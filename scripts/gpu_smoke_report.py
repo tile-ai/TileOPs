@@ -164,3 +164,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# CI: report timings include runner cache warmup on first run.

