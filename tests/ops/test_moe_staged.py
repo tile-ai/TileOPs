@@ -451,11 +451,13 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
         ),
     ],
 )
-def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(
-    layout, sizes, activation, some, n=256
-):
+def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, activation, some):
     """Uneven experts, an empty one included, into a poisoned ``out``: every defined row is
     written and matches the reference."""
+    _check_every_defined_row_written(layout, sizes, activation, some, n=256)
+
+
+def _check_every_defined_row_written(layout, sizes, activation, some, n):
     rows, metadata = _uneven_rows(layout, sizes)
     extra = {} if activation is None else {"activation": activation}
     extra |= {"some": list(some)} if some else {}
@@ -480,9 +482,7 @@ def test_grouped_gemm_writes_every_defined_row_of_short_experts_on_pingpong_tile
     takes 64x256 ping-pong tiles: a CTA's two warp-groups run partly filled tiles of
     different experts."""
     sizes = [100, 0, 30, 64, 7, 0, 20, 5, 1, 2, 3, 4, 8, 6, 3, 3]
-    test_grouped_gemm_writes_every_defined_row_of_uneven_experts(
-        _TIGHT_MOE_GROUPED_GEMM, sizes, None, (), n=4096
-    )
+    _check_every_defined_row_written(_TIGHT_MOE_GROUPED_GEMM, sizes, None, (), n=4096)
 
 
 # WGMMA exists on SM90 and not on SM80, SM86 or SM89, so the grouped GEMM takes a different
