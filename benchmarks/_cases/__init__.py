@@ -8,7 +8,7 @@ merge here, and a name registered twice fails. The workload of an op's call come
 import dataclasses
 import importlib
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 from benchmarks.api import Implementation
 

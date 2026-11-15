@@ -308,7 +308,7 @@ class SignatureCall(CallView):
     # The discriminant point the call took, as its plan keys it.
     branch_key: tuple[object, ...] = ()
     # The metadata tensors the call passed: inputs declaring `values`.
-    metadata: dict[str, torch.Tensor] = None
+    metadata: dict[str, torch.Tensor] | None = None
     # The checked calls the op's sub-ops completed during this call, by stage.
     stages: Mapping[str, tuple[SignatureCall, ...]] | None = None
 

@@ -297,10 +297,6 @@ def _open_calls() -> list:
     return calls
 
 
-# Serializes the assignments that change an op's compile-boundary key.
-_KEY_LOCK = threading.Lock()
-
-
 class Op(ABC):
     """Base class of every TileOPs op.
 
@@ -450,6 +446,8 @@ class Op(ABC):
     _instance_key_names: ClassVar[tuple[str, ...]] = ()
     # The manifest entry the fake is generated from, as text.
     _instance_key_entry: ClassVar[str] = ""
+    # Serializes the assignments that change an op's compile-boundary key.
+    _instance_key_lock: ClassVar[threading.Lock] = threading.Lock()
 
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
@@ -500,7 +498,7 @@ class Op(ABC):
             object.__setattr__(self, name, value)
             return
         # Keeps a concurrent assignment from publishing the key of a value it replaced.
-        with _KEY_LOCK:
+        with self._instance_key_lock:
             object.__setattr__(self, name, value)
             self._instance_key = instance_key(self._instance_identity, self._instance_key_state())
 

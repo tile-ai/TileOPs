@@ -143,12 +143,12 @@ class PlanBranch(SignatureBranch):
     """
 
     # Each passed generated tensor's generator arguments, and each `requires` call.
-    generators: dict[str, list[ast.expr]] = None
-    requires: dict[str, list[ast.Call]] = None
+    generators: dict[str, list[ast.expr]] | None = None
+    requires: dict[str, list[ast.Call]] | None = None
     # The inline roofline `{"flops": tree, "bytes": tree or None}`; None for `func` or none.
     roofline: dict[str, ast.expr | None] | None = None
     # What a call reads: `relevant` less what only generators and `requires` read.
-    called: set[str] = None
+    called: set[str] | None = None
 
 
 @dataclass

@@ -14,7 +14,7 @@ process, so graphs holding its key are never reused by another.
 
 Assigning a param re-keys its op, so a compiled callable retraces; a param edited in place
 leaves the key stale, which a compile tracing the op refuses. A state holding a value the
-encoding does not read keys as on a per-process identity: never shared, and never re-keyed.
+encoding does not read keys on a per-process identity: never shared, and never re-keyed.
 """
 
 import dataclasses
@@ -75,8 +75,10 @@ def get_instance(key: str) -> object:
 
 
 def _qualified_name(cls: type) -> str:
-    """``module.qualname`` when that path names *cls*; otherwise it prefixed with ``~``, which
-    marks a class another process may give the same name to a different body."""
+    """``module.qualname`` when that path names *cls*, else that name prefixed with ``~``.
+
+    The ``~`` marks a class another process may give the same name to a different body.
+    """
     name = f"{cls.__module__}.{cls.__qualname__}"
     found = sys.modules.get(cls.__module__)
     for part in cls.__qualname__.split("."):
@@ -88,10 +90,6 @@ class _OpaqueStateError(Exception):
     """The state holds a value the encoding does not read."""
 
 
-# Past this nesting the encoding would approach the interpreter's recursion limit.
-_MAX_DEPTH = 64
-
-
 class _Encoder:
     """Encodes values as text equal across processes exactly when the values are equal.
 
@@ -100,6 +98,11 @@ class _Encoder:
     most `_MAX_DEPTH` deep. Any other value, a subclass of one of these among them, raises
     `_OpaqueStateError`. A class another process may define otherwise sets `local`.
     """
+
+    # Past this nesting the encoding would approach the interpreter's recursion limit.
+    _MAX_DEPTH = 64
+    # Stands for a dataclass field never set.
+    _UNSET = object()
 
     def __init__(self, local: bool) -> None:
         """Start with `local` already set when the class itself is local."""
@@ -113,7 +116,7 @@ class _Encoder:
         Raises:
             _OpaqueStateError: *value* holds a value the encoding does not read.
         """
-        if depth > _MAX_DEPTH:
+        if depth > self._MAX_DEPTH:
             raise _OpaqueStateError
         depth += 1
         kind = type(value)
@@ -156,14 +159,13 @@ class _Encoder:
             items = (
                 vars(value).items()
                 if kind is ADTValue
-                else ((f.name, getattr(value, f.name, _UNSET)) for f in dataclasses.fields(value))
+                else (
+                    (f.name, getattr(value, f.name, self._UNSET)) for f in dataclasses.fields(value)
+                )
             )
             fields = ",".join(
-                f"{n}=" + ("unset" if v is _UNSET else self.encode(v, depth)) for n, v in items
+                f"{n}=" + ("unset" if v is self._UNSET else self.encode(v, depth)) for n, v in items
             )
             return f"{self.encode(kind, depth)}({fields})"
         finally:
             self._open.pop()
-
-
-_UNSET = object()
