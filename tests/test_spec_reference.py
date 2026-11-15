@@ -280,7 +280,8 @@ def _masked_scatter(p, t):
 
 
 def _rms_norm_gated(p, t):
-    # mamba_ssm.ops.triton.layernorm_gated.rms_norm_ref
+    # mamba_ssm.ops.triton.layernorm_gated.rms_norm_ref; the sigmoid gate follows
+    # fla.modules.fused_norm_gate.rms_norm_gated
     x, z, weight, bias = t["x"], t["z"], t["weight"], t["bias"]
     n = x.shape[-1]
     group = n if p["group_size"] is None else p["group_size"]
@@ -293,7 +294,8 @@ def _rms_norm_gated(p, t):
     ):
         raise ValueError("weight, bias, z and group_size must match x")
     h = x.float()
-    gate = F.silu(z.float()) if z is not None else None
+    act = F.silu if p["activation"] == "silu" else torch.sigmoid
+    gate = act(z.float()) if z is not None else None
     if gate is not None and not p["norm_before_gate"]:
         h = h * gate
     g = h.unflatten(-1, (n // group, group))

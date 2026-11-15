@@ -386,8 +386,10 @@ FusedQKNormRoPEFwdOp:
 
 RMSNormGatedFwdOp:
   # RMSNorm over each group of group_size columns (all N when group_size is None), scaled by
-  # weight and shifted by bias, gated by silu(z) when z is passed: norm(x) * silu(z) with
-  # norm_before_gate, else norm(x * silu(z)). Computed in float32, rounded once to x's dtype.
+  # weight and shifted by bias, gated by act(z) when z is passed: norm(x) * act(z) with
+  # norm_before_gate, else norm(x * act(z)). act is silu, or sigmoid as `activation` selects
+  # in fla.modules.fused_norm_gate.rms_norm_gated. Computed in float32, rounded once to x's
+  # dtype.
   family: norm
   status: spec-only
   ref_api: mamba_ssm.ops.triton.layernorm_gated.rmsnorm_fn
@@ -397,6 +399,7 @@ RMSNormGatedFwdOp:
       eps: {type: float, default: 1.0e-6}
       group_size: {type: "int | None", default: null}
       norm_before_gate: {type: bool, default: true}
+      activation: {type: "'silu' | 'sigmoid'", default: silu}
     inputs:
       x: {dtype: T, shape: "[*B, N]"}
       weight: {dtype: W, shape: "[N]"}
@@ -411,11 +414,19 @@ RMSNormGatedFwdOp:
   - {B: [4096, 48], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.6-27b-gdn-prefill}
   - {B: [64, 48], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}, {T: float16, W: float16, Z: float16}], label: qwen3.6-27b-gdn-decode}
   - {B: [4096, 32], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: float32, Z: bfloat16}], label: qwen3-next-gdn-prefill}
+  - {B: [4096, 32], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.6-35b-a3b-prefill}
+  - {B: [64, 32], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.6-35b-a3b-decode}
+  # Sigmoid-gated output norms: Qwen3.8-Flash-Next (48 heads) and GLM-5.3-Flash KDA (64 heads).
+  - {B: [4096, 48], N: 128, activation: sigmoid, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.8-flash-prefill}
+  - {B: [64, 48], N: 128, activation: sigmoid, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.8-flash-decode}
+  - {B: [4096, 64], N: 128, activation: sigmoid, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: glm-5.3-flash-prefill}
+  - {B: [64, 64], N: 128, activation: sigmoid, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: glm-5.3-flash-decode}
   # Mamba-2 gated norm: norm(x * silu(z)) over d_inner, one group per SSM group.
   - {B: [4096], N: 5120, group_size: 5120, norm_before_gate: false, some: [z], dtype_cases: [{T: bfloat16, W: float32, Z: bfloat16}], label: mamba2-2.7b}
   - {B: [4096], N: 8192, group_size: 1024, norm_before_gate: false, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: codestral-mamba-7b}
   - {B: [2048], N: 3000, eps: 1.0e-5, some: [bias], dtype_cases: [{T: float32, W: float32, Wb: float32}], label: ungated-bias}
   roofline:
-    # Per element: square and accumulate (2), normalize (1), weight (1), bias (1), silu (5)
-    # and the gate multiply (1). Per group: mean (1), eps (1), sqrt and reciprocal (2).
-    flops: "(4 + (1 if present(bias) else 0) + (6 if present(z) else 0)) * prod(B) * N + 4 * prod(B) * (N // group_size.value if present(group_size) else 1)"
+    # Per element: square and accumulate (2), normalize (1), weight (1), bias (1), the gate
+    # (silu 5, sigmoid 4) and its multiply (1). Per group: mean (1), eps (1), sqrt and
+    # reciprocal (2).
+    flops: "(4 + (1 if present(bias) else 0) + ((6 if activation == 'silu' else 5) if present(z) else 0)) * prod(B) * N + 4 * prod(B) * (N // group_size.value if present(group_size) else 1)"

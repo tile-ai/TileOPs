@@ -5,12 +5,13 @@
 EmbeddingFwdOp:
   # output[*S, :] = weight[input[*S], :]. `padding_idx`, `scale_grad_by_freq` and `sparse`
   # change only the gradient. With `max_norm`, each row `input` names whose `norm_type`
-  # norm exceeds `max_norm` is rescaled to `max_norm` in `weight` before the lookup.
+  # norm exceeds `max_norm` is rescaled to `max_norm` in `weight` before the lookup; this
+  # needs a floating table.
   family: indexing
   status: spec-only
   ref_api: torch.nn.functional.embedding
   signature:
-    forall: {S: Shape, V: Dim, D: Dim, I: "DType[int32 | int64]", T: "DType[float16 | bfloat16 | float32]"}
+    forall: {S: Shape, V: Dim, D: Dim, I: "DType[int32 | int64]", T: "DType[float16 | bfloat16 | float32 | int32 | int64]"}
     params:
       padding_idx: {type: "int | None", default: null}
       max_norm: {type: "float | None", default: null}
@@ -25,13 +26,22 @@ EmbeddingFwdOp:
       output: {dtype: T, shape: "[*S, D]"}
     shape_rules:
     - "not present(padding_idx) or (padding_idx.value < V if padding_idx.value > 0 else padding_idx.value >= -V)"
+    - "not present(max_norm) or T in ('float16', 'bfloat16', 'float32')"
   workloads:
   - {S: [1, 4096], V: 248320, D: 5120, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.6-27b-prefill}
   - {S: [1, 32768], V: 248320, D: 5120, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.6-27b-prefill-32k}
   - {S: [64, 1], V: 248320, D: 5120, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.6-27b-decode-b64}
   - {S: [1, 4096], V: 128256, D: 4096, dtype_cases: [{I: int32, T: float16}, {I: int64, T: bfloat16}], label: llama3-8b-prefill}
   - {S: [4, 4096], V: 2304, D: 1152, dtype_cases: [{I: int64, T: float32}], label: qwen3.6-vision-pos}
-  - {S: [32, 512], V: 50000, D: 512, max_norm: 1.0, dtype_cases: [{I: int64, T: float32}], label: max-norm}
+  - {S: [1, 4096], V: 248320, D: 2048, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.6-35b-a3b-prefill}
+  - {S: [1, 4096], V: 129280, D: 4096, dtype_cases: [{I: int64, T: bfloat16}], label: dsv4-flash-prefill}
+  # DeepSeek-V4-Flash hash routing: expert ids looked up by token id.
+  - {S: [1, 4096], V: 129280, D: 6, dtype_cases: [{I: int64, T: int64}], label: dsv4-flash-tid2eid}
+  - {S: [1, 4096], V: 154880, D: 4096, dtype_cases: [{I: int64, T: bfloat16}], label: glm-5.3-flash-prefill}
+  - {S: [1, 4096], V: 248320, D: 2560, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.8-flash-prefill}
+  # V * D above 2^31, as in Qwen3.8-Flash-Next's hashed n-gram table [320001536, 160]: row
+  # offsets need 64-bit arithmetic.
+  - {S: [1, 4096], V: 16777216, D: 160, dtype_cases: [{I: int64, T: bfloat16}], label: ngram-table-64bit}
   roofline:
     # Each distinct row `input` names is read once.
     func: "tileops._perf.formulas.embedding_roofline"
@@ -56,6 +66,9 @@ MaskedScatterFwdOp:
   # the image placeholder tokens. The mask is random, so source holds a row per token.
   - {A: [4096, 5120], M: [4096, 1], R: [4096, 5120], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-image-4k}
   - {A: [16384, 5120], M: [16384, 1], R: [16384, 5120], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-image-16k}
+  - {A: [4096, 2048], M: [4096, 1], R: [4096, 2048], dtype_cases: [{T: bfloat16}], label: qwen3.6-35b-a3b-image}
+  - {A: [4096, 4096], M: [4096, 1], R: [4096, 4096], dtype_cases: [{T: bfloat16}], label: glm-5.3-flash-image}
+  - {A: [4096, 2560], M: [4096, 1], R: [4096, 2560], dtype_cases: [{T: bfloat16}], label: qwen3.8-flash-image}
   - {A: [3000, 4096], M: [3000, 1], R: [3000, 4096], dtype_cases: [{T: float16}, {T: float32}], label: llava-image-3k}
   roofline:
     # Priced at the cheaper outcome of an all-false mask (input's distinct elements) or an

@@ -203,6 +203,9 @@ RoPECosSinFwdOp:
   # sequence's start. interleaved rotates pairs (x[2i], x[2i + 1]), otherwise
   # (x[i], x[i + Rh]). With inplace the rotation is written into x, which is returned.
   # seqlen_offsets is the reference's integer form; its per-sequence tensor form is not declared.
+  # Angles per packed token are the dense form with B = 1, S = Tt and a cos/sin row per token.
+  # x may be a strided view, such as the trailing columns of a wider head rotated in place;
+  # passing -sin applies the inverse rotation.
   family: rope
   status: spec-only
   ref_api: flash_attn.layers.rotary.apply_rotary_emb
@@ -240,6 +243,13 @@ RoPECosSinFwdOp:
   - {B: 1, S: 16384, H: 16, D: 72, P: 16384, Rh: 36, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: qwen3.6-vision-16k}
   - {B: 4, S: 2048, H: 32, D: 128, P: 4096, Rh: 64, dtype_cases: [{T: float16, C: float16, Cs: float16}, {T: bfloat16, C: bfloat16, Cs: bfloat16}], label: llama3-8b-prefill}
   - {B: 4, S: 2048, H: 96, D: 128, P: 8192, Rh: 32, seqlen_offsets: 1024, interleaved: true, max_seqlen: 2048, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: glm-4.5-partial}
+  - {B: 1, S: 4096, H: 16, D: 64, P: 4096, Rh: 32, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: glm-5.3-vision}
+  # Qwen3.8-Flash-Next QSA indexer q: per-token MRoPE angles on the first 64 of 128 columns.
+  - {B: 1, S: 4096, H: 4, D: 128, P: 4096, Rh: 32, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: qwen3.8-qsa-indexer}
+  # DeepSeek-V4-Flash: interleaved rotation of the trailing 64 of 512 columns of q (64 heads)
+  # and of the single kv head, in place.
+  - {B: 1, S: 4096, H: 64, D: 64, P: 4096, Rh: 32, interleaved: true, inplace: true, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: dsv4-flash-q-tail}
+  - {B: 1, S: 4096, H: 1, D: 64, P: 4096, Rh: 32, interleaved: true, inplace: true, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: dsv4-flash-kv-tail}
   - {Tt: 5120, H: 32, D: 128, P: 4096, Rh: 64, seq_lens: [1000, 3000, 1120], max_seqlen: 3000, some: [cu_seqlens], inplace: true, dtype_cases: [{T: bfloat16, C: bfloat16, Cs: bfloat16, I: int32}, {T: float32, C: float32, Cs: float32, I: int64}], label: varlen-inplace}
   roofline:
     # Only the cos/sin rows the sequences reach are read; in place, only the rotated columns.
