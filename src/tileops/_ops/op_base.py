@@ -329,7 +329,7 @@ class Op(ABC):
     # The bound builder: ``_UNRESOLVED`` before a call binds one, ``None`` for the in-tree
     # kernels, or a target's build_kernel.
     _target_builder: object = _UNRESOLVED
-    # The target bound with it, for ``serving_target`` and error messages.
+    # The target bound with it, for ``serving_target``.
     _serving_target: Target = None
     # Whether this instance has warned that a kernel of its target cannot be tuned.
     _tune_warned: bool = False
@@ -1298,9 +1298,9 @@ class Op(ABC):
             kernel = builder(*specs, **params)
         if not callable(kernel):
             raise OpNotAvailableError(
-                f"the kernel builder {builder!r} returned {kernel!r} for "
-                f"{type(self).__name__}, which is not callable; a builder returns "
-                f"something the op can call with the tensors it was described"
+                f"the kernel builder {builder!r} returned {kernel!r}, which is not "
+                f"callable, for {type(self).__name__}; a builder returns something the "
+                f"op can call with the tensors it was described"
             )
         if self._tune_requested:
             self._tune_target_kernel(device, kernel)
@@ -1345,16 +1345,19 @@ class Op(ABC):
         return values
 
     def _entries_built(self, interface: str) -> Mapping[Hashable, object]:
-        """Return a read-only view of the entries built for *interface* so far, whoever built them.
+        """Return a read-only mapping of the entries built for *interface* so far, whoever built them.
 
         Empty before the interface's first build. A target serves the whole op, so for an op a
-        target serves every interface shows the target's kernels, one per input signature. For
+        target serves every interface maps to a copy of the target's kernels taken at the
+        call, one per input signature; an in-tree op's mapping is a live view. For
         introspection — tests, benchmark reporting — never for dispatch: an execution path
         asks ``kernel_for`` so a miss builds rather than raises.
         """
         builder = self._target_builder
         if builder is not None and builder is not _UNRESOLVED:
-            return MappingProxyType({s: kernel for s, (kernel, _) in self._target_kernels.items()})
+            # Copied in one step, so a concurrent call adding a kernel cannot break the loop.
+            held = tuple(self._target_kernels.items())
+            return MappingProxyType({s: kernel for s, (kernel, _) in held})
         return MappingProxyType(self._built_entries.get(interface, {}))
 
     def delegate_for(
@@ -1539,7 +1542,8 @@ class Op(ABC):
         """
         seen: set[tuple] = set()
         for op in self._walk_ops():
-            for signature, (kernel, _) in op._target_kernels.items():
+            # Copied in one step: tuning runs between yields while calls may add kernels.
+            for signature, (kernel, _) in tuple(op._target_kernels.items()):
                 device = signature[0]
                 if (device, id(kernel)) not in seen:
                     seen.add((device, id(kernel)))
