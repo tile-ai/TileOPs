@@ -100,7 +100,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     )
     from tileops._kernels.quantization.fp8_quant import FP8QuantKernel
     from tileops._kernels.rope import (
-        RoPENeoxKernel,
         RoPENeoxPositionIdsKernel,
         RoPENonNeoxKernel,
     )
@@ -214,7 +213,6 @@ _LAZY = {
     "NSAFwdVarlenKernel": ".attention",
     "NSATopKVarlenKernel": ".attention",
     "RMSNormKernel": ".norm",
-    "RoPENeoxKernel": ".rope",
     "RoPENeoxPositionIdsKernel": ".rope",
     "RoPENonNeoxKernel": ".rope",
     "DSADecodeBasicKernel": ".attention",

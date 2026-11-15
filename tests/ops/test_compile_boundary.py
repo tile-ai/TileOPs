@@ -85,7 +85,6 @@ from tileops._ops.rope import (
     LongRoPEFwdOp,
     RoPEFwdOp,
     RoPELlama31FwdOp,
-    RoPENeoxPositionIdsFwdOp,
     YaRNFwdOp,
 )
 from tileops._ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
@@ -791,41 +790,46 @@ def _sequence_modeling_cases():
 
 
 def _rope_cases():
-    """The RoPE ops, one layout each, with the inputs they are built for."""
+    """The RoPE ops, each with positions past 0, a query and a key."""
     _DTYPE = torch.float16
-    _SEQ_LEN, _HEADS, _D = 64, 4, 64
+    _TOKENS, _HEADS, _D = 64, 4, 64
+    common = {"head_size": _D, "rotary_dim": _D, "max_position_embeddings": 4096, "base": 1e4}
 
-    def _x(*shape):
-        return torch.randn(*shape, dtype=_DTYPE, device=run_device())
+    def _inputs():
+        positions = torch.arange(100, 100 + _TOKENS, device=run_device())
+        q = torch.randn(_TOKENS, _HEADS * _D, dtype=_DTYPE, device=run_device())
+        k = torch.randn(_TOKENS, _D, dtype=_DTYPE, device=run_device())
+        return positions, q, k
 
-    def one_d(op_cls):
-        return lambda: (op_cls(input_layout="1d"), (_x(_SEQ_LEN, _D),))
+    def rope(neox):
+        return lambda: (RoPEFwdOp(**common, is_neox_style=neox, dtype=_DTYPE), _inputs())
 
-    def two_d(op_cls):
-        return lambda: (op_cls(input_layout="2d"), (_x(2, _SEQ_LEN, _HEADS, _D),))
+    def llama31():
+        op = RoPELlama31FwdOp(
+            **common,
+            is_neox_style=True,
+            dtype=_DTYPE,
+            scaling_factor=8.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            orig_max_position=1024,
+        )
+        return op, _inputs()
+
+    def yarn():
+        return YaRNFwdOp(**common, is_neox_style=True, scaling_factor=2.0, dtype=_DTYPE), _inputs()
 
     def longrope():
         rescale = torch.linspace(1.0, 2.0, _D // 2).tolist()
-        return LongRoPEFwdOp(rescale_factors=rescale), (_x(_SEQ_LEN, _D),)
-
-    def position_ids():
-        op = RoPENeoxPositionIdsFwdOp(max_position=128)
-        positions = torch.arange(_SEQ_LEN, device=run_device(), dtype=torch.int32)
-        return op, (_x(_SEQ_LEN, _HEADS, _D), positions)
+        op = LongRoPEFwdOp(_D, _D, 8192, 4096, 1e4, True, _DTYPE, rescale)
+        return op, _inputs()
 
     return (
-        ("rope-neox", one_d(RoPEFwdOp)),
-        (
-            "rope-interleaved",
-            lambda: (
-                RoPEFwdOp(rope_layout="interleaved", input_layout="2d"),
-                (_x(2, _SEQ_LEN, _HEADS, _D),),
-            ),
-        ),
-        ("rope-llama31", one_d(RoPELlama31FwdOp)),
-        ("rope-yarn", two_d(YaRNFwdOp)),
+        ("rope-neox", rope(True)),
+        ("rope-gptj", rope(False)),
+        ("rope-llama31", llama31),
+        ("rope-yarn", yarn),
         ("rope-longrope", longrope),
-        ("rope-neox-position-ids", position_ids),
     )
 
 
@@ -937,7 +941,6 @@ for _op_cls in (
     RoPELlama31FwdOp,
     YaRNFwdOp,
     LongRoPEFwdOp,
-    RoPENeoxPositionIdsFwdOp,
     TopKMaskFwdOp,
     TopKTopPMaskFwdOp,
 ):

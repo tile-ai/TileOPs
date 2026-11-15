@@ -54,7 +54,7 @@ class GQAPagedFwdOp(Op):
     live replay inputs; choosing and preparing this path requires no host readback.
 
     Append with ``PagedKVCacheWriteFwdOp`` using physical slots, then read with
-    post-append lengths. For rotated caches, apply ``RoPENeoxPositionIdsFwdOp`` to
+    post-append lengths. For rotated caches, apply ``RoPEFwdOp`` at the token positions to
     new Q/K before writing and use ``pos_encoding_mode="none"`` to avoid double
     rotation. FP8 writes quantize new K/V before attention; the retired fused append
     op attended those tokens at their original 16-bit precision.

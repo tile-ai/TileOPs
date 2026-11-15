@@ -4,7 +4,6 @@ from tileops._ops.rope import (
     LongRoPEFwdOp,
     RoPEFwdOp,
     RoPELlama31FwdOp,
-    RoPENeoxPositionIdsFwdOp,
     YaRNFwdOp,
 )
 
@@ -12,6 +11,5 @@ __all__ = [
     "LongRoPEFwdOp",
     "RoPEFwdOp",
     "RoPELlama31FwdOp",
-    "RoPENeoxPositionIdsFwdOp",
     "YaRNFwdOp",
 ]

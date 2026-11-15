@@ -1036,6 +1036,62 @@ class TestSpecOnlyRecounts:
         )
         assert flops == 3 * 6 * 2 * 4
 
+    @pytest.mark.parametrize(
+        "name, extra",
+        [
+            ("RoPEFwdOp", {}),
+            (
+                "RoPELlama31FwdOp",
+                {
+                    "scaling_factor": 8.0,
+                    "low_freq_factor": 1.0,
+                    "high_freq_factor": 4.0,
+                    "orig_max_position": 8,
+                },
+            ),
+            ("YaRNFwdOp", {"scaling_factor": 2.0}),
+            (
+                "LongRoPEFwdOp",
+                {"original_max_position_embeddings": 8, "rescale_factors": [1.0, 2.0]},
+            ),
+        ],
+    )
+    def test_rope_reads_only_the_cache_rows_the_positions_name(self, name, extra):
+        tokens = 5
+        row = {
+            "head_size": 8,
+            "rotary_dim": 4,
+            "max_position_embeddings": 16,
+            "base": 10000.0,
+            "is_neox_style": True,
+            "dtype": "bfloat16",
+            "Hq": 2,
+            "Hk": 1,
+            "some": ["key"],
+            **extra,
+            **({"N": tokens} if name == "LongRoPEFwdOp" else {"S": [tokens]}),
+        }
+        case = {"T": "bfloat16", "I": "int64"}
+        positions = [3, 3, 7, 0, 7]
+        (flops, moved), _call = _evaluated(name, row, case, positions=positions)
+        q, k = ((tokens, 16), _BF16), ((tokens, 8), _BF16)
+        ledger = {"offsets": None} if name == "LongRoPEFwdOp" else {}
+        # Three distinct rows of 4 cos/sin values each.
+        assert (
+            moved
+            == _ledger(
+                name,
+                positions=((tokens,), _I64),
+                query=q,
+                key=k,
+                query_out=q,
+                key_out=k,
+                **ledger,
+            )
+            + 3 * 4 * 2
+        )
+        assert flops == 3 * tokens * 3 * 4
+
     def test_rope_cos_sin_reads_no_table_row_when_nothing_rotates(self):
         name = "RoPECosSinFwdOp"
         row = {"B": 0, "S": 3, "H": 2, "D": 8, "P": 6, "Rh": 2}
@@ -1156,6 +1212,10 @@ HAND_WRITTEN = {
     "EmbeddingFwdOp": "it reads the weight rows its indices name, not the table",
     "MaskedScatterFwdOp": "each output element reads input or source, as the mask decides",
     "RoPECosSinFwdOp": "it reads the cos/sin rows the sequences reach, and in place only the rotated columns",
+    "RoPEFwdOp": "it reads only the cos/sin cache rows the positions name",
+    "RoPELlama31FwdOp": "it reads only the cos/sin cache rows the positions name",
+    "YaRNFwdOp": "it reads only the cos/sin cache rows the positions name",
+    "LongRoPEFwdOp": "it reads only the cos/sin cache rows the positions and offsets name",
     "ChainSpeculativeSamplingFwdOp": "where the chain stops is drawn at run time, so it prices the cheaper outcome",
 }
 

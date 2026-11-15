@@ -65,6 +65,7 @@ __all__ = [
     "paged_kv_cache_write_roofline",
     "pool_roofline",
     "rope_cos_sin_roofline",
+    "rope_positions_roofline",
     "routed_active_experts",
     "routed_expert_mlp_roofline",
     "top_k_mask_roofline",
@@ -1275,6 +1276,36 @@ def embedding_roofline(call: CallView) -> tuple[int, int]:
         flops = rows * (per_value * d + per_row)
     moved = call.bytes("input") + rows * d * _elem_bytes(call, "weight") + call.bytes("output")
     return flops, moved
+
+
+def _flat_values(values: object) -> list:
+    """The values of a nested list, in order."""
+    if not isinstance(values, list):
+        return [values]
+    return [v for item in values for v in _flat_values(item)]
+
+
+def rope_positions_roofline(call: CallView) -> tuple[int, int]:
+    """3 per rotated value of query and key. Both are read and written whole, positions (and
+    offsets) read, and the cache rows they name read once, cos and sin in the query's dtype."""
+    indices = call.indices
+    index = call.metadata_values("positions")
+    if call.present("offsets"):
+        offsets = call.metadata_values("offsets")
+        index = [p + o for p, o in zip(index, offsets, strict=True)]
+    flat = _flat_values(index)
+    rows, tokens = set(flat), len(flat)
+    rotated, moved = 0, 0
+    for name in ("query", "key"):
+        if call.present(name):
+            heads = prod(call.tensors[name][0]) // max(tokens * indices["head_size"], 1)
+            rotated += tokens * heads * indices["rotary_dim"]
+            moved += 2 * call.bytes(name)
+    for name in ("positions", "offsets"):
+        if call.present(name):
+            moved += call.bytes(name)
+    moved += len(rows) * indices["rotary_dim"] * _elem_bytes(call, "query")
+    return 3 * rotated, moved
 
 
 def rope_cos_sin_roofline(call: CallView) -> tuple[int, int]:

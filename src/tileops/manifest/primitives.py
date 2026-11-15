@@ -230,6 +230,14 @@ def coalesce_dtype(value: str | None, dtype: str) -> str:
     return dtype if value is None else value
 
 
+def rope_yarn_cache_rows(max_position_embeddings: int, scaling_factor: float) -> int:
+    """The rows of a YaRN cos/sin cache, ``len(arange(max_position_embeddings * scaling_factor))``."""
+    rows = math.ceil(max_position_embeddings * scaling_factor)
+    if rows <= 0:
+        raise ValueError(f"a YaRN cache of {max_position_embeddings} * {scaling_factor} has no row")
+    return rows
+
+
 def mhc_expansion(q: int) -> int:
     """The positive `n` with `n * n + 2 * n == q`."""
     n = math.isqrt(q + 1) - 1
@@ -308,6 +316,7 @@ PRIMITIVES: dict[str, Callable[..., Any]] = {
     "pool.out": pool_out,
     "moe.capacity": moe_capacity,
     "mhc.expansion": mhc_expansion,
+    "rope.yarn_cache_rows": rope_yarn_cache_rows,
     "promote_int_to_float": promote_int_to_float,
     "coalesce_dtype": coalesce_dtype,
     "promote": promote,
@@ -351,6 +360,7 @@ PRIMITIVE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "pool.out": (("Int", "Int", "Int", "Int", "Int", "Bool"), "Dim"),
     "moe.capacity": (("ADT", "Int", "Int"), "Dim"),
     "mhc.expansion": (("Int",), "Dim"),
+    "rope.yarn_cache_rows": (("Int", "Value"), "Dim"),
     "promote_int_to_float": (("DType",), "DType"),
     "coalesce_dtype": (("Maybe[DType]", "DType"), "DType"),
     "promote": (("Seq[DType]",), "DType"),

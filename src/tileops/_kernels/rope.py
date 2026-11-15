@@ -1,21 +1,12 @@
-"""Rotary Position Embedding (RoPE) kernels — 4 frequency schemes x 2 input layouts.
+"""Rotary position embedding kernels.
 
-All 5 variants share the same core rotation logic applied at the kernel level:
+The ops compute their cos/sin tables; a kernel receives them and rotates:
     y = x * cos + rotate(x) * sin
 
-The variants differ only in how the frequency tables (cos, sin) are computed,
-which is handled in the Op layer (Python). The kernel receives pre-computed
-cos/sin tables.
-
-Two rotation styles exist at the kernel level:
-- **Neox-style** (used by neox, llama31, yarn, longrope): split x into halves,
-  rotate_half = concat(-x2, x1).
-- **Non-neox** (original RoFormer): adjacent-pair rotation,
-  rotate_pairs = interleave(-x_odd, x_even).
-
-Layouts:
-- 1D: (seq_len, head_dim) — single-head or pre-reshaped
-- 2D: (batch, seq_len, num_heads, head_dim) — multi-head batched
+- ``RoPENeoxPositionIdsKernel``: NeoX halves, each token at the table row its position
+  names, the leading ``rotary_dim`` columns of each head rotated and the rest copied.
+- ``RoPENonNeoxKernel``: RoFormer adjacent pairs over ``(batch, seq_len, heads, dim)``,
+  token ``s`` at row ``s``; an op gathers the rows its positions name first.
 """
 
 import dataclasses
@@ -24,21 +15,15 @@ from abc import abstractmethod
 import tilelang
 import tilelang.language as T
 import torch
-from tvm import DataType
 
-from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
-from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
-from tileops._kernels.streaming_load import load16, load16_evict_last
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 __all__ = [
     "RoPECall",
-    "RoPENeoxFwdInterface",
-    "RoPENeoxKernel",
     "RoPENeoxPositionIdsCall",
     "RoPENeoxPositionIdsFwdInterface",
     "RoPENeoxPositionIdsKernel",
@@ -53,7 +38,6 @@ class RoPECall(CallSpec):
 
     seq_len: int = 0
     head_dim: int = 0
-    input_layout: str = "1d"
     batch: int = 1
     num_heads: int = 1
     dtype: torch.dtype | None = None
@@ -69,39 +53,7 @@ class RoPENeoxPositionIdsCall(CallSpec):
     rotary_dim: int = 0
     max_position: int = 0
     dtype: torch.dtype | None = None
-
-
-class RoPENeoxFwdInterface(KernelInterface):
-    """The GPT-NeoX rotation of a tensor by caller-supplied cos/sin tables.
-
-    The variants that differ only in how those tables are computed -- standard theta,
-    Llama 3.1, YaRN, LongRoPE -- share this contract: the table is an input, so what the
-    kernel computes from it is the same rotation.
-    """
-
-    request = RoPECall
-
-    @abstractmethod
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-        """Rotate each head by the half-split convention; nothing is written in place.
-
-        Splitting a head at its midpoint into ``x1`` and ``x2``, the output is
-        ``x * cos_row + concat(-x2, x1) * sin_row``, where each table half is broadcast
-        over both halves of the head and the row is the token's position along the
-        sequence axis. Nothing is written in place, and the output aliases no input.
-
-        Args:
-            x: The input, ``(call.seq_len, call.head_dim)`` under input layout ``"1d"``, or
-                ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under
-                ``"2d"``, in ``call.dtype`` on ``call.device``, contiguous in that axis
-                order. The op makes it contiguous before the call.
-            cos: The cosine table, ``(call.seq_len, call.head_dim // 2)`` in ``call.dtype``
-                on ``call.device``, contiguous, row-major.
-            sin: The sine table, in the same shape, dtype, device and layout.
-
-        Returns:
-            A new contiguous tensor on ``call.device``, shaped and typed as *x*.
-        """
+    position_dtype: torch.dtype = torch.int32
 
 
 class RoPENonNeoxFwdInterface(KernelInterface):
@@ -119,10 +71,9 @@ class RoPENonNeoxFwdInterface(KernelInterface):
         place, and the output aliases no input.
 
         Args:
-            x: The input, ``(call.seq_len, call.head_dim)`` under input layout ``"1d"``, or
-                ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` under
-                ``"2d"``, in ``call.dtype`` on ``call.device``, contiguous in that axis
-                order. The op makes it contiguous before the call.
+            x: The input, ``(call.batch, call.seq_len, call.num_heads, call.head_dim)`` in
+                ``call.dtype`` on ``call.device``, contiguous in that axis order. The op
+                makes it contiguous before the call.
             cos: The cosine table, ``(call.seq_len, call.head_dim // 2)`` in ``call.dtype``
                 on ``call.device``, contiguous, row-major.
             sin: The sine table, in the same shape, dtype, device and layout.
@@ -156,7 +107,8 @@ class RoPENeoxPositionIdsFwdInterface(KernelInterface):
             cos: The cosine table, ``(call.max_position, call.rotary_dim // 2)`` in
                 ``call.dtype`` on ``call.device``, contiguous, row-major.
             sin: The sine table, in the same shape, dtype, device and layout.
-            position_ids: ``int32`` ``(call.num_tokens,)`` on ``call.device``, contiguous.
+            position_ids: ``(call.num_tokens,)`` in ``call.position_dtype``, ``int32`` or
+                ``int64``, on ``call.device``, contiguous.
 
         Returns:
             A new contiguous tensor on ``call.device``, shaped and typed as *x*.
@@ -171,213 +123,6 @@ class RoPENeoxPositionIdsFwdInterface(KernelInterface):
         """
 
 
-# Kernel factories for 1D and 2D layouts
-
-
-@target_cache(maxsize=32)
-def _make_rope_neox_1d(seq_len: int, head_dim: int, dtype: str) -> object:
-    """1D neox RoPE kernel: (seq_len, head_dim) x cos(seq_len, half) x sin(seq_len, half).
-
-    cos/sin are of shape (seq_len, head_dim // 2), one entry per rotated pair.
-    The arithmetic is f32 and rounds once.
-    """
-    half = head_dim // 2
-    n_pairs = seq_len * half
-
-    @tilelang.jit(out_idx=[3])
-    def kernel(threads_arg, npt_arg):
-        @T.prim_func
-        def main(
-            x: T.Tensor((seq_len, head_dim), dtype),
-            cos_table: T.Tensor((seq_len, half), dtype),
-            sin_table: T.Tensor((seq_len, half), dtype),
-            y: T.Tensor((seq_len, head_dim), dtype),
-        ):
-            with T.Kernel(T.ceildiv(n_pairs, threads_arg * npt_arg), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    pair_idx = (bx * threads_arg + i) * npt_arg + j
-                    if pair_idx < n_pairs:
-                        row = pair_idx // half
-                        col = pair_idx % half
-                        c = T.Cast("float32", cos_table[row, col])
-                        s = T.Cast("float32", sin_table[row, col])
-                        x_low = T.Cast("float32", x[row, col])
-                        x_high = T.Cast("float32", x[row, col + half])
-                        y[row, col] = T.Cast(dtype, x_low * c - x_high * s)
-                        y[row, col + half] = T.Cast(dtype, x_high * c + x_low * s)
-
-        return main
-
-    return kernel
-
-
-@target_cache(maxsize=32)
-def _make_rope_neox_2d(
-    batch: int,
-    seq_len: int,
-    num_heads: int,
-    head_dim: int,
-    dtype: str,
-) -> object:
-    """2D neox RoPE kernel: (batch, seq_len, num_heads, head_dim).
-
-    cos/sin are of shape (seq_len, head_dim // 2), broadcast over batch and heads.
-    ``x`` and ``y`` are flat: the caller reshapes. The arithmetic is f32 and rounds
-    once.
-
-    A thread whose ``num_per_thread`` pairs fill one 16-byte vector of a half-row
-    reads both halves and both table rows as vectors. Where there is more than one batch
-    or head, each reads the same table rows, so those stay in L2 evict-last; ``x`` is
-    read once. A half-row
-    that is not a whole number of vectors, or another ``num_per_thread``, rotates one
-    pair an iteration.
-    """
-    half = head_dim // 2
-    n_pairs = batch * seq_len * num_heads * half
-    n_total = n_pairs * 2
-    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
-
-    @tilelang.jit(out_idx=[3], compile_flags=csrc_include("streaming_load.h"))
-    def kernel(threads_arg, npt_arg):
-        vectorized = npt_arg == vec and half % vec == 0
-
-        @T.prim_func
-        def main(
-            x: T.Tensor((n_total,), dtype),
-            cos_table: T.Tensor((seq_len, half), dtype),
-            sin_table: T.Tensor((seq_len, half), dtype),
-            y: T.Tensor((n_total,), dtype),
-        ):
-            if vectorized:
-                with T.Kernel(T.ceildiv(n_pairs // vec, threads_arg), threads=threads_arg) as bx:
-                    tx = T.get_thread_binding()
-                    lo = T.alloc_local([vec], dtype)
-                    hi = T.alloc_local([vec], dtype)
-                    cs = T.alloc_local([vec], dtype)
-                    sn = T.alloc_local([vec], dtype)
-                    unit = bx * threads_arg + tx
-                    if unit < n_pairs // vec:
-                        head = unit // (half // vec)
-                        col = unit % (half // vec) * vec
-                        s_idx = head // num_heads % seq_len
-                        low = head * head_dim + col
-                        load16(lo, 0, x, low)
-                        load16(hi, 0, x, low + half)
-                        if batch * num_heads > 1:
-                            load16_evict_last(cs, 0, cos_table, (s_idx, col))
-                            load16_evict_last(sn, 0, sin_table, (s_idx, col))
-                        else:
-                            load16(cs, 0, cos_table, (s_idx, col))
-                            load16(sn, 0, sin_table, (s_idx, col))
-                        for i in T.unroll(vec):
-                            c = T.Cast("float32", cs[i])
-                            s = T.Cast("float32", sn[i])
-                            x_low = T.Cast("float32", lo[i])
-                            x_high = T.Cast("float32", hi[i])
-                            lo[i] = T.Cast(dtype, x_low * c - x_high * s)
-                            hi[i] = T.Cast(dtype, x_high * c + x_low * s)
-                        for i in T.vectorized(vec):
-                            y[low + i] = lo[i]
-                        for i in T.vectorized(vec):
-                            y[low + half + i] = hi[i]
-            else:
-                with T.Kernel(T.ceildiv(n_pairs, threads_arg * npt_arg), threads=threads_arg) as bx:
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        pair_idx = (bx * threads_arg + i) * npt_arg + j
-                        if pair_idx < n_pairs:
-                            head = pair_idx // half
-                            col = pair_idx % half
-                            s_idx = (head // num_heads) % seq_len
-                            low = head * head_dim + col
-                            c = T.Cast("float32", cos_table[s_idx, col])
-                            s = T.Cast("float32", sin_table[s_idx, col])
-                            x_low = T.Cast("float32", x[low])
-                            x_high = T.Cast("float32", x[low + half])
-                            y[low] = T.Cast(dtype, x_low * c - x_high * s)
-                            y[low + half] = T.Cast(dtype, x_high * c + x_low * s)
-
-        return main
-
-    return kernel
-
-
-@target_cache(maxsize=32)
-def _make_rope_non_neox_1d(seq_len: int, head_dim: int, dtype: str) -> object:
-    """1D non-neox (RoFormer) RoPE kernel: adjacent-pair rotation.
-
-    cos/sin shape: (seq_len, head_dim // 2), one entry per pair; entry ``p`` serves
-    columns ``2p`` and ``2p + 1``. The arithmetic is f32 and rounds once.
-    """
-    half = head_dim // 2
-    n_pairs = seq_len * half
-    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
-
-    @tilelang.jit(out_idx=[3], compile_flags=csrc_include("streaming_load.h"))
-    def kernel(threads_arg, npt_arg):
-        block = threads_arg * npt_arg
-        vectorized = (
-            npt_arg % 2 == 0 and head_dim % npt_arg == 0 and (seq_len * head_dim) % block == 0
-        )
-        whole_tables = npt_arg // 2 % vec == 0
-
-        @T.prim_func
-        def main(
-            x: T.Tensor((seq_len, head_dim), dtype),
-            cos_table: T.Tensor((seq_len, half), dtype),
-            sin_table: T.Tensor((seq_len, half), dtype),
-            y: T.Tensor((seq_len, head_dim), dtype),
-        ):
-            if vectorized:
-                with T.Kernel(seq_len * head_dim // block, threads=threads_arg) as bx:
-                    tx = T.get_thread_binding()
-                    run = T.alloc_local([npt_arg], dtype)
-                    turned = T.alloc_local([npt_arg], dtype)
-                    cs = T.alloc_local([npt_arg // 2], dtype)
-                    sn = T.alloc_local([npt_arg // 2], dtype)
-                    at = (bx * threads_arg + tx) * npt_arg
-                    row = at // head_dim
-                    col = at % head_dim
-                    if whole_tables:
-                        for v in T.unroll(npt_arg // vec):
-                            load16(run, v * vec, x, (row, col + v * vec))
-                        for v in T.unroll(npt_arg // 2 // vec):
-                            load16(cs, v * vec, cos_table, (row, col // 2 + v * vec))
-                            load16(sn, v * vec, sin_table, (row, col // 2 + v * vec))
-                    else:
-                        for i in T.vectorized(npt_arg):
-                            run[i] = x[row, col + i]
-                        for i in T.vectorized(npt_arg // 2):
-                            cs[i] = cos_table[row, col // 2 + i]
-                        for i in T.vectorized(npt_arg // 2):
-                            sn[i] = sin_table[row, col // 2 + i]
-                    for i in T.serial(npt_arg // 2):
-                        x_even = T.Cast("float32", run[i * 2])
-                        x_odd = T.Cast("float32", run[i * 2 + 1])
-                        c = T.Cast("float32", cs[i])
-                        s = T.Cast("float32", sn[i])
-                        turned[i * 2] = T.Cast(dtype, x_even * c - x_odd * s)
-                        turned[i * 2 + 1] = T.Cast(dtype, x_odd * c + x_even * s)
-                    for i in T.vectorized(npt_arg):
-                        y[row, col + i] = turned[i]
-            else:
-                with T.Kernel(T.ceildiv(n_pairs, block), threads=threads_arg) as bx:
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        pair_idx = (bx * threads_arg + i) * npt_arg + j
-                        if pair_idx < n_pairs:
-                            row = pair_idx // half
-                            pair = pair_idx % half
-                            c = T.Cast("float32", cos_table[row, pair])
-                            s = T.Cast("float32", sin_table[row, pair])
-                            x_even = T.Cast("float32", x[row, pair * 2])
-                            x_odd = T.Cast("float32", x[row, pair * 2 + 1])
-                            y[row, pair * 2] = T.Cast(dtype, x_even * c - x_odd * s)
-                            y[row, pair * 2 + 1] = T.Cast(dtype, x_odd * c + x_even * s)
-
-        return main
-
-    return kernel
-
-
 @target_cache(maxsize=32)
 def _make_rope_neox_position_ids_thd(
     num_tokens: int,
@@ -386,6 +131,7 @@ def _make_rope_neox_position_ids_thd(
     rotary_dim: int,
     max_position: int,
     dtype: str,
+    position_dtype: str = "int32",
     one_wave: bool = False,
 ) -> object:
     """THD neox RoPE kernel with explicit absolute position ids.
@@ -419,7 +165,7 @@ def _make_rope_neox_position_ids_thd(
             x: T.Tensor((n_total,), dtype),
             cos_table: T.Tensor((max_position, half), dtype),
             sin_table: T.Tensor((max_position, half), dtype),
-            position_ids: T.Tensor((num_tokens,), "int32"),
+            position_ids: T.Tensor((num_tokens,), position_dtype),
             status: T.Tensor((1,), "int32"),
             y: T.Tensor((n_total,), dtype),
         ):
@@ -563,162 +309,6 @@ def _make_rope_non_neox_2d(
     return kernel
 
 
-class _RoPEKernelBase(Kernel):
-    """Base class for all RoPE kernel variants.
-
-    The core rotation is performed in the TileLang kernel.
-    Variant-specific frequency computation is done in the Op layer.
-
-    Args:
-        seq_len: Sequence length.
-        head_dim: Head dimension (must be even).
-        dtype: Torch dtype.
-        input_layout: "1d" for (seq_len, head_dim) or "2d" for
-            (batch, seq_len, num_heads, head_dim).
-        batch: Batch size (required for the 2d input layout).
-        num_heads: Number of heads (required for the 2d input layout).
-        config: Optional config dict.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
-    ROTATION_STYLE: str = "neox"  # "neox" or "non_neox"
-
-    @classmethod
-    def entry_for(cls, call: RoPECall) -> Entry:
-        return call, lambda: cls(
-            call.seq_len,
-            call.head_dim,
-            call.dtype,
-            input_layout=call.input_layout,
-            batch=call.batch,
-            num_heads=call.num_heads,
-        )
-
-    def __init__(
-        self,
-        seq_len: int,
-        head_dim: int,
-        dtype: torch.dtype,
-        input_layout: str = "1d",
-        batch: int = 1,
-        num_heads: int = 1,
-        config: dict | None = None,
-    ):
-        super().__init__()
-        if head_dim % 2 != 0:
-            raise ValueError(f"head_dim must be even, got {head_dim}")
-        if input_layout not in ("1d", "2d"):
-            raise ValueError(f"input_layout must be '1d' or '2d', got '{input_layout}'")
-
-        self.seq_len = seq_len
-        self.head_dim = head_dim
-        self.dtype = dtype
-        self.input_layout = input_layout
-        self.batch = batch
-        self.num_heads = num_heads
-
-        self.kernel = self._build_kernel()
-        self.init_config(config)
-
-    def _build_kernel(self) -> object:
-        dtype_str = self.dtype_to_str(self.dtype)
-
-        if self.ROTATION_STYLE == "neox":
-            if self.input_layout == "1d":
-                return _make_rope_neox_1d(
-                    self.seq_len,
-                    self.head_dim,
-                    dtype_str,
-                )
-            else:
-                return _make_rope_neox_2d(
-                    self.batch,
-                    self.seq_len,
-                    self.num_heads,
-                    self.head_dim,
-                    dtype_str,
-                )
-        elif self.ROTATION_STYLE == "non_neox":
-            if self.input_layout == "1d":
-                return _make_rope_non_neox_1d(
-                    self.seq_len,
-                    self.head_dim,
-                    dtype_str,
-                )
-            else:
-                return _make_rope_non_neox_2d(
-                    self.batch,
-                    self.seq_len,
-                    self.num_heads,
-                    self.head_dim,
-                    dtype_str,
-                )
-        else:
-            raise ValueError(f"Unknown rotation style: {self.ROTATION_STYLE}")
-
-    @property
-    def default_config(self) -> dict:
-        """Default threads and per-thread work.
-
-        ``num_per_thread`` counts columns for the non-neox rotation and pairs for the
-        neox one, so a caller overriding it states its own units.
-        """
-        vec = VECTOR_ACCESS_BYTES // self.dtype.itemsize
-        if self.input_layout == "1d":
-            if self.ROTATION_STYLE == "non_neox":
-                # Eight columns: for float32 two vectors of x and one whole vector of each
-                # table, which the vector loads need. A 16-bit row keeps one vector.
-                return {"threads": 256, "num_per_thread": 8}
-            npt = 2 if self.dtype == torch.float32 else 4
-            return {"threads": 256, "num_per_thread": npt}
-        if self.ROTATION_STYLE == "non_neox":
-            npt = 8 if self.dtype == torch.float32 else 16
-            return {"threads": 128, "num_per_thread": npt}
-        # Four warps a CTA, as the non-neox rotation takes: smaller CTAs schedule the blocks
-        # in finer steps than eight-warp ones.
-        return {"threads": 128, "num_per_thread": vec}
-
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-        """Apply RoPE rotation.
-
-        Args:
-            x: Input tensor. 1D: (seq_len, head_dim), 2D: (batch, seq_len, num_heads, head_dim).
-            cos: Cosine table of shape (seq_len, head_dim // 2).
-            sin: Sine table of shape (seq_len, head_dim // 2).
-
-        Returns:
-            Rotated tensor of same shape as x.
-        """
-        program = self.program(self._compile)
-        orig_shape = x.shape
-        if self.input_layout == "2d":
-            x_flat = x.contiguous().reshape(-1)
-            result = program(x_flat, cos, sin)
-            return result.reshape(orig_shape)
-        else:
-            return program(x, cos, sin)
-
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])
-
-
-# Concrete kernel classes (5 variants)
-
-
-class RoPENeoxKernel(_RoPEKernelBase, RoPENeoxFwdInterface):
-    """GPT-NeoX style RoPE kernel, for every variant whose tables the op computes.
-
-    Rotation: split dimension at midpoint, rotate_half = concat(-x2, x1). The standard,
-    Llama 3.1, YaRN and LongRoPE variants differ only in those tables, so this one program
-    serves all four.
-    Reference: GPT-NeoX / HuggingFace transformers RotaryEmbedding.
-    """
-
-    ROTATION_STYLE = "neox"
-
-
 class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
     """GPT-NeoX style RoPE kernel for packed THD tensors with explicit positions."""
 
@@ -734,6 +324,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
             rotary_dim=call.rotary_dim,
             max_position=call.max_position,
             dtype=call.dtype,
+            position_dtype=call.position_dtype,
             sm_count=call.sm_count,
         )
 
@@ -745,6 +336,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         rotary_dim: int,
         max_position: int,
         dtype: torch.dtype,
+        position_dtype: torch.dtype = torch.int32,
         sm_count: int | None = None,
         config: dict | None = None,
     ):
@@ -764,6 +356,9 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         self.rotary_dim = rotary_dim
         self.max_position = max_position
         self.dtype = dtype
+        if position_dtype not in (torch.int32, torch.int64):
+            raise ValueError(f"position_dtype must be int32 or int64, got {position_dtype}")
+        self.position_dtype = position_dtype
         self.sm_count = sm_count
         # Grows by one per position seen outside [0, max_position), and is never
         # reset; take_out_of_range answers whether it moved.
@@ -780,6 +375,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
             self.rotary_dim,
             self.max_position,
             self.dtype_to_str(self.dtype),
+            self.dtype_to_str(self.position_dtype),
             one_wave=self._one_wave,
         )
 
@@ -838,11 +434,55 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         return self.kernel(cfg["threads"], cfg["num_per_thread"])
 
 
-class RoPENonNeoxKernel(_RoPEKernelBase, RoPENonNeoxFwdInterface):
+class RoPENonNeoxKernel(Kernel, RoPENonNeoxFwdInterface):
     """Original RoFormer RoPE kernel with adjacent-pair rotation.
 
-    Rotation: pairs (x_even, x_odd) -> (-x_odd, x_even).
+    Rotation: pairs (x_even, x_odd) -> (-x_odd, x_even), on a
+    ``(batch, seq_len, num_heads, head_dim)`` input whose token ``s`` reads table row ``s``.
     Reference: Su et al., "RoFormer: Enhanced Transformer with Rotary Position Embedding".
     """
 
-    ROTATION_STYLE = "non_neox"
+    supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @classmethod
+    def entry_for(cls, call: RoPECall) -> Entry:
+        return call, lambda: cls(
+            call.seq_len, call.head_dim, call.dtype, batch=call.batch, num_heads=call.num_heads
+        )
+
+    def __init__(
+        self,
+        seq_len: int,
+        head_dim: int,
+        dtype: torch.dtype,
+        batch: int = 1,
+        num_heads: int = 1,
+        config: dict | None = None,
+    ):
+        super().__init__()
+        if head_dim % 2 != 0:
+            raise ValueError(f"head_dim must be even, got {head_dim}")
+        self.seq_len = seq_len
+        self.head_dim = head_dim
+        self.dtype = dtype
+        self.batch = batch
+        self.num_heads = num_heads
+        self.kernel = _make_rope_non_neox_2d(
+            batch, seq_len, num_heads, head_dim, self.dtype_to_str(dtype)
+        )
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        """Default threads and columns per thread."""
+        npt = 8 if self.dtype == torch.float32 else 16
+        return {"threads": 128, "num_per_thread": npt}
+
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        result = self.program(self._compile)(x.contiguous().reshape(-1), cos, sin)
+        return result.reshape(x.shape)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])
