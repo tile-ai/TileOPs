@@ -301,9 +301,10 @@ class GroupedGEMMSpec:
             raise ValueError(f"block_k must be 64 or 128, got {self.block_k}")
         if self.num_math_threads not in (128, 256):
             raise ValueError("num_math_threads must be 128 or 256")
-        # A tight psum tile stores each staged chunk before it stages the next, its ragged
-        # rows under a mask in 16-byte vectors, so it takes one staging buffer and chunks of
-        # whole vectors; a batched tile is whole, so its stores may alternate two.
+        # A tight psum tile stores each staged chunk before it stages the next, so it takes
+        # one staging buffer; a 16-bit chunk's ragged rows leave under a mask in 16-byte
+        # vectors, so a chunk is whole vectors. A batched tile is whole, so its stores may
+        # alternate two buffers.
         tight_pingpong = (
             self.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
             and self.block_m == 64
