@@ -1252,7 +1252,7 @@ def fused_qk_norm_rope_roofline(call: CallView) -> tuple[int, int]:
 # ---------------------------------------------------------------- indexing and rope
 
 
-def embedding_roofline(call: "CallView") -> tuple[int, int]:
+def embedding_roofline(call: CallView) -> tuple[int, int]:
     """Row lookup: the indices, each distinct row they name once, and the output. With
     ``max_norm``, the ``norm_type`` norm of each distinct row and a compare, priced at the
     cheaper outcome where no row exceeds it and none is written back: per value 2 (abs or
@@ -1277,7 +1277,7 @@ def embedding_roofline(call: "CallView") -> tuple[int, int]:
     return flops, moved
 
 
-def rope_cos_sin_roofline(call: "CallView") -> tuple[int, int]:
+def rope_cos_sin_roofline(call: CallView) -> tuple[int, int]:
     """3 per rotated value. Out of place every value of x is read and written; in place only
     the rotated columns. cos and sin are read on the rows the sequences reach: S dense, the
     longest sequence packed, none when there is nothing to rotate."""
