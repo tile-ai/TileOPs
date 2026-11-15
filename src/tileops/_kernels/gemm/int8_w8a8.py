@@ -18,12 +18,28 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMINT8W8A8Call, GEMMINT8W8A8FwdInterface
-from tileops._kernels.gemm.dense import native_acc_layout
-from tileops._kernels.gemm.heuristics import int8_w8a8_config
+from tileops._kernels.gemm.dense import _narrow_grid, _narrow_grid_tile, native_acc_layout
+from tileops._kernels.gemm.heuristics import int8_pingpong_grid, int8_w8a8_config
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.tiling import grouped_tile_id
 
 __all__ = ["GEMMINT8W8A8Kernel", "GEMMINT8W8A8PingPongKernel", "GEMMINT8W8A8SimpleKernel"]
+
+
+# A consumer's 128 threads stage a native-width tile's column vectors in whole passes:
+# ``T.Parallel`` over a width that is not a multiple of the thread count writes past it.
+_PINGPONG_VEC_N = 256
+
+
+def _row_scale_layout(rows: int, first_thread: int):
+    """The layout of a WGMMA accumulator's row scales: each row is shared by the four lanes
+    holding it, in the warpgroup starting at thread *first_thread*."""
+    return T.Fragment(
+        [rows],
+        forward_thread_fn=lambda i, r: first_thread + i // 16 * 32 + i % 8 * 4 + r,
+        replicate=4,
+        forward_index_fn=lambda i: i % 16 // 8,
+    )
 
 
 @T.macro
@@ -45,11 +61,12 @@ def _load_stage(
     block_n: int,
     block_k: int,
 ):
-    """One K step of the producer: the step's ``a`` boxes and its ``b`` box.
+    """One K step of the producer: the step's ``a`` boxes and its ``block_n``-row ``b`` box.
 
     ``top_rows`` and ``bot_rows`` are the rows of ``a`` each consumer's box loads, 0 for
     a consumer that does not exist. A box past the end of a tensor is zero-filled by TMA,
     so the N and K tails need no predicate: a zero K tail adds nothing to the int32 sum.
+    A ``b`` box narrower than ``b_smem`` fills its first ``block_n`` rows.
     """
     ks = kb * block_k
     T.tma_copy(
@@ -64,7 +81,9 @@ def _load_stage(
             barrier=ab_full[slot],
         )
     T.tma_copy(
-        b[n_start : n_start + block_n, ks : ks + block_k], b_smem[slot, :, :], barrier=ab_full[slot]
+        b[n_start : n_start + block_n, ks : ks + block_k],
+        b_smem[slot, 0:block_n, :],
+        barrier=ab_full[slot],
     )
     T.barrier_arrive(ab_full[slot])
 
@@ -271,12 +290,7 @@ def _gemm_int8_ws_kernel(
 
         # Explicit scale layouts are needed with the annotated accumulator:
         # each row is shared by four lanes, each column by 32 lanes.
-        row_layout = T.Fragment(
-            [block_m],
-            forward_thread_fn=lambda i, r: 128 + i // 16 * 32 + i % 8 * 4 + r,
-            replicate=4,
-            forward_index_fn=lambda i: i % 16 // 8,
-        )
+        row_layout = _row_scale_layout(block_m, 128)
         col_layout = T.Fragment(
             [block_n],
             forward_thread_fn=lambda j, r: 128 + r // 8 * 32 + r % 8 * 4 + j % 8 // 2,
@@ -457,38 +471,49 @@ def _gemm_int8_pingpong_kernel(
     """Persistent ping-pong INT8 GEMM: two consumer warpgroups take whole tiles in turn.
 
     One producer warpgroup fills one TMA ring in tile order; consumer ``w % 2`` takes a
-    CTA's ``w``-th tile, a whole 128 x 128 tile held as two 64-row int32 accumulators. The consumers' mainloops alternate on the tensor cores -- a consumer
-    waits on its turn barrier before its first WGMMA and, after issuing its last, arrives
-    on the other's -- so one consumer's epilogue runs under the other's mainloop. That is
-    what a short K axis needs, where an epilogue is a large share of a tile.
+    CTA's ``w``-th tile, a whole 128-row tile held as two 64-row int32 accumulators. The
+    consumers' mainloops alternate on the tensor cores -- a consumer waits on its turn
+    barrier before its first WGMMA and, after issuing its last, arrives on the other's -- so
+    one consumer's epilogue runs under the other's mainloop. That is what a short K axis
+    needs, where an epilogue is a large share of a tile.
+
+    Tiles are 128 or 192 wide (:func:`int8_pingpong_grid`). TileLang issues a 192-wide
+    ``T.wgmma_gemm`` as three n64 WGMMAs, each re-reading A, so the 192-wide tile and its
+    narrow tiles issue one WGMMA of their own width through ``dense_wgmma_s8_64xN``; a
+    narrow tile's B box fills the first ``narrow_n`` rows of a ring stage and its
+    accumulator the registers of its first ``narrow_n`` columns.
 
     The epilogue holds no output fragment: it stages the tile's column scales and bias in
     shared memory and dequantizes each 64-row half straight into the staging tile the TMA
-    store reads (measured: 151.3 us against 155.2 us with an output fragment and the column
-    vectors in registers, 4096 x 6144 x 4096). Every tile leaves through the TMA store,
-    which drops what an M / N tail puts past the output; K tails are TMA zero-filled.
+    store reads, which leaves the accumulators their registers. Every tile leaves through
+    the TMA store, which drops what an M / N tail puts past the output; K tails are TMA
+    zero-filled.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(num_stages, group_size_m)`` returns
-        the compiled ``prim_func``.
+        A ``@tilelang.jit`` factory; calling it with ``(num_stages, group_size_m, block_n,
+        narrow_n, narrow_rows, narrow_cols)`` returns the compiled ``prim_func``.
     """
     block_m = 128
     half_m = 64
-    # Wider tiles measured no faster: TileLang splits a 192-wide WGMMA into three n64 ones,
-    # and through a native-width helper 160-192 came within run-to-run noise of 128.
-    block_n = 128
     block_k = 128
+    vec_n = _PINGPONG_VEC_N
 
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
-    def _gemm_int8_pingpong_func(num_stages: int = 4, group_size_m: int = 16) -> Callable:
+    def _gemm_int8_pingpong_func(
+        num_stages: int = 4,
+        group_size_m: int = 16,
+        block_n: int = 128,
+        narrow_n: int = 0,
+        narrow_rows: int = 0,
+        narrow_cols: int = 0,
+    ) -> Callable:
         nr = (half_m * block_n) // 128
-        num_pid_m = -(-m // block_m)
-        num_pid_n = -(-n // block_n)
-        total_tiles = num_pid_m * num_pid_n
+        grid = _narrow_grid(m, n, block_n, narrow_n, narrow_rows, narrow_cols)
+        total_tiles = grid.total_tiles
         max_waves = -(-total_tiles // sm_count)
         # Each consumer takes every other wave.
         consumer_waves = -(-max_waves // 2)
@@ -499,21 +524,33 @@ def _gemm_int8_pingpong_kernel(
         # One named barrier per consumer for its epilogue staging; ids below 8 belong to
         # TileLang.
         bar_0, bar_1 = 8, 9
+        native = block_n != 128
 
         @T.macro
-        def half_mma(a_ring, b_ring, slot, acc, ki):
-            T.wgmma_gemm(
-                a_ring[slot, :, :],
-                b_ring[slot, :, :],
-                acc,
-                transpose_B=True,
-                policy=T.GemmWarpPolicy.FullRow,
-                clear_accum=(ki == 0),
-            )
+        def half_mma(a_ring, b_ring, slot, acc, ki, width):
+            if native:
+                T.call_extern(
+                    "handle",
+                    f"tileops::dense_wgmma_s8_64xN<{width}, 1>",
+                    acc.data,
+                    T.address_of(a_ring[slot, 0, 0]),
+                    T.address_of(b_ring[slot, 0, 0]),
+                    0,
+                    ki > 0,
+                )
+            else:
+                T.wgmma_gemm(
+                    a_ring[slot, :, :],
+                    b_ring[slot, :, :],
+                    acc,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullRow,
+                    clear_accum=(ki == 0),
+                )
 
         @T.macro
-        def store_half(c, acc, sa_f, sb_s, bias_s, c_smem, row0, n_start, bar):
-            """Dequantize one 64-row half into c_smem and store it."""
+        def store_half(c, acc, sa_f, sb_s, bias_s, c_smem, row0, n_start, bar, width):
+            """Dequantize one 64-row half into c_smem and store its first ``width`` columns."""
             # The previous store may still read c_smem; waiting here lets the first one
             # overlap the mainloop that ran since.
             T.tma_store_wait(0)
@@ -530,7 +567,50 @@ def _gemm_int8_pingpong_kernel(
                     )
             T.fence_proxy_async()
             T.sync_threads(barrier_id=bar, arrive_count=128)
-            T.tma_copy(c_smem, c[row0 : row0 + half_m, n_start : n_start + block_n])
+            T.tma_copy(c_smem[:, 0:width], c[row0 : row0 + half_m, n_start : n_start + width])
+
+        @T.macro
+        def load(a, b, a_top, a_bot, b_smem, ab_full, slot, ki, m_start, n_start, width):
+            """The producer's K step ``ki`` of a tile ``width`` columns wide."""
+            _load_stage(
+                a,
+                b,
+                a_top,
+                a_bot,
+                b_smem,
+                ab_full,
+                slot,
+                ki,
+                m_start,
+                n_start,
+                top_rows=half_m,
+                bot_rows=half_m,
+                half_m=half_m,
+                block_n=width,
+                block_k=block_k,
+            )
+
+        @T.macro
+        def store_tile(
+            c, acc_top, acc_bot, sa_top, sa_bot, sb_s, bias_s, c_smem, m0, n0, bar, width
+        ):
+            """Store both 64-row halves of a tile, ``width`` columns of each."""
+            store_half(c, acc_top, sa_top, sb_s, bias_s, c_smem, m0, n0, bar, width)
+            store_half(c, acc_bot, sa_bot, sb_s, bias_s, c_smem, m0 + half_m, n0, bar, width)
+
+        @T.macro
+        def mainloop(a_top, a_bot, b_smem, ab_full, ab_empty, acc_top, acc_bot, prev, w, width):
+            """A consumer's K axis of its ``w``-th tile, ``width`` columns wide."""
+            for ki in T.Pipelined(k_iters, num_stages=0):
+                stage = w * k_iters + ki
+                slot = stage % num_stages
+                T.barrier_wait(ab_full[slot], (stage // num_stages) & 1)
+                half_mma(a_top, b_smem, slot, acc_top, ki, width)
+                half_mma(a_bot, b_smem, slot, acc_bot, ki, width)
+                if ki > 0:
+                    T.wait_wgmma(2)
+                    T.barrier_arrive(ab_empty[prev[0]])
+                prev[0] = slot
 
         @T.macro
         def consumer(
@@ -562,28 +642,20 @@ def _gemm_int8_pingpong_kernel(
                 w = 2 * j + wg
                 flat_id = T.int32(sm_count) * w + pid
                 if flat_id < total_tiles:
-                    grouped_tile_id(
-                        flat_id,
-                        mt,
-                        nt,
-                        group_size_m=group_size_m,
-                        num_pid_m=num_pid_m,
-                        num_pid_n=num_pid_n,
-                    )
+                    _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                     m_start = mt[0] * block_m
-                    n_start = nt[0] * block_n
+                    # A narrow grid gives the tile's first column; a uniform one its index.
+                    n_start = nt[0] if narrow_n else nt[0] * block_n
                     # This consumer's j-th turn on the tensor cores.
                     T.barrier_wait(turn[wg], j & 1)
-                    for ki in T.Pipelined(k_iters, num_stages=0):
-                        stage = w * k_iters + ki
-                        slot = stage % num_stages
-                        T.barrier_wait(ab_full[slot], (stage // num_stages) & 1)
-                        half_mma(a_top, b_smem, slot, acc_top, ki)
-                        half_mma(a_bot, b_smem, slot, acc_bot, ki)
-                        if ki > 0:
-                            T.wait_wgmma(2)
-                            T.barrier_arrive(ab_empty[prev[0]])
-                        prev[0] = slot
+                    ring = (a_top, a_bot, b_smem, ab_full, ab_empty, acc_top, acc_bot, prev, w)
+                    if narrow_n:
+                        if nt[1] == 1:
+                            mainloop(*ring, narrow_n)
+                        else:
+                            mainloop(*ring, block_n)
+                    else:
+                        mainloop(*ring, block_n)
                     # The other consumer's next tile may start its WGMMAs; they queue behind
                     # this tile's last.
                     if flat_id + T.int32(sm_count) < total_tiles:
@@ -606,18 +678,51 @@ def _gemm_int8_pingpong_kernel(
                     # accumulators. The last tile's dequantization is done with them once
                     # this barrier passes.
                     T.sync_threads(barrier_id=bar, arrive_count=128)
-                    for jj in T.Parallel(block_n):
+                    for jj in T.Parallel(vec_n if native else block_n):
                         sb_s[jj] = (
                             scale_b[0, T.min(n_start + jj, n - 1)] if per_channel else scale_b[0, 0]
                         )
                         if has_bias:
                             bias_s[jj] = T.cast(bias[T.min(n_start + jj, n - 1)], "float32")
-                    store_half(c, acc_top, sa_top, sb_s, bias_s, c_smem, m_start, n_start, bar)
-                    store_half(
-                        c, acc_bot, sa_bot, sb_s, bias_s, c_smem, m_start + half_m, n_start, bar
+                    out = (
+                        c,
+                        acc_top,
+                        acc_bot,
+                        sa_top,
+                        sa_bot,
+                        sb_s,
+                        bias_s,
+                        c_smem,
+                        m_start,
+                        n_start,
+                        bar,
                     )
+                    if narrow_n:
+                        if nt[1] == 1:
+                            store_tile(*out, narrow_n)
+                        else:
+                            store_tile(*out, block_n)
+                    else:
+                        store_tile(*out, block_n)
             # Drain the last store before the CTA's shared memory goes.
             T.tma_store_wait(0)
+
+        def accumulator_layouts(acc_top, acc_bot, sa_top, sa_bot, first_thread):
+            """The native-width WGMMA layouts of one consumer's accumulators and row scales.
+
+            The helper's accumulator is not inferred from a ``T.wgmma_gemm``.
+            """
+            row_layout = _row_scale_layout(half_m, first_thread)
+            return {
+                acc_top: native_acc_layout(
+                    acc_top, half_m, block_n, block_k, T.int8, T.int32, first_thread
+                ),
+                acc_bot: native_acc_layout(
+                    acc_bot, half_m, block_n, block_k, T.int8, T.int32, first_thread
+                ),
+                sa_top: row_layout,
+                sa_bot: row_layout,
+            }
 
         @T.prim_func
         def _gemm_int8_pingpong_main(
@@ -640,21 +745,35 @@ def _gemm_int8_pingpong_kernel(
                 sa_bot_0 = T.alloc_fragment((half_m,), "float32")
                 sa_top_1 = T.alloc_fragment((half_m,), "float32")
                 sa_bot_1 = T.alloc_fragment((half_m,), "float32")
-                sb_s_0 = T.alloc_shared((block_n,), "float32")
-                sb_s_1 = T.alloc_shared((block_n,), "float32")
-                bias_s_0 = T.alloc_shared((block_n,), "float32")
-                bias_s_1 = T.alloc_shared((block_n,), "float32")
+                vec_shape = (vec_n,) if native else (block_n,)
+                sb_s_0 = T.alloc_shared(vec_shape, "float32")
+                sb_s_1 = T.alloc_shared(vec_shape, "float32")
+                bias_s_0 = T.alloc_shared(vec_shape, "float32")
+                bias_s_1 = T.alloc_shared(vec_shape, "float32")
                 c_smem_0 = T.alloc_shared((half_m, block_n), out_dtype)
                 c_smem_1 = T.alloc_shared((half_m, block_n), out_dtype)
-                T.annotate_layout(
-                    {
-                        a_top: tilelang.layout.make_swizzled_layout(a_top),
-                        a_bot: tilelang.layout.make_swizzled_layout(a_bot),
-                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
-                        c_smem_0: tilelang.layout.make_swizzled_layout(c_smem_0),
-                        c_smem_1: tilelang.layout.make_swizzled_layout(c_smem_1),
-                    }
+                # A narrow tile stores whole 32-column boxes, a 64-byte swizzle; otherwise
+                # 64-column boxes, a 128-byte swizzle.
+                c_layout = (
+                    tilelang.layout.make_half_bank_swizzled_layout
+                    if narrow_n
+                    else tilelang.layout.make_swizzled_layout
                 )
+                layouts = {
+                    a_top: tilelang.layout.make_swizzled_layout(a_top),
+                    a_bot: tilelang.layout.make_swizzled_layout(a_bot),
+                    b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                    c_smem_0: c_layout(c_smem_0),
+                    c_smem_1: c_layout(c_smem_1),
+                }
+                if native:
+                    layouts.update(
+                        accumulator_layouts(acc_top_0, acc_bot_0, sa_top_0, sa_bot_0, 128)
+                    )
+                    layouts.update(
+                        accumulator_layouts(acc_top_1, acc_bot_1, sa_top_1, sa_bot_1, 256)
+                    )
+                T.annotate_layout(layouts)
                 ab_full = T.alloc_barrier([128] * num_stages)
                 ab_empty = T.alloc_barrier([128] * num_stages)
                 # One per consumer: completes a phase when the other consumer hands it the
@@ -664,7 +783,8 @@ def _gemm_int8_pingpong_kernel(
                 prev_0 = T.alloc_local((1,), "int32")
                 prev_1 = T.alloc_local((1,), "int32")
                 mt = T.alloc_local((1,), "int32")
-                nt = T.alloc_local((1,), "int32")
+                # The tile's column (index or first column) and whether it is narrow.
+                nt = T.alloc_local((2,), "int32")
                 tx = T.get_thread_binding()
 
                 if tx < 128:
@@ -672,20 +792,13 @@ def _gemm_int8_pingpong_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(sm_count) * w + pid
                         if flat_id < total_tiles:
-                            grouped_tile_id(
-                                flat_id,
-                                mt,
-                                nt,
-                                group_size_m=group_size_m,
-                                num_pid_m=num_pid_m,
-                                num_pid_n=num_pid_n,
-                            )
+                            _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                             m_start = mt[0] * block_m
-                            n_start = nt[0] * block_n
+                            n_start = nt[0] if narrow_n else nt[0] * block_n
                             for ki in T.Pipelined(k_iters, num_stages=0):
                                 slot = gi_prod % num_stages
                                 T.barrier_wait(ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
-                                _load_stage(
+                                stage_args = (
                                     a,
                                     b,
                                     a_top,
@@ -696,12 +809,14 @@ def _gemm_int8_pingpong_kernel(
                                     ki,
                                     m_start,
                                     n_start,
-                                    top_rows=half_m,
-                                    bot_rows=half_m,
-                                    half_m=half_m,
-                                    block_n=block_n,
-                                    block_k=block_k,
                                 )
+                                if narrow_n:
+                                    if nt[1] == 1:
+                                        load(*stage_args, narrow_n)
+                                    else:
+                                        load(*stage_args, block_n)
+                                else:
+                                    load(*stage_args, block_n)
                                 gi_prod = gi_prod + 1
                 elif tx < 256:
                     T.inc_max_nreg(240)
@@ -993,8 +1108,8 @@ class GEMMINT8W8A8Kernel(_GEMMINT8TMAKernel):
 
 
 class GEMMINT8W8A8PingPongKernel(_GEMMINT8TMAKernel):
-    """INT8 NT GEMM over 128 x 128 tiles, two consumer warpgroups in turn; see
-    :func:`_gemm_int8_pingpong_kernel`.
+    """INT8 NT GEMM over 128-row tiles, 128 or 192 wide (:func:`int8_pingpong_grid`), two
+    consumer warpgroups in turn; see :func:`_gemm_int8_pingpong_kernel`.
 
     It serves ``m`` over one 128-row tile. At or below that the 128-row grid holds half
     the tiles of the 64-row kernel's, leaves SMs idle on every decode shape measured, and
@@ -1014,13 +1129,18 @@ class GEMMINT8W8A8PingPongKernel(_GEMMINT8TMAKernel):
 
     @property
     def default_config(self) -> dict:
-        # A ring stage: both consumers' 64 A rows and the 128 B rows of one 128-wide K step,
-        # and its full and empty mbarriers.
-        stage = (self._BLOCK_M + 128) * 128 + 16
-        # Each consumer's 64 x 128 output staging tile and its staged column scales and bias.
-        epilogue = 2 * (64 * 128 * 2 + 2 * 128 * 4)
+        group_size_m = 16
+        grid = int8_pingpong_grid(self.m, self.n, self.build_target.sm_count, group_size_m)
+        block_n = grid["block_n"]
+        # A ring stage: both consumers' 64 A rows and the block_n B rows of one 128-wide K
+        # step, and its full and empty mbarriers.
+        stage = (self._BLOCK_M + block_n) * 128 + 16
+        # Each consumer's 64-row output staging tile and its staged column scales and bias,
+        # 256 wide at the native widths.
+        vec_n = _PINGPONG_VEC_N if block_n != 128 else 128
+        epilogue = 2 * (64 * block_n * 2 + 2 * vec_n * 4)
         num_stages = (BLOCK_SHARED_BYTES_OPT_IN[90] - epilogue) // stage
-        return {"num_stages": num_stages, "group_size_m": 16}
+        return {"num_stages": num_stages, "group_size_m": group_size_m, **grid}
 
     def _builder(self) -> Callable:
         return _gemm_int8_pingpong_kernel(

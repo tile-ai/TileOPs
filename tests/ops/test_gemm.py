@@ -1001,11 +1001,12 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-one-row",
                 ),
-                # Ping-pong: M / N / K tails, and 297 tiles, more than two waves of 132 SMs,
-                # so each CTA runs both consumers and hands the turn back and forth.
+                # Ping-pong on 132 SMs: M / N / K tails, and 192-wide tiles whose last 11 row
+                # tiles start with 160-wide ones, 288 tiles: more than two waves, so each CTA
+                # runs both consumers and hands the turn back and forth.
                 pytest.param(
-                    1100,
-                    4104,
+                    2400,
+                    2568,
                     1040,
                     True,
                     True,
@@ -1056,8 +1057,8 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     id="full-partial-row-tile",
                 ),
                 pytest.param(
-                    1100,
-                    4104,
+                    2400,
+                    2568,
                     1040,
                     False,
                     False,
@@ -1066,6 +1067,35 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     _INT8_PP,
                     marks=pytest.mark.full,
                     id="full-pingpong-tensor-scales-bias",
+                ),
+                # Ping-pong 192-wide tiles with no narrow ones on 132 SMs, the 64-column store
+                # boxes: M / N tails, a bias, and one K step, whose only stage the drain after
+                # the mainloop releases.
+                pytest.param(
+                    1900,
+                    1032,
+                    16,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    True,
+                    _INT8_PP,
+                    marks=pytest.mark.full,
+                    id="full-pingpong-192-uniform-bias",
+                ),
+                # Ping-pong 128-wide tiles on 132 SMs, 392 tiles: M / N / K tails over more
+                # than two waves, fp16 with tensor scales and a bias.
+                pytest.param(
+                    1700,
+                    3464,
+                    1040,
+                    False,
+                    False,
+                    torch.float16,
+                    True,
+                    _INT8_PP,
+                    marks=pytest.mark.full,
+                    id="full-pingpong-128-tails-bias",
                 ),
                 # n off the output's 16-byte TMA row pitch: the fallback.
                 pytest.param(

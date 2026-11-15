@@ -18,6 +18,7 @@ __all__ = [
     "best_config",
     "fp8_ws_config",
     "gemv_config",
+    "int8_pingpong_grid",
     "int8_w8a8_config",
     "small_batch_config",
     "small_m_splitk_config",
@@ -1046,3 +1047,41 @@ def int8_w8a8_config(m: int, n: int, k: int, sm_count: int) -> dict:
     staging = block_m * block_n * 2 if m >= block_m else 0
     num_stages = min(-(-k // block_k), (BLOCK_SHARED_BYTES_OPT_IN[90] - staging) // stage)
     return {"block_n": block_n, "num_stages": num_stages, "group_size_m": 8, "block_k": block_k}
+
+
+def int8_pingpong_grid(m: int, n: int, sm_count: int, group_size_m: int) -> dict:
+    """Tile width and narrow tiles of the persistent INT8 ping-pong GEMM's grid.
+
+    The grid takes 128 x 192 tiles where the busiest CTA computes no more columns with them
+    than with 128 x 128 tiles, and 128 x 128 tiles otherwise. At equal busiest-CTA work the
+    192-wide tile is faster: its TMA loads and WGMMA shared-memory reads carry fewer bytes
+    a MAC, and a CTA hands the tensor cores between its consumers a third less often. A
+    192-wide grid ends with the narrow tiles :func:`_narrow_tiles` picks to cut the busiest
+    CTA's columns, 160 wide: the epilogue stores 32-column TMA boxes, so a narrow tile is
+    whole boxes.
+
+    Returns:
+        ``block_n``, ``narrow_n``, ``narrow_rows`` and ``narrow_cols``; ``narrow_n`` 0 is a
+        uniform grid.
+    """
+    rows = -(-m // 128)
+    uniform = {"block_n": 128, "narrow_n": 0, "narrow_rows": 0, "narrow_cols": 0}
+    uniform_cols = _busiest_cta(rows * -(-n // 128), 0, 128, 0, sm_count)
+    wide_n = 192
+    cols = -(-n // wide_n)
+    narrow = _narrow_tiles(m, n, wide_n, (160,), group_size_m, sm_count) or {
+        "narrow_n": 0,
+        "narrow_rows": 0,
+        "narrow_cols": 0,
+    }
+    narrow_n, narrow_rows, narrow_cols = (
+        narrow["narrow_n"],
+        narrow["narrow_rows"],
+        narrow["narrow_cols"],
+    )
+    tail_cols = -(-(n - narrow_cols * narrow_n) // wide_n)
+    wide_tiles = (rows - narrow_rows) * cols + narrow_rows * tail_cols
+    wide_cols = _busiest_cta(wide_tiles, narrow_rows * narrow_cols, wide_n, narrow_n, sm_count)
+    if wide_cols > uniform_cols:
+        return uniform
+    return {"block_n": wide_n, **narrow}
