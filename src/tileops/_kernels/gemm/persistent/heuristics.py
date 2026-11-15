@@ -760,7 +760,7 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         return rows * cols * _layout_features(desc, layout).wave_efficiency
 
     def _pingpong_group_layout(desc: GEMMDesc, chosen: _Layout | None) -> _Layout | None:
-        """The ping-pong tile: the band's, else below the bands ``chosen`` if 64 rows high.
+        """The ping-pong tile: the band's where a band decides, else ``chosen`` if 64 rows high.
 
         The band's tile is taken for tight groups near one 128-row tile, and for unfused groups
         past that band where its tile slots hold more rows. ``chosen`` is the selector's own
