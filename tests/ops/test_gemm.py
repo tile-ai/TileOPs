@@ -1087,6 +1087,20 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-pingpong-192-uniform-bias",
                 ),
+                # Ping-pong on 132 SMs, one wave of 92 tiles: 192-wide tiles whose four row
+                # tiles each start with 23 tiles 96 wide; M and K tails.
+                pytest.param(
+                    400,
+                    2208,
+                    1040,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_PP,
+                    marks=pytest.mark.full,
+                    id="full-pingpong-narrow-96",
+                ),
                 # Ping-pong 128-wide tiles on 132 SMs, 392 tiles: M / N / K tails over more
                 # than two waves, fp16 with tensor scales and a bias.
                 pytest.param(
@@ -1154,15 +1168,17 @@ def test_gemm_int8_w8a8(
 @pytest.mark.parametrize(
     "m, n, grid",
     [
-        # The ping-pong cases above: a 160-wide tail, a 32-wide tail, 192 with no narrow
-        # tiles, and 128 where 192 would give the busiest CTA more columns.
+        # The ping-pong cases above: 160-, 96- and 32-wide narrow tiles, and 192 with none.
         pytest.param(2200, 3720, (192, 160, 8, 14), marks=pytest.mark.smoke, id="narrow-160"),
+        pytest.param(400, 2208, (192, 96, 4, 23), marks=pytest.mark.smoke, id="narrow-96"),
         pytest.param(2400, 2568, (192, 32, 8, 3), marks=pytest.mark.smoke, id="narrow-32"),
         pytest.param(1900, 1032, (192, 0, 0, 0), marks=pytest.mark.smoke, id="uniform-192"),
+        # Equal busiest-CTA columns, but 192-wide tiles give one consumer of a CTA more
+        # columns of epilogue: 288 against 256 (the 128-wide case above), 352 against 256.
         pytest.param(1700, 3464, (128, 0, 0, 0), marks=pytest.mark.smoke, id="uniform-128"),
-        # Equal busiest-CTA columns (512), but 192-wide tiles give one consumer of a CTA
-        # 352 columns of epilogue against 256: 128 wide.
         pytest.param(2048, 4096, (128, 0, 0, 0), marks=pytest.mark.smoke, id="consumer-tie"),
+        # 192-wide tiles give the busiest CTA more columns: 192 against 128.
+        pytest.param(300, 512, (128, 0, 0, 0), marks=pytest.mark.smoke, id="cta-more"),
     ],
 )
 def test_int8_pingpong_grid_on_132_sms(m: int, n: int, grid: tuple) -> None:
