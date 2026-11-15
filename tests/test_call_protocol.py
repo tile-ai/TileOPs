@@ -653,6 +653,49 @@ def test_a_composite_runs_the_sub_op_built_for_its_specialization():
     assert both(x).tolist() == both(x).tolist() == [5.0, 5.0]
 
 
+def test_a_call_records_its_sub_op_however_many_times_another_thread_replaces_it():
+    """Each replaced sub-op keeps its stage while a call still runs on it."""
+    import threading
+
+    table = {"table": {"dtype": "float32", "shape": "[2]", "device": "cpu"}}
+
+    def construct(self, **params):
+        vars(self).update(params)
+        Op.__init__(self)
+        self.weight = self.table.clone()
+
+    leaf = {
+        "leaf": _probe(
+            lambda self, x: x * self.weight, params=table, attributes={"__init__": construct}
+        )
+    }
+    ran, resume = threading.Event(), threading.Event()
+
+    def pausing(self, x):
+        sub_op = self.delegate_for("leaf", None, table=self.table)
+        if threading.current_thread().name == "paused":
+            ran.set()
+            resume.wait()
+        return sub_op(x)
+
+    pauser = _probe(pausing, params=table, boundary=False, attributes={"delegate_types": leaf})(
+        table=torch.full((2,), 2.0)
+    )
+    x = torch.ones(2)
+    pauser(x)
+    results = []
+    paused = threading.Thread(target=lambda: results.append(pauser(x).tolist()), name="paused")
+    paused.start()
+    ran.wait()
+    for value in (6.0, 7.0):
+        pauser.table = torch.full((2,), value)
+        assert pauser(x).tolist() == [value, value]
+    resume.set()
+    paused.join()
+    assert results == [[2.0, 2.0]]
+    assert [c.indices["M"] for c in pauser.last_call.stages["leaf"]] == [2]
+
+
 def test_calls_resolving_one_plan_together_hold_each_request_once():
     """Threads making the first calls of one specialization together resolve its plan once,
     and leave it one request per position, so each request keeps its own call spec."""

@@ -5,6 +5,7 @@ import inspect
 import math
 import threading
 import warnings
+import weakref
 from abc import ABC, abstractmethod
 from types import MappingProxyType
 from typing import (
@@ -480,6 +481,8 @@ class Op(ABC):
         self._building = threading.RLock()
         self._delegates = {}
         self._delegate_stages = {}
+        # The construction tensors each sub-op held under no identity was built for.
+        self._settled_tensors = {}
         self._effect_branches = {}
         self._plans = {}
 
@@ -1093,6 +1096,7 @@ class Op(ABC):
                     builder = self._bind_target(plan.call.device)
                 if builder is not None:
                     result = self._run_on_target(
+                        builder,
                         inputs,
                         writes,
                         kernel_written,
@@ -1171,13 +1175,14 @@ class Op(ABC):
 
     def _run_on_target(
         self,
+        builder: object,
         inputs: "tuple[torch.Tensor | None, ...]",
         writes: "dict[str, torch.Tensor]",
         written: "frozenset[str] | None" = None,
         execution: "dict[str, object] | None" = None,
         device: "torch.device | None" = None,
     ) -> object:
-        """Run the whole op on the target bound to this instance.
+        """Run the whole op on the target whose *builder* this call selected.
 
         What the op layer guarantees every target: every tensor on one device, every
         input the call does not write contiguous, every call tensor on a 16-byte boundary, and
@@ -1203,12 +1208,14 @@ class Op(ABC):
         # An absent optional input keeps its slot as ``None``, so two calls differing
         # only in which one they omit key apart. A tensor param keys by identity, which a
         # builder may hold: the key holds the tensor too, so no other one takes its identity.
+        # The builder keys too: a call binding another target reaches none of its kernels.
         tensors = tuple(v for v in params.values() if isinstance(v, torch.Tensor)) if params else ()
         signature = (
             device,
             *(None if t is None else (t.dtype, tuple(t.shape)) for t in inputs),
             _snapshot(params),
             *tensors,
+            builder,
         )
         # A builder may read a tensor param's contents, so a write in place rebuilds.
         versions = (
@@ -1227,7 +1234,7 @@ class Op(ABC):
                         k: v if isinstance(v, torch.Tensor) else copy.deepcopy(v)
                         for k, v in params.items()
                     }
-                    kernel = self._build_target_kernel(device, named, owned)
+                    kernel = self._build_target_kernel(builder, device, named, owned)
                     entry = (kernel, versions)
                     if None not in versions:
                         built[signature] = entry
@@ -1249,12 +1256,13 @@ class Op(ABC):
 
     def _build_target_kernel(
         self,
+        builder: object,
         device: "torch.device | None",
         inputs: "dict[str, torch.Tensor | None]",
         params: "dict[str, object]",
     ) -> object:
-        """Ask the target for the kernel serving calls on *device* described by *inputs*,
-        built with the manifest *params*.
+        """Ask *builder* for the kernel serving calls on *device* described by *inputs*, built
+        with the manifest *params*.
 
         The builder runs with *device* current. In tuned mode the kernel is tuned before it
         is returned, so a kernel whose tuning raised is never cached and the next call builds
@@ -1267,7 +1275,7 @@ class Op(ABC):
         # Built with its device current, as an in-tree entry is: a builder may compile or
         # allocate for whichever device is current.
         with device_context(device):
-            kernel = self._target_builder(*specs, **params)
+            kernel = builder(*specs, **params)
         if not callable(kernel):
             raise OpNotAvailableError(
                 f"target {self._serving_target!r} built {kernel!r} for "
@@ -1392,8 +1400,12 @@ class Op(ABC):
                             f"{identity!r}"
                         )
                     entries[identity] = delegate
-                    # Which stage holds each sub-op.
+                    # Which stage holds each sub-op, for as long as it lives: a call may still
+                    # run on one this op has replaced. Dropped before its id can be reused.
                     self._delegate_stages[id(delegate)] = stage
+                    weakref.finalize(
+                        delegate, self._delegate_stages.pop, id(delegate), None
+                    ).atexit = False
                     # A sub-op held while this op is in tuned mode joins it, built or given.
                     if self._tune_requested:
                         delegate.request_tune()
@@ -1419,7 +1431,7 @@ class Op(ABC):
         signature = getattr(type(self), "_signature", None)
         identity = (stage, None if signature is None else param_state(self, signature.sig))
         if tensors is not None:
-            built_for = self.__dict__.setdefault("_settled_tensors", {})
+            built_for = self._settled_tensors
             entries = self._delegates.setdefault(stage, {})
             with self._building:
                 held = entries.get(identity)
@@ -1430,12 +1442,6 @@ class Op(ABC):
                         if at is not None:
                             del plan.delegates[at:]
                     del entries[identity]
-                    # A call still running on the replaced sub-op records under its stage.
-                    retired = self.__dict__.setdefault("_retired_delegates", {})
-                    older = retired.pop(identity, None)
-                    if older is not None:
-                        del self._delegate_stages[id(older)]
-                    retired[identity] = held
                 delegate = self.delegate_for(stage, identity, **params)
                 built_for[identity] = tensors
             return delegate
@@ -1638,7 +1644,7 @@ class Op(ABC):
                 builder = self._bind_target(self._traced_device((*args, *kwargs.values())))
             if builder is not None:
                 inputs, writes, execution = self._split_forward_args(args, kwargs)
-                return self._run_on_target(inputs, writes, None, execution)
+                return self._run_on_target(builder, inputs, writes, None, execution)
             return self.forward(*args, **kwargs)
         inputs, writes, execution = self._split_forward_args(args, kwargs)
         return self._execute(inputs, writes, None, execution)

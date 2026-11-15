@@ -669,6 +669,78 @@ def test_a_build_that_fails_pins_nothing():
     assert op._serving_target == "acme"
 
 
+def test_a_call_builds_with_the_target_it_selected_when_another_call_unbinds_it(monkeypatch):
+    """A call that selected a target builds with it, even when the call that bound the target
+    fails and unbinds it before this call builds."""
+    import threading
+
+    started, fail, reached, go = (threading.Event() for _ in range(4))
+
+    class BoomError(Exception):
+        pass
+
+    def kernel(x, weight):
+        if threading.current_thread().name == "first":
+            started.set()
+            fail.wait()
+            raise BoomError
+        return torch.full_like(x, 3)
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("RMSNormFwdOp", "acme", lambda *inputs, **params: kernel)
+    describe = TensorSpec.of
+
+    def pausing(t):
+        if threading.current_thread().name == "second":
+            reached.set()
+            go.wait()
+        return describe(t)
+
+    monkeypatch.setattr(op_base.TensorSpec, "of", pausing)
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+    outcomes = {}
+
+    def run(rows):
+        try:
+            outcomes[threading.current_thread().name] = op(*_inputs(rows=rows))
+        except Exception as exc:
+            outcomes[threading.current_thread().name] = exc
+
+    first = threading.Thread(target=run, args=(4,), name="first")
+    first.start()
+    started.wait()
+    second = threading.Thread(target=run, args=(8,), name="second")
+    second.start()
+    reached.wait()
+    fail.set()
+    first.join()
+    go.set()
+    second.join()
+    assert isinstance(outcomes["first"], BoomError)
+    assert not isinstance(outcomes["second"], Exception), repr(outcomes["second"])
+    assert torch.equal(outcomes["second"], torch.full_like(outcomes["second"], 3))
+
+
+def test_a_kernel_a_call_built_after_an_unbinding_serves_only_its_own_builder():
+    """A call still building with the builder it selected after its binding was undone leaves
+    a kernel that a call binding another builder never reuses."""
+
+    def builder_of(value):
+        return lambda *inputs, **params: lambda x, weight: torch.full_like(x, value)
+
+    first, second = builder_of(1), builder_of(2)
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("RMSNormFwdOp", "acme", first)
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+    x, weight = _inputs()
+    assert torch.equal(op(x, weight), torch.full_like(x, 1))
+
+    op._reset_binding()
+    op._run_on_target(first, (x, weight), {}, None, None, x.device)
+    registry.BUILDERS[("RMSNormFwdOp", "acme")] = second
+    assert torch.equal(op(x, weight), torch.full_like(x, 2))
+
+
 def test_a_builder_must_return_something_callable():
     """One of the rules this boundary owes, checked where it is crossed."""
     recorder = _Recorder()
