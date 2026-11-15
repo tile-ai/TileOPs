@@ -1,0 +1,18 @@
+# Keeps the SHA-pinned actions current; one grouped PR a week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    # Dependabot appends a colon to a prefix ending in "]"; ending in one already gives
+    # "[CI] Actions: Bump ...", which the PR title check accepts.
+    commit-message:
+      prefix: "[CI] Actions:"
+    labels: []
