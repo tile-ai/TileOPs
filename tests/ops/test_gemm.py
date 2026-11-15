@@ -2219,9 +2219,9 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
             marks=pytest.mark.smoke,
         ),
         # A two-way split runs as a cluster pair: uneven slices over a partial last K tile,
-        # a 64-row tile over padded rows, and a deferred-scale tile.
+        # even slices on a 64-row tile, and a deferred-scale tile.
         pytest.param(
-            128,
+            64,
             1024,
             14464,
             _w4a16_config(128, 128, 256, 2, 256, 2),

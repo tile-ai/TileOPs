@@ -1060,6 +1060,9 @@ def _gemm_w4a16_kernel(
                         1 - bz,
                         tx % 128,
                     )
+                # Both warpgroups meet here before the keeping one writes ``out_shared``; left
+                # to TileLang, this barrier can land inside the keeping warpgroup's branch.
+                T.sync_threads(barrier_id=6, arrive_count=threads)
                 for i, j in T.Parallel(block_n, block_m):
                     if i // wg_rows == bz:
                         buf.out_shared[j, i] = T.cast(buf.output_local[i, j], dtype)
@@ -1525,9 +1528,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
             reduce_ = _w4a16_streamk_reduce_kernel(
                 -(-n // block_n), _CONFIG_SPACE.stream_slots, m_pad, n, block_n, self.dtype_str
             )()
-        elif _pair_reduced(cfg["threads"], block_n, cfg["split_k"]):
-            return CompiledProgram(mainloop), m_pad
-        elif cfg["split_k"] > 1:
+        elif cfg["split_k"] > 1 and not _pair_reduced(cfg["threads"], block_n, cfg["split_k"]):
             reduce_ = splitk_reduce_kernel(cfg["split_k"], m_pad, n, self.dtype_str)()
         else:
             return CompiledProgram(mainloop), m_pad
