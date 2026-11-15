@@ -65,7 +65,7 @@ def test_a_state_the_encoding_does_not_read_keeps_one_key():
     deep = {}
     for _ in range(2000):
         deep = {"child": deep}
-    states = [(deep,), (torch.eye(2).to_sparse_csr(),), (type("L", (list,), {})(),)]
+    states = [(deep,), (torch.eye(2).to_sparse(),), (type("L", (list,), {})(),)]
     keys = {instance_key(identity, state) for state in states}
     deep["other"] = 1
     keys.add(instance_key(identity, states[0]))
