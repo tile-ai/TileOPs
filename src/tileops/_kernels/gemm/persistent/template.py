@@ -21,6 +21,7 @@ from tileops._kernels.gemm.persistent.heuristics import (
     INTERLEAVED_ACTIVATIONS,
     PER_GROUP_TYPES,
     PER_ROW_TYPES,
+    ROW_STORE_VECTOR,
     SWIGLUOAI_ALPHA,
     SWIGLUOAI_LIMIT,
     GEMMDesc,
@@ -64,6 +65,7 @@ def _make_prim_func(
     a_box_rows: int,
     group_starts: bool,
     native_wgmma: bool,
+    vector_row_store: bool,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
 
@@ -549,7 +551,23 @@ def _make_prim_func(
             if tight and rows < T.int32(wg_rows):
                 T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
                 if rows > 0:
-                    if store_run == staged_n:
+                    if vector_row_store:
+                        # The output row pitch is a multiple of 8 elements
+                        # (``GEMMTemplate.refusal_for``), so a vector at a multiple of
+                        # ``ROW_STORE_VECTOR`` lies wholly inside or wholly past the last column.
+                        for run in range(staged_n // store_run):
+                            run_col = col0 + chunk_col + run * store_run
+                            for i, v in T.Parallel(wg_rows, store_run // ROW_STORE_VECTOR):
+                                if i < rows and run_col + v * ROW_STORE_VECTOR < c_cols:
+                                    T.call_extern(
+                                        "handle",
+                                        "tileops::copy16",
+                                        T.address_of(C[row0 + i, run_col + v * ROW_STORE_VECTOR]),
+                                        T.address_of(
+                                            C_s[i, run * store_run + v * ROW_STORE_VECTOR]
+                                        ),
+                                    )
+                    elif store_run == staged_n:
                         for i, j in T.Parallel(wg_rows, staged_n):
                             if i < rows and col0 + chunk_col + j < c_cols:
                                 C[row0 + i, col0 + chunk_col + j] = C_s[i, j]
@@ -1073,11 +1091,14 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
     a_box_rows = spec.a_box_rows
     group_starts = spec.group_starts
     native_wgmma = spec.native_wgmma
+    vector_row_store = spec.vector_row_store
     headers = []
     if native_wgmma:
         headers.append("dense_wgmma_helper.h")
     if spec.gemm_type is GEMMType.DENSE and activation == "silu_and_mul":
         headers.append("approx_math.h")
+    if vector_row_store:
+        headers.append("streaming_load.h")  # copy16
     compile_flags = ["-O3", "-DENABLE_BF16"]
     if headers:
         compile_flags += csrc_include(*headers)
@@ -1116,6 +1137,7 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
             a_box_rows,
             group_starts,
             native_wgmma,
+            vector_row_store,
         )
 
     return _func

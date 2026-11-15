@@ -147,8 +147,11 @@ _ONE_ROW_TILE = [40, 0, 64, 17, 60, 64, 3, 50]
         # Empty first and last groups end where the next group starts and at the last row.
         pytest.param(_EMPTY_ENDS, 256, 512, True, marks=pytest.mark.smoke, id="empty-ends-nt"),
         pytest.param(_EMPTY_ENDS, 256, 512, False, marks=pytest.mark.smoke, id="empty-ends-nn"),
-        # The ping-pong tile past its band; it needs a K-major B, so NT only.
-        pytest.param(_SKEWED, 2048, 768, True, marks=pytest.mark.full, id="skewed-pingpong-nt"),
+        # Enough groups that their row ends leave the 192-wide ping-pong tile a deeper ring
+        # only when it stages its output by 64-column box; it needs a K-major B, so NT only.
+        pytest.param(
+            [193] * 1280, 192, 64, True, marks=pytest.mark.full, id="many-groups-box-staged-nt"
+        ),
         # The short-group tile over a K tail of 64 and an output tail of 40 columns.
         pytest.param(
             _ONE_ROW_TILE, 1000, 1088, True, marks=pytest.mark.full, id="one-row-tile-tails-nt"
@@ -166,14 +169,23 @@ def test_m_grouped_gemm_group_starts(sizes: list, n: int, k: int, trans_b: bool)
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_m_grouped_gemm_narrow_pingpong(dtype: torch.dtype) -> None:
-    """Skewed groups past the ping-pong band run on its 192-wide tile, which takes a K-major B.
+@pytest.mark.parametrize(
+    "n, dtype",
+    [
+        pytest.param(1040, torch.float16, marks=pytest.mark.smoke, id="narrow-fp16"),
+        pytest.param(1040, torch.bfloat16, marks=pytest.mark.smoke, id="narrow-bf16"),
+        pytest.param(2024, torch.float16, marks=pytest.mark.full, id="box-staged-fp16"),
+        pytest.param(2024, torch.bfloat16, marks=pytest.mark.full, id="box-staged-bf16"),
+    ],
+)
+def test_m_grouped_gemm_skewed_pingpong_tails(n: int, dtype: torch.dtype) -> None:
+    """Skewed groups past the ping-pong band, which takes a K-major B, with an output tail.
 
-    N = 1040 leaves 80 columns of output in the last column tile.
+    N = 1040 runs the 192-wide tile, its last column tile 80 columns. N = 2024 runs the
+    256-wide tile staged by 64-column box; its last box holds 40 columns, which each group's
+    ragged last tile stores in 16-byte vectors.
     """
-    test = GroupedGEMMTest(sum(_SKEWED), len(_SKEWED), 1040, 768, dtype, False, True)
+    test = GroupedGEMMTest(sum(_SKEWED), len(_SKEWED), n, 768, dtype, False, True)
     test.batch_sizes_list = _SKEWED
     op = GroupedGEMMFwdOp(trans_a=False, trans_b=True)
     test.check(op, *test.gen_inputs())

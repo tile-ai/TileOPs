@@ -37,6 +37,9 @@ INTERLEAVED_ACTIVATIONS = ("swigluoai",)
 # grouped GEMM kernels' epilogues read them, so the two compute one activation.
 SWIGLUOAI_ALPHA = 1.702
 SWIGLUOAI_LIMIT = 7.0
+# 16-bit outputs one row-masked vector store moves, one 16-byte copy. The spec cuts a tight
+# ping-pong tile's output into chunks of whole vectors, and the template stores them.
+ROW_STORE_VECTOR = 8
 
 
 @dataclasses.dataclass(frozen=True)
@@ -57,6 +60,8 @@ class _HeuristicPolicy:
     element_bytes: int = 2
     max_stages: int = 16
     smem_alignment_slack: int = 6 * 1024
+    # A TMA store box of a 128-byte-swizzled staging buffer spans 128 bytes of a row.
+    store_box_bytes: int = 128
 
     # The candidate set `layout_candidates` enumerates.
     block_k: int = 64
@@ -296,12 +301,14 @@ class GroupedGEMMSpec:
             raise ValueError(f"block_k must be 64 or 128, got {self.block_k}")
         if self.num_math_threads not in (128, 256):
             raise ValueError("num_math_threads must be 128 or 256")
-        # A tight psum tile is staged whole, its ragged rows stored under a mask; a batched
-        # tile is whole, so its store may leave in chunks.
+        # A tight psum tile stores each staged chunk before it stages the next, so it takes
+        # one staging buffer; a 16-bit chunk's ragged rows leave under a mask in 16-byte
+        # vectors, so a chunk is whole vectors. A batched tile is whole, so its stores may
+        # alternate two buffers.
         tight_pingpong = (
             self.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
             and self.block_m == 64
-            and not self.epilogue_stage_n
+            and self.epilogue_stage_n % ROW_STORE_VECTOR == 0
         )
         batched_pingpong = self.gemm_type is GEMMType.BATCHED and self.block_m == 128
         if self.pingpong and (
@@ -311,7 +318,8 @@ class GroupedGEMMSpec:
         ):
             raise ValueError(
                 "ping-pong runs two math warp-groups through shared staging buffers, over "
-                "64-row tiles of a tight psum layout staged whole or over 128-row batched "
+                "64-row tiles of a tight psum layout through one buffer, whole or in chunks of "
+                f"a multiple of {ROW_STORE_VECTOR} columns, or over 128-row batched "
                 f"tiles; got {self.num_math_warpgroups} groups, block_m={self.block_m}, "
                 f"{self.epilogue_buffers} buffers of {self.epilogue_stage_n or 'the tile'}, "
                 f"{self.gemm_type.value}"
@@ -367,6 +375,22 @@ class GroupedGEMMSpec:
     @property
     def num_math_warpgroups(self) -> int:
         return self.num_math_threads // 128
+
+    @property
+    def vector_row_store(self) -> bool:
+        """Whether a ragged tile's row-masked store copies eight 16-bit outputs a step.
+
+        TileLang guards each element of a store into the dynamic-row output, so the masked
+        store otherwise issues one store per element. A ping-pong tile staged in chunks
+        stores each chunk before it stages the next through its one buffer, so its ragged
+        tiles pay that store once per chunk with no mainloop under it.
+        """
+        return (
+            self.pingpong
+            and self.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
+            and bool(self.epilogue_stage_n)
+            and self.cd_dtype == self.ab_dtype
+        )
 
     @property
     def native_wgmma(self) -> bool:
@@ -870,8 +894,16 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
 
     pingpong_tile = _pingpong_group_layout(desc)
     if pingpong_tile is not None:
-        stages = _num_stages(desc, pingpong_tile)
-        return _spec(desc, pingpong_tile, stages, num_math_wgs=2, pingpong=True)
+        # An unfused tile stages its output one TMA store box at a time where that, rather
+        # than the whole tile, frees shared memory for another ring stage.
+        box_n = desc.policy.store_box_bytes // desc.policy.element_bytes
+        stage_n, stages = 0, _num_stages(desc, pingpong_tile)
+        box_stages = _num_stages(desc, pingpong_tile, box_n)
+        if not desc.fused and pingpong_tile.block_n % box_n == 0 and box_stages > stages:
+            stage_n, stages = box_n, box_stages
+        return _spec(
+            desc, pingpong_tile, stages, epilogue_stage_n=stage_n, num_math_wgs=2, pingpong=True
+        )
     short = _short_group_layout(desc)
     best = short or _filled_layout(desc, _best_layout(desc, layout_candidates(desc)))
     spec = _staged_epilogue(desc, best) or _spec(desc, best, _num_stages(desc, best))
