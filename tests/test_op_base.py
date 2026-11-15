@@ -17,6 +17,7 @@ import yaml
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops import op_base
+from tileops._ops.compile_boundary import instance_key
 from tileops._ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
@@ -529,7 +530,7 @@ class TestInstanceKeys:
         keys = set()
         for _ in range(50):
             op = _Dummy()
-            keys.add(op_base.register_instance(op))
+            keys.add(instance_key(op_base.register_instance(op), ()))
             ref = weakref.ref(op)
             del op
             assert ref() is None

@@ -31,6 +31,9 @@ from tileops.manifest._values import ADTValue
 _OP_REGISTRY: "weakref.WeakValueDictionary[str, object]" = weakref.WeakValueDictionary()
 _ORDINALS: dict[str, "itertools.count[int]"] = {}
 _RUN = uuid.uuid4().hex
+# `Py_TPFLAGS_HEAPTYPE` and `Py_TPFLAGS_IMMUTABLETYPE`: a class a `class` statement creates
+# has the first and not the second.
+_HEAP_TYPE, _IMMUTABLE_TYPE = 1 << 9, 1 << 8
 
 
 def register_instance(op: object) -> str:
@@ -44,9 +47,9 @@ def register_instance(op: object) -> str:
 def instance_key(identity: str, state: Iterable[object]) -> str:
     """The key of the instance registered as *identity* while it holds *state*."""
     name, _, ordinal = identity.rpartition("-")
-    local = [name.startswith("~")]
-    text = "\0".join(_encode(v, local) for v in state)
-    if local[0]:
+    encoder = _Encoder(local=name.startswith("~"))
+    text = "\0".join(encoder.encode(v) for v in state)
+    if encoder.local:
         text = f"{_RUN}\0{text}"
     return f"{name}#{hashlib.sha256(text.encode()).hexdigest()[:32]}-{ordinal}"
 
@@ -79,44 +82,74 @@ def _qualified_name(cls: type) -> str:
     return name if found is cls else f"~{name}"
 
 
-def _encode(value: object, local: list) -> str:
-    """*value* as text equal across processes exactly when the values are equal.
+class _Encoder:
+    """Encodes values as text equal across processes exactly when the values are equal.
 
-    A value nothing describes beyond its identity is encoded by its `id`, and *local* is set,
-    so that the text is compared only within this process.
+    A value nothing describes beyond its identity is encoded by its `id` and sets `local`, so
+    that the text is compared only within this process.
     """
-    kind = type(value)
-    if value is None or kind in (bool, int, float, str):
-        return f"{kind.__name__}:{value!r}"
-    if kind in (torch.dtype, torch.device):
-        return f"{kind.__name__}:{value}"
-    if kind in (torch.Tensor, torch.nn.Parameter):
-        # The fake reads a construction-time tensor's layout, never its contents.
-        return f"Tensor:{tuple(value.shape)}:{value.stride()}:{value.dtype}:{value.device}"
-    if isinstance(value, (type, enum.Enum)):
-        cls = value if isinstance(value, type) else kind
-        name = _qualified_name(cls)
-        local[0] |= name.startswith("~")
-        if isinstance(value, type):
-            return name
-        # Expressions read a member's value, so it is part of what the fake reads.
-        return f"{name}.{value.name}={_encode(value.value, local)}"
-    if isinstance(value, (list, tuple, dict)):
-        if isinstance(value, dict):
-            items = (f"{_encode(k, local)}={_encode(v, local)}" for k, v in value.items())
-        else:
-            items = (_encode(v, local) for v in value)
-        text = f"({','.join(items)})"
-        if kind in (list, tuple, dict):
-            return f"{kind.__name__}{text}"
-        # A subclass is read through its contents and its own fields.
-        return f"{_encode(kind, local)}{text}{_encode(getattr(value, '__dict__', {}), local)}"
-    if kind is ADTValue:
-        return f"ADT:{value.adt}.{value.kind}{_encode(value.fields, local)}"
-    fields = getattr(value, "__dict__", None)
-    # A builtin base, such as an `int` subclass's, holds state its `__dict__` does not show.
-    builtin = any(c.__module__ == "builtins" for c in kind.__mro__[:-1])
-    if type(fields) is not dict or builtin or hasattr(kind, "__slots__"):
-        local[0] = True
-        return f"@{id(value)}"
-    return f"{_encode(kind, local)}{_encode(fields, local)}"
+
+    def __init__(self, local: bool) -> None:
+        """Start with `local` already set when the class itself is local."""
+        self.local = local
+        # The containers and objects being encoded, by `id`; meeting one again is a cycle.
+        self._open: set[int] = set()
+
+    def encode(self, value: object) -> str:
+        """*value* as text."""
+        kind = type(value)
+        if value is None or kind in (bool, int, float, str):
+            return f"{kind.__name__}:{value!r}"
+        if kind in (torch.dtype, torch.device):
+            return f"{kind.__name__}:{value}"
+        if kind in (torch.Tensor, torch.nn.Parameter):
+            # The fake reads a construction-time tensor's layout, never its contents.
+            return f"Tensor:{tuple(value.shape)}:{value.stride()}:{value.dtype}:{value.device}"
+        if isinstance(value, (type, enum.Enum)):
+            cls = value if isinstance(value, type) else kind
+            name = _qualified_name(cls)
+            self.local |= name.startswith("~")
+            if isinstance(value, type):
+                return name
+            # Expressions read a member's value, so it is part of what the fake reads.
+            return f"{name}.{value.name}={self.encode(value.value)}"
+        if id(value) in self._open:
+            return "^cycle"
+        self._open.add(id(value))
+        try:
+            return self._encode_compound(value, kind)
+        finally:
+            self._open.discard(id(value))
+
+    def _encode_compound(self, value: object, kind: type) -> str:
+        if kind is ADTValue:
+            return f"ADT:{value.adt}.{value.kind}{self.encode(value.fields)}"
+        if isinstance(value, (list, tuple, dict)):
+            if isinstance(value, dict):
+                items = (f"{self.encode(k)}={self.encode(v)}" for k, v in value.items())
+            else:
+                items = (self.encode(v) for v in value)
+            text = f"({','.join(items)})"
+            if kind in (list, tuple, dict):
+                return f"{kind.__name__}{text}"
+            # A subclass is read through its contents and its own fields.
+            return f"{self.encode(kind)}{text}{self.encode(_fields(value))}"
+        # A class not written in Python, such as an `int` base or an extension type, holds state
+        # its fields do not show.
+        flags = (c.__flags__ & (_HEAP_TYPE | _IMMUTABLE_TYPE) for c in kind.__mro__[:-1])
+        if any(f != _HEAP_TYPE for f in flags):
+            self.local = True
+            return f"@{id(value)}"
+        return f"{self.encode(kind)}{self.encode(_fields(value))}"
+
+
+def _fields(value: object) -> dict[str, object]:
+    """*value*'s own fields: each set slot across its classes, then its `__dict__`."""
+    fields = {}
+    for cls in type(value).__mro__:
+        slots = getattr(cls, "__slots__", ())
+        for name in (slots,) if isinstance(slots, str) else slots:
+            if name not in ("__dict__", "__weakref__") and hasattr(value, name):
+                fields[name] = getattr(value, name)
+    fields.update(getattr(value, "__dict__", {}))
+    return fields

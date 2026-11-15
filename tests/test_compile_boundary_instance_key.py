@@ -22,7 +22,9 @@ class _Size(int):
 
 
 class _Dims(list):
-    """A `list` subclass a param may hold and edit in place."""
+    """A `list` subclass a param may hold and edit in place, with a slot of its own."""
+
+    __slots__ = ("align", "__dict__")
 
 
 def test_a_key_resolves_to_its_own_instance():
@@ -40,9 +42,14 @@ def test_unequal_values_the_encoding_cannot_see_key_apart_in_one_process():
     identity = register_instance(_Marker())
     assert instance_key(identity, (_Size(1),)) != instance_key(identity, (_Size(2),))
     dims = _Dims([1])
-    before = instance_key(identity, (dims,))
+    dims.align = 1
+    dims.owner = dims
+    keys = {instance_key(identity, (dims,))}
     dims.append(2)
-    assert instance_key(identity, (dims,)) != before
+    keys.add(instance_key(identity, (dims,)))
+    dims.align = 2
+    keys.add(instance_key(identity, (dims,)))
+    assert len(keys) == 3
 
 
 # Each state's key in a fresh process: stable states, then states with no stable encoding.
@@ -50,14 +57,14 @@ _STABLE = (
     "[(2, None, 'x'), (torch.float16, E.A, [1.5, (2,)], {'k': True}), (torch.zeros(3, 2).t(),),"
     " (1, None, 'x'), (torch.bfloat16, E.A, [1.5, (2,)], {'k': True}), (torch.zeros(2, 3),)]"
 )
-_LOCAL = "[(object(),), (lambda: 0,)]"
+_LOCAL = "[(threading.Lock(),), (lambda: 0,)]"
 
 
 def _keys(member_value: int) -> list[str]:
     """Keys a fresh process gives one `_Marker` holding each state, then a local class's key;
     its enum `E.A` has *member_value*."""
     setup = (
-        "import enum, torch\n"
+        "import enum, threading, torch\n"
         "from tileops._ops.compile_boundary import instance_key, register_instance\n"
         "from tests.test_compile_boundary_instance_key import _Marker\n"
         f"class E(enum.Enum):\n    A = {member_value}\n"
@@ -80,7 +87,7 @@ def test_two_processes_share_a_key_exactly_when_the_state_agrees():
     assert first[:stable] == second[:stable]
     # Each changed state keys apart from its original.
     assert not set(first[:3]) & set(first[3:stable])
-    # No stable encoding, or a class defined inside a function: never shared.
+    # An extension type, a function, or a class defined inside a function: never shared.
     assert not set(first[stable:]) & set(second[stable:])
     # One enum name, another member value, which expressions read.
     assert first[1] != other[1] and first[4] != other[4] and first[0] == other[0]
