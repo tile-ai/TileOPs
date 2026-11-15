@@ -11,6 +11,7 @@ import pytest
 
 from tests.fresh_interpreter import probe
 from tileops._ops.compile_boundary import get_instance, instance_key, register_instance
+from tileops.manifest._values import ADTValue
 
 pytestmark = pytest.mark.smoke
 
@@ -24,6 +25,7 @@ class _Layout:
     """A dataclass param, as an ADT's `python` class is."""
 
     align: int
+    cache: dict = dataclasses.field(init=False)
 
 
 def test_a_key_resolves_to_its_own_instance():
@@ -40,12 +42,21 @@ def test_a_key_resolves_to_its_own_instance():
 def test_a_value_edited_in_place_changes_its_key():
     identity = register_instance(_Marker())
     dims, layout = [1], _Layout(1)
-    keys = {instance_key(identity, (dims, layout))}
+    literal = ADTValue("Layout", {"masked": {"max_m": 4}})
+    state = (dims, layout, literal)
+    keys = {instance_key(identity, state)}
     dims.append(2)
-    keys.add(instance_key(identity, (dims, layout)))
+    keys.add(instance_key(identity, state))
     layout.align = 2
-    keys.add(instance_key(identity, (dims, layout)))
-    assert len(keys) == 3
+    keys.add(instance_key(identity, state))
+    layout.cache = {}
+    keys.add(instance_key(identity, state))
+    literal.max_m = 8
+    keys.add(instance_key(identity, state))
+    assert len(keys) == 5
+    unset, empty = _Layout(1), _Layout(1)
+    empty.cache = None
+    assert instance_key(identity, (unset,)) != instance_key(identity, (empty,))
 
 
 def test_cyclic_values_key_by_their_shape():

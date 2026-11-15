@@ -129,8 +129,13 @@ class _Encoder:
             if kind in (list, tuple):
                 return f"{kind.__name__}({','.join(self.encode(v) for v in value)})"
             if kind is ADTValue:
-                return f"ADT:{value.adt}.{value.kind}{self.encode(value.fields)}"
-            fields = {f.name: getattr(value, f.name) for f in dataclasses.fields(value)}
+                # An assigned attribute shadows the field of its name, so all of them count.
+                return f"ADT{self.encode(dict(vars(value)))}"
+            # A one-tuple holds a set field's value; an empty one marks a field never set.
+            fields = {
+                f.name: (getattr(value, f.name),) if hasattr(value, f.name) else ()
+                for f in dataclasses.fields(value)
+            }
             return f"{self.encode(kind)}{self.encode(fields)}"
         finally:
             self._open.pop()
