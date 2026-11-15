@@ -24,6 +24,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         elementwise,
         fft,
         gemm,
+        indexing,
         linear_attention,
         mamba,
         moe,
@@ -52,6 +53,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
 # One entry per op family, ordered simple to composite; the docs nav follows this order.
 _FAMILIES = (
     "elementwise",
+    "indexing",
     "reduction",
     "norm",
     "quantization",
