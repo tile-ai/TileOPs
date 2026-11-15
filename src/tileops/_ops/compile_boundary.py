@@ -12,10 +12,12 @@ agree on a key only when their instances' fakes agree, so a later process reuses
 one's graphs. A state holding a value with no stable encoding is digested with a token of this
 process, so graphs holding its key are never reused by another.
 
-Assigning a param re-keys its op, so a compiled callable retraces; a param edited in place
-leaves the key stale and is refused when a compile traces the op.
+Assigning a param re-keys its op, so a compiled callable retraces. A param edited in place
+leaves the key stale, which a compile tracing the op refuses; a value keyed by its `id` shows
+no edit.
 """
 
+import dataclasses
 import enum
 import hashlib
 import itertools
@@ -31,9 +33,6 @@ from tileops.manifest._values import ADTValue
 _OP_REGISTRY: "weakref.WeakValueDictionary[str, object]" = weakref.WeakValueDictionary()
 _ORDINALS: dict[str, "itertools.count[int]"] = {}
 _RUN = uuid.uuid4().hex
-# `Py_TPFLAGS_HEAPTYPE` and `Py_TPFLAGS_IMMUTABLETYPE`: a class a `class` statement creates
-# has the first and not the second.
-_HEAP_TYPE, _IMMUTABLE_TYPE = 1 << 9, 1 << 8
 
 
 def register_instance(op: object) -> str:
@@ -85,15 +84,17 @@ def _qualified_name(cls: type) -> str:
 class _Encoder:
     """Encodes values as text equal across processes exactly when the values are equal.
 
-    A value nothing describes beyond its identity is encoded by its `id` and sets `local`, so
+    It reads the values a manifest param holds: scalars, dtypes, devices, tensor layouts, enum
+    members, types, lists, tuples, dicts, ADT literals and dataclasses. Any other value, a
+    subclass of a container or scalar among them, is encoded by its `id` and sets `local`, so
     that the text is compared only within this process.
     """
 
     def __init__(self, local: bool) -> None:
         """Start with `local` already set when the class itself is local."""
         self.local = local
-        # The containers and objects being encoded, by `id`; meeting one again is a cycle.
-        self._open: set[int] = set()
+        # The containers being encoded, outermost first; meeting one again is a cycle.
+        self._open: list[object] = []
 
     def encode(self, value: object) -> str:
         """*value* as text."""
@@ -113,43 +114,23 @@ class _Encoder:
                 return name
             # Expressions read a member's value, so it is part of what the fake reads.
             return f"{name}.{value.name}={self.encode(value.value)}"
-        if id(value) in self._open:
-            return "^cycle"
-        self._open.add(id(value))
-        try:
-            return self._encode_compound(value, kind)
-        finally:
-            self._open.discard(id(value))
-
-    def _encode_compound(self, value: object, kind: type) -> str:
-        if kind is ADTValue:
-            return f"ADT:{value.adt}.{value.kind}{self.encode(value.fields)}"
-        if isinstance(value, (list, tuple, dict)):
-            if isinstance(value, dict):
-                items = (f"{self.encode(k)}={self.encode(v)}" for k, v in value.items())
-            else:
-                items = (self.encode(v) for v in value)
-            text = f"({','.join(items)})"
-            if kind in (list, tuple, dict):
-                return f"{kind.__name__}{text}"
-            # A subclass is read through its contents and its own fields.
-            return f"{self.encode(kind)}{text}{self.encode(_fields(value))}"
-        # A class not written in Python, such as an `int` base or an extension type, holds state
-        # its fields do not show.
-        flags = (c.__flags__ & (_HEAP_TYPE | _IMMUTABLE_TYPE) for c in kind.__mro__[:-1])
-        if any(f != _HEAP_TYPE for f in flags):
+        compound = kind in (list, tuple, dict) or kind is ADTValue
+        if not compound and not dataclasses.is_dataclass(value):
             self.local = True
             return f"@{id(value)}"
-        return f"{self.encode(kind)}{self.encode(_fields(value))}"
-
-
-def _fields(value: object) -> dict[str, object]:
-    """*value*'s own fields: each set slot across its classes, then its `__dict__`."""
-    fields = {}
-    for cls in type(value).__mro__:
-        slots = getattr(cls, "__slots__", ())
-        for name in (slots,) if isinstance(slots, str) else slots:
-            if name not in ("__dict__", "__weakref__") and hasattr(value, name):
-                fields[name] = getattr(value, name)
-    fields.update(getattr(value, "__dict__", {}))
-    return fields
+        for depth, open_value in enumerate(self._open):
+            if open_value is value:
+                return f"^{depth}"
+        self._open.append(value)
+        try:
+            if kind is dict:
+                items = (f"{self.encode(k)}={self.encode(v)}" for k, v in value.items())
+                return f"dict({','.join(items)})"
+            if kind in (list, tuple):
+                return f"{kind.__name__}({','.join(self.encode(v) for v in value)})"
+            if kind is ADTValue:
+                return f"ADT:{value.adt}.{value.kind}{self.encode(value.fields)}"
+            fields = {f.name: getattr(value, f.name) for f in dataclasses.fields(value)}
+            return f"{self.encode(kind)}{self.encode(fields)}"
+        finally:
+            self._open.pop()
