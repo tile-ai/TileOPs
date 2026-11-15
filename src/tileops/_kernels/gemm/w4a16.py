@@ -1006,8 +1006,8 @@ def _gemm_w4a16_kernel(
             """`sliced` over a two-CTA cluster: CTA ``bz`` keeps consumer warpgroup ``bz``'s
             rows, adds the peer's partial of them from ``landing``, and stores them.
 
-            ``landing`` may share memory with ``out_shared``, so the keeping warpgroup meets at
-            a barrier between its last read of one and its first write of the other.
+            ``landing`` may share memory with ``out_shared``, so both warpgroups meet at a
+            barrier between the last read of one and the first write of the other.
             """
             with T.ClusterKernel(
                 tiles_m, tiles_n, split_k, cluster_dims=(1, 1, 2), threads=threads
@@ -1060,12 +1060,10 @@ def _gemm_w4a16_kernel(
                         1 - bz,
                         tx % 128,
                     )
-                # Both warpgroups meet here before the keeping one writes ``out_shared``; left
-                # to TileLang, this barrier can land inside the keeping warpgroup's branch.
                 T.sync_threads(barrier_id=6, arrive_count=threads)
+                # Both warpgroups stage so no inserted barrier sits in a one-warpgroup branch.
                 for i, j in T.Parallel(block_n, block_m):
-                    if i // wg_rows == bz:
-                        buf.out_shared[j, i] = T.cast(buf.output_local[i, j], dtype)
+                    buf.out_shared[j, i] = T.cast(buf.output_local[i, j], dtype)
                 if bz == 0:
                     T.copy(
                         buf.out_shared[:, 0:wg_rows],
