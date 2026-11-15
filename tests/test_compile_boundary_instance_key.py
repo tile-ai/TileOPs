@@ -8,6 +8,7 @@ whose fakes agree, and a key must resolve to the one instance it was made for.
 import dataclasses
 
 import pytest
+import torch
 
 from tests.fresh_interpreter import probe
 from tileops._ops.compile_boundary import get_instance, instance_key, register_instance
@@ -55,10 +56,20 @@ def test_a_value_edited_in_place_changes_its_key():
     keys.add(instance_key(identity, state))
     assert len(keys) == 5
     assert instance_key(identity, (10**5000,)) != instance_key(identity, (10**5000 + 1,))
+
+
+def test_a_state_the_encoding_does_not_read_keeps_one_key():
+    """Too deep, a tensor without strides, or a type it does not read: no error, and the
+    same key however the state changes, so a trace never refuses it as stale."""
+    identity = register_instance(_Marker())
     deep = {}
     for _ in range(2000):
         deep = {"child": deep}
-    assert instance_key(identity, (deep,))
+    states = [(deep,), (torch.eye(2).to_sparse_csr(),), (type("L", (list,), {})(),)]
+    keys = {instance_key(identity, state) for state in states}
+    deep["other"] = 1
+    keys.add(instance_key(identity, states[0]))
+    assert len(keys) == 1
     unset, empty = _Layout(1), _Layout(1)
     empty.cache = None
     assert instance_key(identity, (unset,)) != instance_key(identity, (empty,))

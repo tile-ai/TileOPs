@@ -9,12 +9,12 @@ one of the graph's constants. A key is ``<class>#<state>-<n>``: the class's qual
 digest of the state the fake reads, and the instance's ordinal among the instances of its class
 in this process. The ordinal resolves a key to one instance; the digest makes two processes
 agree on a key only when their instances' fakes agree, so a later process reuses an earlier
-one's graphs. A state holding a value with no stable encoding is digested with a token of this
+one's graphs. A class another process may define otherwise is digested with a token of this
 process, so graphs holding its key are never reused by another.
 
-Assigning a param re-keys its op, so a compiled callable retraces. A param edited in place
-leaves the key stale, which a compile tracing the op refuses; a value keyed by its `id` shows
-no edit.
+Assigning a param re-keys its op, so a compiled callable retraces; a param edited in place
+leaves the key stale, which a compile tracing the op refuses. A state holding a value the
+encoding does not read keys as on a per-process identity: never shared, and never re-keyed.
 """
 
 import dataclasses
@@ -47,7 +47,10 @@ def instance_key(identity: str, state: Iterable[object]) -> str:
     """The key of the instance registered as *identity* while it holds *state*."""
     name, _, ordinal = identity.rpartition("-")
     encoder = _Encoder(local=name.startswith("~"))
-    text = "\0".join(encoder.encode(v) for v in state)
+    try:
+        text = "\0".join(encoder.encode(v, 0) for v in state)
+    except _OpaqueStateError:
+        text = _RUN
     if encoder.local:
         text = f"{_RUN}\0{text}"
     return f"{name}#{hashlib.sha256(text.encode()).hexdigest()[:32]}-{ordinal}"
@@ -81,14 +84,21 @@ def _qualified_name(cls: type) -> str:
     return name if found is cls else f"~{name}"
 
 
+class _OpaqueStateError(Exception):
+    """The state holds a value the encoding does not read."""
+
+
+# Past this nesting the encoding would approach the interpreter's recursion limit.
+_MAX_DEPTH = 64
+
+
 class _Encoder:
     """Encodes values as text equal across processes exactly when the values are equal.
 
-    It reads the values a manifest param holds: scalars, dtypes, devices, tensor layouts, enum
-    members, types, lists, tuples, dicts, ADT literals and dataclasses. Any other value, a
-    subclass of a container or scalar among them, and one nested past 64 levels, is encoded by
-    its `id` and sets `local`, so
-    that the text is compared only within this process.
+    It reads the values a manifest param holds: scalars, dtypes, devices, strided tensor
+    layouts, enum members, types, lists, tuples, dicts, ADT literals and dataclasses, nested at
+    most `_MAX_DEPTH` deep. Any other value, a subclass of one of these among them, raises
+    `_OpaqueStateError`. A class another process may define otherwise sets `local`.
     """
 
     def __init__(self, local: bool) -> None:
@@ -97,8 +107,15 @@ class _Encoder:
         # The containers being encoded, outermost first; meeting one again is a cycle.
         self._open: list[object] = []
 
-    def encode(self, value: object) -> str:
-        """*value* as text."""
+    def encode(self, value: object, depth: int) -> str:
+        """*value*, found *depth* levels down, as text.
+
+        Raises:
+            _OpaqueStateError: *value* holds a value the encoding does not read.
+        """
+        if depth > _MAX_DEPTH:
+            raise _OpaqueStateError
+        depth += 1
         kind = type(value)
         if kind is int:
             # Hexadecimal has no digit limit, where `repr` refuses a long integer.
@@ -108,6 +125,8 @@ class _Encoder:
         if kind in (torch.dtype, torch.device):
             return f"{kind.__name__}:{value}"
         if kind in (torch.Tensor, torch.nn.Parameter):
+            if value.layout is not torch.strided or value.is_nested:
+                raise _OpaqueStateError
             # The fake reads a construction-time tensor's layout, never its contents.
             return f"Tensor:{tuple(value.shape)}:{value.stride()}:{value.dtype}:{value.device}"
         if isinstance(value, (type, enum.Enum)):
@@ -117,30 +136,34 @@ class _Encoder:
             if isinstance(value, type):
                 return name
             # Expressions read a member's value, so it is part of what the fake reads.
-            return f"{name}.{value.name}={self.encode(value.value)}"
-        compound = kind in (list, tuple, dict) or kind is ADTValue
-        # Past this nesting the encoding would exhaust the interpreter's recursion limit.
-        if not compound and not dataclasses.is_dataclass(value) or len(self._open) >= 64:
-            self.local = True
-            return f"@{id(value)}"
-        for depth, open_value in enumerate(self._open):
+            return f"{name}.{value.name}={self.encode(value.value, depth)}"
+        if kind not in (list, tuple, dict, ADTValue) and not dataclasses.is_dataclass(value):
+            raise _OpaqueStateError
+        for index, open_value in enumerate(self._open):
             if open_value is value:
-                return f"^{depth}"
+                return f"^{index}"
         self._open.append(value)
         try:
             if kind is dict:
-                items = (f"{self.encode(k)}={self.encode(v)}" for k, v in value.items())
+                items = (
+                    f"{self.encode(k, depth)}={self.encode(v, depth)}" for k, v in value.items()
+                )
                 return f"dict({','.join(items)})"
             if kind in (list, tuple):
-                return f"{kind.__name__}({','.join(self.encode(v) for v in value)})"
-            if kind is ADTValue:
-                # An assigned attribute shadows the field of its name, so all of them count.
-                return f"ADT{self.encode(dict(vars(value)))}"
-            # A one-tuple holds a set field's value; an empty one marks a field never set.
-            fields = {
-                f.name: (getattr(value, f.name),) if hasattr(value, f.name) else ()
-                for f in dataclasses.fields(value)
-            }
-            return f"{self.encode(kind)}{self.encode(fields)}"
+                return f"{kind.__name__}({','.join(self.encode(v, depth) for v in value)})"
+            # An attribute assigned on an ADT literal shadows the field of its name, so all of
+            # them count; a dataclass field never set is marked apart from any value.
+            items = (
+                vars(value).items()
+                if kind is ADTValue
+                else ((f.name, getattr(value, f.name, _UNSET)) for f in dataclasses.fields(value))
+            )
+            fields = ",".join(
+                f"{n}=" + ("unset" if v is _UNSET else self.encode(v, depth)) for n, v in items
+            )
+            return f"{self.encode(kind, depth)}({fields})"
         finally:
             self._open.pop()
+
+
+_UNSET = object()
