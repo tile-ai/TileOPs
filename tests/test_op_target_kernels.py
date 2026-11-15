@@ -624,7 +624,7 @@ def test_a_call_with_no_tensor_leaves_the_question_open():
 def test_a_call_no_device_places_runs_in_tree_and_decides_nothing(monkeypatch, traced):
     """No tensor, no ``device`` param and no current accelerator: the call runs ``forward``
     with the binding left open, eager or traced."""
-    from tileops._ops import _signature_codegen, op_base
+    from tileops._ops import _signature_codegen
     from tileops._ops.elementwise import AlibiFwdOp
 
     class RanError(Exception):

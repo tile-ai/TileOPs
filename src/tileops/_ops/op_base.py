@@ -319,7 +319,9 @@ class Op(ABC):
     ``super().__init__``. It declares ``kernel_types``, ``interfaces``, ``delegate_types`` and
     ``injected_parameters``; it may override ``dtype``, ``roof_key()``,
     ``eval_roofline_read_bytes()`` and ``roofline_data_terms()``. Callers call the op as
-    ``op(...)``, never ``forward``. docs/design/ops-design-reference.md describes each member.
+    ``op(...)``, never ``forward``. Each member states its contract in its own docstring or
+    comment; docs/design/ops-design-reference.md describes the call protocol and the kernel
+    caching methods.
 
     A member whose name starts with an underscore belongs to the base class and its generated
     code; a subclass neither calls nor overrides it.
@@ -368,7 +370,8 @@ class Op(ABC):
     # The plan of each specialization this instance has resolved, by its key
     # (``_observe``). Built empty by ``__init__``.
     _plans: dict
-    # The most plans ``_plans`` holds; the oldest is evicted past it.
+    # The most plans ``_plans`` holds; the oldest is evicted past it. Bounded because calls
+    # whose shapes keep changing, such as decode steps over a growing cache, resolve one each.
     _MAX_PLANS: ClassVar[int] = 256
     # The generated signature plan; None for a class without a manifest entry.
     _signature: ClassVar[object] = None
@@ -1187,8 +1190,8 @@ class Op(ABC):
         What the op layer guarantees every target: every tensor on one device, every
         input the call does not write contiguous, every call tensor on a 16-byte boundary, and
         the checks generated from the signature.
-        The kernel is built once per device, input dtypes and shapes, and the manifest params
-        it is built with, a tensor param by identity.
+        The kernel is built once per device, input dtypes and shapes, the manifest params it is
+        built with, a tensor param by identity, and builder.
 
         *device* is the call device the checks placed the call on; a traced call, which runs
         no check, places it from its tensors or the ``device`` param.
