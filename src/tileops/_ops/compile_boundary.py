@@ -86,7 +86,8 @@ class _Encoder:
 
     It reads the values a manifest param holds: scalars, dtypes, devices, tensor layouts, enum
     members, types, lists, tuples, dicts, ADT literals and dataclasses. Any other value, a
-    subclass of a container or scalar among them, is encoded by its `id` and sets `local`, so
+    subclass of a container or scalar among them, and one nested past 64 levels, is encoded by
+    its `id` and sets `local`, so
     that the text is compared only within this process.
     """
 
