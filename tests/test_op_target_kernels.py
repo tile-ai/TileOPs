@@ -620,6 +620,29 @@ def test_a_call_with_no_tensor_leaves_the_question_open():
     assert op._serving_target == "acme", "the first call with a tensor decides"
 
 
+@pytest.mark.parametrize("traced", [False, True], ids=["eager", "traced"])
+def test_a_call_no_device_places_runs_in_tree_and_decides_nothing(monkeypatch, traced):
+    """No tensor, no ``device`` param and no current accelerator: the call runs ``forward``
+    with the binding left open, eager or traced."""
+    from tileops._ops import _signature_codegen, op_base
+    from tileops._ops.elementwise import AlibiFwdOp
+
+    class RanError(Exception):
+        pass
+
+    def forward():
+        assert op._target_builder is op_base._UNRESOLVED
+        raise RanError
+
+    monkeypatch.setattr(_signature_codegen, "current_device", lambda: None)
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: traced)
+    op = AlibiFwdOp(seq_len=8, num_heads=4)
+    op.forward = forward
+
+    with pytest.raises(RanError):
+        op()
+
+
 def test_a_build_that_fails_pins_nothing():
     """The builder's exception reaches the caller unchanged, a TypeError included, and the
     next call resolves again rather than being stuck on a target that could not."""

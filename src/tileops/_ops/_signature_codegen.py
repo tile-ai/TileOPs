@@ -29,6 +29,7 @@ from torch.fx.experimental.symbolic_shapes import sym_and, sym_or
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._ops._naming import operator_name
+from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 from tileops._ops.compile_boundary import get_instance
 from tileops._utils.device import current_device
 from tileops.backend import OpNotAvailableError
@@ -179,7 +180,11 @@ def tensorless_device(name: str, op, ctor: tuple):
     Also what ``Op._device_without_call_tensors`` answers, so a call the generated checks
     never see is placed by the same rule.
     """
-    declared = op._declared_device() if hasattr(op, "_declared_device") else None
+    # The `device` param, which only an op with no tensor input declares; None leaves the
+    # choice to the target.
+    declared = (
+        getattr(op, "device", None) if "device" in getattr(op, PARAM_NAMES_ATTRIBUTE, ()) else None
+    )
     if declared is not None:
         # The device a tensor allocated there reports: ``torch.device("cuda")`` compares
         # unequal to the ``cuda:0`` such a tensor carries, and ``cpu:1`` reports ``cpu``.
