@@ -1060,6 +1060,9 @@ def _gemm_w4a16_kernel(
                         1 - bz,
                         tx % 128,
                     )
+                # Both warpgroups meet here before the keeping one writes ``out_shared``; left
+                # to TileLang, this barrier can land inside the keeping warpgroup's branch.
+                T.sync_threads(barrier_id=6, arrive_count=threads)
                 for i, j in T.Parallel(block_n, block_m):
                     if i // wg_rows == bz:
                         buf.out_shared[j, i] = T.cast(buf.output_local[i, j], dtype)
