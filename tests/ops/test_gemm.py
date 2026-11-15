@@ -2146,12 +2146,14 @@ def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
 @pytest.mark.parametrize(
     "n, k",
     [
-        # One-row projections with different output widths.
-        pytest.param(1024, 8192, id="split-k-8", marks=pytest.mark.smoke),
-        pytest.param(2176, 8192, id="split-k-3-uneven", marks=pytest.mark.smoke),
-        # Long contractions with a final 128-element group.
-        pytest.param(4288, 32896, id="stream-k-crossing", marks=pytest.mark.full),
-        pytest.param(4224, 32896, id="stream-k-two-way", marks=pytest.mark.full),
+        # A one-row projection on two warpgroups split six ways unevenly.
+        pytest.param(2176, 8192, id="paired-split-k-6-uneven", marks=pytest.mark.smoke),
+        # A long contraction with a final 128-element group, on two warpgroups split four
+        # ways.
+        pytest.param(4224, 32896, id="paired-split-k-4-k-tail", marks=pytest.mark.full),
+        # Stream-K is not offered to a two-warpgroup tile; the cost model would stream this
+        # one.
+        pytest.param(12288, 12288, id="two-warpgroups-unstreamed", marks=pytest.mark.full),
     ],
 )
 def test_gemm_w4a16_decode_partitions_match_the_reference(n: int, k: int) -> None:
@@ -2295,6 +2297,16 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
             id="deferred-scale-32-rows-split-k",
             marks=pytest.mark.full,
         ),
+        # Stream-K over exactly two CTAs per N tile: 66 N tiles on 132 CTAs. The selector picks
+        # it only where N tiles numbering half the SMs do not pair up, which no 132-SM board has.
+        pytest.param(
+            1,
+            4224,
+            32896,
+            {**_w4a16_config(8, 64, 512, 4, 128, 1), "stream_ctas": 132},
+            id="stream-k-two-way",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_gemm_w4a16_pinned_tile_matches_the_reference(m: int, n: int, k: int, config: dict) -> None:
@@ -2321,6 +2333,34 @@ def test_gemm_w4a16_selector_moves_128_row_tiles_onto_the_cross_tile_ring() -> N
         128,
         cfg["split_k"],
     )
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k, tile",
+    [
+        # Kept: a doubled split leaves a slice under two K tiles; the paired tile does not
+        # fit in shared memory.
+        pytest.param(1, 1024, 8192, (64, 128, 8), id="kept-short-slice", marks=pytest.mark.smoke),
+        pytest.param(32, 8192, 8192, (64, 128, 1), id="kept-no-fit", marks=pytest.mark.full),
+        pytest.param(1, 8192, 8192, (128, 256, 2), id="paired-split-1", marks=pytest.mark.full),
+        pytest.param(1, 4096, 14336, (128, 256, 4), id="paired-split-2", marks=pytest.mark.full),
+        # Stream-K picks: the 132 streamed CTAs become 64 paired N tiles split two ways (128
+        # CTAs); 67 N tiles do not pair up and keep the stream.
+        pytest.param(1, 8192, 81920, (128, 256, 2), id="paired-stream-k", marks=pytest.mark.full),
+        pytest.param(1, 4288, 32896, (64, 128, 1), id="kept-odd-n-tiles", marks=pytest.mark.full),
+    ],
+)
+def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tuple) -> None:
+    """On 132 SMs a deferred-scale tile on one consumer warpgroup runs twice its weight rows
+    on two warpgroups over as many K slices as keep its CTAs, a stream-K pick included; it
+    keeps its tile where that split leaves a slice under two K tiles, the paired tile does
+    not fit, or its N tiles do not pair up."""
+    cfg = _select_config(m, n, k, 128, 132)
+    assert (cfg["block_n"], cfg["threads"], cfg["split_k"]) == tile
+    test = GEMMW4A16Test(m, n, k, torch.float16)
+    test.check(GEMMW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels

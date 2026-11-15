@@ -140,13 +140,21 @@ def _stage_meta_per_tile(
 
     A 128-thread tile reloads on narrow K tiles, and on wide ones when staging all
     metadata exceeds the calibrated crossover. A 256-thread tile reloads on 128-wide K
-    tiles of at most 128 rows; the 256-row variant exceeds assembler constraints.
+    tiles of at most 128 rows, and on every K tile when it defers its scale; wider K tiles
+    of more rows, and the 256-row variant, exceed assembler constraints.
     """
     if threads == 256:
-        return block_m <= 128 and block_k == 128
+        return block_m <= 128 and (block_k == 128 or _defers_scale(block_m))
     return threads == 128 and (
         block_k <= 256 or block_n * all_groups * 3 > _CALIBRATION.meta_staging_crossover_bytes
     )
+
+
+def _defers_scale(block_m: int) -> bool:
+    """Whether a tile applies group scales to FP32 partials instead of to the FP16 weight:
+    a tile of at most 32 rows is bound by the instructions its consumer issues, and
+    scaling its partials takes fewer of them than scaling every decoded weight."""
+    return block_m <= 32
 
 
 def _narrow_tile(block_m: int) -> bool:
@@ -303,6 +311,8 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: int | None = No
                                 sms is not None
                                 and split_k == 1
                                 and _narrow_tile(block_m)
+                                # The streamed kernel accumulates one consumer warpgroup.
+                                and threads == 128
                                 and block_k == 512
                                 and -(-m // block_m) == 1
                                 and n % block_n == 0
@@ -353,7 +363,10 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
     """Choose the legal tile and K slicing the cost model puts fastest.
 
     The cost model has no term for the cross-tile mainloop: a pick that mainloop can run on
-    ``cross_tile_stages`` 128-wide K tiles takes that ring instead.
+    ``cross_tile_stages`` 128-wide K tiles takes that ring instead. Nor has it a term for the
+    issue rate of a deferred-scale tile's one consumer warpgroup: such a pick takes twice
+    its weight rows on two consumer warpgroups, split over as many K slices as keep its CTA
+    count, where its N tiles pair up and that config is legal.
     """
 
     def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
@@ -390,6 +403,21 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
     if not legal:
         raise ValueError(f"no legal W4A16 tile for m={m}, n={n}, k={k}")
     best = min(legal, key=lambda cfg: _config_cost(m, n, k, cfg, sms))
+    # Half as many N tiles, each split over twice the K slices: at most the pick's CTAs.
+    if best["threads"] == 128 and _defers_scale(best["block_m"]) and n % (2 * best["block_n"]) == 0:
+        tiles = -(-m // best["block_m"]) * (n // best["block_n"])
+        ctas = best["stream_ctas"] or tiles * best["split_k"]
+        paired = {
+            **best,
+            "block_n": 2 * best["block_n"],
+            "threads": 2 * best["threads"],
+            "producer_reg": _CONFIG_SPACE.producer_reg,
+            "consumer_reg": _CONFIG_SPACE.consumer_reg,
+            "split_k": 2 * ctas // tiles,
+            "stream_ctas": 0,
+        }
+        if paired in legal:
+            return paired
     stages = _CALIBRATION.cross_tile_stages
     deeper = {**best, "block_k": W4A16_LAYOUT.mma_step_k, "num_stages": stages}
     if (
@@ -480,10 +508,7 @@ def _gemm_w4a16_kernel(
             if has_k_tail
             else math.gcd(16, meta_groups, all_groups, meta_groups if even_slices else tile_groups)
         )
-        # Whether a tile applies group scales to FP32 partials instead of to the FP16 weight:
-        # a tile of at most 32 rows is bound by the instructions its consumer issues, and
-        # scaling its partials takes fewer of them than scaling every decoded weight.
-        defer_scale = block_m <= 32
+        defer_scale = _defers_scale(block_m)
         stream_k = stream_ctas > 0
         # Whether the producer refills a stage while a CTA runs: only then must a stage's
         # release wait for the WGMMAs reading it. A streamed CTA runs a varying K range.
