@@ -620,6 +620,29 @@ def test_a_call_with_no_tensor_leaves_the_question_open():
     assert op._serving_target == "acme", "the first call with a tensor decides"
 
 
+@pytest.mark.parametrize("traced", [False, True], ids=["eager", "traced"])
+def test_a_call_no_device_places_runs_in_tree_and_decides_nothing(monkeypatch, traced):
+    """No tensor, no ``device`` param and no current accelerator: the call runs ``forward``
+    with the binding left open, eager or traced."""
+    from tileops._ops import _signature_codegen
+    from tileops._ops.elementwise import AlibiFwdOp
+
+    class RanError(Exception):
+        pass
+
+    def forward():
+        assert op._target_builder is op_base._UNRESOLVED
+        raise RanError
+
+    monkeypatch.setattr(_signature_codegen, "current_device", lambda: None)
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: traced)
+    op = AlibiFwdOp(seq_len=8, num_heads=4)
+    op.forward = forward
+
+    with pytest.raises(RanError):
+        op()
+
+
 def test_a_build_that_fails_pins_nothing():
     """The builder's exception reaches the caller unchanged, a TypeError included, and the
     next call resolves again rather than being stuck on a target that could not."""
@@ -644,6 +667,77 @@ def test_a_build_that_fails_pins_nothing():
     out = op(*_inputs())
     assert torch.equal(out, torch.full_like(out, 3)), "asking again tries again"
     assert op._serving_target == "acme"
+
+
+def test_a_call_builds_with_the_target_it_selected_when_another_call_unbinds_it(monkeypatch):
+    """A call that selected a target builds with it, even when the call that bound the target
+    fails and unbinds it before this call builds."""
+    import threading
+
+    started, fail, reached, go = (threading.Event() for _ in range(4))
+
+    class BoomError(Exception):
+        pass
+
+    def kernel(x, weight):
+        if threading.current_thread().name == "first":
+            started.set()
+            fail.wait()
+            raise BoomError
+        return torch.full_like(x, 3)
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("RMSNormFwdOp", "acme", lambda *inputs, **params: kernel)
+    describe = TensorSpec.of
+
+    def pausing(t):
+        if threading.current_thread().name == "second":
+            reached.set()
+            go.wait()
+        return describe(t)
+
+    monkeypatch.setattr(op_base.TensorSpec, "of", pausing)
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+    outcomes = {}
+
+    def run(rows):
+        try:
+            outcomes[threading.current_thread().name] = op(*_inputs(rows=rows))
+        except Exception as exc:
+            outcomes[threading.current_thread().name] = exc
+
+    first = threading.Thread(target=run, args=(4,), name="first")
+    first.start()
+    started.wait()
+    second = threading.Thread(target=run, args=(8,), name="second")
+    second.start()
+    reached.wait()
+    fail.set()
+    first.join()
+    go.set()
+    second.join()
+    assert isinstance(outcomes["first"], BoomError)
+    assert not isinstance(outcomes["second"], Exception), repr(outcomes["second"])
+    assert torch.equal(outcomes["second"], torch.full_like(outcomes["second"], 3))
+
+
+def test_a_kernel_a_call_built_after_an_unbinding_serves_only_its_own_builder():
+    """A kernel built with one builder never serves a call bound to another."""
+
+    def builder_of(value):
+        return lambda *inputs, **params: lambda x, weight: torch.full_like(x, value)
+
+    first, second = builder_of(1), builder_of(2)
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("RMSNormFwdOp", "acme", first)
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+    x, weight = _inputs()
+    assert torch.equal(op(x, weight), torch.full_like(x, 1))
+
+    op._reset_binding()
+    op._run_on_target(first, (x, weight), {}, None, None, x.device)
+    registry.BUILDERS[("RMSNormFwdOp", "acme")] = second
+    assert torch.equal(op(x, weight), torch.full_like(x, 2))
 
 
 def test_a_builder_must_return_something_callable():
