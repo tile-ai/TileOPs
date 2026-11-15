@@ -1190,8 +1190,8 @@ class Op(ABC):
         What the op layer guarantees every target: every tensor on one device, every
         input the call does not write contiguous, every call tensor on a 16-byte boundary, and
         the checks generated from the signature.
-        The kernel is built once per device, input dtypes and shapes, the manifest params it is
-        built with, a tensor param by identity, and builder.
+        The kernel is built once per builder, device, input dtypes and shapes, and the manifest
+        params it is built with, a tensor param by identity.
 
         *device* is the call device the checks placed the call on; a traced call, which runs
         no check, places it from its tensors or the ``device`` param.
