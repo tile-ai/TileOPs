@@ -11,5 +11,6 @@ QUALIFIED_OPS = frozenset(
         "MergeAttentionStatesFwdOp",
         "PagedKVCacheGatherFwdOp",
         "RMSNormFwdOp",
+        "RoPEFwdOp",
     }
 )

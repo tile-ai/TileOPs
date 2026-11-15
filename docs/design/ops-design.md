@@ -40,7 +40,7 @@ The generated signature check is the only dtype gate, and every eager call is he
 
 - **Softmax scale.** A softmax-attention op that takes a scale takes `sm_scale: float | None = None`; `None` is the query-key head dimension `** -0.5`, and the manifest requires `0 < sm_scale < inf`.
 - **Rows without a key.** An attention row that sees no key has `o = 0` and `lse = -inf`, unless the op's manifest entry rules such rows out.
-- **Packed offsets.** An op with an input whose manifest `requires` holds `prefix_offsets` takes keyword-only `validate_inputs=False`; when set, the call checks those offsets, and a CPU copy passed with them, on the CPU before dispatch.
+- **Packed offsets.** An op with an input whose manifest `requires` holds `prefix_offsets` takes keyword-only `validate_inputs=False`; when set, the call checks those offsets, and a CPU copy passed with them, on the CPU before dispatch, together with every `in_range` bound of its inputs. An op without packed offsets may declare `validate_inputs` for its `in_range` bounds alone.
 - **Backward pairing.** A `Bwd` op accepts what its forward returns and every default its forward accepts; its docstring names the forward and the calls it does not feed.
 - **Reference defaults.** A default follows the entry's `ref_api`; the manifest comments a default the reference does not have.
 - **Written inputs.** An op that writes an input other than `out` says "in place" in the first line of its class docstring.

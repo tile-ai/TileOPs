@@ -131,11 +131,10 @@ class _RotaryEmbeddingOp(Op):
 
     def _rotate(
         self, x: torch.Tensor, index: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-    ) -> tuple[torch.Tensor, Kernel | None]:
+    ) -> torch.Tensor:
         """*x*, ``[*S, head_size * H]``, with each token's heads rotated at its row *index*.
 
-        Also returns the kernel that counted the positions outside the cache, or None where
-        *index* was checked before the call.
+        A row outside the cache is clamped to it.
         """
         tokens, rows = index.numel(), cos.shape[0]
         heads = x.numel() // max(tokens * self.head_size, 1)
@@ -154,7 +153,7 @@ class _RotaryEmbeddingOp(Op):
                     device=flat.device,
                 ),
             )
-            return kernel(flat, cos, sin, index.contiguous()).reshape(x.shape), kernel
+            return kernel(flat, cos, sin, index.contiguous()).reshape(x.shape)
         part = flat[..., : self.rotary_dim].contiguous().unsqueeze(0)
         kernel = self.kernel_for(
             _GPTJ,
@@ -167,27 +166,20 @@ class _RotaryEmbeddingOp(Op):
                 device=flat.device,
             ),
         )
-        rotated = kernel(part, cos[index].contiguous(), sin[index].contiguous())[0]
+        # Clamped as the NeoX kernel clamps, so the gather never reads past the cache.
+        clamped = index.clamp(0, rows - 1)
+        rotated = kernel(part, cos[clamped].contiguous(), sin[clamped].contiguous())[0]
         if self.rotary_dim < self.head_size:
             rotated = torch.cat((rotated, flat[..., self.rotary_dim :]), dim=-1)
-        return rotated.reshape(x.shape), None
+        return rotated.reshape(x.shape)
 
     def _forward(
         self, index: torch.Tensor, query: torch.Tensor, key: torch.Tensor | None
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         index = index.reshape(-1)
         cos, sin = self._tables(query.dtype, query.device)
-        rows = cos.shape[0]
-        # The NeoX kernel clamps its table index and counts the positions it clamped; the
-        # GPT-J path gathers its rows here, so it checks the positions first.
-        if not self.is_neox_style and bool(((index < 0) | (index >= rows)).any()):
-            raise ValueError(f"positions must be in [0, {rows})")
-        query_out, counted = self._rotate(query, index, cos, sin)
-        key_out, key_counted = (None, None) if key is None else self._rotate(key, index, cos, sin)
-        # Asked after both launches, so one wait covers the two counters.
-        moved = [k.take_out_of_range() for k in dict.fromkeys((counted, key_counted)) if k]
-        if any(moved):
-            raise ValueError(f"positions must be in [0, {rows})")
+        query_out = self._rotate(query, index, cos, sin)
+        key_out = None if key is None else self._rotate(key, index, cos, sin)
         return query_out, key_out
 
     def forward(
@@ -213,6 +205,10 @@ class RoPEFwdOp(_RotaryEmbeddingOp):
 
     ``is_neox_style`` rotates the two halves of each head's rotary columns against each
     other; otherwise each adjacent pair rotates (GPT-J).
+
+    Positions in the cache are the caller's obligation, checked only with
+    ``validate_inputs=True``; unchecked, a position outside the cache reads its nearest row,
+    row 0 or the last.
     """
 
     def __init__(
@@ -225,6 +221,7 @@ class RoPEFwdOp(_RotaryEmbeddingOp):
         dtype: torch.dtype,
         init_cache: bool = True,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ):
         """Build the op and its cos/sin cache settings.
@@ -237,6 +234,9 @@ class RoPEFwdOp(_RotaryEmbeddingOp):
             is_neox_style: Rotate halves (NeoX) rather than adjacent pairs (GPT-J).
             dtype: The cos/sin cache's dtype, before it takes the query's.
             init_cache: Must be True: the op computes its own cache.
+            validate_inputs: Check on the CPU that every position lies in the cache before
+                the kernels run; this synchronizes the device and cannot run inside CUDA
+                Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -247,6 +247,7 @@ class RoPEFwdOp(_RotaryEmbeddingOp):
         self.is_neox_style = is_neox_style
         self.dtype = dtype
         self.init_cache = init_cache
+        self.validate_inputs = validate_inputs
         self._start(target)
 
 
@@ -256,6 +257,10 @@ class RoPELlama31FwdOp(_RotaryEmbeddingOp):
     A frequency whose wavelength is below ``orig_max_position / high_freq_factor`` is kept,
     one above ``orig_max_position / low_freq_factor`` is divided by ``scaling_factor``, and
     one between blends the two.
+
+    Positions in the cache are the caller's obligation, checked only with
+    ``validate_inputs=True``; unchecked, a position outside the cache reads its nearest row,
+    row 0 or the last.
     """
 
     def __init__(
@@ -271,6 +276,7 @@ class RoPELlama31FwdOp(_RotaryEmbeddingOp):
         high_freq_factor: float,
         orig_max_position: int,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ):
         """Build the op and its cos/sin cache settings.
@@ -286,6 +292,9 @@ class RoPELlama31FwdOp(_RotaryEmbeddingOp):
             low_freq_factor: Bounds the low-frequency band.
             high_freq_factor: Bounds the high-frequency band.
             orig_max_position: The context length the bands are measured against.
+            validate_inputs: Check on the CPU that every position lies in the cache before
+                the kernels run; this synchronizes the device and cannot run inside CUDA
+                Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -299,6 +308,7 @@ class RoPELlama31FwdOp(_RotaryEmbeddingOp):
         self.low_freq_factor = low_freq_factor
         self.high_freq_factor = high_freq_factor
         self.orig_max_position = orig_max_position
+        self.validate_inputs = validate_inputs
         self._start(target)
 
     def _inv_freq(self) -> torch.Tensor:
@@ -330,6 +340,10 @@ class YaRNFwdOp(_RotaryEmbeddingOp):
     correction dimensions ``beta_fast`` and ``beta_slow`` name; cos and sin are scaled by
     the YaRN magnitude. The cache holds ``max_position_embeddings * scaling_factor`` rows,
     rounded up.
+
+    Positions in the cache are the caller's obligation, checked only with
+    ``validate_inputs=True``; unchecked, a position outside the cache reads its nearest row,
+    row 0 or the last.
     """
 
     def __init__(
@@ -348,6 +362,7 @@ class YaRNFwdOp(_RotaryEmbeddingOp):
         beta_slow: int = 1,
         apply_yarn_scaling: bool = True,
         truncate: bool = True,
+        validate_inputs: bool = False,
         target: Target = None,
     ):
         """Build the op and its cos/sin cache settings.
@@ -366,6 +381,9 @@ class YaRNFwdOp(_RotaryEmbeddingOp):
             beta_slow: Rotations bounding the interpolated band.
             apply_yarn_scaling: Scale the magnitude by YaRN's ``0.1 * ln(scale) + 1``.
             truncate: Round the correction dimensions outward to integers.
+            validate_inputs: Check on the CPU that every position lies in the cache before
+                the kernels run; this synchronizes the device and cannot run inside CUDA
+                Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -382,6 +400,7 @@ class YaRNFwdOp(_RotaryEmbeddingOp):
         self.beta_slow = beta_slow
         self.apply_yarn_scaling = apply_yarn_scaling
         self.truncate = truncate
+        self.validate_inputs = validate_inputs
         self._start(target)
 
     def _cache_rows(self) -> int:
@@ -424,8 +443,10 @@ class LongRoPEFwdOp(_RotaryEmbeddingOp):
     ``scale = max_position_embeddings / original_max_position_embeddings``, 1 where
     ``scale <= 1``). Token n reads cache row ``positions[n] + offsets[n]``, which lies in
     ``[0, max_position_embeddings)``, and in ``[0, original_max_position_embeddings)`` with
-    the short factors; the bound on the sum is the caller's obligation. The rotation is
-    NeoX, and the cache dtype is the query's.
+    the short factors. Both bounds are the caller's obligation; ``validate_inputs=True``
+    checks ``positions`` alone against the cache, not the sum. Unchecked, a row outside the
+    cache reads its nearest row, row 0 or the last. The rotation is NeoX, and the cache dtype
+    is the query's.
     """
 
     def __init__(
@@ -440,6 +461,7 @@ class LongRoPEFwdOp(_RotaryEmbeddingOp):
         rescale_factors: Sequence[float] | None,
         mscale: float | None = None,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ):
         """Build the op and its cos/sin cache settings.
@@ -454,6 +476,9 @@ class LongRoPEFwdOp(_RotaryEmbeddingOp):
             dtype: The cos/sin cache's dtype, the query's.
             rescale_factors: ``rotary_dim // 2`` divisors of the frequencies, or None for 1.
             mscale: Magnitude scale of cos and sin, or None for the default.
+            validate_inputs: Check on the CPU that every position lies in the cache before
+                the kernels run; this synchronizes the device and cannot run inside CUDA
+                Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
 
@@ -471,6 +496,7 @@ class LongRoPEFwdOp(_RotaryEmbeddingOp):
         self.dtype = dtype
         self.rescale_factors = rescale_factors
         self.mscale = mscale
+        self.validate_inputs = validate_inputs
         self._start(target)
 
     def _inv_freq(self) -> torch.Tensor:

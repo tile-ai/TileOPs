@@ -63,8 +63,9 @@ class GQAPagedFwdOp(Op):
     the partial outputs of short requests whose keys it splits across work items; a
     captured graph takes its own copy from the graph pool.
 
-    The caller guarantees well-formed ``cu_seqlens_q``, or passes ``validate_inputs=True``, which
-    checks it on the CPU on every call.
+    The caller guarantees well-formed ``cu_seqlens_q`` and in-range ``block_table`` and
+    ``cache_seqlens``, or passes ``validate_inputs=True``, which checks them on the CPU on
+    every call.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -117,7 +118,8 @@ class GQAPagedFwdOp(Op):
             rotary_dim: Even rotated width; ``None`` uses the full head dimension.
             rope_layout: ``"neox"`` or ``"interleaved"``.
             validate_inputs: Check on the CPU that ``cu_seqlens_q`` starts at 0, never decreases
-                and ends at the query token count.
+                and ends at the query token count, and that ``block_table`` and
+                ``cache_seqlens`` lie in their manifest ranges.
             target: Backend target, or ``None`` to resolve from the input device.
         """
         self.is_causal = is_causal

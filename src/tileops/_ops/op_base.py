@@ -201,7 +201,7 @@ class _Plan:
         "copied",
         "overlaps",
         "metadata",
-        "offsets",
+        "contents",
         "effect",
         "empty",
         "result_check",
@@ -227,8 +227,8 @@ class _Plan:
         self.call = dataclasses.replace(call, indices=copy.deepcopy(call.indices), metadata=None)
         # Each metadata tensor by name, with its position among the inputs.
         self.metadata = tuple((name, order.index(name)) for name in call.metadata)
-        # The `validate_inputs` check of the call's packed offsets, or None when it has none.
-        self.offsets = signature.offsets.get(call.branch_key)
+        # The `validate_inputs` check of the call's tensor contents, or None when it has none.
+        self.contents = signature.contents.get(call.branch_key)
         self.copied, self.effect, self.empty, self.stages = copied, effect, empty, stages
         self.overlaps = overlaps
         # The copied positions to copy back, by the inputs the implementation writes.
@@ -390,8 +390,8 @@ class Op(ABC):
     # The generated signature plan; None for a class without a manifest entry.
     _signature: ClassVar[object] = None
     dtype: torch.dtype | None = None
-    # Whether a call's packed offsets are checked against its tensors; set by every op whose
-    # signature declares packed offsets.
+    # Whether a call's tensor contents are checked against their `requires`; set by every op
+    # whose signature declares `validate_inputs`.
     validate_inputs: bool
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -1124,8 +1124,8 @@ class Op(ABC):
                 values(
                     self, dict(zip(signature.sig.inputs, inputs, strict=True)), plan.call.indices
                 )
-            if plan.offsets is not None and self.validate_inputs:
-                plan.offsets(plan.call, inputs)
+            if plan.contents is not None and self.validate_inputs:
+                plan.contents(plan.call, inputs)
             if plan.empty:
                 # An empty call runs no implementation, so none has to be available for it;
                 # its result is built here, so no result check runs. A named target must exist.

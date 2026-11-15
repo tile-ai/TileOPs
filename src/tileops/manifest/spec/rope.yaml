@@ -19,6 +19,7 @@ RoPEFwdOp:
       is_neox_style: {type: bool}
       dtype: {type: "float16 | bfloat16 | float32"}
       init_cache: {type: bool, default: true}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       positions: {dtype: I, shape: "[*S]", values: "random_ints(S, 0, max_position_embeddings)", requires: ["in_range(0, max_position_embeddings)"]}
       query: {dtype: T, shape: "[*S, head_size * Hq]"}
@@ -72,6 +73,7 @@ RoPELlama31FwdOp:
       low_freq_factor: {type: float}
       high_freq_factor: {type: float}
       orig_max_position: {type: int}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       positions: {dtype: I, shape: "[*S]", values: "random_ints(S, 0, max_position_embeddings)", requires: ["in_range(0, max_position_embeddings)"]}
       query: {dtype: T, shape: "[*S, head_size * Hq]"}
@@ -126,6 +128,7 @@ YaRNFwdOp:
       beta_slow: {type: int, default: 1, kw_only: true}
       apply_yarn_scaling: {type: bool, default: true, kw_only: true}
       truncate: {type: bool, default: true, kw_only: true}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       positions: {dtype: I, shape: "[*S]", values: "random_ints(S, 0, rope.yarn_cache_rows(max_position_embeddings, scaling_factor))", requires: ["in_range(0, rope.yarn_cache_rows(max_position_embeddings, scaling_factor))"]}
       query: {dtype: T, shape: "[*S, head_size * Hq]"}
@@ -160,10 +163,11 @@ LongRoPEFwdOp:
   # scale = max_position_embeddings / original_max_position_embeddings, 1 where scale <= 1).
   # Token n reads cache row positions[n] + offsets[n] (positions[n] without offsets): a row
   # in [0, max_position_embeddings), and in [0, original_max_position_embeddings) with the
-  # short factors. The bound on the sum is the caller's obligation; positions' own bound is
-  # its `requires`. query and key hold each token's heads flattened, head_size columns a
-  # head; the first rotary_dim columns rotate (NeoX) and the rest are copied. The cache
-  # dtype is the query's, so the output keeps it.
+  # short factors. The bound on the sum is the caller's obligation, which `requires` cannot
+  # state; positions' own bound is its `requires`, which validate_inputs checks. query and
+  # key hold each token's heads flattened, head_size columns a head; the first rotary_dim
+  # columns rotate (NeoX) and the rest are copied. The cache dtype is the query's, so the
+  # output keeps it.
   family: rope
   status: implemented
   ref_api: vllm.model_executor.layers.rotary_embedding.phi3_long_rope_scaled_rope.Phi3LongRoPEScaledRotaryEmbedding
@@ -180,6 +184,7 @@ LongRoPEFwdOp:
       dtype: {type: "float16 | bfloat16 | float32"}
       rescale_factors: {type: "list[float] | None"}
       mscale: {type: "float | None", default: null}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       positions: {dtype: I, shape: "[N]", values: "random_ints((N,), 0, original_max_position_embeddings)", requires: ["in_range(0, max_position_embeddings)"]}
       query: {dtype: T, shape: "[N, head_size * Hq]"}

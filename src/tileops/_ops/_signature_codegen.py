@@ -244,6 +244,17 @@ def _check_equal(name: str, tensor, other: str, values: list) -> None:
         raise ValueError(f"{name} must equal {other}")
 
 
+def _check_range(name: str, tensor, lo: int, hi: int) -> None:
+    """Check on the CPU that every element of *tensor* lies in ``[lo, hi)``.
+
+    Raises:
+        ValueError: An element lies outside; the message names the input.
+    """
+    values = torch.as_tensor(tensor).detach().cpu()
+    if values.numel() and (int(values.min()) < lo or int(values.max()) >= hi):
+        raise ValueError(f"{name} must be in [{lo}, {hi})")
+
+
 def _failed(name: str, where: str, exc: Exception) -> CheckError:
     """The one contextual failure a generated method raises for an evaluation that failed."""
     return CheckError(f"{name}: {where}: {exc}")
@@ -287,6 +298,7 @@ _GLOBALS = {
     "_failed": _failed,
     "_check_offsets": _check_offsets,
     "_check_equal": _check_equal,
+    "_check_range": _check_range,
     "CheckError": CheckError,
     "_Elements": Elements,
     "torch": torch,
@@ -1024,26 +1036,40 @@ def _roofline_source(sig: Signature, b: PlanBranch) -> str:
     )
 
 
-def _offsets_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
-    """`offsets(_c, inputs)` at one point, or None: each passed input whose `requires` holds
-    `prefix_offsets` checked against its bound, and each other passed input declaring the same
-    `values` checked equal to it."""
+def _contents_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
+    """`contents(_c, inputs)` at one point, or None: the `validate_inputs` check of the
+    passed inputs' `requires` that read tensor contents.
+
+    Each input whose `requires` holds `prefix_offsets` is checked against its bound, and each
+    other passed input declaring the same `values` is checked equal to it; each `in_range`
+    bound is checked on its input. None where the signature declares no `validate_inputs`.
+    """
+    if "validate_inputs" not in sig.params:
+        return None
     order = list(sig.inputs)
+    present = [t for t in order if t in b.shapes]
     bounds = {
         t: call.args[0]
-        for t, calls in b.requires.items()
-        if t in order
-        for call in calls
+        for t in present
+        for call in b.requires.get(t, ())
         if callee(call.func) == "prefix_offsets"
     }
-    if not bounds:
+    ranges = [
+        (t, call.args)
+        for t in present
+        for call in b.requires.get(t, ())
+        if callee(call.func) == "in_range"
+    ]
+    if not bounds and not ranges:
         return None
-    read = sorted(set().union(*map(names, bounds.values())))
-    lines = ["def offsets(_c, inputs):", *(f"    {n} = _c.indices[{n!r}]" for n in read)]
+    read = sorted(
+        set().union(*map(names, bounds.values()), *(names(a) for _, args in ranges for a in args))
+    )
+    lines = ["def contents(_c, inputs):", *(f"    {n} = _c.indices[{n!r}]" for n in read)]
     done = set()
     # An input on the call device anchors its group ahead of a CPU copy.
     for t in sorted(order, key=lambda name: sig.inputs[name].cpu):
-        if t not in bounds or t not in b.shapes or t in done:
+        if t not in bounds or t in done:
             continue
         values = f"_v{len(done)}"
         lines.append(
@@ -1058,6 +1084,10 @@ def _offsets_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
                 f"    _check_equal({other!r}, inputs[{order.index(other)}], {t!r}, {values})"
             )
             done.add(other)
+    for t, (lo, hi) in ranges:
+        lines.append(
+            f"    _check_range({t!r}, inputs[{order.index(t)}], {_code(sig, lo)}, {_code(sig, hi)})"
+        )
     return "\n".join(lines)
 
 
@@ -1237,9 +1267,9 @@ class _SignaturePlan:
             },
         )
         self.constructions, self.checks, self.shapes, self.effects, self.roofs = {}, {}, {}, {}, {}
-        # The `validate_inputs` check of each call point's packed offsets; a point with none
+        # The `validate_inputs` check of each call point's tensor contents; a point with none
         # has no key.
-        self.offsets = {}
+        self.contents = {}
         # The per-call check of each call point's refinements that read a call-time scalar; a
         # point with none has no key.
         self.values = {}
@@ -1306,9 +1336,9 @@ class _SignaturePlan:
                 ).values_source()
                 if values is not None:
                     self.values[key] = _compiled("values", values, f"{sig.name} values")
-                offsets = None if rejected is not None else _offsets_source(sig, b, self.equal)
-                if offsets is not None:
-                    self.offsets[key] = _compiled("offsets", offsets, f"{sig.name} offsets")
+                contents = None if rejected is not None else _contents_source(sig, b, self.equal)
+                if contents is not None:
+                    self.contents[key] = _compiled("contents", contents, f"{sig.name} contents")
                 if plan.roofline is not None and "flops" in plan.roofline and rejected is None:
                     self.roofs[key] = _compiled(
                         "roofline",

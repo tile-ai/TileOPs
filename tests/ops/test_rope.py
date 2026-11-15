@@ -150,21 +150,54 @@ def test_longrope_reads_the_row_positions_plus_offsets_name() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
-@pytest.mark.parametrize("tokens", [2, 32768], ids=["one-wave", "multi-wave"])
 @pytest.mark.parametrize(
     ("dtype", "bad"),
     [(torch.int32, 8), (torch.int64, 2**32 + 1), (torch.int64, -(2**32) + 1)],
     ids=["int32", "int64-past-int32", "int64-negative"],
 )
-def test_rope_rejects_a_position_outside_the_cache(neox, tokens, dtype, bad) -> None:
-    op, params = _op("RoPEFwdOp", torch.float16, max_position_embeddings=8, is_neox_style=neox)
-    positions = torch.zeros(tokens, device=run_device(), dtype=dtype)
+def test_rope_validate_inputs_rejects_a_position_outside_the_cache(neox, dtype, bad) -> None:
+    op, params = _op(
+        "RoPEFwdOp",
+        torch.float16,
+        max_position_embeddings=8,
+        is_neox_style=neox,
+        validate_inputs=True,
+    )
+    positions = torch.zeros(2, device=run_device(), dtype=dtype)
     positions[-1] = bad
-    query = torch.randn(tokens, 64, device=run_device(), dtype=torch.float16)
-    with pytest.raises(ValueError, match="positions"):
+    query = torch.randn(2, 64, device=run_device(), dtype=torch.float16)
+    with pytest.raises(ValueError, match=r"^positions must be in \[0, 8\)"):
         op(positions, query)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="RoPEFwdOp")
+@pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
+def test_rope_graph_replay(neox) -> None:
+    """Replay rotates changed positions, query and key into the captured outputs."""
+    dtype = torch.bfloat16
+    op, params = _op("RoPEFwdOp", dtype, is_neox_style=neox)
+    positions, query, key = _inputs("RoPEFwdOp", params, 64, 8, 2, dtype, first=100)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(positions, query, key)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        got_q, got_k = op(positions, query, key)
+    for _ in range(2):
+        positions.add_(1000)
+        query.neg_()
+        key.mul_(0.5)
+        got_q.fill_(float("nan"))
+        got_k.fill_(float("nan"))
+        graph.replay()
+        ref_q, ref_k = _reference("RoPEFwdOp", params, positions, query, key)
+        compare_outputs(got_q, ref_q, rope_verification())
+        compare_outputs(got_k, ref_k, rope_verification())
 
 
 @pytest.mark.smoke

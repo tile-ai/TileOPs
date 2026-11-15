@@ -25,8 +25,9 @@ class PagedKVCacheGatherFwdOp(Op):
     dtype. A non-contiguous destination uses a contiguous staging buffer and a copy back
     into the caller's view; its previous contents are never read.
 
-    The caller guarantees well-formed ``cu_seqlens``, or passes ``validate_inputs=True``, which
-    checks it on the CPU on every call.
+    The caller guarantees well-formed ``cu_seqlens`` and in-range ``block_table`` and
+    ``seq_starts``, or passes ``validate_inputs=True``, which checks them on the CPU on every
+    call.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -48,7 +49,8 @@ class PagedKVCacheGatherFwdOp(Op):
         Args:
             out_dtype: Destination dtype for FP8 dequantization; otherwise the cache dtype.
             validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never decreases
-                and ends at ``out``'s row count.
+                and ends at ``out``'s row count, and that ``block_table`` and ``seq_starts``
+                lie in their manifest ranges.
             target: Backend target, or None to resolve from the input device.
         """
         self.out_dtype = out_dtype

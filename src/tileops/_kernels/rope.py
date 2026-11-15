@@ -97,8 +97,7 @@ class RoPENeoxPositionIdsFwdInterface(KernelInterface):
         Token ``t`` reads table row ``position_ids[t]`` and rotates the first
         ``call.rotary_dim`` columns of each of its heads by the half-split convention; the
         remaining columns are copied. A position outside ``[0, call.max_position)`` is
-        clamped to the table rather than read out of bounds, and counted, which
-        ``take_out_of_range`` reports. Nothing is written in place except that counter, and
+        clamped to the table rather than read out of bounds. Nothing is written in place, and
         the output aliases no input.
 
         Args:
@@ -112,14 +111,6 @@ class RoPENeoxPositionIdsFwdInterface(KernelInterface):
 
         Returns:
             A new contiguous tensor on ``call.device``, shaped and typed as *x*.
-        """
-
-    @abstractmethod
-    def take_out_of_range(self) -> bool:
-        """Whether a call since the previous ask saw a position outside the table.
-
-        The op asks after every call and raises when the answer is true, so an
-        implementation that clamps silently still reports here.
         """
 
 
@@ -141,15 +132,12 @@ def _make_rope_neox_position_ids_thd(
     once.
 
     A position outside ``[0, max_position)`` is clamped to the table rather than
-    faulting, and ``status`` counts how many were seen. The count only grows and is
-    never reset, so one buffer serves every call and a caller learns of an out-of-range
-    position by the count moving.
+    faulting.
 
     ``one_wave`` builds the body for a grid of at most one wave, whose time is the chain of
     a position load then a table load. A thread there loads its ``num_per_thread`` pairs
     as vectors, the position and the table first; the clamp sits in the table index, where
-    the bounds analysis sees it, so the loads carry no branch on the position; and the
-    thread holding a token's first pair counts that token's position, adding no load.
+    the bounds analysis sees it, so the loads carry no branch on the position.
     """
     half = rotary_dim // 2
     token_stride = num_heads * head_dim
@@ -158,7 +146,7 @@ def _make_rope_neox_position_ids_thd(
     n_tail = num_tokens * num_heads * (head_dim - rotary_dim)
     n_walked = max(n_pairs, n_tail)
 
-    @tilelang.jit(out_idx=[5])
+    @tilelang.jit(out_idx=[4])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
         def main(
@@ -166,7 +154,6 @@ def _make_rope_neox_position_ids_thd(
             cos_table: T.Tensor((max_position, half), dtype),
             sin_table: T.Tensor((max_position, half), dtype),
             position_ids: T.Tensor((num_tokens,), position_dtype),
-            status: T.Tensor((1,), "int32"),
             y: T.Tensor((n_total,), dtype),
         ):
             with T.Kernel(T.ceildiv(n_walked, threads_arg * npt_arg), threads=threads_arg) as bx:
@@ -182,12 +169,6 @@ def _make_rope_neox_position_ids_thd(
                         row = first // half
                         col = first % half
                         seen = position_ids[row // num_heads]
-                        if (
-                            row % num_heads == 0
-                            and col == 0
-                            and seen != T.max(0, T.min(seen, max_position - 1))
-                        ):
-                            T.atomic_add(status[0], 1)
                         for j in T.vectorized(npt_arg):
                             cs[j] = cos_table[T.max(0, T.min(seen, max_position - 1)), col + j]
                         for j in T.vectorized(npt_arg):
@@ -209,12 +190,6 @@ def _make_rope_neox_position_ids_thd(
                         for j in T.vectorized(npt_arg):
                             y[low + half + j] = hi[j]
                 else:
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        token = (bx * threads_arg + i) * npt_arg + j
-                        if token < num_tokens:
-                            seen = position_ids[token]
-                            if seen != T.max(0, T.min(seen, max_position - 1)):
-                                T.atomic_add(status[0], 1)
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         pair_idx = (bx * threads_arg + i) * npt_arg + j
                         if pair_idx < n_pairs:
@@ -360,10 +335,6 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
             raise ValueError(f"position_dtype must be int32 or int64, got {position_dtype}")
         self.position_dtype = position_dtype
         self.sm_count = sm_count
-        # Grows by one per position seen outside [0, max_position), and is never
-        # reset; take_out_of_range answers whether it moved.
-        self._status: torch.Tensor | None = None
-        self._seen_out_of_range = 0
         self.kernel = self._build_kernel()
         self.init_config(config)
 
@@ -402,30 +373,12 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
-    def take_out_of_range(self) -> bool:
-        """Whether a call since the previous ask saw a position outside the table.
-
-        Costs one device synchronisation per ask.
-        """
-        if self._status is None:
-            return False
-        count = int(self._status.item())
-        moved = count != self._seen_out_of_range
-        self._seen_out_of_range = count
-        return moved
-
     def forward(
         self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor
     ) -> torch.Tensor:
         orig_shape = x.shape
-        if self._status is None:
-            self._status = torch.zeros(1, device=x.device, dtype=torch.int32)
         result = self.program(self._compile)(
-            x.contiguous().reshape(-1),
-            cos,
-            sin,
-            position_ids.contiguous(),
-            self._status,
+            x.contiguous().reshape(-1), cos, sin, position_ids.contiguous()
         )
         return result.reshape(orig_shape)
 
