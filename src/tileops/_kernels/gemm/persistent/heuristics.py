@@ -760,23 +760,17 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         cols = desc.n / (math.ceil(desc.n / layout.block_n) * layout.block_n)
         return rows * cols * _layout_features(desc, layout).wave_efficiency
 
-    def _pingpong_group_layout(desc: GEMMDesc, chosen: "_Layout | None") -> _Layout | None:
-        """The calibrated ping-pong tile for this call, or ``None``.
-
-        It is taken for tight groups near one 128-row tile, for unfused groups past that band
-        where its tile slots hold more rows, and for an unfused call whose ``chosen`` tile,
-        the one selected without it and staged whole, is the ping-pong tile itself.
+    def _pingpong_group_layout(desc: GEMMDesc, chosen: _Layout | None) -> _Layout | None:
+        """Select the calibrated ping-pong tile for tight groups near one 128-row tile, for
+        unfused groups past that band where its tile slots hold more rows, or where an unfused
+        call's unstaged cost-model tile (``chosen``) already is the ping-pong tile.
 
         A 64-row tile reduces padding in routed groups; two math warp-groups overlap
         their epilogues. Unfused groups averaging exactly 128 rows are excluded because
         evenly sized groups fill 128-row tiles without the extra B loads. Past the band,
         an unbiased 64-row tile takes ``pingpong_narrow_n`` columns where that width's slot
         share is the larger, and is taken where its slot share beats the 128-row tile's by
-        ``pingpong_slot_share_ratio``. Where ``chosen`` already is the ping-pong tile, its
-        one math warp-group would store each tile before starting the next; the second
-        group runs the next tile under that store, on the same tiles, ring and loads. A
-        tile given a staged epilogue is not ``chosen``: ping-pong stages a tile whole. A
-        fused call keeps its own band. Explicit ``expected_m`` keeps the cost model's
+        ``pingpong_slot_share_ratio``. Explicit ``expected_m`` keeps the cost model's
         selection.
         """
         bands = desc.bands

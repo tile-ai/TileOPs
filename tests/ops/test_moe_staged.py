@@ -395,56 +395,30 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("layout", "sizes", "activation", "some", "n"),
+    ("layout", "sizes", "activation", "some"),
     [
-        pytest.param(
-            _TIGHT_MOE_GROUPED_GEMM, [100, 0, 300, 128, 7, 64], None, (), 256, id="tight-psum"
-        ),
+        pytest.param(_TIGHT_MOE_GROUPED_GEMM, [100, 0, 300, 128, 7, 64], None, (), id="tight-psum"),
         # 142 rows an expert on average: on H200 the unfused ping-pong 64-row tiles.
         pytest.param(
-            _TIGHT_MOE_GROUPED_GEMM,
-            [200, 0, 300, 129, 70, 150],
-            None,
-            (),
-            256,
-            id="tight-psum-pingpong",
+            _TIGHT_MOE_GROUPED_GEMM, [200, 0, 300, 129, 70, 150], None, (), id="tight-psum-pingpong"
         ),
         pytest.param(
             _TIGHT_MOE_GROUPED_GEMM,
             [200, 0, 300, 129, 70, 150],
             None,
             ("bias",),
-            256,
             id="tight-psum-pingpong-bias",
         ),
-        # 16 experts of a few rows, one past a 64-row tile, at the width where H200's selector
-        # takes 64x256 ping-pong tiles: a CTA's two warp-groups run partly filled tiles of
-        # different experts.
         pytest.param(
-            _TIGHT_MOE_GROUPED_GEMM,
-            [100, 0, 30, 64, 7, 0, 20, 5, 1, 2, 3, 4, 8, 6, 3, 3],
-            None,
-            (),
-            4096,
-            id="tight-psum-pingpong-short",
+            _aligned("per_row"), [100, 0, 300, 128, 7, 64], None, (), id="aligned-per-row"
         ),
         pytest.param(
-            _aligned("per_row"), [100, 0, 300, 128, 7, 64], None, (), 256, id="aligned-per-row"
+            _aligned("physical_psum"), [100, 0, 300, 128, 7, 64], None, (), id="aligned-psum"
         ),
+        pytest.param(_aligned("physical_psum"), [300] * 32, None, (), id="aligned-psum-32-experts"),
+        pytest.param({"masked": {"max_m": 256}}, [100, 0, 256, 33], None, (), id="masked"),
         pytest.param(
-            _aligned("physical_psum"), [100, 0, 300, 128, 7, 64], None, (), 256, id="aligned-psum"
-        ),
-        pytest.param(
-            _aligned("physical_psum"), [300] * 32, None, (), 256, id="aligned-psum-32-experts"
-        ),
-        pytest.param({"masked": {"max_m": 256}}, [100, 0, 256, 33], None, (), 256, id="masked"),
-        pytest.param(
-            {"masked": {"max_m": 256}},
-            [100, 0, 256, 33],
-            "silu_and_mul",
-            (),
-            256,
-            id="masked-gated",
+            {"masked": {"max_m": 256}}, [100, 0, 256, 33], "silu_and_mul", (), id="masked-gated"
         ),
         # A bias under each layout; the gate/up bias stacked and interleaved.
         pytest.param(
@@ -452,7 +426,6 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 300, 128, 7, 64],
             None,
             ("bias",),
-            256,
             id="aligned-per-row-bias",
         ),
         pytest.param(
@@ -460,7 +433,6 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 256, 33],
             "swigluoai",
             ("bias",),
-            256,
             id="masked-swigluoai-bias",
         ),
         pytest.param(
@@ -468,7 +440,6 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 300, 128, 7, 64],
             None,
             ("bias",),
-            256,
             id="tight-per-row-bias",
         ),
         pytest.param(
@@ -476,13 +447,12 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 300, 128, 7, 64],
             "silu_and_mul",
             ("bias",),
-            256,
             id="aligned-psum-silu-bias",
         ),
     ],
 )
 def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(
-    layout, sizes, activation, some, n
+    layout, sizes, activation, some, n=256
 ):
     """Uneven experts, an empty one included, into a poisoned ``out``: every defined row is
     written and matches the reference."""
@@ -501,6 +471,17 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(
         out,
         workload.ref_program(a, b, metadata, bias),
         workload.verification(a, b, metadata, bias),
+    )
+
+
+@pytest.mark.smoke
+def test_grouped_gemm_writes_every_defined_row_of_short_experts_on_pingpong_tiles():
+    """16 experts of a few rows, one past a 64-row tile, at the width where H200's selector
+    takes 64x256 ping-pong tiles: a CTA's two warp-groups run partly filled tiles of
+    different experts."""
+    sizes = [100, 0, 30, 64, 7, 0, 20, 5, 1, 2, 3, 4, 8, 6, 3, 3]
+    test_grouped_gemm_writes_every_defined_row_of_uneven_experts(
+        _TIGHT_MOE_GROUPED_GEMM, sizes, None, (), n=4096
     )
 
 
