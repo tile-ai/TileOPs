@@ -9,6 +9,10 @@ parameter, a keyword no longer accepted, a changed default, or a new required pa
 Additions pass. Return types and behavior are not compared; review covers them. Without a
 release tag the check passes.
 
+A reviewed break is listed in ``api_compat_allow.txt`` beside this script, one line per break
+exactly as the check prints it; a line starting with ``#`` is a comment. A listed break is skipped, and a listed
+line that matches no break fails the check as stale.
+
     python scripts/ci/check_api_compat.py [--base <git ref>]
 """
 
@@ -26,6 +30,7 @@ from io import BytesIO
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+ALLOWLIST = Path(__file__).resolve().with_name("api_compat_allow.txt")
 # Public modules besides the op families, which `tileops._FAMILIES` lists.
 MODULES = ("tileops.authoring", "tileops.backend", "tileops.manifest", "tileops.trace")
 _POSITIONAL = ("POSITIONAL_ONLY", "POSITIONAL_OR_KEYWORD")
@@ -188,6 +193,18 @@ def breaks(old: dict, new: dict) -> list[str]:
     return out
 
 
+def load_allowlist(text: str) -> list[str]:
+    """The break lines of an allowlist, without blank lines and ``#`` comment lines."""
+    lines = (line.strip() for line in text.splitlines())
+    return [line for line in lines if line and not line.startswith("#")]
+
+
+def allow(found: list[str], allowed: list[str]) -> tuple[list[str], list[str]]:
+    """The breaks of *found* not in *allowed*, and the lines of *allowed* that match none."""
+    listed, seen = set(allowed), set(found)
+    return [b for b in found if b not in listed], [a for a in allowed if a not in seen]
+
+
 def _latest_tag() -> "str | None":
     """The highest final release tag, found by version rather than ancestry, which a shallow
     clone lacks."""
@@ -235,11 +252,17 @@ def main() -> int:
             tar.extractall(tmp, filter="data")
         old = _surface_of(Path(tmp) / "src")
     new = _surface_of(REPO_ROOT / "src")
-    found = breaks(old, new)
+    allowed = load_allowlist(ALLOWLIST.read_text()) if ALLOWLIST.exists() else []
+    found, stale = allow(breaks(old, new), allowed)
     for line in found:
         print(line)
-    print(f"{len(found)} incompatible change(s) against {base}")
-    return 1 if found else 0
+    for line in stale:
+        print(f"stale {ALLOWLIST.name} entry, matching no break: {line}")
+    print(
+        f"{len(found)} incompatible change(s) against {base}, {len(allowed)} allowed, "
+        f"{len(stale)} stale allowlist entr{'y' if len(stale) == 1 else 'ies'}"
+    )
+    return 1 if found or stale else 0
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ Within 0.x, minor and patch releases change the public API only additively:
 - A release may add a module, a name, an optional parameter, or a new accepted input.
 - Any other change waits for a major release.
 
-`scripts/ci/check_api_compat.py` checks every pull request against the latest release and fails on a change that breaks a call written against it.
+`scripts/ci/check_api_compat.py` checks every pull request against the latest release and fails on a change that breaks a call written against it. During 0.x, a reviewed break is listed in [`scripts/ci/api_compat_allow.txt`](../scripts/ci/api_compat_allow.txt), which the check skips; the list is emptied at the next release.
 
 ## Support scope
 

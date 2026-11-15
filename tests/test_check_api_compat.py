@@ -105,3 +105,13 @@ def test_a_dataclass_field_is_a_member():
 
     Facts.__module__ = "tileops._probe"
     assert "Facts.arch" in check_api_compat._class_members("Facts", Facts)
+
+
+def test_an_allowlisted_break_is_skipped_and_a_stale_entry_is_reported():
+    allowed = check_api_compat.load_allowlist(
+        "# reviewed in this release\n\nf: removed\ng: removed\n"
+    )
+    assert allowed == ["f: removed", "g: removed"]
+    found, stale = check_api_compat.allow(["f: removed", "h: removed"], allowed)
+    assert found == ["h: removed"]
+    assert stale == ["g: removed"]
