@@ -20,7 +20,7 @@ from workloads.reduction import ArgreduceCase, reduction_verification
 def _call(op, x: torch.Tensor) -> torch.Tensor:
     """Invoke a single-output argreduce op and narrow the return to ``Tensor``.
 
-    The shared ``OpBase.__call__`` is typed as ``Union[Tensor, tuple]`` to
+    The shared ``Op.__call__`` is typed as ``Tensor | tuple[Tensor, ...]`` to
     accommodate ops with multiple outputs.  Argreduce ops always return a
     single ``Tensor``; this helper keeps the call sites well-typed without
     sprinkling ``cast(...)`` everywhere.

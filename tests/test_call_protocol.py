@@ -844,10 +844,11 @@ def test_calls_of_several_plans_missing_one_sub_op_together_build_it_once():
 
 
 def test_a_compiled_call_whose_op_was_collected_says_the_op_must_outlive_it():
-    from tileops._ops.compile_boundary import get_instance, register_instance
+    from tileops._ops.compile_boundary import get_instance
 
     op = _probe(lambda self, x: x.clone())()
-    key = register_instance(op)
+    key = op._instance_key
+    assert get_instance(key) is op
     del op
     gc.collect()
     with pytest.raises(RuntimeError, match="keep the op instance alive"):

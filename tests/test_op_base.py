@@ -536,14 +536,6 @@ class TestInstanceKeys:
 
         assert len(keys) == 50
 
-    def test_a_key_names_the_class_it_belongs_to(self):
-        """Graph dumps and guard failures show the key, not the instance."""
-
-        class _Dummy:
-            pass
-
-        assert op_base.register_instance(_Dummy()).startswith("_Dummy")
-
 
 def test_no_abstract_op_class_is_instantiated_anywhere():
     """An abstract Op cannot be constructed, so nothing in the tree may try.

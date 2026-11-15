@@ -21,6 +21,10 @@ class _Size(int):
     """An `int` subclass: its value lives in the builtin base, not in `__dict__`."""
 
 
+class _Dims(list):
+    """A `list` subclass a param may hold and edit in place."""
+
+
 def test_a_key_resolves_to_its_own_instance():
     a, b = _Marker(), _Marker()
     ka, kb = (instance_key(register_instance(o), (2,)) for o in (a, b))
@@ -35,6 +39,10 @@ def test_a_key_resolves_to_its_own_instance():
 def test_unequal_values_the_encoding_cannot_see_key_apart_in_one_process():
     identity = register_instance(_Marker())
     assert instance_key(identity, (_Size(1),)) != instance_key(identity, (_Size(2),))
+    dims = _Dims([1])
+    before = instance_key(identity, (dims,))
+    dims.append(2)
+    assert instance_key(identity, (dims,)) != before
 
 
 # Each state's key in a fresh process: stable states, then states with no stable encoding.

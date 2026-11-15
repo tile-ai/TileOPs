@@ -101,11 +101,16 @@ def _encode(value: object, local: list) -> str:
             return name
         # Expressions read a member's value, so it is part of what the fake reads.
         return f"{name}.{value.name}={_encode(value.value, local)}"
-    if kind in (list, tuple):
-        return f"{kind.__name__}({','.join(_encode(v, local) for v in value)})"
-    if kind is dict:
-        items = (f"{_encode(k, local)}={_encode(v, local)}" for k, v in value.items())
-        return f"dict({','.join(items)})"
+    if isinstance(value, (list, tuple, dict)):
+        if isinstance(value, dict):
+            items = (f"{_encode(k, local)}={_encode(v, local)}" for k, v in value.items())
+        else:
+            items = (_encode(v, local) for v in value)
+        text = f"({','.join(items)})"
+        if kind in (list, tuple, dict):
+            return f"{kind.__name__}{text}"
+        # A subclass is read through its contents and its own fields.
+        return f"{_encode(kind, local)}{text}{_encode(getattr(value, '__dict__', {}), local)}"
     if kind is ADTValue:
         return f"ADT:{value.adt}.{value.kind}{_encode(value.fields, local)}"
     fields = getattr(value, "__dict__", None)

@@ -75,7 +75,7 @@ class DSADenseFwdOp(Op):
             dim_tail (int): The dimension of the tail portion of the attention vectors.
             stride_kv (int): The stride for the key-value sequence.
             q_start_index_s (int): The start index for queries in the sequence.
-            sm_scale (Optional[float], default=None): Scaling factor for the softmax
+            sm_scale (float | None, default=None): Scaling factor for the softmax
                 function; ``None`` means ``(D + dim_tail) ** -0.5``, the query-key head
                 dimension including the tail.
             is_causal (bool, default=True): Whether the attention is causal. The
