@@ -133,6 +133,19 @@ def _w4a16_streamk_reduce_kernel(
     return build
 
 
+def _stream_tile_ctas(tiles_n: int, k_iters: int, stream_ctas: int) -> list[int]:
+    """How many of the ``stream_ctas`` CTAs run units of each N tile, with CTA ``c`` running
+    units ``c * units // stream_ctas`` up to the next CTA's first, as the streamed kernel
+    splits them."""
+    units = tiles_n * k_iters
+    used = [0] * tiles_n
+    for cta in range(stream_ctas):
+        start, end = cta * units // stream_ctas, (cta + 1) * units // stream_ctas
+        for tile in range(start // k_iters, -(-end // k_iters)):
+            used[tile] += 1
+    return used
+
+
 def _stage_meta_per_tile(
     threads: int, block_m: int, block_k: int, block_n: int, all_groups: int
 ) -> bool:
@@ -451,7 +464,9 @@ def _gemm_w4a16_kernel(
         raise ValueError(f"K must be divisible by group_size={group_size}, got {k}")
 
     @tilelang.jit(
-        out_idx=[-1],
+        # An int: TileLang rewrites a list's -1 in place to the first program's last index, and
+        # the stream program has one more parameter than the others.
+        out_idx=-1,
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=[
             "-O3",
@@ -943,19 +958,15 @@ def _gemm_w4a16_kernel(
             )
 
         @T.macro
-        def store_stream_tile(partials, cta, tile, slot, output_local):
-            """Store one stream-K segment and initialize its tile's unused slots."""
+        def store_stream_tile(partials, used, tile, slot, output_local):
+            """Store one stream-K segment in its N tile's slot, and zero the slots no CTA of the
+            tile writes: ``used[tile]`` and up, which every CTA of the tile zeroes alike."""
             for i, j in T.Parallel(block_n, block_m):
                 if j < m:
                     partials[tile, slot, j, i] = output_local[i, j]
-            # CTA ranges are half-open after floor division; the +1 finds the
-            # first range whose end lies beyond this tile's first unit.
-            first_cta = T.ceildiv((tile * k_iters + 1) * stream_ctas, stream_units) - 1
-            last_cta = T.ceildiv((tile + 1) * k_iters * stream_ctas, stream_units) - 1
-            if cta == first_cta:
-                for unused, i, j in T.Parallel(stream_slots, block_n, block_m):
-                    if unused > last_cta - first_cta and j < m:
-                        partials[tile, unused, j, i] = T.float32(0)
+            for unused, i, j in T.Parallel(stream_slots, block_n, block_m):
+                if unused >= used[tile] and j < m:
+                    partials[tile, unused, j, i] = T.float32(0)
 
         @T.prim_func
         def main(
@@ -1323,6 +1334,7 @@ def _gemm_w4a16_kernel(
                 packed_weight: T.Tensor((n, k // 8), "uint32"),  # type: ignore
                 weight_scale: T.Tensor((n, all_groups), dtype),  # type: ignore
                 weight_zero: T.Tensor((n, all_groups), "uint8"),  # type: ignore
+                used: T.Tensor((tiles_n,), "int32"),  # type: ignore
                 partials: T.Tensor((tiles_n, stream_slots, m, block_n), "float"),  # type: ignore
             ) -> None:
                 with T.Kernel(stream_ctas, threads=threads) as bx:
@@ -1377,7 +1389,7 @@ def _gemm_w4a16_kernel(
                                 buf.output_local[i, j] += tmp_3[i, j] * scale_3[i, j]
                             else:
                                 output_local_b[i, j] += tmp_3[i, j] * scale_3[i, j]
-                    store_stream_tile(partials, bx, first_tile, first_slot, buf.output_local)
+                    store_stream_tile(partials, used, first_tile, first_slot, buf.output_local)
                     if end_unit > boundary:
                         second_tile = first_tile + 1
                         second_first_cta = (
@@ -1388,7 +1400,7 @@ def _gemm_w4a16_kernel(
                             - 1
                         )
                         second_slot = bx - second_first_cta
-                        store_stream_tile(partials, bx, second_tile, second_slot, output_local_b)
+                        store_stream_tile(partials, used, second_tile, second_slot, output_local_b)
 
             return streamed
 
@@ -1548,9 +1560,19 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
         m_pad = self._padded_m(cfg)
         mainloop = self._builder(m_pad)(**cfg)
         n, block_n = self.n, cfg["block_n"]
+        # The stream-K mainloop also reads how many CTAs write each N tile; the kernel holds
+        # the table, which a graph captured under this config still reads.
+        tables = ()
         if cfg["stream_ctas"] > 0:
+            tiles_n = -(-n // block_n)
+            split = (tiles_n, -(-self.k // cfg["block_k"]), cfg["stream_ctas"])
+            used = self._workspace(
+                ("stream_tile_ctas", *split),
+                lambda: torch.tensor(_stream_tile_ctas(*split), dtype=torch.int32, device="cuda"),
+            )
+            tables = (used,)
             reduce_ = _w4a16_streamk_reduce_kernel(
-                -(-n // block_n), _CONFIG_SPACE.stream_slots, m_pad, n, block_n, self.dtype_str
+                tiles_n, _CONFIG_SPACE.stream_slots, m_pad, n, block_n, self.dtype_str
             )()
         elif cfg["split_k"] > 1 and not _pair_reduced(cfg["threads"], block_n, cfg["split_k"]):
             reduce_ = splitk_reduce_kernel(cfg["split_k"], m_pad, n, self.dtype_str)()
@@ -1560,7 +1582,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
 
         def reduced(activation, words, weight_scale, weight_zero):
             out = activation.new_empty((m_pad, n))
-            reduce_(mainloop(activation, words, weight_scale, weight_zero), out)
+            reduce_(mainloop(activation, words, weight_scale, weight_zero, *tables), out)
             return out
 
         return reduced, m_pad

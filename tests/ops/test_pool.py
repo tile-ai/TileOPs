@@ -1965,9 +1965,24 @@ def test_adaptive_avg_pool2d_lanes_follow_window_and_device() -> None:
 
 
 @pytest.mark.smoke
+def test_adaptive_avg_pool2d_misaligned_view() -> None:
+    """A contiguous view two bytes past a 16-byte boundary pools like an aligned tensor: the
+    lane kernel's 16-byte loads of this global window read an aligned copy."""
+    test = AdaptiveAvgPool2dTest(2, 64, 56, 56, (1, 1), torch.float16)
+    buf = torch.randn(1 + 2 * 64 * 56 * 56, device=run_device(), dtype=torch.float16)
+    x = buf[1:].view(2, 64, 56, 56)
+    assert x.data_ptr() % 16 != 0
+    out = AdaptiveAvgPool2dFwdOp(output_size=test.output_size)(x)
+    compare_outputs(out, test.ref_program(x), test.verification(x))
+
+
 @pytest.mark.parametrize(
     "op_cls",
-    [AdaptiveAvgPool2dFwdOp, AdaptiveMaxPool2dFwdOp, AdaptiveMaxPool2dIndicesFwdOp],
+    [
+        pytest.param(AdaptiveAvgPool2dFwdOp, marks=pytest.mark.smoke),
+        pytest.param(AdaptiveMaxPool2dFwdOp, marks=pytest.mark.full),
+        pytest.param(AdaptiveMaxPool2dIndicesFwdOp, marks=pytest.mark.full),
+    ],
 )
 def test_adaptive_pool2d_bin_products_past_int32(op_cls) -> None:
     """Bins whose bound products pass int32 before the division: 99999 * 150001.
