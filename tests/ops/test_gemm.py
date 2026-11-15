@@ -7,7 +7,7 @@ from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
 from tileops._kernels.gemm.w4a16 import _cross_tile_wgmma, _select_config
-from tileops._utils import calibration_key, get_sm_count, get_sm_version
+from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
@@ -2297,6 +2297,16 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
             id="deferred-scale-32-rows-split-k",
             marks=pytest.mark.full,
         ),
+        # Stream-K over exactly two CTAs per N tile: 66 N tiles on 132 CTAs. The selector picks
+        # it only where N tiles numbering half the SMs do not pair up, which no 132-SM board has.
+        pytest.param(
+            1,
+            4224,
+            32896,
+            {**_w4a16_config(8, 64, 512, 4, 128, 1), "stream_ctas": 132},
+            id="stream-k-two-way",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_gemm_w4a16_pinned_tile_matches_the_reference(m: int, n: int, k: int, config: dict) -> None:
@@ -2343,35 +2353,14 @@ def test_gemm_w4a16_selector_moves_128_row_tiles_onto_the_cross_tile_ring() -> N
     ],
 )
 def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tuple) -> None:
-    """On H200 a deferred-scale tile on one consumer warpgroup runs twice its weight rows on
-    two warpgroups over as many K slices as keep its CTAs, a stream-K pick included; it keeps
-    its tile where that split leaves a slice under two K tiles, the paired tile does not fit,
-    or its N tiles do not pair up."""
+    """On 132 SMs a deferred-scale tile on one consumer warpgroup runs twice its weight rows
+    on two warpgroups over as many K slices as keep its CTAs, a stream-K pick included; it
+    keeps its tile where that split leaves a slice under two K tiles, the paired tile does
+    not fit, or its N tiles do not pair up."""
+    cfg = _select_config(m, n, k, 128, 132)
+    assert (cfg["block_n"], cfg["threads"], cfg["split_k"]) == tile
     test = GEMMW4A16Test(m, n, k, torch.float16)
-    op = GEMMW4A16FwdOp(target=BUILTIN)
-    test.check(op, *test.gen_inputs())
-    device = torch.device(run_device())
-    board = calibration_key(torch.cuda.get_device_name(device))
-    if board != "h200" or get_sm_count(device.index) != 132:
-        return
-    (kernel,) = [kern for kern in op.iter_kernels() if type(kern).__name__ == "GEMMW4A16Kernel"]
-    assert (kernel.config["block_n"], kernel.config["threads"], kernel.config["split_k"]) == tile
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_gemm_w4a16_two_way_stream_k_matches_the_reference() -> None:
-    """Stream-K with exactly two CTAs an N tile runs on an SM90 board whose SM count is twice an
-    odd number: there 64-row N tiles numbering half the SMs do not pair up on two warpgroups."""
-    device = torch.device(run_device())
-    sms = get_sm_count(device.index)
-    if get_sm_version(device.index) != 90 or sms % 4 != 2:
-        pytest.skip("the two-way stream runs on SM90 boards whose half SM count is odd")
-    test = GEMMW4A16Test(1, 32 * sms, 32896, torch.float16)
-    op = GEMMW4A16FwdOp(target=BUILTIN)
-    test.check(op, *test.gen_inputs())
-    (kernel,) = [kern for kern in op.iter_kernels() if type(kern).__name__ == "GEMMW4A16Kernel"]
-    assert kernel.config["stream_ctas"] == sms and kernel.config["block_n"] == 64
+    test.check(GEMMW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels

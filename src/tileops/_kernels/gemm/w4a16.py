@@ -403,7 +403,7 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
     if not legal:
         raise ValueError(f"no legal W4A16 tile for m={m}, n={n}, k={k}")
     best = min(legal, key=lambda cfg: _config_cost(m, n, k, cfg, sms))
-    # A second consumer warp on every scheduler.
+    # Half as many N tiles, each split over twice the K slices: at most the pick's CTAs.
     if best["threads"] == 128 and _defers_scale(best["block_m"]) and n % (2 * best["block_n"]) == 0:
         tiles = -(-m // best["block_m"]) * (n // best["block_n"])
         ctas = best["stream_ctas"] or tiles * best["split_k"]
