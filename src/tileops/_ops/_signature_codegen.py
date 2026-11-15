@@ -180,8 +180,6 @@ def tensorless_device(name: str, op, ctor: tuple):
     Also what ``Op._device_without_call_tensors`` answers, so a call the generated checks
     never see is placed by the same rule.
     """
-    # The `device` param, which only an op with no tensor input declares; None leaves the
-    # choice to the target.
     declared = (
         getattr(op, "device", None) if "device" in getattr(op, PARAM_NAMES_ATTRIBUTE, ()) else None
     )

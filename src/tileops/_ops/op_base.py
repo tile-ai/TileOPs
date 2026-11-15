@@ -367,14 +367,13 @@ class Op(ABC):
     # The plan of each specialization this instance has resolved, by its key
     # (``_observe``). Built empty by ``__init__``.
     _plans: dict
-    # The most plans ``_plans`` holds; the oldest is evicted past it. Calls whose shapes keep
-    # changing, such as decode steps over a growing cache, resolve a plan each.
+    # The most plans ``_plans`` holds; the oldest is evicted past it.
     _MAX_PLANS: ClassVar[int] = 256
     # The generated signature plan; None for a class without a manifest entry.
     _signature: ClassVar[object] = None
     dtype: Optional[torch.dtype] = None
-    # Whether the call checks a call's packed offsets against its tensors. Read only for an
-    # op whose signature declares packed offsets, which sets it from its constructor.
+    # Whether a call's packed offsets are checked against its tensors; set by every op whose
+    # signature declares packed offsets.
     validate_inputs: bool
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -994,7 +993,6 @@ class Op(ABC):
         """:meth:`_resolve_plan` for a key no plan is held under yet."""
         signature = type(self)._signature
         self._construction_indices = type(self)._check_construction(self)
-        # Every tensor the call passes, by signature name: what the generated checks read.
         tensors = {**dict(zip(signature.sig.inputs, inputs, strict=True)), **writes}
         call = signature.check(self, tensors)
         present = tuple(tensors.get(name) is not None for name in signature.tensor_axes)
