@@ -51,6 +51,7 @@ tileops.norm.BatchNormFwdOp.forward: parameter `running_var` default changed fro
 tileops.norm.BatchNormFwdOp.forward: parameter `running_mean` (slot 1) is required, and calls may omit it
 tileops.norm.BatchNormFwdOp.forward: parameter `running_var` (slot 2) is required, and calls may omit it
 tileops.quantization.FP8QuantPerTokenGroupFwdOp: parameter `group_size` (slot 0) is required, and calls may omit it
+tileops.quantization.FP8QuantPerTokenGroupFwdOp torch operator tileops::quantization_fp8_quant_per_token_group_fwd: removed
 tileops.rope.LongRoPEFwdOp: slot 0 was `input_layout`, is now `head_size` (POSITIONAL_OR_KEYWORD)
 tileops.rope.LongRoPEFwdOp: slot 1 was `base`, is now `rotary_dim` (POSITIONAL_OR_KEYWORD)
 tileops.rope.LongRoPEFwdOp: slot 2 was `rescale_factors`, is now `max_position_embeddings` (POSITIONAL_OR_KEYWORD)

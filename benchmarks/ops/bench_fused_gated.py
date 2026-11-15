@@ -24,13 +24,14 @@ from tileops._ops.elementwise import (
 def _profile_fused_gated(op_cls, case: bench.Case, library: str) -> None:
     op = op_cls(**case.arguments)
     flashinfer_fn = flashinfer_op(library)
-    bench.Runner(op, case).compare(
-        {
-            FLASHINFER_TAG: flashinfer_fn,
-            "torch-ref": case.torch,
-            TORCH_COMPILE_TAG: compiled_reference(case.torch),
-        }
-    )
+    implementations = {}
+    if case.arguments.get("swiglu_limit", 0.0) > 0 or any(t is not None for t in case.inputs[1:]):
+        print(f"  [skip] {FLASHINFER_TAG}: {library} clamps no input and scales no row")
+    else:
+        implementations[FLASHINFER_TAG] = lambda x, *_absent: flashinfer_fn(x)
+    implementations["torch-ref"] = case.torch
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(case.torch)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(SiLUAndMulFwdOp), ids=lambda case: case.id)

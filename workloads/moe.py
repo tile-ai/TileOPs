@@ -11,10 +11,13 @@ class FusedTopKWorkload(CallWorkload):
     """Router logits, and the optional bias, of one ``FusedTopKFwdOp`` call."""
 
     def ref_program(
-        self, gating_output: torch.Tensor, correction_bias: torch.Tensor | None = None
+        self,
+        gating_output: torch.Tensor,
+        correction_bias: torch.Tensor | None = None,
+        expert_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Score, select ``top_k`` (on the biased scores when a bias is passed) inside the best
-        expert groups, renormalize, scale."""
+        expert groups, or take ``expert_ids``; renormalize, scale."""
         p = self.call.params
         return ref_fused_topk(
             gating_output,
@@ -25,14 +28,29 @@ class FusedTopKWorkload(CallWorkload):
             p["num_expert_group"],
             p["topk_group"],
             p["routed_scaling_factor"],
+            expert_ids,
         )
 
     def verification(self, *inputs):
         from workloads.numerics import Custom
 
-        gating_output, *bias = inputs
-        correction_bias = bias[0] if bias else None
+        gating_output, *optional = inputs
+        correction_bias = optional[0] if optional else None
+        expert_ids = optional[1] if len(optional) > 1 else None
         p = self.call.params
+        if expert_ids is not None:
+            scores = ref_router_scores(gating_output, p["scoring_func"])
+
+            def validate_given(got, expected):
+                weights, ids = got[:2]
+                assert torch.equal(ids, expert_ids), "the returned experts are not the given ones"
+                selected = scores.gather(1, expert_ids.long())
+                if p["renormalize"]:
+                    selected = selected / selected.sum(-1, keepdim=True)
+                scaled = selected * p["routed_scaling_factor"]
+                torch.testing.assert_close(weights, scaled, rtol=1e-4, atol=0)
+
+            return Custom(validate_given, "the given experts and their weights")
         scale = p["routed_scaling_factor"]
         router = _Router(
             gating_output,
@@ -233,6 +251,24 @@ def ref_moe_grouped_gemm(
     return out.to(out_dtype)
 
 
+def ref_moe_grouped_gemm_mxfp4(
+    a: torch.Tensor,
+    a_scale: torch.Tensor,
+    b: torch.Tensor,
+    b_scale: torch.Tensor,
+    layout_metadata: torch.Tensor,
+    layout,
+) -> torch.Tensor:
+    """``MoEGroupedGEMMMXFP4FwdOp``'s reference: :func:`ref_moe_grouped_gemm` in float32 over
+    ``a`` under its per-128 scales and the e2m1 pairs of ``b`` under their per-32 scales,
+    rounded once to bfloat16 (DeepSeek-V4-Flash ``inference/kernel.py`` ``fp4_gemm``)."""
+    from workloads.quantization.quantize import unpack_e2m1
+
+    a_f = a.float() * a_scale.float().repeat_interleave(128, dim=-1)
+    b_f = unpack_e2m1(b) * b_scale.float().repeat_interleave(32, dim=-1)
+    return ref_moe_grouped_gemm(a_f, b_f, layout_metadata, layout, torch.bfloat16)
+
+
 class MoEGroupedGEMMWorkload(CallWorkload):
     """Expert-materialized ``a``, per-expert ``b`` and the layout's generated metadata."""
 
@@ -390,8 +426,10 @@ class MoEPostPermuteWorkload(CallWorkload):
         expert_output: torch.Tensor,
         topk_weights: torch.Tensor,
         inverse_indices: torch.Tensor,
+        residual: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """``out[t] = scale * sum_k w[t, k] * rows[inverse[t * K + k]]`` in fp32, then cast."""
+        """``out[t] = scale * sum_k w[t, k] * rows[inverse[t * K + k]] + residual[t]`` in fp32,
+        then cast."""
         p = self.call.params
         tokens, top_k = topk_weights.shape
         rows = expert_output.reshape(-1, expert_output.shape[-1])
@@ -399,6 +437,8 @@ class MoEPostPermuteWorkload(CallWorkload):
         out = (gathered * topk_weights.unsqueeze(-1)).sum(dim=1)
         if p["epilogue"] is not None:
             out = out * p["epilogue"].routed_scaling_factor
+        if residual is not None:
+            out = out + residual.float()
         dtype = expert_output.dtype if p["out_dtype"] is None else getattr(torch, p["out_dtype"])
         return out.to(dtype)
 
@@ -566,6 +606,16 @@ def ref_group_scores(select: torch.Tensor, num_groups: int, biased: bool) -> tor
     return grouped.max(dim=-1).values
 
 
+def ref_router_scores(gating_output: torch.Tensor, scoring_func: str) -> torch.Tensor:
+    """The float32 scores of router logits: softmax, sigmoid or ``sqrt(softplus(x))``."""
+    logits = gating_output.float()
+    if scoring_func == "softmax":
+        return logits.softmax(-1)
+    if scoring_func == "sigmoid":
+        return logits.sigmoid()
+    return torch.nn.functional.softplus(logits).sqrt()
+
+
 def ref_fused_topk(
     gating_output: torch.Tensor,
     correction_bias: torch.Tensor | None,
@@ -575,15 +625,20 @@ def ref_fused_topk(
     num_expert_group: int = 1,
     topk_group: int = 1,
     routed_scaling_factor: float = 1.0,
+    expert_ids: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize, scale.
 
     With ``num_expert_group > 1`` the selection is restricted to the ``topk_group`` best groups
     of :func:`ref_group_scores`, ties to the lower group index, as vLLM's ``grouped_topk``
-    torch fallback computes it in float32.
+    torch fallback computes it in float32. ``expert_ids`` replaces the selection.
     """
-    logits = gating_output.float()
-    scores = torch.softmax(logits, dim=-1) if scoring_func == "softmax" else logits.sigmoid()
+    scores = ref_router_scores(gating_output, scoring_func)
+    if expert_ids is not None:
+        topk_weights = scores.gather(1, expert_ids.long())
+        if renormalize:
+            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        return topk_weights * routed_scaling_factor, expert_ids.clone()
     select = scores if correction_bias is None else scores + correction_bias
     if num_expert_group > 1:
         group_scores = ref_group_scores(select, num_expert_group, correction_bias is not None)
@@ -622,8 +677,7 @@ class _Router:
         num_groups,
         topk_group,
     ):
-        logits = gating_output.float()
-        self.scores = logits.softmax(-1) if scoring_func == "softmax" else logits.sigmoid()
+        self.scores = ref_router_scores(gating_output, scoring_func)
         self.selection = (
             self.scores if correction_bias is None else self.scores + correction_bias.float()
         )

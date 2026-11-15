@@ -42,12 +42,16 @@ def test_fp8_quant_bench(case) -> None:
             # The op's None is float32 scales; vLLM would resolve None from DeepGEMM.
             use_ue8m0=bool(arguments["use_ue8m0"]),
         )
-        return q.view(x.shape), scale.view(*x.shape[:-1], -1)
+        scale = scale.view(*x.shape[:-1], -1).to(arguments["scale_dtype"])
+        return q.view(x.shape), scale, None
 
-    bench.Runner(op, case).compare(
-        {
-            VLLM_TAG: private_inputs(vllm_fn, case.inputs, *range(1, len(case.inputs))),
-            "torch-ref": case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
-        }
-    )
+    implementations = {}
+    if arguments["inplace"]:
+        print(f"  [skip] {VLLM_TAG}: per_token_group_quant_fp8 has no in-place fake quantization")
+    else:
+        implementations[VLLM_TAG] = private_inputs(
+            vllm_fn, case.inputs, *range(1, len(case.inputs))
+        )
+    implementations["torch-ref"] = case.reference
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(case.reference)
+    bench.Runner(op, case).compare(implementations)

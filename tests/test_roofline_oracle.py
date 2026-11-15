@@ -1203,6 +1203,100 @@ class TestSpecOnlyRecounts:
         case = {"T": "bfloat16", "C": "float32", "Cs": "float32"}
         assert _evaluated(name, row, case)[0] == (0, 0)
 
+    @pytest.mark.parametrize(
+        "scoring_func,renormalize,read",
+        [
+            ("sqrtsoftplus", True, 2),
+            ("sigmoid", False, 2),
+            ("softmax", True, 2),
+            ("softmax", False, 16),
+        ],
+    )
+    def test_fused_topk_with_given_experts_reads_their_logits(
+        self, scoring_func, renormalize, read
+    ):
+        name = "FusedTopKFwdOp"
+        row = {
+            "T": 4,
+            "E": 16,
+            "top_k": 2,
+            "scoring_func": scoring_func,
+            "renormalize": renormalize,
+            "some": ["correction_bias", "expert_ids"],
+        }
+        (_flops, moved), _call = _evaluated(name, row, {"G": "float32"})
+        # Only an unrenormalized softmax needs the whole row; the bias selects nothing.
+        assert moved == _ledger(
+            name,
+            gating_output=((4, read), _F32),
+            correction_bias_unread=True,
+            expert_ids=((4, 2), _I32),
+            topk_weights=((4, 2), _F32),
+            topk_ids=((4, 2), _I32),
+        )
+
+    @pytest.mark.parametrize("renormalize", [False, True])
+    def test_fused_topk_softmax_selecting_with_a_bias_normalizes_the_whole_row(self, renormalize):
+        row = {"T": 4, "E": 16, "top_k": 2, "scoring_func": "softmax", "renormalize": renormalize}
+        (flops, _moved), _call = _evaluated(
+            "FusedTopKFwdOp", {**row, "some": ["correction_bias"]}, {"G": "float32"}
+        )
+        # Softmax (3 per logit) and its row sum and divide (2 per logit), the bias add, top_k
+        # compare-and-selects per logit, and 2 per kept weight to renormalize.
+        assert flops == 4 * (16 * 5 + 16 + 2 * 16 + (4 if renormalize else 0))
+
+    def test_ngram_hash_leaves_an_empty_sequence_untouched(self):
+        name = "NGramHashFwdOp"
+        row = {
+            "Tt": 3,
+            "seq_lens": [0, 3],
+            "N": 3,
+            "Hd": 4,
+            "S": 5,
+            "W": 4,
+            "eos_token_id": 0,
+            "some": ["cu_seqlens", "context_indices", "num_accepted_tokens"],
+        }
+        (flops, moved), _call = _evaluated(name, row, {})
+        # Only the second sequence reads its 2 history columns and rewrites 1 + 3.
+        assert moved == _ledger(
+            name,
+            input_ids=((3,), _I64),
+            context=((1, 2), _I64),
+            context_write=((1, 4), _I64),
+            multipliers=((3,), _I64),
+            primes=((4,), _I64),
+            offsets=((4,), _I64),
+            cu_seqlens=((3,), _I32),
+            context_indices=((2,), _I32),
+            num_accepted_tokens=((2,), _I32),
+            ngram_ids=((3, 4), _I64),
+        )
+        assert flops == 0
+
+    @pytest.mark.parametrize("verify", [False, True])
+    def test_ngram_hash_moves_the_context_columns_each_sequence_reaches(self, verify):
+        name = "NGramHashFwdOp"
+        some = ["context_indices", *(["num_accepted_tokens"] if verify else [])]
+        row = {"B": 2, "L": 3, "N": 3, "Hd": 4, "S": 5, "W": 4, "eos_token_id": 0, "some": some}
+        (flops, moved), _call = _evaluated(name, row, {})
+        # Each sequence reads its N - 1 = 2 history columns of the pool's 5 x 4, and rewrites
+        # 2, or under verification the history after its first column and its 3 tokens.
+        assert moved == _ledger(
+            name,
+            input_ids=((2, 3), _I64),
+            context=((2, 2), _I64),
+            context_write=((2, 4 if verify else 2), _I64),
+            multipliers=((3,), _I64),
+            primes=((4,), _I64),
+            offsets=((4,), _I64),
+            cu_seqlens=None,
+            context_indices=((2,), _I32),
+            num_accepted_tokens=((2,), _I32) if verify else None,
+            ngram_ids=((2, 3, 4), _I64),
+        )
+        assert flops == 0
+
     def test_chain_speculative_sampling_prices_the_cheaper_outcome(self):
         name = "ChainSpeculativeSamplingFwdOp"
         batch, n, vocab = 2, 3, 10
@@ -1323,6 +1417,8 @@ HAND_WRITTEN = {
     "LongRoPEFwdOp": "it reads only the cos/sin cache rows the positions and offsets name",
     "ChainSpeculativeSamplingFwdOp": "where the chain stops is drawn at run time, so it prices the cheaper outcome",
     "GatedPoolCompressFwdOp": "the state rows it reads and the entries it writes follow the positions",
+    "NGramHashFwdOp": "it reads and rewrites only the context columns each sequence's slot reaches",
+    "FusedTopKFwdOp": "with caller-given experts it reads only their logits and no bias",
 }
 
 

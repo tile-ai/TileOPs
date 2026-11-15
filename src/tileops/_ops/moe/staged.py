@@ -358,6 +358,10 @@ class MoEPostPermuteFwdOp(Op):
     A caller-provided ``out`` must not overlap ``expert_output``, ``topk_weights``
     or ``inverse_indices``. Overlap raises ``ValueError`` before any write;
     disjoint views of one buffer are accepted.
+
+    A ``residual``, such as DeepSeek-V4-Flash's shared-expert output, is added to the
+    float32 reduction before the one cast. The in-tree kernel adds none; a call passing one
+    raises ``OpNotAvailableError`` when a kernel is selected.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -397,6 +401,7 @@ class MoEPostPermuteFwdOp(Op):
         inverse_indices: torch.Tensor,
         *,
         out: torch.Tensor | None = None,
+        residual: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Restore token order, apply routing weights, reduce top-k, and cast.
 
@@ -408,6 +413,8 @@ class MoEPostPermuteFwdOp(Op):
             inverse_indices: ``int32`` row of ``expert_output`` each route sits in,
                 $[T \\cdot K]$.
             out: Buffer $[T \\times H]$ to write the result into, or ``None``.
+            residual: $[T \\times H]$ in the dtype of ``expert_output``, added before the
+                cast, or ``None``.
 
         Returns:
             The reduced result, $[T \\times H]$, in ``out_dtype`` or else the dtype of
@@ -430,6 +437,7 @@ class MoEPostPermuteFwdOp(Op):
                 num_tokens=topk_weights.shape[0],
                 hidden_size=expert_output.shape[-1],
                 top_k=topk_weights.shape[1],
+                has_residual=residual is not None,
             ),
         )
-        return kernel(expert_output, inverse_indices, topk_weights, out=out)
+        return kernel(expert_output, inverse_indices, topk_weights, out=out, residual=residual)

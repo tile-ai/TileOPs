@@ -5,14 +5,21 @@
 SiLUAndMulFwdOp:
   # Composite expression: F.silu(gate) * value where input = [gate, value]
   # along the last dim, input.shape == (M, 2*N). No single torch.* symbol.
+  # A positive swiglu_limit clamps gate to at most it and value to within plus or minus it
+  # first (vLLM SiluAndMulWithClamp's swiglu_limit; a non-positive one clamps nothing, as in
+  # vLLM's swiglu_limit_func). scale multiplies each row before the one rounding to T, as
+  # DeepSeek-V4-Flash inference/model.py Expert.forward applies its routing weights.
   family: elementwise
   status: implemented
   ref_api: flashinfer.activation.silu_and_mul
 
   signature:
     forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
+    params:
+      swiglu_limit: {type: float, default: 0.0}
     inputs:
       input: {dtype: T, shape: "[M, 2 * N]"}
+      scale: {dtype: float32, shape: "[M]", type: "Tensor | None", default: null, kw_only: true}
     outputs:
       output: {dtype: T, shape: "[M, N]"}
 
@@ -21,12 +28,18 @@ SiLUAndMulFwdOp:
   - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "llama-8b-ffn-prefill"}
   - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "llama-8b-ffn-decode"}
   - {M: 32, N: 12288, dtype_cases: [{T: bfloat16}], label: qwen3-8b-swiglu-b32}
+  # DeepSeek-V4-Flash experts, intermediate 2048, limit 10: the routed rows of 1 and 4096
+  # tokens at top 6, scaled by their routing weights, and the shared expert's 4096 tokens.
+  - {M: 6, N: 2048, swiglu_limit: 10.0, some: [scale], dtype_cases: [{T: bfloat16}], label: dsv4-flash-routed-t1}
+  - {M: 24576, N: 2048, swiglu_limit: 10.0, some: [scale], dtype_cases: [{T: bfloat16}], label: dsv4-flash-routed-4k}
+  - {M: 4096, N: 2048, swiglu_limit: 10.0, dtype_cases: [{T: bfloat16}], label: dsv4-flash-shared-4k}
 
   roofline:
     # FLOPs: silu(gate) = gate * sigmoid(gate); sigmoid = neg + exp + add +
     # recip = 4. silu adds one mul (= 5). Final mul-by-value = 1. Total 6
-    # per output element. N output elements per row, M rows.
-    flops: "6 * M * N"
+    # per output element, plus the two clamps under a limit and the row scale.
+    # N output elements per row, M rows.
+    flops: "(6 + (2 if swiglu_limit > 0 else 0) + (1 if present(scale) else 0)) * M * N"
 
 GELUAndMulFwdOp:
   # Composite expression: F.gelu(gate, approximate=approximate) * value where

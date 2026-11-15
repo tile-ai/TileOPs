@@ -29,6 +29,8 @@ from tileops._kernels.elementwise.call_spec import (
     GELUCall,
     LeakyReLUCall,
     LeakyReLUFwdInterface,
+    SiLUAndMulCall,
+    SiLUAndMulFwdInterface,
     SoftplusCall,
     SoftplusFwdInterface,
     UnaryElementwiseFwdInterface,
@@ -102,7 +104,7 @@ class GELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     MIN_NUM_PER_THREAD = 2
 
     @classmethod
-    def refusal(cls, call: GELUCall) -> "str | None":
+    def refusal(cls, call: GELUCall) -> str | None:
         if call.approximate != "none":
             return f"evaluates the erf form, not approximate={call.approximate!r}"
         return super().refusal(call)
@@ -120,7 +122,7 @@ class GELUTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """
 
     @classmethod
-    def refusal(cls, call: GELUCall) -> "str | None":
+    def refusal(cls, call: GELUCall) -> str | None:
         if call.approximate != "tanh":
             return f"evaluates the tanh approximation, not approximate={call.approximate!r}"
         return super().refusal(call)
@@ -418,10 +420,21 @@ class SoftplusFwdKernel(MultiInputElementwiseKernel, SoftplusFwdInterface):
         return self._run(x=x)
 
 
-class SiLUAndMulFwdKernel(FusedGatedKernel):
+class SiLUAndMulFwdKernel(FusedGatedKernel, SiLUAndMulFwdInterface):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
+
+    @classmethod
+    def refusal(cls, call: SiLUAndMulCall) -> str | None:
+        if call.swiglu_limit > 0:
+            return f"does not clamp its inputs, and swiglu_limit={call.swiglu_limit}"
+        if call.has_scale:
+            return "scales no row"
+        return super().refusal(call)
+
+    def forward(self, x, scale=None):
+        return super().forward(x)
 
     @staticmethod
     def activation_func(x):
@@ -441,7 +454,7 @@ class GELUAndMulFwdKernel(FusedGatedKernel):
     SUPPORTED_DTYPES = FLOAT_DTYPES
 
     @classmethod
-    def refusal(cls, call: GELUAndMulCall) -> "str | None":
+    def refusal(cls, call: GELUAndMulCall) -> str | None:
         if call.approximate != "none":
             return f"evaluates the erf form, not approximate={call.approximate!r}"
         return super().refusal(call)
@@ -460,7 +473,7 @@ class GELUTanhAndMulFwdKernel(FusedGatedKernel):
     SUPPORTED_DTYPES = FLOAT_DTYPES
 
     @classmethod
-    def refusal(cls, call: GELUAndMulCall) -> "str | None":
+    def refusal(cls, call: GELUAndMulCall) -> str | None:
         if call.approximate != "tanh":
             return f"evaluates the tanh approximation, not approximate={call.approximate!r}"
         return super().refusal(call)

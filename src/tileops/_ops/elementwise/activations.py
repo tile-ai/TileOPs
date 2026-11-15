@@ -33,6 +33,8 @@ from tileops._kernels.elementwise.call_spec import (
     GELUCall,
     LeakyReLUCall,
     LeakyReLUFwdInterface,
+    SiLUAndMulCall,
+    SiLUAndMulFwdInterface,
     SoftplusCall,
     SoftplusFwdInterface,
 )
@@ -270,9 +272,60 @@ class SoftplusFwdOp(UnaryOp):
 
 
 class SiLUAndMulFwdOp(FusedGatedOp):
-    """SiLU-and-Mul: y = silu(gate) * value."""
+    """SiLU-and-Mul: y = silu(gate) * value.
+
+    A positive ``swiglu_limit`` first clamps ``gate`` to at most it and ``value`` to within
+    plus or minus it, and a per-row ``scale`` multiplies each row before the one rounding to
+    the input dtype, as DeepSeek-V4-Flash's experts apply their routing weights. The in-tree
+    kernel serves neither; such a call raises ``OpNotAvailableError`` when a kernel is
+    selected.
+    """
 
     kernel_types = {"silu_and_mul": SiLUAndMulFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        ELEMENTWISE: SiLUAndMulFwdInterface
+    }
+
+    def __init__(
+        self,
+        swiglu_limit: float = 0.0,
+        *,
+        target: Target = None,
+    ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            swiglu_limit: A positive bound the gate and value are clamped to; a non-positive
+                one clamps nothing.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.swiglu_limit = swiglu_limit
+        super().__init__(target=target)
+
+    def forward(self, input: torch.Tensor, *, scale: torch.Tensor | None = None) -> torch.Tensor:
+        """Run the op on ``input``.
+
+        Args:
+            input: $[M \\times 2N]$: the gate in the first ``N`` columns, the value in the rest.
+            scale: $[M]$ ``float32`` per-row multipliers, or ``None``.
+
+        Returns:
+            A new tensor $[M \\times N]$ in the dtype of ``input``.
+        """
+        input = input.contiguous()
+        kernel = self.kernel_for(
+            ELEMENTWISE,
+            lambda: SiLUAndMulCall(
+                device=input.device,
+                m=input.shape[0],
+                n=input.shape[1] // 2,
+                dtype=input.dtype,
+                swiglu_limit=self.swiglu_limit,
+                has_scale=scale is not None,
+            ),
+        )
+        return kernel(input, scale)
 
 
 class GELUAndMulFwdOp(FusedGatedOp):

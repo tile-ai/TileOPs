@@ -55,6 +55,7 @@ __all__ = [
     "moe_layout_rows",
     "moe_post_permute_roofline",
     "moe_slab_bytes",
+    "ngram_hash_roofline",
     "nsa_closed_chunk_pairs",
     "nsa_compressed_fwd_varlen_roofline",
     "nsa_fwd_varlen_roofline",
@@ -95,12 +96,13 @@ def _elem_bytes(call: CallView, name: str) -> int:
 
 
 def moe_post_permute_roofline(call) -> tuple[int, int]:
-    """One multiply-add per route and hidden element, and a scale per output element when the
-    routing epilogue carries a factor other than one; each tensor moves once."""
+    """One multiply-add per route and hidden element, a scale per output element when the
+    routing epilogue carries a factor other than one, and an add per output element with a
+    residual; each tensor moves once."""
     t, k, h = call.indices["T"], call.indices["K"], call.indices["H"]
     epilogue = call.indices["epilogue"]
     scaled = epilogue is not None and epilogue.routed_scaling_factor != 1.0
-    flops = 2 * t * k * h + (t * h if scaled else 0)
+    flops = 2 * t * k * h + (t * h if scaled else 0) + (t * h if call.present("residual") else 0)
     return flops, _derived_bytes(call)
 
 
@@ -1379,6 +1381,28 @@ def rope_cos_sin_roofline(call: CallView) -> tuple[int, int]:
         if call.member(metadata) == "Tensor":
             moved += call.bytes(metadata)
     return 3 * tokens * indices["H"] * rotated, moved
+
+
+def ngram_hash_roofline(call: CallView) -> tuple[int, int]:
+    """Integer hashing only. The context row of each sequence with tokens is read at its N - 1
+    history columns and written at the columns the call rewrites: N - 1, or with
+    ``num_accepted_tokens`` N - 2 plus the sequence's tokens. Every other tensor moves once."""
+    indices = call.indices
+    n = indices["N"]
+    if call.present("cu_seqlens"):
+        bounds = call.metadata_values("cu_seqlens")
+        sequences = sum(1 for a, b in zip(bounds, bounds[1:], strict=False) if b > a)
+        tokens = indices["Tt"]
+    else:
+        sequences = indices["B"] if indices["L"] > 0 else 0
+        tokens = sequences * indices["L"]
+    if call.present("num_accepted_tokens"):
+        written = sequences * (n - 2) + tokens
+    else:
+        written = sequences * (n - 1)
+    moved = sum(call.bytes(t) for t in call.tensors if t != "context")
+    moved += (sequences * (n - 1) + written) * _elem_bytes(call, "context")
+    return 0, moved
 
 
 # ---------------------------------------------------------------- sampling

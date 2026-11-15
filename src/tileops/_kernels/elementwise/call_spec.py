@@ -51,6 +51,8 @@ __all__ = [
     "ReciprocalFwdInterface",
     "RoundCall",
     "RoundFwdInterface",
+    "SiLUAndMulCall",
+    "SiLUAndMulFwdInterface",
     "SinusoidalCall",
     "SinusoidalFwdInterface",
     "SoftplusCall",
@@ -116,6 +118,15 @@ class FusedGatedCall(CallSpec):
     m: int = 0
     n: int = 0
     dtype: torch.dtype = torch.float16
+
+
+@dataclasses.dataclass(frozen=True)
+class SiLUAndMulCall(FusedGatedCall):
+    """A SiLU-and-Mul call: ``swiglu_limit`` is the op's construction parameter, and
+    ``has_scale`` whether a per-row scale is passed."""
+
+    swiglu_limit: float = 0.0
+    has_scale: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -501,6 +512,28 @@ class FusedGatedFwdInterface(KernelInterface):
         Args:
             x: ``(call.m, 2 * call.n)`` in ``call.dtype`` on ``call.device``, contiguous
                 and row-major.
+
+        Returns:
+            A new contiguous ``(call.m, call.n)`` tensor on ``call.device``, in ``call.dtype``.
+        """
+
+
+class SiLUAndMulFwdInterface(FusedGatedFwdInterface):
+    """``silu(gate) * value`` of each row, its inputs clamped and its result scaled per row."""
+
+    request = SiLUAndMulCall
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, scale: torch.Tensor | None = None) -> torch.Tensor:
+        """Return ``silu(g) * u * scale[:, None]`` in float32, rounded once to ``call.dtype``.
+
+        ``g = x[:, :n]`` and ``u = x[:, n:]``; a positive ``call.swiglu_limit`` clamps ``g``
+        to at most it and ``u`` to within plus or minus it first. Nothing is written in place.
+
+        Args:
+            x: ``(call.m, 2 * call.n)`` in ``call.dtype`` on ``call.device``, contiguous
+                and row-major.
+            scale: ``float32`` ``(call.m,)``, passed exactly when ``call.has_scale``.
 
         Returns:
             A new contiguous ``(call.m, call.n)`` tensor on ``call.device``, in ``call.dtype``.

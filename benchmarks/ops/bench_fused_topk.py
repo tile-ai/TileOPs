@@ -26,6 +26,10 @@ def test_fused_topk_bench(case) -> None:
     gating_output, *bias = case.inputs
     correction_bias = bias[0] if bias else None
     op = FusedTopKFwdOp(**case.arguments)
+    if len(case.inputs) == 3:
+        # No vLLM router takes each token's experts from the caller.
+        bench.Runner(op, case).compare({})
+        return
     top_k, scoring_func, renormalize = op.top_k, op.scoring_func, op.renormalize
     num_tokens = gating_output.shape[0]
 

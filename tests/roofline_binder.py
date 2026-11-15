@@ -50,6 +50,16 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
 
     body = {"__init__": construct}
     body["forward"] = lambda self, *args: None
+    if "output" in _SLAB_ROWS.get(op_name, ()):
+
+        def eval_roofline_read_bytes(self):
+            # A masked slab writes only the valid rows of `output`, as an implementation of
+            # the grouped MoE GEMM states in its own override.
+            from tileops._perf.formulas import moe_slab_bytes
+
+            return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
+
+        body["eval_roofline_read_bytes"] = eval_roofline_read_bytes
     cls = type(f"Signature{op_name}", (Op,), body)
     if not install(cls, entry):
         raise ValueError(f"{op_name}: the signature does not generate")
@@ -60,11 +70,13 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
 _EXPERT_WEIGHTS = {
     "MoEGroupedGEMMFwdOp": ("b", "bias"),
     "MoEGroupedGEMMFP8FwdOp": ("b", "b_scale"),
+    "MoEGroupedGEMMMXFP4FwdOp": ("b", "b_scale"),
     "MoEExpertMLPFwdOp": ("w_gate_up", "w_down", "b_gate_up", "b_down"),
 }
 _SLAB_ROWS = {
     "MoEGroupedGEMMFwdOp": ("a", "output"),
     "MoEGroupedGEMMFP8FwdOp": ("a", "a_scale", "output"),
+    "MoEGroupedGEMMMXFP4FwdOp": ("a", "a_scale", "output"),
     "MoEExpertMLPFwdOp": ("expert_input", "output"),
 }
 

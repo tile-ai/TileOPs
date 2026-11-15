@@ -17,8 +17,11 @@ def _private_output(op, case) -> Implementation:
 
 
 def _topk_inputs(workload) -> tuple:
-    """The router logits, and the correction bias only where the call passes one."""
-    gating_output, correction_bias = workload.gen_inputs()
+    """The router logits, the correction bias only where the call passes one or given experts,
+    and the given experts only where the call passes them."""
+    gating_output, correction_bias, expert_ids = workload.gen_inputs()
+    if expert_ids is not None:
+        return gating_output, correction_bias, expert_ids
     return (gating_output,) if correction_bias is None else (gating_output, correction_bias)
 
 

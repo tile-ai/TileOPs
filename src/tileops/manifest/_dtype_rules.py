@@ -28,11 +28,14 @@ _DTYPES: dict[str, tuple[int, str]] = {
     "float8_e4m3": (8, "float"),
     "float8_e5m2fnuz": (8, "float"),
     "float8_e4m3fnuz": (8, "float"),
+    # Power-of-two scales: an 8-bit exponent, no sign, no mantissa.
+    "float8_e8m0fnu": (8, "float"),
+    # Two e2m1 values per element. A tensor holds it in a `uint8` carrier; this name is the
+    # logical dtype a dtype parameter states (docs/design/manifest.md § Dtypes).
+    "float4_e2m1fn_x2": (8, "float"),
 }
 
 DTYPE_BITS: dict[str, int] = {name: bits for name, (bits, _) in _DTYPES.items()}
 # 'bool', 'int', 'float' or 'complex'.
 DTYPE_CATEGORY: dict[str, str] = {name: kind for name, (_, kind) in _DTYPES.items()}
-FLOAT8_DTYPES: frozenset[str] = frozenset(
-    name for name, (bits, kind) in _DTYPES.items() if bits == 8 and kind == "float"
-)
+FLOAT8_DTYPES: frozenset[str] = frozenset(name for name in _DTYPES if name.startswith("float8_"))

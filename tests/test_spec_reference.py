@@ -26,11 +26,12 @@ from tileops._ops._signature_codegen import leaves
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._workload import TensorSpec, instantiate
-from workloads import sampling
+from workloads import moe, sampling
 from workloads.attention.gated_pool_compress import gated_pool_compress
 from workloads.attention.merge_states import MergeAttentionStatesWorkload
 from workloads.quantization import int8_dequant
 from workloads.quantization import quantize as quantization
+from workloads.sequence_modeling import hc_head, ngram_hash
 
 pytestmark = pytest.mark.smoke
 
@@ -68,6 +69,18 @@ _int4_per_group = _outputs(
     group_size="group_size",
 )
 _smooth_quant = _outputs(("q", "scale"), quantization.smooth_quant, "x", "smooth")
+
+
+def _fp4_per_group(p, t):
+    result = quantization.fp4_quant_per_group(
+        t["x"], p["block_size"], p["inplace"], p["scale_dtype"]
+    )
+    q, scale, output = result
+    if p["inplace"]:
+        assert q is None and scale is None and output is t["x"]
+        return {"output": output}
+    assert output is None
+    return {"q": q, "scale": scale}
 
 
 # ---------------------------------------------------------------- sampling
@@ -315,6 +328,57 @@ def _gated_pool_compress(p, t):
     return {"entries": entries, "valid": valid}
 
 
+# ---------------------------------------------------------------- moe
+
+
+def _moe_grouped_gemm_mxfp4(p, t):
+    names = ("a", "a_scale", "b", "b_scale", "layout_metadata")
+    return {"output": moe.ref_moe_grouped_gemm_mxfp4(*(t[n] for n in names), p["layout"])}
+
+
+# ---------------------------------------------------------------- sequence modeling
+
+
+def _hyper_connection_pre(p, t):
+    # vllm.model_executor.kernels.mhc.torch.mhc_pre_torch
+    residual, fn, scale, base = t["residual"], t["fn"], t["hc_scale"], t["hc_base"]
+    n, c = residual.shape[-2:]
+    x = residual.flatten(-2).float()
+    mixes = (x @ fn.T) * torch.rsqrt(x.square().mean(-1, keepdim=True) + p["rms_eps"])
+    pre = torch.sigmoid(mixes[..., :n] * scale[0] + base[:n]) + p["hc_pre_eps"]
+    post = torch.sigmoid(mixes[..., n : 2 * n] * scale[1] + base[n : 2 * n])
+    comb = mixes[..., 2 * n :].unflatten(-1, (n, n)) * scale[2] + base[2 * n :].view(n, n)
+    eps = p["hc_sinkhorn_eps"]
+    comb = comb.softmax(-1) + eps
+    comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    for _ in range(p["sinkhorn_repeat"] - 1):
+        comb = comb / (comb.sum(-1, keepdim=True) + eps)
+        comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    layer_input = (pre.unsqueeze(-1) * residual.float()).sum(-2).to(torch.bfloat16)
+    post_mix = (post * p["hc_post_mult_value"]).unsqueeze(-1)
+    return {"post_mix": post_mix, "comb_mix": comb, "layer_input": layer_input}
+
+
+def _hyper_connection_post(p, t):
+    # vllm.model_executor.kernels.mhc.torch.mhc_post_torch
+    x, residual = t["x"], t["residual"]
+    mixed = torch.einsum("...ij,...ih->...jh", t["comb_res_mix"].float(), residual.float())
+    out = t["post_layer_mix"].float() * x.unsqueeze(-2).float() + mixed
+    return {"output": out.to(residual.dtype)}
+
+
+def _hyper_connection_head(p, t):
+    names = ("hidden_states", "hc_fn", "hc_scale", "hc_base")
+    return {"output": hc_head(*(t[n] for n in names), p["rms_norm_eps"], p["hc_eps"])}
+
+
+def _ngram_hash(p, t):
+    names = ("input_ids", "context", "multipliers", "primes", "offsets")
+    optional = ("cu_seqlens", "context_indices", "num_accepted_tokens")
+    ids = ngram_hash(*(t[n] for n in names), p["eos_token_id"], *(t[n] for n in optional))
+    return {"ngram_ids": ids}
+
+
 # ---------------------------------------------------------------- indexing
 
 
@@ -479,6 +543,12 @@ REFERENCES = {
     "ConcatFwdOp": (_concat, _narrow_element("tensors", 1, 0)),
     "GatedPoolCompressFwdOp": (_gated_pool_compress, _narrow("ape")),
     "NSAVarlenFwdOp": (_nsa_varlen, _narrow("v")),
+    "FP4QuantPerGroupFwdOp": (_fp4_per_group, _narrow("x")),
+    "MoEGroupedGEMMMXFP4FwdOp": (_moe_grouped_gemm_mxfp4, _narrow("b_scale")),
+    "HyperConnectionPreFwdOp": (_hyper_connection_pre, _narrow("hc_base")),
+    "HyperConnectionPostFwdOp": (_hyper_connection_post, _narrow("comb_res_mix")),
+    "HyperConnectionHeadFwdOp": (_hyper_connection_head, _narrow("hc_base")),
+    "NGramHashFwdOp": (_ngram_hash, _narrow("offsets")),
 }
 
 
@@ -553,7 +623,7 @@ def test_reference_agrees_with_the_signature(name):
         inputs = {n: host[n] for n in plan.sig.inputs}
         with _Writes() as writes:
             outputs = reference(call.arguments(), inputs)
-        declared = {n: call.tensors[n] for n in plan.sig.outputs}
+        declared = {n: call.tensors[n] for n in plan.sig.outputs if n in call.tensors}
         got = {n: (tuple(v.shape), str(v.dtype).removeprefix("torch.")) for n, v in outputs.items()}
         assert got == {n: (tuple(s), d) for n, (s, d) in declared.items()}, where
         written = {
