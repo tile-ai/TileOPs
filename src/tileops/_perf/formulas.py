@@ -25,6 +25,7 @@ __all__ = [
     "dsa_distinct_kv_rows",
     "dsa_paged_fwd_roofline",
     "dsa_selected_keys",
+    "embedding_roofline",
     "fft_c2c_roofline",
     "fp8_lightning_indexer_roofline",
     "fused_moe_active_experts",
@@ -63,6 +64,7 @@ __all__ = [
     "paged_kv_cache_gather_roofline",
     "paged_kv_cache_write_roofline",
     "pool_roofline",
+    "rope_cos_sin_roofline",
     "routed_active_experts",
     "routed_expert_mlp_roofline",
     "top_k_mask_roofline",
@@ -1247,6 +1249,56 @@ def fused_qk_norm_rope_roofline(call: "CallView") -> tuple[int, int]:
         * _elem_bytes(call, "cos_sin_cache")
     )
     return flops, moved
+
+
+# ---------------------------------------------------------------- indexing and rope
+
+
+def embedding_roofline(call: "CallView") -> tuple[int, int]:
+    """Row lookup: the indices, each distinct row they name once, and the output. With
+    ``max_norm``, the ``norm_type`` norm of each distinct row and a compare, priced at the
+    cheaper outcome where no row exceeds it and none is written back: per value 2 (abs or
+    square, accumulate), 3 for a general p (abs, power, accumulate); a root per row except
+    for p = 1 and p = inf."""
+    d, p = call.indices["D"], call.indices["norm_type"]
+    ids = call.metadata_values("input")
+    pending, flat = [ids], []
+    while pending:
+        item = pending.pop()
+        if isinstance(item, list):
+            pending.extend(item)
+        else:
+            flat.append(item)
+    rows = len(set(flat))
+    flops = 0
+    if call.indices["max_norm"] is not None:
+        per_value = 2 if p in (1.0, 2.0, float("inf")) else 3
+        per_row = 1 + (0 if p in (1.0, float("inf")) else 1)
+        flops = rows * (per_value * d + per_row)
+    moved = call.bytes("input") + rows * d * _elem_bytes(call, "weight") + call.bytes("output")
+    return flops, moved
+
+
+def rope_cos_sin_roofline(call: "CallView") -> tuple[int, int]:
+    """3 per rotated value. Out of place every value of x is read and written; in place only
+    the rotated columns. cos and sin are read on the rows the sequences reach: S dense, the
+    longest sequence packed, none when there is nothing to rotate."""
+    indices = call.indices
+    rotated = 2 * indices["Rh"]
+    if call.present("cu_seqlens"):
+        bounds = call.metadata_values("cu_seqlens")
+        tokens = indices["Tt"]
+        rows = max((b - a for a, b in zip(bounds, bounds[1:], strict=False)), default=0)
+    else:
+        tokens, rows = indices["B"] * indices["S"], indices["S"]
+    if tokens * indices["H"] == 0:
+        rows = 0
+    width = rotated if indices["inplace"] else indices["D"]
+    moved = 2 * tokens * indices["H"] * width * _elem_bytes(call, "x")
+    moved += rows * indices["Rh"] * (_elem_bytes(call, "cos") + _elem_bytes(call, "sin"))
+    if call.present("cu_seqlens"):
+        moved += call.bytes("cu_seqlens")
+    return 3 * tokens * indices["H"] * rotated, moved
 
 
 # ---------------------------------------------------------------- sampling

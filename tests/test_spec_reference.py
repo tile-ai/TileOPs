@@ -264,6 +264,78 @@ def _paged_kv_cache_gather(p, t):
     return {"output": out}
 
 
+# ---------------------------------------------------------------- indexing
+
+
+def _embedding(p, t):
+    params = ("padding_idx", "max_norm", "norm_type", "scale_grad_by_freq", "sparse")
+    return {"output": F.embedding(t["input"], t["weight"], **{k: p[k] for k in params})}
+
+
+def _masked_scatter(p, t):
+    return {"output": torch.masked_scatter(t["input"], t["mask"], t["source"])}
+
+
+# ---------------------------------------------------------------- norm
+
+
+def _rms_norm_gated(p, t):
+    # mamba_ssm.ops.triton.layernorm_gated.rms_norm_ref
+    x, z, weight, bias = t["x"], t["z"], t["weight"], t["bias"]
+    n = x.shape[-1]
+    group = n if p["group_size"] is None else p["group_size"]
+    if (
+        weight.shape != (n,)
+        or (bias is not None and bias.shape != (n,))
+        or (z is not None and z.shape != x.shape)
+        or group <= 0
+        or n % group
+    ):
+        raise ValueError("weight, bias, z and group_size must match x")
+    h = x.float()
+    gate = F.silu(z.float()) if z is not None else None
+    if gate is not None and not p["norm_before_gate"]:
+        h = h * gate
+    g = h.unflatten(-1, (n // group, group))
+    h = (g * (1 / torch.sqrt(g.square().mean(-1, keepdim=True) + p["eps"]))).flatten(-2)
+    h = h * weight.float()
+    if bias is not None:
+        h = h + bias.float()
+    if gate is not None and p["norm_before_gate"]:
+        h = h * gate
+    return {"output": h.to(x.dtype)}
+
+
+# ---------------------------------------------------------------- rope
+
+
+def _rope_cos_sin(p, t):
+    # flash_attn.layers.rotary.apply_rotary_emb with an integer seqlen_offsets
+    x, cos, sin, cu = t["x"], t["cos"], t["sin"], t["cu_seqlens"]
+    if cos.shape != sin.shape or 2 * cos.shape[-1] > x.shape[-1]:
+        raise ValueError("cos and sin must share a shape of at most half the head")
+    r, off = 2 * cos.shape[-1], p["seqlen_offsets"]
+    if cu is None:
+        rows = torch.arange(x.shape[1]) + off
+        c, s = cos[rows][None, :, None].float(), sin[rows][None, :, None].float()
+    else:
+        bounds = cu.tolist()
+        rows = torch.cat(
+            [torch.arange(e - a) + off for a, e in zip(bounds, bounds[1:], strict=False)]
+        )
+        c, s = cos[rows][:, None].float(), sin[rows][:, None].float()
+    h = x[..., :r].float()
+    if p["interleaved"]:
+        x1, x2 = h[..., 0::2], h[..., 1::2]
+        rotated = torch.stack((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1).flatten(-2)
+    else:
+        x1, x2 = h.chunk(2, dim=-1)
+        rotated = torch.cat((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1)
+    out = x if p["inplace"] else x.clone()
+    out[..., :r] = rotated.to(x.dtype)
+    return {"output": out}
+
+
 # ---------------------------------------------------------------- entries
 
 
@@ -280,6 +352,13 @@ def _narrow(name, axis=-1):
 def _unsqueeze(name):
     def edit(tensors):
         tensors[name] = tensors[name][None]
+
+    return edit
+
+
+def _as_float(name):
+    def edit(tensors):
+        tensors[name] = tensors[name].float()
 
     return edit
 
@@ -322,6 +401,10 @@ REFERENCES = {
     "MergeAttentionStatesFwdOp": (_merge_attention_states, _narrow("v_b")),
     "DSAPagedFwdOp": (_dsa_paged, _narrow("kv_cache")),
     "PagedKVCacheGatherFwdOp": (_paged_kv_cache_gather, _narrow("out")),
+    "EmbeddingFwdOp": (_embedding, _as_float("input")),
+    "MaskedScatterFwdOp": (_masked_scatter, _narrow("mask", 0)),
+    "RMSNormGatedFwdOp": (_rms_norm_gated, _narrow("weight")),
+    "RoPECosSinFwdOp": (_rope_cos_sin, _narrow("sin")),
 }
 
 

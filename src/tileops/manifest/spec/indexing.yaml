@@ -1,0 +1,64 @@
+# indexing.yaml -- manifest entries for the 'indexing' family.
+#
+# Ops that gather, scatter or join tensor elements by index or mask.
+
+EmbeddingFwdOp:
+  # output[*S, :] = weight[input[*S], :]. `padding_idx`, `scale_grad_by_freq` and `sparse`
+  # change only the gradient. With `max_norm`, each row `input` names whose `norm_type`
+  # norm exceeds `max_norm` is rescaled to `max_norm` in `weight` before the lookup.
+  family: indexing
+  status: spec-only
+  ref_api: torch.nn.functional.embedding
+  signature:
+    forall: {S: Shape, V: Dim, D: Dim, I: "DType[int32 | int64]", T: "DType[float16 | bfloat16 | float32]"}
+    params:
+      padding_idx: {type: "int | None", default: null}
+      max_norm: {type: "float | None", default: null}
+      norm_type: {type: float, default: 2.0}
+      scale_grad_by_freq: {type: bool, default: false}
+      sparse: {type: bool, default: false}
+      validate_inputs: {type: bool, default: false, kw_only: true}
+    inputs:
+      input: {dtype: I, shape: "[*S]", values: "random_ids(prod(S[:-1]), S[-1], V)", requires: ["in_range(0, V)"]}
+      weight: {dtype: T, shape: "[V, D]", mutated: "present(max_norm)"}
+    outputs:
+      output: {dtype: T, shape: "[*S, D]"}
+    shape_rules:
+    - "not present(padding_idx) or (padding_idx.value < V if padding_idx.value > 0 else padding_idx.value >= -V)"
+  workloads:
+  - {S: [1, 4096], V: 248320, D: 5120, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.6-27b-prefill}
+  - {S: [1, 32768], V: 248320, D: 5120, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.6-27b-prefill-32k}
+  - {S: [64, 1], V: 248320, D: 5120, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.6-27b-decode-b64}
+  - {S: [1, 4096], V: 128256, D: 4096, dtype_cases: [{I: int32, T: float16}, {I: int64, T: bfloat16}], label: llama3-8b-prefill}
+  - {S: [4, 4096], V: 2304, D: 1152, dtype_cases: [{I: int64, T: float32}], label: qwen3.6-vision-pos}
+  - {S: [32, 512], V: 50000, D: 512, max_norm: 1.0, dtype_cases: [{I: int64, T: float32}], label: max-norm}
+  roofline:
+    # Each distinct row `input` names is read once.
+    func: "tileops._perf.formulas.embedding_roofline"
+
+MaskedScatterFwdOp:
+  # Out of place: output = input broadcast with mask, whose true positions take the
+  # elements of source in row-major order. The caller passes a source holding at least as
+  # many elements as mask has true positions after broadcasting.
+  family: indexing
+  status: spec-only
+  ref_api: torch.masked_scatter
+  signature:
+    forall: {A: Shape, M: Shape, R: Shape, T: "DType[float16 | bfloat16 | float32]"}
+    inputs:
+      input: {dtype: T, shape: "[*A]"}
+      mask: {dtype: bool, shape: "[*M]"}
+      source: {dtype: T, shape: "[*R]"}
+    outputs:
+      output: {dtype: T, shape: "[*broadcast(A, M)]"}
+  workloads:
+  # Qwen3.6-27B image prompts: vision embeddings written into the text embedding rows of
+  # the image placeholder tokens. The mask is random, so source holds a row per token.
+  - {A: [4096, 5120], M: [4096, 1], R: [4096, 5120], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-image-4k}
+  - {A: [16384, 5120], M: [16384, 1], R: [16384, 5120], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-image-16k}
+  - {A: [3000, 4096], M: [3000, 1], R: [3000, 4096], dtype_cases: [{T: float16}, {T: float32}], label: llava-image-3k}
+  roofline:
+    # Priced at the cheaper outcome of an all-false mask (input's distinct elements) or an
+    # all-true one (a source element per output element).
+    flops: "0"
+    bytes: "bytes(mask) + bytes(output) + min((bytes(input), bytes(output)))"

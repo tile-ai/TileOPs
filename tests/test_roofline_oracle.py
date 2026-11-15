@@ -921,6 +921,106 @@ class TestSpecOnlyRecounts:
         )
         assert flops == 5 * 4 * (4 * 8 + 3 * 4)
 
+    @pytest.mark.parametrize(
+        "max_norm,norm_type,flops_per_row",
+        [
+            (None, 2.0, 0),
+            (1.0, 2.0, 2 * 4 + 2),
+            (1.0, 1.0, 2 * 4 + 1),
+            (1.0, float("inf"), 2 * 4 + 1),
+            (1.0, 3.0, 3 * 4 + 2),
+        ],
+    )
+    def test_embedding_reads_the_named_rows_once(self, max_norm, norm_type, flops_per_row):
+        name = "EmbeddingFwdOp"
+        row = {"S": [2, 3], "V": 10, "D": 4, "max_norm": max_norm, "norm_type": norm_type}
+        ids = [[1, 7, 1], [7, 2, 2]]  # rows 1, 2 and 7
+        (flops, moved), _call = _evaluated(name, row, {"I": "int64", "T": "float32"}, input=ids)
+        assert moved == _ledger(
+            name,
+            input=((2, 3), _I64),
+            weight=((3, 4), _F32),
+            output=((2, 3, 4), _F32),
+        )
+        # With max_norm, a norm per distinct row; no row is written back at the cheaper outcome.
+        assert flops == 3 * flops_per_row
+
+    def test_embedding_prices_a_scalar_index(self):
+        from types import SimpleNamespace
+
+        from tileops._perf.formulas import embedding_roofline
+
+        sizes = {"input": 8, "weight": 10 * 4 * 4, "output": 4 * 4}
+        call = SimpleNamespace(
+            indices={"D": 4, "norm_type": 2.0, "max_norm": None},
+            tensors={"input": ((), "int64"), "weight": ((10, 4), "float32")},
+            metadata_values=lambda name: 3,
+            bytes=sizes.__getitem__,
+        )
+        assert embedding_roofline(call) == (0, 8 + 4 * 4 + 4 * 4)
+
+    @pytest.mark.parametrize("broadcast", [False, True])
+    def test_masked_scatter_prices_the_cheaper_mask_outcome(self, broadcast):
+        name = "MaskedScatterFwdOp"
+        a = [1, 4] if broadcast else [6, 4]
+        row = {"A": a, "M": [6, 1], "R": [6, 4]}
+        (flops, moved), _call = _evaluated(name, row, {"T": "bfloat16"})
+        assert moved == _ledger(
+            name,
+            input=((*a,), _BF16),  # the cheaper outcome: an all-false mask
+            mask=((6, 1), torch.bool),
+            source_unread=True,
+            output=((6, 4), _BF16),
+        )
+        assert flops == 0
+
+    @pytest.mark.parametrize(
+        "row,case",
+        [
+            (
+                {"B": 2, "S": 3, "H": 2, "D": 8, "P": 6, "Rh": 2},
+                {"T": "bfloat16", "C": "float32", "Cs": "float32"},
+            ),
+            (
+                {
+                    "Tt": 5,
+                    "H": 2,
+                    "D": 8,
+                    "P": 6,
+                    "Rh": 2,
+                    "seq_lens": [3, 2],
+                    "max_seqlen": 3,
+                    "inplace": True,
+                    "some": ["cu_seqlens"],
+                },
+                {"T": "bfloat16", "C": "float32", "Cs": "bfloat16", "I": "int32"},
+            ),
+        ],
+    )
+    def test_rope_cos_sin_reads_the_rows_the_sequences_reach(self, row, case):
+        name = "RoPECosSinFwdOp"
+        (flops, moved), _call = _evaluated(name, row, case)
+        packed = "cu_seqlens" in row.get("some", [])
+        tokens, rows = (5, 3) if packed else (6, 3)
+        x = ((tokens, 2, 4 if packed else 8), _BF16)  # in place, only the 4 rotated columns
+        sin = torch.bfloat16 if packed else _F32
+        assert moved == _ledger(
+            name,
+            x=x,
+            x_write=x if packed else None,
+            cos=((rows, 2), _F32),
+            sin=((rows, 2), sin),
+            cu_seqlens=((3,), _I32) if packed else None,
+            output=None if packed else x,  # in place, the output is x
+        )
+        assert flops == 3 * tokens * 2 * 4
+
+    def test_rope_cos_sin_reads_no_table_row_when_nothing_rotates(self):
+        name = "RoPECosSinFwdOp"
+        row = {"B": 0, "S": 3, "H": 2, "D": 8, "P": 6, "Rh": 2}
+        case = {"T": "bfloat16", "C": "float32", "Cs": "float32"}
+        assert _evaluated(name, row, case)[0] == (0, 0)
+
     def test_chain_speculative_sampling_prices_the_cheaper_outcome(self):
         name = "ChainSpeculativeSamplingFwdOp"
         batch, n, vocab = 2, 3, 10
@@ -1030,6 +1130,9 @@ HAND_WRITTEN = {
     "MLAKVCacheWriteFwdOp": "only the tokens `slot_mapping` gives a slot are read and written",
     "PagedKVCacheGatherFwdOp": "it reads the cache rows each request's range reaches, not the pool",
     "FusedQKNormRoPEFwdOp": "it leaves the v columns untouched and reads only the named cos/sin rows",
+    "EmbeddingFwdOp": "it reads the weight rows its indices name, not the table",
+    "MaskedScatterFwdOp": "each output element reads input or source, as the mask decides",
+    "RoPECosSinFwdOp": "it reads the cos/sin rows the sequences reach, and in place only the rotated columns",
     "ChainSpeculativeSamplingFwdOp": "where the chain stops is drawn at run time, so it prices the cheaper outcome",
 }
 
