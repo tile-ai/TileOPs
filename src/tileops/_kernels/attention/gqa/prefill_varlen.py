@@ -378,6 +378,9 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
     def refusal(cls, call) -> "str | None":
         if call.is_fp8:
             return "does not serve FP8"
+        # The score GEMM contracts the head dim in MMA steps of 16.
+        if call.dim % 16:
+            return f"requires a head dim that is a multiple of 16, got {call.dim}"
         return super().refusal(call)
 
     def _make_kernel(self) -> Callable:
