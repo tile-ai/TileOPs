@@ -750,6 +750,20 @@ def test_a_builder_must_return_something_callable():
         RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(*_inputs())
 
 
+def test_a_builder_returning_no_kernel_is_named_though_no_binding_is_in_place():
+    """The refusal names the builder the call ran, so it holds with no binding in place, as
+    after a concurrent call that failed cleared it."""
+
+    def not_a_kernel(*inputs, **params):
+        return "not a kernel"
+
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+    x, weight = _inputs()
+    assert op._serving_target is None
+    with pytest.raises(OpNotAvailableError, match="not_a_kernel"):
+        op._run_on_target(not_a_kernel, (x, weight), {}, None, None, x.device)
+
+
 def test_params_are_this_ops_manifest_params_and_not_an_inherited_set():
     """A subclass with no manifest entry of its own hands a backend nothing."""
 
