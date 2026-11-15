@@ -99,7 +99,10 @@ class _Encoder:
     def encode(self, value: object) -> str:
         """*value* as text."""
         kind = type(value)
-        if value is None or kind in (bool, int, float, str):
+        if kind is int:
+            # Hexadecimal has no digit limit, where `repr` refuses a long integer.
+            return f"int:{value:x}"
+        if value is None or kind in (bool, float, str):
             return f"{kind.__name__}:{value!r}"
         if kind in (torch.dtype, torch.device):
             return f"{kind.__name__}:{value}"
