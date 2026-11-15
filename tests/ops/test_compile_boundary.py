@@ -599,8 +599,8 @@ def _other_cases():
         return HadamardTransformFwdOp(), (x,)
 
     def fp8_quant():
-        x = torch.randn(1, 64, 1, 64, dtype=torch.float16, device=run_device())
-        return FP8QuantPerTokenGroupFwdOp(), (x,)
+        x = torch.randn(64, 256, dtype=torch.float16, device=run_device())
+        return FP8QuantPerTokenGroupFwdOp(128), (x,)
 
     def fp8_quant_per_block():
         return FP8QuantPerBlockFwdOp(), FP8QuantPerBlockWorkload(

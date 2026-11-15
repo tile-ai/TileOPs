@@ -50,6 +50,7 @@ _FAMILIES = (
     "moe",
     "norm",
     "pool",
+    "quantization",
 )
 
 

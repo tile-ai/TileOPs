@@ -5,29 +5,44 @@
 # by zero. A scale is the dequantization multiplier: x ~= q * scale.
 
 FP8QuantPerTokenGroupFwdOp:
+  # Each group of group_size adjacent columns of the last axis is scaled by its absolute
+  # maximum, floored at eps, over the float8_e4m3fn maximum. With out_q the codes are written
+  # there and q is out_q. dtype None is the platform's fp8, float8_e4m3fn on CUDA.
   family: quantization
   status: implemented
   ref_api: vllm.model_executor.layers.quantization.utils.fp8_utils.per_token_group_quant_fp8
 
   signature:
-    forall: {batch: Dim, seq_len_kv: Dim, kv_group: Dim, index_dim: Dim, T: "DType[float16 | bfloat16 | float32]"}
+    forall: {S: Shape, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
+    params:
+      group_size: {type: int}
+      eps: {type: float, default: 1.0e-10}
+      dtype: {type: "float8_e4m3fn | None", default: null}
+      column_major_scales: {type: bool, default: false}
+      tma_aligned_scales: {type: bool, default: false}
+      use_ue8m0: {type: bool, default: false}
     inputs:
-      x: {dtype: T, shape: "[batch, seq_len_kv, kv_group, index_dim]"}
+      x: {dtype: T, shape: "[*S, K]"}
+      out_q: {type: "Tensor | None", dtype: float8_e4m3fn, shape: "[*S, K]", default: null, mutated: "present(out_q)"}
     outputs:
-      q: {dtype: float8_e4m3fn, shape: "[batch, seq_len_kv, kv_group, index_dim]"}
-      scale: {dtype: float32, shape: "[batch, seq_len_kv, kv_group]"}
+      q: {dtype: float8_e4m3fn, shape: "[*S, K]", alias: out_q}
+      scale: {dtype: float32, shape: "[*S, K // group_size]"}
     shape_rules:
-    - "index_dim > 0"
+    - "group_size > 0 and K % group_size == 0"
+    - "eps > 0"
 
   workloads:
-  - {batch: 1, seq_len_kv: 8192, kv_group: 1, index_dim: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: kv-index-8k}
-  - {batch: 1, seq_len_kv: 4096, kv_group: 1, index_dim: 128, dtype_cases: [{T: float32}], label: kv-index-4k}
-  - {batch: 1, seq_len_kv: 3072, kv_group: 1, index_dim: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: kv-index-context-chunk}
+  - {S: [8192], K: 64, group_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: kv-index-8k}
+  - {S: [4096], K: 128, group_size: 128, dtype_cases: [{T: float32}], label: kv-index-4k}
+  - {S: [3072], K: 128, group_size: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: kv-index-context-chunk}
+  # DeepSeek-V3 block-FP8 activations: 128-column groups of the 7168-wide hidden state.
+  - {S: [4096], K: 7168, group_size: 128, dtype_cases: [{T: bfloat16}], label: dsv3-act-prefill}
+  - {S: [2, 64], K: 7168, group_size: 128, some: [out_q], dtype_cases: [{T: bfloat16}], label: dsv3-act-decode-out}
 
   roofline:
-    # Per element: abs, the row-max comparison, the scaling and the clamp; per row: the amax
-    # floor and the scale.
-    flops: "4 * batch * seq_len_kv * kv_group * index_dim + 2 * batch * seq_len_kv * kv_group"
+    # Per element: abs, the group-max comparison, the scaling and the clamp; per group: the
+    # amax floor and the scale.
+    flops: "4 * prod(S) * K + 2 * prod(S) * (K // group_size)"
 
 INT8QuantPerTensorFwdOp:
   family: quantization

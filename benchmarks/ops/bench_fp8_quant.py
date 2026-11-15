@@ -7,7 +7,13 @@ byte counts come from the op's ``eval_roofline()``.
 import pytest
 
 from benchmarks import api as bench
-from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
+from benchmarks.baselines import (
+    TORCH_COMPILE_TAG,
+    VLLM_TAG,
+    compiled_reference,
+    private_inputs,
+    vllm_op,
+)
 from tileops.quantization import FP8QuantPerTokenGroupFwdOp
 
 
@@ -20,15 +26,26 @@ def test_fp8_quant_bench(case) -> None:
         "per_token_group_quant_fp8", "model_executor.layers.quantization.utils.fp8_utils"
     )
 
-    def vllm_fn(x):
-        values, scales = quantize(
-            x.reshape(-1, x.shape[-1]), x.shape[-1], eps=1e-4, use_ue8m0=False
+    arguments = case.arguments
+
+    def vllm_fn(x, out_q=None):
+        # vLLM's CUDA kernel takes two-dimensional x; the leading axes are folded into rows.
+        rows = x.reshape(-1, x.shape[-1])
+        q, scale = quantize(
+            rows,
+            arguments["group_size"],
+            eps=arguments["eps"],
+            dtype=arguments["dtype"],
+            column_major_scales=arguments["column_major_scales"],
+            tma_aligned_scales=arguments["tma_aligned_scales"],
+            out_q=None if out_q is None else out_q.view(rows.shape),
+            use_ue8m0=arguments["use_ue8m0"],
         )
-        return values.reshape_as(x), scales.reshape(x.shape[:-1])
+        return q.view(x.shape), scale.view(*x.shape[:-1], -1)
 
     bench.Runner(op, case).compare(
         {
-            VLLM_TAG: vllm_fn,
+            VLLM_TAG: private_inputs(vllm_fn, case.inputs, *range(1, len(case.inputs))),
             "torch-ref": case.reference,
             TORCH_COMPILE_TAG: compiled_reference(case.reference),
         }

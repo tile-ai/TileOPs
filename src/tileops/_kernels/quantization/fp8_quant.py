@@ -16,46 +16,46 @@ __all__ = ["FP8QuantCall", "FP8QuantFwdInterface", "FP8QuantKernel"]
 
 @dataclasses.dataclass(frozen=True)
 class FP8QuantCall(CallSpec):
-    """One per-row FP8 quantization of a $[B \\times S \\times G \\times D]$ index tensor."""
+    """One per-group FP8 quantization of ``rows`` contiguous groups of ``group_size``."""
 
-    batch: int = 0
-    seq_len_kv: int = 0
-    kv_group: int = 0
-    index_dim: int = 0
+    rows: int = 0
+    group_size: int = 0
+    eps: float = 1e-10
     dtype: torch.dtype | None = None
+    column_major_scales: bool = False
+    tma_aligned_scales: bool = False
+    use_ue8m0: bool = False
 
 
 class FP8QuantFwdInterface(KernelInterface):
-    """Row-wise quantization of an index tensor to ``float8_e4m3fn``."""
+    """Group-wise quantization to ``float8_e4m3fn``."""
 
     request = FP8QuantCall
 
     @abstractmethod
     def forward(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Scale each row by its own maximum; nothing is written in place.
+        """Scale each group by its own maximum; nothing is written in place.
 
-        A row is the trailing ``call.index_dim`` axis. Its scale is the absolute maximum
-        over the row, floored at ``1e-4``, divided by 448; each element is multiplied by
-        the reciprocal of that scale and clamped to the ``float8_e4m3fn`` range. A row
+        A group is a row of ``call.group_size`` elements. Its scale is the absolute maximum
+        over the group, floored at ``call.eps``, divided by 448; each element is multiplied
+        by the reciprocal of that scale and clamped to the ``float8_e4m3fn`` range. A group
         holding an infinity or a NaN has no defined result: whether the maximum and the
         clamp carry the non-finite value is left to the implementation. Nothing is written
         in place, and neither output aliases the input.
 
         Args:
-            input_tensor: The input,
-                ``(call.batch, call.seq_len_kv, call.kv_group, call.index_dim)`` in
-                ``call.dtype`` on ``call.device``, contiguous in that axis order. The op
-                makes it contiguous before the call.
+            input_tensor: ``(call.rows, call.group_size)`` in ``call.dtype`` on
+                ``call.device``, contiguous.
 
         Returns:
             New contiguous ``(scale_tensor, output_tensor)`` on ``call.device``:
-            ``float32`` ``(call.batch, call.seq_len_kv, call.kv_group)`` scales, and the
-            rows divided by them in ``float8_e4m3fn``, shaped as the input.
+            ``float32`` ``(call.rows,)`` scales, and the groups divided by them in
+            ``float8_e4m3fn``, shaped as the input.
         """
 
 
 @target_cache(maxsize=32)
-def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
+def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int, eps: float):
     @tilelang.jit(out_idx=[1, 2])
     def _fp8_quant_fwd_func(block_m):
         if block_m < 1:
@@ -64,9 +64,7 @@ def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
         scale_dtype = T.float32
         fp8_min = -FP8_E4M3_MAX
         fp8_max = FP8_E4M3_MAX
-        # workloads/quantization/fp8_quant.py clamps a row's absolute maximum to this before
-        # dividing.
-        amax_floor = 1e-4
+        amax_floor = eps
 
         @T.prim_func
         def _fp8_quant_fwd_main(
@@ -110,18 +108,16 @@ def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
 
 
 class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
-    """Per-group fp8 quantization of a $[B \\times S\\_kv \\times G \\times D]$ index tensor.
+    """Per-group fp8 quantization of ``rows`` contiguous groups.
 
-    A block owns whole rows, taken along the flattened $[B \\times S\\_kv \\times G]$ row
-    axis so that its rows are adjacent in memory, and reduces each of them across the
+    A block owns whole rows, adjacent in memory, and reduces each of them across the
     threads holding it, or inside one thread where the row width leaves the reduction no
     power-of-two group of threads. Any positive ``block_m`` serves any row count.
 
     Args:
-        batch: Batch size.
-        seq_len_kv: Key/value sequence length.
-        kv_group: Number of key/value groups.
-        index_dim: Index (head) dimension.
+        rows: Number of groups.
+        index_dim: Elements per group.
+        eps: Floor of each group's absolute maximum.
         dtype: Torch dtype of the tensor being quantized. The output element
             type is fixed at ``torch.float8_e4m3fn`` and the scale at
             ``torch.float32``, so this is the kernel's only free dtype.
@@ -147,29 +143,33 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
         return p
 
     @classmethod
+    def refusal(cls, call: FP8QuantCall) -> str | None:
+        if call.column_major_scales or call.tma_aligned_scales:
+            return "does not serve column-major or TMA-aligned scales"
+        if call.use_ue8m0:
+            return "does not serve UE8M0 scales"
+        return super().refusal(call)
+
+    @classmethod
     def entry_for(cls, call: FP8QuantCall) -> Entry:
-        return call, lambda: cls(
-            call.batch, call.seq_len_kv, call.kv_group, call.index_dim, call.dtype
-        )
+        return call, lambda: cls(call.rows, call.group_size, call.eps, call.dtype)
 
     def __init__(
         self,
-        batch: int,
-        seq_len_kv: int,
-        kv_group: int,
+        rows: int,
         index_dim: int,
+        eps: float,
         dtype: torch.dtype,
         config: dict | None = None,
     ):
         super().__init__()
-        self.batch = batch
-        self.seq_len_kv = seq_len_kv
-        self.kv_group = kv_group
+        self.rows = rows
         self.index_dim = index_dim
+        self.eps = eps
         self.dtype = dtype
         self._threads, self._block_m = self._launch()
         self.kernel = _fp8_quant_kernel(
-            batch * seq_len_kv * kv_group, self.index_dim, self.dtype_str, self._threads
+            rows, self.index_dim, self.dtype_str, self._threads, self.eps
         )
         self.init_config(config)
 
@@ -184,7 +184,7 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
         split across threads. Every other width keeps the split, faster where the two
         demands agree: 2.016 us against 2.369 at ``index_dim=64``.
         """
-        rows = self.batch * self.seq_len_kv * self.kv_group
+        rows = self.rows
         odd = self.index_dim
         while odd % 2 == 0:
             odd //= 2
@@ -203,12 +203,7 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
         return [self.default_config]
 
     def forward(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        batch, seq_len_kv, kv_group = self.batch, self.seq_len_kv, self.kv_group
-        rows = batch * seq_len_kv * kv_group
-        scale, quant = self.program(self._compile)(input_tensor.view(rows, self.index_dim))
-        return scale.view(batch, seq_len_kv, kv_group), quant.view(
-            batch, seq_len_kv, kv_group, self.index_dim
-        )
+        return self.program(self._compile)(input_tensor.view(self.rows, self.index_dim))
 
     def _compile(self, cfg: dict):
         """The program of config *cfg*."""
