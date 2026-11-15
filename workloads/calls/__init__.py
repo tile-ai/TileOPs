@@ -6,7 +6,8 @@ they merge here, and an op registered twice fails.
 
 import functools
 import importlib
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 __all__ = ["call_workload", "registered"]
 

@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -51,8 +52,8 @@ class GQADenseBwdOp(Op):
         is_causal: bool = False,
         window_size_left: int = -1,
         window_size_right: int = -1,
-        sm_scale: Optional[float] = None,
-        softcap: Optional[float] = None,
+        sm_scale: float | None = None,
+        softcap: float | None = None,
         *,
         target: Target = None,
     ) -> None:

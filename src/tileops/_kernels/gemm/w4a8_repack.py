@@ -1,7 +1,7 @@
 """Repack a signed INT4 weight into the order the W4A8 GEMM kernels read."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -134,8 +134,8 @@ class W4A8RepackKernel(Kernel, W4A8RepackFwdInterface):
         self,
         n: int,
         k: int,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n

@@ -1,7 +1,5 @@
 """Single-token DeltaNet inference decode."""
 
-from typing import Optional, Tuple
-
 import torch
 
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -26,7 +24,7 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetFwdInterface):
     supported_archs = [80, 89, 90]
 
     @classmethod
-    def refusal(cls, call: DeltaNetCall) -> Optional[str]:
+    def refusal(cls, call: DeltaNetCall) -> str | None:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         One 16-bit token over a 64- or 128-wide square float32 state.
@@ -139,7 +137,7 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetFwdInterface):
         initial_state: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         cu_seqlens_cpu: torch.Tensor | None = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         del cu_seqlens, cu_seqlens_cpu
         self._require_devices(q=q, k=k, v=v, beta=beta)
         if self.has_initial_state and initial_state is None:

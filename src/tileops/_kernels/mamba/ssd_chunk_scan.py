@@ -6,7 +6,8 @@ sequence-fused, ``cb`` and ``C`` are group-owned, and ``prev_states`` stores
 causal chunk contribution.
 """
 
-from typing import Callable, ClassVar, Optional
+from collections.abc import Callable
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -476,7 +477,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         d_state: int,
         n_groups: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.batch = batch

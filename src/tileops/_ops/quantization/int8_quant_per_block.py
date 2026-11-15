@@ -1,6 +1,7 @@
 """Per-block (1x128) symmetric INT8 quantization operator."""
 
-from typing import ClassVar, Mapping, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -54,7 +55,7 @@ class INT8QuantPerTokenGroupFwdOp(Op):
         """
         super().__init__(target=target)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Quantize each 128-element block of ``x`` against its own absolute maximum.
 
         Args:

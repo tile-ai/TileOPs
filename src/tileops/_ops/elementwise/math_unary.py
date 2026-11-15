@@ -1,6 +1,7 @@
 """Unary math elementwise ops (exp/log/sqrt/abs/neg/round/etc.)."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

@@ -1,6 +1,7 @@
 """Partitioned long-context GLA prefill kernels."""
 
-from typing import Callable, NamedTuple, Optional
+from collections.abc import Callable
+from typing import NamedTuple
 
 import tilelang
 import torch
@@ -398,7 +399,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
     _PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
 
     @classmethod
-    def refusal(cls, call: GLACall) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> str | None:
         fit = cls._PARTITION_FITS.get(call.calibration)
         if fit is None:
             return "has no partition fit for this board"
@@ -436,7 +437,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         scale: float,
         dtype: torch.dtype,
         has_initial_state: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         self.has_initial_state = has_initial_state
         if seq_len % (64 * 16):
@@ -542,9 +543,9 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if cu_seqlens is not None or cu_seqlens_cpu is not None:
             raise ValueError("the in-tree GLA dense-prefill kernel does not support packed varlen")

@@ -6,7 +6,8 @@ Provides:
   - Conv3dFwdOp: torch.nn.functional.conv3d
 """
 
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -43,16 +44,16 @@ __all__ = [
 ]
 
 
-def _axes(value: int | Tuple[int, ...], dims: int) -> Tuple[int, ...]:
+def _axes(value: int | tuple[int, ...], dims: int) -> tuple[int, ...]:
     """A per-axis parameter as one value per spatial axis."""
     return (value,) * dims if isinstance(value, int) else tuple(value)
 
 
 def _padding(
-    padding: int | Tuple[int, ...] | str,
-    kernel: Tuple[int, ...],
-    dilation: Tuple[int, ...],
-) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    padding: int | tuple[int, ...] | str,
+    kernel: tuple[int, ...],
+    dilation: tuple[int, ...],
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """The padding before and after every spatial axis.
 
     ``padding='same'`` with an odd total puts the extra element after, as torch does.
@@ -86,9 +87,9 @@ class Conv1dFwdOp(Op):
 
     def __init__(
         self,
-        stride: int | Tuple[int] = 1,
-        padding: int | Tuple[int] | str = 0,
-        dilation: int | Tuple[int] = 1,
+        stride: int | tuple[int] = 1,
+        padding: int | tuple[int] | str = 0,
+        dilation: int | tuple[int] = 1,
         groups: int = 1,
         *,
         target: Target = None,
@@ -113,7 +114,7 @@ class Conv1dFwdOp(Op):
         self,
         input: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Apply the convolution.
 
@@ -186,9 +187,9 @@ class Conv2dFwdOp(Op):
 
     def __init__(
         self,
-        stride: int | Tuple[int, int] = 1,
-        padding: int | Tuple[int, int] | str = 0,
-        dilation: int | Tuple[int, int] = 1,
+        stride: int | tuple[int, int] = 1,
+        padding: int | tuple[int, int] | str = 0,
+        dilation: int | tuple[int, int] = 1,
         groups: int = 1,
         *,
         target: Target = None,
@@ -213,7 +214,7 @@ class Conv2dFwdOp(Op):
         self,
         input: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Apply the convolution.
 
@@ -279,9 +280,9 @@ class Conv3dFwdOp(Op):
 
     def __init__(
         self,
-        stride: int | Tuple[int, int, int] = 1,
-        padding: int | Tuple[int, int, int] | str = 0,
-        dilation: int | Tuple[int, int, int] = 1,
+        stride: int | tuple[int, int, int] = 1,
+        padding: int | tuple[int, int, int] | str = 0,
+        dilation: int | tuple[int, int, int] = 1,
         groups: int = 1,
         *,
         target: Target = None,
@@ -306,7 +307,7 @@ class Conv3dFwdOp(Op):
         self,
         input: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Apply the convolution.
 

@@ -3,8 +3,6 @@
 Separate copy groups allow the first row's stores to overlap the second row's loads.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -120,7 +118,7 @@ class RMSNormStagedKernel(_RMSNormRowsKernel):
     _builder = staticmethod(_rms_norm_staged_kernel)
 
     @classmethod
-    def refusal(cls, call: LayerNormCall) -> Optional[str]:
+    def refusal(cls, call: LayerNormCall) -> str | None:
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         wave = _CTAS_PER_SM * call.sm_count
         # At least three vectors a thread amortize the shared-memory staging and its barriers.

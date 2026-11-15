@@ -3,7 +3,8 @@
 Shapes are strict 3D-3D — ``a``: $[B \\times M \\times K]$, ``b``: $[B \\times K \\times N]$, ``c``: $[B \\times M \\times N]$.
 """
 
-from typing import Callable, NamedTuple, Optional
+from collections.abc import Callable
+from typing import NamedTuple
 
 import tilelang
 import tilelang.language as T
@@ -657,15 +658,15 @@ class BMMKernel(Kernel, BMMFwdInterface):
     general = True
 
     @classmethod
-    def refusal(cls, call: BMMCall) -> Optional[str]:
+    def refusal(cls, call: BMMCall) -> str | None:
         return cls._region_refusal(call)
 
     @staticmethod
-    def _region_refusal(call: BMMCall) -> Optional[str]:
+    def _region_refusal(call: BMMCall) -> str | None:
         return BMMKernel._k_refusal(call.k)
 
     @staticmethod
-    def _k_refusal(k: int) -> Optional[str]:
+    def _k_refusal(k: int) -> str | None:
         """The tile loop steps K by 16."""
         return None if k % 16 == 0 else f"requires k a multiple of 16, got k={k}"
 
@@ -690,8 +691,8 @@ class BMMKernel(Kernel, BMMFwdInterface):
         n: int,
         k: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         reason = self._k_refusal(k)
@@ -763,7 +764,7 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
     # reaches 64 and loses. A board without an entry keeps BMMKernel.
     _PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
     # None takes the template selector's configuration.
-    _TEMPLATE_CONFIG: Optional[dict] = None
+    _TEMPLATE_CONFIG: dict | None = None
 
     @staticmethod
     def _tiles(band: _PersistentBand, batch: int, m: int, n: int) -> int:
@@ -771,11 +772,11 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
         return batch * -(-m // band.tile_m) * -(-n // band.tile_n)
 
     @classmethod
-    def refusal(cls, call: BMMCall) -> Optional[str]:
+    def refusal(cls, call: BMMCall) -> str | None:
         return cls._region_refusal(call)
 
     @classmethod
-    def _region_refusal(cls, call: BMMCall) -> Optional[str]:
+    def _region_refusal(cls, call: BMMCall) -> str | None:
         band = cls._PERSISTENT_BANDS.get(call.calibration)
         if band is None:
             return "has no persistent band for this board"
@@ -813,8 +814,8 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
         batch: int,
         m: int,
         n: int,
-        device_index: Optional[int] = None,
-        template_config: Optional[dict] = None,
+        device_index: int | None = None,
+        template_config: dict | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch, self.m, self.n = batch, m, n
@@ -822,7 +823,7 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
         self._class_config = template_config or self._TEMPLATE_CONFIG
         self.program(self._template)
 
-    def _template(self, cfg: Optional[dict]) -> GEMMTemplate:
+    def _template(self, cfg: dict | None) -> GEMMTemplate:
         """The template *cfg* pins, a description :meth:`forward` published; the class's
         tile, or the selector's, before one is."""
         pinned = dict(cfg or {})
@@ -907,9 +908,7 @@ class BMMPingPongKernel(BMMPersistentKernel):
         identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
         return identity, lambda: cls(call.batch, call.m, call.n, call.k, device_index=index)
 
-    def __init__(
-        self, batch: int, m: int, n: int, k: int, device_index: Optional[int] = None
-    ) -> None:
+    def __init__(self, batch: int, m: int, n: int, k: int, device_index: int | None = None) -> None:
         super().__init__(
             batch, m, n, device_index=device_index, template_config=self._template_config(k)
         )
@@ -924,7 +923,7 @@ class BMMPingPongKernel(BMMPersistentKernel):
         return {**cls._TEMPLATE_CONFIG, "epilogue_stage_n": width}
 
     @classmethod
-    def refusal(cls, call: BMMCall) -> Optional[str]:
+    def refusal(cls, call: BMMCall) -> str | None:
         band = cls._PINGPONG_BANDS.get(call.calibration)
         persistent = cls._PERSISTENT_BANDS.get(call.calibration)
         if band is None or persistent is None:
@@ -962,14 +961,14 @@ class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
     supported_archs: list[int] = [89, 90]
 
     @staticmethod
-    def _k_refusal(k: int) -> Optional[str]:
+    def _k_refusal(k: int) -> str | None:
         """The FP8 WGMMA K-step is 32 elements wide."""
         if k % 32 == 0:
             return None
         return f"requires k a multiple of 32 (the FP8 WGMMA K step), got k={k}"
 
     @classmethod
-    def refusal(cls, call: BMMFP8Call) -> Optional[str]:
+    def refusal(cls, call: BMMFP8Call) -> str | None:
         return cls._k_refusal(call.k)
 
     @classmethod
@@ -987,9 +986,9 @@ class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
         k: int,
         dtype: torch.dtype,
         out_dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         reason = self._k_refusal(k)
@@ -1297,9 +1296,9 @@ class BMMFP8TransposeKernel(Kernel, BMMFP8TransposeFwdInterface):
         rows: int,
         cols: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         """Build the transpose for one shape and dtype.
 

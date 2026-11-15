@@ -14,8 +14,6 @@ Staged design:
     Pass 2:  Gate bwd -> RMSNorm(H) bwd, RMSNorm(k) bwd -> dH, dk, dv
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -374,7 +372,7 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
         eps: float,
         dtype: torch.dtype,
         sm_count: int,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.M = M

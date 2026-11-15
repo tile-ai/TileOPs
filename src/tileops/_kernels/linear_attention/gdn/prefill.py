@@ -2,7 +2,7 @@
 
 import collections
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import tilelang
 import torch
@@ -52,7 +52,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def refusal(cls, call: GDNCall) -> Optional[str]:
+    def refusal(cls, call: GDNCall) -> str | None:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         Prefill in chunks of 64 tokens over a 64- or 128-wide square state, equal-length or
@@ -377,7 +377,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
 
     def _programs(
         self,
-        cfg: Dict[str, Any],
+        cfg: dict[str, Any],
         offsets_dtype: torch.dtype,
         beta_dtype: torch.dtype,
         state_dtype: torch.dtype | None,
@@ -529,7 +529,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         cu_seqlens_cpu: torch.Tensor | None = None,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         chunk_size = 64
         batch, seq_len = q.shape[:2]

@@ -3,7 +3,6 @@ interfaces their implementations inherit."""
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional, Tuple
 
 import torch
 
@@ -41,14 +40,14 @@ class AvgPoolCall(CallSpec):
 
     n: int = 0
     c_in: int = 0
-    size: Tuple[int, ...] = ()
-    window: Tuple[int, ...] = ()
-    stride: Tuple[int, ...] = ()
-    pad: Tuple[int, ...] = ()
+    size: tuple[int, ...] = ()
+    window: tuple[int, ...] = ()
+    stride: tuple[int, ...] = ()
+    pad: tuple[int, ...] = ()
     ceil_mode: bool = False
     count_include_pad: bool = True
-    divisor_override: Optional[int] = None
-    dtype: Optional[torch.dtype] = None
+    divisor_override: int | None = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -61,13 +60,13 @@ class MaxPoolCall(CallSpec):
 
     n: int = 0
     c_in: int = 0
-    size: Tuple[int, ...] = ()
-    window: Tuple[int, ...] = ()
-    stride: Tuple[int, ...] = ()
-    pad: Tuple[int, ...] = ()
-    dilation: Tuple[int, ...] = ()
+    size: tuple[int, ...] = ()
+    window: tuple[int, ...] = ()
+    stride: tuple[int, ...] = ()
+    pad: tuple[int, ...] = ()
+    dilation: tuple[int, ...] = ()
     ceil_mode: bool = False
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,7 +79,7 @@ class AdaptivePool2dCall(CallSpec):
     w_in: int = 0
     out_h: int = 0
     out_w: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -95,8 +94,8 @@ class MeanPoolingCall(CallSpec):
     chunks_per_batch: int = 0
     seq_num: int = 0
     use_offsets: bool = False
-    dtype: Optional[torch.dtype] = None
-    accum_dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
+    accum_dtype: torch.dtype | None = None
 
 
 class AvgPool1dFwdInterface(KernelInterface):
@@ -266,7 +265,7 @@ class MaxPool1dIndicesFwdInterface(KernelInterface):
     request = MaxPoolCall
 
     @abstractmethod
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Take each window's maximum and where it sat; nothing is written in place.
 
         A window's positions step by ``call.dilation``. The padded positions read as
@@ -292,7 +291,7 @@ class MaxPool2dIndicesFwdInterface(KernelInterface):
     request = MaxPoolCall
 
     @abstractmethod
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Take each window's maximum and where it sat; nothing is written in place.
 
         A window's positions step by ``call.dilation``. The padded positions read as
@@ -318,7 +317,7 @@ class MaxPool3dIndicesFwdInterface(KernelInterface):
     request = MaxPoolCall
 
     @abstractmethod
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Take each window's maximum and where it sat; nothing is written in place.
 
         A window's positions step by ``call.dilation``. The padded positions read as
@@ -398,7 +397,7 @@ class AdaptiveMaxPool2dIndicesFwdInterface(KernelInterface):
     request = AdaptivePool2dCall
 
     @abstractmethod
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Take each output cell's window maximum and where it sat; nothing is written in place.
 
         The windows are the ones ``torch.nn.functional.adaptive_max_pool2d`` uses: cell

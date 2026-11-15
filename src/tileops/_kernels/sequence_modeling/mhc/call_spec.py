@@ -3,7 +3,6 @@ select and build on, and the kernel interfaces their implementations inherit."""
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import torch
 
@@ -20,7 +19,7 @@ class MHCPreCall(CallSpec):
     batch: int = 0
     n_expand: int = 0
     c_x: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     alpha_pre: float = 0.0
     alpha_post: float = 0.0
     alpha_res: float = 0.0
@@ -35,7 +34,7 @@ class MHCPostCall(CallSpec):
     batch: int = 0
     n_expand: int = 0
     c_x: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 class MHCPreFwdInterface(KernelInterface):

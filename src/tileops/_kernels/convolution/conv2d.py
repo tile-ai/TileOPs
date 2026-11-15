@@ -1,7 +1,5 @@
 """2-D convolution kernels: dense, grouped, depthwise, symmetric, and 1x1."""
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -139,8 +137,8 @@ def _conv2d_kernel(
     dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
-    pad_h_end: Optional[int] = None,
-    pad_w_end: Optional[int] = None,
+    pad_h_end: int | None = None,
+    pad_w_end: int | None = None,
 ):
     # Swizzle panel: a power of two so the block remap divides by shift, and the
     # narrowest one because long grids lose as it widens.
@@ -282,8 +280,8 @@ def _conv2d_group_kernel(
     groups: int = 1,
     c_in_g: int = 0,
     c_out_g: int = 0,
-    pad_h_end: Optional[int] = None,
-    pad_w_end: Optional[int] = None,
+    pad_h_end: int | None = None,
+    pad_w_end: int | None = None,
 ):
     # Swizzle panel: a power of two so the block remap divides by shift, and the
     # narrowest one because long grids lose as it widens.
@@ -441,8 +439,8 @@ def _conv2d_depthwise_kernel(
     dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
-    pad_h_end: Optional[int] = None,
-    pad_w_end: Optional[int] = None,
+    pad_h_end: int | None = None,
+    pad_w_end: int | None = None,
 ):
     """Build the depthwise Conv2d program: one input channel feeds one output channel.
 
@@ -736,7 +734,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
     block_m_candidates: tuple[int, ...] = (64, 128)
 
     @classmethod
-    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+    def refusal(cls, call: Conv2dCall) -> str | None:
         if call.groups != 1:
             return "serves ungrouped convolution"
         if not (
@@ -790,9 +788,9 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         dilation: int,
         dtype: torch.dtype,
         has_bias: bool = False,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -874,7 +872,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x_nhwc = torch.empty(
             (self.n, self.h, self.w, self.c_in),
@@ -896,7 +894,7 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+    def refusal(cls, call: Conv2dCall) -> str | None:
         if call.groups != 1:
             return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
@@ -944,10 +942,10 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
-        pad_end: Optional[tuple[int, ...]] = None,
-        config: Optional[dict] = None,
+        pad_end: tuple[int, ...] | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -1035,7 +1033,7 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return launch(self, x, weight, bias=bias)
 
@@ -1051,7 +1049,7 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
         return call.n * call.groups
 
     @classmethod
-    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+    def refusal(cls, call: Conv2dCall) -> str | None:
         if call.groups <= 1:
             return "serves grouped convolution"
         return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
@@ -1103,13 +1101,13 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
-        pad_end: Optional[tuple[int, ...]] = None,
+        pad_end: tuple[int, ...] | None = None,
         groups: int = 1,
-        c_in_g: Optional[int] = None,
-        c_out_g: Optional[int] = None,
-        config: Optional[dict] = None,
+        c_in_g: int | None = None,
+        c_out_g: int | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -1198,7 +1196,7 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return launch(self, x, weight, bias=bias)
 
@@ -1277,7 +1275,7 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
     preferred_over = frozenset({"conv2d_symmetric"})
 
     @classmethod
-    def refusal(cls, call: Conv2dCall) -> Optional[str]:
+    def refusal(cls, call: Conv2dCall) -> str | None:
         if not (
             call.groups == 1
             and call.kernel_h == 1
@@ -1322,9 +1320,9 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
         pad_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -1401,7 +1399,7 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # OIHW -> OC,IC since the 1x1 kernel consumes a dense [C_out, C_in] weight matrix.
         weight_oc_ci = weight.view(self.c_out, self.c_in).contiguous()

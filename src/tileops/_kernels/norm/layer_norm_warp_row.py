@@ -5,8 +5,6 @@ variance are summed across the warp by shuffles, so the row is never padded and 
 waits on shared memory. The weight and bias are read with the row, before the reductions.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -163,7 +161,7 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
     preferred_over = frozenset({"layer_norm", "layer_norm_held"})
 
     @classmethod
-    def refusal(cls, call: LayerNormCall) -> Optional[str]:
+    def refusal(cls, call: LayerNormCall) -> str | None:
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         if call.n % ALIGNMENT == 0:
             return f"serves rows that do not split into {ALIGNMENT}-element blocks"
@@ -186,7 +184,7 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
         N: int,
         eps: float,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         """Build for a hidden size and dtype.
 
@@ -208,7 +206,7 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
         return [{"warps": warps} for warps in (1, 2, 4, 8)]
 
     def forward(
-        self, x: torch.Tensor, weight: Optional[torch.Tensor], bias: Optional[torch.Tensor]
+        self, x: torch.Tensor, weight: torch.Tensor | None, bias: torch.Tensor | None
     ) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
 

@@ -1,6 +1,7 @@
 """ALiBi position-encoding generative op."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

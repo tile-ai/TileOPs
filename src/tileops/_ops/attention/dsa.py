@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -63,7 +64,7 @@ class DSADenseFwdOp(Op):
         dim_tail: int,
         stride_kv: int,
         q_start_index_s: int,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         is_causal: bool = True,
         *,
         target: Target = None,
@@ -165,7 +166,7 @@ class DSAPagedFwdOp(Op):
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dsa_paged": DSAPagedFwdInterface}
 
-    def __init__(self, sm_scale: Optional[float] = None, *, target: Target = None) -> None:
+    def __init__(self, sm_scale: float | None = None, *, target: Target = None) -> None:
         """Build the op. Shapes are taken from each call.
 
         Args:

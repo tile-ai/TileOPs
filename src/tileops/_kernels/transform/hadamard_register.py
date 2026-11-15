@@ -13,7 +13,8 @@ does the same for a row of base_order segments and adds the base product in each
 import functools
 import itertools
 import math
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 import tilelang
 import tilelang.language as T
@@ -361,7 +362,7 @@ class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
     preferred_over = frozenset({"hadamard_shared_rows"})
 
     @classmethod
-    def refusal(cls, call: HadamardTransformCall) -> Optional[str]:
+    def refusal(cls, call: HadamardTransformCall) -> str | None:
         if call.base_order != 1:
             return f"base order {call.base_order}: rows of a power of two only"
         if not 32 <= call.n <= 512:
@@ -380,10 +381,10 @@ class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
         self,
         n: int,
         dtype: torch.dtype,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
         *,
         sm_count: int,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -396,7 +397,7 @@ class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
         return _hadamard_warp_rows_kernel(log_n, dtype, slots, ctas_per_sm * self.sm_count)
 
     @property
-    def default_config(self) -> Dict[str, Any]:
+    def default_config(self) -> dict[str, Any]:
         # Eight slots a thread where a row fits them, and a grid of every block up to 64 an
         # SM: the fastest measured launch at 32 to 512 elements a row.
         return {"slots": max(8, self.n // 32), "ctas_per_sm": 64}
@@ -407,7 +408,7 @@ class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
             return torch.empty_like(x)
         return self.program(self._compile)(words).view(x.shape)
 
-    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+    def _compile(self, cfg: dict[str, Any]) -> Callable:
         """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(**cfg)()
 
@@ -437,7 +438,7 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
     preferred_over = frozenset({"hadamard_shared_rows"})
 
     @classmethod
-    def refusal(cls, call: HadamardTransformCall) -> Optional[str]:
+    def refusal(cls, call: HadamardTransformCall) -> str | None:
         if call.base_order != 1:
             return f"base order {call.base_order}: rows of a power of two only"
         if not 1024 <= call.n <= 32768:
@@ -460,11 +461,11 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
         self,
         n: int,
         dtype: torch.dtype,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
         *,
         sm_count: int,
         smem_budget: int,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -484,7 +485,7 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
         )
 
     @property
-    def default_config(self) -> Dict[str, Any]:
+    def default_config(self) -> dict[str, Any]:
         return {"slots": _fewest_slots(self.log_n)}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -493,7 +494,7 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
             return torch.empty_like(x)
         return self.program(self._compile)(words).view(x.shape)
 
-    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+    def _compile(self, cfg: dict[str, Any]) -> Callable:
         """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(**cfg)()
 
@@ -511,7 +512,7 @@ def base_program(base: int) -> tuple:
     exprs = [{(a, 1 if rows[a][c] == "+" else -1) for a in range(base)} for c in range(base)]
     temps = []
     while True:
-        count: Dict[tuple, int] = {}
+        count: dict[tuple, int] = {}
         for e in exprs:
             for (u, su), (v, sv) in itertools.combinations(sorted(e), 2):
                 count[(u, v, su * sv)] = count.get((u, v, su * sv), 0) + 1
@@ -669,7 +670,7 @@ class HadamardBaseExchangeKernel(Kernel, HadamardTransformFwdInterface):
     preferred_over = frozenset({"hadamard_shared_rows"})
 
     @classmethod
-    def refusal(cls, call: HadamardTransformCall) -> Optional[str]:
+    def refusal(cls, call: HadamardTransformCall) -> str | None:
         m = call.n // call.base_order
         if call.base_order == 1:
             return "base order 1 rows take the power-of-two kernels"
@@ -692,10 +693,10 @@ class HadamardBaseExchangeKernel(Kernel, HadamardTransformFwdInterface):
         n: int,
         base_order: int,
         dtype: torch.dtype,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
         *,
         sm_count: int,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -710,7 +711,7 @@ class HadamardBaseExchangeKernel(Kernel, HadamardTransformFwdInterface):
         return _hadamard_base_exchange_kernel(base, log_m, dtype, ctas_per_sm * self.sm_count)
 
     @property
-    def default_config(self) -> Dict[str, Any]:
+    def default_config(self) -> dict[str, Any]:
         return {"ctas_per_sm": 8}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -719,6 +720,6 @@ class HadamardBaseExchangeKernel(Kernel, HadamardTransformFwdInterface):
             return torch.empty_like(x)
         return self.program(self._compile)(words).view(x.shape)
 
-    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+    def _compile(self, cfg: dict[str, Any]) -> Callable:
         """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(**cfg)()

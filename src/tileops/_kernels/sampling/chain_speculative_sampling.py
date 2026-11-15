@@ -1,6 +1,6 @@
 """Chain speculative sampling: verify a draft chain, then draw once from the residual row."""
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -444,7 +444,7 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
         return vec, threads, parts, -(-row_tiles // parts) * (threads // WARP_LANES)
 
     @classmethod
-    def refusal(cls, call: SamplingCall) -> Optional[str]:
+    def refusal(cls, call: SamplingCall) -> str | None:
         reason = super().refusal(call)
         if reason is not None:
             return reason
@@ -466,7 +466,7 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
             return f"folds a row into {leaves} shared float64 entries, past {budget // 8}"
         return None
 
-    def __init__(self, call: SamplingCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: SamplingCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype

@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -962,7 +962,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         if call.return_lse:
             return "does not return the log-sum-exp"
         if not call.is_fp8:
@@ -987,7 +987,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         softcap: float,
         window: tuple[int, int],
         fuse_rope: bool,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Why the program cannot build this shape; read by the region and the constructor,
         which a caller can reach directly."""
         if window != (-1, -1):
@@ -1036,16 +1036,16 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         window_size_left: int,
         window_size_right: int,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         has_sinks: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.has_sinks = has_sinks
@@ -1104,12 +1104,12 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(
             q=q,

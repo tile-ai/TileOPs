@@ -2,7 +2,8 @@
 
 import math
 import warnings
-from typing import ClassVar, List, Mapping, Optional, Tuple, Union
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -57,9 +58,9 @@ class _SoftmaxBaseOp(Op):
 
     def __init__(
         self,
-        dim: Optional[int] = None,
+        dim: int | None = None,
         *,
-        dtype: Optional[torch.dtype] = None,
+        dtype: torch.dtype | None = None,
         target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
@@ -159,7 +160,7 @@ class LogSumExpFwdOp(_ReduceOpBase):
 
     def __init__(
         self,
-        dim: Union[int, List[int], Tuple[int, ...]],
+        dim: int | list[int] | tuple[int, ...],
         keepdim: bool = False,
         *,
         target: Target = None,

@@ -5,7 +5,8 @@ preserved without materializing an input tile. Launch geometry adapts to the
 row length; input layout remains the responsibility of the reduction Op layer.
 """
 
-from typing import Callable, NamedTuple, Optional
+from collections.abc import Callable
+from typing import NamedTuple
 
 import tilelang
 import tilelang.language as T
@@ -558,7 +559,7 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
 
     supported_archs: list[int] = [80, 86, 89, 90, 100]
 
-    def __init__(self, call: ArgreduceCall, config: Optional[dict] = None):
+    def __init__(self, call: ArgreduceCall, config: dict | None = None):
         super().__init__(device_index=call.device.index if call.device is not None else None)
         if call.op_kind not in ("argmax", "argmin"):
             raise ValueError(

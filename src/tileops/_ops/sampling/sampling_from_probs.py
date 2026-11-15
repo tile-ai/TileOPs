@@ -1,6 +1,7 @@
 """The categorical draw from probabilities op."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

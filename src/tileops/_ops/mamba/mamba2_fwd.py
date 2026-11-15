@@ -16,7 +16,8 @@ Chains the five sub-ops in order:
 * All intermediate tensors remain on-device; no host syncs between sub-ops.
 """
 
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -97,9 +98,9 @@ class Mamba2FwdOp(Op):
         A: torch.Tensor,
         B: torch.Tensor,
         C: torch.Tensor,
-        dt_bias: Optional[torch.Tensor] = None,
-        initial_states: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        dt_bias: torch.Tensor | None = None,
+        initial_states: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the full Mamba-2 SSD forward pass.
 
         Args:

@@ -14,7 +14,7 @@ and -inf fills, eliminating host-side ``F.pad`` from the forward path.
 """
 
 import functools
-from typing import Callable
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T

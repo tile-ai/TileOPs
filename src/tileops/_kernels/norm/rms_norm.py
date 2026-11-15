@@ -18,8 +18,6 @@ The fragment may be wider than the row: columns past the row load zero and are n
 stored, and the mean divides by N.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -90,7 +88,7 @@ def _warp_row_shape(n: int, elem_bytes: int) -> tuple:
     return vectors // per_lane, per_lane, max(1, 4 // per_lane)
 
 
-def _paired_width(n: int, elem_bytes: int) -> Optional[int]:
+def _paired_width(n: int, elem_bytes: int) -> int | None:
     """The block width giving each thread two 16-byte vectors of a row of *n*, where that
     width is 64, 128 or 256 threads, else ``None``.
 
@@ -494,7 +492,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         N: int,
         eps: float,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         """Build for a hidden size and dtype.
 
@@ -551,7 +549,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         # Past the shared budget the best width still varies with the row.
         return select_row_configs(self.N_padded, self.dtype, every_width_past_budget=True)
 
-    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
 
         Args:
@@ -611,7 +609,7 @@ class _RMSNormRowsKernel(Kernel, RMSNormFwdInterface):
         identity = (call.n, call.eps, call.dtype)
         return identity, lambda: cls(*identity)
 
-    def __init__(self, N: int, eps: float, dtype: torch.dtype, config: Optional[dict] = None):
+    def __init__(self, N: int, eps: float, dtype: torch.dtype, config: dict | None = None):
         """Build for a hidden size and dtype; ``forward`` resolves the program per row count."""
         super().__init__()
         self.N = N
@@ -627,7 +625,7 @@ class _RMSNormRowsKernel(Kernel, RMSNormFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
 
         Args:
@@ -685,7 +683,7 @@ class RMSNormPairedKernel(_RMSNormRowsKernel):
     _MIN_WAVES = 6
 
     @classmethod
-    def refusal(cls, call: LayerNormCall) -> Optional[str]:
+    def refusal(cls, call: LayerNormCall) -> str | None:
         threads = _paired_width(call.n, call.dtype.itemsize)
         if threads is None:
             return f"a row of {call.n} is not two vectors a thread of 64 to 256 threads"
@@ -745,7 +743,7 @@ class RMSNormTwoPassKernel(_RMSNormRowsKernel):
     _MIN_WAVES = 16
 
     @classmethod
-    def refusal(cls, call: LayerNormCall) -> Optional[str]:
+    def refusal(cls, call: LayerNormCall) -> str | None:
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         shape = _two_pass_shape(call.n, call.dtype.itemsize, call.threads_per_sm)
         threads, chunk, blocks, paired = shape

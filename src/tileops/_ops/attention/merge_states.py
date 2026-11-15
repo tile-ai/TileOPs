@@ -1,6 +1,7 @@
 """Combine partial attention outputs over disjoint key sets."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

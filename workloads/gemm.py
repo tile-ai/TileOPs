@@ -1,7 +1,7 @@
 """Workloads for GEMM, batched matmul and grouped GEMM."""
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import torch
 
@@ -12,7 +12,7 @@ W4A16_GROUP_SIZE = 128
 
 
 def matmul_fp32_reduction(
-    a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+    a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
 ) -> torch.Tensor:
     """``torch.matmul``, or ``torch.addmm`` with a bias, with any split-K partials reduced
     in fp32, as ``GEMMFwdOp`` accumulates.
@@ -90,7 +90,7 @@ class GEMMWorkload(WorkloadBase):
         return a, b
 
     def ref_program(
-        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         if self.trans_a:
             a = a.T
@@ -102,7 +102,7 @@ class GEMMWorkload(WorkloadBase):
         return out.to(a.dtype)
 
     def torch_program(
-        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         return matmul_fp32_reduction(a.T if self.trans_a else a, b.T if self.trans_b else b, bias)
 
@@ -864,7 +864,7 @@ class GroupedGEMMWorkload(WorkloadBase):
         dtype: torch.dtype,
         trans_a: bool,
         trans_b: bool,
-        batch_sizes: Optional[list[int]] = None,
+        batch_sizes: list[int] | None = None,
     ):
         self.batch_sum = batch_sum
         self.batch_count = batch_count

@@ -4,7 +4,8 @@ import functools
 import threading
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar, Dict, Hashable, Iterator, Optional, Sequence, Union
+from collections.abc import Callable, Hashable, Iterator, Sequence
+from typing import Any, ClassVar
 
 import torch
 
@@ -153,7 +154,7 @@ class _Config(dict):
     dict.
     """
 
-    def __init__(self, config: Dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any]) -> None:
         super().__init__((k, _frozen(v)) for k, v in config.items())
 
     def _refuse(self, *args: Any, **kwargs: Any) -> None:
@@ -189,11 +190,11 @@ class _Generation:
 
     __slots__ = ("config", "programs", "building", "previous")
 
-    def __init__(self, config: Dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any]) -> None:
         """Start a generation of a copy of *config*, with no program compiled yet."""
         self.config = None if config is None else _Config(config)
         # What a tuning replaced, restored if a build fails before a launch completes.
-        self.previous: "Optional[_Generation]" = None
+        self.previous: _Generation | None = None
         # Each program by the code that builds it and the launch facts.
         self.programs: dict = {}
         # Concurrent misses build a program once. Reentrant: a build may ask for another
@@ -204,9 +205,9 @@ class _Generation:
 class Kernel(ABC):
     """A TileLang kernel: its build device, its published ``config`` and its autotuning."""
 
-    dtype: Optional[torch.dtype] = None
-    autotune_configs: Optional[list[Dict[str, Any]]] = None
-    supported_archs: Optional[list[int]] = None
+    dtype: torch.dtype | None = None
+    autotune_configs: list[dict[str, Any]] | None = None
+    supported_archs: list[int] | None = None
     kernel: Callable[[dict], Callable]
     _AUTOTUNE_PARAM_ALIASES = {
         "threads_arg": "threads",
@@ -215,7 +216,7 @@ class Kernel(ABC):
     }
 
     @staticmethod
-    def _int_tensor_input_names(jit_kernel: Any, seeds: Dict[str, Any]) -> list[str]:
+    def _int_tensor_input_names(jit_kernel: Any, seeds: dict[str, Any]) -> list[str]:
         """Integer tensor parameters *jit_kernel* takes as inputs, outputs excluded.
 
         Raises:
@@ -286,7 +287,7 @@ class Kernel(ABC):
         return self._generation
 
     @property
-    def config(self) -> Dict[str, Any]:
+    def config(self) -> dict[str, Any]:
         """The configuration of the generation this launch runs, or the published one outside
         a launch. It refuses to change in place.
 
@@ -295,7 +296,7 @@ class Kernel(ABC):
         return self._current().config
 
     @config.setter
-    def config(self, config: Dict[str, Any]) -> None:
+    def config(self, config: dict[str, Any]) -> None:
         self._generation = _Generation(config)
 
     @contextlib.contextmanager
@@ -316,7 +317,7 @@ class Kernel(ABC):
             else:
                 pinned[ident] = outer
 
-    def _publish(self, config: Dict[str, Any], build: Callable[..., Any], *facts: Hashable) -> None:
+    def _publish(self, config: dict[str, Any], build: Callable[..., Any], *facts: Hashable) -> None:
         """Publish *config* with the program *build* compiles for *facts* already in it.
 
         A build that raises publishes nothing.
@@ -326,7 +327,7 @@ class Kernel(ABC):
             self.program(build, *facts)
         self._generation = generation
 
-    def _trying(self, config: Dict[str, Any]) -> contextlib.AbstractContextManager:
+    def _trying(self, config: dict[str, Any]) -> contextlib.AbstractContextManager:
         """Run this thread's launches inside the block under *config*, unpublished.
 
         For timing a tuning candidate; every other thread keeps launching the published
@@ -419,17 +420,17 @@ class Kernel(ABC):
     preferred_over: ClassVar[frozenset[str]] = frozenset()
 
     # Preserve the build device across lazy compilation and tuning; None uses the current one.
-    _build_device: "Optional[torch.device]" = None
+    _build_device: "torch.device | None" = None
 
     # Set when tuning was requested before the program existed; the next launch tunes it.
     _tune_pending: bool = False
     # Whether this kernel has been put in tuned mode, so a second request changes nothing.
     _tune_requested: bool = False
     # The program and seed config tuning measures, for a kernel that names them.
-    _tune_target: "Optional[tuple[Callable, Dict[str, Any]]]" = None
+    _tune_target: "tuple[Callable, dict[str, Any]] | None" = None
 
     @classmethod
-    def refusal(cls, call: Any) -> Optional[str]:
+    def refusal(cls, call: Any) -> str | None:
         """Why this implementation does not serve *call*, or ``None`` when it does.
 
         States the calls it serves, never what a sibling serves; every refusal names the
@@ -444,7 +445,7 @@ class Kernel(ABC):
         return None
 
     @classmethod
-    def unavailable(cls, call: Any) -> Optional[str]:
+    def unavailable(cls, call: Any) -> str | None:
         """Why this class cannot run on *call*'s device, or ``None`` when it can.
 
         From ``devices`` and ``supported_archs``. Selection asks this before ``refusal``.
@@ -515,7 +516,7 @@ class Kernel(ABC):
                 f"{sorted(cls.supported_archs)}, but {where} reports {arch}"
             )
 
-    def _require_devices(self, **tensors: Optional[torch.Tensor]) -> None:
+    def _require_devices(self, **tensors: torch.Tensor | None) -> None:
         """Raise unless every named tensor is on a device type this class's ``devices`` names.
 
         Selection already keeps an op's calls on those devices; this guards a kernel called
@@ -530,7 +531,7 @@ class Kernel(ABC):
                     f"{tensor.device}. Another target's backend serves other devices."
                 )
 
-    def init_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def init_config(self, config: dict[str, Any] | None = None) -> None:
         """Set ``self.config``: *config*'s value for each key it states, the default for the rest.
 
         Tuning is not a construction step: ``request_tune()`` puts the kernel in tuned mode
@@ -555,7 +556,7 @@ class Kernel(ABC):
         return str(dtype).split(".")[-1]
 
     @property
-    def default_config(self) -> Dict[str, Any]:
+    def default_config(self) -> dict[str, Any]:
         """Return the default config for the kernel"""
         return {}
 
@@ -596,7 +597,7 @@ class Kernel(ABC):
         return result
 
     @property
-    def autotune_supply_prog(self) -> Optional[Callable]:
+    def autotune_supply_prog(self) -> Callable | None:
         """Return a supply_prog callback for autotuning input generation.
 
         Override in subclasses whose kernels have scalar (T.int32, etc.) parameters
@@ -608,9 +609,9 @@ class Kernel(ABC):
 
     def _autotune_initial_kwargs(
         self,
-        kernel: Optional[Callable] = None,
-        config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        kernel: Callable | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Return initial JIT kwargs for TileLang autotuner binding.
 
         TileLang 0.1.11 validates/binds the JIT signature before candidate
@@ -641,12 +642,12 @@ class Kernel(ABC):
     def _call_autotuned_kernel(
         self,
         autotuned_kernel_fn: Callable,
-        kernel: Optional[Callable] = None,
-        config: Optional[Dict[str, Any]] = None,
+        kernel: Callable | None = None,
+        config: dict[str, Any] | None = None,
     ) -> Any:
         return autotuned_kernel_fn(**self._autotune_initial_kwargs(kernel=kernel, config=config))
 
-    def _refuse_random_int_inputs(self, jit_kernel: Callable, seeds: Dict[str, Any]) -> None:
+    def _refuse_random_int_inputs(self, jit_kernel: Callable, seeds: dict[str, Any]) -> None:
         """Refuse to tune *jit_kernel* on integer inputs TileLang would randomise.
 
         Raises:
@@ -666,7 +667,7 @@ class Kernel(ABC):
             f"change what the candidates measure."
         )
 
-    def _param_name_aliases(self, jit_kernel: Callable) -> Dict[str, str]:
+    def _param_name_aliases(self, jit_kernel: Callable) -> dict[str, str]:
         """Map config key -> the builder parameter that carries it, for this builder.
 
         TileLang binds a candidate config by parameter name and refuses a key naming
@@ -683,8 +684,8 @@ class Kernel(ABC):
         }
 
     def tuning_candidates(
-        self, configs: Sequence[Dict[str, Any]], untuned: Optional[Dict[str, Any]] = None
-    ) -> list[Dict[str, Any]]:
+        self, configs: Sequence[dict[str, Any]], untuned: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """Return *configs* with the untuned config added when none of them is it.
 
         Tuning keeps the fastest config it times, so a search space that leaves out the
@@ -725,11 +726,11 @@ class Kernel(ABC):
     def tune_jit_kernel(
         self,
         jit_kernel: Callable,
-        configs: list[Dict[str, Any]],
+        configs: list[dict[str, Any]],
         warmup: int = 25,
         rep: int = 50,
-        seed_config: Optional[Dict[str, Any]] = None,
-        supply_prog: Union[Callable, None, object] = _INHERIT_SUPPLY_PROG,
+        seed_config: dict[str, Any] | None = None,
+        supply_prog: Callable | None | object = _INHERIT_SUPPLY_PROG,
     ) -> Any:
         """Benchmark *configs* against one JIT kernel and return the winner.
 
@@ -765,7 +766,7 @@ class Kernel(ABC):
         rename = self._param_name_aliases(jit_kernel)
         if rename:
             configs = [{rename.get(k, k): v for k, v in cfg.items()} for cfg in configs]
-        autotune_kwargs: Dict[str, Any] = dict(configs=configs, warmup=warmup, rep=rep)
+        autotune_kwargs: dict[str, Any] = dict(configs=configs, warmup=warmup, rep=rep)
         if seeds:
             autotune_kwargs["do_not_specialize"] = list(seeds)
         if supply_prog is _INHERIT_SUPPLY_PROG:
@@ -826,14 +827,14 @@ class Kernel(ABC):
             )
         )
 
-    def _publish_tuned(self, config: Dict[str, Any]) -> None:
+    def _publish_tuned(self, config: dict[str, Any]) -> None:
         """Publish a tuned configuration, restoring the replaced one if a build fails before a
         launch under it completes."""
         generation = _Generation(config)
         generation.previous = self.__dict__.get("_generation")
         self._generation = generation
 
-    def _tuned_config(self, tuned: Dict[str, Any]) -> Dict[str, Any]:
+    def _tuned_config(self, tuned: dict[str, Any]) -> dict[str, Any]:
         """The configuration tuning publishes, from *tuned*, the values of the axes it swept.
 
         *tuned* itself by default; a kernel whose program reads more than the swept axes

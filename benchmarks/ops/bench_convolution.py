@@ -12,7 +12,7 @@ Every row is timed against flag_gems' Triton convolutions, ``F.convNd`` eager
 inductor.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import pytest
 import torch
@@ -46,7 +46,7 @@ def _flaggems_conv_baseline(rank: int, workload) -> Callable:
     def baseline_fn(
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return conv_fn(x, weight, bias, stride, padding, dilation, workload.groups)
 

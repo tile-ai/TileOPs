@@ -1,6 +1,6 @@
 import itertools
 import math
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -221,9 +221,9 @@ class GroupedGEMMKernel(Kernel, GroupedGEMMFwdInterface):
         dtype,
         transpose_a: bool = False,
         transpose_b: bool = True,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.batch_sum = batch_sum

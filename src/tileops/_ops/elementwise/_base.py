@@ -14,7 +14,8 @@ type is not a construction parameter: an instance serves whichever dtype its cal
 passes, one specialization per element type, built on first use.
 """
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

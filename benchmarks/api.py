@@ -10,8 +10,8 @@ import functools
 import gc
 import statistics
 import warnings
-from collections.abc import Mapping
-from typing import Any, Callable, Optional
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import torch
 
@@ -79,9 +79,9 @@ class Implementation:
     """
 
     run: Callable
-    args: Optional[tuple] = None
-    reset: Optional[Callable[[], None]] = None
-    noncomparable_reason: Optional[str] = None
+    args: tuple | None = None
+    reset: Callable[[], None] | None = None
+    noncomparable_reason: str | None = None
 
 
 def _report_value(value: Any) -> Any:
@@ -128,12 +128,12 @@ class Case:
         return arguments() if arguments is not None else self._call.arguments({})
 
     @functools.cached_property
-    def reference(self) -> Optional[Callable]:
+    def reference(self) -> Callable | None:
         """The callable whose result every implementation is checked against."""
         return getattr(self.workload, "ref_program", None)
 
     @functools.cached_property
-    def torch(self) -> Optional[Callable]:
+    def torch(self) -> Callable | None:
         """The op as torch runs it at the input dtype; the reference where none is declared."""
         return getattr(self.workload, "torch_program", None) or self.reference
 
@@ -197,7 +197,7 @@ class Runner:
             raise ValueError(f"{name} cannot run case {case.id!r} of {case._call.signature.name}")
         self.op = op
         self.case = case
-        self._roofline: Optional[tuple[float, float]] = None
+        self._roofline: tuple[float, float] | None = None
 
     def compare(self, implementations: Any) -> dict[str, dict]:
         """Verify every implementation, then time all of them in both orders and record them.

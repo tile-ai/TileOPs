@@ -12,8 +12,6 @@ An empty sequence (``e == a``) keeps its state.
 The products accumulate in float32 and the output rounds once to the input dtype.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -352,8 +350,8 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         has_bias: bool,
         has_init: bool,
         silu: bool,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dim, self.width, self.dtype = dim, width, dtype
@@ -381,8 +379,8 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         weight: torch.Tensor,
         conv_state: torch.Tensor,
         cu_seqlens: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-        has_initial_state: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
+        has_initial_state: torch.Tensor | None = None,
     ) -> torch.Tensor:
         y = torch.empty_like(x)
         batch = cu_seqlens.shape[0] - 1
@@ -499,8 +497,8 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         dtype: torch.dtype,
         has_bias: bool,
         silu: bool,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dim, self.width, self.dtype = dim, width, dtype
@@ -523,7 +521,7 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         x: torch.Tensor,
         weight: torch.Tensor,
         conv_state: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         y = torch.empty_like(x)
         self.program(self._compile)(

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import torch
 
@@ -80,7 +79,7 @@ class Conv2dCall(CallSpec):
     padding: tuple[int, int] = (0, 0)
     # The padding after each axis where it differs from ``padding``, the padding before;
     # ``padding='same'`` with an odd total puts the extra element here, as torch does.
-    padding_end: Optional[tuple[int, int]] = None
+    padding_end: tuple[int, int] | None = None
     dilation: tuple[int, int] = (1, 1)
     groups: int = 1
     out_h: int = 1
@@ -126,7 +125,7 @@ class Conv3dCall(CallSpec):
     padding: tuple[int, int, int] = (0, 0, 0)
     # The padding after each axis where it differs from ``padding``, the padding before;
     # ``padding='same'`` with an odd total puts the extra element here, as torch does.
-    padding_end: Optional[tuple[int, int, int]] = None
+    padding_end: tuple[int, int, int] | None = None
     dilation: tuple[int, int, int] = (1, 1, 1)
     groups: int = 1
     out_d: int = 1
@@ -158,7 +157,7 @@ class Conv1dFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(
-        self, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         """Convolve *x* with *weight*; nothing is written in place.
 
@@ -185,7 +184,7 @@ class Conv2dFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(
-        self, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         """Convolve *x* with *weight*; nothing is written in place.
 
@@ -213,7 +212,7 @@ class Conv3dFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(
-        self, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         """Convolve *x* with *weight*; nothing is written in place.
 

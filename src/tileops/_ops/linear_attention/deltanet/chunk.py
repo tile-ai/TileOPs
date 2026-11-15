@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -63,7 +64,7 @@ class DeltaNetChunkFwdOp(Op):
         k: torch.Tensor,
         v: torch.Tensor,
         beta: torch.Tensor,
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, ...]:
         """Run deltanet forward.
 
         Args:
@@ -139,7 +140,7 @@ class DeltaNetChunkBwdOp(Op):
         Au: torch.Tensor,
         w: torch.Tensor,
         u: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run deltanet backward.
 
         Args:

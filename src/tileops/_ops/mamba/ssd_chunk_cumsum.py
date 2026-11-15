@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -63,8 +64,8 @@ class SSDChunkCumsumFwdOp(Op):
         self,
         dt: torch.Tensor,
         A: torch.Tensor,
-        dt_bias: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        dt_bias: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the dA_cumsum forward pass.
 
         Args:

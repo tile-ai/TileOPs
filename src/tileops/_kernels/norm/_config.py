@@ -4,8 +4,6 @@ Non-power-of-two fragment rows use ``block_m=1``: larger row blocks can produce
 replicated layouts, register spills, and serial reductions. Whole 16-byte-vector
 rows up to 1024 elements can instead use an unpadded warp reduction."""
 
-from typing import Optional
-
 import tilelang.language as T
 import torch
 
@@ -79,7 +77,7 @@ def select_row_config() -> dict:
     return {"block_m": 1, "threads": default_threads}
 
 
-def select_row_config_by_width(n_padded: int, widths: Optional[tuple] = None) -> dict:
+def select_row_config_by_width(n_padded: int, widths: tuple | None = None) -> dict:
     """``{block_m, threads}`` for a row reduction, sized by the row itself.
 
     Args:
@@ -274,7 +272,7 @@ def make_corrected_row_reduce(block_m, n, n_padded, eps):
     return corrected_row_reduce
 
 
-def warp_row_vector(n: int, elem_bytes: int) -> Optional[int]:
+def warp_row_vector(n: int, elem_bytes: int) -> int | None:
     """Return a 16-byte vector width for aligned rows of at most 1024 elements."""
     vec = VECTOR_ACCESS_BYTES // elem_bytes
     # At 2048 16-bit columns the fragment body led it on H200: by 3% at 128 rows with one

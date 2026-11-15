@@ -11,7 +11,7 @@ Query token ``i`` of request ``b`` sits at position ``kv_len_b - q_len_b + i`` a
 token ``j`` at position ``j``.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -338,8 +338,8 @@ class VarlenKeyRoPE:
         self,
         k: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
-        rope_cos: Optional[torch.Tensor],
-        rope_sin: Optional[torch.Tensor],
+        rope_cos: torch.Tensor | None,
+        rope_sin: torch.Tensor | None,
     ) -> torch.Tensor:
         if rope_cos is None or rope_sin is None:
             raise ValueError("fused RoPE requires rope_cos and rope_sin")

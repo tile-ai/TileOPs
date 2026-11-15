@@ -2,7 +2,8 @@
 CB Producer Op - High-level interface for CB matrix computation.
 """
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

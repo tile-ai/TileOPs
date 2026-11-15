@@ -6,7 +6,7 @@ its key and value rows, so the guard and the slot load are paid once for the two
 An FP8 cache divides by the scale and uses a saturating cast that preserves NaN.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -120,8 +120,8 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
         page_size: int,
         dtype: torch.dtype,
         cache_dtype: torch.dtype,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ):
         """Build the program for one page pool geometry.
 
@@ -199,8 +199,8 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
         k_pages: torch.Tensor,
         v_pages: torch.Tensor,
         slot_mapping: torch.Tensor,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
     ) -> None:
         """Write the rows the slots name into both pools; see the interface for the contract."""
         # A call of no tokens writes nothing. The page pools it is handed still hold

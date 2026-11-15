@@ -11,7 +11,8 @@ import dataclasses
 import functools
 import math
 from abc import abstractmethod
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 import tilelang
 import tilelang.language as T
@@ -1346,7 +1347,7 @@ def _four_step_record(factors: tuple, tile: tuple, dtype: str) -> _FFTPlan:
     )
 
 
-def _plan_table() -> Dict[tuple, _FFTPlan]:
+def _plan_table() -> dict[tuple, _FFTPlan]:
     """One record per served (length, dtype); every one-CTA builder takes (row, grp)."""
 
     radix_plan = {
@@ -1481,7 +1482,7 @@ def _plan_table() -> Dict[tuple, _FFTPlan]:
     return dict(sorted(records.items(), key=lambda kv: (kv[0][0], kv[0][1] != "complex64")))
 
 
-def _narrow_plan_table() -> Dict[tuple, _FFTPlan]:
+def _narrow_plan_table() -> dict[tuple, _FFTPlan]:
     """One decomposed record per ``narrow_plan`` key, naming the architectures it alone serves."""
 
     narrow_plan = {
@@ -1509,11 +1510,11 @@ def _narrow_plan_table() -> Dict[tuple, _FFTPlan]:
     return records
 
 
-FFT_PLANS: Dict[tuple, _FFTPlan] = _plan_table()
-FFT_NARROW_PLANS: Dict[tuple, _FFTPlan] = _narrow_plan_table()
+FFT_PLANS: dict[tuple, _FFTPlan] = _plan_table()
+FFT_NARROW_PLANS: dict[tuple, _FFTPlan] = _narrow_plan_table()
 
 
-def _plan_for(n: int, dtype: str, arch: int, decomposed: bool) -> Optional[_FFTPlan]:
+def _plan_for(n: int, dtype: str, arch: int, decomposed: bool) -> _FFTPlan | None:
     """The record serving (n, dtype) on *arch* with *decomposed* launches, if one does."""
     narrow = FFT_NARROW_PLANS.get((n, dtype))
     plan = narrow if narrow is not None and arch in narrow.archs else FFT_PLANS.get((n, dtype))
@@ -1594,8 +1595,8 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         self,
         n: int,
         dtype: torch.dtype = torch.complex64,
-        config: Optional[Dict[str, Any]] = None,
-        device_index: Optional[int] = None,
+        config: dict[str, Any] | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -1607,7 +1608,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         self._tables: dict = {}
         self.init_config(config)
 
-    def _check_config(self, config: Dict[str, Any]) -> None:
+    def _check_config(self, config: dict[str, Any]) -> None:
         """Refuse strides below the record's floor or past the shared-memory limit.
 
         Raises:
@@ -1636,7 +1637,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
             )
 
     @property
-    def default_config(self) -> Dict[str, Any]:
+    def default_config(self) -> dict[str, Any]:
         row, grp = self.plan.pad[0]
         return {"row": row, "grp": grp}
 
@@ -1688,7 +1689,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         self.program(self._compile)(x_pair, *self._tables[index], y_pair)
         return y_pair
 
-    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+    def _compile(self, cfg: dict[str, Any]) -> Callable:
         """The program ``_transform`` launches, compiled at *cfg*'s padding."""
         return self.kernel(cfg["row"], cfg["grp"])
 
@@ -1725,8 +1726,8 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
         self,
         n: int,
         dtype: torch.dtype = torch.complex64,
-        config: Optional[Dict[str, Any]] = None,
-        device_index: Optional[int] = None,
+        config: dict[str, Any] | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -1745,7 +1746,7 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
             return False
         return self.plan.four_step_smem_bytes(index, tw, strides) <= self.plan.smem_cap
 
-    def _check_config(self, config: Dict[str, Any]) -> None:
+    def _check_config(self, config: dict[str, Any]) -> None:
         """Refuse a tile or stride set that breaks a kernel's structural bounds.
 
         Raises:
@@ -1778,7 +1779,7 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
                 )
 
     @property
-    def default_config(self) -> Dict[str, Any]:
+    def default_config(self) -> dict[str, Any]:
         return {"tile": self.plan.tile, "pad": self.plan.pad}
 
     @property
@@ -1895,7 +1896,7 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
             program(chain[i], *tables, chain[i + 1])
         return chain[-1]
 
-    def _compile(self, cfg: Dict[str, Any]) -> tuple:
+    def _compile(self, cfg: dict[str, Any]) -> tuple:
         """The factor programs, in launch order, compiled at *cfg*'s tiles and strides."""
         tile, pad = cfg["tile"], cfg["pad"]
         return tuple(

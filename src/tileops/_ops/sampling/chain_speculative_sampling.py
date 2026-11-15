@@ -1,6 +1,7 @@
 """The chain speculative sampling op."""
 
-from typing import ClassVar, Mapping, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -66,7 +67,7 @@ class ChainSpeculativeSamplingFwdOp(Op):
         target_probs: torch.Tensor,
         seed: torch.Tensor,
         offset: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Verify the draft chains and draw the token after each accepted prefix.
 
         Args:

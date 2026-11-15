@@ -1,7 +1,8 @@
 """Root Mean Square (RMS) norm operator."""
 
 import math
-from typing import ClassVar, Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import ClassVar
 
 import torch
 
@@ -55,7 +56,7 @@ class RMSNormFwdOp(Op):
     def __init__(
         self,
         normalized_shape: Sequence[int],
-        eps: Optional[float] = None,
+        eps: float | None = None,
         *,
         target: Target = None,
     ) -> None:
@@ -72,7 +73,7 @@ class RMSNormFwdOp(Op):
         self.eps = eps
         super().__init__(target=target)
 
-    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, weight: torch.Tensor | None = None) -> torch.Tensor:
         """Apply RMS normalization over the trailing ``normalized_shape``.
 
         Args:

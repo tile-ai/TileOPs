@@ -7,7 +7,8 @@ column axis: each K step is an ``m64n8`` product rather than an ``m64nN`` one, a
 grid is one CTA per 64 columns of the output.
 """
 
-from typing import Callable, ClassVar, Optional
+from collections.abc import Callable
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -123,8 +124,8 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
         k: int,
         dtype: torch.dtype,
         out_dtype: torch.dtype,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.m = m
@@ -157,7 +158,7 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
         b: torch.Tensor,
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if bias is not None:
             raise ValueError(f"{type(self).__name__} has no bias epilogue")

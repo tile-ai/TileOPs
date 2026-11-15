@@ -6,7 +6,7 @@ warpgroups accumulate dQ, dK, and dV over 48 keys each. A final launch writes
 dQ in q's layout and dtype. Scheduling keeps longest-request tiles together.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -688,7 +688,7 @@ class _MLABwdWSKernelBase(Kernel):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def refusal(cls, call: MLABwdCall) -> Optional[str]:
+    def refusal(cls, call: MLABwdCall) -> str | None:
         # mla_bwd_wgmma.h instantiates its WGMMAs for this head only.
         if (call.dim_qk, call.dim_v) != (192, 128):
             return (
@@ -727,10 +727,10 @@ class _MLABwdWSKernelBase(Kernel):
         seqlen_kv: int,
         is_causal: bool,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        config: Optional[dict] = None,
+        sm_scale: float | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch, self.heads = batch, heads

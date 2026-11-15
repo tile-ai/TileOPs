@@ -1,7 +1,5 @@
 """Single-token Gated DeltaNet (GDN) inference decode."""
 
-from typing import Optional, Tuple
-
 import torch
 
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -27,7 +25,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
     supported_archs = [80, 89, 90]
 
     @classmethod
-    def refusal(cls, call: GDNCall) -> Optional[str]:
+    def refusal(cls, call: GDNCall) -> str | None:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         One token continuing a 64- or 128-wide square state, in either layout, under
@@ -161,7 +159,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         cu_seqlens_cpu: torch.Tensor | None = None,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         del cu_seqlens, cu_seqlens_cpu
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         if self.has_initial_state and initial_state is None:

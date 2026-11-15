@@ -11,7 +11,6 @@ element once; the fp32 kernel runs one block a head.
 """
 
 import math
-from typing import Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -158,7 +157,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
     general = True
 
     @classmethod
-    def refusal(cls, call: GLADecodeCall) -> Optional[str]:
+    def refusal(cls, call: GLADecodeCall) -> str | None:
         return head_count_refusal(call.heads)
 
     @classmethod
@@ -173,8 +172,8 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         dim_v: int,
         scale: float,
         dtype: str = "float32",
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -261,7 +260,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         v: torch.Tensor,
         gk: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.program(self._compile)(q, k, v, gk, state)
 
 
@@ -390,8 +389,8 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         dim_v: int,
         scale: float,
         dtype: str = "float32",
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         if dtype != "float32":
@@ -474,5 +473,5 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         v: torch.Tensor,
         gk: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.program(self._compile)(q, k, v, gk, state)

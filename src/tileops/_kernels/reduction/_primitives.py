@@ -14,9 +14,9 @@ the op's contract rather than a kernel's.
 
 import functools
 import itertools
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import prod
-from typing import Callable
 
 import tilelang
 import tilelang.language as T

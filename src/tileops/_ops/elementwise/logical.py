@@ -1,6 +1,7 @@
 """Element-wise logical ops (output bool)."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 from tileops._kernels.elementwise import (
     LogicalAndBoolStorageFwdKernel,

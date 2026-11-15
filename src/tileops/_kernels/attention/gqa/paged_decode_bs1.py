@@ -8,8 +8,6 @@ Logical KV tiles are translated through the page table before TMA. SM90-only, lo
 ``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -162,7 +160,7 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         return super().refusal(call)
 
     @staticmethod
-    def block_n_for_page_size(page_size: int) -> Optional[int]:
+    def block_n_for_page_size(page_size: int) -> int | None:
         """Return a page-contained WGMMA N tile, or None when the fast path is unsafe."""
         try:
             block_n = gqa_decode_paged_block_ns(page_size)[0]
@@ -200,10 +198,10 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         page_size,
         max_pages_per_req,
         dtype="float16",
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -249,13 +247,13 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         V: torch.Tensor,
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
-        cu_seqlens_q: Optional[torch.Tensor] = None,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        cu_seqlens_q: torch.Tensor | None = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ):
         """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
         capacity = self.max_pages_per_req * self.page_size

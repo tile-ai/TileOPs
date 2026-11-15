@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import enum
 import math
-from typing import TypeAlias
 
 import torch
 
@@ -58,22 +57,22 @@ class ContiguousLayoutSpec:
             raise ValueError("aligned contiguous packing requires alignment > 1")
 
     @classmethod
-    def tight_physical_psum(cls) -> "ContiguousLayoutSpec":
+    def tight_physical_psum(cls) -> ContiguousLayoutSpec:
         """Use tight rows described by per-expert physical segment ends."""
         return cls(ContiguousPacking.TIGHT, ContiguousMetadata.PHYSICAL_PSUM)
 
     @classmethod
-    def tight_per_row(cls) -> "ContiguousLayoutSpec":
+    def tight_per_row(cls) -> ContiguousLayoutSpec:
         """Use tight rows described by one expert ID per materialized row."""
         return cls(ContiguousPacking.TIGHT, ContiguousMetadata.PER_ROW)
 
     @classmethod
-    def aligned_per_row(cls, alignment: int) -> "ContiguousLayoutSpec":
+    def aligned_per_row(cls, alignment: int) -> ContiguousLayoutSpec:
         """Use aligned expert segments described by one expert ID per row."""
         return cls(ContiguousPacking.ALIGNED, ContiguousMetadata.PER_ROW, alignment)
 
     @classmethod
-    def aligned_physical_psum(cls, alignment: int) -> "ContiguousLayoutSpec":
+    def aligned_physical_psum(cls, alignment: int) -> ContiguousLayoutSpec:
         """Use aligned expert segments described by per-expert physical segment ends."""
         return cls(ContiguousPacking.ALIGNED, ContiguousMetadata.PHYSICAL_PSUM, alignment)
 
@@ -119,7 +118,7 @@ class MaskedLayoutSpec:
         return "masked"
 
 
-MGroupedLayoutSpec: TypeAlias = ContiguousLayoutSpec | MaskedLayoutSpec
+type MGroupedLayoutSpec = ContiguousLayoutSpec | MaskedLayoutSpec
 
 
 @dataclasses.dataclass(frozen=True)

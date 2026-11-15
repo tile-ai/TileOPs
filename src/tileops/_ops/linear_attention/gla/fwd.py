@@ -1,6 +1,7 @@
 """Inference-facing GLA contract with dense-prefill and decode dispatch."""
 
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -47,7 +48,7 @@ class GLAFwdOp(Op):
 
     def __init__(
         self,
-        scale: Optional[float] = None,
+        scale: float | None = None,
         *,
         validate_inputs: bool = False,
         target: Target = None,
@@ -77,10 +78,10 @@ class GLAFwdOp(Op):
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run GLA prefill or decode and return output plus final FP32 state.
 
         Args:

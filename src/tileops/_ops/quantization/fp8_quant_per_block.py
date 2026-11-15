@@ -1,6 +1,7 @@
 """Per-block (128x128) FP8 quantization operator."""
 
-from typing import ClassVar, Mapping, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -51,7 +52,7 @@ class FP8QuantPerBlockFwdOp(Op):
         """
         super().__init__(target=target)
 
-    def forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Quantize each 128x128 tile of ``w`` against its own absolute maximum.
 
         Args:

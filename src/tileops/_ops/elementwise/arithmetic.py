@@ -1,6 +1,7 @@
 """Binary arithmetic elementwise ops with broadcasting."""
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -118,7 +119,7 @@ class DivFwdOp(BinaryOp):
     def __init__(
         self,
         *,
-        rounding_mode: Optional[str] = None,
+        rounding_mode: str | None = None,
         target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.

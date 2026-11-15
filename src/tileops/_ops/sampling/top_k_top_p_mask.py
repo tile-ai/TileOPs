@@ -1,6 +1,7 @@
 """The top-k then top-p logit filter op."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

@@ -11,7 +11,8 @@ Input tensors accept shape (N, C, *spatial); the kernel reshapes to
 """
 
 import math
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -74,8 +75,8 @@ class GroupNormFwdOp(Op):
     def forward(
         self,
         input: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Apply group normalization.
 

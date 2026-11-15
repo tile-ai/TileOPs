@@ -1,7 +1,5 @@
 """Route-indexed small-M expert MLP kernels."""
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -271,7 +269,7 @@ class IndexedRouteStatsKernel(Kernel, IndexedRouteStatsFwdInterface):
         top_k: int,
         num_experts: int,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.num_tokens = num_tokens
@@ -320,8 +318,8 @@ class IndexedExpertGEMMTemplate(Kernel):
         activation: str = "none",
         route_input: bool = False,
         dispatch_mode: str = "direct",
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         if activation not in ("none", "silu_and_mul"):
@@ -460,7 +458,7 @@ class IndexedWeightedReduceKernel(Kernel, IndexedWeightedReduceFwdInterface):
         dtype: torch.dtype,
         scaling: float,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.num_tokens = num_tokens

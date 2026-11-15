@@ -9,8 +9,9 @@ from __future__ import annotations
 import threading
 import traceback
 import warnings
+from collections.abc import Callable
 from importlib.metadata import entry_points
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
 from tileops.backend._errors import BackendError
 from tileops.backend._protocol import BuildKernel, DetectFn, ReadDeviceFacts, Target

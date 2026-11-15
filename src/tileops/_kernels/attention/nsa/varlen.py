@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import torch
@@ -374,7 +374,7 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
         selected_blocks: int,
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -443,7 +443,7 @@ class NSAFwdVarlenTMAKernel(NSAFwdVarlenKernel):
     preferred_over = frozenset({"nsa_fwd_varlen_kernel"})
 
     @classmethod
-    def refusal(cls, call: NSACall) -> Optional[str]:
+    def refusal(cls, call: NSACall) -> str | None:
         """Head dims the MMA K step tiles, and a slot mask that fits one int32."""
         if call.dim % 16 != 0:
             return f"head dim {call.dim} is not a multiple of the MMA K step 16"

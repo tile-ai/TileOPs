@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -54,7 +55,7 @@ class NSATopKVarlenFwdOp(Op):
         *,
         selected_block_num: int,
         block_size: int,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
@@ -151,7 +152,7 @@ class NSAVarlenFwdOp(Op):
         self,
         *,
         block_size: int,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         is_causal: bool = True,
         validate_inputs: bool = False,
         target: Target = None,
@@ -264,7 +265,7 @@ class NSACompressedVarlenFwdOp(Op):
         self,
         *,
         block_size: int,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
@@ -299,7 +300,7 @@ class NSACompressedVarlenFwdOp(Op):
         cu_seqlens: torch.Tensor,
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Attend each token to its request's compressed chunks.
 
         Args:

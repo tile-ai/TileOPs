@@ -2,7 +2,6 @@
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -24,8 +23,8 @@ class PagedKVCacheGatherCall(CallSpec):
     page_size: int = 0
     table_width: int = 0
     row_width: int = 0
-    dtype: Optional[torch.dtype] = None
-    out_dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
+    out_dtype: torch.dtype | None = None
     has_starts: bool = False
 
 

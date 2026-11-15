@@ -1,5 +1,6 @@
 import warnings
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -92,7 +93,7 @@ class GEMMFwdOp(Op):
         super().__init__(target=target)
 
     def forward(
-        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         """Multiply the two matrices under the layout the constructor selected, and add
         the bias.
@@ -178,7 +179,7 @@ class GEMMFP8FwdOp(Op):
         b: torch.Tensor,
         a_scale: torch.Tensor,
         b_scale: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Multiply the two FP8 matrices, apply the scales, and add the bias.
 
@@ -275,7 +276,7 @@ class GEMMINT8W8A8FwdOp(Op):
         b: torch.Tensor,
         a_scale: torch.Tensor,
         b_scale: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Multiply the two INT8 matrices, dequantize, and add the bias.
 

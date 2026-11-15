@@ -1,6 +1,7 @@
 """NanToNum op: replace NaN, +Inf, -Inf with specified values."""
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -21,8 +22,8 @@ class NanToNumFwdOp(UnaryOp):
         self,
         *,
         nan: float = 0.0,
-        posinf: Optional[float] = None,
-        neginf: Optional[float] = None,
+        posinf: float | None = None,
+        neginf: float | None = None,
         target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.

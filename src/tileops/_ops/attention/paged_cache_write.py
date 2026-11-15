@@ -4,7 +4,8 @@ Provides:
   - PagedKVCacheWriteFwdOp: k_cache[slot_mapping] = k, v_cache[slot_mapping] = v
 """
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -60,8 +61,8 @@ class PagedKVCacheWriteFwdOp(Op):
         k_cache: torch.Tensor,
         v_cache: torch.Tensor,
         slot_mapping: torch.Tensor,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
     ) -> None:
         """Write each token's key and value row into the page-pool row its slot names.
 

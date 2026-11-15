@@ -1,4 +1,5 @@
-from typing import Callable, ClassVar, Mapping, Optional
+from collections.abc import Callable, Mapping
+from typing import ClassVar
 
 import torch
 
@@ -71,11 +72,11 @@ class GQAVarlenFwdOp(Op):
         is_causal: bool = False,
         window_size_left: int = -1,
         window_size_right: int = -1,
-        sm_scale: Optional[float] = None,
-        softcap: Optional[float] = None,
-        out_dtype: Optional[torch.dtype] = None,
+        sm_scale: float | None = None,
+        softcap: float | None = None,
+        out_dtype: torch.dtype | None = None,
         pos_encoding_mode: str = "none",
-        rotary_dim: Optional[int] = None,
+        rotary_dim: int | None = None,
         rope_layout: str = "neox",
         *,
         validate_inputs: bool = False,
@@ -114,7 +115,7 @@ class GQAVarlenFwdOp(Op):
         """Varlen attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
-    def _varlen_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
+    def _varlen_call(self, inputs: tuple[torch.Tensor | None, ...]) -> AttentionCall:
         """Describe one packed call using tensor shapes and Op semantics."""
         q, k, _v, cu_q, _cu_kv, _qs, _ks, _vs, rope_cos, _rope_sin, sinks = inputs
         assert q is not None and k is not None and cu_q is not None
@@ -144,16 +145,14 @@ class GQAVarlenFwdOp(Op):
             device=q.device,
         )
 
-    def _get_kernel(
-        self, inputs: tuple[Optional[torch.Tensor], ...]
-    ) -> Callable[..., torch.Tensor]:
+    def _get_kernel(self, inputs: tuple[torch.Tensor | None, ...]) -> Callable[..., torch.Tensor]:
         """Return the ``gqa_varlen`` kernel for *inputs*."""
         return self.kernel_for("gqa_varlen", lambda: self._varlen_call(inputs))
 
     @staticmethod
     def _canonicalize_inputs(
-        *inputs: Optional[torch.Tensor],
-    ) -> tuple[Optional[torch.Tensor], ...]:
+        *inputs: torch.Tensor | None,
+    ) -> tuple[torch.Tensor | None, ...]:
         return tuple(tensor.contiguous() if tensor is not None else None for tensor in inputs)
 
     def forward(
@@ -163,12 +162,12 @@ class GQAVarlenFwdOp(Op):
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run packed Varlen GQA; Q/K/V use ``[total_tokens, heads, dim]``.
 

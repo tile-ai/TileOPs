@@ -2,7 +2,8 @@
 
 import contextlib
 import functools
-from typing import Any, Callable, Iterator, NamedTuple, Optional
+from collections.abc import Callable, Iterator
+from typing import Any, NamedTuple
 
 import torch
 
@@ -14,18 +15,18 @@ __all__ = ["BuildTarget", "building_on", "current_target", "target_cache", "targ
 class BuildTarget(NamedTuple):
     """The device facts a build compiles for, with their device type."""
 
-    kind: Optional[str]
+    kind: str | None
     arch: int
     sm_count: int
     smem_budget: int
-    calibration: Optional[str]
+    calibration: str | None
     threads_per_sm: int
     regs_per_sm: int
     smem_per_sm: int
     l2_bytes: int
 
 
-def target_of(device: Optional[torch.device]) -> BuildTarget:
+def target_of(device: torch.device | None) -> BuildTarget:
     """The build target of *device*; ``None`` names the current device."""
     from tileops.backend._dispatch import device_facts_and_tuning
 
@@ -41,7 +42,7 @@ def current_target() -> BuildTarget:
 
 
 @contextlib.contextmanager
-def building_on(device: Optional[torch.device]) -> Iterator[None]:
+def building_on(device: torch.device | None) -> Iterator[None]:
     """Make *device* current and set its compilation target.
 
     Match TileLang's architecture spelling so explicit and detected targets share cache entries.
@@ -59,7 +60,7 @@ def building_on(device: Optional[torch.device]) -> Iterator[None]:
             yield
 
 
-def target_cache(maxsize: Optional[int] = 128) -> Callable[[Callable], Callable]:
+def target_cache(maxsize: int | None = 128) -> Callable[[Callable], Callable]:
     """LRU cache keyed by arguments and the current build target.
 
     Compile JIT objects directly to bypass their argument-only cache. Every argument of the

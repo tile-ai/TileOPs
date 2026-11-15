@@ -1,5 +1,4 @@
 import itertools
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -195,7 +194,7 @@ class MHCPreKernel(Kernel, MHCPreFwdInterface):
         n_expand,
         c_x,
         dtype: torch.dtype = torch.float32,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.batch = batch

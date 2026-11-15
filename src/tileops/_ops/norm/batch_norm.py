@@ -19,7 +19,8 @@ Input tensors accept any shape ``(N, C, *spatial)``; the kernels take its contig
 """
 
 import math
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -111,11 +112,11 @@ class BatchNormFwdOp(Op):
     def forward(
         self,
         input: torch.Tensor,
-        running_mean: Optional[torch.Tensor] = None,
-        running_var: Optional[torch.Tensor] = None,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        running_mean: torch.Tensor | None = None,
+        running_var: torch.Tensor | None = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """Run batch normalization forward pass.
 
         The ``training`` mode is bound at ctor time. Construct a separate
@@ -231,8 +232,8 @@ class BatchNormBwdOp(Op):
         save_mean: torch.Tensor,
         save_invstd: torch.Tensor,
         *,
-        weight: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        weight: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run batch normalization backward pass.
 
         Args:

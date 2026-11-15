@@ -1,6 +1,6 @@
 """DeepSpeed-compatible per-group asymmetric INT4 quantization."""
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -163,13 +163,13 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
     _PER_CTA: ClassVar[bool]
 
     @classmethod
-    def refusal(cls, call: QuantizeCall) -> Optional[str]:
+    def refusal(cls, call: QuantizeCall) -> str | None:
         reason = super().refusal(call)
         if reason is None and call.rows * call.cols > 2**31 - 1:
             return f"indexes elements with int32, and N * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.kernel = _int4_quant_per_group_kernel(

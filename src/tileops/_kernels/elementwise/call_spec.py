@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import torch
 
@@ -93,14 +92,14 @@ class DivCall(BroadcastCall):
     """A division call; ``rounding_mode`` is the op's construction parameter, as in
     ``torch.div``: ``None``, ``"trunc"`` or ``"floor"``."""
 
-    rounding_mode: Optional[str] = None
+    rounding_mode: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
 class AlphaScaledCall(BroadcastCall):
     """A binary call whose second operand is scaled by ``alpha`` before combining."""
 
-    alpha: "int | float" = 1
+    alpha: int | float = 1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -153,8 +152,8 @@ class ELUCall(ElementwiseCall):
 class BoundsCall(ElementwiseCall):
     """A clamping call; ``None`` on either side leaves that side unbounded."""
 
-    min_val: Optional[float] = None
-    max_val: Optional[float] = None
+    min_val: float | None = None
+    max_val: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -175,8 +174,8 @@ class NanToNumCall(ElementwiseCall):
     """
 
     nan: float = 0.0
-    posinf: Optional[float] = None
-    neginf: Optional[float] = None
+    posinf: float | None = None
+    neginf: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -190,7 +189,7 @@ class RoundCall(ElementwiseCall):
 class MaskedFillCall(ElementwiseCall):
     """A scalar-value masked_fill call; ``value`` is the op's construction parameter."""
 
-    value: "bool | int | float" = 0.0
+    value: bool | int | float = 0.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -570,8 +569,8 @@ class ClampTensorFwdInterface(KernelInterface):
     def forward(
         self,
         input: torch.Tensor,
-        min: Optional[torch.Tensor],
-        max: Optional[torch.Tensor],
+        min: torch.Tensor | None,
+        max: torch.Tensor | None,
     ) -> torch.Tensor:
         """Clamp each element between the bounds; nothing is written in place.
 

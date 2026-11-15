@@ -1,7 +1,6 @@
 """1-D convolution kernels: dense, grouped, and the pointwise (kernel size 1) form."""
 
 import itertools
-from typing import Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -657,7 +656,7 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+    def refusal(cls, call: Conv1dCall) -> str | None:
         if not (
             call.groups == 1
             and call.kernel_l == 1
@@ -688,9 +687,9 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
         c_out: int,
         dtype: torch.dtype,
         has_bias: bool = False,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -749,7 +748,7 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         weight_2d = weight[:, :, 0].contiguous()
         return launch(self, x, weight_2d, bias=bias)
@@ -763,7 +762,7 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
     _builder = staticmethod(_conv1d_kernel)
 
     @classmethod
-    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+    def refusal(cls, call: Conv1dCall) -> str | None:
         if call.groups != 1:
             return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
@@ -793,13 +792,13 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
         c_out: int,
         kernel_l: int,
         stride_l: int,
-        pad_l: Tuple[int, int],
+        pad_l: tuple[int, int],
         dtype: torch.dtype,
         dilation_l: int = 1,
         has_bias: bool = False,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -876,7 +875,7 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # The implicit-GEMM K axis is (kernel_l, c_in). Materialize it from live
         # weights so inference tensors and graph replay need no version cache.
@@ -896,7 +895,7 @@ class Conv1dUnitStrideKernel(Conv1dKernel):
     _builder = staticmethod(_conv1d_unit_stride_kernel)
 
     @classmethod
-    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+    def refusal(cls, call: Conv1dCall) -> str | None:
         if call.stride_l != 1 or call.kernel_l <= 1 or call.c_in < 16:
             return "serves unit stride, a kernel wider than 1 and at least 16 input channels"
         return super().refusal(call) or operand_refusal(call.n * call.c_out * call.out_l)
@@ -954,7 +953,7 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         return call.n * call.groups
 
     @classmethod
-    def refusal(cls, call: Conv1dCall) -> Optional[str]:
+    def refusal(cls, call: Conv1dCall) -> str | None:
         if call.groups <= 1:
             return "serves grouped convolution"
         return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
@@ -987,16 +986,16 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         c_out: int,
         kernel_l: int,
         stride_l: int,
-        pad_l: Tuple[int, int],
+        pad_l: tuple[int, int],
         dtype: torch.dtype,
         dilation_l: int = 1,
         has_bias: bool = False,
         groups: int = 1,
-        c_in_g: Optional[int] = None,
-        c_out_g: Optional[int] = None,
-        config: Optional[dict] = None,
+        c_in_g: int | None = None,
+        c_out_g: int | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -1079,7 +1078,7 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return launch(self, x, weight, bias=bias)
 

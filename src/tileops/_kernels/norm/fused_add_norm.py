@@ -21,8 +21,6 @@ interleaved; the chunk a CTA writes waits in shared memory in between. Its rows 
 to 256 elements, so a 16-byte access always divides the row across a warp.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -197,7 +195,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
         N: int,
         eps: float,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         """Build for a hidden size and dtype.
 
@@ -786,7 +784,7 @@ class _HeldLayerNormKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     # 16-byte (or narrower) accesses in a CTA's share of the build tuning measures.
-    _tune_accesses: Optional[int] = None
+    _tune_accesses: int | None = None
     # Whether the row is ``x + residual``, written back as ``residual_out``.
     _fused: bool = True
     # Whether the affine pair is per element (AdaLayerNorm), and a gate multiplies the output.
@@ -805,7 +803,7 @@ class _HeldLayerNormKernel(Kernel):
         N: int,
         eps: float,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         """Build for a hidden size and dtype.
 
@@ -1023,7 +1021,7 @@ class LayerNormHeldKernel(_HeldLayerNormKernel, LayerNormFwdInterface):
     _operands = 3
 
     def forward(
-        self, x: torch.Tensor, weight: Optional[torch.Tensor], bias: Optional[torch.Tensor]
+        self, x: torch.Tensor, weight: torch.Tensor | None, bias: torch.Tensor | None
     ) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
 
@@ -1063,7 +1061,7 @@ class AdaLayerNormHeldKernel(_HeldLayerNormKernel, AdaLayerNormFwdInterface):
         x: torch.Tensor,
         scale: torch.Tensor,
         shift: torch.Tensor,
-        gate: Optional[torch.Tensor] = None,
+        gate: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Normalize and modulate ``x`` over its trailing ``N`` elements.
 
@@ -1288,7 +1286,7 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         N: int,
         eps: float,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         """Build for a hidden size and dtype.
 

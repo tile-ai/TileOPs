@@ -1,5 +1,3 @@
-from typing import Optional
-
 import torch
 
 from tileops._kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
@@ -48,7 +46,7 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
     supported_archs = [89]
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         if call.return_lse:
             return "does not return the log-sum-exp"
         if call.has_sinks and call.is_fp8:
@@ -186,12 +184,12 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         attention, rope = self.program(self._compile)
         if rope is not None:

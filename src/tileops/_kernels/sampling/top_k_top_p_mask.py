@@ -4,7 +4,7 @@ The top-k select is ``top_k_mask.py``'s, copied rather than shared: its pieces a
 one prim_func, and the two files hold them at different points of the same kernel body.
 """
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -657,13 +657,13 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
     _MAX_SLOTS_ONE_CTA: ClassVar[int] = 32
 
     @classmethod
-    def refusal(cls, call: SamplingCall) -> Optional[str]:
+    def refusal(cls, call: SamplingCall) -> str | None:
         reason = super().refusal(call)
         if reason is not None:
             return reason
         return row_refusal(call, cls._THREADS, cls._MAX_SLOTS, cls._MAX_SLOTS_ONE_CTA)
 
-    def __init__(self, call: SamplingCall, config: Optional[dict] = None):
+    def __init__(self, call: SamplingCall, config: dict | None = None):
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype

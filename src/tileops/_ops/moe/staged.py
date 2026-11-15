@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -151,7 +152,7 @@ class MoEGroupedGEMMFwdOp(Op):
         "grouped_gemm": MGroupedGEMMFwdInterface
     }
 
-    def roofline_data_terms(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> dict[str, int]:
         """The valid rows this call's layout metadata marks, which its flops follow."""
         from tileops._perf.formulas import moe_layout_rows
 
@@ -271,7 +272,7 @@ class MoEExpertMLPFwdOp(Op):
         "down": MoEGroupedGEMMFwdOp,
     }
 
-    def roofline_data_terms(self) -> "dict[str, int]":
+    def roofline_data_terms(self) -> dict[str, int]:
         """The valid rows this call's layout metadata marks, which its flops follow."""
         from tileops._perf.formulas import moe_layout_rows
 

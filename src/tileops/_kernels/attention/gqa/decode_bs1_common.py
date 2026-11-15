@@ -1,7 +1,5 @@
 """Shared macros for SM90 batch=1 GQA decode kernels."""
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -268,7 +266,7 @@ def make_gqa_decode_bs1_combine(
     dtype: str,
     accum_dtype: str,
     has_sinks: bool = False,
-    sink_heads: Optional[int] = None,
+    sink_heads: int | None = None,
 ):
     """Create the paging-independent split-output combine macro.
 

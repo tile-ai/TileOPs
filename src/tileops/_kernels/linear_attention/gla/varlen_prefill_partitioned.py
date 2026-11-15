@@ -5,8 +5,6 @@ and the output pass restores every chunk state. This increases parallelism
 without re-reading key, value, or float32 gate tiles.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -510,7 +508,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
     _blocks_per_sm = 1
 
     @classmethod
-    def refusal(cls, call: GLACall) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> str | None:
         """A packed or part-chunk call whose sequences the per-sequence walk serves badly.
 
         Two cases reach that, and each is read from the shapes alone. A call whose rows are
@@ -602,7 +600,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
         scale: float,
         dtype: torch.dtype,
         has_initial_state: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         self.has_initial_state = has_initial_state
         super().__init__(device_index=device_index)
@@ -667,9 +665,9 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # The offsets are read on the device, so the host copy is never needed.
         del cu_seqlens_cpu

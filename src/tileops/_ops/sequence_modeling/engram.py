@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -60,7 +61,7 @@ class EngramGateConvFwdOp(Op):
         rms_w_h: torch.Tensor,
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, ...]:
         """Run the fused gate and convolution.
 
         Args:
@@ -145,7 +146,7 @@ class EngramGateConvBwdOp(Op):
         rrms_h: torch.Tensor,
         rrms_k: torch.Tensor,
         rrms_v: torch.Tensor,
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, ...]:
         """Propagate ``dY`` back through the fused gate and convolution.
 
         Args:

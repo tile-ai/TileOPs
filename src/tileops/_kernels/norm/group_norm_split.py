@@ -7,7 +7,7 @@ the device.
 """
 
 import functools
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -283,7 +283,7 @@ class GroupNormSplitKernel(Kernel, GroupNormFwdInterface):
         num_groups: int,
         channels_per_group: int,
         affine: bool,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.D, self.eps, self.dtype = D, eps, dtype
@@ -301,8 +301,8 @@ class GroupNormSplitKernel(Kernel, GroupNormFwdInterface):
     def forward(
         self,
         x: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Normalize *x*'s groups; *weight* and *bias* come exactly when built with the affine.
 

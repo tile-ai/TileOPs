@@ -8,8 +8,6 @@ state slice nor the gate, because every term the gate scales is zero, and the st
 outer product of the token's key and value alone.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -138,7 +136,7 @@ class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
     supported_archs = [80, 89, 90]
 
     @classmethod
-    def refusal(cls, call: GLACall) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> str | None:
         reason = dense_refusal(call)
         if reason is not None:
             return reason
@@ -167,7 +165,7 @@ class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
         scale: float,
         dtype: torch.dtype,
         has_initial_state: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         if dim_k not in (64, 128) or dim_v not in (64, 128):
@@ -219,9 +217,9 @@ class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if cu_seqlens is not None or cu_seqlens_cpu is not None:
             raise ValueError("GLA dense decode does not support packed varlen inputs")

@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -66,7 +67,7 @@ class FusedAddRMSNormPerTokenQuantFwdOp(Op):
         self,
         quant_dtype: torch.dtype = torch.float8_e4m3fn,
         eps: float = 1e-6,
-        scale_ub: Optional[float] = None,
+        scale_ub: float | None = None,
         *,
         target: Target = None,
     ):
@@ -89,7 +90,7 @@ class FusedAddRMSNormPerTokenQuantFwdOp(Op):
 
     def forward(
         self, input: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Add, normalize and quantize each token.
 
         Args:

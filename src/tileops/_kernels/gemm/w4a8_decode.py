@@ -7,7 +7,8 @@ of K. Each CTA runs a contiguous range of items, split over its units; the parti
 tile held by several units or CTAs are added by the holder of the tile's last item.
 """
 
-from typing import Callable, NamedTuple, Optional
+from collections.abc import Callable
+from typing import NamedTuple
 
 import tilelang
 import tilelang.language as T
@@ -56,9 +57,7 @@ def _shared_bytes(m_tile: int, nw: int, uw: int, block_k: int, stages: int) -> t
     return base, base + slots
 
 
-def _check_config(
-    m: int, n: int, k: int, cfg: dict, smem_budget: int, sm_count: int
-) -> Optional[str]:
+def _check_config(m: int, n: int, k: int, cfg: dict, smem_budget: int, sm_count: int) -> str | None:
     """Return why the builder cannot run *cfg* for ``(m, n, k)``, or ``None``."""
     nt, nw, uw = cfg["block_tokens"], cfg["warpgroups"], cfg["unit_warpgroups"]
     bk, stages, ctas = cfg["block_k"], cfg["num_stages"], cfg["num_ctas"]
@@ -906,7 +905,7 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     autotune_configs = None
 
     @classmethod
-    def refusal(cls, call: GEMMW4A8Call) -> Optional[str]:
+    def refusal(cls, call: GEMMW4A8Call) -> str | None:
         """Serve small token counts, and 33 to 40 tokens on the grids the 40-token tile wins."""
         if call.m > GEMMW4A8DecodeKernel.token_tiles[-1]:
             return f"serves m <= {GEMMW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
@@ -961,8 +960,8 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
         m: int,
         n: int,
         k: int,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.m, self.n, self.k = m, n, k

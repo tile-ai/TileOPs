@@ -6,7 +6,6 @@ The GLA inference contract lives in ``tileops._kernels.linear_attention.gla.call
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import torch
 
@@ -34,7 +33,7 @@ __all__ = [
 ]
 
 
-def head_count_refusal(*counts: int) -> Optional[str]:
+def head_count_refusal(*counts: int) -> str | None:
     """Why no in-tree linear-attention kernel serves these head counts, or ``None``.
 
     Every model that runs a gated delta rule, a delta rule or GLA splits its state into an
@@ -57,7 +56,7 @@ class DeltaNetChunkCall(CallSpec):
     chunk_size: int = 0
     dim_k: int = 0
     dim_v: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -68,7 +67,7 @@ class DeltaNetDecodeCall(CallSpec):
     heads: int = 0
     dim_k: int = 0
     dim_v: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,7 +79,7 @@ class DeltaNetCall(CallSpec):
     heads: int = 0
     dim_k: int = 0
     dim_v: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     scale: float = 0.0
     l2norm: bool = False
     varlen: bool = False
@@ -99,7 +98,7 @@ class GLAChunkCall(CallSpec):
     dim_v: int = 0
     chunk_size: int = 0
     scale: float = 0.0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     has_initial_state: bool = False
 
 
@@ -112,7 +111,7 @@ class GLADecodeCall(CallSpec):
     dim_k: int = 0
     dim_v: int = 0
     scale: float = 0.0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -125,7 +124,7 @@ class GDNCall(CallSpec):
     value_heads: int = 0
     dim_k: int = 0
     dim_v: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     scale: float = 0.0
     has_initial_state: bool = False
     varlen: bool = False
@@ -155,7 +154,7 @@ class KDACall(CallSpec):
     value_heads: int = 0
     dim_k: int = 0
     dim_v: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     scale: float = 0.0
     has_initial_state: bool = False
     varlen: bool = False
@@ -164,11 +163,11 @@ class KDACall(CallSpec):
     gate_in_kernel: bool = False
     beta_sigmoid: bool = False
     allow_neg_eigval: bool = False
-    lower_bound: Optional[float] = None
+    lower_bound: float | None = None
     has_dt_bias: bool = False
 
     @property
-    def chunk_refusal(self) -> Optional[str]:
+    def chunk_refusal(self) -> str | None:
         """Why no in-tree Kimi Delta Attention program serves this call, or ``None``.
 
         The recurrence variants and state layouts the in-tree pair does not
@@ -314,9 +313,9 @@ class DeltaNetFwdInterface(KernelInterface):
         k: torch.Tensor,
         v: torch.Tensor,
         beta: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the recurrence from *initial_state* over the call's sequence.
 
@@ -350,7 +349,7 @@ class GLAChunkFwdInterface(KernelInterface):
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the chunked gated recurrence; nothing is written in place.
 
@@ -389,7 +388,7 @@ class GLAChunkBwdInterface(KernelInterface):
         do: torch.Tensor,
         dht: torch.Tensor,
         has_initial_state: bool = False,
-    ) -> tuple[Optional[torch.Tensor], ...]:
+    ) -> tuple[torch.Tensor | None, ...]:
         """Propagate *do* and *dht* back through the recurrence; nothing is written in place.
 
         Every tensor is on ``call.device`` in BTHD layout; the op passes them as the caller
@@ -458,11 +457,11 @@ class GDNFwdInterface(KernelInterface):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
-        A_log: Optional[torch.Tensor] = None,
-        dt_bias: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
+        A_log: torch.Tensor | None = None,
+        dt_bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the recurrence from *initial_state* over the call's sequence.
 
@@ -504,11 +503,11 @@ class KDAFwdInterface(KernelInterface):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
-        A_log: Optional[torch.Tensor] = None,
-        dt_bias: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
+        A_log: torch.Tensor | None = None,
+        dt_bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the recurrence from *initial_state* over the call's sequence.
 

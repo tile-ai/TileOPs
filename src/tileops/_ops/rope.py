@@ -19,7 +19,8 @@ manifest entry.
 """
 
 import math
-from typing import Callable, ClassVar, Dict, Mapping, Optional
+from collections.abc import Callable, Mapping
+from typing import ClassVar
 
 import torch
 
@@ -153,7 +154,7 @@ class _RoPEOpBase(Op):
         """
         self.input_layout = input_layout
         self.base = base
-        self._freq_cache: Dict[tuple, tuple] = {}
+        self._freq_cache: dict[tuple, tuple] = {}
         super().__init__(target=target)
 
     def _get_cos_sin(
@@ -277,7 +278,7 @@ class RoPENeoxPositionIdsFwdOp(Op):
         self,
         max_position: int,
         base: float = 10000.0,
-        rotary_dim: Optional[int] = None,
+        rotary_dim: int | None = None,
         *,
         target: Target = None,
     ):
@@ -293,7 +294,7 @@ class RoPENeoxPositionIdsFwdOp(Op):
         self.max_position = max_position
         self.base = base
         self.rotary_dim = rotary_dim
-        self._freq_cache: Dict[tuple, tuple] = {}
+        self._freq_cache: dict[tuple, tuple] = {}
         super().__init__(target=target)
 
     def _get_cos_sin(
@@ -621,7 +622,7 @@ class LongRoPEFwdOp(_RoPEOpBase):
         head_dim: int,
         seq_len: int,
         base: float = 10000.0,
-        rescale_factors: Optional[torch.Tensor] = None,
+        rescale_factors: torch.Tensor | None = None,
         max_position: int = 4096,
         original_max_position: int = 4096,
         dtype: torch.dtype = torch.float32,
@@ -682,7 +683,7 @@ class LongRoPEFwdOp(_RoPEOpBase):
         self,
         input_layout: str = "1d",
         base: float = 10000.0,
-        rescale_factors: Optional[torch.Tensor] = None,
+        rescale_factors: torch.Tensor | None = None,
         max_position: int = 4096,
         original_max_position: int = 4096,
         *,

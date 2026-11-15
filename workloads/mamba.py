@@ -1,5 +1,4 @@
 import math
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -663,7 +662,7 @@ def ssd_chunk_state_fwd_ref(
 def ssd_state_passing_fwd_ref(
     states: torch.Tensor,
     dA_chunk_cumsum: torch.Tensor,
-    initial_states: Optional[torch.Tensor] = None,
+    initial_states: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """PyTorch reference for the inter-chunk recurrent scan.
 
@@ -1021,8 +1020,8 @@ def causal_conv1d_ref(
     weight: torch.Tensor,
     conv_state: torch.Tensor,
     cu_seqlens: torch.Tensor,
-    bias: Optional[torch.Tensor] = None,
-    has_initial_state: Optional[torch.Tensor] = None,
+    bias: torch.Tensor | None = None,
+    has_initial_state: torch.Tensor | None = None,
     silu: bool = True,
 ) -> torch.Tensor:
     """Float32 reference of CausalConv1dFwdOp; overwrites *conv_state* as the op does.
@@ -1053,7 +1052,7 @@ def causal_conv1d_update_ref(
     x: torch.Tensor,
     weight: torch.Tensor,
     conv_state: torch.Tensor,
-    bias: Optional[torch.Tensor] = None,
+    bias: torch.Tensor | None = None,
     silu: bool = True,
 ) -> torch.Tensor:
     """Float32 reference of CausalConv1dUpdateFwdOp; advances *conv_state* as the op does."""

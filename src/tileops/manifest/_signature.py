@@ -76,10 +76,10 @@ class Tensor:
     name: str
     dtype: str
     shape: str
-    optional: "bool | str" = False
+    optional: bool | str = False
     nullable: str | None = None
     buffer: bool = False
-    mutated: "bool | str" = False
+    mutated: bool | str = False
     values: str | None = None
     requires: tuple[str, ...] = ()
     cpu: bool = False
@@ -526,7 +526,7 @@ def rejecting_rule(sig: Signature, point: dict) -> str | None:
     return None
 
 
-def holds(expr: "bool | str | None", point: dict) -> bool:
+def holds(expr: bool | str | None, point: dict) -> bool:
     """A presence or effect condition at `point`; it must read only discriminants."""
     if expr is None or isinstance(expr, bool):
         return expr is not False

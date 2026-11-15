@@ -11,7 +11,6 @@ Strategy: explicit_parallel (N elements per thread) with per-thread RNG state.
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -30,7 +29,7 @@ class DropoutCall(CallSpec):
 
     count: int = 0
     p: float = 0.5
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 class DropoutFwdInterface(KernelInterface):

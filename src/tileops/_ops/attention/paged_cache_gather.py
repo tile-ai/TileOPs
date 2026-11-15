@@ -1,7 +1,8 @@
 """Gather ragged rows from a caller-owned paged cache."""
 
 import math
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -37,7 +38,7 @@ class PagedKVCacheGatherFwdOp(Op):
 
     def __init__(
         self,
-        out_dtype: Optional[torch.dtype] = None,
+        out_dtype: torch.dtype | None = None,
         *,
         validate_inputs: bool = False,
         target: Target = None,
@@ -59,8 +60,8 @@ class PagedKVCacheGatherFwdOp(Op):
         kv_cache: torch.Tensor,
         block_table: torch.Tensor,
         cu_seqlens: torch.Tensor,
-        seq_starts: Optional[torch.Tensor] = None,
-        kv_scale: Optional[torch.Tensor] = None,
+        seq_starts: torch.Tensor | None = None,
+        kv_scale: torch.Tensor | None = None,
         *,
         out: torch.Tensor,
     ) -> torch.Tensor:

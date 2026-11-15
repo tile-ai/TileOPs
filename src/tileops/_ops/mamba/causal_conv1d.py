@@ -5,7 +5,8 @@ Provides:
   - CausalConv1dUpdateFwdOp: one decode token per sequence, advancing that state
 """
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -50,7 +51,7 @@ class CausalConv1dFwdOp(Op):
 
     def __init__(
         self,
-        activation: Optional[str] = "silu",
+        activation: str | None = "silu",
         *,
         validate_inputs: bool = False,
         target: Target = None,
@@ -74,8 +75,8 @@ class CausalConv1dFwdOp(Op):
         weight: torch.Tensor,
         conv_state: torch.Tensor,
         cu_seqlens: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-        has_initial_state: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
+        has_initial_state: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Convolve every packed sequence and leave its last ``W - 1`` tokens in its state.
 
@@ -135,7 +136,7 @@ class CausalConv1dUpdateFwdOp(Op):
         "causal_conv1d_update": CausalConv1dUpdateFwdInterface
     }
 
-    def __init__(self, activation: Optional[str] = "silu", *, target: Target = None) -> None:
+    def __init__(self, activation: str | None = "silu", *, target: Target = None) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
@@ -151,7 +152,7 @@ class CausalConv1dUpdateFwdOp(Op):
         x: torch.Tensor,
         weight: torch.Tensor,
         conv_state: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Convolve each sequence's new token with its state and shift the token into it.
 

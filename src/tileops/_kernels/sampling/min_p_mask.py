@@ -1,6 +1,6 @@
 """Per-row min-p logit mask: a persistent grid reduces each row, then masks it on chip."""
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -210,7 +210,7 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
     _PACE: ClassVar[int] = 8
 
     @classmethod
-    def refusal(cls, call: SamplingCall) -> Optional[str]:
+    def refusal(cls, call: SamplingCall) -> str | None:
         reason = super().refusal(call)
         # Element offsets are int32 and run up to one tile past B * V. A tile holds
         # _THREADS vectors, and a vector is at most VECTOR_ACCESS_BYTES elements.
@@ -219,7 +219,7 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
             return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
         return reason
 
-    def __init__(self, call: SamplingCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: SamplingCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype

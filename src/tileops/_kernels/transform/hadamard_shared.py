@@ -7,7 +7,8 @@ shared memory through a float32 copy in global memory, one pass a few bits wide.
 
 import functools
 import math
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 import tilelang
 import tilelang.language as T
@@ -193,7 +194,7 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
     preferred_over = frozenset({"hadamard_multi_pass"})
 
     @classmethod
-    def refusal(cls, call: HadamardTransformCall) -> Optional[str]:
+    def refusal(cls, call: HadamardTransformCall) -> str | None:
         need = 4 * _rows_per_cta(call.n) * call.n
         if need > call.smem_budget:
             return f"a row takes {need} bytes as float32, past the {call.smem_budget} a block has"
@@ -211,8 +212,8 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
         n: int,
         base_order: int,
         dtype: torch.dtype,
-        config: Optional[Dict[str, Any]] = None,
-        device_index: Optional[int] = None,
+        config: dict[str, Any] | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -225,7 +226,7 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
         self.init_config(config)
 
     @property
-    def default_config(self) -> Dict[str, Any]:
+    def default_config(self) -> dict[str, Any]:
         rows = _rows_per_cta(self.n)
         return {"rows_per_cta": rows, "threads": _shared_rows_threads(self.n, rows)}
 
@@ -235,7 +236,7 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
         flat = x.contiguous().view(-1)
         return self.program(self._compile)(flat).view(x.shape)
 
-    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+    def _compile(self, cfg: dict[str, Any]) -> Callable:
         """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(**cfg)()
 
@@ -349,8 +350,8 @@ class HadamardMultiPassKernel(Kernel, HadamardTransformFwdInterface):
         n: int,
         base_order: int,
         dtype: torch.dtype,
-        config: Optional[Dict[str, Any]] = None,
-        device_index: Optional[int] = None,
+        config: dict[str, Any] | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -392,7 +393,7 @@ class HadamardMultiPassKernel(Kernel, HadamardTransformFwdInterface):
         self.init_config(config)
 
     @property
-    def default_config(self) -> Dict[str, Any]:
+    def default_config(self) -> dict[str, Any]:
         return {}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -401,7 +402,7 @@ class HadamardMultiPassKernel(Kernel, HadamardTransformFwdInterface):
         flat = x.contiguous().view(-1)
         return self.program(self._launcher)(flat).view(x.shape)
 
-    def _launcher(self, cfg: Dict[str, Any]) -> Callable:
+    def _launcher(self, cfg: dict[str, Any]) -> Callable:
         """What one launch runs on the flat input: the chunk pass, the bit passes and the
         base product. *cfg* is empty; the passes have no tunable axis."""
         chunk = CompiledProgram(self._chunk())

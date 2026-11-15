@@ -5,7 +5,8 @@ Provides:
     in place
 """
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

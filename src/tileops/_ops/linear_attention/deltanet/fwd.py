@@ -1,6 +1,7 @@
 """Inference-facing DeltaNet forward contract, and its dense prefill and decode dispatch."""
 
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -50,7 +51,7 @@ class DeltaNetFwdOp(Op):
 
     def __init__(
         self,
-        scale: Optional[float] = None,
+        scale: float | None = None,
         use_qk_l2norm_in_kernel: bool = False,
         *,
         validate_inputs: bool = False,
@@ -82,10 +83,10 @@ class DeltaNetFwdOp(Op):
         k: torch.Tensor,
         v: torch.Tensor,
         beta: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run prefill or decode and return ``(o, final_state)``.
 
         Args:

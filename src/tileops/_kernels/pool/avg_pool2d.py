@@ -1,4 +1,4 @@
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -119,9 +119,9 @@ class AvgPool2dKernel(Kernel, AvgPool2dFwdInterface):
         pad_w: int,
         ceil_mode: bool,
         count_include_pad: bool,
-        divisor_override: Optional[int],
+        divisor_override: int | None,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.n = n

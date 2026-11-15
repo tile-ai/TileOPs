@@ -1,7 +1,5 @@
 """SM90 warp-specialized packed variable-length GQA prefill kernel."""
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -1725,12 +1723,12 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         if torch.cuda.is_current_stream_capturing():

@@ -9,7 +9,7 @@ one or two 128-row waves whose K-step products all go through one partial
 accumulator, under either ``scale_b`` grid.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -1432,7 +1432,7 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
     }
 
     @classmethod
-    def _calibrated_epilogue(cls, m: int, n: int, k: int, calibration: Optional[str]) -> bool:
+    def _calibrated_epilogue(cls, m: int, n: int, k: int, calibration: str | None) -> bool:
         """Whether the schedule calibrated on *calibration*'s board stores through shared memory.
 
         False off a calibrated board or shape: the packed global store has the
@@ -1442,7 +1442,7 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
         return bool(tuned["shared_epilogue"]) if tuned is not None else False
 
     @staticmethod
-    def _shape_refusal(m: int, n: int, k: int, *, shared_epilogue: bool) -> Optional[str]:
+    def _shape_refusal(m: int, n: int, k: int, *, shared_epilogue: bool) -> str | None:
         """Why this schedule cannot address these shapes, or ``None`` when it can.
 
         ``a``, ``b`` and ``scale_a`` arrive through TMA, whose descriptors address the
@@ -1521,9 +1521,9 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
         k: int,
         dtype: torch.dtype,
         out_dtype: torch.dtype,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
-        shared_epilogue: Optional[bool] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
+        shared_epilogue: bool | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         if dtype != torch.float8_e4m3fn:
@@ -1624,7 +1624,7 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
         b: torch.Tensor,
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if bias is not None:
             raise ValueError(f"{type(self).__name__} has no bias epilogue")
@@ -1807,8 +1807,8 @@ class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
         k: int,
         dtype: torch.dtype,
         out_dtype: torch.dtype,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
         scale_b_per_row: bool = False,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1845,7 +1845,7 @@ class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
         b: torch.Tensor,
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if bias is not None:
             raise ValueError(f"{type(self).__name__} has no bias epilogue")

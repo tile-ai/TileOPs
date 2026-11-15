@@ -1,7 +1,6 @@
 """Block-scaled FP8 grouped GEMM on masked slabs or aligned SM89 MMA rows."""
 
 import itertools
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -16,7 +15,7 @@ __all__ = ["MoEGroupedGEMMFP8MMAKernel"]
 
 
 @target_cache(maxsize=32)
-def _moe_grouped_gemm_fp8_mma_kernel(groups: int, rows: Optional[int], n: int, k: int):
+def _moe_grouped_gemm_fp8_mma_kernel(groups: int, rows: int | None, n: int, k: int):
     scale_block = 128
     contiguous = rows is None
 
@@ -112,7 +111,7 @@ class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
     _BLOCK_M = (32, 64)
 
     @classmethod
-    def refusal(cls, call: MGroupedGEMMFP8Call) -> Optional[str]:
+    def refusal(cls, call: MGroupedGEMMFP8Call) -> str | None:
         """Masked slabs, or aligned rows whose metadata names each row's expert."""
         if call.kind != "masked" and (call.kind, call.packing, call.metadata_kind) != (
             "contiguous",
@@ -153,7 +152,7 @@ class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
         if self.alignment % config["block_m"]:
             raise ValueError("FP8 MMA block_m must divide the aligned layout's alignment")
 
-    def init_config(self, config: Optional[dict] = None) -> None:
+    def init_config(self, config: dict | None = None) -> None:
         if config is not None and not set(config) <= {"block_m", "block_n"}:
             raise ValueError("FP8 MMA takes only block_m and block_n")
         Kernel.init_config(self, config)

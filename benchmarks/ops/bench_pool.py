@@ -6,7 +6,7 @@ The 3D cases model video CNN spatiotemporal pooling patterns such as
 I3D/SlowFast-style feature stages.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import pytest
 import torch
@@ -58,9 +58,9 @@ def flaggems_pool_fn(
     ceil_mode: bool,
     count_include_pad: bool = True,
     dilation: tuple = (1, 1),
-    divisor_override: Optional[int] = None,
+    divisor_override: int | None = None,
     return_indices: bool = False,
-) -> Optional[Callable]:
+) -> Callable | None:
     """Return a FlagGems 2D pooling callable, or None if unsupported.
 
     FlagGems 5.0.2's LibEntry cache misaligns kernel arguments under triton 3.7 and

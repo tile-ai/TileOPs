@@ -1,5 +1,6 @@
+from collections.abc import Mapping
 from math import prod
-from typing import ClassVar, Mapping, Optional, Tuple
+from typing import ClassVar
 
 import torch
 
@@ -30,7 +31,7 @@ class _AdaptivePool2dFwdOpBase(Op):
 
     def __init__(
         self,
-        output_size: int | None | Tuple[Optional[int], Optional[int]] | list[Optional[int]],
+        output_size: int | None | tuple[int | None, int | None] | list[int | None],
         *,
         target: Target = None,
     ) -> None:
@@ -86,7 +87,7 @@ class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
 
     def __init__(
         self,
-        output_size: int | None | Tuple[Optional[int], Optional[int]] | list[Optional[int]],
+        output_size: int | None | tuple[int | None, int | None] | list[int | None],
         *,
         target: Target = None,
     ) -> None:
@@ -112,7 +113,7 @@ class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
 
     def __init__(
         self,
-        output_size: int | None | Tuple[Optional[int], Optional[int]] | list[Optional[int]],
+        output_size: int | None | tuple[int | None, int | None] | list[int | None],
         *,
         target: Target = None,
     ) -> None:
@@ -137,7 +138,7 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
 
     def __init__(
         self,
-        output_size: int | None | Tuple[Optional[int], Optional[int]] | list[Optional[int]],
+        output_size: int | None | tuple[int | None, int | None] | list[int | None],
         *,
         target: Target = None,
     ) -> None:
@@ -149,7 +150,7 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
         """
         super().__init__(output_size=output_size, target=target)
 
-    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the op on the inputs the manifest declares.
 
         Args:

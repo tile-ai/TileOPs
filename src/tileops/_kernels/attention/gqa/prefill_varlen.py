@@ -10,7 +10,7 @@ matching the dense prefill contract when q_len may be smaller than kv_len.
 """
 
 import itertools
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -50,7 +50,7 @@ def _gqa_prefill_varlen_fwd_kernel(
     heads_kv: int,
     dim: int,
     is_causal: bool,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
     softcap: float = 0.0,
     dtype: str = "float16",
     window_size_left: int = -1,
@@ -447,12 +447,12 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         program = self.program(self._compile)
         if self.key_rope is None:

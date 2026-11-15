@@ -7,7 +7,6 @@ output; more splits write FP32 partials that a combine kernel merges.
 """
 
 import math
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -443,7 +442,7 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
     _DIMS = (64, 128, 256)
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Unrotated 16-bit dense decode, one query position or the packed positions
         :attr:`AttentionCall.dense_decode_program` names, at the head dimensions this plan
         builds for."""
@@ -477,14 +476,14 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         seq_len_kv,
         dim,
         dtype=torch.float16,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
         seq_len_q: int = 1,
         is_causal: bool = False,
         has_sinks: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         # The program takes the cache length per call.
@@ -567,12 +566,12 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         del q_scale, k_scale, v_scale, rope_cos, rope_sin

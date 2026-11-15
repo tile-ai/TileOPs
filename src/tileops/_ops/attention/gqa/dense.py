@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -56,9 +57,9 @@ class _GQADenseFwdOpBase(Op):
     # Whether the kernel also returns each query row's log-sum-exp.
     _returns_lse: ClassVar[bool] = False
     pos_encoding_mode: str = "none"
-    rotary_dim: Optional[int] = None
+    rotary_dim: int | None = None
     rope_layout: str = "neox"
-    out_dtype: Optional[torch.dtype] = None
+    out_dtype: torch.dtype | None = None
 
     @property
     def _zero_query(self) -> bool:
@@ -72,7 +73,7 @@ class _GQADenseFwdOpBase(Op):
         """Dense attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
-    def _dense_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
+    def _dense_call(self, inputs: tuple[torch.Tensor | None, ...]) -> AttentionCall:
         """State what one contiguous call is, for selection to filter against."""
         q, k, _v, _q_scale, _k_scale, _v_scale, rope_cos, _rope_sin, sinks = inputs
         assert q is not None and k is not None
@@ -106,7 +107,7 @@ class _GQADenseFwdOpBase(Op):
             device=q.device,
         )
 
-    def _run_dense(self, *tensors: Optional[torch.Tensor]):
+    def _run_dense(self, *tensors: torch.Tensor | None):
         """Run the kernel serving the nine tensor slots, each made contiguous."""
         inputs = tuple(tensor.contiguous() if tensor is not None else None for tensor in tensors)
         if self._zero_query:
@@ -149,12 +150,12 @@ class GQADenseFwdOp(_GQADenseFwdOpBase):
         is_causal: bool = False,
         window_size_left: int = -1,
         window_size_right: int = -1,
-        sm_scale: Optional[float] = None,
-        softcap: Optional[float] = None,
+        sm_scale: float | None = None,
+        softcap: float | None = None,
         pos_encoding_mode: str = "none",
-        rotary_dim: Optional[int] = None,
+        rotary_dim: int | None = None,
         rope_layout: str = "neox",
-        out_dtype: Optional[torch.dtype] = None,
+        out_dtype: torch.dtype | None = None,
         *,
         target: Target = None,
     ) -> None:
@@ -208,12 +209,12 @@ class GQADenseFwdOp(_GQADenseFwdOpBase):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         r"""Run dense GQA attention over one set of $Q$/$K$/$V$ tensors.
 
@@ -287,8 +288,8 @@ class GQADenseWithLSEFwdOp(_GQADenseFwdOpBase):
         is_causal: bool = False,
         window_size_left: int = -1,
         window_size_right: int = -1,
-        sm_scale: Optional[float] = None,
-        softcap: Optional[float] = None,
+        sm_scale: float | None = None,
+        softcap: float | None = None,
         *,
         target: Target = None,
     ) -> None:

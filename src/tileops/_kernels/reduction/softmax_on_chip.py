@@ -10,8 +10,6 @@ a row instead, each CTA's share held in registers; so do many 16-bit rows of who
 of eight vectors a thread, on a portable cluster. See :class:`SoftmaxClusterSplitKernel`.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -236,7 +234,7 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
     preferred_over = frozenset({"softmax_streaming"})
 
     @classmethod
-    def _plan(cls, call: SoftmaxCall) -> Optional[tuple]:
+    def _plan(cls, call: SoftmaxCall) -> tuple | None:
         """``(cluster, threads, held_vectors, ctas_per_sm)`` for *call*'s rows, or ``None``."""
         elem = call.dtype.itemsize
         # A 16384-element fp32 row runs faster on SoftmaxKernel.
@@ -534,7 +532,7 @@ class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
     preferred_over = frozenset({"softmax_split", "softmax_on_chip"})
 
     @classmethod
-    def _plan(cls, call: SoftmaxCall) -> Optional[tuple]:
+    def _plan(cls, call: SoftmaxCall) -> tuple | None:
         """``(cluster, threads, min_blocks)`` for *call*'s rows, or ``None``."""
         if call.op_kind != "softmax":
             return None

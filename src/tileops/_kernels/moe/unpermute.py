@@ -9,8 +9,6 @@ Output:
   output           [T, H]                 bf16/fp16
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -145,10 +143,10 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         materialized_rows: int,
         scaling: float = 1.0,
         dtype: torch.dtype = torch.bfloat16,
-        config: Optional[dict] = None,
-        sm_count: Optional[int] = None,
+        config: dict | None = None,
+        sm_count: int | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.num_tokens = num_tokens
@@ -179,7 +177,7 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         expert_output: torch.Tensor,
         inverse_indices: torch.Tensor,
         topk_weights: torch.Tensor,
-        out: Optional[torch.Tensor] = None,
+        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run moe_unpermute.
 

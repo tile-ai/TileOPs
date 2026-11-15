@@ -1,5 +1,6 @@
 import itertools
-from typing import Any, Callable, ClassVar, Optional, Tuple
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -301,7 +302,7 @@ class _MaxPool3dKernelBase(Kernel):
         dilation_w: int,
         ceil_mode: bool,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         if dtype not in {torch.float16, torch.bfloat16, torch.float32}:
@@ -403,7 +404,7 @@ class MaxPool3dWithIndicesKernel(_MaxPool3dKernelBase, MaxPool3dIndicesFwdInterf
         block_m = 256 if self.dtype == torch.float32 else 512
         return {"block_m": block_m, "threads": 128}
 
-    def _launch(self, program, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _launch(self, program, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         values, positions = program(x.reshape(self.n * self.c_in, self.d_in, self.h_in, self.w_in))
         shape = (self.n, self.c_in, self.out_d, self.out_h, self.out_w)
         return values.view(shape), positions.view(shape)

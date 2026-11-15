@@ -1,6 +1,6 @@
 """Repack a W4A16 weight into the layout ``GEMMW4A16Kernel`` reads."""
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -87,8 +87,8 @@ class W4A16RepackKernel(Kernel, W4A16RepackFwdInterface):
         self,
         n: int,
         packed_k: int,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n

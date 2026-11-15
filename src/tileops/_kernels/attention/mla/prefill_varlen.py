@@ -5,7 +5,7 @@ from shared per-token rope features to avoid duplicating the latter.
 Q and K share tokens and ``cu_seqlens``. Float32 LSE supports merging partials."""
 
 import itertools
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -48,7 +48,7 @@ def _mla_varlen_fwd_kernel(
     dim_pe: int,
     dim_v: int,
     is_causal: bool,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
     dtype: str = "bfloat16",
 ) -> Callable:
     """Build the dynamic TileLang program factory for one call shape."""
@@ -283,7 +283,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
     _NARROW = _CANDIDATES[-1]
 
     @classmethod
-    def refusal(cls, call: MLAVarlenCall) -> Optional[str]:
+    def refusal(cls, call: MLAVarlenCall) -> str | None:
         """Why *call* is outside the shapes this schedule serves."""
         if call.dim_nope % 16 != 0 or call.dim_pe % 16 != 0 or call.dim_v % 16 != 0:
             return (
@@ -324,10 +324,10 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
         dim_v: int,
         is_causal: bool,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        config: Optional[dict] = None,
+        sm_scale: float | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         """Build the program factory for one call shape.
 

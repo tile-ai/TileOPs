@@ -5,8 +5,6 @@ tiles through TMA rings while a consumer warpgroup maintains online softmax
 partials. Shared memory merges consumer and split-block partials.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -428,9 +426,9 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
         page_size: int,
         is_causal: bool = False,
         dtype: torch.dtype = torch.float16,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
-        max_pages_per_req: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
+        max_pages_per_req: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch

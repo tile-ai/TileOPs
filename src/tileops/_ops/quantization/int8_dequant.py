@@ -1,6 +1,7 @@
 """Symmetric INT8 dequantize operators."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

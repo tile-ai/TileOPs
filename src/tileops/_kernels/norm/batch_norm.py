@@ -8,7 +8,7 @@ one channel, whose element *l* sits at ``[l // S, c, l % S]``.
 """
 
 import functools
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -53,7 +53,7 @@ def _param(tensor, index, present: bool, absent: float):
     return tensor[index] if present else T.float32(absent)
 
 
-def _fill_absent(x: torch.Tensor, channels: int, *tensors: Optional[torch.Tensor]) -> tuple:
+def _fill_absent(x: torch.Tensor, channels: int, *tensors: torch.Tensor | None) -> tuple:
     """*tensors*, each absent one replaced by an unwritten ``(channels,)`` float32 tensor.
 
     A program built without a tensor never reads or writes it, so the stand-in costs an
@@ -1540,7 +1540,7 @@ class _BatchNormKernel(Kernel):
     _SPLIT_TARGET_BLOCKS = 512
 
     @classmethod
-    def _block_launch(cls, call: BatchNormCall, held_tensors: int) -> Optional[tuple[int, int]]:
+    def _block_launch(cls, call: BatchNormCall, held_tensors: int) -> tuple[int, int] | None:
         """The ``(threads, num_per_thread)`` of a block holding one channel in registers.
 
         ``None`` where the channel does not fit. A thread holds *held_tensors* elements per
@@ -1596,10 +1596,10 @@ class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: Optional[torch.Tensor],
-        running_var: Optional[torch.Tensor],
-        weight: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
+        running_mean: torch.Tensor | None,
+        running_var: torch.Tensor | None,
+        weight: torch.Tensor | None,
+        bias: torch.Tensor | None,
     ):
         """Normalize an ``(N, C, S)`` input by its batch statistics.
 
@@ -1668,7 +1668,7 @@ class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
         eps: float = 1e-5,
         momentum: float = 0.1,
         presence: tuple[bool, bool, bool] = (True, True, True),
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
@@ -1745,7 +1745,7 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
         momentum: float,
         launch: tuple[int, int],
         presence: tuple[bool, bool, bool] = (True, True, True),
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
@@ -1812,9 +1812,9 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         eps: float,
         momentum: float,
         splits: int,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         presence: tuple[bool, bool, bool] = (True, True, True),
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.N = N
@@ -1946,10 +1946,10 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: Optional[torch.Tensor],
-        running_var: Optional[torch.Tensor],
-        weight: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
+        running_mean: torch.Tensor | None,
+        running_var: torch.Tensor | None,
+        weight: torch.Tensor | None,
+        bias: torch.Tensor | None,
     ):
         """Normalize an ``(N, C, S)`` input by its batch statistics.
 
@@ -2005,9 +2005,9 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
         dtype: torch.dtype = torch.float16,
         eps: float = 1e-5,
         momentum: float = 0.1,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         presence: tuple[bool, bool, bool] = (True, True, True),
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
@@ -2029,10 +2029,10 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: Optional[torch.Tensor],
-        running_var: Optional[torch.Tensor],
-        weight: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
+        running_mean: torch.Tensor | None,
+        running_var: torch.Tensor | None,
+        weight: torch.Tensor | None,
+        bias: torch.Tensor | None,
     ):
         """Normalize an ``(N, C, S)`` input by its batch statistics.
 
@@ -2258,8 +2258,8 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
         input_dtype_params: bool = False,
         has_weight: bool = True,
         has_bias: bool = True,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.total = N * C * S
@@ -2308,8 +2308,8 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
         x: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
-        weight: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
+        weight: torch.Tensor | None,
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         """Run inference forward pass on an ``(N, C, S)`` input.
 
@@ -2872,7 +2872,7 @@ class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
         S: int,
         dtype: torch.dtype,
         launch: tuple[int, int],
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
@@ -2943,8 +2943,8 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
         S: int,
         dtype: torch.dtype,
         splits: int,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
@@ -3047,8 +3047,8 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
         C: int,
         S: int,
         dtype: torch.dtype = torch.float16,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C

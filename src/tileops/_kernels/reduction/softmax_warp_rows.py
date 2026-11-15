@@ -6,8 +6,6 @@ the row's maximum and sum by shuffles, so a row needs no shared memory and no bl
 barrier.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -110,7 +108,7 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
     preferred_over = frozenset({"softmax_fwd"})
 
     @classmethod
-    def _plan(cls, call: SoftmaxCall) -> Optional[tuple]:
+    def _plan(cls, call: SoftmaxCall) -> tuple | None:
         """``(lanes, per_lane)`` for *call*'s rows, or ``None``."""
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         vectors = call.n // vec

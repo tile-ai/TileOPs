@@ -7,17 +7,11 @@ import threading
 import warnings
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from types import MappingProxyType
 from typing import (
     Any,
-    Callable,
     ClassVar,
-    Hashable,
-    Iterator,
-    Mapping,
-    Optional,
-    Sequence,
-    Union,
 )
 
 import torch
@@ -380,7 +374,7 @@ class Op(ABC):
     _MAX_PLANS: ClassVar[int] = 256
     # The generated signature plan; None for a class without a manifest entry.
     _signature: ClassVar[object] = None
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     # Whether a call's packed offsets are checked against its tensors; set by every op whose
     # signature declares packed offsets.
     validate_inputs: bool
@@ -551,7 +545,7 @@ class Op(ABC):
             f"states its manifest entry as the class attribute `spec`"
         )
 
-    def eval_roofline_read_bytes(self) -> Optional[int]:
+    def eval_roofline_read_bytes(self) -> int | None:
         """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
 
         ``bytes`` minus the write half, which the signature settles: every
@@ -1501,7 +1495,7 @@ class Op(ABC):
             return BUILTIN
         return self._serving_target
 
-    def kernel_config(self) -> Optional[dict[str, Any]]:
+    def kernel_config(self) -> dict[str, Any] | None:
         """The configuration the op's kernels published, or ``None``.
 
         An op given a config of its own answers with it; otherwise the first configured
@@ -1597,7 +1591,7 @@ class Op(ABC):
     def _walk_ops(self) -> Iterator["Op"]:
         """Yield this op and the ops it runs kernels through, each one once."""
         seen: set[int] = set()
-        stack: list["Op"] = [self]
+        stack: list[Op] = [self]
         while stack:
             op = stack.pop()
             if id(op) in seen:
@@ -1644,9 +1638,7 @@ class Op(ABC):
         )
 
     @abstractmethod
-    def forward(
-        self, *args: object, **kwargs: object
-    ) -> Union[torch.Tensor, tuple[torch.Tensor, ...]]:
+    def forward(self, *args: object, **kwargs: object) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """Run the op.
 
         Returns:
@@ -1655,9 +1647,7 @@ class Op(ABC):
         """
         raise NotImplementedError("forward method is not implemented")
 
-    def __call__(
-        self, *args: object, **kwargs: object
-    ) -> Union[torch.Tensor, tuple[torch.Tensor, ...]]:
+    def __call__(self, *args: object, **kwargs: object) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """Make the op callable.
 
         ``forward`` is the op's computation, and it runs inside :meth:`_execute`. An op with

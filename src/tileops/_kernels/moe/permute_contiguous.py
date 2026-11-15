@@ -1,7 +1,6 @@
 """Layout-specialized contiguous materialization for staged MoE PrePermute."""
 
 import math
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -366,7 +365,7 @@ class MoEPrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
             return f"requires float16 or bfloat16, got {call.input_dtype}"
         return super().refusal(call)
 
-    def __init__(self, call: PrePermuteCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: PrePermuteCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         layout = call.layout
         self.layout_key = getattr(layout, "selection_key", "")

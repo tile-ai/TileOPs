@@ -1,5 +1,4 @@
 import functools
-from typing import Tuple
 
 import tilelang
 import tilelang.language as T
@@ -37,7 +36,7 @@ class _PlaneStaging:
     _THREAD_CHOICES = (128, 256, 512)
 
     @staticmethod
-    def _divisors(value: int) -> Tuple[int, ...]:
+    def _divisors(value: int) -> tuple[int, ...]:
         return tuple(d for d in range(1, value + 1) if value % d == 0)
 
     def __init__(self, rows: int, h_in: int, w_in: int, dtype: str) -> None:
@@ -48,7 +47,7 @@ class _PlaneStaging:
     def _tile_bytes(self, planes: int) -> int:
         return planes * self._plane * dtype_itemsize(self._dtype)
 
-    def counts(self) -> Tuple[int, ...]:
+    def counts(self) -> tuple[int, ...]:
         """Plane counts a block may take: divisors of ``rows`` whose tile fits shared.
 
         A run of planes is contiguous in the flat ``(rows, h_in, w_in)`` view for every
@@ -100,7 +99,7 @@ def _bin_lanes(threads: int, outputs: int) -> int:
     return lanes
 
 
-def _bin_extent(size_in: int, size_out: int) -> Tuple[int, bool]:
+def _bin_extent(size_in: int, size_out: int) -> tuple[int, bool]:
     """The widest bin on this axis, and whether every bin on it is that wide."""
     extent = max_adaptive_bin_extent(size_in, size_out)
     return extent, all(
@@ -380,7 +379,7 @@ class AdaptiveMaxPool2dWithIndicesKernel(
 ):
     """Adaptive max pooling forward kernel returning values and int64 indices."""
 
-    def _launch(self, program, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _launch(self, program, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         values, indices = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
         shape = (self.n, self.c_in, self.out_h, self.out_w)
         return values.view(shape), indices.view(shape)

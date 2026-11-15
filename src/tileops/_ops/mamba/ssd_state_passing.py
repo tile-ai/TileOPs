@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -49,7 +50,7 @@ class SSDStatePassingFwdOp(Op):
         self,
         states: torch.Tensor,
         dA_chunk_cumsum: torch.Tensor,
-        initial_states: Optional[torch.Tensor] = None,
+        initial_states: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the SSD state passing forward pass.
 

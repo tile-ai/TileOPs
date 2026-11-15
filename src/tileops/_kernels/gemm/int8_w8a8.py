@@ -8,7 +8,7 @@ adds the bias in fp32 and rounds once to the output dtype.
 """
 
 from abc import abstractmethod
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -897,8 +897,8 @@ class _GEMMINT8Kernel(Kernel, GEMMINT8W8A8FwdInterface):
         per_channel: bool,
         out_dtype: torch.dtype,
         has_bias: bool,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.m = m
@@ -910,13 +910,13 @@ class _GEMMINT8Kernel(Kernel, GEMMINT8W8A8FwdInterface):
         self.out_dtype = out_dtype
         self.has_bias = has_bias
         self.init_config(config)
-        self._unused_bias: Optional[torch.Tensor] = None
+        self._unused_bias: torch.Tensor | None = None
 
     @property
     def out_dtype_str(self) -> str:
         return self.dtype_to_str(self.out_dtype)
 
-    def _bias_operand(self, bias: Optional[torch.Tensor], like: torch.Tensor) -> torch.Tensor:
+    def _bias_operand(self, bias: torch.Tensor | None, like: torch.Tensor) -> torch.Tensor:
         """The bias, or a one-element stand-in the no-bias program never reads."""
         if bias is not None:
             return bias
@@ -958,7 +958,7 @@ class _GEMMINT8TMAKernel(_GEMMINT8Kernel):
         b: torch.Tensor,
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         program = self.program(self._compile)
         return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))
@@ -1058,7 +1058,7 @@ class GEMMINT8W8A8SimpleKernel(_GEMMINT8Kernel):
         b: torch.Tensor,
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         program = self.program(self._compile)
         return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))

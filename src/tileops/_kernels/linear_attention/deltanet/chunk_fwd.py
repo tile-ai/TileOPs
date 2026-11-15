@@ -20,7 +20,6 @@ Unlike Gated DeltaNet (GDN), there is no gate parameter g:
 
 import functools
 import itertools
-from typing import Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -393,7 +392,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         )
 
     @classmethod
-    def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
+    def refusal(cls, call: DeltaNetChunkCall) -> str | None:
         """Why no program serves this call, or ``None``.
 
         Reads the lower bound of the cheaper state pass the shape allows, so a call above it
@@ -450,7 +449,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     @staticmethod
     def _late_loads_for(
         budget: int, c: int, k: int, v: int, elem: int, walk: bool
-    ) -> Tuple[bool, bool]:
+    ) -> tuple[bool, bool]:
         """Whether the w/u preparation and the output pass load late: only where their buffers,
         every one loaded up front, exceed *budget*."""
         fused = (2 * c * k + 2 * c * v + 2 * c * c + c) * elem
@@ -484,7 +483,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         dim_k: int,
         dim_v: int,
         dtype: str = "float32",
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.batch = batch
@@ -691,7 +690,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         k: torch.Tensor,
         v: torch.Tensor,
         beta: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         fused_fn, state_fn, o_fn = self.program(self._programs)
         if self._walk:
             Aw, Au, w, u, neg_kw, ku = fused_fn(k, v, beta)

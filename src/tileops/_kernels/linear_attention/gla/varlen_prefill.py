@@ -5,8 +5,6 @@ A contiguous ``[batch, seq_len, heads, dim]`` tensor is the same bytes as a pack
 equal-length call with a ragged ``seq_len`` is a packed call and runs the same four passes.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -503,7 +501,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
     _state_stages = 4
 
     @classmethod
-    def refusal(cls, call: GLACall) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> str | None:
         """Either the call is packed, or its rows are equal-length and not a whole chunk.
 
         The two are the same work once the rows are read as one packed sequence each.
@@ -578,7 +576,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
         scale: float,
         dtype: torch.dtype,
         has_initial_state: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         self.has_initial_state = has_initial_state
         super().__init__(device_index=device_index)
@@ -630,9 +628,9 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # The offsets are read on the device, so the host copy is never needed.
         del cu_seqlens_cpu

@@ -6,7 +6,8 @@ B scales cover 128x128 blocks. Accumulation is float32 and output is bfloat16.
 
 import itertools
 import math
-from typing import Callable, ClassVar, Mapping, Optional
+from collections.abc import Callable, Mapping
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -87,11 +88,11 @@ def _moe_grouped_gemm_fp8_kernel(
     num_groups: int,
     n: int,
     k: int,
-    max_m: Optional[int],
+    max_m: int | None,
     sm_count: int,
     smem_limit: int,
-    packing: Optional[str] = None,
-    metadata_kind: Optional[str] = None,
+    packing: str | None = None,
+    metadata_kind: str | None = None,
     alignment: int = 1,
 ) -> Callable:
     """Build a persistent FP8 grouped GEMM for the given layout.
@@ -770,7 +771,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
     # Ring depths. A depth that divides the K steps runs the constant-slot ring.
     _NUM_STAGES: ClassVar[range] = range(3, 9)
     # Calibrated configs keyed by (E, N, K, max_m); contiguous layouts use max_m=None.
-    _CONFIGS: ClassVar[dict[str, dict[tuple[int, int, int, Optional[int]], dict[str, int]]]] = {
+    _CONFIGS: ClassVar[dict[str, dict[tuple[int, int, int, int | None], dict[str, int]]]] = {
         "h200": {
             (8, 4096, 7168, 128): {
                 "block_m": 64,
@@ -882,7 +883,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         smem_limit: int,
         scale_k: int,
         alignment: int = 0,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Why the builder cannot instantiate *config*, or ``None`` when it can.
 
         Args:
@@ -923,7 +924,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         return None
 
     @classmethod
-    def refusal(cls, call: MGroupedGEMMFP8Call) -> Optional[str]:
+    def refusal(cls, call: MGroupedGEMMFP8Call) -> str | None:
         """The layout, dtype, extents and scale grids the kernel instantiates."""
         if call.ab_dtype is not torch.float8_e4m3fn:
             return f"serves float8_e4m3fn operands, got {call.ab_dtype}"
@@ -994,7 +995,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         if reason is not None:
             raise ValueError(f"{type(self).__name__} cannot run config {dict(config)}: {reason}")
 
-    def init_config(self, config: Optional[dict] = None) -> None:
+    def init_config(self, config: dict | None = None) -> None:
         """Set the config as the base class does, then check it.
 
         Raises:
@@ -1105,7 +1106,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         b: torch.Tensor,
         b_scale: torch.Tensor,
         layout_metadata: torch.Tensor,
-        out: Optional[torch.Tensor] = None,
+        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run each expert's block-scaled product over its rows, into *out* if given."""
         if out is None:

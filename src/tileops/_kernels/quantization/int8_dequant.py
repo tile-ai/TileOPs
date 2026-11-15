@@ -1,6 +1,6 @@
 """INT8 dequantize kernels."""
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -133,7 +133,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
     _TUNE_STEPS: ClassVar[tuple[int, ...]] = (1, 2, 4)
 
     @classmethod
-    def refusal(cls, call: DequantizeCall) -> Optional[str]:
+    def refusal(cls, call: DequantizeCall) -> str | None:
         reason = super().refusal(call)
         # The last block's indices run up to one block past M * K; the widest block holds
         # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
@@ -153,7 +153,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         m: int,
         k: int,
         out_dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)
@@ -298,7 +298,7 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
     _TUNE_STEPS: ClassVar[tuple[int, ...]] = (2, 4, 8)
 
     @classmethod
-    def refusal(cls, call: DequantizeCall) -> Optional[str]:
+    def refusal(cls, call: DequantizeCall) -> str | None:
         reason = super().refusal(call)
         # The last block's indices run up to one block past M * K; the widest block holds
         # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
@@ -317,7 +317,7 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         self,
         n: int,
         out_dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)
@@ -590,7 +590,7 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
     _TUNE_STEPS: ClassVar[tuple[int, ...]] = (2, 4, 8)
 
     @classmethod
-    def refusal(cls, call: DequantizeCall) -> Optional[str]:
+    def refusal(cls, call: DequantizeCall) -> str | None:
         reason = super().refusal(call)
         # The last block's indices run up to one block past M * K; the widest block holds
         # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
@@ -610,7 +610,7 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         m: int,
         k: int,
         out_dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)

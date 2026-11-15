@@ -1,7 +1,6 @@
 import dataclasses
 import itertools
 from abc import abstractmethod
-from typing import Optional
 
 import tilelang
 import torch
@@ -290,7 +289,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
     _MIN_PIPELINED_BLOCK_Q = 2
 
     @classmethod
-    def refusal(cls, call: FP8LightningIndexerCall) -> Optional[str]:
+    def refusal(cls, call: FP8LightningIndexerCall) -> str | None:
         """Why the call cannot fit the device's shared memory at one query a block, or ``None``."""
         if not call.smem_budget:
             return None
@@ -336,7 +335,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         kv_group,
         clean_logits=True,
         dtype: torch.dtype = torch.float8_e4m3fn,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         if dtype != torch.float8_e4m3fn:
@@ -764,7 +763,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
     _ROWS = 256  # query-head rows a CTA holds: the WGMMA's N
 
     @classmethod
-    def refusal(cls, call: FP8LightningIndexerCall) -> Optional[str]:
+    def refusal(cls, call: FP8LightningIndexerCall) -> str | None:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
         if call.kv_group != 1:
             return "scores one key group"
@@ -789,7 +788,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
         return max(1, min(-(-call.sm_count // q_blocks), tiles // 2))
 
     @classmethod
-    def partial_wave_for(cls, call: FP8LightningIndexerCall) -> Optional[tuple[int, int]]:
+    def partial_wave_for(cls, call: FP8LightningIndexerCall) -> tuple[int, int] | None:
         """``(whole, pieces)`` when the call's query blocks leave a partial last wave on one
         batch row: the first ``whole`` blocks run on one CTA each and every later one splits its
         key tiles over ``pieces`` CTAs, a power of two. A piece costs a CTA prologue, so blocks
@@ -830,8 +829,8 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
         seq_len_kv: int,
         clean_logits: bool = True,
         splits: int = 1,
-        partial_wave: Optional[tuple[int, int]] = None,
-        device_index: Optional[int] = None,
+        partial_wave: tuple[int, int] | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dtype = torch.float8_e4m3fn

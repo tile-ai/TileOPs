@@ -1,6 +1,5 @@
 import copy
 import itertools
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -498,7 +497,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         return max(candidate for candidate in cls._SPLIT_CANDIDATES if candidate <= limit)
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """The contiguous decode region and the limits the program builds within."""
         if call.return_lse:
             return "does not return the log-sum-exp"
@@ -511,7 +510,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         return cls._limit_refusal(call.dim, call.seqlen_kv, call.arch)
 
     @staticmethod
-    def _limit_refusal(dim: int, seq_len_kv: int, arch: int) -> Optional[str]:
+    def _limit_refusal(dim: int, seq_len_kv: int, arch: int) -> str | None:
         """Why the program cannot build this shape; read by the region and the constructor,
         which a caller can reach directly. D256 uses the narrow, one-stage tile.
         """
@@ -561,16 +560,16 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         seq_len_kv,
         dim,
         dtype="float16",
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         has_sinks: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.has_sinks = has_sinks
@@ -815,12 +814,12 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         del q_scale, k_scale, v_scale
@@ -908,7 +907,7 @@ class GQADecodeSplitKernel(GQADecodeKernel):
     PARTS = 32
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """The split's region, within what the general decode program serves."""
         if call.return_lse:
             return "does not return the log-sum-exp"

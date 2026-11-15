@@ -1,6 +1,7 @@
 """SmoothQuant activation quantization operator."""
 
-from typing import ClassVar, Mapping, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -49,7 +50,7 @@ class SmoothQuantFwdOp(Op):
         """
         super().__init__(target=target)
 
-    def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Smooth ``x`` by channel, then quantize each row against its absolute maximum.
 
         Args:

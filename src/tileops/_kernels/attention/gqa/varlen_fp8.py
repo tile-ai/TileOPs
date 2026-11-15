@@ -6,7 +6,8 @@ folded into the score and output rescale instead of promoting every element.
 """
 
 import itertools
-from typing import Callable, ClassVar, Optional
+from collections.abc import Callable
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -56,7 +57,7 @@ def _gqa_varlen_fp8_fwd_kernel(
     heads_kv: int,
     dim: int,
     is_causal: bool,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
     softcap: float = 0.0,
     out_dtype: str = "float16",
     window_size_left: int = -1,
@@ -287,7 +288,7 @@ def _gqa_varlen_fp8_ws_kernel(
     heads_kv: int,
     dim: int,
     is_causal: bool,
-    sm_scale: Optional[float],
+    sm_scale: float | None,
     softcap: float,
     out_dtype: str,
     window_size_left: int,
@@ -1220,7 +1221,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
     _ROPE_PLACEHOLDER_WIDTH = VECTOR_ACCESS_BYTES // 2
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Why this class does not serve *call*, or ``None`` when it does."""
         reason = cls._contract_refusal(call)
         if reason is not None or not call.smem_budget:
@@ -1230,7 +1231,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         return None
 
     @staticmethod
-    def _contract_refusal(call: AttentionCall) -> Optional[str]:
+    def _contract_refusal(call: AttentionCall) -> str | None:
         """The inputs the FP8 programs take, apart from the resources one needs."""
         if not call.is_fp8:
             return "requires float8_e4m3fn q, k and v"
@@ -1241,7 +1242,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         return None
 
     @staticmethod
-    def _fitting_config(batch: int, dim: int, element: int, budget: int) -> Optional[dict]:
+    def _fitting_config(batch: int, dim: int, element: int, budget: int) -> dict | None:
         """The first default candidate *budget* bytes of shared memory hold, or ``None``."""
         wide = {"block_m": 128, "block_n": 128, "num_stages": 2, "threads": 256}
         candidates = [
@@ -1266,23 +1267,23 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
         window_size_left: int = -1,
         window_size_right: int = -1,
         accum_dtype: torch.dtype = torch.float32,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
         has_sinks: bool = False,
     ) -> None:
         if dtype not in ATTENTION_DTYPES:
             raise ValueError("FP8 packed-varlen GQA outputs float16 or bfloat16")
-        self._rope_placeholder: Optional[torch.Tensor] = None
+        self._rope_placeholder: torch.Tensor | None = None
         super().__init__(
             batch,
             heads,
@@ -1305,7 +1306,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         )
 
     def _rope_tables(
-        self, rope_cos: Optional[torch.Tensor], rope_sin: Optional[torch.Tensor]
+        self, rope_cos: torch.Tensor | None, rope_sin: torch.Tensor | None
     ) -> "tuple[torch.Tensor, torch.Tensor]":
         """The rotation tables, or the placeholder a call without rotation passes instead."""
         if self.key_rope is None:
@@ -1407,12 +1408,12 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError(f"{type(self).__name__} requires q_scale, k_scale and v_scale")
@@ -1449,7 +1450,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
     # Which CTA runs which item follows the order the claims land in, which is not fixed
     # between launches. An item owns a disjoint slice of the output, so the result does
     # not depend on that order.
-    _claim: Optional[torch.Tensor] = None
+    _claim: torch.Tensor | None = None
     # The work counter the persistent CTAs claim from: the next item to hand out, and the
     # CTAs that have stopped claiming. The program leaves both at zero, so one buffer serves
     # every launch and no call has to clear it.
@@ -1460,7 +1461,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
     _MAX_BATCH: int = 2048
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Why this class does not serve *call*, or ``None`` when it does."""
         base = GQAVarlenFP8FwdKernel._contract_refusal(call)
         # The rotation is this class's alone: it rotates the query tile inside the CTA
@@ -1508,7 +1509,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
         return {}
 
     @property
-    def autotune_configs(self) -> Optional[list[dict]]:
+    def autotune_configs(self) -> list[dict] | None:
         return None
 
     def forward(
@@ -1518,12 +1519,12 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError(f"{type(self).__name__} requires q_scale, k_scale and v_scale")

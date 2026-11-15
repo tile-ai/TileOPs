@@ -12,7 +12,6 @@ query tokens owns no tile.
 """
 
 import math
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -904,7 +903,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside.
 
         It serves every call computed in float16 or bfloat16 whose query and cache are of
@@ -925,7 +924,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         return None
 
     @staticmethod
-    def _converts_wide_tiles(cache_dtype: Optional[torch.dtype], dim: int) -> bool:
+    def _converts_wide_tiles(cache_dtype: torch.dtype | None, dim: int) -> bool:
         """Whether the consumers convert FP8 key tiles wider than 128 channels; such a tile
         needs two warpgroups (one would hold a 256-register accumulator)."""
         return cache_dtype == torch.float8_e4m3fn and dim > 128
@@ -978,10 +977,10 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         window_size_left: int = -1,
         window_size_right: int = -1,
         dtype: torch.dtype = torch.float16,
-        query_dtype: Optional[torch.dtype] = None,
-        cache_dtype: Optional[torch.dtype] = None,
+        query_dtype: torch.dtype | None = None,
+        cache_dtype: torch.dtype | None = None,
         per_request_kv_scale: bool = False,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
         rows_fill_tile: bool = False,
         has_sinks: bool = False,
@@ -989,8 +988,8 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         if heads_kv <= 0 or heads % heads_kv != 0:
@@ -1319,13 +1318,13 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         v_pool: torch.Tensor,
         cache_seqlens: torch.Tensor,
         page_table: torch.Tensor,
-        cu_seqlens_q: Optional[torch.Tensor] = None,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        cu_seqlens_q: torch.Tensor | None = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         sinks = sinks if self.has_sinks else self._unused_sinks
         rope_cos = rope_cos if self.fuse_rope else self._unused_rope

@@ -312,7 +312,7 @@ class SignatureCall(CallView):
     # The checked calls the op's sub-ops completed during this call, by stage.
     stages: Mapping[str, tuple[SignatureCall, ...]] | None = None
 
-    def materialize(self) -> "SignatureCall":
+    def materialize(self) -> SignatureCall:
         """Return this call, as a call record's ``materialize`` returns the call it holds."""
         return self
 
@@ -1431,7 +1431,7 @@ def _traced(tensors: tuple) -> bool:
     )
 
 
-def _extent(t: "torch.Tensor | None") -> "tuple | None":
+def _extent(t: torch.Tensor | None) -> tuple | None:
     """``(device, first byte, end byte)`` of *t*'s storage, or None when it holds no bytes."""
     if t is None or t.numel() == 0 or t.is_meta:
         return None
@@ -1440,7 +1440,7 @@ def _extent(t: "torch.Tensor | None") -> "tuple | None":
     return (t.device, start, start + storage.nbytes())
 
 
-def _overlaps(extent: "tuple | None", others: list) -> bool:
+def _overlaps(extent: tuple | None, others: list) -> bool:
     """Whether *extent* shares a byte with any of the extents *others*."""
     if extent is None:
         return False

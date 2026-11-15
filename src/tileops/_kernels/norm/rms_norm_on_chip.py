@@ -6,8 +6,6 @@ across a thread-block cluster; the CTAs of a cluster exchange their partial sums
 through each other's shared memory.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -180,7 +178,7 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
     _THREADS = 1024
 
     @classmethod
-    def _plan(cls, n: int, dtype: torch.dtype, smem_budget: int) -> Optional[tuple]:
+    def _plan(cls, n: int, dtype: torch.dtype, smem_budget: int) -> tuple | None:
         """``(cluster, held_vectors, async_stage)`` for rows of *n*, or ``None``."""
         elem = dtype.itemsize
         vec = VECTOR_ACCESS_BYTES // elem
@@ -234,7 +232,7 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
         rows = x.reshape(-1, self.n)
         m = rows.shape[0]
         has_weight = weight is not None

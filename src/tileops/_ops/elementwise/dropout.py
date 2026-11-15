@@ -9,7 +9,8 @@ Edge cases:
 - training=False: identity pass-through
 """
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -52,7 +53,7 @@ class DropoutFwdOp(Op):
         training: bool = True,
         *,
         inplace: bool = False,
-        seed: Optional[int] = None,
+        seed: int | None = None,
         target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.

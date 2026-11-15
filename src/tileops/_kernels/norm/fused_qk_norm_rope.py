@@ -12,8 +12,6 @@ Values past R pass through normalized; the v heads are not touched. The arithmet
 and each value rounds once to the qkv dtype.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -200,7 +198,7 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def refusal(cls, call: FusedQKNormRoPECall) -> Optional[str]:
+    def refusal(cls, call: FusedQKNormRoPECall) -> str | None:
         if call.dim % 2:
             return f"a lane holds pairs of values, so the head dim must be even, not {call.dim}"
         lanes = call.dim // (2 * _vector(call.dim, call.rot, call.dtype))
@@ -236,8 +234,8 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
         eps: float,
         dtype: torch.dtype,
         cache_dtype: torch.dtype,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dtype = dtype

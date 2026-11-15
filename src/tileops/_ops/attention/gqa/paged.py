@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -91,11 +92,11 @@ class GQAPagedFwdOp(Op):
         is_causal: bool = False,
         window_size_left: int = -1,
         window_size_right: int = -1,
-        sm_scale: Optional[float] = None,
-        softcap: Optional[float] = None,
-        out_dtype: Optional[torch.dtype] = None,
+        sm_scale: float | None = None,
+        softcap: float | None = None,
+        out_dtype: torch.dtype | None = None,
         pos_encoding_mode: str = "none",
-        rotary_dim: Optional[int] = None,
+        rotary_dim: int | None = None,
         rope_layout: str = "neox",
         *,
         validate_inputs: bool = False,
@@ -140,9 +141,9 @@ class GQAPagedFwdOp(Op):
         q: torch.Tensor,
         k_cache: torch.Tensor,
         block_table: torch.Tensor,
-        k_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        k_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> AttentionCall:
         """State what one paged call is, for selection to filter against.
 
@@ -189,12 +190,12 @@ class GQAPagedFwdOp(Op):
         block_table: torch.Tensor,
         cache_seqlens: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run read-only paged GQA over packed Q and rank-4 KV pages.
 

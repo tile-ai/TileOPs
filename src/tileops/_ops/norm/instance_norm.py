@@ -16,7 +16,8 @@ Input tensors accept shape ``(N, C, *spatial)``.
 """
 
 import math
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -102,10 +103,10 @@ class InstanceNormFwdOp(Op):
     def forward(
         self,
         input: torch.Tensor,
-        running_mean: Optional[torch.Tensor] = None,
-        running_var: Optional[torch.Tensor] = None,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        running_mean: torch.Tensor | None = None,
+        running_var: torch.Tensor | None = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Apply instance normalization.
 

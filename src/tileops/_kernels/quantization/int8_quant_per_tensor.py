@@ -1,6 +1,6 @@
 """Per-tensor symmetric INT8 quantization in one cooperative launch."""
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -338,7 +338,7 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
     _BATCH: ClassVar[int] = 8
 
     @classmethod
-    def refusal(cls, call: QuantizeCall) -> Optional[str]:
+    def refusal(cls, call: QuantizeCall) -> str | None:
         reason = super().refusal(call)
         # Offsets are int32 and run up to one tile past M * K.
         largest_tile = cls._THREADS * VECTOR_ACCESS_BYTES
@@ -346,7 +346,7 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
             return f"indexes elements with int32, and M * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.dtype = call.dtype
         self.numel = call.rows * call.cols

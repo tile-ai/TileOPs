@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import tilelang
 import torch
@@ -188,7 +188,7 @@ class NSACompressedFwdVarlenKernel(Kernel, NSACompressedFwdInterface):
         bs: int,
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.seq_num = seq_num
@@ -225,7 +225,7 @@ class NSACompressedFwdVarlenKernel(Kernel, NSACompressedFwdInterface):
         offsets: torch.Tensor,
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.program(self._compile)(
             q.to(self.dtype),
             k_cmp.to(self.dtype),
@@ -552,7 +552,7 @@ class NSACompressedFwdVarlenTMAKernel(NSACompressedFwdVarlenKernel):
     _KEY_HALF = 16
 
     @classmethod
-    def refusal(cls, call: NSACall) -> Optional[str]:
+    def refusal(cls, call: NSACall) -> str | None:
         """Two 64-column halves per head and one m64 row block per tile."""
         if call.dim != 2 * cls._HALF or call.dim_v != 2 * cls._HALF:
             return f"head dims ({call.dim}, {call.dim_v}) are not two {cls._HALF}-column halves"

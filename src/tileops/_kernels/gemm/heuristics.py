@@ -9,7 +9,6 @@ board so the serving kernel can use its default configuration.
 import functools
 import math
 from dataclasses import dataclass
-from typing import Optional
 
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 
@@ -147,7 +146,7 @@ class _Calibration:
         return dict(self.structure_factor)[structure]
 
 
-def _calibration(calibration: Optional[str]) -> Optional[_Calibration]:
+def _calibration(calibration: str | None) -> _Calibration | None:
     """The calibration measured on the board keyed *calibration*, or ``None`` for a board
     without one."""
     # One entry per board the scorer has been calibrated on, by its calibration key
@@ -429,7 +428,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     return out
 
 
-def _fill_cand(m: int, n: int, k: int, sm_count: int) -> Optional[_Cand]:
+def _fill_cand(m: int, n: int, k: int, sm_count: int) -> _Cand | None:
     """The one-wave 64-row NT tile at a width the basic tiles skip, or None.
 
     Its width is the narrowest multiple of 8 whose grid of 64-row tiles fits one wave,
@@ -470,7 +469,7 @@ def _tile_fill(m: int, n: int, block_n: int, sm_count: int) -> float:
     return m * n / (math.ceil(tiles / sm_count) * sm_count * 128 * block_n)
 
 
-def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) -> Optional[dict]:
+def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) -> dict | None:
     """The ping-pong config to run in place of a coop2 tile, or None to keep coop2.
 
     A ping-pong consumer runs its epilogue under the other consumer's mainloop, where
@@ -703,7 +702,7 @@ def _tiny_m_config(n: int, k: int, sm_count: int, gemv: bool, cal: _TinyMCalibra
     return min(_tiny_m_candidates(k, gemv), key=lambda c: _tiny_m_score_us(c, n, k, sm_count, cal))
 
 
-def two_row_gemv_wins(n: int, k: int, sm_count: int, calibration: Optional[str]) -> bool:
+def two_row_gemv_wins(n: int, k: int, sm_count: int, calibration: str | None) -> bool:
     """Whether ``GemvKernel`` outscores every tiny-m tile on an ``m == 2`` NT call.
 
     *calibration* is the board's calibration key; False on a board without a calibration.
@@ -804,10 +803,10 @@ def best_config(
     trans_a: bool,
     trans_b: bool,
     sm_count: int,
-    calibration: Optional[str],
+    calibration: str | None,
     *,
     l2_bytes: int,
-) -> Optional[dict]:
+) -> dict | None:
     """Return the analytically selected ``GEMMTMAKernel`` config for a shape.
 
     Args:
@@ -884,8 +883,8 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
 
 
 def small_m_splitk_config(
-    m: int, n: int, k: int, sm_count: int, calibration: Optional[str]
-) -> Optional[dict]:
+    m: int, n: int, k: int, sm_count: int, calibration: str | None
+) -> dict | None:
     """Select the split-K basic GEMM band fitted on a calibrated board for a small-M NT call."""
     block_k = 128
     k_tiles = k // block_k

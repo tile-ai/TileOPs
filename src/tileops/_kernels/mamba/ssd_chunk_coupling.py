@@ -4,7 +4,7 @@ The kernel reads sequence-fused group-owned inputs and writes the lower
 triangle of each ``(chunk, group)`` matrix directly in its storage dtype.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -175,7 +175,7 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
         chunk_len: int,
         d_state: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.batch = batch

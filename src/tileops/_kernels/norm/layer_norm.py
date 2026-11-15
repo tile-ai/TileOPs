@@ -2,8 +2,6 @@
 
 Rows are padded to 256 elements; padded values are excluded from statistics."""
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -288,7 +286,7 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
         N: int,
         eps: float,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         """Build for a hidden size and dtype.
 
@@ -310,7 +308,7 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
         return select_row_configs(self.N_padded, self.dtype, block_ms=(1,))
 
     def forward(
-        self, x: torch.Tensor, weight: Optional[torch.Tensor], bias: Optional[torch.Tensor]
+        self, x: torch.Tensor, weight: torch.Tensor | None, bias: torch.Tensor | None
     ) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
 

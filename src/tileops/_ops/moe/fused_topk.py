@@ -1,6 +1,7 @@
 """MoE fused top-k routing operator."""
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -92,7 +93,7 @@ class FusedTopKFwdOp(Op):
     def forward(
         self,
         gating_output: torch.Tensor,
-        correction_bias: Optional[torch.Tensor] = None,
+        correction_bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run top-k routing.
 

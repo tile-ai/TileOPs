@@ -1,7 +1,8 @@
 """PReLU op: y = x if x > 0 else weight[channel] * x."""
 
+from collections.abc import Mapping
 from math import prod
-from typing import ClassVar, Mapping
+from typing import ClassVar
 
 import torch
 

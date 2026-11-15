@@ -7,8 +7,6 @@ producer zeroes stale V rows in the final partial cache page before consumers
 read them.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -824,7 +822,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     _MAX_ROPE_SCRATCH_BYTES: int = 512 * 1024 * 1024
 
     @staticmethod
-    def block_n_for(page_size: int, dim: int) -> Optional[int]:
+    def block_n_for(page_size: int, dim: int) -> int | None:
         """The widest key tile up to 128 rows that is part of one page or a run of whole
         pages, a multiple of the 16 rows one WGMMA step reduces over; ``None`` when none is.
         At dimension 256 a tile holds at most 64 rows: the query tile and two stages of key
@@ -860,7 +858,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         return 0 if cache_fp8 else min(dim, tilelang.cdiv(rotary_dim, 64) * 64)
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
         if call.dtype not in ATTENTION_DTYPES:
             return "requires a float16 or bfloat16 output"
@@ -946,10 +944,10 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         max_pages_per_req: int,
         is_causal: bool,
         dtype: torch.dtype = torch.float16,
-        query_dtype: Optional[torch.dtype] = None,
-        cache_dtype: Optional[torch.dtype] = None,
+        query_dtype: torch.dtype | None = None,
+        cache_dtype: torch.dtype | None = None,
         per_request_kv_scale: bool = False,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
         window_size_left: int = -1,
         window_size_right: int = -1,
@@ -958,8 +956,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         if heads_kv <= 0 or heads % heads_kv != 0:
@@ -1034,7 +1032,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         has_sinks: bool = False,
         rope_cols: int = 0,
         rope_rows: int = 0,
-        key_pages: Optional[int] = None,
+        key_pages: int | None = None,
     ):
         """The persistent program for one geometry over a table *max_pages_per_req* wide;
         *key_pages* bounds a request's key pages (the table width by default)."""
@@ -1108,7 +1106,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         page_table: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         sinks: torch.Tensor,
-        k_rotated: Optional[torch.Tensor] = None,
+        k_rotated: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run *program* over the pools, claiming work from the stream's counter in
         *counters*: a new output of q's shape and dtype. *k_rotated* feeds a rope_cols build."""
@@ -1188,13 +1186,13 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         v_pool: torch.Tensor,
         cache_seqlens: torch.Tensor,
         page_table: torch.Tensor,
-        cu_seqlens_q: Optional[torch.Tensor] = None,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        cu_seqlens_q: torch.Tensor | None = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if q.shape[0] == 0:
             return torch.empty(q.shape, dtype=self.dtype, device=q.device)

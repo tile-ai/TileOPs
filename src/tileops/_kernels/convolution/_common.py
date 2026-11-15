@@ -2,7 +2,6 @@
 launch path."""
 
 import itertools
-from typing import Optional
 
 import torch
 
@@ -10,7 +9,7 @@ from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS
 from tileops._kernels.kernel_base import Kernel
 
 
-def grid_refusal(*, y: int = 1, z: int = 1) -> Optional[str]:
+def grid_refusal(*, y: int = 1, z: int = 1) -> str | None:
     """Why a launch of ``y`` blocks along grid y and ``z`` along z cannot run, or ``None``."""
     for axis, blocks in (("y", y), ("z", z)):
         if blocks > MAX_GRID_YZ_BLOCKS:
@@ -18,7 +17,7 @@ def grid_refusal(*, y: int = 1, z: int = 1) -> Optional[str]:
     return None
 
 
-def operand_refusal(elements: int) -> Optional[str]:
+def operand_refusal(elements: int) -> str | None:
     """Why a program with an operand of ``elements`` elements cannot build, or ``None``.
 
     TileLang fails to build the programs that ask once an index into that operand passes
@@ -96,7 +95,7 @@ def conv_autotune_configs(
 def launch(
     kernel: Kernel,
     *tensors: torch.Tensor,
-    bias: Optional[torch.Tensor],
+    bias: torch.Tensor | None,
 ) -> torch.Tensor:
     """Run *kernel*'s compiled program, passing *bias* only when the call carries one.
 

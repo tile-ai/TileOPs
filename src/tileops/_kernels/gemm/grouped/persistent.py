@@ -1,7 +1,5 @@
 """The persistent kernel behind ``GroupedGEMMFwdOp``'s four layouts."""
 
-from typing import Optional
-
 import torch
 
 from tileops._kernels.gemm.grouped.call_spec import (
@@ -61,7 +59,7 @@ class GroupedGEMMPersistentKernel(Kernel, GroupedGEMMFwdInterface):
         transpose_a: bool = False,
         transpose_b: bool = True,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         """Bind the layout; shapes and the tile come from each call."""
         super().__init__(device_index=device_index)

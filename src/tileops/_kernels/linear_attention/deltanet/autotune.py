@@ -8,7 +8,8 @@ merges the winners into the single flat config the wrapped kernel reads.
 
 import itertools
 import warnings
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from tileops._kernels.autotune import TUNING_FATAL
 from tileops._kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
@@ -24,19 +25,19 @@ __all__ = [
 ]
 
 # ``num_stages`` / ``threads`` candidates for the two matmul-heavy sub-kernels.
-PIPELINE_CONFIGS: Tuple[Dict[str, int], ...] = tuple(
+PIPELINE_CONFIGS: tuple[dict[str, int], ...] = tuple(
     {"num_stages": num_stages, "threads": threads}
     for num_stages in (1, 2)
     for threads in (128, 256)
 )
 
 # ``threads`` candidates for the output projection, which takes no pipeline depth.
-OUTPUT_CONFIGS: Tuple[Dict[str, int], ...] = tuple(
+OUTPUT_CONFIGS: tuple[dict[str, int], ...] = tuple(
     {"threads": threads} for threads in (64, 128, 256)
 )
 
 
-def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
+def h_block_v_candidates(dim_v: int) -> tuple[int, ...]:
     """Return the recurrence V-tile widths worth offering at this dimension.
 
     Admissibility is ``resolve_block_v``'s question — gemm N extent and
@@ -66,7 +67,7 @@ def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     return tuple(buildable)
 
 
-def _require_h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
+def _require_h_block_v_candidates(dim_v: int) -> tuple[int, ...]:
     """Return the admissible widths, so both callers refuse the same shapes."""
     candidates = h_block_v_candidates(dim_v)
     if not candidates:
@@ -101,7 +102,7 @@ def default_h_block_v(dim_v: int, chunk_size: int) -> int:
     return 0 if 0 in candidates else min(tiled)
 
 
-def delta_rule_fwd_autotune_configs(dim_v: int) -> List[Dict[str, int]]:
+def delta_rule_fwd_autotune_configs(dim_v: int) -> list[dict[str, int]]:
     """Return every merged config the sweep can select at this value dimension.
 
     The three sub-kernels are tuned independently, so the reachable set is their
@@ -162,7 +163,7 @@ def tune_delta_rule_fwd(
     o_builder: Callable[..., Callable],
     warmup: int = 10,
     rep: int = 10,
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Return the merged best config for a three-sub-kernel delta-rule forward.
 
     The recurrence's V-tile width changes the generated kernel, so TileLang's
@@ -200,11 +201,11 @@ def tune_delta_rule_fwd(
         kernel,
         label: str,
         jit_kernel: Callable,
-        configs: Sequence[Dict[str, int]],
+        configs: Sequence[dict[str, int]],
         warmup: int,
         rep: int,
-        untuned: Optional[Dict[str, int]] = None,
-    ) -> Tuple[Optional[Dict[str, int]], Optional[float]]:
+        untuned: dict[str, int] | None = None,
+    ) -> tuple[dict[str, int] | None, float | None]:
         """Sweep one sub-kernel and return its ``(winning config, latency)``.
 
         *untuned* is the sub-kernel's launch config in the untuned kernel, which
@@ -256,7 +257,7 @@ def tune_delta_rule_fwd(
         """
         return f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
 
-    def _tuned_value(config: Optional[Dict[str, int]], key: str, fallback: Any) -> Any:
+    def _tuned_value(config: dict[str, int] | None, key: str, fallback: Any) -> Any:
         """Return the tuned value for *key*, or *fallback* if the sweep found none."""
         if config is None or config.get(key) is None:
             return fallback
@@ -284,13 +285,13 @@ def tune_delta_rule_fwd(
         {"num_stages": default["fused_num_stages"], "threads": default["fused_threads"]},
     )
 
-    h_config: Optional[Dict[str, int]] = None
-    h_block_v: Optional[int] = None
+    h_config: dict[str, int] | None = None
+    h_block_v: int | None = None
     # Widths whose sweep returned, having compiled: the autotuner raises when
     # no candidate of a width compiles, and JIT-compiles directly when it skips
     # the search. Only a measurement, not membership here, says one is fast.
-    compiled: List[int] = []
-    failures: List[Tuple[str, Exception]] = []
+    compiled: list[int] = []
+    failures: list[tuple[str, Exception]] = []
     best_latency = float("inf")
     h_untuned = {"num_stages": default["h_num_stages"], "threads": default["h_threads"]}
     for block_v in candidates:

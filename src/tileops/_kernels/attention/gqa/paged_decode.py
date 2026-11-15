@@ -8,7 +8,6 @@ batch-1 GQA paged kernel builds on this module's programs.
 """
 
 import itertools
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -595,7 +594,7 @@ class MHADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
     general: bool = True
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Why *call* is outside the decode region, its page size, or a head dim whose
         narrowest tiles overflow the device's shared memory."""
         reason = call.paged_decode_refusal or call.tensor_core_dim_refusal
@@ -648,10 +647,10 @@ class MHADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
         max_pages_per_req,
         is_causal,
         dtype="float16",
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         if heads_kv <= 0 or heads % heads_kv != 0:

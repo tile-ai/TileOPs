@@ -12,7 +12,7 @@ The flag_gems callables cast nothing — like aten, its reductions accumulate in
 and return the storage dtype — so each tag is one kernel.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import pytest
 import torch
@@ -37,7 +37,7 @@ from tileops._ops.reduction.reduce import (
 )
 
 
-def _bench(op_cls: type, case: bench.Case, flaggems_fn: Optional[Callable] = None) -> None:
+def _bench(op_cls: type, case: bench.Case, flaggems_fn: Callable | None = None) -> None:
     """Check flag_gems against the reference, then time it and the op with torch."""
     baseline_fn = case.torch
     op = op_cls(**case.arguments)
@@ -53,7 +53,7 @@ def _out_dtype(x: torch.Tensor, params: dict) -> torch.dtype:
     return getattr(torch, params["dtype"]) if params.get("dtype") else x.dtype
 
 
-def _flaggems(name: str, params: dict, *extra, **kwargs) -> Optional[Callable]:
+def _flaggems(name: str, params: dict, *extra, **kwargs) -> Callable | None:
     """flag_gems' reduction over the row's axes, or ``None`` for a row passing ``dtype``."""
     if params.get("dtype"):
         return None
