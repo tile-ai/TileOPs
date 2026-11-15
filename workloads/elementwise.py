@@ -418,14 +418,12 @@ _REFERENCES = {
     "SoftplusFwdOp": _in_float32(
         lambda a, x: F.softplus(x, a.get("beta", 1.0), a.get("threshold", 20.0))
     ),
-    "ClampTensorFwdOp": lambda a, x, lo=None, hi=None: torch.clamp(x, lo, hi),
-    "ClampScalarFwdOp": lambda a, x: torch.clamp(x, a.get("min", None), a.get("max", None)),
+    "ClampFwdOp": lambda a, x, lo=None, hi=None: torch.clamp(x, lo, hi),
     "NanToNumFwdOp": lambda a, x: torch.nan_to_num(
         x, a.get("nan", 0.0), a.get("posinf", None), a.get("neginf", None)
     ),
     "PReLUFwdOp": _in_float32(lambda a, x, w: F.prelu(x, w)),
-    "MaskedFillTensorFwdOp": lambda a, x, m, v: x.masked_fill(m, v),
-    "MaskedFillScalarFwdOp": lambda a, x, m: x.masked_fill(m, a["value"]),
+    "MaskedFillFwdOp": lambda a, x, m, v: x.masked_fill(m, v),
     "AddFwdOp": _in_float32(lambda a, x, y: torch.add(x, y, alpha=a.get("alpha", 1.0))),
     "SubFwdOp": _in_float32(lambda a, x, y: torch.sub(x, y, alpha=a.get("alpha", 1.0))),
     "MulFwdOp": _in_float32(lambda a, x, y: torch.mul(x, y)),
@@ -436,7 +434,6 @@ _REFERENCES = {
     "RemainderFwdOp": lambda a, x, y: torch.remainder(x, y),
     "PowFwdOp": _in_float32(lambda a, x, y: torch.pow(x, y)),
     "FloorDivideFwdOp": lambda a, x, y: torch.floor_divide(x, y),
-    "LerpScalarFwdOp": _in_float32(lambda a, x, y: torch.lerp(x, y, a.get("weight", 0.5))),
     "MaximumFwdOp": lambda a, x, y: torch.maximum(x, y),
     "MinimumFwdOp": lambda a, x, y: torch.minimum(x, y),
     "EqFwdOp": lambda a, x, y: torch.eq(x, y),
@@ -451,7 +448,7 @@ _REFERENCES = {
     "BitwiseOrFwdOp": lambda a, x, y: torch.bitwise_or(x, y),
     "BitwiseXorFwdOp": lambda a, x, y: torch.bitwise_xor(x, y),
     "WhereFwdOp": lambda a, c, x, y: torch.where(c, x, y),
-    "LerpTensorFwdOp": _in_float32(lambda a, x, e, w: torch.lerp(x, e, w)),
+    "LerpFwdOp": _in_float32(lambda a, x, e, w: torch.lerp(x, e, w)),
     "SiLUAndMulFwdOp": _gated(lambda a, g: F.silu(g)),
     "GELUAndMulFwdOp": _gated(lambda a, g: F.gelu(g, approximate=a.get("approximate", "none"))),
     "AlibiFwdOp": lambda a: alibi_reference(
@@ -497,16 +494,14 @@ class ElementwiseWorkload(WorkloadBase):
             "FloorDivideFwdOp",
             "RemainderFwdOp",
             "WhereFwdOp",
-            "ClampScalarFwdOp",
-            "ClampTensorFwdOp",
-            "MaskedFillScalarFwdOp",
-            "MaskedFillTensorFwdOp",
+            "ClampFwdOp",
+            "MaskedFillFwdOp",
             "MaximumFwdOp",
             "MinimumFwdOp",
             "NanToNumFwdOp",
         } or (name == "DivFwdOp" and self.arguments().get("rounding_mode") is not None):
             return Exact(atol=0, rtol=0)
-        if name == "LerpScalarFwdOp":
+        if name == "LerpFwdOp" and not isinstance(inputs[2], torch.Tensor):
             return lerp_verification(inputs[0].dtype)
         if name != "DropoutFwdOp":
             return Exact()
@@ -547,10 +542,11 @@ class ElementwiseCall(CallWorkload, ElementwiseWorkload):
 
     def gen_inputs(self) -> tuple:
         draw = _DOMAINS.get(self.call.signature.name, _draw_normal)
-        specs = (self.call.specs[t] for t in self.call.signature.inputs)
         return tuple(
-            None if s is None else draw(s.shape, getattr(torch, s.dtype), self.device)
-            for s in specs
+            self.call.scalars.get(t)
+            if s is None
+            else draw(s.shape, getattr(torch, s.dtype), self.device)
+            for t, s in ((t, self.call.specs[t]) for t in self.call.signature.inputs)
         )
 
     def arguments(self) -> dict:
@@ -648,12 +644,17 @@ class FloorDivideCase(PositivePairWorkload):
 
 
 class LerpCase(RandnPairWorkload):
+    """Two same-shape ``randn`` vectors and a Number weight."""
+
     def __init__(self, n_total: int, dtype, weight: float = 0.5):
         super().__init__(n_total, dtype)
         self.weight = weight
 
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["LerpScalarFwdOp"]({"weight": self.weight}, a, b)
+    def gen_inputs(self) -> tuple:
+        return (*super().gen_inputs(), self.weight)
+
+    def ref_program(self, a: torch.Tensor, b: torch.Tensor, weight: float) -> torch.Tensor:
+        return _REFERENCES["LerpFwdOp"]({}, a, b, weight)
 
     def verification(self, *inputs):
         return lerp_verification(inputs[0].dtype)
@@ -679,14 +680,14 @@ class FullRangeCase(ElementwiseWorkload):
     """Operands of given shapes and dtypes for one operator's shared reference.
 
     Each operand is ``(shape, dtype)``: an integer operand spans its dtype's whole range,
-    a bool operand is a fair coin.
+    a bool operand is a fair coin. *arguments* follow the operands as further inputs.
     """
 
-    def __init__(self, operands, op_name, **parameters):
+    def __init__(self, operands, op_name, *arguments, **parameters):
         ElementwiseWorkload.__init__(self, op_name, (), **parameters)
-        self.operands = tuple(operands)
+        self.operands, self.trailing = tuple(operands), arguments
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+    def gen_inputs(self) -> tuple:
         inputs = []
         for shape, dtype in self.operands:
             if dtype == torch.bool:
@@ -696,7 +697,7 @@ class FullRangeCase(ElementwiseWorkload):
                 inputs.append(
                     torch.randint(info.min, info.max, shape, dtype=dtype, device=run_device())
                 )
-        return tuple(inputs)
+        return (*inputs, *self.trailing)
 
 
 class UnaryActivationCase(RandnFlatWorkload, ElementwiseWorkload):
@@ -716,15 +717,18 @@ class UnaryMathCase(RandnFlatWorkload, ElementwiseWorkload):
 
 
 class Every16BitCase(ElementwiseWorkload):
-    """Every bit pattern of a 16-bit float dtype, NaN and infinities included, as one input."""
+    """Every bit pattern of a 16-bit float dtype, NaN and infinities included, as one input.
 
-    def __init__(self, dtype, op_name, **parameters):
+    *arguments* follow it as the call's further inputs.
+    """
+
+    def __init__(self, dtype, op_name, *arguments, **parameters):
         ElementwiseWorkload.__init__(self, op_name, (), **parameters)
-        self.dtype = dtype
+        self.dtype, self.trailing = dtype, arguments
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self) -> tuple:
         bits = torch.arange(-(2**15), 2**15, device=run_device(), dtype=torch.int32)
-        return (bits.to(torch.int16).view(self.dtype),)
+        return (bits.to(torch.int16).view(self.dtype), *self.trailing)
 
 
 class ComparisonCase(RandnPairWorkload, ElementwiseWorkload):
@@ -999,7 +1003,7 @@ class LerpCancellationWorkload(ElementwiseWorkload):
     def __init__(self, dtype):
         a = torch.full((256,), -4 - 4 * torch.finfo(dtype).eps, dtype=dtype, device=run_device())
         b, w = torch.full_like(a, 4), torch.full_like(a, 0.5)
-        super().__init__("LerpTensorFwdOp", (a, b, w))
+        super().__init__("LerpFwdOp", (a, b, w))
 
     def verification(self, *inputs):
         from workloads.numerics import Exact

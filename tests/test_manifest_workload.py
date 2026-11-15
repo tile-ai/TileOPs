@@ -431,9 +431,9 @@ _ENTRY_ERRORS = [
         "repeats",
     ),
     (
-        "ClampTensorFwdOp",
+        "ClampFwdOp",
         _entry(
-            "ClampTensorFwdOp",
+            "ClampFwdOp",
             status="implemented",
             workloads=[
                 {
@@ -449,18 +449,18 @@ _ENTRY_ERRORS = [
         "no row passes member 'None' of 'max'",
     ),
     (
-        "ClampTensorFwdOp",
+        "ClampFwdOp",
         _entry(
-            "ClampTensorFwdOp",
+            "ClampFwdOp",
             status="implemented",
             workloads=[{"A": [4], "dtype_cases": [{"T": "float16"}], "label": "x"}],
         ),
         "no row passes member 'Tensor' of 'max'",
     ),
     (
-        "ClampTensorFwdOp",
+        "ClampFwdOp",
         _entry(
-            "ClampTensorFwdOp",
+            "ClampFwdOp",
             workloads=[
                 {
                     "A": [4],

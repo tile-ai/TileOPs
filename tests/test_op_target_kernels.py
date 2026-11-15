@@ -844,12 +844,12 @@ def test_a_settled_instance_is_bound_to_that_target_s_devices():
 
 
 # --------------------------------------------------------------------------------------
-# Two optional inputs passed to a target: ClampTensorFwdOp's min and max
+# Two optional inputs passed to a target: ClampFwdOp's min and max
 # --------------------------------------------------------------------------------------
 
 
 class _ClampRecorder:
-    """A target for ClampTensorFwdOp; its kernel takes whatever the op hands over."""
+    """A target for ClampFwdOp; its kernel takes whatever the op hands over."""
 
     def __init__(self):
         self.calls = []
@@ -874,24 +874,24 @@ def _clamp_inputs(rows=4, cols=8, dtype=DTYPE, device="cpu"):
 def test_an_absent_optional_input_keeps_its_slot():
     """The slot says which input is missing; how many slots there are cannot."""
     recorder = _ClampRecorder()
-    _register(recorder, op="ClampTensorFwdOp")
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    _register(recorder, op="ClampFwdOp")
+    from tileops._ops.elementwise import ClampFwdOp
 
     input, lower, _ = _clamp_inputs()
-    ClampTensorFwdOp()(input, lower, None)
+    ClampFwdOp()(input, lower, None)
 
     ((inputs, params),) = recorder.calls
     assert inputs == (TensorSpec.of(input), TensorSpec.of(lower), None)
-    assert params == {}, "ClampTensorFwdOp declares no manifest params"
+    assert params == {}, "ClampFwdOp declares no manifest params"
 
 
 def test_the_two_one_sided_clamps_are_two_kernels():
     """Both hand over two tensors of one shape; only the slot tells them apart."""
     recorder = _ClampRecorder()
-    _register(recorder, op="ClampTensorFwdOp")
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    _register(recorder, op="ClampFwdOp")
+    from tileops._ops.elementwise import ClampFwdOp
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
     input, lower, upper = _clamp_inputs()
 
     op(input, lower, None)
@@ -905,13 +905,28 @@ def test_the_two_one_sided_clamps_are_two_kernels():
 
 def test_a_clamp_with_neither_bound_never_reaches_the_backend():
     recorder = _ClampRecorder()
-    _register(recorder, op="ClampTensorFwdOp")
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    _register(recorder, op="ClampFwdOp")
+    from tileops._ops.elementwise import ClampFwdOp
 
     input, _, _ = _clamp_inputs()
-    with pytest.raises(ValueError, match="ClampOut"):
-        ClampTensorFwdOp()(input)
+    with pytest.raises(ValueError, match=r"present\(min\) or present\(max\)"):
+        ClampFwdOp()(input)
     assert recorder.calls == []
+
+
+def test_a_number_bound_reaches_the_target_kernel_built_once_for_its_type():
+    """A call-time scalar is described by its type; its value is the kernel's argument."""
+    recorder = _ClampRecorder()
+    _register(recorder, op="ClampFwdOp")
+    from tileops._ops.elementwise import ClampFwdOp
+
+    op = ClampFwdOp()
+    input, _, _ = _clamp_inputs()
+    op(input, 0.5)
+    op(input, 0.25)
+    ((inputs, _params),) = recorder.calls
+    assert inputs == (TensorSpec.of(input), float, None)
+    assert recorder.kernel_calls == 2
 
 
 # --------------------------------------------------------------------------------------

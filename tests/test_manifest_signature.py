@@ -54,9 +54,16 @@ _UNUSED = {
     "cases": [{"when": True, "is": "[M]"}, {"when": False, "is": "[M]"}],
 }
 
+# ClampOut's cases with a tensor bound; a call with none matches no case.
+_CLAMP_CASES = [
+    {"when": [True, True], "is": "[*broadcast(A, L, U)]"},
+    {"when": [True, False], "is": "[*broadcast(A, L)]"},
+    {"when": [False, True], "is": "[*broadcast(A, U)]"},
+]
+
 _EDITS = [
     (
-        _edit("ClampTensorFwdOp", _set(("shape_rules",), ["min is not None or max is not None"])),
+        _edit("ClampFwdOp", _set(("shape_rules",), ["min is not None or max is not None"])),
         "outside the expression language",
     ),
     (_edit("GEMMFwdOp", _set(("shape_rules",), ["a.shape == (M, K)"])), "read as a value"),
@@ -69,7 +76,14 @@ _EDITS = [
     (_edit("GEMMFwdOp", _set(("forall", "T"), "DType[banana]")), "unknown kind"),
     (_edit("GEMMFwdOp", _set(("let", "L"), "(")), "cannot parse"),
     (_edit("MaxPool2dFwdOp", _set(("let", "kH"), "sH + 1")), "let cycle"),
-    (_edit("ClampTensorFwdOp", _set(("shape_rules",), [])), "0 cases match"),
+    (
+        _edit(
+            "ClampFwdOp",
+            _set(("shape_rules",), []),
+            _set(("types", "ClampOut", "cases"), _CLAMP_CASES[:3]),
+        ),
+        "0 cases match",
+    ),
     (
         _edit(
             "MoEPrePermuteFwdOp",
@@ -105,7 +119,7 @@ _EDITS = [
     ),
     (
         _edit(
-            "ClampTensorFwdOp",
+            "ClampFwdOp",
             _set(("inputs", "min", "type"), "float | Tensor"),
             _set(("inputs", "min", "default"), 0),
         ),
@@ -113,7 +127,7 @@ _EDITS = [
     ),
     (
         _edit(
-            "ClampTensorFwdOp",
+            "ClampFwdOp",
             _set(("inputs", "min", "type"), "Number | Tensor | None"),
             _set(("params", "min__number"), {"type": "int"}),
         ),
@@ -121,7 +135,7 @@ _EDITS = [
     ),
     (
         _edit(
-            "ClampTensorFwdOp",
+            "ClampFwdOp",
             _set(("inputs", "min", "type"), "int | Tensor | None"),
             _set(("let", "Z"), "min + 1"),
             _set(("outputs", "output", "shape"), "[Z]"),
@@ -130,7 +144,7 @@ _EDITS = [
     ),
     (
         _edit(
-            "ClampTensorFwdOp",
+            "ClampFwdOp",
             _set(("inputs", "min", "type"), "int | Tensor | None"),
             _set(("outputs", "output", "shape"), "[min]"),
         ),
@@ -149,7 +163,7 @@ _EDITS = [
     # Each member guard narrows what the earlier ones left.
     (
         _edit(
-            "ClampTensorFwdOp",
+            "ClampFwdOp",
             _set(("inputs", "min", "type"), "int | Tensor | None"),
             _set(("inputs", "min", "shape"), "[*A]"),
             _set(("inputs", "max", "shape"), "[*A]"),
@@ -597,7 +611,7 @@ def test_a_roofline_reads_no_let_of_a_call_time_scalar():
     from tileops.manifest._signature import parse_signature
 
     name, entry = _edit(
-        "ClampTensorFwdOp",
+        "ClampFwdOp",
         _set(("inputs", "min", "type"), "int | Tensor | None"),
         _set(("let", "Z"), "min if member(min) == 'int' else 0"),
     )
@@ -630,7 +644,7 @@ def test_a_roofline_member_names_a_call_time_argument():
     from tileops.manifest._plan import roofline_plan
     from tileops.manifest._signature import parse_signature
 
-    name, entry = _edit("ClampTensorFwdOp")
+    name, entry = _edit("ClampFwdOp")
     sig = parse_signature(name, entry, _ADTS)
     errors, _ = roofline_plan(sig, {"flops": "1 if member(typo) == 'Tensor' else 0"})
     assert any("member(typo) names no call-time argument" in e for e in errors), errors

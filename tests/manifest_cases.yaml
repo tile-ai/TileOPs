@@ -71,7 +71,7 @@ entries:
       trans_b: false
       dtype_cases:
       - T: bfloat16
-  ClampTensorFwdOp:
+  ClampFwdOp:
     signature:
       types:
         ClampOut:
@@ -79,11 +79,11 @@ entries:
             A: Shape
             L: Shape
             U: Shape
-            pl: Bool
-            pu: Bool
+            tl: Bool
+            tu: Bool
           match:
-          - pl
-          - pu
+          - tl
+          - tu
           cases:
           - when:
             - true
@@ -97,6 +97,10 @@ entries:
             - false
             - true
             is: '[*broadcast(A, U)]'
+          - when:
+            - false
+            - false
+            is: '[*A]'
       forall:
         A: Shape
         L: Shape
@@ -108,20 +112,22 @@ entries:
           shape: '[*A]'
         min:
           dtype: T
-          type: Tensor | None
+          type: Number | Tensor | None
           default: null
           shape: '[*L]'
         max:
           dtype: T
-          type: Tensor | None
+          type: Number | Tensor | None
           default: null
           shape: '[*U]'
       outputs:
         output:
           dtype: T
-          shape: ClampOut[A, L, U, present(min), present(max)]
+          shape: ClampOut[A, L, U, member(min) == 'Tensor', member(max) == 'Tensor']
       shape_rules:
       - present(min) or present(max)
+      - member(min) != 'Number' or member(max) != 'Tensor'
+      - member(min) != 'Tensor' or member(max) != 'Number'
     workloads:
     - label: clamp-0
       A:
@@ -154,6 +160,27 @@ entries:
       A:
       - 8
       - 16
+      expect_fail: true
+      dtype_cases:
+      - T: float16
+    - label: clamp-3
+      A:
+      - 8
+      - 16
+      min: -0.5
+      max: 0.5
+      dtype_cases:
+      - T: float16
+    - label: clamp-4
+      A:
+      - 8
+      - 16
+      U:
+      - 8
+      - 16
+      min: -0.5
+      some:
+      - max
       expect_fail: true
       dtype_cases:
       - T: float16

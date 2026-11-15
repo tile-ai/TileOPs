@@ -151,25 +151,25 @@ def test_logical_and_output_stays_bool_across_input_storage():
 @pytest.mark.smoke
 def test_masked_fill_alternates_between_bool_and_float_input():
     """The scalar is re-validated per element type, the mask stays bool."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
-    op = MaskedFillScalarFwdOp(value=1)
+    op = MaskedFillFwdOp()
     mask = torch.tensor([True, False] * 32, device=run_device())
     b = torch.zeros(64, device=run_device(), dtype=torch.bool)
     f = torch.zeros(64, device=run_device(), dtype=torch.float32)
 
     compare_outputs(
-        op(b, mask),
+        op(b, mask, 1),
         b.masked_fill(mask, 1),
         ElementwiseWorkload(type(op).__name__, ()).verification(),
     )
     compare_outputs(
-        op(f, mask),
+        op(f, mask, 1),
         f.masked_fill(mask, 1),
         ElementwiseWorkload(type(op).__name__, ()).verification(),
     )
     compare_outputs(
-        op(b, mask),
+        op(b, mask, 1),
         b.masked_fill(mask, 1),
         ElementwiseWorkload(type(op).__name__, ()).verification(),
     )

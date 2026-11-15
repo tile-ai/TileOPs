@@ -34,7 +34,7 @@ The generated signature check is the only dtype gate, and every eager call is he
 
 ### Variants
 
-**A different input schema, different math or a different output schema is a separate class** (`ClampScalarFwdOp` and `ClampTensorFwdOp`; `RoPEFwdOp` and `YaRNFwdOp`; `MaxPool2dFwdOp` and `MaxPool2dIndicesFwdOp`; `GQADenseFwdOp` and `GQADenseWithLSEFwdOp`). Why: the manifest fixes an op's outputs. **A semantic mode with the same schemas is a construction parameter** (GELU's `approximate`, an activation's `inplace`).
+**A different input schema, different math or a different output schema is a separate class** (`RoPEFwdOp` and `YaRNFwdOp`; `MaxPool2dFwdOp` and `MaxPool2dIndicesFwdOp`; `GQADenseFwdOp` and `GQADenseWithLSEFwdOp`). Why: the manifest fixes an op's outputs. **A semantic mode with the same schemas is a construction parameter** (GELU's `approximate`, an activation's `inplace`). **An argument that is a scalar in one form and a tensor in another is one argument of a union type**, and the member it holds selects the kernel (`ClampFwdOp`'s `min: Number | Tensor | None`).
 
 ### Shared semantics
 

@@ -61,7 +61,7 @@ def test_where_rejects_non_bool_condition(bad_dtype):
         op(cond, inp, other)
 
 
-# ClampTensorFwdOp Tensor min/max
+# ClampFwdOp Tensor min/max
 
 
 @pytest.mark.smoke
@@ -74,7 +74,7 @@ def test_where_rejects_non_bool_condition(bad_dtype):
     ],
 )
 def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     inp = torch.randn(input_shape, device=run_device(), dtype=dtype)
     mn = torch.randn(min_shape, device=run_device(), dtype=dtype) - 0.5
@@ -82,25 +82,25 @@ def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
     # Make max >= min where tested ranges overlap: PyTorch clamp tolerates a
     # mismatch, but the reference is only meaningful without one.
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, mn, mx))
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
-# ClampTensorFwdOp must accept Tensor min with max=None and
+# ClampFwdOp must accept Tensor min with max=None and
 # Tensor max with min=None, matching torch.clamp(input, min=tensor, max=None)
 # and torch.clamp(input, min=None, max=tensor) on CUDA. The single-bound shape
 # matrix is covered by test_clamp_min_only_tensor / test_clamp_max_only_tensor;
 # these two verify the None routing at one shape.
 @pytest.mark.smoke
 def test_clamp_min_only_none_routing():
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     inp = torch.randn((4, 8), device=run_device(), dtype=torch.float32)
     mn = torch.randn((4, 8), device=run_device(), dtype=torch.float32) - 0.5
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, mn, None))
     TestBase.check(workload, op, *workload.gen_inputs())
@@ -108,12 +108,12 @@ def test_clamp_min_only_none_routing():
 
 @pytest.mark.smoke
 def test_clamp_max_only_none_routing():
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     inp = torch.randn((4, 8), device=run_device(), dtype=torch.float32)
     mx = torch.randn((4, 8), device=run_device(), dtype=torch.float32) + 0.5
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, None, mx))
     TestBase.check(workload, op, *workload.gen_inputs())
@@ -121,28 +121,27 @@ def test_clamp_max_only_none_routing():
 
 @pytest.mark.smoke
 def test_clamp_both_none_rejected():
-    """ClampTensorFwdOp must reject a call with neither bound (a no-op clamp is invalid).
+    """ClampFwdOp must reject a call with neither bound (a no-op clamp is invalid).
 
     Which bounds it serves is a fact of the call, so the refusal is too.
     """
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     inp = torch.randn(4, device=run_device(), dtype=torch.float32)
-    with pytest.raises(ValueError, match="ClampOut"):
-        ClampTensorFwdOp()(inp)
+    with pytest.raises(ValueError, match=r"present\(min\) or present\(max\)"):
+        ClampFwdOp()(inp)
 
 
 @pytest.mark.smoke
-def test_clamp_scalar_both_none_rejected():
-    """ClampScalarFwdOp must reject min=None and max=None.
+@pytest.mark.parametrize("number_first", [True, False])
+def test_clamp_rejects_a_number_bound_paired_with_a_tensor_bound(number_first):
+    """torch.clamp has a Number overload and a Tensor overload; neither mixes the two."""
+    from tileops._ops.elementwise import ClampFwdOp
 
-    Mirrors torch.clamp(input, None, None), which raises
-    RuntimeError("At least one of min or max must not be None").
-    """
-    from tileops._ops.elementwise import ClampScalarFwdOp
-
-    with pytest.raises(ValueError, match=r"present\(min\) or present\(max\)"):
-        ClampScalarFwdOp(min=None, max=None)
+    inp = torch.randn(4, device=run_device(), dtype=torch.float32)
+    bounds = (0.0, torch.ones_like(inp)) if number_first else (torch.zeros_like(inp), 1.0)
+    with pytest.raises(ValueError, match="member"):
+        ClampFwdOp()(inp, *bounds)
 
 
 @pytest.mark.in_tree_kernels
@@ -153,13 +152,13 @@ def test_one_clamp_instance_serves_clamp_and_both_one_sided_forms():
     Each presence pattern needs its own kernel — ``has_min`` / ``has_max`` change what
     gets built — so this also pins that the three do not share one.
     """
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     inp = torch.randn(4, device=run_device(), dtype=torch.float32)
     mn = torch.zeros(4, device=run_device(), dtype=torch.float32)
     mx = torch.ones(4, device=run_device(), dtype=torch.float32)
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
     workload = ElementwiseWorkload(type(op).__name__, (inp, mn, mx))
     TestBase.check(workload, op, *workload.gen_inputs())
     workload = ElementwiseWorkload(type(op).__name__, (inp, mn, None))
@@ -168,7 +167,7 @@ def test_one_clamp_instance_serves_clamp_and_both_one_sided_forms():
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
-# ClampScalarFwdOp, and ClampTensorFwdOp with one bound withheld
+# ClampFwdOp with Number bounds, and with one Tensor bound withheld
 
 
 @pytest.mark.smoke
@@ -176,14 +175,14 @@ def test_one_clamp_instance_serves_clamp_and_both_one_sided_forms():
     "min_val, max_val",
     [(-0.5, 0.5), (None, 0.5), (-0.5, None)],
 )
-def test_clamp_scalar_param_names(min_val, max_val):
-    from tileops._ops.elementwise import ClampScalarFwdOp
+def test_clamp_number_bounds(min_val, max_val):
+    from tileops._ops.elementwise import ClampFwdOp
 
     inp = torch.randn(1024, device=run_device(), dtype=torch.float32)
 
-    op = ClampScalarFwdOp(min=min_val, max=max_val)
+    op = ClampFwdOp()
 
-    workload = ElementwiseWorkload(type(op).__name__, (inp,), min=min_val, max=max_val)
+    workload = ElementwiseWorkload(type(op).__name__, (inp, min_val, max_val))
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
@@ -193,12 +192,12 @@ def test_clamp_scalar_param_names(min_val, max_val):
     [((4, 8), (4, 8)), ((4, 8), (1, 8)), ((4, 8), ())],
 )
 def test_clamp_min_only_tensor(input_shape, min_shape):
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     inp = torch.randn(input_shape, device=run_device(), dtype=torch.float32)
     mn = torch.randn(min_shape, device=run_device(), dtype=torch.float32)
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, mn))
     TestBase.check(workload, op, *workload.gen_inputs())
@@ -210,12 +209,12 @@ def test_clamp_min_only_tensor(input_shape, min_shape):
     [((4, 8), (4, 8)), ((4, 8), (4, 1)), ((4, 8), ())],
 )
 def test_clamp_max_only_tensor(input_shape, max_shape):
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     inp = torch.randn(input_shape, device=run_device(), dtype=torch.float32)
     mx = torch.randn(max_shape, device=run_device(), dtype=torch.float32)
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, None, mx))
     TestBase.check(workload, op, *workload.gen_inputs())
@@ -224,18 +223,18 @@ def test_clamp_max_only_tensor(input_shape, max_shape):
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("min_val, max_val", [(0.1, 0.7), (-1 / 3, None), (None, 2 / 3)])
-def test_clamp_scalar_every_16bit_value(dtype, min_val, max_val):
-    """ClampScalarFwdOp equals torch.clamp at every 16-bit pattern, NaN and infinities included.
+def test_clamp_number_bounds_every_16bit_value(dtype, min_val, max_val):
+    """Number-bound ClampFwdOp equals torch.clamp at every 16-bit pattern, NaN and inf too.
 
     torch compares in float32; a 16-bit input is clamped in its own dtype against the
     bounds rounded to it. None of these bounds is exact in either dtype, so a bound
     rounded the wrong way, or a min/max that drops NaN, moves some element.
     """
-    from tileops._ops.elementwise import ClampScalarFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
-    op = ClampScalarFwdOp(min=min_val, max=max_val)
+    op = ClampFwdOp()
 
-    workload = Every16BitCase(dtype, type(op).__name__, min=min_val, max=max_val)
+    workload = Every16BitCase(dtype, type(op).__name__, min_val, max_val)
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
@@ -251,14 +250,14 @@ def test_clamp_scalar_every_16bit_value(dtype, min_val, max_val):
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 def test_clamp_tensor_nan_propagation(dtype):
-    """ClampTensorFwdOp must match torch.clamp NaN semantics (Tensor min + max)."""
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    """ClampFwdOp must match torch.clamp NaN semantics (Tensor min + max)."""
+    from tileops._ops.elementwise import ClampFwdOp
 
     x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=run_device(), dtype=dtype)
     mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device=run_device(), dtype=dtype)
     mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device=run_device(), dtype=dtype)
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (x, mn, mx))
     TestBase.check(workload, op, *workload.gen_inputs())
@@ -267,13 +266,13 @@ def test_clamp_tensor_nan_propagation(dtype):
 @pytest.mark.smoke
 def test_clamp_tensor_nan_propagation_broadcast_bounds():
     """NaN in an input or in a bound read at stride 0 propagates as torch.clamp does."""
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=run_device()).repeat(4, 1)
     mn = torch.tensor([[-1.0], [float("nan")], [-1.0], [-1.0]], device=run_device())
     mx = torch.tensor([[1.0, 1.0, 1.0, float("nan")]], device=run_device())
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (x, mn, mx))
     TestBase.check(workload, op, *workload.gen_inputs())
@@ -288,12 +287,12 @@ def test_clamp_tensor_nan_propagation_broadcast_bounds():
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 def test_clamp_min_only_nan_propagation(dtype):
     """A min-only clamp must match torch.clamp_min NaN semantics."""
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=run_device(), dtype=dtype)
     mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device=run_device(), dtype=dtype)
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (x, mn))
     TestBase.check(workload, op, *workload.gen_inputs())
@@ -303,18 +302,18 @@ def test_clamp_min_only_nan_propagation(dtype):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 def test_clamp_max_only_nan_propagation(dtype):
     """A max-only clamp must match torch.clamp_max NaN semantics."""
-    from tileops._ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=run_device(), dtype=dtype)
     mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device=run_device(), dtype=dtype)
 
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (x, None, mx))
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
-# MaskedFillTensorFwdOp (0-dim Tensor) / MaskedFillScalarFwdOp (Number)
+# MaskedFillFwdOp: a 0-dim Tensor or a Number value
 
 
 _MASKED_FILL_TENSOR_VALUE_FLOAT_DTYPES = [
@@ -369,26 +368,26 @@ def _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype):
     ],
 )
 def test_masked_fill_tensor_value(input_shape, mask_shape, dtype):
-    from tileops._ops.elementwise import MaskedFillTensorFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     inp, mask, value = _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype)
 
-    op = MaskedFillTensorFwdOp()
+    op = MaskedFillFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, mask, value))
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
-def test_masked_fill_scalar_param_names():
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+def test_masked_fill_number_value():
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     inp = torch.randn(1024, device=run_device(), dtype=torch.float32)
     mask = torch.randint(0, 2, (1024,), device=run_device()).bool()
 
-    op = MaskedFillScalarFwdOp(value=-1.0)
+    op = MaskedFillFwdOp()
 
-    workload = ElementwiseWorkload(type(op).__name__, (inp, mask), value=-1.0)
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mask, -1.0))
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
@@ -403,7 +402,7 @@ def test_masked_fill_scalar_param_names():
 )
 def test_masked_fill_scalar_broadcast_mask(input_shape, mask_shape, dtype, value):
     """A mask read at stride 0 fills with the scalar converted to the input dtype."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     if dtype == torch.bool:
         inp = torch.randint(0, 2, input_shape, device=run_device()).bool()
@@ -413,30 +412,28 @@ def test_masked_fill_scalar_broadcast_mask(input_shape, mask_shape, dtype, value
         inp = torch.randn(input_shape, device=run_device(), dtype=dtype)
     mask = torch.randint(0, 2, mask_shape, device=run_device()).bool()
 
-    op = MaskedFillScalarFwdOp(value=value)
+    op = MaskedFillFwdOp()
 
-    workload = ElementwiseWorkload(type(op).__name__, (inp, mask), value=value)
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mask, value))
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.smoke
 def test_masked_fill_scalar_long_int64():
     """int64 input long enough to fill the device several times over."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     n = 16_777_216
-    workload = FullRangeCase(
-        (((n,), torch.int64), ((n,), torch.bool)), "MaskedFillScalarFwdOp", value=7
-    )
-    TestBase.check(workload, MaskedFillScalarFwdOp(value=7), *workload.gen_inputs())
+    workload = FullRangeCase((((n,), torch.int64), ((n,), torch.bool)), "MaskedFillFwdOp", 7)
+    TestBase.check(workload, MaskedFillFwdOp(), *workload.gen_inputs())
 
 
 @pytest.mark.parametrize(
     "op_name",
     [
         pytest.param("WhereFwdOp", marks=pytest.mark.smoke),
-        pytest.param("MaskedFillTensorFwdOp", marks=pytest.mark.full),
-        pytest.param("MaskedFillScalarFwdOp", marks=pytest.mark.full),
+        pytest.param("tensor-value", marks=pytest.mark.full),
+        pytest.param("number-value", marks=pytest.mark.full),
     ],
 )
 def test_uint8_selector_tuned(op_name):
@@ -446,15 +443,15 @@ def test_uint8_selector_tuned(op_name):
     shape, dtype = (1000, 24), torch.float16
     x, y = (torch.randn(shape, device=run_device(), dtype=dtype) for _ in range(2))
     mask = torch.randint(0, 2, shape, device=run_device()).bool()
-    inputs, params = {
-        "WhereFwdOp": ((mask, x, y), {}),
-        "MaskedFillTensorFwdOp": (
+    name, inputs = {
+        "WhereFwdOp": ("WhereFwdOp", (mask, x, y)),
+        "tensor-value": (
+            "MaskedFillFwdOp",
             (x, mask, torch.tensor(-1.5, device=run_device(), dtype=dtype)),
-            {},
         ),
-        "MaskedFillScalarFwdOp": ((x, mask), {"value": -1.5}),
+        "number-value": ("MaskedFillFwdOp", (x, mask, -1.5)),
     }[op_name]
-    op = getattr(ops, op_name)(**params)
+    op = getattr(ops, name)()
     op.request_tune()
-    workload = ElementwiseWorkload(op_name, inputs, **params)
+    workload = ElementwiseWorkload(name, inputs)
     TestBase.check(workload, op, *workload.gen_inputs())

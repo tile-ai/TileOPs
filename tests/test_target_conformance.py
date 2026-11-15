@@ -101,7 +101,18 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
     op, args, declared_outputs = _from_call(cls, name, entry)
     declared = tuple(entry["signature"].get("inputs") or {})
     passed = args + (None,) * (len(declared) - len(args))
-    described = tuple(None if t is None else TensorSpec.of(t) for t in passed)
+    # A tensor is described by its spec, a tensor sequence element by element, and a
+    # call-time scalar by its type.
+    described = tuple(
+        None
+        if t is None
+        else tuple(map(TensorSpec.of, t))
+        if isinstance(t, (list, tuple))
+        else TensorSpec.of(t)
+        if isinstance(t, torch.Tensor)
+        else type(t)
+        for t in passed
+    )
     expected_params = op._manifest_params()
     seen, returned = [], []
 

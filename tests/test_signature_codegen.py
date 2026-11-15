@@ -81,7 +81,7 @@ def test_check_rejects(tensors, message):
 
 
 @pytest.mark.parametrize(
-    "name", ["ClampTensorFwdOp", "ConcatRowsFwdOp", "GQAPrefillVarlenFwdOp", "SumFwdOp"]
+    "name", ["ClampFwdOp", "ConcatRowsFwdOp", "GQAPrefillVarlenFwdOp", "SumFwdOp"]
 )
 def test_check_traces_on_symints(name):
     call = next(_calls(name))

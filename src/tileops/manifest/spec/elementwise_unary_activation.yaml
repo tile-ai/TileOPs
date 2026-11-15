@@ -281,11 +281,11 @@ SoftplusFwdOp:
     # mul-beta(1) + threshold compare-and-select(1) + exp(1) + log1p(1) + div-by-beta(1) = 5 per elem.
     flops: "5 * prod(S)"
 
-ClampTensorFwdOp:
-  # PyTorch's torch.clamp(input, min=None, max=None) where each bound is a
-  # Tensor or absent, broadcast with input. At least one bound must be passed;
-  # min-only is torch.clamp_min and max-only is torch.clamp_max. The scalar
-  # (Number) form is its own entry, ClampScalarFwdOp.
+ClampFwdOp:
+  # PyTorch's torch.clamp(input, min=None, max=None): each bound is a Number, a Tensor
+  # broadcast with input, or absent. At least one bound is passed, and a Number bound is
+  # never paired with a Tensor one, as in torch.clamp's two overloads. min-only is
+  # torch.clamp_min and max-only is torch.clamp_max.
   ref_api: "torch.clamp"
   family: elementwise
   status: implemented
@@ -294,20 +294,25 @@ ClampTensorFwdOp:
     forall: {A: Shape, L: Shape, U: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
       input: {dtype: T, shape: "[*A]"}
-      min: {dtype: T, shape: "[*L]", type: "Tensor | None", default: null}
-      max: {dtype: T, shape: "[*U]", type: "Tensor | None", default: null}
+      min: {type: "Number | Tensor | None", dtype: T, shape: "[*L]", default: null}
+      max: {type: "Number | Tensor | None", dtype: T, shape: "[*U]", default: null}
     outputs:
-      output: {dtype: T, shape: "ClampOut[A, L, U, present(min), present(max)]"}
+      output: {dtype: T, shape: "ClampOut[A, L, U, member(min) == 'Tensor', member(max) == 'Tensor']"}
     types:
       ClampOut:
-        params: {A: Shape, L: Shape, U: Shape, pl: Bool, pu: Bool}
-        match: [pl, pu]
+        params: {A: Shape, L: Shape, U: Shape, tl: Bool, tu: Bool}
+        match: [tl, tu]
         cases:
         - {when: [true, true], is: "[*broadcast(A, L, U)]"}
         - {when: [true, false], is: "[*broadcast(A, L)]"}
         - {when: [false, true], is: "[*broadcast(A, U)]"}
+        - {when: [false, false], is: "[*A]"}
     shape_rules:
     - "present(min) or present(max)"
+    - "member(min) != 'Number' or member(max) != 'Tensor'"
+    - "member(min) != 'Tensor' or member(max) != 'Number'"
+    - "member(min) != 'Number' or representable(min, T)"
+    - "member(max) != 'Number' or representable(max, T)"
 
   workloads:
   - {A: [4096, 4096], L: [4096, 4096], U: [4096, 4096], some: [min, max], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
@@ -317,41 +322,14 @@ ClampTensorFwdOp:
   - {A: [4096, 4096], U: [4096, 4096], some: [max], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M-max-only"}
   - {A: [16384, 16384], U: [16384, 16384], some: [max], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M-max-only"}
   - {A: [16, 256, 56, 56], L: [256, 1, 1], U: [256, 1, 1], some: [min, max], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-channel-bounds"}
+  - {A: [4096, 4096], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M-number"}
+  - {A: [16384, 16384], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M-number"}
+  - {A: [4096, 4096], min: -0.5, dtype_cases: [{T: float16}], label: "16M-number-min-only"}
+  - {A: [4096, 4096], max: 0.5, dtype_cases: [{T: float16}], label: "16M-number-max-only"}
 
   roofline:
-    flops: "prod(broadcast(A, L, U)) if present(min) and present(max) else prod(broadcast(A, L)) if present(min) else prod(broadcast(A, U))"
-
-ClampScalarFwdOp:
-  # PyTorch's torch.clamp(input, min=None, max=None) with Number (or None)
-  # bounds. The bounds are params here and tensor inputs in ClampTensorFwdOp above:
-  # two signatures, so two entries.
-  ref_api: "torch.clamp"
-  family: elementwise
-  status: implemented
-
-  signature:
-    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
-    params:
-      min: {type: "Number | None", default: null, kw_only: true}
-      max: {type: "Number | None", default: null, kw_only: true}
-    inputs:
-      input: {dtype: T, shape: "[*S]"}
-    outputs:
-      output: {dtype: T, shape: "[*S]"}
-    shape_rules:
-    - "present(min) or present(max)"
-    - "not present(min) or representable(min, T)"
-    - "not present(max) or representable(max, T)"
-
-  workloads:
-  - {S: [4096, 4096], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
-  - {S: [16384, 16384], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
-
-  roofline:
-    # FLOPs: clamp = compare-and-select. Per roofline.md §1.3 convention,
-    # the clamp / min-max family collapses to 1 FLOP per output element
-    # regardless of one or two bounds. = 1 per elem.
-    flops: "prod(S)"
+    # One compare-and-select per output element, whichever bounds apply.
+    flops: "prod(broadcast(A, L, U)) if member(min) == 'Tensor' and member(max) == 'Tensor' else prod(broadcast(A, L)) if member(min) == 'Tensor' else prod(broadcast(A, U)) if member(max) == 'Tensor' else prod(A)"
 
 NanToNumFwdOp:
   ref_api: "torch.nan_to_num"

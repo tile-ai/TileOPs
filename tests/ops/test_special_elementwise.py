@@ -8,7 +8,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.elementwise import (
-    ClampScalarFwdOp,
+    ClampFwdOp,
     HardtanhFwdOp,
     IsfiniteFwdOp,
     IsinfFwdOp,
@@ -167,16 +167,16 @@ def test_where(n_total: int, dtype: torch.dtype) -> None:
 
 @IndependentFixture
 def test_clamp(n_total: int, dtype: torch.dtype) -> None:
-    from tileops._ops.elementwise import ClampScalarFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     x = torch.randn(n_total, device=run_device(), dtype=dtype)
     ref = torch.clamp(x, -0.5, 0.5)
-    op = ClampScalarFwdOp(min=-0.5, max=0.5)
-    out = op(x)
+    op = ClampFwdOp()
+    out = op(x, -0.5, 0.5)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x,), min=-0.5, max=0.5).verification(*(x,)),
+        ElementwiseWorkload(type(op).__name__, (x, -0.5, 0.5)).verification(*(x,)),
     )
 
 
@@ -185,21 +185,19 @@ def test_clamp(n_total: int, dtype: torch.dtype) -> None:
 
 @IndependentFixture
 def test_masked_fill(n_total: int, dtype: torch.dtype) -> None:
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     x = torch.randn(n_total, device=run_device(), dtype=dtype)
     mask = torch.randint(0, 2, (n_total,), device=run_device()).bool()
     # Use -100.0 to avoid fp16 overflow (fp16 max ~65504)
     fill_value = -100.0
     ref = x.masked_fill(mask, fill_value)
-    op = MaskedFillScalarFwdOp(value=fill_value)
-    out = op(x, mask)
+    op = MaskedFillFwdOp()
+    out = op(x, mask, fill_value)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
-            *(x, mask)
-        ),
+        ElementwiseWorkload(type(op).__name__, (x, mask, fill_value)).verification(*(x, mask)),
     )
 
 
@@ -344,16 +342,16 @@ class ClampDtypeSizeFixture(FixtureBase):
 
 @ClampDtypeSizeFixture
 def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
-    from tileops._ops.elementwise import ClampScalarFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     x = torch.randn(n_total, device=run_device(), dtype=dtype)
     ref = torch.clamp(x, -0.5, 0.5)
-    op = ClampScalarFwdOp(min=-0.5, max=0.5)
-    out = op(x)
+    op = ClampFwdOp()
+    out = op(x, -0.5, 0.5)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x,), min=-0.5, max=0.5).verification(*(x,)),
+        ElementwiseWorkload(type(op).__name__, (x, -0.5, 0.5)).verification(*(x,)),
     )
 
 
@@ -363,89 +361,85 @@ def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
 @IndependentEdgeFixture
 def test_clamp_min_gt_max(n_total: int, dtype: torch.dtype) -> None:
     """Edge: min > max -- PyTorch clamp semantics: min wins (output = min_val)."""
-    from tileops._ops.elementwise import ClampScalarFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     x = torch.randn(n_total, device=run_device(), dtype=dtype)
     # When min > max, PyTorch clamp returns min_val for all elements
     ref = torch.clamp(x, min=0.5, max=-0.5)
-    op = ClampScalarFwdOp(min=0.5, max=-0.5)
-    out = op(x)
+    op = ClampFwdOp()
+    out = op(x, 0.5, -0.5)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x,), min=0.5, max=-0.5).verification(*(x,)),
+        ElementwiseWorkload(type(op).__name__, (x, 0.5, -0.5)).verification(*(x,)),
     )
 
 
 @IndependentEdgeFixture
 def test_clamp_upper_only(n_total: int, dtype: torch.dtype) -> None:
     """Edge: min=None, max=0.5 (upper bound only)."""
-    from tileops._ops.elementwise import ClampScalarFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     x = torch.randn(n_total, device=run_device(), dtype=dtype)
     ref = torch.clamp(x, min=None, max=0.5)
-    op = ClampScalarFwdOp(min=None, max=0.5)
-    out = op(x)
+    op = ClampFwdOp()
+    out = op(x, None, 0.5)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x,), min=None, max=0.5).verification(*(x,)),
+        ElementwiseWorkload(type(op).__name__, (x, None, 0.5)).verification(*(x,)),
     )
 
 
 @IndependentEdgeFixture
 def test_clamp_lower_only(n_total: int, dtype: torch.dtype) -> None:
     """Edge: min=-0.5, max=None (lower bound only)."""
-    from tileops._ops.elementwise import ClampScalarFwdOp
+    from tileops._ops.elementwise import ClampFwdOp
 
     x = torch.randn(n_total, device=run_device(), dtype=dtype)
     ref = torch.clamp(x, min=-0.5, max=None)
-    op = ClampScalarFwdOp(min=-0.5, max=None)
-    out = op(x)
+    op = ClampFwdOp()
+    out = op(x, -0.5, None)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x,), min=-0.5, max=None).verification(*(x,)),
+        ElementwiseWorkload(type(op).__name__, (x, -0.5, None)).verification(*(x,)),
     )
 
 
 @IndependentEdgeFixture
 def test_masked_fill_all_true(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all True mask -> all values replaced."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     x = torch.randn(n_total, device=run_device(), dtype=dtype)
     mask = torch.ones(n_total, device=run_device(), dtype=torch.bool)
     fill_value = -1e9
     ref = x.masked_fill(mask, fill_value)
-    op = MaskedFillScalarFwdOp(value=fill_value)
-    out = op(x, mask)
+    op = MaskedFillFwdOp()
+    out = op(x, mask, fill_value)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
-            *(x, mask)
-        ),
+        ElementwiseWorkload(type(op).__name__, (x, mask, fill_value)).verification(*(x, mask)),
     )
 
 
 @IndependentEdgeFixture
 def test_masked_fill_all_false(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all False mask -> input unchanged."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     x = torch.randn(n_total, device=run_device(), dtype=dtype)
     mask = torch.zeros(n_total, device=run_device(), dtype=torch.bool)
     fill_value = -1e9
     ref = x.masked_fill(mask, fill_value)
-    op = MaskedFillScalarFwdOp(value=fill_value)
-    out = op(x, mask)
+    op = MaskedFillFwdOp()
+    out = op(x, mask, fill_value)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
-            *(x, mask)
-        ),
+        ElementwiseWorkload(type(op).__name__, (x, mask, fill_value)).verification(*(x, mask)),
     )
 
 
@@ -511,12 +505,10 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
 
 _NAN = float("nan")
 _NAN_CASES = [
-    pytest.param("ClampScalarFwdOp", {"min": -1.0, "max": 1.0}, id="clamp-scalar-nan-input"),
-    pytest.param("ClampScalarFwdOp", {"min": _NAN}, id="clamp-scalar-nan-min"),
-    pytest.param("ClampScalarFwdOp", {"min": -1.0, "max": _NAN}, id="clamp-scalar-nan-max"),
-    pytest.param(
-        "ClampTensorFwdOp", {"min": -1.0, "max": _NAN}, id="clamp-tensor-nan-input-and-bound"
-    ),
+    pytest.param("number", {"min": -1.0, "max": 1.0}, id="clamp-number-nan-input"),
+    pytest.param("number", {"min": _NAN}, id="clamp-number-nan-min"),
+    pytest.param("number", {"min": -1.0, "max": _NAN}, id="clamp-number-nan-max"),
+    pytest.param("tensor", {"min": -1.0, "max": _NAN}, id="clamp-tensor-nan-input-and-bound"),
     pytest.param("HardtanhFwdOp", {}, id="hardtanh-nan-input"),
     pytest.param("HardsigmoidFwdOp", {}, id="hardsigmoid-nan-input"),
 ]
@@ -534,18 +526,20 @@ def test_clamp_family_propagates_nan_like_torch(op_name: str, kwargs: dict) -> N
     x = torch.tensor(
         [float("nan"), -3.0, -0.5, 0.25, 2.0, 7.0] * 128, device=run_device(), dtype=dtype
     )
-    if op_name == "ClampTensorFwdOp":
+    name = "ClampFwdOp" if op_name in ("tensor", "number") else op_name
+    if op_name == "tensor":
         lo = torch.full_like(x, kwargs["min"])
         hi = torch.full_like(x, kwargs["max"])
-        out, ref = ew.ClampTensorFwdOp()(x, lo, hi), torch.clamp(x, lo, hi)
-    elif op_name == "ClampScalarFwdOp":
-        out, ref = ew.ClampScalarFwdOp(**kwargs)(x), torch.clamp(x, **kwargs)
+        out, ref = ew.ClampFwdOp()(x, lo, hi), torch.clamp(x, lo, hi)
+    elif op_name == "number":
+        bounds = (kwargs.get("min"), kwargs.get("max"))
+        out, ref = ew.ClampFwdOp()(x, *bounds), torch.clamp(x, *bounds)
     elif op_name == "HardtanhFwdOp":
         out, ref = ew.HardtanhFwdOp()(x), F.hardtanh(x)
     else:
         out, ref = ew.HardsigmoidFwdOp()(x), F.hardsigmoid(x)
     assert torch.isnan(ref).any()
-    compare_outputs(out, ref, ElementwiseWorkload(op_name, (x,), **kwargs).verification(x))
+    compare_outputs(out, ref, ElementwiseWorkload(name, (x,)).verification(x))
 
 
 @pytest.mark.smoke
@@ -564,27 +558,23 @@ def test_nan_to_num_stores_an_out_of_range_replacement_as_inf() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op_cls, kwargs",
-    [
-        pytest.param("MaskedFillScalarFwdOp", {"value": -100.0}, id="masked_fill"),
-    ],
-)
-def test_masked_fill_forward_rejects_unsupported_dtype(op_cls: str, kwargs: dict) -> None:
+@pytest.mark.parametrize("tensor_value", [False, True], ids=["number", "tensor"])
+def test_masked_fill_forward_rejects_unsupported_dtype(tensor_value: bool) -> None:
     """The manifest union is the gate; float32 is inside it and must be accepted."""
-    import tileops._ops.elementwise as mod
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
-    cls = getattr(mod, op_cls)
-    op = cls(**kwargs)
+    op = MaskedFillFwdOp()
     mask = torch.ones(1024, device=run_device(), dtype=torch.bool)
-    args = () if "value" in kwargs else (torch.tensor(0.0, device=run_device()),)
+
+    def value(dtype):
+        return torch.tensor(0.0, device=run_device(), dtype=dtype) if tensor_value else -100.0
+
     for dtype in (torch.float16, torch.float32):
         x = torch.randn(1024, device=run_device(), dtype=dtype)
-        extra = tuple(a.to(dtype) for a in args)
-        assert op(x, mask, *extra).dtype == dtype
+        assert op(x, mask, value(dtype)).dtype == dtype
     bad = torch.randn(1024, device=run_device(), dtype=torch.float64)
     with pytest.raises(ValueError, match="dtype"):
-        op(bad, mask, *tuple(a.to(torch.float64) for a in args))
+        op(bad, mask, value(torch.float64))
 
 
 # Negative tests: scalar parameter validation, at first use
@@ -594,10 +584,10 @@ def test_masked_fill_forward_rejects_unsupported_dtype(op_cls: str, kwargs: dict
 @pytest.mark.parametrize(
     "make_op",
     [
-        pytest.param(lambda: HardtanhFwdOp(min_val=-1e6), id="hardtanh-min_val"),
-        pytest.param(lambda: HardtanhFwdOp(max_val=1e6), id="hardtanh-max_val"),
-        pytest.param(lambda: ClampScalarFwdOp(min=1e6), id="clamp-min"),
-        pytest.param(lambda: ClampScalarFwdOp(max=1e6), id="clamp-max"),
+        pytest.param(lambda: (HardtanhFwdOp(min_val=-1e6), ()), id="hardtanh-min_val"),
+        pytest.param(lambda: (HardtanhFwdOp(max_val=1e6), ()), id="hardtanh-max_val"),
+        pytest.param(lambda: (ClampFwdOp(), (1e6,)), id="clamp-min"),
+        pytest.param(lambda: (ClampFwdOp(), (None, 1e6)), id="clamp-max"),
     ],
 )
 def test_scalar_param_rejects_unrepresentable(make_op) -> None:
@@ -607,13 +597,13 @@ def test_scalar_param_rejects_unrepresentable(make_op) -> None:
     dtype — which arrives with the tensors. 1e6 is finite in float32 and
     overflows float16, so the same op accepts one and rejects the other.
     """
-    op = make_op()
+    op, bounds = make_op()
     fp32 = torch.zeros(1024, device=run_device(), dtype=torch.float32)
-    assert op(fp32).dtype == torch.float32  # 1e6 is finite in float32
+    assert op(fp32, *bounds).dtype == torch.float32  # 1e6 is finite in float32
 
     fp16 = torch.zeros(1024, device=run_device(), dtype=torch.float16)
     with pytest.raises(ValueError, match="representable"):
-        op(fp16)
+        op(fp16, *bounds)
 
 
 @pytest.mark.skipif(
@@ -622,41 +612,41 @@ def test_scalar_param_rejects_unrepresentable(make_op) -> None:
 )
 @pytest.mark.smoke
 def test_masked_fill_forward_rejects_cpu_mask() -> None:
-    """MaskedFillTensorFwdOp forward() must raise ValueError when mask is not on x's device."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    """MaskedFillFwdOp forward() must raise ValueError when mask is not on x's device."""
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
-    op = MaskedFillScalarFwdOp(value=-100.0)
+    op = MaskedFillFwdOp()
     x = torch.randn(1024, device=run_device(), dtype=torch.float16)
     mask = torch.ones(1024, dtype=torch.bool)  # CPU mask
     with pytest.raises(ValueError, match="needs every tensor on one device"):
-        op(x, mask)
+        op(x, mask, -100.0)
 
 
 @pytest.mark.smoke
 def test_masked_fill_forward_rejects_non_bool_mask() -> None:
-    """MaskedFillTensorFwdOp forward() must raise ValueError when mask dtype is not bool."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    """MaskedFillFwdOp forward() must raise ValueError when mask dtype is not bool."""
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
-    op = MaskedFillScalarFwdOp(value=-100.0)
+    op = MaskedFillFwdOp()
     x = torch.randn(1024, device=run_device(), dtype=torch.float16)
     mask = torch.ones(1024, device=run_device(), dtype=torch.float32)  # wrong dtype
     with pytest.raises(ValueError, match="mask dtype is not bool"):
-        op(x, mask)
+        op(x, mask, -100.0)
 
 
 @pytest.mark.smoke
 def test_masked_fill_forward_rejects_a_mask_that_cannot_broadcast() -> None:
     """The manifest states the output as a broadcast, so a shape that does not fit fails."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
-    op = MaskedFillScalarFwdOp(value=-100.0)
+    op = MaskedFillFwdOp()
     x = torch.randn(1024, device=run_device(), dtype=torch.float16)
     mask = torch.ones(512, device=run_device(), dtype=torch.bool)  # neither shape broadcasts
     with pytest.raises(ValueError, match="not broadcastable"):
-        op(x, mask)
+        op(x, mask, -100.0)
 
 
-# MaskedFillScalar: int / uint / bool dtype coverage
+# MaskedFillFwdOp with a Number value: int / uint / bool dtype coverage
 
 
 _MASKED_FILL_INT_DTYPES = [
@@ -681,73 +671,69 @@ def _masked_fill_int_inputs(n_total: int, dtype: torch.dtype):
 @pytest.mark.parametrize("dtype", _MASKED_FILL_INT_DTYPES)
 def test_masked_fill_int_dtypes(dtype: torch.dtype) -> None:
     """L1: each manifest int dtype matches PyTorch on a representative fill."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     n_total = 4096
     fill_value = 7  # arbitrary in-range value; the contract is parity with PyTorch.
     x, mask = _masked_fill_int_inputs(n_total, dtype)
     ref = x.masked_fill(mask, fill_value)
-    op = MaskedFillScalarFwdOp(value=fill_value)
-    out = op(x, mask)
+    op = MaskedFillFwdOp()
+    out = op(x, mask, fill_value)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
-            *(x, mask)
-        ),
+        ElementwiseWorkload(type(op).__name__, (x, mask, fill_value)).verification(*(x, mask)),
     )
 
 
 @pytest.mark.smoke
 def test_masked_fill_uint8_wraps_negative_int() -> None:
     """uint8 wraps a negative Python int via two's complement (PyTorch: -1 -> 255)."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     n_total = 4096
     x, mask = _masked_fill_int_inputs(n_total, torch.uint8)
     ref = x.masked_fill(mask, -1)
-    op = MaskedFillScalarFwdOp(value=-1)
+    op = MaskedFillFwdOp()
     compare_outputs(
-        op(x, mask),
+        op(x, mask, -1),
         ref,
-        ElementwiseWorkload(type(op).__name__, (x, mask), value=-1).verification(*(x, mask)),
+        ElementwiseWorkload(type(op).__name__, (x, mask, -1)).verification(*(x, mask)),
     )
 
 
 @pytest.mark.smoke
 def test_masked_fill_int_truncates_fractional_float() -> None:
     """Integer dtypes truncate a float fill toward zero (PyTorch: 1.5 -> 1)."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     n_total = 4096
     x, mask = _masked_fill_int_inputs(n_total, torch.int32)
     ref = x.masked_fill(mask, 1.5)
-    op = MaskedFillScalarFwdOp(value=1.5)
+    op = MaskedFillFwdOp()
     compare_outputs(
-        op(x, mask),
+        op(x, mask, 1.5),
         ref,
-        ElementwiseWorkload(type(op).__name__, (x, mask), value=1.5).verification(*(x, mask)),
+        ElementwiseWorkload(type(op).__name__, (x, mask, 1.5)).verification(*(x, mask)),
     )
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("fill_value", [True, False])
+@pytest.mark.parametrize("fill_value", [True, False, 2, 0])
 def test_masked_fill_bool(fill_value) -> None:
-    """L1: bool masked_fill coerces non-zero -> True via uint8 storage view."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    """L1: bool masked_fill takes a bool and coerces a non-zero Number to True."""
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     n_total = 4096
     x = torch.randint(0, 2, (n_total,), device=run_device()).bool()
     mask = torch.randint(0, 2, (n_total,), device=run_device()).bool()
     ref = x.masked_fill(mask, fill_value)
-    op = MaskedFillScalarFwdOp(value=fill_value)
-    out = op(x, mask)
+    op = MaskedFillFwdOp()
+    out = op(x, mask, fill_value)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
-            *(x, mask)
-        ),
+        ElementwiseWorkload(type(op).__name__, (x, mask, fill_value)).verification(*(x, mask)),
     )
 
 
@@ -762,20 +748,18 @@ def test_masked_fill_bool(fill_value) -> None:
 )
 def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> None:
     """L4: +/-Inf and NaN fill values pass through unchanged (no clamp)."""
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     n_total = 4096
     x = torch.randn(n_total, device=run_device(), dtype=dtype)
     mask = torch.randint(0, 2, (n_total,), device=run_device()).bool()
     ref = x.masked_fill(mask, fill_value)
-    op = MaskedFillScalarFwdOp(value=fill_value)
-    out = op(x, mask)
+    op = MaskedFillFwdOp()
+    out = op(x, mask, fill_value)
     compare_outputs(
         out,
         ref,
-        ElementwiseWorkload(type(op).__name__, (x, mask), value=fill_value).verification(
-            *(x, mask)
-        ),
+        ElementwiseWorkload(type(op).__name__, (x, mask, fill_value)).verification(*(x, mask)),
     )
 
 
@@ -801,18 +785,18 @@ def test_masked_fill_rejects_when_pytorch_rejects(
     diagnostic: a bare ``Exception`` would also be satisfied by an unrelated
     builder or backend failure, which proves nothing about the validator.
     """
-    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillFwdOp
 
     pytorch_mask = torch.tensor([True], device=run_device())
     pytorch_tensor = torch.zeros(1, device=run_device(), dtype=dtype)
     with pytest.raises(Exception):  # noqa: B017
         pytorch_tensor.masked_fill(pytorch_mask, fill_value)
 
-    op = MaskedFillScalarFwdOp(value=fill_value)
+    op = MaskedFillFwdOp()
     x = torch.zeros(1024, device=run_device(), dtype=dtype)
     mask = torch.zeros(1024, device=run_device(), dtype=torch.bool)
     with pytest.raises(ValueError, match="representable"):
-        op(x, mask)
+        op(x, mask, fill_value)
 
 
 # The independent elementwise ops reject fp8 and accept the manifest's non-fp8 dtypes.
