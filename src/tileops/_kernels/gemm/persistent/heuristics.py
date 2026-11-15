@@ -760,16 +760,23 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         cols = desc.n / (math.ceil(desc.n / layout.block_n) * layout.block_n)
         return rows * cols * _layout_features(desc, layout).wave_efficiency
 
-    def _pingpong_group_layout(desc: GEMMDesc) -> _Layout | None:
-        """Select the calibrated ping-pong tile for tight groups near one 128-row tile, or
-        for unfused groups past that band where its tile slots hold more rows.
+    def _pingpong_group_layout(desc: GEMMDesc, chosen: "_Layout | None") -> _Layout | None:
+        """The calibrated ping-pong tile for this call, or ``None``.
+
+        It is taken for tight groups near one 128-row tile, for unfused groups past that band
+        where its tile slots hold more rows, and for an unfused call whose ``chosen`` tile,
+        the one selected without it and staged whole, is the ping-pong tile itself.
 
         A 64-row tile reduces padding in routed groups; two math warp-groups overlap
         their epilogues. Unfused groups averaging exactly 128 rows are excluded because
         evenly sized groups fill 128-row tiles without the extra B loads. Past the band,
         an unbiased 64-row tile takes ``pingpong_narrow_n`` columns where that width's slot
         share is the larger, and is taken where its slot share beats the 128-row tile's by
-        ``pingpong_slot_share_ratio``. Explicit ``expected_m`` keeps the cost model's
+        ``pingpong_slot_share_ratio``. Where ``chosen`` already is the ping-pong tile, its
+        one math warp-group would store each tile before starting the next; the second
+        group runs the next tile under that store, on the same tiles, ring and loads. A
+        tile given a staged epilogue is not ``chosen``: ping-pong stages a tile whole. A
+        fused call keeps its own band. Explicit ``expected_m`` keeps the cost model's
         selection.
         """
         bands = desc.bands
@@ -789,6 +796,8 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             or desc.expected_m != 0
         ):
             return None
+        if not desc.fused and chosen == tile:
+            return tile
         in_band = low < rows_per_group <= high
         past_band = not desc.fused and rows_per_group > high
         if not (in_band or past_band) or tile not in layout_candidates(desc):
@@ -892,7 +901,10 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
                 )
         return None
 
-    pingpong_tile = _pingpong_group_layout(desc)
+    short = _short_group_layout(desc)
+    best = short or _filled_layout(desc, _best_layout(desc, layout_candidates(desc)))
+    staged = _staged_epilogue(desc, best)
+    pingpong_tile = _pingpong_group_layout(desc, None if staged else best)
     if pingpong_tile is not None:
         # An unfused tile stages its output one TMA store box at a time where that, rather
         # than the whole tile, frees shared memory for another ring stage.
@@ -904,9 +916,7 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         return _spec(
             desc, pingpong_tile, stages, epilogue_stage_n=stage_n, num_math_wgs=2, pingpong=True
         )
-    short = _short_group_layout(desc)
-    best = short or _filled_layout(desc, _best_layout(desc, layout_candidates(desc)))
-    spec = _staged_epilogue(desc, best) or _spec(desc, best, _num_stages(desc, best))
+    spec = staged or _spec(desc, best, _num_stages(desc, best))
     if short is not None and desc.major_a is Major.K:
         # A short group fills a few rows of its tile: load only the A boxes they reach.
         spec = dataclasses.replace(spec, a_box_rows=desc.bands.short_group_a_box_rows)

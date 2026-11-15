@@ -395,30 +395,56 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("layout", "sizes", "activation", "some"),
+    ("layout", "sizes", "activation", "some", "n"),
     [
-        pytest.param(_TIGHT_MOE_GROUPED_GEMM, [100, 0, 300, 128, 7, 64], None, (), id="tight-psum"),
+        pytest.param(
+            _TIGHT_MOE_GROUPED_GEMM, [100, 0, 300, 128, 7, 64], None, (), 256, id="tight-psum"
+        ),
         # 142 rows an expert on average: on H200 the unfused ping-pong 64-row tiles.
         pytest.param(
-            _TIGHT_MOE_GROUPED_GEMM, [200, 0, 300, 129, 70, 150], None, (), id="tight-psum-pingpong"
+            _TIGHT_MOE_GROUPED_GEMM,
+            [200, 0, 300, 129, 70, 150],
+            None,
+            (),
+            256,
+            id="tight-psum-pingpong",
         ),
         pytest.param(
             _TIGHT_MOE_GROUPED_GEMM,
             [200, 0, 300, 129, 70, 150],
             None,
             ("bias",),
+            256,
             id="tight-psum-pingpong-bias",
         ),
+        # 16 experts of a few rows, one past a 64-row tile, at the width where H200's selector
+        # takes 64x256 ping-pong tiles: a CTA's two warp-groups run partly filled tiles of
+        # different experts.
         pytest.param(
-            _aligned("per_row"), [100, 0, 300, 128, 7, 64], None, (), id="aligned-per-row"
+            _TIGHT_MOE_GROUPED_GEMM,
+            [100, 0, 30, 64, 7, 0, 20, 5, 1, 2, 3, 4, 8, 6, 3, 3],
+            None,
+            (),
+            4096,
+            id="tight-psum-pingpong-short",
         ),
         pytest.param(
-            _aligned("physical_psum"), [100, 0, 300, 128, 7, 64], None, (), id="aligned-psum"
+            _aligned("per_row"), [100, 0, 300, 128, 7, 64], None, (), 256, id="aligned-per-row"
         ),
-        pytest.param(_aligned("physical_psum"), [300] * 32, None, (), id="aligned-psum-32-experts"),
-        pytest.param({"masked": {"max_m": 256}}, [100, 0, 256, 33], None, (), id="masked"),
         pytest.param(
-            {"masked": {"max_m": 256}}, [100, 0, 256, 33], "silu_and_mul", (), id="masked-gated"
+            _aligned("physical_psum"), [100, 0, 300, 128, 7, 64], None, (), 256, id="aligned-psum"
+        ),
+        pytest.param(
+            _aligned("physical_psum"), [300] * 32, None, (), 256, id="aligned-psum-32-experts"
+        ),
+        pytest.param({"masked": {"max_m": 256}}, [100, 0, 256, 33], None, (), 256, id="masked"),
+        pytest.param(
+            {"masked": {"max_m": 256}},
+            [100, 0, 256, 33],
+            "silu_and_mul",
+            (),
+            256,
+            id="masked-gated",
         ),
         # A bias under each layout; the gate/up bias stacked and interleaved.
         pytest.param(
@@ -426,6 +452,7 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 300, 128, 7, 64],
             None,
             ("bias",),
+            256,
             id="aligned-per-row-bias",
         ),
         pytest.param(
@@ -433,6 +460,7 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 256, 33],
             "swigluoai",
             ("bias",),
+            256,
             id="masked-swigluoai-bias",
         ),
         pytest.param(
@@ -440,6 +468,7 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 300, 128, 7, 64],
             None,
             ("bias",),
+            256,
             id="tight-per-row-bias",
         ),
         pytest.param(
@@ -447,22 +476,25 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 300, 128, 7, 64],
             "silu_and_mul",
             ("bias",),
+            256,
             id="aligned-psum-silu-bias",
         ),
     ],
 )
-def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, activation, some):
+def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(
+    layout, sizes, activation, some, n
+):
     """Uneven experts, an empty one included, into a poisoned ``out``: every defined row is
     written and matches the reference."""
     rows, metadata = _uneven_rows(layout, sizes)
     extra = {} if activation is None else {"activation": activation}
     extra |= {"some": list(some)} if some else {}
     rows_arg = {} if "masked" in layout else {"P": rows}
-    call = _gemm_call(torch.bfloat16, layout, K=512, E=len(sizes), N=256, **rows_arg, **extra)
+    call = _gemm_call(torch.bfloat16, layout, K=512, E=len(sizes), N=n, **rows_arg, **extra)
     workload = MoEGroupedGEMMWorkload(call)
     a, b, _, bias = workload.gen_inputs()
     metadata = torch.tensor(metadata, dtype=torch.int32, device=a.device)
-    out = torch.full((*a.shape[:-1], 256), 1e4, dtype=torch.bfloat16, device=a.device)
+    out = torch.full((*a.shape[:-1], n), 1e4, dtype=torch.bfloat16, device=a.device)
     op = MoEGroupedGEMMFwdOp(**call.arguments({}))
     assert op(a, b, metadata, out=out, bias=bias) is out
     compare_outputs(
