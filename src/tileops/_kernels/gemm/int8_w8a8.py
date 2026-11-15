@@ -26,9 +26,10 @@ from tileops._kernels.tiling import grouped_tile_id
 __all__ = ["GEMMINT8W8A8Kernel", "GEMMINT8W8A8PingPongKernel", "GEMMINT8W8A8SimpleKernel"]
 
 
-# A consumer's 128 threads stage a native-width tile's column vectors in whole passes:
-# ``T.Parallel`` over a width that is not a multiple of the thread count writes past it.
-_PINGPONG_VEC_N = 256
+def _vector_width(block_n: int) -> int:
+    """The width a consumer's 128 threads stage a tile's column vectors over, in whole passes:
+    ``T.Parallel`` over a width that is not a multiple of the thread count writes past it."""
+    return -(-block_n // 128) * 128
 
 
 def _row_scale_layout(rows: int, first_thread: int):
@@ -496,7 +497,6 @@ def _gemm_int8_pingpong_kernel(
     block_m = 128
     half_m = 64
     block_k = 128
-    vec_n = _PINGPONG_VEC_N
 
     @tilelang.jit(
         out_idx=[-1],
@@ -525,6 +525,7 @@ def _gemm_int8_pingpong_kernel(
         # TileLang.
         bar_0, bar_1 = 8, 9
         native = block_n != 128
+        vec_n = _vector_width(block_n)
 
         @T.macro
         def half_mma(a_ring, b_ring, slot, acc, ki, width):
@@ -556,18 +557,30 @@ def _gemm_int8_pingpong_kernel(
             T.tma_store_wait(0)
             T.sync_threads(barrier_id=bar, arrive_count=128)
             if has_bias:
-                for i, j in T.Parallel(half_m, block_n):
+                for i, j in T.Parallel(half_m, width):
                     c_smem[i, j] = T.cast(
                         T.cast(acc[i, j], "float32") * sa_f[i] * sb_s[j] + bias_s[j], out_dtype
                     )
             else:
-                for i, j in T.Parallel(half_m, block_n):
+                for i, j in T.Parallel(half_m, width):
                     c_smem[i, j] = T.cast(
                         T.cast(acc[i, j], "float32") * sa_f[i] * sb_s[j], out_dtype
                     )
             T.fence_proxy_async()
             T.sync_threads(barrier_id=bar, arrive_count=128)
             T.tma_copy(c_smem[:, 0:width], c[row0 : row0 + half_m, n_start : n_start + width])
+
+        @T.macro
+        def by_width(body, nt, *args):
+            """``body(*args, width)`` at the width of the tile ``nt`` names; each width is a
+            compile-time int of the TMA boxes and WGMMAs ``body`` issues."""
+            if narrow_n:
+                if nt[1] == 1:
+                    body(*args, narrow_n)
+                else:
+                    body(*args, block_n)
+            else:
+                body(*args, block_n)
 
         @T.macro
         def load(a, b, a_top, a_bot, b_smem, ab_full, slot, ki, m_start, n_start, width):
@@ -648,14 +661,19 @@ def _gemm_int8_pingpong_kernel(
                     n_start = nt[0] if narrow_n else nt[0] * block_n
                     # This consumer's j-th turn on the tensor cores.
                     T.barrier_wait(turn[wg], j & 1)
-                    ring = (a_top, a_bot, b_smem, ab_full, ab_empty, acc_top, acc_bot, prev, w)
-                    if narrow_n:
-                        if nt[1] == 1:
-                            mainloop(*ring, narrow_n)
-                        else:
-                            mainloop(*ring, block_n)
-                    else:
-                        mainloop(*ring, block_n)
+                    by_width(
+                        mainloop,
+                        nt,
+                        a_top,
+                        a_bot,
+                        b_smem,
+                        ab_full,
+                        ab_empty,
+                        acc_top,
+                        acc_bot,
+                        prev,
+                        w,
+                    )
                     # The other consumer's next tile may start its WGMMAs; they queue behind
                     # this tile's last.
                     if flat_id + T.int32(sm_count) < total_tiles:
@@ -678,13 +696,15 @@ def _gemm_int8_pingpong_kernel(
                     # accumulators. The last tile's dequantization is done with them once
                     # this barrier passes.
                     T.sync_threads(barrier_id=bar, arrive_count=128)
-                    for jj in T.Parallel(vec_n if native else block_n):
+                    for jj in T.Parallel(vec_n):
                         sb_s[jj] = (
                             scale_b[0, T.min(n_start + jj, n - 1)] if per_channel else scale_b[0, 0]
                         )
                         if has_bias:
                             bias_s[jj] = T.cast(bias[T.min(n_start + jj, n - 1)], "float32")
-                    out = (
+                    by_width(
+                        store_tile,
+                        nt,
                         c,
                         acc_top,
                         acc_bot,
@@ -697,13 +717,6 @@ def _gemm_int8_pingpong_kernel(
                         n_start,
                         bar,
                     )
-                    if narrow_n:
-                        if nt[1] == 1:
-                            store_tile(*out, narrow_n)
-                        else:
-                            store_tile(*out, block_n)
-                    else:
-                        store_tile(*out, block_n)
             # Drain the last store before the CTA's shared memory goes.
             T.tma_store_wait(0)
 
@@ -745,7 +758,7 @@ def _gemm_int8_pingpong_kernel(
                 sa_bot_0 = T.alloc_fragment((half_m,), "float32")
                 sa_top_1 = T.alloc_fragment((half_m,), "float32")
                 sa_bot_1 = T.alloc_fragment((half_m,), "float32")
-                vec_shape = (vec_n,) if native else (block_n,)
+                vec_shape = (vec_n,)
                 sb_s_0 = T.alloc_shared(vec_shape, "float32")
                 sb_s_1 = T.alloc_shared(vec_shape, "float32")
                 bias_s_0 = T.alloc_shared(vec_shape, "float32")
@@ -798,7 +811,9 @@ def _gemm_int8_pingpong_kernel(
                             for ki in T.Pipelined(k_iters, num_stages=0):
                                 slot = gi_prod % num_stages
                                 T.barrier_wait(ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
-                                stage_args = (
+                                by_width(
+                                    load,
+                                    nt,
                                     a,
                                     b,
                                     a_top,
@@ -810,13 +825,6 @@ def _gemm_int8_pingpong_kernel(
                                     m_start,
                                     n_start,
                                 )
-                                if narrow_n:
-                                    if nt[1] == 1:
-                                        load(*stage_args, narrow_n)
-                                    else:
-                                        load(*stage_args, block_n)
-                                else:
-                                    load(*stage_args, block_n)
                                 gi_prod = gi_prod + 1
                 elif tx < 256:
                     T.inc_max_nreg(240)
@@ -1137,7 +1145,7 @@ class GEMMINT8W8A8PingPongKernel(_GEMMINT8TMAKernel):
         stage = (self._BLOCK_M + block_n) * 128 + 16
         # Each consumer's 64-row output staging tile and its staged column scales and bias,
         # 256 wide at the native widths.
-        vec_n = _PINGPONG_VEC_N if block_n != 128 else 128
+        vec_n = _vector_width(block_n)
         epilogue = 2 * (64 * block_n * 2 + 2 * vec_n * 4)
         num_stages = (BLOCK_SHARED_BYTES_OPT_IN[90] - epilogue) // stage
         return {"num_stages": num_stages, "group_size_m": group_size_m, **grid}

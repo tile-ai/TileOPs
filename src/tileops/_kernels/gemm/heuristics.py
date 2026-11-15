@@ -1049,16 +1049,37 @@ def int8_w8a8_config(m: int, n: int, k: int, sm_count: int) -> dict:
     return {"block_n": block_n, "num_stages": num_stages, "group_size_m": 8, "block_k": block_k}
 
 
+def _pingpong_busiest(wide: int, narrow: int, block_n: int, narrow_n: int, sm_count: int) -> tuple:
+    """Columns the busiest CTA and the busiest consumer of a persistent ping-pong grid compute,
+    when ``wide`` tiles ``block_n`` wide run before ``narrow`` tiles ``narrow_n`` wide.
+
+    CTA ``p`` takes tiles ``p``, ``p + sm_count``, ...; its consumer ``w % 2`` takes its
+    ``w``-th tile and runs that tile's epilogue.
+    """
+    total = wide + narrow
+    cta = consumer = 0
+    for p in range(min(sm_count, total)):
+        widths = [block_n if t < wide else narrow_n for t in range(p, total, sm_count)]
+        cta = max(cta, sum(widths))
+        consumer = max(consumer, sum(widths[0::2]), sum(widths[1::2]))
+    return cta, consumer
+
+
 def int8_pingpong_grid(m: int, n: int, sm_count: int, group_size_m: int) -> dict:
     """Tile width and narrow tiles of the persistent INT8 ping-pong GEMM's grid.
 
-    The grid takes 128 x 192 tiles where the busiest CTA computes no more columns with them
-    than with 128 x 128 tiles, and 128 x 128 tiles otherwise. At equal busiest-CTA work the
-    192-wide tile is faster: its TMA loads and WGMMA shared-memory reads carry fewer bytes
-    a MAC, and a CTA hands the tensor cores between its consumers a third less often. A
-    192-wide grid ends with the narrow tiles :func:`_narrow_tiles` picks to cut the busiest
-    CTA's columns, 160 wide: the epilogue stores 32-column TMA boxes, so a narrow tile is
-    whole boxes.
+    The grid takes 128 x 192 tiles, ending in the narrow tiles :func:`_narrow_tiles` picks,
+    where they leave the busiest CTA no more columns than 128 x 128 tiles and, at equal
+    columns, leave the busiest consumer no more; 128 x 128 tiles otherwise.
+
+    - The busiest CTA's columns bound its tensor work: both consumers share the CTA's tensor
+      cores.
+    - The busiest consumer's columns bound its epilogues, which hide under the other
+      consumer's mainloops only while those are longer; a CTA with an odd tile count gives
+      one consumer the extra tile.
+    - At equal work the 192-wide tile is faster: its TMA loads and WGMMA shared-memory reads
+      carry fewer bytes a MAC, and a CTA hands the tensor cores between its consumers a
+      third less often.
 
     Returns:
         ``block_n``, ``narrow_n``, ``narrow_rows`` and ``narrow_cols``; ``narrow_n`` 0 is a
@@ -1066,10 +1087,15 @@ def int8_pingpong_grid(m: int, n: int, sm_count: int, group_size_m: int) -> dict
     """
     rows = -(-m // 128)
     uniform = {"block_n": 128, "narrow_n": 0, "narrow_rows": 0, "narrow_cols": 0}
-    uniform_cols = _busiest_cta(rows * -(-n // 128), 0, 128, 0, sm_count)
+    uniform_load = _pingpong_busiest(rows * -(-n // 128), 0, 128, 0, sm_count)
+    # A consumer holds its tile as two 64-row int32 accumulators, block_n registers a thread.
+    # 192 is the widest multiple of the 32-column store box that leaves the consumer's
+    # 240-register budget room for its addresses, scales and loop state: 224 leaves 16.
     wide_n = 192
+    # Every width of whole 32-column store boxes below the wide tile.
+    narrow_widths = tuple(range(wide_n - 32, 0, -32))
     cols = -(-n // wide_n)
-    narrow = _narrow_tiles(m, n, wide_n, (160,), group_size_m, sm_count) or {
+    narrow = _narrow_tiles(m, n, wide_n, narrow_widths, group_size_m, sm_count) or {
         "narrow_n": 0,
         "narrow_rows": 0,
         "narrow_cols": 0,
@@ -1081,7 +1107,7 @@ def int8_pingpong_grid(m: int, n: int, sm_count: int, group_size_m: int) -> dict
     )
     tail_cols = -(-(n - narrow_cols * narrow_n) // wide_n)
     wide_tiles = (rows - narrow_rows) * cols + narrow_rows * tail_cols
-    wide_cols = _busiest_cta(wide_tiles, narrow_rows * narrow_cols, wide_n, narrow_n, sm_count)
-    if wide_cols > uniform_cols:
+    wide_load = _pingpong_busiest(wide_tiles, narrow_rows * narrow_cols, wide_n, narrow_n, sm_count)
+    if wide_load > uniform_load:
         return uniform
     return {"block_n": wide_n, **narrow}
