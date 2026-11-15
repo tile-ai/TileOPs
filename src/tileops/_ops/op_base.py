@@ -481,7 +481,7 @@ class Op(ABC):
         self._building = threading.RLock()
         self._delegates = {}
         self._delegate_stages = {}
-        # The construction tensors each sub-op held under no identity was built for.
+        # The construction tensors each ``_settled_delegate`` sub-op was built from, by identity.
         self._settled_tensors = {}
         self._effect_branches = {}
         self._plans = {}
@@ -1208,7 +1208,7 @@ class Op(ABC):
         # An absent optional input keeps its slot as ``None``, so two calls differing
         # only in which one they omit key apart. A tensor param keys by identity, which a
         # builder may hold: the key holds the tensor too, so no other one takes its identity.
-        # The builder keys too: a call binding another target reaches none of its kernels.
+        # The builder keys too: a kernel serves only the builder that built it.
         tensors = tuple(v for v in params.values() if isinstance(v, torch.Tensor)) if params else ()
         signature = (
             device,
@@ -1400,8 +1400,8 @@ class Op(ABC):
                             f"{identity!r}"
                         )
                     entries[identity] = delegate
-                    # Which stage holds each sub-op, for as long as it lives: a call may still
-                    # run on one this op has replaced. Dropped before its id can be reused.
+                    # Which stage holds each sub-op, replaced ones included, until it is
+                    # collected.
                     self._delegate_stages[id(delegate)] = stage
                     weakref.finalize(
                         delegate, self._delegate_stages.pop, id(delegate), None

@@ -722,8 +722,7 @@ def test_a_call_builds_with_the_target_it_selected_when_another_call_unbinds_it(
 
 
 def test_a_kernel_a_call_built_after_an_unbinding_serves_only_its_own_builder():
-    """A call still building with the builder it selected after its binding was undone leaves
-    a kernel that a call binding another builder never reuses."""
+    """A kernel built with one builder never serves a call bound to another."""
 
     def builder_of(value):
         return lambda *inputs, **params: lambda x, weight: torch.full_like(x, value)
