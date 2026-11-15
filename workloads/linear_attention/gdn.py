@@ -168,7 +168,7 @@ class GDNFwdCall(CallWorkload):
     """A manifest call sharing the focused workload's FP32 recurrence and verification."""
 
     def gen_inputs(self):
-        q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, a_log, dt_bias = (
+        q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, a_log, dt_bias, *serving = (
             super().gen_inputs()
         )
         raw_gate = self.call.indices["use_gate_in_kernel"]
@@ -187,11 +187,26 @@ class GDNFwdCall(CallWorkload):
             cu_seqlens_cpu,
             a_log,
             dt_bias,
+            *serving,
         )
 
     def ref_program(
-        self, q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, a_log, dt_bias
+        self,
+        q,
+        k,
+        v,
+        g,
+        beta,
+        initial_state,
+        cu_seqlens,
+        cu_seqlens_cpu,
+        a_log,
+        dt_bias,
+        state_indices=None,
+        num_accepted_tokens=None,
     ):
+        if state_indices is not None or num_accepted_tokens is not None:
+            raise ValueError("the reference reads and writes the states in batch order")
         p = self.call.indices
         return gdn_ref(
             q,

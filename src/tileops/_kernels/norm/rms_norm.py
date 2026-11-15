@@ -28,7 +28,12 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import select_row_config, select_row_configs
-from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
+from tileops._kernels.norm.call_spec import (
+    LayerNormCall,
+    RMSNormCall,
+    RMSNormFwdInterface,
+    whole_row_scale_refusal,
+)
 from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import (
@@ -479,6 +484,10 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
+    def refusal(cls, call: RMSNormCall) -> str | None:
+        return whole_row_scale_refusal(call) or super().refusal(call)
+
+    @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:
         identity = (call.n, call.eps, call.dtype)
         return identity, lambda: cls(*identity)
@@ -603,6 +612,10 @@ class _RMSNormRowsKernel(Kernel, RMSNormFwdInterface):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     preferred_over = frozenset({"rms_norm"})
+
+    @classmethod
+    def refusal(cls, call: RMSNormCall) -> str | None:
+        return whole_row_scale_refusal(call) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:

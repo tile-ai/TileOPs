@@ -522,8 +522,11 @@ def test_gdn_contract_reaches_target_builder(isolated_registry) -> None:
             cu_seqlens_cpu,
             A_log,
             dt_bias,
+            state_indices,
+            num_accepted_tokens,
         ):
             del k, g, beta, initial_state, cu_seqlens_cpu, A_log, dt_bias
+            del state_indices, num_accepted_tokens
             batch, seq_len, _heads, dim_k = q.shape
             value_heads, dim_v = v.shape[2:]
             state_batch = cu_seqlens.shape[0] - 1
@@ -587,7 +590,8 @@ def test_gdn_contract_reaches_target_builder(isolated_registry) -> None:
                     A_log,
                     dt_bias,
                 )
-            ),
+            )
+            + (None, None),
             {
                 "scale": 0.125,
                 "use_qk_l2norm_in_kernel": True,

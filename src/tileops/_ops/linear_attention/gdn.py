@@ -20,7 +20,7 @@ __all__ = ["GDNFwdOp"]
 
 
 class GDNFwdOp(Op):
-    """Gated DeltaNet (GDN): inference forward for the gated delta rule.
+    """Gated DeltaNet (GDN) inference forward; updates a state pool in place given slot indices.
 
     ``q`` and ``k`` use ``[B, T, H, K]``. ``v``, ``g``, ``beta`` and the
     output use ``HV`` recurrent heads, where ``HV`` is a multiple of ``H``.
@@ -90,7 +90,8 @@ class GDNFwdOp(Op):
                 compute ``-exp(A_log) * softplus(g + dt_bias)``. Otherwise,
                 ``g`` must already contain the log-space decay.
             validate_inputs: Check on the CPU that ``cu_seqlens`` (and
-                ``cu_seqlens_cpu``) start at 0, never decrease and end at ``S``.
+                ``cu_seqlens_cpu``) start at 0, never decrease and end at ``S``, and that
+                ``state_indices`` and ``num_accepted_tokens`` lie in their manifest ranges.
                 It synchronizes the device; leave it off under CUDA Graph capture.
             target: Backend target, or ``None`` to resolve from the input
                 device.
@@ -120,6 +121,9 @@ class GDNFwdOp(Op):
         cu_seqlens_cpu: torch.Tensor | None = None,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
+        *,
+        state_indices: torch.Tensor | None = None,
+        num_accepted_tokens: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run prefill or decode and return ``(o, final_state)``.
 
@@ -142,12 +146,20 @@ class GDNFwdOp(Op):
                 ``use_gate_in_kernel``.
             dt_bias: ``float32`` gate bias, $[\\mathit{HV}]$. Required under
                 ``use_gate_in_kernel``.
+            state_indices: ``int32`` slots of a state pool, or ``None``. With it,
+                ``initial_state`` is the pool, $[P \\times \\mathit{HV} \\times \\ldots]$, updated in
+                place: $[N]$, the slot each sequence starts from and ends in; with
+                ``num_accepted_tokens``, $[N \\times L]$, slot ``t`` taking the state after
+                token ``t``.
+            num_accepted_tokens: ``int32`` $[N]$, or ``None``: sequence ``n`` starts from its
+                slot ``num_accepted_tokens[n] - 1``.
 
         Returns:
             ``(o, final_state)``. ``o`` is the output,
             $[B \\times S \\times \\mathit{HV} \\times V]$, in the dtype of ``q``.
             ``final_state`` is the ``float32`` state after the last token, in the layout
-            ``initial_state`` takes. $N = B$ unless ``cu_seqlens`` is given.
+            ``initial_state`` takes, or the pool itself with ``state_indices``.
+            $N = B$ unless ``cu_seqlens`` is given.
         """
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
@@ -185,6 +197,8 @@ class GDNFwdOp(Op):
                 gate_in_kernel=self.use_gate_in_kernel,
                 beta_sigmoid=self.use_beta_sigmoid_in_kernel,
                 allow_neg_eigval=self.allow_neg_eigval,
+                pooled=state_indices is not None,
+                rollback=num_accepted_tokens is not None,
                 device=q.device,
             ),
         )(*inputs)

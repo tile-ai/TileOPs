@@ -5,7 +5,7 @@ import torch
 
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.norm import FusedAddRMSNormKernel
-from tileops._kernels.norm.call_spec import FusedAddRMSNormFwdInterface, LayerNormCall
+from tileops._kernels.norm.call_spec import FusedAddRMSNormFwdInterface, RMSNormCall
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
@@ -28,6 +28,9 @@ class FusedAddRMSNormFwdOp(Op):
     Returns dual outputs ``(y, residual_out)`` so downstream residual connections can
     reuse the pre-norm sum without recomputation.
 
+    ``zero_centered`` scales by ``1 + w``, as ``flashinfer.norm.gemma_fused_add_rmsnorm``
+    does: the arithmetic is float32 and ``y`` rounds once to the input dtype.
+
     Supported dtypes:
         ``torch.float16``, ``torch.bfloat16``.
 
@@ -49,6 +52,7 @@ class FusedAddRMSNormFwdOp(Op):
         self,
         eps: float = 1e-6,
         *,
+        zero_centered: bool = False,
         target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
@@ -56,10 +60,12 @@ class FusedAddRMSNormFwdOp(Op):
         Args:
             eps: Epsilon for numerical stability. The default ``1e-6`` is that of
                 ``flashinfer.norm.fused_add_rmsnorm``.
+            zero_centered: Whether to scale by ``1 + weight`` instead of ``weight``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
         """
         self.eps = eps
+        self.zero_centered = zero_centered
         super().__init__(target=target)
 
     def forward(
@@ -86,7 +92,13 @@ class FusedAddRMSNormFwdOp(Op):
         weight = weight.contiguous()
         kernel = self.kernel_for(
             "fused_add_rms_norm",
-            lambda: LayerNormCall(device=input.device, n=n, eps=self.eps, dtype=input.dtype),
+            lambda: RMSNormCall(
+                device=input.device,
+                n=n,
+                eps=self.eps,
+                dtype=input.dtype,
+                zero_centered=self.zero_centered,
+            ),
         )
         y, residual_out = kernel(input, residual, weight)
         return y, residual_out

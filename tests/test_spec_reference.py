@@ -219,10 +219,33 @@ def _nsa_varlen(p, t):
     return {"o": torch.cat(outs).to(q.dtype)}
 
 
+def _mrope_angles(cos_sin, positions, sections, interleaved):
+    """The ``[N, R]`` cos ‖ sin rows of ``positions [3, N]``: each frequency from the row of
+    the temporal, height or width position its section names.
+
+    vllm.model_executor.layers.rotary_embedding.mrope.MRotaryEmbedding.forward_native.
+    """
+    if positions.dim() != 2 or positions.shape[0] != 3 or sum(sections) != cos_sin.shape[1] // 2:
+        raise ValueError("MRoPE takes [3, N] positions and sections summing to R / 2")
+    cos, sin = cos_sin[positions].chunk(2, -1)
+    halves = []
+    for part in (cos, sin):
+        if interleaved:
+            picked = part[0].clone()
+            picked[..., 1 : sections[1] * 3 : 3] = part[1, ..., 1 : sections[1] * 3 : 3]
+            picked[..., 2 : sections[2] * 3 : 3] = part[2, ..., 2 : sections[2] * 3 : 3]
+        else:
+            picked = torch.cat([m[i] for i, m in enumerate(part.split(sections, -1))], -1)
+        halves.append(picked)
+    return torch.cat(halves, -1)
+
+
 def _rope(x, cos_sin, positions, layout):
-    """Rotate ``x [N, ..., R']`` on its first ``R`` columns by ``cos_sin [P, R]`` at ``positions``."""
+    """Rotate ``x [N, ..., R']`` on its first ``R`` columns by ``cos_sin [P, R]`` at ``positions``;
+    ``positions`` may instead be the ``[N, R]`` cos ‖ sin rows themselves, a floating tensor."""
     half = cos_sin.shape[1] // 2
-    cos, sin = cos_sin[positions].float().chunk(2, -1)
+    rows = positions if positions.is_floating_point() else cos_sin[positions]
+    cos, sin = rows.float().chunk(2, -1)
     shape = (x.shape[0],) + (1,) * (x.dim() - 2) + (half,)
     cos, sin = cos.view(shape), sin.view(shape)
     rot, rest = x[..., : 2 * half].float(), x[..., 2 * half :]
@@ -247,14 +270,19 @@ def _mla_kv_cache_write(p, t):
 
 
 def _fused_qk_norm_rope(p, t):
-    qkv, eps = t["qkv"], p["eps"]
+    # vLLM fused_qk_norm_rope; GemmaRMSNorm for zero_centered, MRotaryEmbedding for MRoPE.
+    qkv, eps, cos_sin = t["qkv"], p["eps"], t["cos_sin_cache"]
     heads, kv_heads = p["num_heads"], p["num_kv_heads"]
     dim = t["q_weight"].shape[0]
     tokens = qkv.shape[0]
+    positions = t["positions"]
+    if p["mrope_section"] is not None:
+        positions = _mrope_angles(cos_sin, positions, p["mrope_section"], p["mrope_interleaved"])
     for first, count, weight in ((0, heads, t["q_weight"]), (heads, kv_heads, t["k_weight"])):
         view = qkv[:, first * dim : (first + count) * dim].view(tokens, count, dim)
-        normed = F.rms_norm(view.float(), (dim,), weight.float(), eps).to(qkv.dtype)
-        view.copy_(_rope(normed, t["cos_sin_cache"], t["positions"], p["rope_layout"]))
+        scale = weight.float() + 1 if p["zero_centered"] else weight.float()
+        normed = F.rms_norm(view.float(), (dim,), scale, eps)
+        view.copy_(_rope(normed, cos_sin, positions, p["rope_layout"]))
     return {}
 
 
@@ -423,6 +451,66 @@ def _rms_norm_gated(p, t):
     return {"output": h.to(x.dtype)}
 
 
+# ---------------------------------------------------------------- mamba
+
+
+def _dilated_taps(history, x, weight, bias, dilation, silu):
+    """Each token of ``x [q, D]`` convolved with the ``(W - 1) * dilation`` tokens of
+    ``history [D, ...]`` before it, taps ``dilation`` apart, in float32."""
+    width = weight.shape[1]
+    span = (width - 1) * dilation
+    xp = torch.cat([history.float().t(), x.float()])
+    w = weight.float()
+    acc = sum(w[:, j] * xp[j * dilation : j * dilation + x.shape[0]] for j in range(width))
+    if bias is not None:
+        acc = acc + bias.float()
+    return (F.silu(acc) if silu else acc), xp, span
+
+
+def _causal_conv1d(p, t):
+    # vLLM causal_conv1d_fn; dilation as transformers Qwen4ExpTextPLELayer's F.conv1d.
+    x, weight, state, cu, bias = t["x"], t["weight"], t["conv_state"], t["cu_seqlens"], t["bias"]
+    flags, rows = t["has_initial_state"], t["cache_indices"]
+    span = (weight.shape[1] - 1) * p["dilation"]
+    if state.shape[2] < span or weight.shape[0] != x.shape[1]:
+        raise ValueError("the state holds the dilated window of x's channels")
+    out = torch.empty_like(x)
+    bounds = cu.tolist()
+    for s, (a, e) in enumerate(zip(bounds, bounds[1:], strict=False)):
+        slot = int(rows[s]) if rows is not None else s
+        history = state[slot, :, :span]
+        if flags is not None:
+            history = torch.where(flags[s], history, torch.zeros_like(history))
+        else:
+            history = torch.zeros_like(history)
+        acc, xp, _ = _dilated_taps(history, x[a:e], weight, bias, p["dilation"], p["activation"])
+        out[a:e] = acc.to(x.dtype)
+        if e > a:
+            state[slot, :, :span] = xp[e - a :].t().to(state.dtype)
+    return {"output": out}
+
+
+def _causal_conv1d_update(p, t):
+    # vLLM causal_conv1d_update, its varlen form and num_accepted_tokens rollback.
+    x, weight, state, bias = t["x"], t["weight"], t["conv_state"], t["bias"]
+    rows, accepted, cu = t["conv_state_indices"], t["num_accepted_tokens"], t["query_start_loc"]
+    span = (weight.shape[1] - 1) * p["dilation"]
+    if weight.shape[0] != x.shape[1]:
+        raise ValueError("weight must have x's channels")
+    bounds = cu.tolist() if cu is not None else list(range(x.shape[0] + 1))
+    out = torch.empty_like(x)
+    for s, (a, e) in enumerate(zip(bounds, bounds[1:], strict=False)):
+        slot = int(rows[s]) if rows is not None else s
+        first = int(accepted[s]) - 1 if accepted is not None else 0
+        history = state[slot, :, first : first + span]
+        acc, xp, _ = _dilated_taps(history, x[a:e], weight, bias, p["dilation"], p["activation"])
+        out[a:e] = acc.to(x.dtype)
+        kept = span + (e - a - 1 if accepted is not None else 0)
+        if e > a:
+            state[slot, :, :kept] = xp[xp.shape[0] - kept :].t().to(state.dtype)
+    return {"output": out}
+
+
 # ---------------------------------------------------------------- rope
 
 
@@ -549,6 +637,8 @@ REFERENCES = {
     "HyperConnectionPostFwdOp": (_hyper_connection_post, _narrow("comb_res_mix")),
     "HyperConnectionHeadFwdOp": (_hyper_connection_head, _narrow("hc_base")),
     "NGramHashFwdOp": (_ngram_hash, _narrow("offsets")),
+    "CausalConv1dFwdOp": (_causal_conv1d, _narrow("weight", 0)),
+    "CausalConv1dUpdateFwdOp": (_causal_conv1d_update, _narrow("weight", 0)),
 }
 
 

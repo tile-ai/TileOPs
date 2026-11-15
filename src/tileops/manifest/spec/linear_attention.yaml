@@ -70,20 +70,34 @@ GDNFwdOp:
   # returns final_state: serving callers need it to continue recurrence.
   # state_v_first stores the state as [.., V, K]; A_log and dt_bias are passed
   # exactly when the gate is computed in the kernel.
+  # With state_indices, initial_state is a pool of P states updated in place and returned
+  # as final_state: sequence n starts from slot state_indices[n] and ends in it. Not
+  # flashinfer's: num_accepted_tokens and the [Ns, L] slot form are vLLM
+  # fused_recurrent_gated_delta_rule's (its ssm_state_indices). With num_accepted_tokens,
+  # sequence n has L slots: it starts from slot state_indices[n, num_accepted_tokens[n] - 1]
+  # and the state after its token t goes to slot state_indices[n, t], a sequence holding at
+  # most L tokens. The slots a call writes are distinct; every slot index names a state,
+  # vLLM's null slot 0 is not declared.
   family: linear_attention
   status: implemented
   ref_api: flashinfer.gdn_prefill.chunk_gated_delta_rule
   signature:
     types:
       State:
-        params: {packed: Bool, vf: Bool, B: Dim, N: Dim, HV: Dim, K: Dim, V: Dim}
-        match: [packed, vf]
+        params: {vf: Bool, pooled: Bool, Ns: Dim, P: Dim, HV: Dim, K: Dim, V: Dim}
+        match: [vf, pooled]
         cases:
-        - {when: [false, false], is: "[B, HV, K, V]"}
-        - {when: [false, true], is: "[B, HV, V, K]"}
-        - {when: [true, false], is: "[N, HV, K, V]"}
-        - {when: [true, true], is: "[N, HV, V, K]"}
-    forall: {B: Dim, S: Dim, H: Dim, HV: Dim, K: Dim, V: Dim, N: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
+        - {when: [false, false], is: "[Ns, HV, K, V]"}
+        - {when: [true, false], is: "[Ns, HV, V, K]"}
+        - {when: [false, true], is: "[P, HV, K, V]"}
+        - {when: [true, true], is: "[P, HV, V, K]"}
+      Slots:
+        params: {spec: Bool, Ns: Dim, L: Dim}
+        match: spec
+        cases:
+        - {when: false, is: "[Ns]"}
+        - {when: true, is: "[Ns, L]"}
+    forall: {B: Dim, S: Dim, H: Dim, HV: Dim, K: Dim, V: Dim, N: Dim, P: Dim, L: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
       scale: {type: "float | None", default: null}
       use_qk_l2norm_in_kernel: {type: bool, default: false}
@@ -98,14 +112,20 @@ GDNFwdOp:
       v: {dtype: T, shape: "[B, S, HV, V]"}
       g: {dtype: T, shape: "[B, S, HV]"}
       beta: {dtype: T, shape: "[B, S, HV]"}
-      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]", type: "Tensor | None", default: null}
-      cu_seqlens: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      initial_state: {dtype: float32, shape: "State[state_v_first, present(state_indices), Ns, P, HV, K, V]", type: "Tensor | None", default: null, mutated: "present(state_indices)"}
+      cu_seqlens: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)", "max_segment(L if present(num_accepted_tokens) else S)"]}
+      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)", "max_segment(L if present(num_accepted_tokens) else S)"]}
       A_log: {dtype: float32, shape: "[HV]", type: "Tensor | None", default: null}
       dt_bias: {dtype: float32, shape: "[HV]", type: "Tensor | None", default: null}
+      state_indices: {dtype: int32, shape: "Slots[present(num_accepted_tokens), Ns, L]", type: "Tensor | None", default: null, kw_only: true, values: "distinct_ids(slots, P)", requires: ["in_range(0, P)"]}
+      num_accepted_tokens: {dtype: int32, shape: "[Ns]", type: "Tensor | None", default: null, kw_only: true, values: "full((Ns,), 1)", requires: ["in_range(1, L + 1)"]}
     outputs:
       o: {dtype: T, shape: "[B, S, HV, V]"}
-      final_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]"}
+      final_state: {dtype: float32, shape: "State[state_v_first, present(state_indices), Ns, P, HV, K, V]", alias: initial_state}
+    let:
+      # Sequences, and the shape of their slot indices.
+      Ns: "N if present(cu_seqlens) else B"
+      slots: "(Ns, L) if present(num_accepted_tokens) else (Ns,)"
     shape_rules:
     - "present(dt_bias) == use_gate_in_kernel"
     - "present(A_log) == use_gate_in_kernel"
@@ -115,6 +135,10 @@ GDNFwdOp:
     - "not present(cu_seqlens) or B == 1"
     - "not allow_neg_eigval or use_beta_sigmoid_in_kernel"
     - "not present(scale) or -inf < scale < inf"
+    - "not present(state_indices) or present(initial_state)"
+    - "not present(num_accepted_tokens) or present(state_indices)"
+    # A sequence writes the state after each of its tokens to a slot of its own.
+    - "not present(num_accepted_tokens) or present(cu_seqlens) or S <= L"
   workloads:
   - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-4k}
   - {B: 1, S: 12288, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-12k}
@@ -262,16 +286,15 @@ GDNFwdOp:
   - {B: 128, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b128, some: [initial_state]}
   - {B: 256, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b256, some: [initial_state]}
   - {B: 512, S: 1, H: 16, HV: 32, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: q35-gva-decode-b512, some: [initial_state]}
+  # Serving on a state pool, vLLM's layout: decode, packed prefill and speculative
+  # verification of 3 drafts a sequence, Qwen3.6-27B (48 value heads) and Qwen3.6-35B-A3B (32).
+  - {B: 64, S: 1, H: 16, HV: 48, K: 128, V: 128, P: 256, use_qk_l2norm_in_kernel: true, state_v_first: true, some: [initial_state, state_indices], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-dec-pool}
+  - {B: 1, S: 4096, H: 16, HV: 48, K: 128, V: 128, P: 256, seq_lens: [3000, 1000, 96], use_qk_l2norm_in_kernel: true, state_v_first: true, some: [initial_state, cu_seqlens, state_indices], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-pf-pool}
+  - {B: 1, S: 256, H: 16, HV: 48, K: 128, V: 128, P: 512, L: 4, seq_lens: "repeat(4, 64)", use_qk_l2norm_in_kernel: true, state_v_first: true, some: [initial_state, cu_seqlens, state_indices, num_accepted_tokens], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-spec-verify}
+  - {B: 64, S: 1, H: 16, HV: 32, K: 128, V: 128, P: 256, use_qk_l2norm_in_kernel: true, state_v_first: true, some: [initial_state, state_indices], dtype_cases: [{T: bfloat16}], label: qwen3.6-35b-a3b-dec-pool}
+  - {B: 64, S: 4, H: 16, HV: 32, K: 128, V: 128, P: 512, L: 4, use_qk_l2norm_in_kernel: true, state_v_first: true, some: [initial_state, state_indices, num_accepted_tokens], dtype_cases: [{T: bfloat16}], label: qwen3.6-35b-a3b-spec}
   roofline:
-    # Each transform the op may leave to the kernel: normalizing one head vector is its sum
-    # of squares, the epsilon, the reciprocal square root and the scale; the gate is a bias,
-    # a softplus and a rate per token plus the rate's own exponential and negation per head;
-    # the step size is a sigmoid, and one multiply more where the eigenvalue may go negative.
-    flops: >-
-      B * S * HV * 7 * K * V
-      + (2 * B * S * H * (3 * K + 2) if use_qk_l2norm_in_kernel else 0)
-      + (B * S * HV * 5 + 2 * HV if use_gate_in_kernel else 0)
-      + (B * S * HV * (5 if allow_neg_eigval else 4) if use_beta_sigmoid_in_kernel else 0)
+    func: "tileops._perf.formulas.gdn_fwd_roofline"
 
 KDAFwdOp:
   # Kimi Delta Attention (KDA): the gated delta rule with a per-key-channel decay g
@@ -280,20 +303,29 @@ KDAFwdOp:
   # use_gate_in_kernel, g is the raw gate input and the decay is
   # -exp(A_log) * softplus(g + dt_bias), or lower_bound * sigmoid(exp(A_log) * (g + dt_bias))
   # when lower_bound is passed (FLA fused_recurrent_kda).
+  # Not fla's fused_recurrent_kda, which takes no slot indices: state_indices and
+  # num_accepted_tokens have GDNFwdOp's names and semantics, the state pool GLM-5.3-Flash
+  # serving keeps (vLLM fused_recurrent_kda, its ssm_state_indices).
   family: linear_attention
   status: implemented
   ref_api: fla.ops.kda.fused_recurrent_kda
   signature:
     types:
       State:
-        params: {packed: Bool, vf: Bool, B: Dim, N: Dim, HV: Dim, K: Dim, V: Dim}
-        match: [packed, vf]
+        params: {vf: Bool, pooled: Bool, Ns: Dim, P: Dim, HV: Dim, K: Dim, V: Dim}
+        match: [vf, pooled]
         cases:
-        - {when: [false, false], is: "[B, HV, K, V]"}
-        - {when: [false, true], is: "[B, HV, V, K]"}
-        - {when: [true, false], is: "[N, HV, K, V]"}
-        - {when: [true, true], is: "[N, HV, V, K]"}
-    forall: {B: Dim, S: Dim, H: Dim, HV: Dim, K: Dim, V: Dim, N: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
+        - {when: [false, false], is: "[Ns, HV, K, V]"}
+        - {when: [true, false], is: "[Ns, HV, V, K]"}
+        - {when: [false, true], is: "[P, HV, K, V]"}
+        - {when: [true, true], is: "[P, HV, V, K]"}
+      Slots:
+        params: {spec: Bool, Ns: Dim, L: Dim}
+        match: spec
+        cases:
+        - {when: false, is: "[Ns]"}
+        - {when: true, is: "[Ns, L]"}
+    forall: {B: Dim, S: Dim, H: Dim, HV: Dim, K: Dim, V: Dim, N: Dim, P: Dim, L: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
       scale: {type: "float | None", default: null}
       use_qk_l2norm_in_kernel: {type: bool, default: false}
@@ -309,14 +341,20 @@ KDAFwdOp:
       v: {dtype: T, shape: "[B, S, HV, V]"}
       g: {dtype: T, shape: "[B, S, HV, K]"}
       beta: {dtype: T, shape: "[B, S, HV]"}
-      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]", type: "Tensor | None", default: null}
-      cu_seqlens: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      initial_state: {dtype: float32, shape: "State[state_v_first, present(state_indices), Ns, P, HV, K, V]", type: "Tensor | None", default: null, mutated: "present(state_indices)"}
+      cu_seqlens: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)", "max_segment(L if present(num_accepted_tokens) else S)"]}
+      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)", "max_segment(L if present(num_accepted_tokens) else S)"]}
       A_log: {dtype: float32, shape: "[HV]", type: "Tensor | None", default: null}
       dt_bias: {dtype: float32, shape: "[HV * K]", type: "Tensor | None", default: null}
+      state_indices: {dtype: int32, shape: "Slots[present(num_accepted_tokens), Ns, L]", type: "Tensor | None", default: null, kw_only: true, values: "distinct_ids(slots, P)", requires: ["in_range(0, P)"]}
+      num_accepted_tokens: {dtype: int32, shape: "[Ns]", type: "Tensor | None", default: null, kw_only: true, values: "full((Ns,), 1)", requires: ["in_range(1, L + 1)"]}
     outputs:
       o: {dtype: T, shape: "[B, S, HV, V]"}
-      final_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]"}
+      final_state: {dtype: float32, shape: "State[state_v_first, present(state_indices), Ns, P, HV, K, V]", alias: initial_state}
+    let:
+      # Sequences, and the shape of their slot indices.
+      Ns: "N if present(cu_seqlens) else B"
+      slots: "(Ns, L) if present(num_accepted_tokens) else (Ns,)"
     shape_rules:
     - "present(A_log) == use_gate_in_kernel"
     - "H > 0 and HV % H == 0"
@@ -326,6 +364,10 @@ KDAFwdOp:
     - "not allow_neg_eigval or use_beta_sigmoid_in_kernel"
     - "not present(dt_bias) or use_gate_in_kernel"
     - "not present(lower_bound) or use_gate_in_kernel"
+    - "not present(state_indices) or present(initial_state)"
+    - "not present(num_accepted_tokens) or present(state_indices)"
+    # A sequence writes the state after each of its tokens to a slot of its own.
+    - "not present(num_accepted_tokens) or present(cu_seqlens) or S <= L"
   workloads:
   - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, seq_lens: "repeat(1024, 4)", use_qk_l2norm_in_kernel: true, some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}, {T: float16}], label: kda-tp1-4x1024}
   - {B: 1, S: 32768, H: 32, HV: 32, K: 128, V: 128, seq_lens: "repeat(8192, 4)", use_qk_l2norm_in_kernel: true, some: [cu_seqlens], dtype_cases: [{T: bfloat16}], label: kda-tp1-4x8192}
@@ -361,6 +403,11 @@ KDAFwdOp:
   - {B: 1, S: 256, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, initial_state, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-cont256}
   - {B: 1, S: 4096, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, initial_state, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-cont4096}
   - {B: 32, S: 256, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-b32-s256}
+  # GLM-5.3-Flash KDA (64 heads) on a state pool: decode, packed prefill and speculative
+  # verification of 3 drafts a sequence.
+  - {B: 64, S: 1, H: 64, HV: 64, K: 128, V: 128, P: 256, use_qk_l2norm_in_kernel: true, some: [initial_state, state_indices], dtype_cases: [{T: bfloat16}], label: glm-5.3-flash-dec-pool}
+  - {B: 1, S: 4096, H: 64, HV: 64, K: 128, V: 128, P: 256, seq_lens: [3000, 1000, 96], use_qk_l2norm_in_kernel: true, some: [initial_state, cu_seqlens, state_indices], dtype_cases: [{T: bfloat16}], label: glm-5.3-flash-pf-pool}
+  - {B: 1, S: 256, H: 64, HV: 64, K: 128, V: 128, P: 512, L: 4, seq_lens: "repeat(4, 64)", use_qk_l2norm_in_kernel: true, some: [initial_state, cu_seqlens, state_indices, num_accepted_tokens], dtype_cases: [{T: bfloat16}], label: glm-5.3-flash-spec}
   - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-4096}
   - {B: 1, S: 16384, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-16384}
   - {B: 1, S: 65536, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-65536}
@@ -384,18 +431,7 @@ KDAFwdOp:
   - {B: 32, S: 1, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp8-decode-b32}
   - {B: 256, S: 1, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp8-decode-b256}
   roofline:
-    # The per-token recurrence (the signature carries no chunk size). Per token and value
-    # head: exp(g), the decay, k^T S, v - k^T S and beta, the rank-1 update and the q^T S
-    # readout; per query head the q scale, shared by its value heads. Flag terms: the q/k
-    # l2 norms; the in-kernel gate per channel (softplus form 3, sigmoid form 6, the bias
-    # add 1) and its per-head factor (-exp(A_log) 2, exp(A_log) 1); the beta sigmoid and its
-    # doubling.
-    flops: >-
-      B * S * (HV * (7 * K * V + K + 2 * V) + H * K
-      + (H * (6 * K + 4) if use_qk_l2norm_in_kernel else 0)
-      + (HV * K * ((6 if present(lower_bound) else 3) + (1 if present(dt_bias) else 0)) if use_gate_in_kernel else 0)
-      + (HV * (4 + (1 if allow_neg_eigval else 0)) if use_beta_sigmoid_in_kernel else 0))
-      + ((1 if present(lower_bound) else 2) * HV if use_gate_in_kernel else 0)
+    func: "tileops._perf.formulas.kda_fwd_roofline"
 
 DeltaNetRecurrentFwdOp:
   # Single-token ungated DeltaNet decode. State ownership is functional: state

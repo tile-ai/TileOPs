@@ -260,77 +260,185 @@ Mamba2FwdOp:
     - {name: state_passing, op: SSDStatePassingFwdOp}
     - {name: chunk_scan, op: SSDChunkScanFwdOp}
 CausalConv1dFwdOp:
+  # Not vLLM's causal_conv1d_fn: dilation spaces the filter taps dilation tokens apart, so a
+  # state holds the last (W - 1) * dilation tokens (transformers Qwen4ExpTextPLELayer short
+  # conv, F.conv1d(..., dilation=3, groups=D)). A float32 weight and bias convolve the
+  # activations upcast to float32 (transformers modeling_glm5_next causal_conv1d_fn, conv1d
+  # kept in float32). With cache_indices, conv_state is a pool of P states and sequence b
+  # reads and writes conv_state[cache_indices[b]], distinct slots across the call; every
+  # slot index names a state, vLLM's null slot 0 is not declared. A state is the first
+  # (W - 1) * dilation tokens of its L columns, the rest not touched.
   family: mamba
   status: implemented
   ref_api: vllm.model_executor.layers.mamba.ops.causal_conv1d.causal_conv1d_fn
   signature:
+    types:
+      States:
+        params: {pooled: Bool, B: Dim, P: Dim, D: Dim, L: Dim}
+        match: pooled
+        cases:
+        - {when: false, is: "[B, D, L]"}
+        - {when: true, is: "[P, D, L]"}
     forall:
       B: Dim
       D: Dim
       W: Dim
       Tt: Dim
+      L: Dim
+      P: Dim
       T: "DType[float16 | bfloat16]"
+      Tw: "DType[float16 | bfloat16 | float32]"
       seq_lens: "Seq[Int]"
     params:
       activation: {type: "'silu' | None", default: silu}
+      dilation: {type: int, default: 1, kw_only: true}
       validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       # Token-major, the sequences packed along Tt: the layout the Mamba block's input
       # projection produces. The ref_api takes the (D, Tt) transposed view of this storage.
       x: {dtype: T, shape: "[Tt, D]"}
-      weight: {dtype: T, shape: "[D, W]"}
-      # The W-1 tokens preceding each sequence. Read for a sequence whose
+      weight: {dtype: Tw, shape: "[D, W]"}
+      # The (W - 1) * dilation tokens preceding each sequence. Read for a sequence whose
       # has_initial_state is true, and overwritten with that sequence's own tail; an empty
       # sequence keeps its state.
-      conv_state: {dtype: T, shape: "[B, D, W - 1]", mutated: true, contiguous: true}
+      conv_state: {dtype: T, shape: "States[present(cache_indices), B, P, D, L]", mutated: true, contiguous: true}
       cu_seqlens: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)"]}
-      bias: {dtype: T, shape: "[D]", type: "Tensor | None"}
+      bias: {dtype: Tw, shape: "[D]", type: "Tensor | None"}
       has_initial_state: {dtype: bool, shape: "[B]", type: "Tensor | None", default: null}
+      cache_indices: {dtype: int32, shape: "[B]", type: "Tensor | None", default: null, kw_only: true, values: "sample_indices(B, P)", requires: ["in_range(0, P)"]}
     outputs:
       output: {dtype: T, shape: "[Tt, D]"}
+    dtype_combos:
+    - {T: float16, Tw: float16}
+    - {T: bfloat16, Tw: bfloat16}
+    - {T: float16, Tw: float32}
+    - {T: bfloat16, Tw: float32}
     shape_rules:
       - "B > 0 and D > 0 and Tt > 0"
       - "W >= 2 and W <= 4"
+      - "dilation >= 1"
+      - "L >= (W - 1) * dilation"
   roofline:
     flops: "2 * D * Tt * W"
+    # (W - 1) * dilation tokens of each sequence's state are written, and read where
+    # has_initial_state is passed.
+    bytes: >-
+      bytes(x) + bytes(weight) + bytes(cu_seqlens) + bytes(output)
+      + (bytes(bias) if present(bias) else 0)
+      + (bytes(has_initial_state) if present(has_initial_state) else 0)
+      + (bytes(cache_indices) if present(cache_indices) else 0)
+      + (2 if present(has_initial_state) else 1) * bytes(conv_state) * B * (W - 1) * dilation // ((P if present(cache_indices) else B) * L)
   workloads:
-    - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-4k}
-    - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-pf4k-nost}
-    - {D: 5376, W: 4, Tt: 32768, seq_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-32k}
-    - {D: 8192, W: 4, Tt: 4096, seq_lens: [2500, 1000, 500, 96], dtype_cases: [{T: float16}], bias: null, some: [has_initial_state], label: qwen3-next-pf4k-ragged}
-    - {D: 8192, W: 4, Tt: 32768, seq_lens: "repeat(8192, 4)", dtype_cases: [{T: float16}], bias: null, some: [has_initial_state], label: qwen3-next-prefill-32k}
+    - {D: 5376, W: 4, L: 3, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-4k}
+    - {D: 5376, W: 4, L: 3, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [bias], label: mamba2-2.7b-pf4k-nost}
+    - {D: 5376, W: 4, L: 3, Tt: 32768, seq_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-32k}
+    - {D: 8192, W: 4, L: 3, Tt: 4096, seq_lens: [2500, 1000, 500, 96], dtype_cases: [{T: float16, Tw: float16}], bias: null, some: [has_initial_state], label: qwen3-next-pf4k-ragged}
+    - {D: 8192, W: 4, L: 3, Tt: 32768, seq_lens: "repeat(8192, 4)", dtype_cases: [{T: float16, Tw: float16}], bias: null, some: [has_initial_state], label: qwen3-next-prefill-32k}
+    # GDN-layer convolutions reading and writing a state pool: Qwen3.6-27B (10240) and
+    # Qwen3.6-35B-A3B (8192); a pool 3 tokens wider also holds speculative-decode drafts.
+    - {D: 10240, W: 4, L: 3, P: 256, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, Tw: bfloat16}], bias: null, some: [has_initial_state, cache_indices], label: qwen3.6-27b-pf-pool}
+    - {D: 10240, W: 4, L: 6, P: 256, Tt: 4096, seq_lens: [3000, 1000, 96], dtype_cases: [{T: bfloat16, Tw: bfloat16}], bias: null, some: [has_initial_state, cache_indices], label: qwen3.6-27b-pf-spec-pool}
+    - {D: 8192, W: 4, L: 3, P: 256, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, Tw: bfloat16}], bias: null, some: [has_initial_state, cache_indices], label: qwen3.6-35b-a3b-pf-pool}
+    # Qwen3.8-Flash-Next PLE short conv over 4 streams of 2560: dilation 3, no bias.
+    - {D: 10240, W: 4, L: 9, Tt: 4096, seq_lens: "repeat(1024, 4)", dilation: 3, dtype_cases: [{T: bfloat16, Tw: bfloat16}], bias: null, some: [has_initial_state], label: qwen3.8-flash-ple-pf}
+    - {D: 10240, W: 4, L: 9, P: 256, Tt: 4096, seq_lens: "repeat(1024, 4)", dilation: 3, dtype_cases: [{T: bfloat16, Tw: bfloat16}], bias: null, some: [has_initial_state, cache_indices], label: qwen3.8-flash-ple-pool}
+    # GLM-5.3-Flash KDA convolution: float32 filters over bf16 activations.
+    - {D: 24576, W: 4, L: 3, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, Tw: float32}], bias: null, some: [has_initial_state], label: glm-5.3-flash-pf}
+    - {D: 24576, W: 4, L: 3, P: 256, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, Tw: float32}], bias: null, some: [has_initial_state, cache_indices], label: glm-5.3-flash-pf-pool}
 
 CausalConv1dUpdateFwdOp:
+  # Not vLLM's causal_conv1d_update: dilation and the float32 weight are
+  # CausalConv1dFwdOp's. With query_start_loc, x packs several tokens a sequence, as vLLM's
+  # varlen form does. With conv_state_indices, sequence b's state is
+  # conv_state[conv_state_indices[b]]. A state is the first (W - 1) * dilation tokens of its
+  # L columns and is advanced by the sequence's tokens; with num_accepted_tokens, sequence b
+  # with a = num_accepted_tokens[b] and q tokens reads the (W - 1) * dilation tokens from
+  # column a - 1, and its first (W - 1) * dilation + q - 1 columns become its last such
+  # tokens, so a later call resumes from any accepted draft. Every slot index names a state;
+  # vLLM's null slot 0 is not declared.
   family: mamba
   status: implemented
   ref_api: vllm.model_executor.layers.mamba.ops.causal_conv1d.causal_conv1d_update
   signature:
+    types:
+      Tokens:
+        params: {varlen: Bool, B: Dim, Tt: Dim, D: Dim}
+        match: varlen
+        cases:
+        - {when: false, is: "[B, D]"}
+        - {when: true, is: "[Tt, D]"}
+      States:
+        params: {pooled: Bool, B: Dim, P: Dim, D: Dim, L: Dim}
+        match: pooled
+        cases:
+        - {when: false, is: "[B, D, L]"}
+        - {when: true, is: "[P, D, L]"}
     forall:
       B: Dim
       D: Dim
       W: Dim
+      Tt: Dim
+      L: Dim
+      P: Dim
       T: "DType[float16 | bfloat16]"
+      Tw: "DType[float16 | bfloat16 | float32]"
+      seq_lens: "Seq[Int]"
     params:
       activation: {type: "'silu' | None", default: silu}
+      dilation: {type: int, default: 1, kw_only: true}
+      max_query_len: {type: int, default: -1, kw_only: true}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
-      x: {dtype: T, shape: "[B, D]"}
-      weight: {dtype: T, shape: "[D, W]"}
-      # The W-1 most recent tokens per sequence, the state CausalConv1dFwdOp leaves.
-      # Advanced by one token in place.
-      conv_state: {dtype: T, shape: "[B, D, W - 1]", mutated: true, contiguous: true}
-      bias: {dtype: T, shape: "[D]", type: "Tensor | None", default: null}
+      x: {dtype: T, shape: "Tokens[present(query_start_loc), B, Tt, D]"}
+      weight: {dtype: Tw, shape: "[D, W]"}
+      # The (W - 1) * dilation most recent tokens per sequence, the state
+      # CausalConv1dFwdOp leaves, advanced in place.
+      conv_state: {dtype: T, shape: "States[present(conv_state_indices), B, P, D, L]", mutated: true, contiguous: true}
+      bias: {dtype: Tw, shape: "[D]", type: "Tensor | None", default: null}
+      conv_state_indices: {dtype: int32, shape: "[B]", type: "Tensor | None", default: null, kw_only: true, values: "sample_indices(B, P)", requires: ["in_range(0, P)"]}
+      num_accepted_tokens: {dtype: int32, shape: "[B]", type: "Tensor | None", default: null, kw_only: true, values: "full((B,), 1)", requires: ["in_range(1, L - (W - 1) * dilation + 2)"]}
+      query_start_loc: {dtype: int32, shape: "[B + 1]", type: "Tensor | None", default: null, kw_only: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)", "max_segment(max_query_len)"]}
     outputs:
-      output: {dtype: T, shape: "[B, D]"}
+      output: {dtype: T, shape: "Tokens[present(query_start_loc), B, Tt, D]"}
+    dtype_combos:
+    - {T: float16, Tw: float16}
+    - {T: bfloat16, Tw: bfloat16}
+    - {T: float16, Tw: float32}
+    - {T: bfloat16, Tw: float32}
     shape_rules:
       - "B > 0 and D > 0"
       - "W >= 2 and W <= 4"
+      - "dilation >= 1"
+      - "not present(query_start_loc) or (present(conv_state_indices) and max_query_len > 0)"
+      - "L >= (W - 1) * dilation + (max_query_len - 1 if present(num_accepted_tokens) and present(query_start_loc) else 0)"
   roofline:
-    flops: "2 * B * D * W"
+    flops: "2 * (Tt if present(query_start_loc) else B) * D * W"
+    # Each sequence reads (W - 1) * dilation state tokens and writes as many, or, rolling
+    # back drafts, (W - 1) * dilation + q - 1 for its q tokens.
+    bytes: >-
+      bytes(x) + bytes(weight) + bytes(output)
+      + (bytes(bias) if present(bias) else 0)
+      + (bytes(conv_state_indices) if present(conv_state_indices) else 0)
+      + (bytes(num_accepted_tokens) if present(num_accepted_tokens) else 0)
+      + (bytes(query_start_loc) if present(query_start_loc) else 0)
+      + bytes(conv_state) * (2 * B * (W - 1) * dilation + (Tt - B if present(num_accepted_tokens) and present(query_start_loc) else 0)) // ((P if present(conv_state_indices) else B) * L)
   workloads:
-    - {B: 1, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-decode-b1}
-    - {B: 64, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-decode-b64}
-    - {B: 256, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-decode-b256}
-    - {B: 64, D: 8192, W: 4, dtype_cases: [{T: float16}], label: qwen3-next-decode-b64}
+    - {B: 1, D: 5376, W: 4, L: 3, dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [bias], label: mamba2-2.7b-decode-b1}
+    - {B: 64, D: 5376, W: 4, L: 3, dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [bias], label: mamba2-2.7b-decode-b64}
+    - {B: 256, D: 5376, W: 4, L: 3, dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [bias], label: mamba2-2.7b-decode-b256}
+    - {B: 64, D: 8192, W: 4, L: 3, dtype_cases: [{T: float16, Tw: float16}], label: qwen3-next-decode-b64}
+    # GDN-layer decode on a state pool, and speculative verification of 3 drafts a sequence
+    # with rollback: Qwen3.6-27B (10240) and Qwen3.6-35B-A3B (8192).
+    - {B: 64, D: 10240, W: 4, L: 3, P: 256, dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [conv_state_indices], label: qwen3.6-27b-dec-pool}
+    - {D: 10240, W: 4, L: 6, P: 256, Tt: 256, seq_lens: "repeat(4, 64)", max_query_len: 4, dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [conv_state_indices, num_accepted_tokens, query_start_loc], label: qwen3.6-27b-spec-verify}
+    - {B: 64, D: 8192, W: 4, L: 3, P: 256, dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [conv_state_indices], label: qwen3.6-35b-a3b-dec-pool}
+    - {D: 8192, W: 4, L: 6, P: 256, Tt: 256, seq_lens: "repeat(4, 64)", max_query_len: 4, dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [conv_state_indices, num_accepted_tokens, query_start_loc], label: qwen3.6-35b-a3b-spec}
+    # Qwen3.8-Flash-Next PLE short conv: dilation 3, a 9-token state.
+    - {B: 64, D: 10240, W: 4, L: 9, P: 256, dilation: 3, dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [conv_state_indices], label: qwen3.8-flash-ple-dec}
+    - {D: 10240, W: 4, L: 12, P: 256, Tt: 256, seq_lens: "repeat(4, 64)", max_query_len: 4, dilation: 3, dtype_cases: [{T: bfloat16, Tw: bfloat16}], some: [conv_state_indices, num_accepted_tokens, query_start_loc], label: qwen3.8-flash-ple-spec}
+    # GLM-5.3-Flash KDA convolution: float32 filters over bf16 activations.
+    - {B: 64, D: 24576, W: 4, L: 3, P: 256, dtype_cases: [{T: bfloat16, Tw: float32}], some: [conv_state_indices], label: glm-5.3-flash-dec-pool}
+    - {D: 24576, W: 4, L: 6, P: 256, Tt: 256, seq_lens: "repeat(4, 64)", max_query_len: 4, dtype_cases: [{T: bfloat16, Tw: float32}], some: [conv_state_indices, num_accepted_tokens, query_start_loc], label: glm-5.3-flash-spec}
 
 SelectiveScanFwdOp:
   # Mamba-1 S6 selective scan: a first-order recurrence whose decay and input gates are

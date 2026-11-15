@@ -17,12 +17,16 @@ GEMMFwdOp:
     params:
       trans_a: {type: bool, default: false}
       trans_b: {type: bool, default: true}
+      # nvmath's MatmulOptions.result_type: float32 keeps the float32 sum of 16-bit operands,
+      # F.linear(a.float(), b.float()) as DeepSeek-V4-Flash inference/model.py Gate.forward
+      # computes its router logits.
+      out_dtype: {type: "float32 | None", default: null, kw_only: true}
     inputs:
       a: {dtype: T, shape: "Mat[trans_a, M, K]"}
       b: {dtype: T, shape: "Mat[trans_b, K, N]"}
       bias: {dtype: T, shape: "[N]", type: "Tensor | None", default: null}
     outputs:
-      d: {dtype: T, shape: "[M, N]"}
+      d: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[M, N]"}
 
   workloads:
   # trans_a/trans_b pick the storage layout the kernel compiles for. The NT (N, K) shapes mirror
@@ -64,6 +68,15 @@ GEMMFwdOp:
   - {M: 1, N: 4608, K: 3584, trans_a: false, trans_b: true, some: [bias], dtype_cases: [{T: bfloat16}], label: qwen2.5-7b-qkv-b1}
   - {M: 64, N: 4608, K: 3584, trans_a: false, trans_b: true, some: [bias], dtype_cases: [{T: bfloat16}], label: qwen2.5-7b-qkv-b64}
   - {M: 4096, N: 4608, K: 3584, trans_a: false, trans_b: true, some: [bias], dtype_cases: [{T: bfloat16}], label: qwen2.5-7b-prefill-qkv}
+  # float32 logits from bf16 operands: DeepSeek-V4-Flash router, KV-compressor projections and
+  # LM head (K 4096), and GLM-5.3-Flash router.
+  - {M: 64, N: 256, K: 4096, out_dtype: float32, dtype_cases: [{T: bfloat16}], label: ds-v4-flash-router-dec}
+  - {M: 8192, N: 256, K: 4096, out_dtype: float32, dtype_cases: [{T: bfloat16}], label: ds-v4-flash-router-pf}
+  - {M: 8192, N: 1024, K: 4096, out_dtype: float32, dtype_cases: [{T: bfloat16}], label: ds-v4-flash-comp-1024}
+  - {M: 8192, N: 512, K: 4096, out_dtype: float32, dtype_cases: [{T: bfloat16}], label: ds-v4-flash-comp-512}
+  - {M: 64, N: 129280, K: 4096, out_dtype: float32, dtype_cases: [{T: bfloat16}], label: ds-v4-flash-lm-head-dec}
+  - {M: 64, N: 288, K: 4096, out_dtype: float32, dtype_cases: [{T: bfloat16}], label: glm-5.3-flash-router-dec}
+  - {M: 8192, N: 288, K: 4096, out_dtype: float32, dtype_cases: [{T: bfloat16}], label: glm-5.3-flash-router-pf}
 
   roofline:
     flops: "2 * M * N * K + (M * N if present(bias) else 0)"

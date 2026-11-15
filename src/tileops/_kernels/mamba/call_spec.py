@@ -33,7 +33,12 @@ __all__ = [
 
 @dataclasses.dataclass(frozen=True)
 class CausalConv1dCall(CallSpec):
-    """One prefill convolution over packed sequences; their count and lengths are runtime data."""
+    """One prefill convolution over packed sequences; their count and lengths are runtime data.
+
+    ``weight_dtype`` is that of the weight and bias, ``state_len`` the token columns of a
+    state, ``dilation`` the token spacing of the filter taps, and ``pooled`` whether
+    ``cache_indices`` maps each sequence to its state.
+    """
 
     dim: int = 0
     width: int = 0
@@ -41,17 +46,33 @@ class CausalConv1dCall(CallSpec):
     has_bias: bool = False
     has_init: bool = False
     silu: bool = True
+    weight_dtype: torch.dtype | None = None
+    state_len: int = 0
+    dilation: int = 1
+    pooled: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
 class CausalConv1dUpdateCall(CallSpec):
-    """One decode step of the convolution, one token a sequence; the batch is runtime data."""
+    """One decode step of the convolution, one token a sequence; the batch is runtime data.
+
+    ``weight_dtype``, ``state_len``, ``dilation`` and ``pooled`` are those of
+    ``CausalConv1dCall``, ``pooled`` following ``conv_state_indices``; ``varlen`` is whether
+    ``query_start_loc`` packs several tokens a sequence, and ``rollback`` whether
+    ``num_accepted_tokens`` is passed.
+    """
 
     dim: int = 0
     width: int = 0
     dtype: torch.dtype | None = None
     has_bias: bool = False
     silu: bool = True
+    weight_dtype: torch.dtype | None = None
+    state_len: int = 0
+    dilation: int = 1
+    pooled: bool = False
+    varlen: bool = False
+    rollback: bool = False
 
 
 @dataclasses.dataclass(frozen=True)

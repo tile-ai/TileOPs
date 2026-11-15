@@ -240,7 +240,7 @@ def _vllm_state_lines(conv_state: torch.Tensor) -> tuple[torch.Tensor, torch.Ten
 @pytest.mark.parametrize("case", bench.cases(CausalConv1dFwdOp), ids=lambda case: case.id)
 def test_causal_conv1d_bench(case) -> None:
     """Prefill against vLLM, which takes the (D, Tt) transposed view of the same storage."""
-    x, weight, conv_state, cu_seqlens, bias, has_initial_state = case.inputs
+    x, weight, conv_state, cu_seqlens, bias, has_initial_state, _cache_indices = case.inputs
     op = CausalConv1dFwdOp(**case.arguments)
     causal_conv1d_fn = vllm_op("causal_conv1d_fn", module=VLLM_CONV1D)
     lines, indices = _vllm_state_lines(conv_state)
@@ -272,7 +272,7 @@ def test_causal_conv1d_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(CausalConv1dUpdateFwdOp), ids=lambda case: case.id)
 def test_causal_conv1d_update_bench(case) -> None:
-    x, weight, conv_state, bias = case.inputs
+    x, weight, conv_state, bias, *_serving = case.inputs
     op = CausalConv1dUpdateFwdOp(**case.arguments)
     causal_conv1d_update = vllm_op("causal_conv1d_update", module=VLLM_CONV1D)
     lines, indices = _vllm_state_lines(conv_state)

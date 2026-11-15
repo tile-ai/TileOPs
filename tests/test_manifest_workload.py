@@ -18,7 +18,7 @@ from tileops.manifest._workload import (
     check_workloads,
     instantiate,
 )
-from tileops.manifest.primitives import GENERATORS, PREDICATES
+from tileops.manifest.primitives import GENERATOR_SHAPES, GENERATORS, PREDICATES
 
 pytestmark = pytest.mark.smoke
 
@@ -181,6 +181,35 @@ def test_packed_positions_restart_at_each_sequence():
     for lengths in ([], [2, 0]):
         with pytest.raises(ValueError, match="non-empty positive list"):
             GENERATORS["packed_positions"](lengths)
+
+
+def test_stacked_positions_repeat_the_packed_positions_over_the_leading_shape():
+    assert GENERATORS["stacked_positions"]((), [2, 1]) == [0, 1, 0]
+    assert GENERATORS["stacked_positions"]((3,), [2, 1]) == [[0, 1, 0]] * 3
+    assert GENERATOR_SHAPES["stacked_positions"]((3,), [2, 1]) == (3, 3)
+    # A 2 x 3 image opens each sequence; the text after it continues from 3 on every axis.
+    assert GENERATORS["stacked_positions"]((3,), [8, 2], (2, 3)) == [
+        [0, 0, 0, 0, 0, 0, 3, 4, 0, 0],
+        [0, 0, 0, 1, 1, 1, 3, 4, 0, 0],
+        [0, 1, 2, 0, 1, 2, 3, 4, 0, 1],
+    ]
+    with pytest.raises(ValueError, match="image"):
+        GENERATORS["stacked_positions"]((), [2], (2, 3))
+    with pytest.raises(ValueError, match="non-negative"):
+        GENERATORS["stacked_positions"]((-1,), [2])
+
+
+def test_distinct_ids_fill_their_shape_with_distinct_values_in_range():
+    import random
+
+    ids = GENERATORS["distinct_ids"](random.Random(0), (3, 4), 12)
+    flat = [v for row in ids for v in row]
+    assert len(ids) == 3 and all(len(row) == 4 for row in ids)
+    assert sorted(flat) == list(range(12))
+    assert GENERATOR_SHAPES["distinct_ids"]((3, 4), 12) == (3, 4)
+    assert len(GENERATORS["distinct_ids"](random.Random(0), (5,), 7)) == 5
+    with pytest.raises(ValueError, match="0 <= n <= hi"):
+        GENERATORS["distinct_ids"](random.Random(0), (3, 4), 11)
 
 
 def test_causal_topk_indices_draw_distinct_visible_keys_and_pad():

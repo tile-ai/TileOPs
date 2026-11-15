@@ -1064,10 +1064,19 @@ def causal_conv1d_update_ref(
     return (F.silu(acc) if silu else acc).to(x.dtype)
 
 
-def conv_state_result(subject, *inputs):
+def conv_state_result(subject, *inputs, **keywords):
     """Observe the returned output and the convolution state, the third input of both ops."""
-    output = subject(*inputs)
+    output = subject(*inputs, **keywords)
     return output, inputs[2]
+
+
+def _dense_states_only(call, weight, conv_state, indices) -> None:
+    """Raise unless *call* holds ``W - 1``-token states in batch order and adjacent taps."""
+    width = weight.shape[1]
+    if indices is not None or conv_state.shape[2] != width - 1:
+        raise ValueError(f"the reference reads {width - 1}-token states in batch order")
+    if call.arguments().get("dilation", 1) != 1:
+        raise ValueError("the reference convolves adjacent tokens")
 
 
 class CausalConv1dFwdCall(CallWorkload):
@@ -1075,12 +1084,17 @@ class CausalConv1dFwdCall(CallWorkload):
     carrying a state."""
 
     def gen_inputs(self):
-        x, weight, conv_state, cu_seqlens, bias, has_initial_state = super().gen_inputs()
+        x, weight, conv_state, cu_seqlens, bias, has_initial_state, cache_indices = (
+            super().gen_inputs()
+        )
         if has_initial_state is not None:
             has_initial_state = torch.arange(has_initial_state.numel(), device=x.device) % 2 == 0
-        return x, weight * 0.25, conv_state, cu_seqlens, bias, has_initial_state
+        return x, weight * 0.25, conv_state, cu_seqlens, bias, has_initial_state, cache_indices
 
-    def ref_program(self, x, weight, conv_state, cu_seqlens, bias, has_initial_state):
+    def ref_program(
+        self, x, weight, conv_state, cu_seqlens, bias, has_initial_state, cache_indices=None
+    ):
+        _dense_states_only(self.call, weight, conv_state, cache_indices)
         silu = self.call.arguments().get("activation", "silu") is not None
         output = causal_conv1d_ref(x, weight, conv_state, cu_seqlens, bias, has_initial_state, silu)
         return output, conv_state
@@ -1090,10 +1104,22 @@ class CausalConv1dUpdateFwdCall(CallWorkload):
     """A manifest call of CausalConv1dUpdateFwdOp: filters in (-0.5, 0.5)."""
 
     def gen_inputs(self):
-        x, weight, conv_state, bias = super().gen_inputs()
-        return x, weight * 0.25, conv_state, bias
+        x, weight, conv_state, bias, *serving = super().gen_inputs()
+        return x, weight * 0.25, conv_state, bias, *serving
 
-    def ref_program(self, x, weight, conv_state, bias):
+    def ref_program(
+        self,
+        x,
+        weight,
+        conv_state,
+        bias,
+        conv_state_indices=None,
+        num_accepted_tokens=None,
+        query_start_loc=None,
+    ):
+        if num_accepted_tokens is not None or query_start_loc is not None:
+            raise ValueError("the reference convolves one token a sequence")
+        _dense_states_only(self.call, weight, conv_state, conv_state_indices)
         silu = self.call.arguments().get("activation", "silu") is not None
         return causal_conv1d_update_ref(x, weight, conv_state, bias, silu), conv_state
 

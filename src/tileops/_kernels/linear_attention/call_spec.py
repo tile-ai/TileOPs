@@ -116,7 +116,11 @@ class GLADecodeCall(CallSpec):
 
 @dataclasses.dataclass(frozen=True)
 class GDNCall(CallSpec):
-    """One GDN inference call, with the recurrence semantics the op fixed."""
+    """One GDN inference call, with the recurrence semantics the op fixed.
+
+    ``pooled`` is whether ``state_indices`` maps each sequence to its slots of a state
+    pool, and ``rollback`` whether ``num_accepted_tokens`` is passed with a slot a token.
+    """
 
     batch: int = 0
     seq_len: int = 0
@@ -134,6 +138,8 @@ class GDNCall(CallSpec):
     beta_sigmoid: bool = False
     allow_neg_eigval: bool = False
     num_sequences: int = 0
+    pooled: bool = False
+    rollback: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -165,6 +171,10 @@ class KDACall(CallSpec):
     allow_neg_eigval: bool = False
     lower_bound: float | None = None
     has_dt_bias: bool = False
+    # Whether `state_indices` maps each sequence to its slots of a state pool, and
+    # whether `num_accepted_tokens` is passed with a slot a token.
+    pooled: bool = False
+    rollback: bool = False
 
     @property
     def chunk_refusal(self) -> str | None:
@@ -180,6 +190,8 @@ class KDACall(CallSpec):
                 ("state_v_first=True", self.state_v_first),
                 ("use_beta_sigmoid_in_kernel=True", self.beta_sigmoid),
                 ("allow_neg_eigval=True", self.allow_neg_eigval),
+                ("state_indices", self.pooled),
+                ("num_accepted_tokens", self.rollback),
             )
             if present
         ]

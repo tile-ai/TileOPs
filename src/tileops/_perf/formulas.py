@@ -34,6 +34,7 @@ __all__ = [
     "fused_moe_shared_expert_fwd_roofline",
     "fused_qk_norm_rope_roofline",
     "gated_pool_compress_roofline",
+    "gdn_fwd_roofline",
     "gqa_dense_fwd_roofline",
     "gqa_paged_fwd_roofline",
     "gqa_paged_read_terms",
@@ -42,6 +43,7 @@ __all__ = [
     "grouped_gemm_active_groups",
     "grouped_gemm_roofline",
     "hadamard_roofline",
+    "kda_fwd_roofline",
     "lightning_indexer_read_keys",
     "lightning_indexer_scored_keys",
     "mla_dense_bwd_roofline",
@@ -1295,20 +1297,39 @@ def paged_kv_cache_gather_roofline(call: CallView) -> tuple[int, int]:
 
 def fused_qk_norm_rope_roofline(call: CallView) -> tuple[int, int]:
     """Q/K RMSNorm and RoPE in place: per q and k value, RMSNorm with its weight (4), and 3
-    per rotated value. The q and k columns are read and written, the v columns untouched,
-    and the cos/sin rows the positions name read once."""
+    per rotated value; once per weight value, the 1 + weight of a zero-centered weight. The
+    q and k columns are read and written, the v columns untouched, and the cos/sin rows the
+    positions name read once. With MRoPE sections, each of the temporal, height and width
+    positions names rows of which only its section's cos and sin columns are read."""
     indices = call.indices
     heads = indices["num_heads"] + indices["num_kv_heads"]
     values = indices["N"] * heads * indices["D"]
     flops = indices["N"] * heads * (4 * indices["D"] + 3 * indices["R"])
+    if indices["zero_centered"]:
+        flops += 2 * indices["D"]
     moved = 2 * values * _elem_bytes(call, "qkv")
     moved += sum(call.bytes(t) for t in ("q_weight", "k_weight", "positions"))
-    moved += (
-        len(set(call.metadata_values("positions")))
-        * indices["R"]
-        * _elem_bytes(call, "cos_sin_cache")
-    )
+    positions = call.metadata_values("positions")
+    sections = indices["mrope_section"]
+    if sections is None:
+        columns = len(set(positions)) * indices["R"]
+    else:
+        widths = _mrope_widths(sections, indices["R"] // 2, indices["mrope_interleaved"])
+        columns = sum(len(set(p)) * 2 * w for p, w in zip(positions, widths, strict=True))
+    moved += columns * _elem_bytes(call, "cos_sin_cache")
     return flops, moved
+
+
+def _mrope_widths(sections: list, half: int, interleaved: bool) -> tuple[int, int, int]:
+    """The rotary frequencies the temporal, height and width positions each take: consecutive
+    sections, or interleaved, frequency ``i < half`` going to height where ``i % 3 == 1`` and
+    ``i < 3 * sections[1]``, to width where ``i % 3 == 2`` and ``i < 3 * sections[2]``, and
+    to temporal otherwise."""
+    if not interleaved:
+        return tuple(sections)
+    height = len(range(1, min(half, 3 * sections[1]), 3))
+    width = len(range(2, min(half, 3 * sections[2]), 3))
+    return half - height - width, height, width
 
 
 # ---------------------------------------------------------------- indexing and rope
@@ -1403,6 +1424,65 @@ def ngram_hash_roofline(call: CallView) -> tuple[int, int]:
     moved = sum(call.bytes(t) for t in call.tensors if t != "context")
     moved += (sequences * (n - 1) + written) * _elem_bytes(call, "context")
     return 0, moved
+
+
+# ---------------------------------------------------------------- linear attention
+
+
+def _delta_rule_bytes(call: CallView) -> int:
+    """Each tensor moved once but the recurrent state. Batch-order states are read where
+    passed and written whole; on a pool, each sequence reads its one slot and writes one, or
+    one a token where it keeps the state after each of them."""
+    indices = call.indices
+    states = ("initial_state", "final_state")
+    moved = sum(call.bytes(t) for t in call.tensors if t not in states)
+    if not call.present("state_indices"):
+        return moved + sum(call.bytes(t) for t in states if call.present(t))
+    slot = 4 * indices["HV"] * indices["K"] * indices["V"]
+    sequences = indices["Ns"]
+    kept = indices["B"] * indices["S"] if call.present("num_accepted_tokens") else sequences
+    return moved + slot * (sequences + kept)
+
+
+def gdn_fwd_roofline(call: CallView) -> tuple[int, int]:
+    """The gated delta rule: 7 per state value a token and value head. Each transform the op
+    may leave to the kernel: normalizing one head vector is its sum of squares, the epsilon,
+    the reciprocal square root and the scale; the gate is a bias, a softplus and a rate per
+    token plus the rate's own exponential and negation per head; the step size is a sigmoid,
+    and one multiply more where the eigenvalue may go negative. Bytes as
+    ``_delta_rule_bytes``."""
+    i = call.indices
+    steps = i["B"] * i["S"]
+    flops = steps * i["HV"] * 7 * i["K"] * i["V"]
+    if i["use_qk_l2norm_in_kernel"]:
+        flops += 2 * steps * i["H"] * (3 * i["K"] + 2)
+    if i["use_gate_in_kernel"]:
+        flops += steps * i["HV"] * 5 + 2 * i["HV"]
+    if i["use_beta_sigmoid_in_kernel"]:
+        flops += steps * i["HV"] * (5 if i["allow_neg_eigval"] else 4)
+    return flops, _delta_rule_bytes(call)
+
+
+def kda_fwd_roofline(call: CallView) -> tuple[int, int]:
+    """The per-token recurrence (the signature carries no chunk size). Per token and value
+    head: exp(g), the decay, k^T S, v - k^T S and beta, the rank-1 update and the q^T S
+    readout; per query head the q scale, shared by its value heads. Flag terms: the q/k l2
+    norms; the in-kernel gate per channel (softplus form 3, sigmoid form 6, the bias add 1)
+    and its per-head factor (-exp(A_log) 2, exp(A_log) 1); the beta sigmoid and its
+    doubling. Bytes as ``_delta_rule_bytes``."""
+    i = call.indices
+    bounded = i["lower_bound"] is not None
+    per_step = i["HV"] * (7 * i["K"] * i["V"] + i["K"] + 2 * i["V"]) + i["H"] * i["K"]
+    if i["use_qk_l2norm_in_kernel"]:
+        per_step += i["H"] * (6 * i["K"] + 4)
+    if i["use_gate_in_kernel"]:
+        per_step += i["HV"] * i["K"] * ((6 if bounded else 3) + call.present("dt_bias"))
+    if i["use_beta_sigmoid_in_kernel"]:
+        per_step += i["HV"] * (4 + i["allow_neg_eigval"])
+    flops = i["B"] * i["S"] * per_step
+    if i["use_gate_in_kernel"]:
+        flops += (1 if bounded else 2) * i["HV"]
+    return flops, _delta_rule_bytes(call)
 
 
 # ---------------------------------------------------------------- sampling

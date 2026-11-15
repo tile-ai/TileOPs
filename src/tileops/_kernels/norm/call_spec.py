@@ -29,8 +29,10 @@ __all__ = [
     "InstanceNormTrainFwdInterface",
     "LayerNormCall",
     "LayerNormFwdInterface",
+    "RMSNormCall",
     "RMSNormFwdInterface",
     "RMSNormQuantCall",
+    "whole_row_scale_refusal",
 ]
 
 
@@ -76,6 +78,29 @@ class LayerNormCall(CallSpec):
     eps: float = 1e-5
     dtype: torch.dtype = torch.float16
     rows: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class RMSNormCall(LayerNormCall):
+    """The facts that select an RMS normalization implementation and build it.
+
+    RMS and fused-add RMS normalization take it. ``zero_centered`` scales by ``1 + weight``
+    instead of ``weight``; ``group_size`` is the run of elements each root mean square
+    covers, ``None`` for the whole row.
+    """
+
+    zero_centered: bool = False
+    group_size: int | None = None
+
+
+def whole_row_scale_refusal(call: RMSNormCall) -> str | None:
+    """Why a kernel normalizing each whole row and scaling it by ``weight`` does not serve
+    *call*, or ``None`` when it does."""
+    if call.zero_centered:
+        return "the kernel scales by the weight itself; zero_centered is not served"
+    if call.group_size is not None:
+        return "the kernel normalizes each whole row; group_size is not served"
+    return None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -327,7 +352,7 @@ class LayerNormFwdInterface(KernelInterface):
 class RMSNormFwdInterface(KernelInterface):
     """Root mean square normalization over the trailing ``call.n`` elements."""
 
-    request = LayerNormCall
+    request = RMSNormCall
 
     @abstractmethod
     def forward(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
@@ -371,7 +396,7 @@ class FusedAddLayerNormFwdInterface(KernelInterface):
 class FusedAddRMSNormFwdInterface(KernelInterface):
     """A residual add, then RMS normalization of the sum over the last ``call.n`` elements."""
 
-    request = LayerNormCall
+    request = RMSNormCall
 
     @abstractmethod
     def forward(
@@ -477,7 +502,12 @@ class GroupNormFwdInterface(KernelInterface):
 @dataclasses.dataclass(frozen=True)
 class FusedQKNormRoPECall(CallSpec):
     """One in-place q/k normalization and rotation; the token and position counts are runtime
-    data."""
+    data.
+
+    ``zero_centered`` scales by ``1 + weight``. ``mrope_section`` is the op's multimodal
+    rotary sections, ``None`` for one position a token, and ``mrope_interleaved`` its
+    interleaved assignment.
+    """
 
     heads: int = 0
     kv_heads: int = 0
@@ -487,6 +517,9 @@ class FusedQKNormRoPECall(CallSpec):
     eps: float = 1e-6
     dtype: torch.dtype | None = None
     cache_dtype: torch.dtype | None = None
+    zero_centered: bool = False
+    mrope_section: tuple[int, ...] | None = None
+    mrope_interleaved: bool = False
 
 
 class FusedQKNormRoPEFwdInterface(KernelInterface):

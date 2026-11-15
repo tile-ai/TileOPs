@@ -199,6 +199,10 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
 
     @classmethod
     def refusal(cls, call: FusedQKNormRoPECall) -> str | None:
+        if call.zero_centered:
+            return "the kernel scales by the weight itself; zero_centered is not served"
+        if call.mrope_section is not None:
+            return "the kernel reads one position a token; mrope_section is not served"
         if call.dim % 2:
             return f"a lane holds pairs of values, so the head dim must be even, not {call.dim}"
         lanes = call.dim // (2 * _vector(call.dim, call.rot, call.dtype))

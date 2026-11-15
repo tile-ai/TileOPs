@@ -5,7 +5,7 @@ Provides:
     in place
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import ClassVar
 
 import torch
@@ -38,6 +38,15 @@ class FusedQKNormRoPEFwdOp(Op):
     The arithmetic is float32 and each value rounds once to the ``qkv`` dtype. The
     reciprocal square root is the hardware's approximate one, within two float32 units in
     the last place.
+
+    ``zero_centered`` scales by ``1 + w`` instead of ``w``, as vLLM's ``GemmaRMSNorm`` does.
+    ``mrope_section`` gives each token three positions, temporal, height and width, in
+    ``positions`` of shape ``(3, N)``, as vLLM's ``MRotaryEmbedding`` does: of the ``R / 2``
+    rotary frequencies, the first ``mrope_section[0]`` take their angles from the temporal
+    position's cache row, the next ``mrope_section[1]`` from the height's and the rest from
+    the width's; with ``mrope_interleaved``, frequency ``i`` takes the height's when
+    ``i % 3 == 1`` and ``i < 3 * mrope_section[1]``, the width's when ``i % 3 == 2`` and
+    ``i < 3 * mrope_section[2]``, and the temporal's otherwise.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -54,6 +63,9 @@ class FusedQKNormRoPEFwdOp(Op):
         eps: float = 1e-6,
         rope_layout: str = "neox",
         *,
+        zero_centered: bool = False,
+        mrope_section: Sequence[int] | None = None,
+        mrope_interleaved: bool = False,
         target: Target = None,
     ) -> None:
         """Build the op. The head dim, rotary width, token count and dtypes come with each call.
@@ -66,6 +78,11 @@ class FusedQKNormRoPEFwdOp(Op):
                 layer.
             rope_layout: ``"neox"`` to rotate the halves of the rotary values against each
                 other, ``"interleaved"`` to rotate adjacent pairs.
+            zero_centered: Whether to scale by ``1 + weight`` instead of ``weight``.
+            mrope_section: Rotary frequencies of the temporal, height and width positions,
+                summing to ``R / 2``; ``None`` for one position a token.
+            mrope_interleaved: Whether the three positions take frequencies in turn instead
+                of in consecutive sections.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -73,6 +90,9 @@ class FusedQKNormRoPEFwdOp(Op):
         self.num_kv_heads = num_kv_heads
         self.eps = eps
         self.rope_layout = rope_layout
+        self.zero_centered = zero_centered
+        self.mrope_section = mrope_section
+        self.mrope_interleaved = mrope_interleaved
         super().__init__(target=target)
 
     def forward(
@@ -92,7 +112,8 @@ class FusedQKNormRoPEFwdOp(Op):
             k_weight: ``(D,)``, the k heads' RMSNorm weight, in ``qkv``'s dtype.
             cos_sin_cache: ``(P, R)``, float16, bfloat16 or float32: per position, ``R / 2``
                 cosines then ``R / 2`` sines.
-            positions: int64 ``(N,)``, each token's row of ``cos_sin_cache``.
+            positions: int64 ``(N,)``, each token's row of ``cos_sin_cache``; ``(3, N)``,
+                its temporal, height and width rows, with ``mrope_section``.
 
         Returns:
             None; ``qkv`` is mutated and no other tensor is touched.
@@ -110,6 +131,9 @@ class FusedQKNormRoPEFwdOp(Op):
                 eps=self.eps,
                 dtype=qkv.dtype,
                 cache_dtype=cos_sin_cache.dtype,
+                zero_centered=self.zero_centered,
+                mrope_section=None if self.mrope_section is None else tuple(self.mrope_section),
+                mrope_interleaved=self.mrope_interleaved,
                 device=qkv.device,
             ),
         )(

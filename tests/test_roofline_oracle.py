@@ -993,6 +993,163 @@ class TestSpecOnlyRecounts:
         )
         assert flops == 5 * 4 * (4 * 8 + 3 * 4)
 
+    def test_fused_qk_norm_rope_mrope_reads_each_sections_columns_of_its_rows(self):
+        name = "FusedQKNormRoPEFwdOp"
+        row = {
+            "D": 8,
+            "P": 16,
+            "R": 6,
+            "num_heads": 3,
+            "num_kv_heads": 1,
+            "seq_lens": [3, 2],
+            "image": [],
+            "zero_centered": True,
+            "mrope_section": [1, 1, 1],
+            "mrope_interleaved": True,
+        }
+        # Temporal rows 0, 1, 2; height rows 4, 5; width row 7.
+        positions = [[0, 1, 2, 0, 1], [4, 4, 5, 5, 4], [7, 7, 7, 7, 7]]
+        (flops, moved), _call = _evaluated(
+            name, row, {"T": "bfloat16", "C": "float32"}, positions=positions
+        )
+        qk = ((5, 4 * 8), _BF16)
+        assert moved == _ledger(
+            name,
+            qkv=qk,
+            qkv_write=qk,
+            q_weight=((8,), _BF16),
+            k_weight=((8,), _BF16),
+            # One cos and one sin column a section: 3 + 2 + 1 rows.
+            cos_sin_cache=((6, 2), _F32),
+            positions=((3, 5), _I64),
+        )
+        assert flops == 5 * 4 * (4 * 8 + 3 * 6) + 2 * 8
+
+    @pytest.mark.parametrize("interleaved,widths", [(True, (2, 1, 0)), (False, (0, 3, 0))])
+    def test_fused_qk_norm_rope_mrope_widths_follow_the_assignment(self, interleaved, widths):
+        name = "FusedQKNormRoPEFwdOp"
+        row = {
+            "D": 8,
+            "P": 16,
+            "R": 6,
+            "num_heads": 1,
+            "num_kv_heads": 1,
+            "seq_lens": [2],
+            "image": [],
+            "mrope_section": [0, 3, 0],
+            "mrope_interleaved": interleaved,
+        }
+        # Temporal rows 0, 1; height row 4; width rows 6, 7.
+        positions = [[0, 1], [4, 4], [6, 7]]
+        (_flops, moved), _call = _evaluated(
+            name, row, {"T": "bfloat16", "C": "float32"}, positions=positions
+        )
+        rows = 2 * widths[0] + widths[1] + 2 * widths[2]
+        qk = ((2, 2 * 8), _BF16)
+        assert moved == _ledger(
+            name,
+            qkv=qk,
+            qkv_write=qk,
+            q_weight=((8,), _BF16),
+            k_weight=((8,), _BF16),
+            cos_sin_cache=((rows, 2), _F32),  # a cos and a sin column a frequency
+            positions=((3, 2), _I64),
+        )
+
+    @pytest.mark.parametrize("name", ["GDNFwdOp", "KDAFwdOp"])
+    def test_gated_delta_rule_moves_only_the_pool_slots_its_sequences_name(self, name):
+        row = {"B": 2, "S": 1, "H": 1, "HV": 2, "K": 4, "V": 4, "P": 5}
+        row["some"] = ["initial_state", "state_indices"]
+        (flops, moved), _call = _evaluated(name, row, {"T": "bfloat16"})
+        slots = ((2, 2, 4, 4), _F32)  # one slot of 2 value heads a sequence
+        gate = (2, 1, 2, 4) if name == "KDAFwdOp" else (2, 1, 2)
+        assert moved == _ledger(
+            name,
+            q=((2, 1, 1, 4), _BF16),
+            k=((2, 1, 1, 4), _BF16),
+            v=((2, 1, 2, 4), _BF16),
+            g=(gate, _BF16),
+            beta=((2, 1, 2), _BF16),
+            initial_state=slots,
+            initial_state_write=slots,
+            cu_seqlens=None,
+            cu_seqlens_cpu=None,
+            A_log=None,
+            dt_bias=None,
+            state_indices=((2,), _I32),
+            num_accepted_tokens=None,
+            o=((2, 1, 2, 4), _BF16),
+            final_state=None,  # the pool written above
+        )
+        # Per token and value head: 7 per state value, plus KDA's decay and step terms.
+        per_head = 7 * 16 + (4 + 2 * 4 if name == "KDAFwdOp" else 0)
+        assert flops == 2 * 2 * per_head + (2 * 4 if name == "KDAFwdOp" else 0)
+
+    @pytest.mark.parametrize("name", ["GDNFwdOp", "KDAFwdOp"])
+    def test_gated_delta_rule_rollback_writes_a_slot_a_token(self, name):
+        row = {"B": 1, "S": 6, "H": 1, "HV": 2, "K": 4, "V": 4, "P": 9, "L": 3}
+        row["seq_lens"] = [3, 1, 2]
+        row["some"] = ["initial_state", "cu_seqlens", "state_indices", "num_accepted_tokens"]
+        (_flops, moved), _call = _evaluated(name, row, {"T": "bfloat16"})
+        gate = (1, 6, 2, 4) if name == "KDAFwdOp" else (1, 6, 2)
+        assert moved == _ledger(
+            name,
+            q=((1, 6, 1, 4), _BF16),
+            k=((1, 6, 1, 4), _BF16),
+            v=((1, 6, 2, 4), _BF16),
+            g=(gate, _BF16),
+            beta=((1, 6, 2), _BF16),
+            initial_state=((3, 2, 4, 4), _F32),  # each sequence's accepted slot
+            initial_state_write=((6, 2, 4, 4), _F32),  # one slot a token
+            cu_seqlens=((4,), _I64),
+            cu_seqlens_cpu=None,
+            A_log=None,
+            dt_bias=None,
+            state_indices=((3, 3), _I32),
+            num_accepted_tokens=((3,), _I32),
+            o=((1, 6, 2, 4), _BF16),
+            final_state=None,  # the pool written above
+        )
+
+    def test_causal_conv1d_touches_the_dilated_window_of_each_named_state(self):
+        name = "CausalConv1dFwdOp"
+        row = {"D": 4, "W": 3, "L": 5, "P": 6, "Tt": 5, "seq_lens": [3, 2], "dilation": 2}
+        row["some"] = ["cache_indices"]
+        (flops, moved), _call = _evaluated(name, row, {"T": "bfloat16", "Tw": "float32"})
+        window = ((2, 4, 4), _BF16)  # 2 sequences, 4 channels, (W - 1) * dilation tokens
+        assert moved == _ledger(
+            name,
+            x=((5, 4), _BF16),
+            weight=((4, 3), _F32),
+            conv_state_unread=True,  # without has_initial_state every sequence starts from zeros
+            conv_state_write=window,
+            cu_seqlens=((3,), _I32),
+            bias=None,
+            has_initial_state=None,
+            cache_indices=((2,), _I32),
+            output=((5, 4), _BF16),
+        )
+        assert flops == 2 * 4 * 5 * 3
+
+    def test_causal_conv1d_update_rollback_rewrites_the_window_and_the_drafts(self):
+        name = "CausalConv1dUpdateFwdOp"
+        row = {"D": 4, "W": 3, "L": 6, "P": 6, "Tt": 5, "seq_lens": [3, 2], "max_query_len": 3}
+        row["some"] = ["conv_state_indices", "num_accepted_tokens", "query_start_loc"]
+        (flops, moved), _call = _evaluated(name, row, {"T": "bfloat16", "Tw": "bfloat16"})
+        assert moved == _ledger(
+            name,
+            x=((5, 4), _BF16),
+            weight=((4, 3), _BF16),
+            conv_state=((2, 4, 2), _BF16),  # each sequence's W - 1 history tokens
+            conv_state_write=((7, 4), _BF16),  # W - 1 + q - 1 tokens a sequence
+            bias=None,
+            conv_state_indices=((2,), _I32),
+            num_accepted_tokens=((2,), _I32),
+            query_start_loc=((3,), _I32),
+            output=((5, 4), _BF16),
+        )
+        assert flops == 2 * 5 * 4 * 3
+
     @pytest.mark.parametrize(
         "max_norm,norm_type,flops_per_row",
         [
@@ -1408,6 +1565,10 @@ HAND_WRITTEN = {
     "MLAKVCacheWriteFwdOp": "only the tokens `slot_mapping` gives a slot are read and written",
     "PagedKVCacheGatherFwdOp": "it reads the cache rows each request's range reaches, not the pool",
     "FusedQKNormRoPEFwdOp": "it leaves the v columns untouched and reads only the named cos/sin rows",
+    "GDNFwdOp": "it reads and writes only the pool slots its indices name",
+    "KDAFwdOp": "it reads and writes only the pool slots its indices name",
+    "CausalConv1dFwdOp": "it touches the dilated window of the states its sequences name",
+    "CausalConv1dUpdateFwdOp": "it touches the dilated window of the states its sequences name",
     "EmbeddingFwdOp": "it reads the weight rows its indices name, not the table",
     "MaskedScatterFwdOp": "each output element reads input or source, as the mask decides",
     "RoPECosSinFwdOp": "it reads the cos/sin rows the sequences reach, and in place only the rotated columns",

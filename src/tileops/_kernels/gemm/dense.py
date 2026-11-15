@@ -40,6 +40,12 @@ __all__ = [
     "GemvKernel",
 ]
 
+# Every GEMMFwdOp kernel rounds its float32 accumulator to the operands' dtype; the three
+# state the same limit.
+_ROUNDED_TO_OPERANDS = (
+    "the epilogue rounds the result to the operands' dtype; out_dtype is not served"
+)
+
 
 def _tma_misalignment(
     m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool
@@ -4120,6 +4126,8 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> str | None:
+        if call.out_dtype is not None:
+            return _ROUNDED_TO_OPERANDS
         return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
     @classmethod
@@ -4510,6 +4518,8 @@ class GemvKernel(Kernel, GEMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> "str | None":
+        if call.out_dtype is not None:
+            return _ROUNDED_TO_OPERANDS
         if cls.band_for(call) is None:
             return "no GEMV band serves this shape"
         return super().refusal(call)
@@ -4802,6 +4812,8 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> str | None:
+        if call.out_dtype is not None:
+            return _ROUNDED_TO_OPERANDS
         # At k=0 the operands hold no element and the mainloop runs no K step, so no row is
         # loaded and the program writes the bias, or zeros.
         if call.k == 0:

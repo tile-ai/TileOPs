@@ -12,7 +12,7 @@ def test_kda_fwd_bench(case) -> None:
     params = case.params
     op = KDAFwdOp(**case.arguments)
 
-    def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
+    def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias, *_serving):
         fla_kda = baseline_module("fla.ops.kda", "fla")
         chunk_kda, fused_recurrent_kda = fla_kda.chunk_kda, fla_kda.fused_recurrent_kda
 
