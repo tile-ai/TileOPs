@@ -118,7 +118,8 @@ class _Encoder:
             # Expressions read a member's value, so it is part of what the fake reads.
             return f"{name}.{value.name}={self.encode(value.value)}"
         compound = kind in (list, tuple, dict) or kind is ADTValue
-        if not compound and not dataclasses.is_dataclass(value):
+        # Past this nesting the encoding would exhaust the interpreter's recursion limit.
+        if not compound and not dataclasses.is_dataclass(value) or len(self._open) >= 64:
             self.local = True
             return f"@{id(value)}"
         for depth, open_value in enumerate(self._open):

@@ -55,6 +55,10 @@ def test_a_value_edited_in_place_changes_its_key():
     keys.add(instance_key(identity, state))
     assert len(keys) == 5
     assert instance_key(identity, (10**5000,)) != instance_key(identity, (10**5000 + 1,))
+    deep = {}
+    for _ in range(2000):
+        deep = {"child": deep}
+    assert instance_key(identity, (deep,))
     unset, empty = _Layout(1), _Layout(1)
     empty.cache = None
     assert instance_key(identity, (unset,)) != instance_key(identity, (empty,))
