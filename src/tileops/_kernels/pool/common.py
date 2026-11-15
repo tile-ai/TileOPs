@@ -3,6 +3,7 @@ import math
 from collections.abc import Callable
 from typing import Any, ClassVar, NamedTuple
 
+import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
@@ -202,7 +203,12 @@ def adaptive_bin(o, size_in: int, size_out: int):
     ``[floor(o*in/out), ceil((o+1)*in/out))``. Bins are never empty, including
     when ``size_out > size_in``. Evaluated while tracing, so the emitted
     expression is the same as writing the arithmetic inline.
+
+    The products before the division reach ``size_out * (size_in + 1)``; a traced ``o``
+    is widened to int64 where that passes int32.
     """
+    if not isinstance(o, int) and size_out * (size_in + 1) > 2**31 - 1:
+        o = T.cast(o, "int64")
     return (o * size_in) // size_out, ((o + 1) * size_in + size_out - 1) // size_out
 
 

@@ -1,4 +1,7 @@
-from tileops._kernels.pool.adaptive_avg_pool2d import AdaptiveAvgPool2dKernel
+from tileops._kernels.pool.adaptive_avg_pool2d import (
+    AdaptiveAvgPool2dKernel,
+    AdaptiveAvgPool2dLanesKernel,
+)
 from tileops._kernels.pool.adaptive_max_pool2d import (
     AdaptiveMaxPool2dKernel,
     AdaptiveMaxPool2dRegisterKernel,
@@ -40,6 +43,7 @@ from tileops._kernels.pool.mean_pooling import MeanPoolingFwdKernel
 __all__ = [
     "AdaptiveAvgPool2dFwdInterface",
     "AdaptiveAvgPool2dKernel",
+    "AdaptiveAvgPool2dLanesKernel",
     "AdaptiveMaxPool2dFwdInterface",
     "AdaptiveMaxPool2dIndicesFwdInterface",
     "AdaptiveMaxPool2dKernel",
