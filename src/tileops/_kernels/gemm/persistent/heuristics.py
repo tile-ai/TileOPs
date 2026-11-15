@@ -765,9 +765,7 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         The band's tile is taken for tight groups near one 128-row tile, and for unfused groups
         past that band where its tile slots hold more rows. ``chosen`` is the selector's own
         tile, ``None`` where the selector stages its epilogue through two buffers, which
-        ping-pong's one shared buffer does not hold. A ``chosen`` narrower than the short-group
-        tile, the half width taken where the wide tiles underfill the waves, keeps one
-        warp-group: its epilogue, which the second warp-group's turn hides, is half as long.
+        ping-pong's one shared buffer does not hold, or where it halved the short-group tile.
 
         A 64-row tile reduces padding in routed groups; two math warp-groups overlap
         their epilogues. Unfused groups averaging exactly 128 rows are excluded because
@@ -794,13 +792,7 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             or desc.expected_m != 0
         ):
             return None
-        own = (
-            chosen
-            if chosen is not None
-            and chosen.block_m == tile.block_m
-            and chosen.block_n >= bands.short_group_tile[1]
-            else None
-        )
+        own = chosen if chosen is not None and chosen.block_m == tile.block_m else None
         in_band = low < rows_per_group <= high
         past_band = not desc.fused and rows_per_group > high
         if not (in_band or past_band) or tile not in layout_candidates(desc):
@@ -907,7 +899,10 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
     short = _short_group_layout(desc)
     best = short or _filled_layout(desc, _best_layout(desc, layout_candidates(desc)))
     staged = _staged_epilogue(desc, best)
-    pingpong_tile = _pingpong_group_layout(desc, None if staged else best)
+    # A short-group tile halved to fill the waves keeps one warp-group: its epilogue is too
+    # short to hide anything on a DRAM-bound call.
+    halved = short is not None and short != _Layout(*desc.bands.short_group_tile)
+    pingpong_tile = _pingpong_group_layout(desc, None if staged or halved else best)
     if pingpong_tile is not None:
         # An unfused tile stages its output one TMA store box at a time where that, rather
         # than the whole tile, frees shared memory for another ring stage.
