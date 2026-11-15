@@ -58,7 +58,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
   signature:
     forall: {<index>: <kind>}
     params: {<p>: {type, default, kw_only}}
-    inputs: {<t>: {dtype, shape, optional, kw_only, mutated, requires, values, ...}}
+    inputs: {<t>: {type, default, dtype, shape, kw_only, mutated, requires, values, ...}}
     outputs: {<t>: {dtype, shape, nullable, buffer, alias, overlaps, ...}}
     types: {<Family>: {params, match, cases}}   # optional
     let: {<name>: "<expr>"}
@@ -84,7 +84,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
 
 `forall` maps every free type index to its kind. Indices come from three sources: `forall`; construction parameters that appear in an index position ([table 1](#t-names)); and `let`, a derived index.
 
-- `forall` kinds are `Dim` (axis length), `Shape` (tuple of `Dim`), `DType[...]` and the value list `Seq[Int]` ([table 2](#t-forall)). A parameter's kind follows from its `type` ([table 3](#t-types)); expression kinds follow [table 4](#t-expr).
+- `forall` kinds are `Dim` (axis length), `Shape` (tuple of `Dim`), `DType[...]`, the value list `Seq[Int]`, and the element-wise lists `Seq[Dim]`, `Seq[Shape]` and `Seq[DType[...]]` of a tensor sequence ([table 2](#t-forall)). A parameter's kind follows from its `type` ([table 3](#t-types)); expression kinds follow [table 4](#t-expr).
 - A `Dim` may be passed where an `Int` is expected, a `Shape` where a `Seq[Int]` is.
 - Every axis is an integer expression. An axis whose kind is not `Dim`, and every element of a sequence spliced with `*p`, carries the obligation to be non-negative, checked where [Call Semantics](#call-semantics) places it.
 - A YAML value denotes the Python value its kind or `type` declares: a tuple for `Shape` and `tuple[...]`, a list for `Seq[Int]` and `list[...]`, a `torch.dtype` for a dtype name, an object for an ADT value ([table 5](#t-adt)).
@@ -95,7 +95,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
 `signature.params` is the `__init__` parameter list: `type`, optional `default` and `kw_only`.
 
 - The manifest is authoritative. For an implemented entry the validator compares it with `__init__` item by item ([table 6](#t-ctor)); the code may add only the execution-policy parameters of [table 7](#t-policy).
-- `forward`'s parameters begin with the call-time inputs not declaring `kw_only`, in order; after them, keyword-only, come the output buffer `out` and then the `kw_only` inputs ([Presence](#presence)).
+- `forward`'s parameters begin with the call-time inputs not declaring `kw_only`, in order; after them, keyword-only, come the output buffer `out` and then the `kw_only` inputs ([Argument Types](#argument-types)).
 - `forward` may append code-defined execution parameters after them. They are not part of the signature; the code allocates and checks them.
 - Every parameter the operator's reference accepts is declared, even one whose only implemented value is the default.
 - Key order in `params`, `inputs` and `outputs` is signature position.
@@ -105,15 +105,16 @@ Parameters enter types directly:
 - An `int` parameter written into a shape forms an axis, which carries the obligation; a parameter passed to a signed primitive formal (`Int`, `Axes`) carries none of its own.
 - A `list[int]` / `tuple[int, ...]` parameter is spliced as `*p`; each element carries the obligation.
 - A dtype parameter (a `type` over dtype names) is written directly as a tensor `dtype`.
-- An `int | None` parameter has kind `Maybe[Int]` with tag `present(v)`; its payload `v.value` is legal only on branches where `present(v)` holds. A `Maybe` value may be passed as is to a primitive that accepts it.
+- An `int | None` parameter has kind `Maybe[Int]` with tag `present(v)`, true when its value is not `None`. On a branch where `present(v)` holds, `v` is its value. A `Maybe` value may be passed as is to a primitive that accepts it.
+- A `list[X]` or `tuple[X, ...]` parameter takes elements of any `type` of [table 3](#t-types). A list of values outside the type system, such as `list[float]`, is read only through its length, e.g. `not present(rescale_factors) or len(rescale_factors) == D // 2`.
 
 ### Inputs and Outputs
 
-A tensor is `{dtype: ..., shape: "..."}`, i.e. `Tensor[T, s]`. Every role — construction parameter, construction-time tensor, input, output, output buffer — with its phase and type is in [table 8](#t-roles).
+A tensor is `{dtype: ..., shape: "..."}`, i.e. `Tensor[T, s]`. Every role — construction parameter, input, output, output buffer — with its phase and type is in [table 8](#t-roles).
 
 - A shape is `"[" axis, ... "]"` or a type-family application; an axis is an expression, `*S` or `*primitive(...)`; `"[]"` is rank zero. Two tensors of equal shape write the same shape term.
-- An entry has one signature: output names and count are fixed per call. An op whose output count follows a switch, or that takes one argument as a scalar in one form and a tensor in another, is two entries.
-- An op selects its implementation from parameters and tensor presence; tensor contents are computation input only.
+- An entry has one signature: output names and count are fixed per call. An op whose output count follows a switch is two entries.
+- An op selects its implementation from parameters and the member each call-time argument holds; tensor contents and call-time scalar values are computation input only.
 - One fact is stated in one place.
 
 ### Refinements
@@ -123,14 +124,14 @@ Each `shape_rules` item is a refinement: a predicate on index values, checked af
 - Shapes, `let`, type families, refinements and inline roofline share one closed expression language ([table 10](#t-lang)) with Python precedence.
 - A refinement depends only on quantities available at run time. It is checked at construction when construction can evaluate it, otherwise in the call check ([Call Semantics](#call-semantics)).
 - A constraint on a metadata tensor's contents is that tensor's `requires` ([Generators](#generators)), not a refinement ([table 11](#t-constraints)).
-- A guard narrows kinds in the arm it selects: `present(v)` narrows `Maybe[X]` to `X`; `x == lit` and `x in (...)` intersect `x`'s kind with the literals, `x != lit` and `x not in (...)` subtract them. Narrowing composes through `not`, `and`, `or` and conditionals.
+- A guard narrows kinds in the arm it selects: `present(v)` narrows `Maybe[X]` to `X`; `member(x) == '<m>'` narrows `x` to that member and `!=` excludes it; `x == lit` and `x in (...)` intersect `x`'s kind with the literals, `x != lit` and `x not in (...)` subtract them. Narrowing composes through `not`, `and`, `or` and conditionals.
 - A string inhabits `DType[S]` only when it names a registered member of `S`; a comparison with literals that no member of an enum or dtype set takes is rejected.
 - A refinement that reads only discriminants — every name and ADT field it reads is fixed by the discriminant values, judged over the whole expression regardless of operand order — is a **domain restriction**. It is checked before a type-family branch is chosen, and values it rejects need no type-family case.
 - Lists among construction parameters are available at run time and may appear anywhere. `forall` value lists appear only as generator arguments.
 - A scalar parameter whose admitted values depend on a dtype index states that dependence as a refinement with the primitives `category` and `representable`. The generated call check then holds in-tree and target-served calls to the same rule.
 - A refinement states what the operator's algorithm requires: a call outside it is undefined for every implementation. Which shapes an implementation serves is not a refinement; that implementation decides it ([ops-design.md § Kernel selection](ops-design.md#kernel-selection)).
 - Satisfiability of a refinement is the author's responsibility.
-- The validator rejects rules that declare, define or test presence: `x.shape == (...)`, `x is None`, `isinstance` ([table 12](#t-rejected)).
+- The validator rejects rules that declare a shape, define a name, or test presence or type with `x is None` or `isinstance`; a rule reads the member an argument holds through `present(...)` or `member(...)` ([table 12](#t-rejected)).
 
 ### Dtypes
 
@@ -145,14 +146,79 @@ A tensor `dtype` is a dtype expression ([table 13](#t-dtype)): a `forall` `DType
   - the logical dtype comes from a dtype parameter or the entry;
   - roofline counts carrier bytes.
 
-### Presence
+### Argument Types
 
-- An optional input is `optional: true`; inputs that must be present together share one discriminant, `optional: "<p>"`. An output that may be `None` is `nullable: "<p>"`.
-- `optional` and `nullable` expressions are built from finite boolean atoms: `Bool` and enum parameters, ADT tags and finite fields, `present`.
-- Optional inputs follow required ones; `forward` takes them in declaration order with default `None`. Omitting one equals passing `None`.
-- An optional input may declare `kw_only: true`; such inputs follow every other input, and `forward` takes them after `out`, keyword-only. An optional input added to an existing op is `kw_only`, so existing positional callers keep their binding.
-- Construction-time tensor presence is fixed at construction; call-time tensor presence per call.
-- An index is relevant only on the branches where it appears.
+A call-time input declares its argument `type` and `default` as a parameter does ([table 20](#t-members)).
+
+- `type` defaults to `Tensor`, which names this declaration's `Tensor[dtype, shape]`. Members are `Tensor`, `list[Tensor]`, `int`, `float`, `Number`, `bool` and `None`; `Number` already holds `int` and `float`, so it is never listed with them.
+- An input without `default` is passed on every call; one with `default` may be omitted.
+- An argument with a `Tensor` or `list[Tensor]` member is a call-time input, in `inputs`; every other argument is a construction parameter, in `params`. A tensor is never a construction parameter.
+- A value takes a member by its Python type: `None` takes `None`; a list or tuple takes `list[Tensor]`; a tensor takes `Tensor`; a `bool` takes only `bool`; an `int` takes `int`, else `Number`; a `float` takes `float`, else `Number`. A value no member takes is rejected.
+- Among positional inputs, one without `default` never follows one with `default`. A `kw_only` input follows every positional one, and may be required.
+- `member(x)` is the name of the member `x` holds; each argument with several members is one finite discriminant. `present(x)` means `member(x) != 'None'`, whether the caller passed `x` or its `default` applied.
+- `member(x) == '<m>'` narrows `x` to that member, `!=` excludes it, and `present(x)` excludes `None`, composed through `not`, `and`, `or` and conditionals.
+- Tensor-only declarations — `shape`, `dtype`, `contiguous`, `device`, `values`, `requires` and effects — apply on the branches where the argument holds a tensor member. An index only they read is irrelevant elsewhere.
+- Effects are declared only on an argument without a scalar member.
+- An output that may be `None` is `nullable: "<p>"`, an expression of finite discriminants: `Bool` and enum parameters, ADT tags and finite fields, `present(...)` and `member(...)`.
+
+Inputs passed or omitted together state it as a refinement that reads only discriminants, a domain restriction:
+
+```yaml
+inputs:
+  shared_w_gate_up: {type: "Tensor | None", default: null, dtype: D, shape: "[2 * S, H]"}
+  shared_w_down:    {type: "Tensor | None", default: null, dtype: D, shape: "[H, S]"}
+shape_rules:
+- "present(shared_w_down) == present(shared_w_gate_up)"
+```
+
+A required argument that may be `None` declares the `None` member and no `default`:
+
+```yaml
+inputs:
+  bias: {type: "Tensor | None", dtype: Wb, shape: "[N]"}
+```
+
+**Call-time scalars.** An argument narrowed to a scalar member is read as a value in refinements and in `let`s, as in `seqlen_offsets: int | Tensor`:
+
+```yaml
+inputs:
+  seqlen_offsets: {type: "int | Tensor", dtype: O, shape: "[B]", default: 0}
+shape_rules:
+- "member(seqlen_offsets) != 'int' or seqlen_offsets + S <= P"
+```
+
+- A `let` reading a call-time scalar, directly or through another `let`, is read only in refinements and in such `let`s.
+- Shapes, dtypes, type families, presence and effect conditions, `values`, `requires` and roofline formulas never read a call-time scalar value; the validator rejects it. A value therefore decides no output shape and no branch. Construction parameters are not restricted.
+- The refinements and `let`s that read a call-time scalar run on every call. A plan is keyed on the member each argument holds and a scalar's type, never its value.
+
+**Operator schema.** Each input lowers to operator slots ([table 21](#t-slots)). An argument with one member takes one slot under its name. An argument with several members takes a nullable slot per member other than `None`: a tensor member under its own name, a scalar member under `<name>__int`, `<name>__float`, `<name>__number` or `<name>__bool`. A call passes at most one slot of an argument, and passes none only when `None` is a member; the operator and its fake both check it. A slot name equal to another argument's name or an execution parameter's is rejected.
+
+### Tensor Sequences
+
+An argument holding a list of tensors declares `type: list[Tensor]`:
+
+```yaml
+forall: {S: "Seq[Shape]", D: "Seq[DType[float16 | bfloat16 | float32]]"}
+params:
+  dim: {type: int, default: 0}
+inputs:
+  tensors: {type: "list[Tensor]", dtype: D, shape: "[*S]"}
+outputs:
+  output: {dtype: "promote(D)", shape: "[*concat(S, dim)]"}
+shape_rules:
+- "len(S) >= 1"
+```
+
+- In the `shape` and `dtype` of a `list[Tensor]` declaration, every occurrence of a `Seq[Dim]`, `Seq[Shape]` or `Seq[DType[...]]` index is the element's item: element i has shape `S[i]` and dtype `D[i]`, and `len(S)` there is `len(S[i])`. Every other index is shared by all elements.
+- Outside the declaration such an index is the whole list, readable in outputs, refinements, `let` and roofline. A `let` is not expanded into the element.
+- `Seq[Dim]` holds one axis per element and differs from `Shape`, one tuple of axes shared by all.
+- The sequence length is the common length of its element-wise indices; a `list[Tensor]` declaration reads at least one.
+- Element-wise indices are solved on every element and readable once every element is. A shared index is solved from the other tensors first; only when inference stalls is it solved from element 0 of the first sequence in declaration order, then checked on every element. Where that sequence is empty, element 0 of the next nonempty sequence of the same element form, its element-wise names aside, stands in. Two sequences reading one element-wise index: the first solved publishes it, the other checks it per element.
+- An empty sequence gives its element-wise indices empty lists; a shared index only it could solve is not solved, and the call raises naming the declaration.
+- A tensor sequence is passed on every call and only read. It declares no effect, `values`, `requires` or `device`, and is not a member of a union.
+- Device selection, the 16-byte alignment copy and the alias and overlap checks visit each element. Derived bytes count each element once; `bytes(t)` is the sum over its elements.
+
+These combinations are rejected until an op needs them: a `list[Tensor]` output, `None` elements in a sequence, `list[Tensor]` as a union member, and an effect on a sequence.
 
 ### Type Families
 
@@ -160,7 +226,7 @@ A type family gives a shape by the value of a finite discriminant. It lives in t
 
 - A family declares `params`, a mapping of formal names to kinds; a `match` over some of them; and `cases`, a list of `{when: <discriminant value>, is: <shape>}`. A tensor applies it in its `shape` as `Family[arg, ...]`.
 
-- `match` takes a finite discriminant — `Bool`, enum, ADT, `present` — or a tuple of them; a tuple's `when` is a list.
+- `match` takes a finite discriminant — `Bool`, enum, ADT, `present`, `member`, a boolean expression of these such as `member(min) == 'Tensor'` — or a tuple of them; a tuple's `when` is a list. A `Maybe` discriminant matches by its value; only `_` matches it absent.
 
 - `cases` are exhaustive and disjoint over the discriminant values the entry accepts; values a domain restriction rejects need no case.
 
@@ -199,9 +265,8 @@ A finite-valued parameter with fields is an ADT, defined once in `types.yaml` an
 - Adding a member adds a test. A member outside the classes of tables 14, 15, 17 and 18 changes this specification first.
 - Axis-taking primitives normalize axes alike: at rank 0, `0` and `-1` name the one scalar axis and anything else raises; at rank above 0, an axis lies in `[-rank, rank)` and is taken modulo rank.
 
-### Construction-Time Tensors, Layout and Device
+### Layout and Device
 
-- A construction-time tensor is a `params` entry with `dtype` and `shape`, optionally `optional: true`.
 - A `device` parameter is declared only by an op without call-time tensor inputs ([Call Semantics](#call-semantics)).
 - A tensor that must be contiguous declares `contiguous: true`. [stability.md](../stability.md) states which calls with non-contiguous inputs are supported.
 - A tensor that must live on the CPU declares `device: cpu`.
@@ -212,6 +277,7 @@ An op without effect declarations reads its inputs and allocates its outputs. Ef
 
 - An op with several outputs returns a tuple with one fixed slot per declared output, in declaration order; an absent `nullable` output is `None` in its slot.
 - An op whose only effect is writing its inputs declares no outputs and returns `None`.
+- An effect is declared only on an input without a scalar member, and never on a tensor sequence.
 - A tensor a call writes, `out` or a written input, shares no byte with another tensor of the call unless it lists that input in `overlaps`; a call breaking this raises before anything runs. An entry lists an input only when every implementation finishes reading it before writing the tensor, such as a composite whose earlier stage alone reads it.
 
 ## Workloads
@@ -220,19 +286,21 @@ Workloads prioritize representative LLM scenarios within the CI runtime budget. 
 
 ### Rows
 
-A workload row determines one call. Its keys are construction parameter names, relevant index names, `some`, `dtype_cases` and `label` ([table 16](#t-rows)).
+A workload row determines one call. Its keys are construction parameter names, call-time argument names, relevant index names, `some`, `dtype_cases` and `label` ([table 16](#t-rows)).
 
 - A row gives exactly the relevant indices that no generator determines.
 - A `Seq[Int]` index is written as an integer list or as a call of a value primitive ([table 15](#t-prims)) over integer literals, evaluated once at instantiation.
 - An index is relevant on a branch when that branch's shapes, dtypes, refinements, generator arguments, the `requires` of its passed tensors or its inline roofline use it.
 - Each of those is folded at the branch first, so a refinement whose guard folds to true there makes nothing relevant. A `let` passes on what it reads; a `func` roofline makes nothing relevant.
-- Discriminants selecting a type-family branch, presence or `nullable` are always relevant.
+- Discriminants selecting a type-family branch, a member or `nullable` are always relevant.
 - **case id** is `label` followed by the row's `dtype_cases` values in `forall` order, then its dtype parameters' values in `signature.params` order, joined by `-`. An entry's case ids are distinct.
 - The case id keys nightly history, so changing a `label` is breaking.
 - `label` is non-empty `[A-Za-z0-9._-]` of at most 24 characters.
 - **label** names the scenario the row models — the model and its role, or the synthetic purpose — plus only the qualifier that tells the row from a sibling. The op name, the row and the case id already state everything else, so repeating it adds length and no information. Rows that share a label differ only in dtype.
-- **Coverage.** Every optional tensor of an implemented entry is passed in at least one row and omitted in at least one, counted per input.
-- **Instantiation.** A row fixes shapes, dtypes, parameters, presence and metadata values. Devices follow [Call Semantics](#call-semantics); strides are contiguous, tensors do not alias, and other data is random.
+- **Arguments.** `some` lists the arguments with several members that pass their tensor member. Any other argument takes the row's scalar value or `null`, else its `default`; a required argument that may be `None` writes `null`.
+- **Coverage.** Every member of every argument with several members that a domain restriction accepts is taken by at least one row of an implemented entry.
+- A `Seq[DType]` index is written in `dtype_cases` as a list of dtypes, and its value in the case id joins them with `.`.
+- **Instantiation.** A row fixes shapes, dtypes, parameters, the member of each argument, call-time scalar values and metadata values. Devices follow [Call Semantics](#call-semantics); strides are contiguous, tensors do not alias, and other data is random.
 - The validator infers the call back from the instantiated inputs and requires agreement.
 
 ### Generators
@@ -263,16 +331,16 @@ A composite op records the sub-op classes its built-in path may hold and where i
 
 A call has two phases.
 
-- **Construction** checks parameter values against their `type` — dtype parameters within range, construction-time tensors present unless optional — and ADT invariants. `Bool`, enum and ADT parameters, `Maybe` presence and construction-time tensor presence are fixed here.
-- Available at construction: parameters, ADT fields, construction-time tensor presence, the indices unified from construction-time tensors' shapes and dtypes, and the `let`s these make evaluable. Available per call: call-time tensors, their presence and what unifies from them.
+- **Construction** checks parameter values against their `type` — dtype parameters within range — and ADT invariants. `Bool`, enum and ADT parameters and `Maybe` presence are fixed here.
+- Available at construction: parameters, ADT fields and the `let`s these make evaluable. Available per call: call-time arguments, the member each holds, and what unifies from their tensors.
 - An obligation — an axis or spliced element non-negative, a refinement or invariant holding — is checked at construction when both what activates it (its tensor, type-family branch or guard) and its value are available there, otherwise in the call check.
-- **Call.** The checks generated from the signature wrap `forward`, in order: presence of call-time tensors, domain restrictions, type-family branches, inference and the remaining refinements, output-buffer preconditions, the implementation, and the output checks. Any failure raises and names the declaration. The checks before the implementation read only the call's specialization and are resolved once per specialization; the output checks run on every call ([ops-design.md § Call protocol](ops-design.md#call-protocol)).
+- **Call.** The checks generated from the signature wrap `forward`, in order: the member of each call-time argument, domain restrictions, type-family branches, inference and the remaining refinements, output-buffer preconditions, the implementation, and the output checks. Any failure raises and names the declaration. The checks before the implementation read only the call's specialization and are resolved once per specialization, except the refinements and `let`s reading a call-time scalar; those and the output checks run on every call ([ops-design.md § Call protocol](ops-design.md#call-protocol)).
 - A call in which every tensor it writes, each output and each written input, holds no elements runs no implementation, in-tree or target. Its new outputs take the checked shape and dtype on the call device; an `out` buffer or a written input is returned as passed. An empty input whose output holds elements runs as any other call.
 
 **Inference.** Indices are solved from the inputs by unification ([table 19](#t-unify)).
 
 - Branch selection, `let` and unification form one dependency graph, from which the validator derives the inference plan independent of declaration order.
-- The graph's construction-available prefix — construction-time tensor presence, shapes and dtypes, the branches they select and the `let`s they make evaluable — is solved at construction; call inference continues the same graph with call-time facts.
+- The graph's construction-available prefix — the branches parameters select and the `let`s they make evaluable — is solved at construction; call inference continues the same graph with call-time facts.
 - An index that cannot be solved, or has several solutions, rejects the entry.
 - On a branch where it is relevant, every `Dim`, `Shape` or `DType` index is solved from an input, given by a parameter, or determined by a generator. An index appearing only in outputs is a parameter or a `let`.
 - An output buffer fixes only its presence and is checked against the output type once known.
@@ -280,9 +348,9 @@ A call has two phases.
 
 **Device.**
 
-- Tensors marked `device: cpu` stay on the CPU and take no part in choosing the call device.
-- The call device is that of the other call-time inputs, which must agree. Without such inputs it is, in order: the `device` parameter when not `None`; that of the construction-time tensors, which then share one device; the current CUDA device.
-- `out` and outputs are checked or allocated on the call device. Construction-time tensors not marked `device: cpu` are copied there and cast to their signature dtype.
+- Tensors marked `device: cpu` stay on the CPU and take no part in choosing the call device. Every element of a tensor sequence takes part.
+- The call device is that of the other call-time tensors, which must agree. Without such tensors it is, in order: the `device` parameter when not `None`; the current CUDA device.
+- `out` and outputs are checked or allocated on the call device.
 - Workload instantiation places tensors by the same rule.
 
 **Symbolic shapes.**
@@ -293,11 +361,11 @@ A call has two phases.
 
 ## Validation
 
-[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) checks every entry on every combination of its discriminant values: type-family `match`, `optional`, `nullable`, `mutated`, output-buffer presence, and the quantities relevance reads.
+[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) checks every entry on every combination of its discriminant values: type-family `match`, the `member` of each argument with several members, `nullable`, `mutated`, output-buffer presence, and the quantities relevance reads.
 
 - Discriminants are grouped by dependency.
-- Combinations a domain restriction rejects skip only type-family coverage and inference-plan checks.
-- Above a configured number of combinations the validator reports an advisory diagnostic and keeps the entry whole.
+- Combinations a domain restriction rejects skip type-family coverage, the inference plan and read legality.
+- Above a configured number of combinations a domain restriction accepts, the validator reports an advisory diagnostic and keeps the entry whole.
 
 The checks:
 
@@ -325,32 +393,33 @@ The checks:
 
 **<a id="t-names"></a>Table 1** Name categories
 
-| No. | Category    | Definition                                                                                                                                               | Checks                                                   |
-| --- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| 1   | index       | A name in a shape, `dtype`, type-family argument, `optional`, `nullable`, `mutated`, `let`, refinement or `values`, whose `type` is not in table 3 row 8 | kind, inference, exhaustiveness, refinements             |
-| 2   | other param | Any other construction parameter, including those whose `type` is in table 3 row 8                                                                       | `type` and `default`; usable in refinements and roofline |
+| No. | Category    | Definition                                                                                                                                   | Checks                                                   |
+| --- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| 1   | index       | A name in a shape, `dtype`, type-family argument, `nullable`, `mutated`, `let`, refinement or `values`, whose `type` is not in table 3 row 8 | kind, inference, exhaustiveness, refinements             |
+| 2   | other param | Any other construction parameter, including those whose `type` is in table 3 row 8                                                           | `type` and `default`; usable in refinements and roofline |
 
 **<a id="t-forall"></a>Table 2** `forall` kinds
 
-| No. | Kind            | Values                     | Solved from                                 | Written in a row                     |
-| --- | --------------- | -------------------------- | ------------------------------------------- | ------------------------------------ |
-| 1   | `Dim`           | non-negative integer       | unification of inputs or generator results  | integer                              |
-| 2   | `Shape`         | tuple of `Dim`             | unification of inputs                       | integer list                         |
-| 3   | `DType[a \| b]` | one of the declared dtypes | unification of inputs                       | `dtype_cases`                        |
-| 4   | `Seq[Int]`      | integer list               | instantiation only, as a generator argument | integer list or value-primitive call |
+| No. | Kind                                           | Values                                    | Solved from                                 | Written in a row                     |
+| --- | ---------------------------------------------- | ----------------------------------------- | ------------------------------------------- | ------------------------------------ |
+| 1   | `Dim`                                          | non-negative integer                      | unification of inputs or generator results  | integer                              |
+| 2   | `Shape`                                        | tuple of `Dim`                            | unification of inputs                       | integer list                         |
+| 3   | `DType[a \| b]`                                | one of the declared dtypes                | unification of inputs                       | `dtype_cases`                        |
+| 4   | `Seq[Int]`                                     | integer list                              | instantiation only, as a generator argument | integer list or value-primitive call |
+| 5   | `Seq[Dim]`, `Seq[Shape]`, `Seq[DType[a \| b]]` | one item per element of a tensor sequence | unification of each element                 | list; `Seq[DType]` in `dtype_cases`  |
 
 **<a id="t-types"></a>Table 3** Parameter `type` to kind
 
-| No. | `type`                                                               | Kind                                                                                                                |
-| --- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| 1   | `int` / `bool`                                                       | `Int` (signed) / `Bool`                                                                                             |
-| 2   | union of string literals                                             | enum                                                                                                                |
-| 3   | `list[X]`, `tuple[X, ...]`, `tuple[X, Y]`                            | `Seq[K]`, `K` the element type's kind by this table, `Int` or `Maybe[Int]`; a fixed-length tuple carries its length |
-| 4   | `X \| None`                                                          | `Maybe[X]`                                                                                                          |
-| 5   | `X \| Y`                                                             | finite union, each member mapped by this table                                                                      |
-| 6   | ADT name                                                             | that ADT                                                                                                            |
-| 7   | `torch.dtype`, union of dtype names                                  | `DType[...]` (a dtype parameter)                                                                                    |
-| 8   | `float`, `Number`, open `str`, `dict`, `torch.Tensor`, other objects | takes no part in types; `type` and `default` only                                                                   |
+| No. | `type`                                               | Kind                                                                                         |
+| --- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| 1   | `int` / `bool`                                       | `Int` (signed) / `Bool`                                                                      |
+| 2   | union of string literals                             | enum                                                                                         |
+| 3   | `list[X]`, `tuple[X, ...]`, `tuple[X, Y]`            | `Seq[K]`, `K` the element type's kind by this table; a fixed-length tuple carries its length |
+| 4   | `X \| None`                                          | `Maybe[X]`                                                                                   |
+| 5   | `X \| Y`                                             | finite union, each member mapped by this table                                               |
+| 6   | ADT name                                             | that ADT                                                                                     |
+| 7   | `torch.dtype`, union of dtype names                  | `DType[...]` (a dtype parameter)                                                             |
+| 8   | `float`, `Number`, open `str`, `dict`, other objects | takes no part in types; `type` and `default` only                                            |
 
 **<a id="t-expr"></a>Table 4** Expression kinds
 
@@ -389,16 +458,14 @@ The checks:
 
 **<a id="t-roles"></a>Table 8** Roles
 
-| No. | Role                     | Phase        | Declared as                                        | Type                                                                                           |
-| --- | ------------------------ | ------------ | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| 1   | construction parameter   | construction | `params.<p>`                                       | the kind of its `type` (table 3)                                                               |
-| 2   | `device` parameter       | construction | `params.device`                                    | decides the call device                                                                        |
-| 3   | construction-time tensor | construction | `params.<p>` with `dtype`, `shape`                 | `Tensor[T, s]`; if optional, `Maybe[Tensor[T, s]]` with tag `present(p)`, defaulting to `None` |
-| 4   | required input           | call         | `inputs.<t>`                                       | `Tensor[T, s]`                                                                                 |
-| 5   | optional input           | call         | `optional: true`, or `optional: "<p>"` when shared | `Maybe[Tensor[T, s]]` with tag `present(t)` or `p`                                             |
-| 6   | output                   | result       | `outputs.<t>`                                      | `Tensor[T, s]`                                                                                 |
-| 7   | nullable output          | result       | `nullable: "<p>"`                                  | `Maybe[Tensor[T, s]]` with tag `p`                                                             |
-| 8   | output buffer            | call         | table 9's `buffer` and `write_only`                | optional: `Maybe` of the output type, tag `present(out)`; required: `Tensor[T, s]`             |
+| No. | Role                   | Phase        | Declared as                         | Type                                                                                    |
+| --- | ---------------------- | ------------ | ----------------------------------- | --------------------------------------------------------------------------------------- |
+| 1   | construction parameter | construction | `params.<p>`                        | the kind of its `type` (table 3)                                                        |
+| 2   | `device` parameter     | construction | `params.device`                     | decides the call device                                                                 |
+| 3   | input                  | call         | `inputs.<t>` with `type`, `default` | its `type`, `Tensor` standing for `Tensor[T, s]`; with several members, tag `member(t)` |
+| 4   | output                 | result       | `outputs.<t>`                       | `Tensor[T, s]`                                                                          |
+| 5   | nullable output        | result       | `nullable: "<p>"`                   | `Maybe[Tensor[T, s]]` with tag `p`                                                      |
+| 6   | output buffer          | call         | table 9's `buffer` and `write_only` | optional: `Maybe` of the output type, tag `present(out)`; required: `Tensor[T, s]`      |
 
 **<a id="t-effects"></a>Table 9** Effect declarations
 
@@ -414,14 +481,14 @@ The checks:
 
 **<a id="t-lang"></a>Table 10** Expression language
 
-| No. | Element   | Content                                                                                                    |
-| --- | --------- | ---------------------------------------------------------------------------------------------------------- |
-| 1   | literals  | int, finite float, bool, None, str, tuple; reserved float `inf` (`-inf` by negation)                       |
-| 2   | names     | indices, `signature.params` parameters, `let`, comprehension variables; each use site checks kind and type |
-| 3   | presence  | `present(x)` for a tensor or `Maybe` value; `x.value` only where `present(x)` holds                        |
-| 4   | operators | `+ - * // %`, comparisons, `and or not`, `in`, conditional; Python precedence                              |
-| 5   | access    | subscript, slice; an ADT field only on its constructor's branch, plus `kind`                               |
-| 6   | calls     | built-in primitives; a comprehension only as the argument of `all`, `sum`, `max` or `min`                  |
+| No. | Element   | Content                                                                                                     |
+| --- | --------- | ----------------------------------------------------------------------------------------------------------- |
+| 1   | literals  | int, finite float, bool, None, str, tuple; reserved float `inf` (`-inf` by negation)                        |
+| 2   | names     | indices, `signature.params` parameters, `let`, comprehension variables; each use site checks kind and type  |
+| 3   | members   | `member(x)` for a call-time argument; `present(x)` for it or a `Maybe` value, which then reads as its value |
+| 4   | operators | `+ - * // %`, comparisons, `and or not`, `in`, conditional; Python precedence                               |
+| 5   | access    | subscript, slice; an ADT field only on its constructor's branch, plus `kind`                                |
+| 6   | calls     | built-in primitives; a comprehension only as the argument of `all`, `sum`, `max` or `min`                   |
 
 **<a id="t-constraints"></a>Table 11** Constraints
 
@@ -470,13 +537,14 @@ The checks:
 
 **<a id="t-rows"></a>Table 16** Workload row keys
 
-| No. | Key                                       | Value                                                                                                                                                                                              |
-| --- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | construction parameter name               | its value; required when it has no default                                                                                                                                                         |
-| 2   | `some`                                    | the `optional: true` tensors passed                                                                                                                                                                |
-| 3   | `forall` `Dim`, `Shape`, `Seq[Int]` index | exactly the branch's relevant indices no generator solves                                                                                                                                          |
-| 4   | `dtype_cases`                             | non-empty list of assignments, each a mapping `{<DType index>: <dtype>}` over the relevant `forall` `DType` indices; only when there are such indices; a dtype parameter is written as a parameter |
-| 5   | `label`                                   | the row's name                                                                                                                                                                                     |
+| No. | Key                               | Value                                                                                                                                                                                              |
+| --- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | construction parameter name       | its value; required when it has no default                                                                                                                                                         |
+| 2   | `some`                            | the arguments with several members that pass their tensor member                                                                                                                                   |
+| 3   | call-time argument name           | its scalar value or `null`, for an argument with several members not in `some`; required when it has no default                                                                                    |
+| 4   | `forall` index other than `DType` | exactly the branch's relevant indices no generator solves                                                                                                                                          |
+| 5   | `dtype_cases`                     | non-empty list of assignments, each a mapping `{<DType index>: <dtype>}` over the relevant `forall` `DType` indices; only when there are such indices; a dtype parameter is written as a parameter |
+| 6   | `label`                           | the row's name                                                                                                                                                                                     |
 
 **<a id="t-generators"></a>Table 17** Generator classes
 
@@ -494,13 +562,38 @@ The checks:
 
 **<a id="t-unify"></a>Table 19** Unification of an input axis
 
-| No. | Axis form                                                                   | Unification                                           |
-| --- | --------------------------------------------------------------------------- | ----------------------------------------------------- |
-| 1   | `M`, unknown                                                                | `M := size`                                           |
-| 2   | `a * M + e`: `a` a known positive constant, `e` known, `M` the only unknown | `M := (size - e) / a`, checking divisibility and sign |
-| 3   | `*S`, the only unknown segment, other axis counts known                     | `S :=` the matching axes                              |
-| 4   | `dtype` an unknown `DType` index `T`                                        | `T :=` the dtype                                      |
-| 5   | anything else                                                               | checked only                                          |
+| No. | Axis form                                                                  | Unification                                                |
+| --- | -------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 1   | `M`, unknown                                                               | `M := size`                                                |
+| 2   | `a * M + e`: `a` a known positive integer, `e` known, `M` the only unknown | `M := (size - e) / a`, checking `a`, divisibility and sign |
+| 3   | `*S`, the only unknown segment, other axis counts known                    | `S :=` the matching axes                                   |
+| 4   | `dtype` an unknown `DType` index `T`                                       | `T :=` the dtype                                           |
+| 5   | anything else                                                              | checked only                                               |
+
+**<a id="t-members"></a>Table 20** Argument members
+
+| No. | Member         | Value                         | Kind where narrowed to it        |
+| --- | -------------- | ----------------------------- | -------------------------------- |
+| 1   | `Tensor`       | a tensor                      | its declaration's `Tensor[T, s]` |
+| 2   | `list[Tensor]` | a list or tuple of tensors    | a tensor sequence                |
+| 3   | `int`          | an `int` that is not a `bool` | `Int`, a call-time scalar        |
+| 4   | `float`        | a `float`                     | a value, a call-time scalar      |
+| 5   | `Number`       | an `int` or `float`           | a value, a call-time scalar      |
+| 6   | `bool`         | a `bool`                      | `Bool`, a call-time scalar       |
+| 7   | `None`         | `None`                        | `None`                           |
+
+**<a id="t-slots"></a>Table 21** Operator slots of an input
+
+| No. | Member                  | Slot type  | Slot name        |
+| --- | ----------------------- | ---------- | ---------------- |
+| 1   | `Tensor`, the only one  | `Tensor`   | `<name>`         |
+| 2   | `list[Tensor]`          | `Tensor[]` | `<name>`         |
+| 3   | `Tensor`, among several | `Tensor?`  | `<name>`         |
+| 4   | `int`                   | `SymInt?`  | `<name>__int`    |
+| 5   | `float`                 | `float?`   | `<name>__float`  |
+| 6   | `Number`                | `Scalar?`  | `<name>__number` |
+| 7   | `bool`                  | `bool?`    | `<name>__bool`   |
+| 8   | `None`                  | no slot    | —                |
 
 ## Stability
 

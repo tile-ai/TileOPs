@@ -125,7 +125,7 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 | Compiled programs                                | Kernel generation | A configuration is published |
 | Launch, output and trace properties of a program | Program           | The program is replaced      |
 
-The specialization is everything the checks read: each tensor slot's layout, dtype, device and presence, the params, construction-time tensors, execution arguments, and the current device of a call no input places. Assigning a configuration publishes it, and so does a tuning that succeeds; a failed tuning publishes nothing. A plan holds no tensor of any call. Plans and programs are held in bounded caches, oldest out first; an evicted specialization is resolved again on its next call. Why: a decision held past its dependencies answers wrong once one changes, and one held by a shorter-lived owner is resolved again for nothing.
+The specialization is everything the checks read: each tensor slot's layout, dtype, device and presence, the type of each call-time scalar, the params, execution arguments, and the current device of a call no input places. Assigning a configuration publishes it, and so does a tuning that succeeds; a failed tuning publishes nothing. A plan holds no tensor of any call. Plans and programs are held in bounded caches, oldest out first; an evicted specialization is resolved again on its next call. Why: a decision held past its dependencies answers wrong once one changes, and one held by a shorter-lived owner is resolved again for nothing.
 
 **A plan reuses decisions, never observations.** Every call observes the dispatcher state and its specialization, and a call the dispatcher would do more for than run the body goes through the registered operator. Storage relationships, enabled content checks, caller buffers, alignment, tensors and stream are read from the call itself, and one launch runs on one generation.
 
@@ -227,7 +227,7 @@ def __init__(
 
 **Input.** `signature.inputs`; the kernels and kernel interfaces of Step 1.
 
-**Optional inputs.** An `optional: true` input takes a `None` default in `forward`, and presence is read from the call rather than settled at construction, so one instance serves both ways of calling the op. Where the presence changes what gets built, it belongs in the kernel cache key alongside the shapes.
+**Arguments with several members.** An input's `default` is its default in `forward`, and the member it holds is read from the call rather than settled at construction, so one instance serves every way of calling the op. Where the member changes what gets built, it belongs in the kernel cache key alongside the shapes. A call-time scalar's value stays out of the plan key; a kernel that binds the value into its program builds one program per value.
 
 **Output.**
 

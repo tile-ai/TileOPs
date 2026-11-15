@@ -138,10 +138,11 @@ design, calling conventions — live in
 ### Slot S15: <a id="slot-s15"></a> `forward` signature
 
 - **Rule.** The parameter list starts with the signature's call-time inputs not declaring
-  `kw_only`, in `signature.inputs` order, optional inputs defaulting to `None`, followed by `out`
-  when an output declares `buffer: out` ([manifest.md § Effects](./manifest.md#effects)), then,
-  after `*`, each input declaring `kw_only: true`, defaulting to `None`
-  ([manifest.md § Presence](./manifest.md#presence)). Code-defined execution parameters may follow.
+  `kw_only`, in `signature.inputs` order, each with its declared `default` or none, followed by
+  `out` when an output declares `buffer: out` ([manifest.md § Effects](./manifest.md#effects)),
+  then, after `*`, each input declaring `kw_only: true`, with its declared `default` or none
+  ([manifest.md § Argument Types](./manifest.md#argument-types)). Code-defined execution
+  parameters may follow.
   The return matches `signature.outputs`: one tensor, a tuple in declared order, `None` in a
   nullable position whose expression is false, and `None` when `outputs` is empty.
 - **Common mistakes.** A keyword-only tensor parameter the manifest does not declare `kw_only`, or

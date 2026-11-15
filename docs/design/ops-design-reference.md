@@ -102,7 +102,7 @@ The manifest ([`src/tileops/manifest/`](../../src/tileops/manifest/)) is the sol
 
 ### Parameter design <a id="parameter-design"></a>
 
-Two time points: `__init__` takes `signature.params`, construction-time tensors among them. At each call, parameters and presence seed inference, construction-time tensors and call-time inputs are unified together, and `let` derives the rest; generators determine indices only when a workload row is instantiated. An input dtype belongs to the call, never to construction: the tensors carry it, so restating it at construction only creates a second source that can disagree with the first. An output dtype the inputs do not determine is a dtype parameter ([manifest.md § Dtypes](manifest.md#dtypes)). Kernels are built at the first `forward` for a specialization, keyed opaquely by every input that changes what is built.
+Two time points: `__init__` takes `signature.params`. At each call, parameters and the member each call-time argument holds seed inference, the call-time tensors are unified, and `let` derives the rest; generators determine indices only when a workload row is instantiated. An input dtype belongs to the call, never to construction: the tensors carry it, so restating it at construction only creates a second source that can disagree with the first. An output dtype the inputs do not determine is a dtype parameter ([manifest.md § Dtypes](manifest.md#dtypes)). Kernels are built at the first `forward` for a specialization, keyed opaquely by every input that changes what is built.
 
 ### Calling conventions
 
