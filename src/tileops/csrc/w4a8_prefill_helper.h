@@ -297,8 +297,8 @@ __device__ __forceinline__ void w4a8_ring_load(uint32_t* ring,
 
 // Stores this thread's R accumulators at ws_c + off, the caller's off ending in
 // lt * 4 for consumer thread lt of Threads: float4 chunk j at j * Threads * 4
-// floats past it, through L2. The fence orders the stores before the caller's
-// w4a8_signal.
+// floats past it, through L2. The caller's barrier and w4a8_signal order the
+// stores before the count.
 template <int R, int Threads>
 __device__ __forceinline__ void w4a8_store_partial(const float* acc,
                                                    const float* ws_c, int off) {
@@ -308,7 +308,6 @@ __device__ __forceinline__ void w4a8_store_partial(const float* acc,
     __stcg(reinterpret_cast<float4*>(p + j * Threads * 4),
            make_float4(acc[4 * j], acc[4 * j + 1], acc[4 * j + 2],
                        acc[4 * j + 3]));
-  __threadfence();
 }
 
 // Adds to acc the partial w4a8_store_partial<R, Threads> stored at ws + off.
@@ -326,19 +325,35 @@ __device__ __forceinline__ void w4a8_add_partial(float* acc, const float* ws,
   }
 }
 
-// Counts one contribution to tile idx; the last of nc resets the counter and
-// returns 1.
+// Counts one stored partial of tile idx (acquire-release); the call that
+// completes nc returns 1 after clearing the count. One thread calls it, after a
+// barrier over every thread that stored.
 __device__ __forceinline__ int w4a8_signal(const int* cnt_base, int idx,
                                            int nc) {
   int* cnt = const_cast<int*>(cnt_base) + idx;
-  __threadfence();
-  int old = atomicAdd(cnt, 1);
-  if (old == nc - 1) {
-    *cnt = 0;
-    __threadfence();
-    return 1;
-  }
-  return 0;
+  int old;
+  asm volatile("atom.acq_rel.gpu.global.add.s32 %0, [%1], 1;"
+               : "=r"(old)
+               : "l"(cnt)
+               : "memory");
+  if (old != nc - 1) return 0;
+  *cnt = 0;
+  return 1;
+}
+
+// Returns 1, after clearing the count, when tile idx already has `parts`
+// stored partials (acquire); 0 otherwise. One thread calls it.
+__device__ __forceinline__ int w4a8_take_partials(const int* cnt_base, int idx,
+                                                  int parts) {
+  int* cnt = const_cast<int*>(cnt_base) + idx;
+  int seen;
+  asm volatile("ld.acquire.gpu.global.b32 %0, [%1];"
+               : "=r"(seen)
+               : "l"(cnt)
+               : "memory");
+  if (seen != parts) return 0;
+  *cnt = 0;
+  return 1;
 }
 
 }  // namespace tileops

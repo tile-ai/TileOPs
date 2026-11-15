@@ -2564,6 +2564,9 @@ def test_gemm_w4a8_prefill_prefix_edges(m: int, n: int, k: int) -> None:
         # odd/even number of passes per tile respectively. N follows the real device.
         pytest.param((129,), None, 128, marks=pytest.mark.full, id="odd-pass-wave-reuse"),
         pytest.param((193,), None, 128, marks=pytest.mark.full, id="even-pass-wave-reuse"),
+        # On a 132-SM H200, 2-CTA cluster pairs split a partial wave four ways a tile,
+        # each CTA of a pair with its own counter.
+        pytest.param((4096,), 2304, 1024, marks=pytest.mark.full, id="cluster-stream-k"),
         # Reuse a small-token entry after serving another token count. On a 132-SM H200
         # this exercises the decode kernel's independent flag workspace.
         pytest.param(

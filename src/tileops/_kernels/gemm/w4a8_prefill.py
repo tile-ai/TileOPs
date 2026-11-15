@@ -337,6 +337,24 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                 T.barrier_arrive(empty[(ci + num_stages - 1) % num_stages])
 
         @T.macro
+        def count_partials(take, flag_s, cnt, wsi, parts, tx):
+            # One consumer thread reads (take) or adds to the tile's count and shares whether
+            # this CTA finishes the tile in flag_s. Barrier 5 orders any partial the consumers
+            # just stored before the count, and follows their reads of flag_s from the previous
+            # call. Named barriers 1, 2, 5 and 6 span the consumers; TileLang keeps 1 and 2 for
+            # reductions, none here, and numbers the barriers it inserts from 3 (3 and 4 at most
+            # in this program).
+            T.sync_threads(barrier_id=5, arrive_count=consumers)
+            if tx == WARPGROUP_THREADS:
+                if take:
+                    flag_s[0] = T.call_extern(
+                        "int32", "tileops::w4a8_take_partials", cnt.data, wsi, parts
+                    )
+                else:
+                    flag_s[0] = T.call_extern("int32", "tileops::w4a8_signal", cnt.data, wsi, parts)
+            T.sync_threads(barrier_id=6, arrive_count=consumers)
+
+        @T.macro
         def k_step(kk, a_cur, a_prev, ops, ci, kfirst):
             acc, a_s, w_s, tab_s, full, empty, wg, tx, hs = ops
             slot = ci % num_stages
@@ -697,33 +715,33 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                             T.wait_wgmma(0)
                             if tx % WARP_LANES == 0:
                                 release_stage(empty, c_idx)
-                            # Stream-K: every contributor stores its partial; the last to arrive
-                            # adds the others' and runs the epilogue.
+                            # Stream-K: contributor 0 holds the tile's first K steps, which end its
+                            # range, so it tends to reach the tile last. Finding every other partial
+                            # stored, it adds them without storing its own; otherwise it stores its
+                            # own like the others, and the contributor whose count completes the
+                            # tile adds the rest and runs the epilogue. No CTA waits.
                             do_epi = 1
                             if seg[3] >= 0 and (seg[1] > 0 or seg[2] < kg):
                                 t = seg[3]
                                 nc = contributor_counts[t]
                                 wsi = t * cluster + rank
                                 base = wsi * max_contributors * acc_regs * consumers
-                                T.call_extern(
-                                    "handle",
-                                    f"tileops::w4a8_store_partial<{active_regs}, {consumers}>",
-                                    acc.data,
-                                    ws.data,
-                                    base + seg[4] * acc_regs * consumers + lt * 4,
-                                )
-                                # Named barriers 1, 2, 5 and 6 span the consumers. TileLang keeps
-                                # 1 and 2 for reductions, none here, and numbers the barriers it
-                                # inserts from 3 (3 and 4 at most in this program).
-                                T.sync_threads(barrier_id=5, arrive_count=consumers)
-                                if tx == WARPGROUP_THREADS:
-                                    flag_s[0] = T.call_extern(
-                                        "int32", "tileops::w4a8_signal", cnt.data, wsi, nc
+                                do_epi = 0
+                                if seg[4] == 0:
+                                    count_partials(True, flag_s, cnt, wsi, nc - 1, tx)
+                                    do_epi = flag_s[0]
+                                if do_epi == 0:
+                                    T.call_extern(
+                                        "handle",
+                                        f"tileops::w4a8_store_partial<{active_regs}, {consumers}>",
+                                        acc.data,
+                                        ws.data,
+                                        base + seg[4] * acc_regs * consumers + lt * 4,
                                     )
-                                T.sync_threads(barrier_id=6, arrive_count=consumers)
-                                do_epi = flag_s[0]
-                                # The last arriving CTA keeps its accumulator, so FP32
-                                # addition order can vary between launches (see the op API).
+                                    count_partials(False, flag_s, cnt, wsi, nc, tx)
+                                    do_epi = flag_s[0]
+                                # The contributor that completes the tile keeps its accumulator,
+                                # so FP32 addition order can vary between launches (see the op API).
                                 if do_epi == 1:
                                     for c in T.serial(nc):
                                         if c != seg[4]:
