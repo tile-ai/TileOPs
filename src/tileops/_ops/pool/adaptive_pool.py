@@ -7,6 +7,7 @@ from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.pool import (
     AdaptiveAvgPool2dFwdInterface,
     AdaptiveAvgPool2dKernel,
+    AdaptiveAvgPool2dLanesKernel,
     AdaptiveMaxPool2dFwdInterface,
     AdaptiveMaxPool2dIndicesFwdInterface,
     AdaptiveMaxPool2dKernel,
@@ -78,7 +79,8 @@ class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
     """Adaptive average pooling over PyTorch-compatible CHW/NCHW inputs."""
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "adaptive_avg_pool2d_kernel": AdaptiveAvgPool2dKernel
+        "adaptive_avg_pool2d_kernel": AdaptiveAvgPool2dKernel,
+        "adaptive_avg_pool2d_lanes": AdaptiveAvgPool2dLanesKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "adaptive_pool": AdaptiveAvgPool2dFwdInterface

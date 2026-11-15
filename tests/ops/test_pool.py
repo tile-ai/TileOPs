@@ -9,10 +9,13 @@ from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.pool import (
+    AdaptiveAvgPool2dKernel,
+    AdaptiveAvgPool2dLanesKernel,
     AdaptiveMaxPool2dKernel,
     AdaptiveMaxPool2dRegisterKernel,
     AvgPool2dFwdInterface,
 )
+from tileops._utils import device_facts
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
@@ -1665,6 +1668,28 @@ class AdaptiveAvgPool2dFixture(FixtureBase):
                     id="smoke-asymmetric-bf16",
                 ),
                 pytest.param(
+                    2,
+                    16,
+                    56,
+                    56,
+                    (1, 1),
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-global-vector-fp16",
+                ),
+                pytest.param(
+                    1,
+                    8,
+                    11,
+                    7,
+                    (3, 1),
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-row-ragged-bins-bf16",
+                ),
+                pytest.param(
                     1,
                     128,
                     55,
@@ -1674,6 +1699,17 @@ class AdaptiveAvgPool2dFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                     id="full-nondiv-fp16",
+                ),
+                pytest.param(
+                    1,
+                    4,
+                    5,
+                    40,
+                    (8, 1),
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-expanding-rows-fp16",
                 ),
                 pytest.param(
                     1,
@@ -1906,6 +1942,52 @@ def test_adaptive_pool2d_accepts_chw() -> None:
     assert val.shape == (16, 5, 4) and idx.shape == (16, 5, 4)
     compare_outputs(val.float(), ref_val, pool_verification(maximum=True))
     compare_outputs(idx, ref_idx, pool_verification(maximum=True))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_adaptive_avg_pool2d_lanes_follow_window_and_device() -> None:
+    """A bin splits over lanes while a lane reads past one full-width access and the grid does not fill the device."""
+    facts = device_facts(run_device().index)
+    resident = facts.sm_count * facts.threads_per_sm
+    cases = [
+        ((1, 4, 7, 7), (1, 1), AdaptiveAvgPool2dLanesKernel, 8),
+        ((1, resident // 2, 7, 7), (1, 1), AdaptiveAvgPool2dLanesKernel, 2),
+        ((1, 4, 8, 8), (8, 1), AdaptiveAvgPool2dKernel, 1),
+        ((1, resident, 7, 7), (1, 1), AdaptiveAvgPool2dKernel, 1),
+    ]
+    for shape, size, implementation, lanes in cases:
+        op = AdaptiveAvgPool2dFwdOp(output_size=size, target=BUILTIN)
+        op(torch.randn(shape, device=run_device(), dtype=torch.float16))
+        (kernel,) = op.iter_kernels()
+        assert type(kernel) is implementation, (shape, size)
+        assert kernel.config.get("lanes", 1) == lanes, (shape, size)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls",
+    [AdaptiveAvgPool2dFwdOp, AdaptiveMaxPool2dFwdOp, AdaptiveMaxPool2dIndicesFwdOp],
+)
+def test_adaptive_pool2d_bin_products_past_int32(op_cls) -> None:
+    """Bins whose bound products pass int32 before the division: 99999 * 150001.
+
+    torch's CUDA kernel overflows on this call too, so the reference runs on the CPU.
+    """
+    args = (1, 1, 150001, 16, (100000, 1), torch.float16)
+    if op_cls is AdaptiveAvgPool2dFwdOp:
+        test = AdaptiveAvgPool2dTest(*args)
+    else:
+        test = AdaptiveMaxPool2dTest(*args, return_indices=op_cls is AdaptiveMaxPool2dIndicesFwdOp)
+    (x,) = test.gen_inputs()
+    out = op_cls(output_size=test.output_size)(x)
+    ref = test.ref_program(x.cpu())
+    for got, expected in zip(
+        out if isinstance(out, tuple) else (out,),
+        ref if isinstance(ref, tuple) else (ref,),
+        strict=True,
+    ):
+        compare_outputs(got.cpu(), expected, test.verification(x))
 
 
 @pytest.mark.smoke
