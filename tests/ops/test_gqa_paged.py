@@ -88,16 +88,16 @@ def test_gqa_paged_split(
     [
         pytest.param(16, 2, 64, 4, {"has_sinks": True}, marks=pytest.mark.smoke, id="dim-64-sinks"),
         pytest.param(16, 4, 256, 2, {}, marks=pytest.mark.full, id="dim-256"),
-        pytest.param(8, 2, 1040, 4, {}, marks=pytest.mark.full, id="dim-1040"),
+        pytest.param(8, 2, 144, 4, {}, marks=pytest.mark.full, id="dim-144"),
     ],
 )
 def test_gqa_paged_split_combine_row_blocks(
     heads: int, heads_kv: int, dim: int, q_len: int, semantics: dict
 ) -> None:
     """The combine merges a query tile in blocks of rows (16 at dimension 64, 4 at 256, and 8
-    at 1040, where one 16-byte vector a thread is less than a row but eight rows split evenly
-    over the threads): each request's rows span two blocks or more, a block past them stores
-    nothing, and the weight table of sixteen chunks or more is stored split-major."""
+    at 144, where four rows of 16-byte vectors leave a thread a part of a row but eight rows
+    split evenly over the threads): each request's rows span two blocks or more, a block past
+    them stores nothing, and the weight table of sixteen chunks or more is stored split-major."""
     from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
     workload = _decode(2, heads, heads_kv, [4096] * 2, dim, 64, q_len=q_len, **semantics)
