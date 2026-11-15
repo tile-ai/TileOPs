@@ -31,8 +31,6 @@ from tileops.manifest._values import ADTValue
 _OP_REGISTRY: "weakref.WeakValueDictionary[str, object]" = weakref.WeakValueDictionary()
 _ORDINALS: dict[str, "itertools.count[int]"] = {}
 _RUN = uuid.uuid4().hex
-# Deeper nesting is taken for a cycle.
-_MAX_DEPTH = 32
 
 
 def register_instance(op: object) -> str:
@@ -47,7 +45,7 @@ def instance_key(identity: str, state: Iterable[object]) -> str:
     """The key of the instance registered as *identity* while it holds *state*."""
     name, _, ordinal = identity.rpartition("-")
     local = [name.startswith("~")]
-    text = "\0".join(_encode(v, 0, local) for v in state)
+    text = "\0".join(_encode(v, local) for v in state)
     if local[0]:
         text = f"{_RUN}\0{text}"
     return f"{name}#{hashlib.sha256(text.encode()).hexdigest()[:32]}-{ordinal}"
@@ -81,7 +79,7 @@ def _qualified_name(cls: type) -> str:
     return name if found is cls else f"~{name}"
 
 
-def _encode(value: object, depth: int, local: list) -> str:
+def _encode(value: object, local: list) -> str:
     """*value* as text equal across processes exactly when the values are equal.
 
     A value nothing describes beyond its identity is encoded by its `id`, and *local* is set,
@@ -102,22 +100,18 @@ def _encode(value: object, depth: int, local: list) -> str:
         if isinstance(value, type):
             return name
         # Expressions read a member's value, so it is part of what the fake reads.
-        return f"{name}.{value.name}={_encode(value.value, depth + 1, local)}"
-    depth += 1
-    if depth > _MAX_DEPTH:
-        local[0] = True
-        return f"@{id(value)}"
+        return f"{name}.{value.name}={_encode(value.value, local)}"
     if kind in (list, tuple):
-        return f"{kind.__name__}({','.join(_encode(v, depth, local) for v in value)})"
+        return f"{kind.__name__}({','.join(_encode(v, local) for v in value)})"
     if kind is dict:
-        items = (f"{_encode(k, depth, local)}={_encode(v, depth, local)}" for k, v in value.items())
+        items = (f"{_encode(k, local)}={_encode(v, local)}" for k, v in value.items())
         return f"dict({','.join(items)})"
     if kind is ADTValue:
-        return f"ADT:{value.adt}.{value.kind}{_encode(value.fields, depth, local)}"
+        return f"ADT:{value.adt}.{value.kind}{_encode(value.fields, local)}"
     fields = getattr(value, "__dict__", None)
     # A builtin base, such as an `int` subclass's, holds state its `__dict__` does not show.
     builtin = any(c.__module__ == "builtins" for c in kind.__mro__[:-1])
     if type(fields) is not dict or builtin or hasattr(kind, "__slots__"):
         local[0] = True
         return f"@{id(value)}"
-    return f"{_encode(kind, depth, local)}{_encode(fields, depth, local)}"
+    return f"{_encode(kind, local)}{_encode(fields, local)}"

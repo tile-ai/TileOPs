@@ -1603,8 +1603,6 @@ class _CompileBoundary:
         def fake(*args):
             *tensors, key = args
             op = get_instance(key)
-            # A traced key that the op's state no longer yields would put this fake's shapes
-            # in a cache entry that another process's op of the old state reads.
             tracing = TracingContext.try_get() is not None
             if tracing and key != instance_key(op._instance_identity, op._instance_key_state()):
                 raise RuntimeError(

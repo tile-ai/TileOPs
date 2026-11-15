@@ -499,8 +499,7 @@ class Op(ABC):
         if name not in self._instance_key_names or "_instance_identity" not in self.__dict__:
             object.__setattr__(self, name, value)
             return
-        # Dynamo guards on the key, so a compiled callable retraces once a param changes. The
-        # lock keeps a concurrent assignment from publishing the key of a value it replaced.
+        # Keeps a concurrent assignment from publishing the key of a value it replaced.
         with _KEY_LOCK:
             object.__setattr__(self, name, value)
             self._instance_key = instance_key(self._instance_identity, self._instance_key_state())

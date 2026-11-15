@@ -5,8 +5,6 @@ key is one of the graph's constants. So a key that two processes share must name
 whose fakes agree, and a key must resolve to the one instance it was made for.
 """
 
-import enum
-
 import pytest
 
 from tests.fresh_interpreter import probe
@@ -19,79 +17,62 @@ class _Marker:
     """Something to register. `register_instance` only reads the class."""
 
 
-class _Mode(enum.Enum):
-    A = 1
+class _Size(int):
+    """An `int` subclass: its value lives in the builtin base, not in `__dict__`."""
 
 
-def test_two_instances_of_one_class_get_different_keys():
+def test_a_key_resolves_to_its_own_instance():
     a, b = _Marker(), _Marker()
     ka, kb = (instance_key(register_instance(o), (2,)) for o in (a, b))
     assert ka != kb
     assert get_instance(ka) is a
     assert get_instance(kb) is b
     assert ka.startswith(f"{__name__}._Marker#")
+    odd = type("Odd#-Name", (), {})()
+    assert get_instance(instance_key(register_instance(odd), (1,))) is odd
 
 
-def _keys(states: str) -> list[str]:
-    """The keys a fresh process gives one new `_Marker` per state in *states*, in order."""
+def test_unequal_values_the_encoding_cannot_see_key_apart_in_one_process():
+    identity = register_instance(_Marker())
+    assert instance_key(identity, (_Size(1),)) != instance_key(identity, (_Size(2),))
+
+
+# Each state's key in a fresh process: stable states, then states with no stable encoding.
+_STABLE = (
+    "[(2, None, 'x'), (torch.float16, E.A, [1.5, (2,)], {'k': True}), (torch.zeros(3, 2).t(),),"
+    " (1, None, 'x'), (torch.bfloat16, E.A, [1.5, (2,)], {'k': True}), (torch.zeros(2, 3),)]"
+)
+_LOCAL = "[(object(),), (lambda: 0,)]"
+
+
+def _keys(member_value: int) -> list[str]:
+    """Keys a fresh process gives one `_Marker` holding each state, then a local class's key;
+    its enum `E.A` has *member_value*."""
     setup = (
         "import enum, torch\n"
         "from tileops._ops.compile_boundary import instance_key, register_instance\n"
-        "from tests.test_compile_boundary_instance_key import _Marker, _Mode"
+        "from tests.test_compile_boundary_instance_key import _Marker\n"
+        f"class E(enum.Enum):\n    A = {member_value}\n"
+        "def made():\n    class Local: pass\n    return Local()\n"
+        "m = register_instance(_Marker())"
     )
-    expr = f"' '.join(instance_key(register_instance(_Marker()), s) for s in {states})"
+    expr = (
+        f"' '.join([*(instance_key(m, s) for s in {_STABLE} + {_LOCAL}),"
+        " instance_key(register_instance(made()), ())])"
+    )
     return probe(setup, expr).split()
 
 
-def test_a_second_process_shares_a_key_exactly_when_the_state_agrees():
+def test_two_processes_share_a_key_exactly_when_the_state_agrees():
     """The failure this guards: `MaxPool1dFwdOp#3` named a stride-2 instance in one run and
     a stride-1 instance in the next, so the second run loaded the first run's artifact and
     asserted on its output shape."""
-    states = (
-        "[(2, None, 'x'), (torch.float16, _Mode.A, [1.5, (2,)], {'k': True}),"
-        " (torch.zeros(2, 3).t(),)]"
-    )
-    first, second = _keys(states), _keys(states)
-    assert first == second
-    changed = _keys(
-        "[(1, None, 'x'), (torch.bfloat16, _Mode.A, [1.5, (2,)], {'k': True}),"
-        " (torch.zeros(2, 3),)]"
-    )
-    assert not set(first) & set(changed)
-
-
-def test_a_state_without_a_stable_encoding_keys_apart_in_each_process():
-    """An object with no fields to compare, and a class another process may define otherwise,
-    never share a key across processes."""
-    first, second = _keys("[(object(),), (lambda: 0,)]"), _keys("[(object(),), (lambda: 0,)]")
-    assert not set(first) & set(second)
-    setup = (
-        "from tileops._ops.compile_boundary import instance_key, register_instance\n"
-        "def made():\n    class Local: pass\n    return Local()"
-    )
-    expr = "instance_key(register_instance(made()), ())"
-    assert probe(setup, expr) != probe(setup, expr)
-
-
-class _Size(int):
-    """An `int` subclass: its value lives in the builtin base, not in `__dict__`."""
-
-
-def test_values_that_differ_only_where_the_encoding_cannot_see_key_apart():
-    """Unequal `int` subclass values; and, across processes, enum members of one name whose
-    values differ, which expressions read."""
-    identity = register_instance(_Marker())
-    assert instance_key(identity, (_Size(1),)) != instance_key(identity, (_Size(2),))
-    setup = (
-        "import enum\n"
-        "from tileops._ops.compile_boundary import instance_key, register_instance\n"
-        "class E(enum.Enum):\n    A = {}"
-    )
-    expr = "instance_key(register_instance(E), (E.A,))"
-    assert probe(setup.format(1), expr) != probe(setup.format(2), expr)
-
-
-def test_a_class_name_holding_the_separators_resolves_its_instance():
-    marker = type("Odd#-Name", (), {})()
-    key = instance_key(register_instance(marker), (1,))
-    assert get_instance(key) is marker
+    first, second, other = _keys(1), _keys(1), _keys(2)
+    stable = 6
+    assert first[:stable] == second[:stable]
+    # Each changed state keys apart from its original.
+    assert not set(first[:3]) & set(first[3:stable])
+    # No stable encoding, or a class defined inside a function: never shared.
+    assert not set(first[stable:]) & set(second[stable:])
+    # One enum name, another member value, which expressions read.
+    assert first[1] != other[1] and first[4] != other[4] and first[0] == other[0]
