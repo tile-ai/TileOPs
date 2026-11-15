@@ -751,8 +751,8 @@ def test_a_builder_must_return_something_callable():
 
 
 def test_a_builder_returning_no_kernel_is_named_though_no_binding_is_in_place():
-    """The refusal names the builder the call ran: a concurrent failed call may have cleared
-    the binding, which a fresh op has not yet made."""
+    """The refusal names the builder the call ran, so it holds with no binding in place, as
+    after a concurrent call that failed cleared it."""
 
     def not_a_kernel(*inputs, **params):
         return "not a kernel"

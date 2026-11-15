@@ -1526,7 +1526,12 @@ class Op(ABC):
         """
         seen: set[int] = set()
         for op in self._walk_ops():
-            held = [entry for entries in op._built_entries.values() for entry in entries.values()]
+            # Copied in one step each: calls may add entries while this walks.
+            held = [
+                entry
+                for entries in tuple(op._built_entries.values())
+                for entry in tuple(entries.values())
+            ]
             for entry in held:
                 for kernel in self._entry_kernels(entry):
                     if id(kernel) not in seen:
