@@ -226,6 +226,12 @@ def test_selector_runs_its_own_pingpong_tile_on_two_math_warp_groups():
     assert not staged.pingpong
     stated = get_best_config(_desc(4096, 7168, 2048, expected_m=16, **tight))
     assert not stated.pingpong
+    # 2 rows a group, gated, at K 512: the cost model's tile is 64x256; a fused call runs it
+    # ping-pong too.
+    fused = get_best_config(
+        _desc(16, 4096, 512, activation="silu_and_mul", **{**tight, "num_groups": 8})
+    )
+    assert (fused.block_m, fused.block_n, fused.pingpong) == (64, 256, True)
 
 
 @pytest.mark.smoke
