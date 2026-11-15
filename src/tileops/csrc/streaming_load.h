@@ -103,6 +103,12 @@ __device__ __forceinline__ void load16(void* dst, const void* src) {
   __builtin_memcpy(dst, &v, 16);
 }
 
+// Copies the 16 bytes at src to dst, both 16-byte aligned, in any state space,
+// as one 16-byte load and one 16-byte store.
+__device__ __forceinline__ void copy16(void* dst, const void* src) {
+  *reinterpret_cast<uint4*>(dst) = *reinterpret_cast<const uint4*>(src);
+}
+
 // Starts bringing the line holding src into L2 without waiting for it.
 __device__ __forceinline__ void prefetch_l2(const void* src) {
   asm volatile("prefetch.global.L2 [%0];" ::"l"(src));

@@ -176,6 +176,10 @@ def test_selector_pingpong_group_h200_band():
     fused = get_best_config(_desc(32768, 4096, 7168, **grouped))
     assert (fused.block_m, fused.block_n, fused.block_k) == (64, 256, 64)
     assert fused.pingpong and fused.num_math_warpgroups == 2
+    # A fused epilogue writes its whole tile: over 1300 groups, whose row ends take the
+    # shared memory of a fifth stage, it stays whole although a staged box would free one.
+    many = get_best_config(_desc(1300 * 112, 4096, 7168, **{**grouped, "num_groups": 1300}))
+    assert (many.pingpong, many.epilogue_stage_n, many.num_stages) == (True, 0, 4)
     swiglu = get_best_config(
         _desc(16384, 5760, 2880, **{**grouped, "num_groups": 128, "activation": "swigluoai"})
     )
@@ -210,9 +214,13 @@ def test_selector_pingpong_past_the_unfused_band_where_its_slots_hold_more_rows(
     # 428 rows a group at N 2048: slot shares 0.926 (64x256), 0.864 (64x192), 0.810 (128x256).
     skew_down = get_best_config(_desc(6843, 2048, 768, **tight))
     assert (skew_down.block_m, skew_down.block_n, skew_down.pingpong) == (64, 256, True)
+    # Staging one 64-column TMA store box rather than the 32 KiB tile frees a fifth 40 KiB stage.
+    assert (skew_down.epilogue_stage_n, skew_down.num_stages) == (64, 5)
     # At N 1536: 0.926 (64x192) against 0.810 for both 256-wide tiles.
     skew_up = get_best_config(_desc(6843, 1536, 2048, **tight))
     assert (skew_up.block_m, skew_up.block_n, skew_up.pingpong) == (64, 192, True)
+    # Six 32 KiB stages fit beside the whole 24 KiB tile as beside one box: it stays whole.
+    assert (skew_up.epilogue_stage_n, skew_up.num_stages) == (0, 6)
     # At N 1040 the last column tile of either width is partly empty: 0.731 (64x192) against
     # 0.658 (64x256); counted by rows and waves alone the two widths tie at 0.810.
     tail = get_best_config(_desc(6843, 1040, 768, **tight))
@@ -450,7 +458,7 @@ def test_selector_golden_specs(fields, expected):
         (65, (128, 256, 64, 3, 0)),
         (127, (128, 256, 64, 3, 0)),
         (128, (128, 256, 64, 4, 64)),
-        (129, (64, 256, 64, 4, 0)),
+        (129, (64, 256, 64, 5, 64)),
     ],
 )
 def test_selector_golden_rows_per_group_boundaries(rows_per_group, expected):
@@ -556,6 +564,8 @@ def test_spec_rejects_inconsistent_template_parameters():
         spec_from_config(_desc(4096, 2880, 2880, has_bias=True, **tight), tile)
     pingpong = {**m_grouped, "block_m": 64, "block_n": 256, "pingpong": True}
     GroupedGEMMSpec(**pingpong)
+    with pytest.raises(ValueError, match="multiple of 8 columns"):
+        GroupedGEMMSpec(**{**pingpong, "epilogue_stage_n": 4})
     # A 192-wide ping-pong tile issues the native-width WGMMA: no bias, no fused activation,
     # a 16-bit output.
     narrow = {**pingpong, "block_n": 192}
