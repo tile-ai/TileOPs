@@ -457,12 +457,12 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, 
     _check_every_defined_row_written(layout, sizes, activation, some, n=256)
 
 
-def _check_every_defined_row_written(layout, sizes, activation, some, n):
+def _check_every_defined_row_written(layout, sizes, activation, some, n, k=512):
     rows, metadata = _uneven_rows(layout, sizes)
     extra = {} if activation is None else {"activation": activation}
     extra |= {"some": list(some)} if some else {}
     rows_arg = {} if "masked" in layout else {"P": rows}
-    call = _gemm_call(torch.bfloat16, layout, K=512, E=len(sizes), N=n, **rows_arg, **extra)
+    call = _gemm_call(torch.bfloat16, layout, K=k, E=len(sizes), N=n, **rows_arg, **extra)
     workload = MoEGroupedGEMMWorkload(call)
     a, b, _, bias = workload.gen_inputs()
     metadata = torch.tensor(metadata, dtype=torch.int32, device=a.device)
@@ -483,6 +483,17 @@ def test_grouped_gemm_writes_every_defined_row_of_short_experts_on_pingpong_tile
     different experts."""
     sizes = [100, 0, 30, 64, 7, 0, 20, 5, 1, 2, 3, 4, 8, 6, 3, 3]
     _check_every_defined_row_written(_TIGHT_MOE_GROUPED_GEMM, sizes, None, (), n=4096)
+
+
+@pytest.mark.smoke
+def test_grouped_gemm_writes_every_defined_row_of_short_experts_on_boxed_pingpong_tiles():
+    """16 experts of a few rows, one past a 64-row tile, gated at the width and depth where
+    H200's selector takes the short-group tile with A in 16-row boxes, ping-pong: a CTA's two
+    warp-groups run partly filled tiles of different experts."""
+    sizes = [100, 0, 30, 64, 7, 0, 20, 5, 1, 2, 3, 4, 8, 6, 3, 3]
+    _check_every_defined_row_written(
+        _TIGHT_MOE_GROUPED_GEMM, sizes, "silu_and_mul", (), n=1024, k=2048
+    )
 
 
 # WGMMA exists on SM90 and not on SM80, SM86 or SM89, so the grouped GEMM takes a different
