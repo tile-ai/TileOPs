@@ -143,6 +143,7 @@ def test_selector_short_group_h200_band():
     )
     short = get_best_config(_desc(4096, 3072, 5120, calibration="h200", **grouped))
     assert (short.block_m, short.block_n, short.block_k, short.a_box_rows) == (64, 128, 128, 16)
+    assert short.pingpong and short.num_math_warpgroups == 2
     swiglu = get_best_config(
         _desc(
             256,
@@ -207,25 +208,30 @@ def test_selector_pingpong_group_h200_band():
 
 @pytest.mark.smoke
 def test_selector_runs_its_own_pingpong_tile_on_two_math_warp_groups():
-    """Below the bands, an unfused tight GEMM whose tile the cost model sets at the ping-pong
-    tile, staged whole, runs it ping-pong; the same tile given a staged epilogue, a stated
-    group size or a fused activation keeps one math warp-group."""
+    """Below the bands, a tight GEMM whose own tile has the ping-pong tile's 64 rows runs it
+    ping-pong; the same tile given a two-buffer staged epilogue or a stated group size, or the
+    short-group tile's half width, keeps one math warp-group."""
     tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=256, calibration="h200")
     # 16 rows a group at N 7168 K 2048: the cost model's tile is 64x256x64.
     down = get_best_config(_desc(4096, 7168, 2048, **tight))
     assert (down.block_m, down.block_n, down.block_k) == (64, 256, 64)
     assert down.pingpong and down.num_math_warpgroups == 2
+    # 16 rows a group at N 1536 K 2048: the short-group tile's half width, for waves the wide
+    # tiles underfill, keeps one warp-group.
+    half = get_best_config(_desc(257, 1536, 2048, **{**tight, "num_groups": 16}))
+    assert (half.block_m, half.block_n, half.pingpong) == (64, 64, False)
     # 64 rows a group at K 512: the same tile, staged in two 64-wide buffers for a fifth stage.
     staged = get_best_config(_desc(512, 7168, 512, **{**tight, "num_groups": 8}))
     assert (staged.block_m, staged.block_n, staged.epilogue_buffers) == (64, 256, 2)
     assert not staged.pingpong
     stated = get_best_config(_desc(4096, 7168, 2048, expected_m=16, **tight))
     assert not stated.pingpong
-    # 2 rows a group, gated, at K 512: the cost model's tile is 64x256; a fused call keeps it.
+    # 2 rows a group, gated, at K 512: the cost model's tile is 64x256; a fused call runs it
+    # ping-pong too.
     fused = get_best_config(
         _desc(16, 4096, 512, activation="silu_and_mul", **{**tight, "num_groups": 8})
     )
-    assert (fused.block_m, fused.block_n, fused.pingpong) == (64, 256, False)
+    assert (fused.block_m, fused.block_n, fused.pingpong) == (64, 256, True)
 
 
 @pytest.mark.smoke
@@ -554,16 +560,15 @@ def test_spec_rejects_inconsistent_template_parameters():
             }
         )
     m_grouped = {**fields, "gemm_type": GEMMType.M_GROUPED_TIGHT_PSUM, "num_groups": 4}
-    # A boxes split a tight warp-group's 64 rows into positive multiples of 8 dividing them.
+    # A boxes split a tight warp-group's 64 rows into positive multiples of 8 dividing them; a
+    # ping-pong warp-group owns its tile's 64 rows whole.
+    pingpong = {**m_grouped, "pingpong": True, "block_m": 64}
     GroupedGEMMSpec(**{**m_grouped, "a_box_rows": 16})
-    for box in (-16, 24):
+    GroupedGEMMSpec(**{**pingpong, "a_box_rows": 64})
+    for mode, box in ((m_grouped, -16), (m_grouped, 24), (pingpong, 24)):
         with pytest.raises(ValueError, match="a_box_rows"):
-            GroupedGEMMSpec(**{**m_grouped, "a_box_rows": box})
-    for mode in (
-        fields,
-        {**m_grouped, "gemm_type": GEMMType.M_GROUPED_TIGHT_PER_ROW},
-        {**m_grouped, "pingpong": True, "block_m": 64},
-    ):
+            GroupedGEMMSpec(**{**mode, "a_box_rows": box})
+    for mode in (fields, {**m_grouped, "gemm_type": GEMMType.M_GROUPED_TIGHT_PER_ROW}):
         with pytest.raises(ValueError, match="a_box_rows"):
             GroupedGEMMSpec(**{**mode, "a_box_rows": 16})
     # A fused tile takes block_n a multiple of 16, and refuses an odd multiple of 8.
