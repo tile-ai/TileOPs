@@ -133,10 +133,15 @@ def _testcase_fields(tc: ET.Element, props: dict[str, str]) -> dict:
     """The fields every parsed testcase carries: its id, outcome, op and failure message."""
     failure = tc.find("failure")
     error = tc.find("error")
-    if tc.find("skipped") is not None:
-        outcome = "skipped"
-    elif failure is not None or error is not None:
+    if failure is not None or error is not None:
+        # A teardown error after a skip writes both elements; the error wins.
         outcome = "failed"
+    elif tc.find("skipped") is not None and "unavailable" in props:
+        # A row no implementation serves yet (benchmarks/conftest.py): neither a skip to
+        # warn of nor a failure.
+        outcome = "unavailable"
+    elif tc.find("skipped") is not None:
+        outcome = "skipped"
     else:
         outcome = "passed"
     reported = failure if failure is not None else error

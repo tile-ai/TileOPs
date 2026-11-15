@@ -11,13 +11,16 @@ the manifest and its roofline off the op — from the source, without naming an 
 
 A case id recorded twice for one op fails this check: it keys the op's history, so two rows
 sharing one would write one record. Missing, skipped and wholly unverified cases fail coverage.
+A case skipped with the ``unavailable`` property, which ``benchmarks/conftest.py`` sets where
+the op raised ``OpNotAvailableError`` (no implementation serves the row yet), is listed as
+unavailable and is neither a failure nor a gap.
 
 Usage:
     python scripts/check_bench_coverage.py --bench-xml bench_results.xml \\
         [--output bench_coverage.md]
 
-Exit code 0 = every declared case was recorded once; 1 = coverage is incomplete or duplicated;
-2 = the report is missing or unusable.
+Exit code 0 = every declared case was recorded, or skipped as unavailable, once; 1 = coverage is
+incomplete or duplicated; 2 = the report is missing or unusable.
 """
 
 from __future__ import annotations
@@ -41,10 +44,14 @@ EXIT_NO_REPORT = 2
 
 FAIL = "FAIL"
 NOT_RUN = "NOT RUN"
+UNAVAILABLE = "UNAVAILABLE"
 OK = "OK"
 
 # Listing order: what needs acting on first.
-_ORDER = {FAIL: 0, NOT_RUN: 1, OK: 2}
+_ORDER = {FAIL: 0, NOT_RUN: 1, UNAVAILABLE: 2, OK: 3}
+
+# The testcase property `benchmarks/conftest.py` records on a row no implementation serves.
+UNAVAILABLE_PROPERTY = "unavailable"
 
 
 def _properties(testcase: ET.Element) -> dict[str, str]:
@@ -55,11 +62,22 @@ def _properties(testcase: ET.Element) -> dict[str, str]:
     }
 
 
-def parse_run(xml_path: Path) -> tuple[dict[str, list[str]], list[str]]:
-    """The case ids each op recorded in a benchmark report, from its passing testcases."""
+def parse_run(
+    xml_path: Path,
+) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
+    """The case ids each op recorded in a benchmark report, from its passing testcases, and
+    the case ids each op skipped as unavailable."""
     recorded: dict[str, list[str]] = {}
+    unavailable: dict[str, list[str]] = {}
     errors: list[str] = []
     for testcase in ET.parse(xml_path).iter("testcase"):
+        props = _properties(testcase)
+        failed = any(testcase.find(tag) is not None for tag in ("failure", "error"))
+        if not failed and testcase.find("skipped") is not None and UNAVAILABLE_PROPERTY in props:
+            case = _case_id(testcase.attrib.get("name", ""))
+            for name in (n for n in (props.get("ops") or props.get("op") or "").split(",") if n):
+                unavailable.setdefault(name, []).append(case)
+            continue
         unsuccessful = [
             tag for tag in ("skipped", "failure", "error") if testcase.find(tag) is not None
         ]
@@ -68,7 +86,6 @@ def parse_run(xml_path: Path) -> tuple[dict[str, list[str]], list[str]]:
             continue
         # Op names reach the report only from recorded tileops rows: a case timing a baseline
         # alone records none. ``ops`` lists every op the case benchmarked; ``op`` is the first.
-        props = _properties(testcase)
         # Partial verification records a reason but still checks outputs and permits ratios.
         if props.get("tileops_unverified") and props.get("tileops_no_ratio") == "True":
             errors.append(f"{testcase.get('name', '<unnamed>')}: {props['tileops_unverified']}")
@@ -77,7 +94,7 @@ def parse_run(xml_path: Path) -> tuple[dict[str, list[str]], list[str]]:
         case = _case_id(testcase.attrib.get("name", ""))
         for name in (n for n in ops.split(",") if n):
             recorded.setdefault(name, []).append(case)
-    return recorded, errors
+    return recorded, unavailable, errors
 
 
 def _case_id(name: str) -> str:
@@ -97,13 +114,18 @@ def _declared(op_name: str, entry: dict) -> set[str]:
     }
 
 
-def verdicts(recorded: dict[str, list[str]], manifest: dict) -> list[tuple[str, str, str]]:
+def verdicts(
+    recorded: dict[str, list[str]],
+    manifest: dict,
+    unavailable: dict[str, list[str]] | None = None,
+) -> list[tuple[str, str, str]]:
     """One ``(op, verdict, detail)`` row per implemented entry."""
     rows = []
     for op_name, entry in sorted(manifest.items()):
         if entry.get("status") != "implemented":
             continue
-        cases = recorded.get(op_name, [])
+        skipped = (unavailable or {}).get(op_name, [])
+        cases = recorded.get(op_name, []) + skipped
         repeated = sorted({c for c in cases if cases.count(c) > 1})
         declared = _declared(op_name, entry)
         missing = sorted(declared - set(cases))
@@ -115,6 +137,9 @@ def verdicts(recorded: dict[str, list[str]], manifest: dict) -> list[tuple[str, 
                 continue
             detail = f"{len(missing)} of {len(declared)} cases recorded nothing: {missing[0]!r}"
             rows.append((op_name, NOT_RUN, detail))
+        elif skipped:
+            detail = f"{len(skipped)} of {len(declared)} cases unavailable: {sorted(skipped)[0]!r}"
+            rows.append((op_name, UNAVAILABLE, detail))
         else:
             rows.append((op_name, OK, f"{len(declared)} cases recorded"))
     return rows
@@ -148,18 +173,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[coverage] benchmark report not found: {xml_path}", file=sys.stderr)
         return EXIT_NO_REPORT
     try:
-        recorded, report_errors = parse_run(xml_path)
+        recorded, unavailable, report_errors = parse_run(xml_path)
     except ET.ParseError as exc:
         print(f"[coverage] benchmark report {xml_path} is unusable: {exc}", file=sys.stderr)
         return EXIT_NO_REPORT
 
-    rows = verdicts(recorded, load_manifest())
+    rows = verdicts(recorded, load_manifest(), unavailable)
     summary = render(rows)
     print(summary)
     if args.output:
         Path(args.output).write_text(summary, encoding="utf-8")
 
-    failures = [r for r in rows if r[1] != OK]
+    failures = [r for r in rows if r[1] not in (OK, UNAVAILABLE)]
     for op_name, _, detail in failures:
         print(f"[coverage] {op_name}: {detail}", file=sys.stderr)
     for error in report_errors:

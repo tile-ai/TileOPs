@@ -12,6 +12,7 @@ from benchmarks import api
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
 from tileops._utils.device import current_accelerator_type
+from tileops.backend import OpNotAvailableError
 
 # What a row carries besides its measurements.
 _NOT_A_MEASUREMENT = frozenset(
@@ -127,6 +128,36 @@ def pytest_unconfigure(config):
         set_events_fallback_allowed(config.stash[_OUTER_EVENTS_FALLBACK])
     if _OUTER_VERIFYING in config.stash:
         api.set_verifying(config.stash[_OUTER_VERIFYING])
+
+
+# The testcase property, read by scripts/check_bench_coverage.py, that marks a row no
+# implementation serves yet.
+UNAVAILABLE_PROPERTY = "unavailable"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Report a row whose op raised ``OpNotAvailableError`` as skipped and unavailable.
+
+    A manifest row may declare a call no implementation serves yet. It is neither a failure
+    nor a coverage gap: the skip carries a fixed reason and the ``unavailable`` property, with
+    the op it names. Every other exception stays a failure.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if call.when != "call" or call.excinfo is None:
+        return
+    if not isinstance(call.excinfo.value, OpNotAvailableError):
+        return
+    reason = str(call.excinfo.value)
+    report.outcome = "skipped"
+    report.longrepr = (str(item.path), item.location[1], f"unavailable: {reason}")
+    # The JUnit report writes the item's properties with its teardown report.
+    item.user_properties.append((UNAVAILABLE_PROPERTY, reason))
+    cases = getattr(getattr(item, "callspec", None), "params", {}).values()
+    ops = sorted({c._call.signature.name for c in cases if isinstance(c, api.Case)})
+    if ops:
+        item.user_properties.append(("ops", ",".join(ops)))
 
 
 def pytest_sessionstart(session):

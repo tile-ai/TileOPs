@@ -823,3 +823,26 @@ def test_badge_counts_a_small_row_behind_only_when_it_was_behind_before(report, 
     previous = report.badge_rows(_bench_xml(tmp_path, "before.xml", before))
     assert report.badge_standing(rows, previous) == (1, 1)
     assert report.badge_standing(rows, None) == (2, 0)
+
+
+@pytest.mark.parametrize(
+    "extra, outcome",
+    [("", "unavailable"), ('<error message="teardown"/>', "failed")],
+)
+def test_an_unavailable_row_is_neither_a_skip_nor_a_failure(report, tmp_path, extra, outcome):
+    """A row no implementation serves is its own outcome; an error after the skip outranks it."""
+    xml = tmp_path / "bench.xml"
+    xml.write_text(
+        '<testsuite><testcase classname="b" name="t[row-bfloat16]">'
+        '<skipped message="unavailable: no implementation serves this call"/>'
+        f"{extra}<properties>"
+        '<property name="unavailable" value="no implementation serves this call"/>'
+        '<property name="ops" value="AddFwdOp"/>'
+        "</properties></testcase></testsuite>",
+        encoding="utf-8",
+    )
+    rows = report.parse_bench_xml(str(xml))
+
+    assert rows[0]["outcome"] == outcome
+    assert report.count_bench_skips(rows) == 0
+    assert len(report.collect_bench_failures(rows)) == (outcome == "failed")
