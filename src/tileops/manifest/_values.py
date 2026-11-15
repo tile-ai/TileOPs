@@ -10,7 +10,7 @@ import importlib
 
 from tileops.manifest._dtype_rules import DTYPE_BITS
 from tileops.manifest._expr import evaluate, parse
-from tileops.manifest._kinds import split_union
+from tileops.manifest._kinds import _commas, split_union
 
 __all__ = ["ADTValue", "convert", "is_integer", "python_class"]
 
@@ -82,8 +82,11 @@ def _member(member: str, value, adts: dict):
         "Number": isinstance(value, (int, float)),
         "str": isinstance(value, str),
         "dict": isinstance(value, dict),
-        "torch.dtype": isinstance(value, str) and value in DTYPE_BITS,
+        "torch.dtype": str(value).removeprefix("torch.") in DTYPE_BITS
+        and (isinstance(value, str) or type(value).__name__ == "dtype"),
     }
+    if member == "torch.dtype" and simple[member]:
+        return str(value).removeprefix("torch.")
     if member in simple:
         return value if simple[member] else _REJECT
     if member.startswith("'"):
@@ -107,7 +110,7 @@ def _sequence(member: str, head: str, value, adts: dict):
     inner = member[len(head) : -1]
     items = [inner] * len(value)
     if head == "tuple[" and not inner.endswith(",..."):
-        items = inner.split(",")
+        items = _commas(inner)
         if len(items) != len(value):
             return _REJECT
     elif head == "tuple[":
@@ -115,7 +118,11 @@ def _sequence(member: str, head: str, value, adts: dict):
     out = []
     for text, item in zip(items, value, strict=True):
         converted = next(
-            (c for m in text.split("|") if not isinstance(c := _member(m, item, adts), _Rejected)),
+            (
+                c
+                for m in split_union(text)
+                if not isinstance(c := _member(m, item, adts), _Rejected)
+            ),
             _REJECT,
         )
         if isinstance(converted, _Rejected):
@@ -139,6 +146,8 @@ def _adt(name: str, value, adts: dict):
     `ADTValue`; a Python object is checked against its constructor's class and returned as is.
     """
     ctors = adts[name]["sum"]
+    if isinstance(value, ADTValue) and value.adt == name:
+        return value
     if isinstance(value, dict):
         if len(value) != 1 or next(iter(value)) not in ctors:
             raise ValueError(f"{value!r} is not one of the constructors {sorted(ctors)}")

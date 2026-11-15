@@ -326,7 +326,7 @@ def _run(workload) -> tuple:
     """The op built from the call, its output on the call's inputs, and the reference."""
     inputs = workload.gen_inputs()
     cls = MoEGroupedGEMMFwdOp if isinstance(workload, MoEGroupedGEMMWorkload) else MoEExpertMLPFwdOp
-    op = cls(**workload.call.arguments({}))
+    op = cls(**workload.call.arguments())
     args, keywords = workload.call.signature.forward_arguments(inputs)
     out = op(*args, **keywords)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
@@ -467,7 +467,7 @@ def _check_every_defined_row_written(layout, sizes, activation, some, n, k=512):
     a, b, _, bias = workload.gen_inputs()
     metadata = torch.tensor(metadata, dtype=torch.int32, device=a.device)
     out = torch.full((*a.shape[:-1], n), 1e4, dtype=torch.bfloat16, device=a.device)
-    op = MoEGroupedGEMMFwdOp(**call.arguments({}))
+    op = MoEGroupedGEMMFwdOp(**call.arguments())
     assert op(a, b, metadata, out=out, bias=bias) is out
     compare_outputs(
         out,
@@ -586,7 +586,7 @@ def test_grouped_gemm_clamps_swigluoai_at_its_limit():
     for i, (gate, up) in enumerate(limit_pairs):
         b[0, 0::2, i], b[0, 1::2, i] = gate, up
     metadata = torch.tensor([rows], dtype=torch.int32, device=run_device())
-    out = MoEGroupedGEMMFwdOp(**call.arguments({}))(a, b, metadata)
+    out = MoEGroupedGEMMFwdOp(**call.arguments())(a, b, metadata)
     inputs = (a, b, metadata, None)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
@@ -616,7 +616,7 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
     )
     workload = MoEGroupedGEMMWorkload(call)
     a, b, metadata, _ = workload.gen_inputs()
-    op = MoEGroupedGEMMFwdOp(**call.arguments({}))
+    op = MoEGroupedGEMMFwdOp(**call.arguments())
     out = torch.empty(600, 256, dtype=torch.float32, device=run_device())
     assert op(a, b, metadata, out=out) is out
     compare_outputs(
@@ -644,7 +644,7 @@ def test_a_published_config_pins_the_spec_of_the_next_launch(monkeypatch):
     workload = MoEGroupedGEMMWorkload(call)
     inputs = workload.gen_inputs()
     args, keywords = call.signature.forward_arguments(inputs)
-    op = MoEGroupedGEMMFwdOp(**call.arguments({}))
+    op = MoEGroupedGEMMFwdOp(**call.arguments())
     op(*args, **keywords)
     (selected,) = compiled
     pinned = (128, 64) if selected != (128, 64) else (128, 128)
@@ -668,12 +668,12 @@ def test_out_is_keyword_only_and_is_the_output(op_name):
     """``out`` is written and returned when passed by keyword, and refused by position."""
     if op_name == "MoEGroupedGEMMFwdOp":
         call = _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=64, K=64, E=2, N=64)
-        workload, op = MoEGroupedGEMMWorkload(call), MoEGroupedGEMMFwdOp(**call.arguments({}))
+        workload, op = MoEGroupedGEMMWorkload(call), MoEGroupedGEMMFwdOp(**call.arguments())
     else:
         call = manifest_call(
             op_name, {"D": "bfloat16"}, layout=_TIGHT_MOE_GROUPED_GEMM, P=64, H=128, E=2, F=64
         )
-        workload, op = MoEExpertMLPWorkload(call), MoEExpertMLPFwdOp(**call.arguments({}))
+        workload, op = MoEExpertMLPWorkload(call), MoEExpertMLPFwdOp(**call.arguments())
     inputs = workload.gen_inputs()
     required = [t for t in inputs if t is not None]
     out = torch.full_like(op(*required), float("nan"))
@@ -696,7 +696,7 @@ def test_expert_mlp_out_may_be_its_input_but_not_the_down_weights():
         E=2,
         F=64,
     )
-    workload, op = MoEExpertMLPWorkload(call), MoEExpertMLPFwdOp(**call.arguments({}))
+    workload, op = MoEExpertMLPWorkload(call), MoEExpertMLPFwdOp(**call.arguments())
     inputs = workload.gen_inputs()
     expected = workload.ref_program(*inputs)
     expert_input, w_gate_up, w_down, metadata = inputs[:4]
@@ -786,7 +786,7 @@ def test_expert_mlp_in_tuned_mode_serves_repeated_calls():
     )
     workload = MoEExpertMLPWorkload(call)
     inputs = workload.gen_inputs()
-    op = MoEExpertMLPFwdOp(**call.arguments({}))
+    op = MoEExpertMLPFwdOp(**call.arguments())
     op.request_tune()
     expected = workload.ref_program(*inputs)
     args, keywords = call.signature.forward_arguments(inputs)
@@ -879,7 +879,7 @@ def _grouped_gemm_in_workspace(beside: str, into: int) -> tuple:
 
     placed = {name: view(starts[name], t).copy_(t) for name, t in inputs.items()}
     out = view(starts[beside] + (into - out_like.numel()) * out_like.element_size(), out_like)
-    return MoEGroupedGEMMFwdOp(**call.arguments({})), placed, out, workload, workspace
+    return MoEGroupedGEMMFwdOp(**call.arguments()), placed, out, workload, workspace
 
 
 @pytest.mark.sm90
@@ -975,7 +975,7 @@ def test_grouped_gemm_accepts_offset_storage(dtype, shift, masked, arch):
         assert out.is_contiguous() and out.data_ptr() % 16
     else:
         out = torch.full_like(expected, 123)
-    op = MoEGroupedGEMMFwdOp(**call.arguments({}))
+    op = MoEGroupedGEMMFwdOp(**call.arguments())
     assert op(**inputs, out=out) is out
     compare_outputs(out, expected, workload.verification(*inputs.values()))
     if masked:

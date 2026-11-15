@@ -423,7 +423,7 @@ VectorNormFwdOp:
     shape_rules:
     - "ord == 1 or ord == 2 or ord == inf"
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
-    - "not present(dtype) or dtype.value == T or dtype.value == 'float32'"
+    - "not present(dtype) or dtype == T or dtype == 'float32'"
     # The maximum of an empty axis has no value, while an empty sum is 0.
     - "ord != inf or sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:

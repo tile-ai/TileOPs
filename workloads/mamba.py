@@ -1081,7 +1081,7 @@ class CausalConv1dFwdCall(CallWorkload):
         return x, weight * 0.25, conv_state, cu_seqlens, bias, has_initial_state
 
     def ref_program(self, x, weight, conv_state, cu_seqlens, bias, has_initial_state):
-        silu = self.call.arguments({}).get("activation", "silu") is not None
+        silu = self.call.arguments().get("activation", "silu") is not None
         output = causal_conv1d_ref(x, weight, conv_state, cu_seqlens, bias, has_initial_state, silu)
         return output, conv_state
 
@@ -1094,7 +1094,7 @@ class CausalConv1dUpdateFwdCall(CallWorkload):
         return x, weight * 0.25, conv_state, bias
 
     def ref_program(self, x, weight, conv_state, bias):
-        silu = self.call.arguments({}).get("activation", "silu") is not None
+        silu = self.call.arguments().get("activation", "silu") is not None
         return causal_conv1d_update_ref(x, weight, conv_state, bias, silu), conv_state
 
 
@@ -1167,7 +1167,7 @@ class SelectiveScanFwdCall(CallWorkload):
         dt = torch.exp(torch.rand(dim, generator=gen, device=u.device) * (hi - lo) + lo)
         inverse = dt + torch.log(-torch.expm1(-dt))
         raw = 0.1 * torch.randn(batch, dim, seqlen, generator=gen, device=u.device)
-        if self.call.arguments({}).get("delta_softplus", True):
+        if self.call.arguments().get("delta_softplus", True):
             delta = (raw if delta_bias is not None else raw + inverse[:, None]).to(delta.dtype)
             if delta_bias is not None:
                 delta_bias = inverse
@@ -1195,7 +1195,7 @@ class SelectiveScanFwdCall(CallWorkload):
         return u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states
 
     def ref_program(self, u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states):
-        softplus = self.call.arguments({}).get("delta_softplus", True)
+        softplus = self.call.arguments().get("delta_softplus", True)
         return selective_scan_ref(
             u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states, softplus
         )

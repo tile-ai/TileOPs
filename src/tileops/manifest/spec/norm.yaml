@@ -11,7 +11,7 @@ RMSNormFwdOp:
       eps: {type: "float | None", default: null}
     inputs:
       x: {dtype: T, shape: "[*B, *normalized_shape]"}
-      weight: {dtype: T, shape: "[*normalized_shape]", optional: true}
+      weight: {dtype: T, shape: "[*normalized_shape]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[*B, *normalized_shape]"}
     shape_rules:
@@ -52,8 +52,8 @@ LayerNormFwdOp:
       eps: {type: float, default: 1.0e-5}
     inputs:
       input: {dtype: T, shape: "[*B, *normalized_shape]"}
-      weight: {dtype: T, shape: "[*normalized_shape]", optional: true}
-      bias: {dtype: T, shape: "[*normalized_shape]", optional: true}
+      weight: {dtype: T, shape: "[*normalized_shape]", type: "Tensor | None", default: null}
+      bias: {dtype: T, shape: "[*normalized_shape]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[*B, *normalized_shape]"}
     shape_rules:
@@ -194,7 +194,7 @@ FusedAddRMSNormPerTokenQuantFwdOp:
     shape_rules:
     - "N > 0"
     - "eps > 0"
-    - "not present(scale_ub) or scale_ub.value > 0"
+    - "not present(scale_ub) or scale_ub > 0"
     # vLLM bounds the amax for FP8 codes only.
     - "not present(scale_ub) or quant_dtype == 'float8_e4m3fn'"
   workloads:
@@ -232,24 +232,25 @@ BatchNormFwdOp:
       eps: {type: float, default: 1.0e-5}
     inputs:
       input: {dtype: T, shape: "[B, C, *L]"}
-      running_mean: {dtype: float32, shape: "[C]", optional: true, mutated: "training and present(running_mean)"}
-      running_var: {dtype: float32, shape: "[C]", optional: "present(running_mean)", mutated: "training and present(running_mean)"}
-      weight: {dtype: float32, shape: "[C]", optional: true}
-      bias: {dtype: float32, shape: "[C]", optional: true}
+      running_mean: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null, mutated: "training and present(running_mean)"}
+      running_var: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null, mutated: "training and present(running_mean)"}
+      weight: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null}
+      bias: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[B, C, *L]"}
       save_mean: {dtype: float32, shape: "[C]", nullable: "training"}
       save_invstd: {dtype: float32, shape: "[C]", nullable: "training"}
     shape_rules:
+    - "present(running_var) == present(running_mean)"
     - "training or present(running_mean)"
     - "not training or B * prod(L) != 1"
   workloads:
-  - {B: 32, C: 64, L: [], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet-fc}
-  - {B: 8, C: 64, L: [32, 32], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-stage1}
-  - {B: 4, C: 128, L: [32, 32], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet-stage2}
-  - {B: 4, C: 256, L: [28, 28], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}, {T: float32}], label: resnet-stage3}
-  - {B: 4, C: 128, L: [1024, 1024], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: large-spatial}
-  - {B: 4, C: 256, L: [28, 28], some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet-stage3-eval}
+  - {B: 32, C: 64, L: [], training: true, some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}], label: resnet-fc}
+  - {B: 8, C: 64, L: [32, 32], training: true, some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-stage1}
+  - {B: 4, C: 128, L: [32, 32], training: true, some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}], label: resnet-stage2}
+  - {B: 4, C: 256, L: [28, 28], training: true, some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}, {T: float32}], label: resnet-stage3}
+  - {B: 4, C: 128, L: [1024, 1024], training: true, some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}], label: large-spatial}
+  - {B: 4, C: 256, L: [28, 28], some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}], label: resnet-stage3-eval}
   - {B: 8, C: 64, L: [56, 56], training: true, dtype_cases: [{T: bfloat16}], label: resnet-stem}
   roofline:
     # Training: mean (1), centered variance (3), normalize the centered value (1); running
@@ -268,7 +269,7 @@ BatchNormBwdOp:
       save_mean: {dtype: float32, shape: "[C]"}
       save_invstd: {dtype: float32, shape: "[C]"}
       # Absent for a forward called without weight: the unit scale.
-      weight: {dtype: float32, shape: "[C]", optional: true, kw_only: true}
+      weight: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null, kw_only: true}
     outputs:
       dinput: {dtype: T, shape: "[B, C, *L]"}
       dweight: {dtype: float32, shape: "[C]"}
@@ -294,8 +295,8 @@ GroupNormFwdOp:
       eps: {type: float, default: 1.0e-5}
     inputs:
       input: {dtype: T, shape: "[B, C, *L]"}
-      weight: {dtype: T, shape: "[C]", optional: true}
-      bias: {dtype: T, shape: "[C]", optional: true}
+      weight: {dtype: T, shape: "[C]", type: "Tensor | None", default: null}
+      bias: {dtype: T, shape: "[C]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[B, C, *L]"}
     shape_rules:
@@ -325,13 +326,14 @@ InstanceNormFwdOp:
       eps: {type: float, default: 1.0e-5}
     inputs:
       input: {dtype: T, shape: "[B, C, *L]"}
-      running_mean: {dtype: float32, shape: "[C]", optional: true, mutated: "use_input_stats and present(running_mean)"}
-      running_var: {dtype: float32, shape: "[C]", optional: "present(running_mean)", mutated: "use_input_stats and present(running_mean)"}
-      weight: {dtype: T, shape: "[C]", optional: true}
-      bias: {dtype: T, shape: "[C]", optional: true}
+      running_mean: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null, mutated: "use_input_stats and present(running_mean)"}
+      running_var: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null, mutated: "use_input_stats and present(running_mean)"}
+      weight: {dtype: T, shape: "[C]", type: "Tensor | None", default: null}
+      bias: {dtype: T, shape: "[C]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[B, C, *L]"}
     shape_rules:
+    - "present(running_var) == present(running_mean)"
     - "use_input_stats or present(running_mean)"
     - "not use_input_stats or prod(L) != 1"
   workloads:
@@ -341,8 +343,8 @@ InstanceNormFwdOp:
   - {B: 8, C: 128, L: [32, 32], dtype_cases: [{T: float16}, {T: bfloat16}], label: image}
   - {B: 4, C: 256, L: [28, 28], dtype_cases: [{T: float16}, {T: float32}], label: wider-channel}
   - {B: 4, C: 64, L: [30, 30], dtype_cases: [{T: float16}], label: tail-spatial}
-  - {B: 8, C: 128, L: [32, 32], some: [running_mean], dtype_cases: [{T: float16}], label: image-track-stats}
-  - {B: 8, C: 128, L: [32, 32], use_input_stats: false, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: image-eval}
+  - {B: 8, C: 128, L: [32, 32], some: [running_mean, running_var], dtype_cases: [{T: float16}], label: image-track-stats}
+  - {B: 8, C: 128, L: [32, 32], use_input_stats: false, some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}], label: image-eval}
   roofline:
     # Input statistics: mean (1), centered variance (3), normalize the centered value (1);
     # running statistics: normalize (2). One more per present affine tensor.
@@ -403,30 +405,30 @@ RMSNormGatedFwdOp:
     inputs:
       x: {dtype: T, shape: "[*B, N]"}
       weight: {dtype: W, shape: "[N]"}
-      bias: {dtype: Wb, shape: "[N]", optional: true}
-      z: {dtype: Z, shape: "[*B, N]", optional: true}
+      bias: {dtype: Wb, shape: "[N]", type: "Tensor | None"}
+      z: {dtype: Z, shape: "[*B, N]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[*B, N]"}
     shape_rules:
-    - "not present(group_size) or (group_size.value > 0 and N % group_size.value == 0)"
+    - "not present(group_size) or (group_size > 0 and N % group_size == 0)"
   workloads:
   # Gated DeltaNet output norm, one row per token and value head (Qwen3.6-27B: 48 heads of 128).
-  - {B: [4096, 48], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.6-27b-gdn-prefill}
-  - {B: [64, 48], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}, {T: float16, W: float16, Z: float16}], label: qwen3.6-27b-gdn-decode}
-  - {B: [4096, 32], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: float32, Z: bfloat16}], label: qwen3-next-gdn-prefill}
-  - {B: [4096, 32], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.6-35b-a3b-prefill}
-  - {B: [64, 32], N: 128, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.6-35b-a3b-decode}
+  - {B: [4096, 48], N: 128, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.6-27b-gdn-prefill}
+  - {B: [64, 48], N: 128, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}, {T: float16, W: float16, Z: float16}], label: qwen3.6-27b-gdn-decode}
+  - {B: [4096, 32], N: 128, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: float32, Z: bfloat16}], label: qwen3-next-gdn-prefill}
+  - {B: [4096, 32], N: 128, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.6-35b-a3b-prefill}
+  - {B: [64, 32], N: 128, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.6-35b-a3b-decode}
   # Sigmoid-gated output norms: Qwen3.8-Flash-Next (48 heads) and GLM-5.3-Flash KDA (64 heads).
-  - {B: [4096, 48], N: 128, activation: sigmoid, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.8-flash-prefill}
-  - {B: [64, 48], N: 128, activation: sigmoid, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.8-flash-decode}
-  - {B: [4096, 64], N: 128, activation: sigmoid, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: glm-5.3-flash-prefill}
-  - {B: [64, 64], N: 128, activation: sigmoid, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: glm-5.3-flash-decode}
+  - {B: [4096, 48], N: 128, activation: sigmoid, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.8-flash-prefill}
+  - {B: [64, 48], N: 128, activation: sigmoid, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: qwen3.8-flash-decode}
+  - {B: [4096, 64], N: 128, activation: sigmoid, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: glm-5.3-flash-prefill}
+  - {B: [64, 64], N: 128, activation: sigmoid, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: glm-5.3-flash-decode}
   # Mamba-2 gated norm: norm(x * silu(z)) over d_inner, one group per SSM group.
-  - {B: [4096], N: 5120, group_size: 5120, norm_before_gate: false, some: [z], dtype_cases: [{T: bfloat16, W: float32, Z: bfloat16}], label: mamba2-2.7b}
-  - {B: [4096], N: 8192, group_size: 1024, norm_before_gate: false, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: codestral-mamba-7b}
+  - {B: [4096], N: 5120, group_size: 5120, norm_before_gate: false, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: float32, Z: bfloat16}], label: mamba2-2.7b}
+  - {B: [4096], N: 8192, group_size: 1024, norm_before_gate: false, bias: null, some: [z], dtype_cases: [{T: bfloat16, W: bfloat16, Z: bfloat16}], label: codestral-mamba-7b}
   - {B: [2048], N: 3000, eps: 1.0e-5, some: [bias], dtype_cases: [{T: float32, W: float32, Wb: float32}], label: ungated-bias}
   roofline:
     # Per element: square and accumulate (2), normalize (1), weight (1), bias (1), the gate
     # (silu 5, sigmoid 4) and its multiply (1). Per group: mean (1), eps (1), sqrt and
     # reciprocal (2).
-    flops: "(4 + (1 if present(bias) else 0) + ((6 if activation == 'silu' else 5) if present(z) else 0)) * prod(B) * N + 4 * prod(B) * (N // group_size.value if present(group_size) else 1)"
+    flops: "(4 + (1 if present(bias) else 0) + ((6 if activation == 'silu' else 5) if present(z) else 0)) * prod(B) * N + 4 * prod(B) * (N // group_size if present(group_size) else 1)"

@@ -294,8 +294,8 @@ ClampTensorFwdOp:
     forall: {A: Shape, L: Shape, U: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
       input: {dtype: T, shape: "[*A]"}
-      min: {dtype: T, shape: "[*L]", optional: true}
-      max: {dtype: T, shape: "[*U]", optional: true}
+      min: {dtype: T, shape: "[*L]", type: "Tensor | None", default: null}
+      max: {dtype: T, shape: "[*U]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "ClampOut[A, L, U, present(min), present(max)]"}
     types:
@@ -340,8 +340,8 @@ ClampScalarFwdOp:
       output: {dtype: T, shape: "[*S]"}
     shape_rules:
     - "present(min) or present(max)"
-    - "not present(min) or representable(min.value, T)"
-    - "not present(max) or representable(max.value, T)"
+    - "not present(min) or representable(min, T)"
+    - "not present(max) or representable(max, T)"
 
   workloads:
   - {S: [4096, 4096], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}

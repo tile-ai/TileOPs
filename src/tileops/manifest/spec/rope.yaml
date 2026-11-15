@@ -135,11 +135,11 @@ LongRoPEFwdOp:
         cases:
         - {when: 1d, is: "[S, D]"}
         - {when: 2d, is: "[B, S, H, D]"}
-    forall: {B: Dim, S: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16 | float32]", R: "DType[float32 | float16 | bfloat16]"}
+    forall: {B: Dim, S: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       input_layout: {type: "'1d' | '2d'", default: 1d}
       base: {type: float, default: 10000.0}
-      rescale_factors: {dtype: R, shape: "[D // 2]", optional: true}
+      rescale_factors: {type: "list[float] | None", default: null}
       max_position: {type: int, default: 4096}
       original_max_position: {type: int, default: 4096}
     inputs:
@@ -148,6 +148,7 @@ LongRoPEFwdOp:
       output: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
+    - "not present(rescale_factors) or len(rescale_factors) == D // 2"
     - "base > 0"
     # An extended context scales the amplitude by log(scale) / log(original_max_position).
     - "max_position > 0 and original_max_position > 0"
@@ -157,7 +158,8 @@ LongRoPEFwdOp:
   - {input_layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
   - {input_layout: 2d, B: 1, S: 8192, H: 32, D: 128, dtype_cases: [{T: float16}], label: 2d-8k}
   - {input_layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: 1d-5k}
-  - {input_layout: 1d, S: 8192, D: 128, some: [rescale_factors], dtype_cases: [{T: bfloat16, R: float32}, {T: bfloat16, R: float16}, {T: bfloat16, R: bfloat16}], label: 1d-8k-rescaled}
+  # Factors rising linearly from 1 across the 64 frequency pairs.
+  - {input_layout: 1d, S: 8192, D: 128, rescale_factors: [1.0, 1.015625, 1.03125, 1.046875, 1.0625, 1.078125, 1.09375, 1.109375, 1.125, 1.140625, 1.15625, 1.171875, 1.1875, 1.203125, 1.21875, 1.234375, 1.25, 1.265625, 1.28125, 1.296875, 1.3125, 1.328125, 1.34375, 1.359375, 1.375, 1.390625, 1.40625, 1.421875, 1.4375, 1.453125, 1.46875, 1.484375, 1.5, 1.515625, 1.53125, 1.546875, 1.5625, 1.578125, 1.59375, 1.609375, 1.625, 1.640625, 1.65625, 1.671875, 1.6875, 1.703125, 1.71875, 1.734375, 1.75, 1.765625, 1.78125, 1.796875, 1.8125, 1.828125, 1.84375, 1.859375, 1.875, 1.890625, 1.90625, 1.921875, 1.9375, 1.953125, 1.96875, 1.984375], dtype_cases: [{T: bfloat16}], label: 1d-8k-rescaled}
 
   roofline:
     # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
@@ -183,7 +185,7 @@ RoPENeoxPositionIdsFwdOp:
       output: {dtype: T, shape: "[N, H, D]"}
     shape_rules:
     - "0 < max_position <= 2147483648"
-    - "rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D if present(rotary_dim) else D > 0 and D % 2 == 0"
+    - "rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D if present(rotary_dim) else D > 0 and D % 2 == 0"
     - "base > 0"
 
   workloads:
@@ -194,7 +196,7 @@ RoPENeoxPositionIdsFwdOp:
 
   roofline:
     # Two multiplies and one add per rotated element; the columns past rotary_dim are copied.
-    flops: "3 * N * H * (rotary_dim.value if present(rotary_dim) else D)"
+    flops: "3 * N * H * (rotary_dim if present(rotary_dim) else D)"
 
 RoPECosSinFwdOp:
   # Rotates the first R = 2 * Rh columns of each head by caller-given angles; the rest are
@@ -202,7 +204,7 @@ RoPECosSinFwdOp:
   # is [B, S, H, D]; with cu_seqlens it is packed [Tt, H, D], s counting from each
   # sequence's start. interleaved rotates pairs (x[2i], x[2i + 1]), otherwise
   # (x[i], x[i + Rh]). With inplace the rotation is written into x, which is returned.
-  # seqlen_offsets is the reference's integer form; its per-sequence tensor form is not declared.
+  # seqlen_offsets is one offset for every sequence, or one per sequence.
   # Angles per packed token are the dense form with B = 1, S = Tt and a cos/sin row per token.
   # x may be a strided view, such as the trailing columns of a wider head rotated in place;
   # passing -sin applies the inverse rotation.
@@ -210,11 +212,10 @@ RoPECosSinFwdOp:
   status: spec-only
   ref_api: flash_attn.layers.rotary.apply_rotary_emb
   signature:
-    forall: {B: Dim, S: Dim, Tt: Dim, H: Dim, D: Dim, P: Dim, Rh: Dim, T: "DType[float16 | bfloat16 | float32]", C: "DType[float16 | bfloat16 | float32]", Cs: "DType[float16 | bfloat16 | float32]", I: "DType[int32 | int64]", seq_lens: "Seq[Int]"}
+    forall: {B: Dim, S: Dim, Tt: Dim, H: Dim, D: Dim, P: Dim, Rh: Dim, T: "DType[float16 | bfloat16 | float32]", C: "DType[float16 | bfloat16 | float32]", Cs: "DType[float16 | bfloat16 | float32]", I: "DType[int32 | int64]", O: "DType[int32 | int64]", seq_lens: "Seq[Int]"}
     params:
       interleaved: {type: bool, default: false}
       inplace: {type: bool, default: false}
-      seqlen_offsets: {type: int, default: 0}
       max_seqlen: {type: "int | None", default: null}
       validate_inputs: {type: bool, default: false, kw_only: true}
     types:
@@ -228,15 +229,19 @@ RoPECosSinFwdOp:
       x: {dtype: T, shape: "Rows[present(cu_seqlens), B, S, Tt, H, D]", mutated: inplace}
       cos: {dtype: C, shape: "[P, Rh]"}
       sin: {dtype: Cs, shape: "[P, Rh]"}
-      cu_seqlens: {dtype: I, shape: "[B + 1]", optional: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)", "max_segment(max_seqlen.value)"]}
+      cu_seqlens: {dtype: I, shape: "[B + 1]", type: "Tensor | None", default: null, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)", "max_segment(max_seqlen)"]}
+      seqlen_offsets: {type: "int | Tensor", dtype: O, shape: "[B]", default: 0, values: "random_ints((B,), 0, P - L + 1)", requires: ["in_range(0, P - L + 1)"]}
     outputs:
       output: {dtype: T, shape: "Rows[present(cu_seqlens), B, S, Tt, H, D]", alias: x}
+    let:
+      # The rows of one sequence: S dense; packed, at most max_seqlen.
+      L: "max_seqlen if present(cu_seqlens) and present(max_seqlen) else S"
     shape_rules:
     - "Rh > 0 and 2 * Rh <= D"
-    - "seqlen_offsets >= 0"
     # max_seqlen bounds the packed sequences; a dense call ignores it.
     - "not present(cu_seqlens) or present(max_seqlen)"
-    - "seqlen_offsets + (max_seqlen.value if present(cu_seqlens) and present(max_seqlen) else S) <= P"
+    - "L <= P"
+    - "member(seqlen_offsets) != 'int' or 0 <= seqlen_offsets <= P - L"
   workloads:
   # Qwen3.6 vision encoder: 2D RoPE over the full 72-wide head, one cos/sin row per patch.
   - {B: 1, S: 4096, H: 16, D: 72, P: 4096, Rh: 36, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: qwen3.6-vision-4k}
@@ -251,6 +256,9 @@ RoPECosSinFwdOp:
   - {B: 1, S: 4096, H: 64, D: 64, P: 4096, Rh: 32, interleaved: true, inplace: true, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: dsv4-flash-q-tail}
   - {B: 1, S: 4096, H: 1, D: 64, P: 4096, Rh: 32, interleaved: true, inplace: true, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: dsv4-flash-kv-tail}
   - {Tt: 5120, H: 32, D: 128, P: 4096, Rh: 64, seq_lens: [1000, 3000, 1120], max_seqlen: 3000, some: [cu_seqlens], inplace: true, dtype_cases: [{T: bfloat16, C: bfloat16, Cs: bfloat16, I: int32}, {T: float32, C: float32, Cs: float32, I: int64}], label: varlen-inplace}
+  # Llama-3-8B decode: one new token per sequence, each at its own position.
+  - {B: 64, S: 1, H: 32, D: 128, P: 8192, Rh: 64, some: [seqlen_offsets], dtype_cases: [{T: bfloat16, C: float32, Cs: float32, O: int32}], label: llama3-8b-decode}
+  - {Tt: 5120, H: 32, D: 128, P: 8192, Rh: 64, seq_lens: [1000, 3000, 1120], max_seqlen: 3000, some: [cu_seqlens, seqlen_offsets], dtype_cases: [{T: bfloat16, C: bfloat16, Cs: bfloat16, I: int32, O: int32}], label: varlen-offsets}
   roofline:
     # Only the cos/sin rows the sequences reach are read; in place, only the rotated columns.
     func: "tileops._perf.formulas.rope_cos_sin_roofline"

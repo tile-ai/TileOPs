@@ -13,7 +13,7 @@ from collections.abc import Callable, Sequence
 from types import SimpleNamespace
 from typing import Any
 
-from tileops.manifest._dtype_rules import DTYPE_BITS, DTYPE_CATEGORY
+from tileops.manifest._dtype_rules import DTYPE_BITS, DTYPE_CATEGORY, FLOAT8_DTYPES
 
 # The seed both conftests give the global RNG; every private workload RNG derives from it.
 WORKLOAD_SEED = 1235
@@ -74,6 +74,22 @@ def broadcast(*shapes: Sequence[int]) -> tuple[int, ...]:
             raise ValueError(f"shapes {shapes} are not broadcastable")
         out.append(dims.pop() if dims else 1)
     return tuple(out)
+
+
+def concat(shapes: Sequence[Sequence[int]], dim: int) -> tuple[int, ...]:
+    """The shape of `shapes` joined along `dim`: one positive rank, equal extents off `dim`."""
+    if not shapes:
+        raise ValueError("concat of no shapes")
+    rank = len(shapes[0])
+    if rank == 0:
+        raise ValueError("a rank-0 shape has no axis to concatenate along")
+    axis = normalize_axis(dim, rank)
+    for shape in shapes[1:]:
+        if len(shape) != rank or any(
+            a != b for i, (a, b) in enumerate(zip(shape, shapes[0], strict=True)) if i != axis
+        ):
+            raise ValueError(f"shapes {shapes} differ off axis {dim}")
+    return (*shapes[0][:axis], sum(s[axis] for s in shapes), *shapes[0][axis + 1 :])
 
 
 def reduced(
@@ -180,6 +196,35 @@ def promote_int_to_float(dtype: str) -> str:
     return "float32" if category(dtype) == "int" else dtype
 
 
+def promote(dtypes: Sequence[str]) -> str:
+    """`torch.promote_types` folded over a non-empty sequence of dtypes.
+
+    It takes bool, integer and floating dtypes; a float8 dtype promotes only with itself.
+    """
+    if not dtypes:
+        raise ValueError("promote of no dtypes")
+    rank = {"bool": 0, "int": 1, "float": 2}
+    unsupported = [d for d in dtypes if DTYPE_CATEGORY[d] not in rank]
+    if unsupported:
+        raise ValueError(f"promote of {unsupported[0]} is not supported")
+    out = dtypes[0]
+    for d in dtypes[1:]:
+        a, b = sorted((out, d), key=lambda x: (rank[DTYPE_CATEGORY[x]], DTYPE_BITS[x]))
+        if a == b:
+            out = a
+        elif {a, b} & FLOAT8_DTYPES:
+            raise ValueError(f"{a} and {b} do not promote")
+        elif DTYPE_CATEGORY[a] != DTYPE_CATEGORY[b]:
+            out = b
+        elif {a, b} == {"uint8", "int8"}:
+            out = "int16"
+        elif {a, b} == {"float16", "bfloat16"}:
+            out = "float32"
+        else:
+            out = b
+    return out
+
+
 def coalesce_dtype(value: str | None, dtype: str) -> str:
     """`value` when present, else `dtype`."""
     return dtype if value is None else value
@@ -247,6 +292,7 @@ def representable(v: complex, dtype: str) -> bool:
 
 PRIMITIVES: dict[str, Callable[..., Any]] = {
     "broadcast": broadcast,
+    "concat": concat,
     "reduced": reduced,
     "valid_axes": valid_axes,
     "unique_axes": unique_axes,
@@ -264,6 +310,7 @@ PRIMITIVES: dict[str, Callable[..., Any]] = {
     "mhc.expansion": mhc_expansion,
     "promote_int_to_float": promote_int_to_float,
     "coalesce_dtype": coalesce_dtype,
+    "promote": promote,
     "balanced_sizes": balanced_sizes,
     "repeat": repeat,
     "category": category,
@@ -288,6 +335,7 @@ def namespace() -> dict[str, object]:
 # name; a quoted union restricts a string argument to its members.
 PRIMITIVE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "broadcast": (("Shape*",), "Shape"),
+    "concat": (("Seq[Shape]", "Int"), "Shape"),
     "reduced": (("Shape", "Axes", "Bool", "'full' | 'noop' | 'reject'"), "Shape"),
     "valid_axes": (("Axes", "Int"), "Bool"),
     "unique_axes": (("Axes", "Int"), "Bool"),
@@ -305,6 +353,7 @@ PRIMITIVE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "mhc.expansion": (("Int",), "Dim"),
     "promote_int_to_float": (("DType",), "DType"),
     "coalesce_dtype": (("Maybe[DType]", "DType"), "DType"),
+    "promote": (("Seq[DType]",), "DType"),
     "balanced_sizes": (("Int", "Int"), "Seq[Int]"),
     "repeat": (("Int", "Int"), "Seq[Int]"),
     "category": (("Value",), "'bool' | 'int' | 'float' | 'complex'"),
@@ -410,11 +459,19 @@ def topk_ids(rng: random.Random, rows: int, k: int, experts: int) -> list[list[i
     return [rng.sample(range(experts), k) for _ in range(rows)]
 
 
-def random_ids(rng: random.Random, rows: int, width: int, upper: int) -> list[list[int]]:
-    """Rows of independent indices in [0, upper), allowing repeated tokens."""
-    if min(rows, width, upper) <= 0:
-        raise ValueError("random_ids needs positive arguments")
-    return [[rng.randrange(upper) for _ in range(width)] for _ in range(rows)]
+def random_ints(rng: random.Random, shape: Sequence[int], lo: int, hi: int) -> Any:
+    """Independent integers in [lo, hi), nested to `shape`: a scalar at rank 0."""
+    if lo >= hi and math.prod(shape) > 0:
+        raise ValueError(f"random_ints needs lo < hi, got [{lo}, {hi})")
+    if any(n < 0 for n in shape):
+        raise ValueError(f"random_ints: shape {shape} has a negative extent")
+
+    def draw(axes: tuple[int, ...]) -> Any:
+        if not axes:
+            return rng.randrange(lo, hi)
+        return [draw(axes[1:]) for _ in range(axes[0])]
+
+    return draw(tuple(shape))
 
 
 def sample_indices(rng: random.Random, n: int, hi: int) -> list[int]:
@@ -620,7 +677,7 @@ GENERATORS: dict[str, Callable[..., Any]] = {
     "nsa_block_indices": nsa_block_indices,
     "nsa_block_counts": nsa_block_counts,
     "topk_ids": topk_ids,
-    "random_ids": random_ids,
+    "random_ints": random_ints,
     "sample_indices": sample_indices,
     "moe.layout_metadata": moe_layout_metadata,
     "moe.masked_routed_metadata": moe_masked_routed_metadata,
@@ -643,7 +700,7 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "nsa_block_indices": (("Seq[Int]", "Int", "Int", "Int"), "Value"),
     "nsa_block_counts": (("Int", "Int", "Int"), "Value"),
     "topk_ids": (("Int", "Int", "Int"), "Value"),
-    "random_ids": (("Int", "Int", "Int"), "Value"),
+    "random_ints": (("Seq[Int]", "Int", "Int"), "Value"),
     "sample_indices": (("Int", "Int"), "Value"),
     "moe.layout_metadata": (("ADT", "Int", "Int"), "Value"),
     "moe.masked_routed_metadata": (("ADT", "Int", "Int"), "Value"),
@@ -653,7 +710,8 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "key_windows": (("Seq[Int]", "Int", "Int", "'start' | 'end'"), "Value"),
     "full": (("Seq[Int]", "Int"), "Value"),
 }
-# The rank of each generator's result where it is fixed; `full`'s is the length of its shape.
+# The rank of each generator's result where it is fixed; `full`'s and `random_ints`' is the
+# length of their shape.
 GENERATOR_RANKS = {
     "as_tensor": 1,
     "prefix_sum": 1,
@@ -666,7 +724,6 @@ GENERATOR_RANKS = {
     "nsa_block_indices": 3,
     "nsa_block_counts": 2,
     "topk_ids": 2,
-    "random_ids": 2,
     "sample_indices": 1,
     "moe.layout_metadata": 1,
     "moe.masked_routed_metadata": 1,
@@ -688,7 +745,7 @@ GENERATOR_SHAPES: dict[str, Callable[..., tuple[int, ...]]] = {
     "nsa_block_indices": lambda L, block, selected, heads: (sum(L), heads, selected),
     "nsa_block_counts": lambda tokens, heads, selected: (tokens, heads),
     "topk_ids": lambda rows, k, experts: (rows, k),
-    "random_ids": lambda rows, width, upper: (rows, width),
+    "random_ints": lambda shape, lo, hi: tuple(shape),
     "sample_indices": lambda n, hi: (n,),
     "moe.layout_metadata": lambda layout, rows, experts: (
         (rows,) if layout.kind == "contiguous" and layout.metadata_kind == "per_row" else (experts,)
@@ -715,7 +772,7 @@ RANDOM_GENERATORS = frozenset(
         "nsa_block_indices",
         "nsa_block_counts",
         "topk_ids",
-        "random_ids",
+        "random_ints",
         "sample_indices",
         "causal_topk_indices",
         "attn.sparse_topk_positions",

@@ -197,31 +197,25 @@ def test_rope_input_off_a_vector_boundary(rope_layout: str, variant: str) -> Non
 def test_rope_longrope_rejects_a_zero_rescale_factor() -> None:
     from tileops._ops.rope import LongRoPEFwdOp
 
-    rescale = torch.tensor([1.0, 0.0, 2.0, 1.5], device=run_device())
+    rescale = [1.0, 0.0, 2.0, 1.5]
     with pytest.raises(ValueError, match="rescale_factors"):
         LongRoPEFwdOp(rescale_factors=rescale)
 
 
 @pytest.mark.smoke
-def test_rope_longrope_rescale_factors_written_in_inference_mode_recompute_its_tables() -> None:
-    """A write in place to a construction tensor is seen by the next call, for an ordinary
-    tensor through its version and for an inference tensor, which has none; so is a write
-    back to its first values."""
-    import contextlib
-
+def test_rope_longrope_rescale_factors_edited_in_place_recompute_its_tables() -> None:
+    """An edit in place to the factors list is seen by the next call, and so is an edit back
+    to its first values."""
     from tileops._ops.rope import LongRoPEFwdOp
 
-    for mode in (contextlib.nullcontext, torch.inference_mode):
-        with mode():
-            rescale = torch.ones(64, device=run_device())
-            extra = {"rescale_factors": rescale}
-            test = RoPETest("longrope", "1d", 1, 8, 1, 128, torch.float16, extra)
-            (x,) = test.gen_inputs()
-            op = LongRoPEFwdOp(rescale_factors=rescale)
-            op(x)
-            for value in (2.0, 1.0):
-                rescale.fill_(value)
-                test.check(op, x)
+    rescale = [1.0] * 64
+    test = RoPETest("longrope", "1d", 1, 8, 1, 128, torch.float16, {"rescale_factors": rescale})
+    (x,) = test.gen_inputs()
+    op = LongRoPEFwdOp(rescale_factors=rescale)
+    op(x)
+    for value in (2.0, 1.0):
+        rescale[:] = [value] * 64
+        test.check(op, x)
 
 
 @pytest.mark.smoke
@@ -340,7 +334,7 @@ def test_rope_longrope_1d(
     from tileops._ops.rope import LongRoPEFwdOp
 
     half = head_dim // 2
-    rescale = torch.linspace(1.0, 2.0, half, device=run_device())
+    rescale = torch.linspace(1.0, 2.0, half).tolist()
     max_pos = 16384
     orig_max_pos = 4096
     extra = {
@@ -367,7 +361,7 @@ def test_rope_longrope_2d(
     from tileops._ops.rope import LongRoPEFwdOp
 
     half = head_dim // 2
-    rescale = torch.linspace(1.0, 2.0, half, device=run_device())
+    rescale = torch.linspace(1.0, 2.0, half).tolist()
     max_pos = 16384
     orig_max_pos = 4096
     extra = {

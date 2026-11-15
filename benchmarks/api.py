@@ -30,7 +30,7 @@ from tileops._utils.cupti import Sample, median_busy_ms
 from tileops.manifest import _manifest_key, load_adts, load_manifest, load_workloads
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
-from tileops.manifest._workload import Call, instantiate
+from tileops.manifest._workload import Call, Elements, instantiate
 from workloads.calls import call_workload
 from workloads.device import torch_compile_unavailable
 from workloads.numerics import CheckResult, Request, check_inputs_preserved, verify
@@ -125,7 +125,7 @@ class Case:
     def arguments(self) -> dict:
         """The op's constructor arguments."""
         arguments = getattr(self.workload, "arguments", None)
-        return arguments() if arguments is not None else self._call.arguments({})
+        return arguments() if arguments is not None else self._call.arguments()
 
     @functools.cached_property
     def reference(self) -> Callable | None:
@@ -146,7 +146,10 @@ class Case:
     def params(self) -> dict:
         """The report parameters: each tensor's shape and dtype, and the manifest parameters."""
         tensors = {
-            name: (tuple(shape), dtype) for name, (shape, dtype) in self._call.tensors.items()
+            name: tuple((tuple(shape), dtype) for shape, dtype in value.items)
+            if isinstance(value, Elements)
+            else (tuple(value[0]), value[1])
+            for name, value in self._call.tensors.items()
         }
         return tensors | {name: _report_value(v) for name, v in self._call.params.items()}
 

@@ -1279,23 +1279,30 @@ def embedding_roofline(call: CallView) -> tuple[int, int]:
 
 def rope_cos_sin_roofline(call: CallView) -> tuple[int, int]:
     """3 per rotated value. Out of place every value of x is read and written; in place only
-    the rotated columns. cos and sin are read on the rows the sequences reach: S dense, the
-    longest sequence packed, none when there is nothing to rotate."""
+    the rotated columns. cos and sin are read on the distinct rows the sequences reach: each
+    sequence's rows from its offset, none when there is nothing to rotate."""
     indices = call.indices
     rotated = 2 * indices["Rh"]
     if call.present("cu_seqlens"):
         bounds = call.metadata_values("cu_seqlens")
         tokens = indices["Tt"]
-        rows = max((b - a for a, b in zip(bounds, bounds[1:], strict=False)), default=0)
+        lengths = [b - a for a, b in zip(bounds, bounds[1:], strict=False)]
     else:
-        tokens, rows = indices["B"] * indices["S"], indices["S"]
-    if tokens * indices["H"] == 0:
-        rows = 0
+        tokens, lengths = indices["B"] * indices["S"], [indices["S"]] * indices["B"]
+    if call.member("seqlen_offsets") == "Tensor":
+        offsets = call.metadata_values("seqlen_offsets")
+    else:
+        offsets = [0] * len(lengths)
+    reached = set()
+    for start, length in zip(offsets, lengths, strict=True):
+        reached.update(range(start, start + length))
+    rows = len(reached) if tokens * indices["H"] else 0
     width = rotated if indices["inplace"] else indices["D"]
     moved = 2 * tokens * indices["H"] * width * _elem_bytes(call, "x")
     moved += rows * indices["Rh"] * (_elem_bytes(call, "cos") + _elem_bytes(call, "sin"))
-    if call.present("cu_seqlens"):
-        moved += call.bytes("cu_seqlens")
+    for metadata in ("cu_seqlens", "seqlen_offsets"):
+        if call.member(metadata) == "Tensor":
+            moved += call.bytes(metadata)
     return 3 * tokens * indices["H"] * rotated, moved
 
 

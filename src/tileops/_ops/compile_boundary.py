@@ -127,11 +127,6 @@ class _Encoder:
             return f"{kind.__name__}:{value!r}"
         if kind in (torch.dtype, torch.device):
             return f"{kind.__name__}:{value}"
-        if kind in (torch.Tensor, torch.nn.Parameter):
-            if value.layout is not torch.strided or value.is_nested:
-                raise _OpaqueStateError
-            # The fake reads a construction-time tensor's layout, never its contents.
-            return f"Tensor:{tuple(value.shape)}:{value.stride()}:{value.dtype}:{value.device}"
         if isinstance(value, (type, enum.Enum)):
             cls = value if isinstance(value, type) else kind
             name = _qualified_name(cls)

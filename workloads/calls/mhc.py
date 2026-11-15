@@ -12,7 +12,7 @@ def _pre(call) -> MHCPreWorkload:
         call.indices["n"],
         call.indices["c_x"],
         getattr(torch, call.tensors["x"][1]),
-        **call.arguments({}),
+        **call.arguments(),
     )
 
 

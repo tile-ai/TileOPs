@@ -1,6 +1,7 @@
 """Workload definitions for the RoPE op family."""
 
 import math
+from collections.abc import Sequence
 
 import torch
 
@@ -193,7 +194,7 @@ def longrope_frequency_tables(
     head_dim: int,
     seq_len: int,
     base: float = 10000.0,
-    rescale_factors: torch.Tensor | None = None,
+    rescale_factors: Sequence[float] | None = None,
     max_position: int = 4096,
     original_max_position: int = 4096,
     dtype: torch.dtype = torch.float32,
@@ -214,8 +215,7 @@ def longrope_frequency_tables(
     divisor = base ** (dim_indices / half)
 
     if rescale_factors is not None:
-        rf = rescale_factors.to(device=device, dtype=torch.float32)
-        divisor = rf * divisor
+        divisor = torch.tensor(rescale_factors, device=device, dtype=torch.float32) * divisor
 
     freqs = 1.0 / divisor
 
@@ -354,8 +354,6 @@ class RoPECall(CallWorkload):
         }[name]
         seq_len = x.shape[0] if p["input_layout"] == "1d" else x.shape[1]
         kwargs = {k: v for k, v in p.items() if k not in ("input_layout", "rope_layout")}
-        if "rescale_factors" in self.call.specs:
-            kwargs["rescale_factors"] = self.tensors["rescale_factors"]
         cos, sin = tables(x.shape[-1], seq_len, dtype=x.dtype, device=x.device, **kwargs)
         rotate = (
             ref_rope_non_neox if p.get("rope_layout", "neox") == "interleaved" else ref_rope_neox
@@ -368,9 +366,6 @@ class RoPECall(CallWorkload):
 
     def gen_inputs(self):
         return tuple(self.tensors[name] for name in self.call.signature.inputs)
-
-    def arguments(self):
-        return self.call.arguments(self.tensors)
 
 
 def ref_rope_neox_position_ids(

@@ -18,7 +18,7 @@ Conv1dFwdOp:
     inputs:
       input: {dtype: T, shape: "[N, C_in, L_in]"}
       weight: {dtype: T, shape: "[C_out, C_in_g, kW]"}
-      bias: {dtype: T, shape: "[C_out]", optional: true}
+      bias: {dtype: T, shape: "[C_out]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[N, C_out, L_out]"}
     let:
@@ -74,7 +74,7 @@ Conv2dFwdOp:
     inputs:
       input: {dtype: T, shape: "[N, C_in, H, W]"}
       weight: {dtype: T, shape: "[C_out, C_in_g, kH, kW]"}
-      bias: {dtype: T, shape: "[C_out]", optional: true}
+      bias: {dtype: T, shape: "[C_out]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[N, C_out, out_H, out_W]"}
     let:
@@ -140,7 +140,7 @@ Conv3dFwdOp:
     inputs:
       input: {dtype: T, shape: "[N, C_in, D, H, W]"}
       weight: {dtype: T, shape: "[C_out, C_in_g, kD, kH, kW]"}
-      bias: {dtype: T, shape: "[C_out]", optional: true}
+      bias: {dtype: T, shape: "[C_out]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[N, C_out, out_D, out_H, out_W]"}
     let:

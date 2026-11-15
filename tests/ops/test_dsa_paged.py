@@ -29,7 +29,7 @@ def _check(call):
         workload.ref_program,
         inputs,
         evidence=workload.verification(*inputs),
-        requests={"tileops": Request(DSAPagedFwdOp(**call.arguments({})), inputs)},
+        requests={"tileops": Request(DSAPagedFwdOp(**call.arguments()), inputs)},
     )
 
 
@@ -104,4 +104,4 @@ def test_dsa_paged_refuses(row, reason, arch) -> None:
     call = _call(**row)
     inputs = DSAPagedCall(call).gen_inputs()
     with pytest.raises(Exception, match=reason):
-        DSAPagedFwdOp(**call.arguments({}))(*inputs)
+        DSAPagedFwdOp(**call.arguments())(*inputs)

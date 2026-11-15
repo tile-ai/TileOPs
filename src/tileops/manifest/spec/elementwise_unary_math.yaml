@@ -498,7 +498,7 @@ DropoutFwdOp:
       output: {dtype: T, shape: "[*S]", alias: input}
     shape_rules:
     - "0.0 <= p <= 1.0"
-    - "not present(seed) or seed.value >= 0"
+    - "not present(seed) or seed >= 0"
 
   workloads:
   # Normal kernel path. p=0, p=1, and training=false are short-circuit paths

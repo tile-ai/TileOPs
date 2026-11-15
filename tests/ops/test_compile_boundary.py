@@ -805,7 +805,7 @@ def _rope_cases():
         return lambda: (op_cls(input_layout="2d"), (_x(2, _SEQ_LEN, _HEADS, _D),))
 
     def longrope():
-        rescale = torch.linspace(1.0, 2.0, _D // 2, device=run_device())
+        rescale = torch.linspace(1.0, 2.0, _D // 2).tolist()
         return LongRoPEFwdOp(rescale_factors=rescale), (_x(_SEQ_LEN, _D),)
 
     def position_ids():

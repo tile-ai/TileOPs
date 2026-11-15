@@ -51,7 +51,7 @@ def _gemm_fp8_block_scaled():
 def _selective_scan():
     sizes = {"Bsz": 2, "S": 1024, "Di": 64, "N": 16, "G": 1, "delta_softplus": True}
     call = manifest_call("SelectiveScanFwdOp", {"T": "bfloat16"}, **sizes, some=["D", "z"])
-    return SelectiveScanFwdOp(**call.arguments({})), list(SelectiveScanFwdCall(call).gen_inputs())
+    return SelectiveScanFwdOp(**call.arguments()), list(SelectiveScanFwdCall(call).gen_inputs())
 
 
 @pytest.mark.parametrize(

@@ -45,7 +45,12 @@ from tileops.manifest._plan import (  # noqa: E402
     signature_schema_errors as _signature_schema_errors,
 )
 from tileops.manifest._registry import op_class  # noqa: E402
-from tileops.manifest._signature import parse_signature  # noqa: E402
+from tileops.manifest._signature import (  # noqa: E402
+    SLOT_TYPES,
+    SignatureError,
+    members,
+    parse_signature,
+)
 from tileops.manifest._workload import check_workloads as _check_workloads  # noqa: E402
 
 MANIFEST_DIR = REPO_ROOT / "src" / "tileops" / "manifest" / "spec"
@@ -326,11 +331,10 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     `__init__` takes `signature.params` in order with their defaults, a `kw_only` one after
     `*`, then keyword-only `target`, and only the injected objects the class lists in
     `injected_parameters`. `forward` begins with the call-time inputs in order, positional,
-    the optional ones defaulting to `None` and the others to nothing, then keyword-only `out`
-    defaulting to `None` when an output is a buffer, then each `kw_only` input in order,
-    keyword-only, defaulting to `None` unless it is the required buffer `out`. The `op` stages
-    of `composition`
-    are `delegate_types`, and an entry with a composition lists `kernel_types` as its `kernel`
+    each defaulting to its declared `default` or to nothing, then keyword-only `out` defaulting
+    to `None` when an output is a buffer, then each `kw_only` input in order, keyword-only,
+    with its declared `default` or none. The `op` stages of `composition` are
+    `delegate_types`, and an entry with a composition lists `kernel_types` as its `kernel`
     stages, each in order. The class names compile-boundary operators in `compile_op_names`
     exactly when the entry has a call-time tensor input and no composition.
     """
@@ -349,8 +353,6 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     params = list(sig.get("params") or {})
     for i, name in enumerate(params):
         decl = sig["params"][name]
-        if "shape" in decl and decl.get("optional", False) is not False:
-            decl = {**decl, "default": None}  # an optional construction-time tensor
         got = init[i] if i < len(init) else None
         kind = keyword if decl.get("kw_only") else inspect.Parameter.POSITIONAL_OR_KEYWORD
         if got is None or got.name != name or got.kind is not kind:
@@ -383,9 +385,12 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     positional = [n for n in inputs if n not in keyword_inputs]
     for i, name in enumerate(positional + (["out"] if buffered else []) + keyword_inputs):
         got = forward[i] if i < len(forward) else None
-        optional = (name == "out" and buffered) or (
-            name in inputs and inputs[name].get("optional", False) is not False
-        )
+        if name == "out" and buffered:
+            want = None
+        elif name in inputs and "default" in inputs[name]:
+            want = inputs[name]["default"]
+        else:
+            want = empty
         kind, what = (
             (inspect.Parameter.POSITIONAL_OR_KEYWORD, "positional")
             if name in positional
@@ -393,9 +398,25 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
         )
         if got is None or got.name != name or got.kind is not kind:
             errors.append(f"{where}: forward parameter {i + 1} must be {name!r}, {what}")
-        elif got.default is not (None if optional else empty):
-            want = "default to None" if optional else "have no default"
-            errors.append(f"{where}: forward {name!r} must {want}")
+        elif got.default is not want and (
+            type(got.default) is not type(want) or got.default != want
+        ):
+            said = "have no default" if want is empty else f"default to {want!r}"
+            errors.append(f"{where}: forward {name!r} must {said}")
+    declared = len(positional) + buffered + len(keyword_inputs)
+    execution = {p.name for p in forward[declared:]}
+    for name, decl in inputs.items():
+        try:
+            found = members((decl or {}).get("type", "Tensor"))
+        except SignatureError:
+            continue  # the signature check reports it
+        if len(found) > 1:
+            errors += [
+                f"{where}: forward execution parameter {name + SLOT_TYPES[m][1]!r} takes the "
+                f"name of an operator slot of {name!r}"
+                for m in found
+                if m != "None" and name + SLOT_TYPES[m][1] in execution
+            ]
     bounded = bool(inputs) and not entry.get("composition")
     if bool(getattr(cls, "compile_op_names", ())) != bounded:
         errors.append(

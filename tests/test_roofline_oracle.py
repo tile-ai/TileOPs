@@ -36,6 +36,7 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     drop, duplicate or substitute one of them.
     """
     from tileops.manifest import load_manifest
+    from tileops.manifest._signature import members
 
     signature = load_manifest()[op_name]["signature"]
     inputs = signature.get("inputs") or {}
@@ -65,8 +66,8 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
             continue
         if tensors[name] is not None:
             continue
-        assert (spec or {}).get("optional"), (
-            f"{op_name}: {name} is not optional and the case passes None"
+        assert set(members((spec or {}).get("type", "Tensor"))) - {"Tensor", "list[Tensor]"}, (
+            f"{op_name}: {name} holds only tensors and the case passes none"
         )
     return _nbytes(
         *(
@@ -99,7 +100,7 @@ _F16, _BF16, _F16_KV = {"T": "float16"}, {"T": "bfloat16"}, {"T": "float16", "KV
 _VARLEN, _MHA, _DSA = "GQAVarlenFwdOp", "MHAPagedFwdOp", "DSADenseFwdOp"
 _INDEXER, _GG = "FP8LightningIndexerFwdOp", "GroupedGEMMFwdOp"
 _ONE_HEAD = {"H": 1, "H_kv": 1, "D": 64}
-_ROPE = {"pos_encoding_mode": "rope"}
+_ROPE = {"pos_encoding_mode": "rope", "some": ["rope_cos", "rope_sin"]}
 _DENSE_WINDOW = {**_ONE_HEAD, "B": 1, "S_q": 1, "S_kv": 8, "is_causal": True, "window_size_left": 0}
 _PAGED_ROPE = {
     **_ONE_HEAD,
@@ -470,7 +471,9 @@ class TestBytesOracle:
             "is_causal": True,
         }
         plain, _ = _evaluated("GQAVarlenFwdOp", row, {"T": "float16"})
-        sink, _ = _evaluated("GQAVarlenFwdOp", {**row, "some": ["sinks"]}, {"T": "float16"})
+        sink, _ = _evaluated(
+            "GQAVarlenFwdOp", {**row, "some": [*row.get("some", []), "sinks"]}, {"T": "float16"}
+        )
         # Two nonempty rows per head each add subtract/exp/add, and one FP32 logit
         # per head is read. The last request stays zero regardless of its sink.
         assert sink == (plain[0] + 8 * 2 * 3, plain[1] + 8 * 4)
@@ -707,7 +710,7 @@ def _evaluated(op_name: str, row: dict, case: dict, **values):
     call = dataclasses.replace(call, specs=specs)
     tensors = call.materialize("meta")
     cls = signature_class(op_name, entry)
-    op = cls(**call.arguments(tensors))
+    op = cls(**call.arguments())
     checked = cls._signature.check(op, {t: tensors[t] for t in plan.sig.inputs})
     metadata = {n: torch.tensor(call.metadata_values(n)) for n in checked.metadata}
     op._last_call = dataclasses.replace(checked, metadata=metadata)
@@ -823,7 +826,7 @@ class TestSpecOnlyRecounts:
 
     def test_paged_kv_cache_write_moves_only_the_tokens_with_a_slot(self):
         name = "PagedKVCacheWriteFwdOp"
-        row = {"N": 5, "H_kv": 2, "D": 4, "NP": 4, "PS": 3, "some": ["k_scale"]}
+        row = {"N": 5, "H_kv": 2, "D": 4, "NP": 4, "PS": 3, "some": ["k_scale", "v_scale"]}
         slots = [7, -1, 2, -1, 11]
         (flops, moved), _call = _evaluated(
             name, row, {"T": "bfloat16", "KV": "float8_e4m3fn"}, slot_mapping=slots
@@ -854,7 +857,7 @@ class TestSpecOnlyRecounts:
             "P": 16,
             "seq_lens": [3, 2],
             "fuse_rope": True,
-            "some": ["kv_scale"],
+            "some": ["kv_scale", "cos_sin_cache", "positions"],
         }
         slots = [5, -1, 0, 8, -1]  # tokens 0, 2 and 3, at positions 0, 2 and 0
         case = {"T": "bfloat16", "KV": "float8_e4m3fn", "C": "float32"}
@@ -1010,9 +1013,28 @@ class TestSpecOnlyRecounts:
             cos=((rows, 2), _F32),
             sin=((rows, 2), sin),
             cu_seqlens=((3,), _I32) if packed else None,
+            seqlen_offsets=None,
             output=None if packed else x,  # in place, the output is x
         )
         assert flops == 3 * tokens * 2 * 4
+
+    def test_rope_cos_sin_reads_the_union_of_the_rows_each_offset_reaches(self):
+        name = "RoPECosSinFwdOp"
+        row = {"B": 2, "S": 3, "H": 2, "D": 8, "P": 6, "Rh": 2, "some": ["seqlen_offsets"]}
+        case = {"T": "bfloat16", "C": "float32", "Cs": "float32", "O": "int32"}
+        (flops, moved), _call = _evaluated(name, row, case, seqlen_offsets=[0, 2])
+        x = ((2, 3, 2, 8), _BF16)
+        # Rows 0..2 and 2..4: five distinct rows.
+        assert moved == _ledger(
+            name,
+            x=x,
+            cos=((5, 2), _F32),
+            sin=((5, 2), _F32),
+            cu_seqlens=None,
+            seqlen_offsets=((2,), _I32),
+            output=x,
+        )
+        assert flops == 3 * 6 * 2 * 4
 
     def test_rope_cos_sin_reads_no_table_row_when_nothing_rotates(self):
         name = "RoPECosSinFwdOp"
@@ -1090,7 +1112,9 @@ class TestSpecOnlyRecounts:
         }
         dtypes = {"T": "float16", "KV": "float16"}
         plain, _ = _evaluated("GQAPagedFwdOp", row, dtypes)
-        sink, _ = _evaluated("GQAPagedFwdOp", {**row, "some": ["sinks"]}, dtypes)
+        sink, _ = _evaluated(
+            "GQAPagedFwdOp", {**row, "some": [*row.get("some", []), "sinks"]}, dtypes
+        )
         assert sink == (plain[0] + 8 * 3 * 3, plain[1] + 8 * 4)
 
 

@@ -108,7 +108,7 @@ class CallWorkload(WorkloadBase):
         return tuple(tensors[t] for t in self.call.signature.inputs)
 
     def arguments(self) -> dict[str, Any]:
-        return self.call.arguments(self.call.materialize(self.device))
+        return self.call.arguments()
 
 
 class RandnWorkload(WorkloadBase):

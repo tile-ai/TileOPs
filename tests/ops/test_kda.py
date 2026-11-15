@@ -284,7 +284,7 @@ def _raw_gate_test(
         some=list(some),
         **shape,
     )
-    return KDARawGateTest(call), KDAFwdOp(**call.arguments({}))
+    return KDARawGateTest(call), KDAFwdOp(**call.arguments())
 
 
 @pytest.mark.parametrize(
@@ -493,7 +493,7 @@ def test_kda_gate_modes_and_operands_remain_call_local(batch, seqlen, heads):
         )
         test = KDARawGateTest(call)
         inputs = list(test.gen_inputs())
-        op = KDAFwdOp(**call.arguments({}))
+        op = KDAFwdOp(**call.arguments())
         test.check(op, *inputs)
         if raw:
             inputs[8].add_(0.5)

@@ -16,6 +16,8 @@ __all__ = [
     "DTYPE",
     "INT",
     "NONE",
+    "STR",
+    "TENSOR",
     "VALUE",
     "Kind",
     "common",
@@ -39,7 +41,7 @@ __all__ = [
 class Kind:
     """The kind of a manifest value: a `tag` and the structure that tag carries."""
 
-    # One of Int, Bool, Str, DType, Seq, Maybe, Union, ADT, None, Value.
+    # One of Int, Bool, Str, DType, Seq, Maybe, Union, ADT, None, Value, Tensor.
     tag: str
     # Int: never negative (`Dim`).
     nonneg: bool = False
@@ -89,6 +91,8 @@ class Kind:
 
 INT, DIM, BOOL = Kind("Int"), Kind("Int", nonneg=True), Kind("Bool")
 STR, DTYPE, NONE, VALUE = Kind("Str"), Kind("DType"), Kind("None"), Kind("Value")
+# A call-time argument holding a tensor or a tensor sequence: never read as a value.
+TENSOR = Kind("Tensor")
 
 
 def seq(item: Kind | None, length: int | None = None) -> Kind:
@@ -163,7 +167,7 @@ def parse_type(text: object, adts: dict) -> Kind:
     simple = {"int": INT, "bool": BOOL, "None": NONE, "torch.dtype": DTYPE, "str": STR}
     if t in simple:
         return simple[t]
-    if t in ("float", "Number", "dict", "torch.Tensor"):
+    if t in ("float", "Number", "dict"):
         return VALUE
     if _quoted(t):
         return literals([t[1:-1]])
@@ -173,23 +177,15 @@ def parse_type(text: object, adts: dict) -> Kind:
         return adt(t)
     # A sequence's element type maps by this same table; a fixed tuple also carries its arity.
     if (inner := _bracket(t, "list")) is not None:
-        return seq(_element(inner, text, adts))
+        return seq(parse_type(inner, adts))
     if (inner := _bracket(t, "tuple")) is not None:
         items = _commas(inner)
         if len(items) == 2 and items[1] == "...":
-            return seq(_element(items[0], text, adts))
-        return seq(union(*(_element(i, text, adts) for i in items)), len(items))
+            return seq(parse_type(items[0], adts))
+        return seq(union(*(parse_type(i, adts) for i in items)), len(items))
     if t.replace(".", "_").isidentifier():
         return VALUE  # another Python object
     raise ValueError(f"{text!r} is not a parameter type")
-
-
-def _element(text: str, whole: object, adts: dict) -> Kind:
-    """A container's element kind; only `Int` and `Maybe[Int]` are admitted."""
-    kind = parse_type(text, adts)
-    if kind not in (INT, Kind("Maybe", item=INT)):
-        raise ValueError(f"{whole!r}: a sequence holds int or int | None, not {text}")
-    return kind
 
 
 def _commas(text: str) -> list[str]:

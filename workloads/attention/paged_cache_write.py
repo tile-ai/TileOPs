@@ -153,11 +153,3 @@ class PagedKVCacheWriteCall(CallWorkload, PagedKVCacheWriteWorkload):
         )
 
     gen_inputs = PagedKVCacheWriteWorkload.gen_inputs
-
-    def arguments(self):
-        """The op is built from no tensors, so a case needs none to construct it.
-
-        The base materializes the call to hand a construction-time tensor over; this entry
-        declares none, and materializing would allocate both page pools for nothing.
-        """
-        return self.call.arguments({})

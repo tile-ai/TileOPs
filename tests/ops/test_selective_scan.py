@@ -136,7 +136,7 @@ def test_selective_scan(batch, seqlen, dim, dstate, groups, dtype, some, softplu
         some=some,
     )
     test = SelectiveScanFwdTest(call)
-    op = SelectiveScanFwdOp(**call.arguments({}))
+    op = SelectiveScanFwdOp(**call.arguments())
     test.check(op, *test.gen_inputs())
 
 
@@ -186,7 +186,7 @@ def test_selective_scan_growing_rates(packed, carried, sign, drive, rate) -> Non
         seq_idx[:, : 100 if drive else 1] = 0
     if carried:
         initial_states = torch.full_like(initial_states, 1e-10)
-    op = SelectiveScanFwdOp(**call.arguments({}))
+    op = SelectiveScanFwdOp(**call.arguments())
     test.check(op, u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states)
 
 

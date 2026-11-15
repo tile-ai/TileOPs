@@ -19,7 +19,7 @@ manifest entry.
 """
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import ClassVar
 
 import torch
@@ -104,22 +104,11 @@ def _yarn_find_correction_range(
 def _cached_tables(
     op: Op, key: tuple, compute: Callable[[], tuple[torch.Tensor, torch.Tensor]]
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return ``op._freq_cache[key]``, computed again by *compute* once a source changes.
-
-    The sources are the op's params and each construction-time tensor by identity and
-    version. An inference tensor has no version, so its tables are computed on every call.
-    The entry holds the tensors so that no other tensor takes the identity of a freed one.
-    """
-    sig = type(op)._signature.sig
-    tensors = tuple(getattr(op, name, None) for name in sig.ctor_tensors)
-    versions = tuple(
-        None if t is None else (id(t), object() if t.is_inference() else t._version)
-        for t in tensors
-    )
-    sources = (param_state(op, sig), versions)
+    """Return ``op._freq_cache[key]``, computed again by *compute* once a param changes."""
+    sources = param_state(op, type(op)._signature.sig)
     held = op._freq_cache.get(key)
     if held is None or held[0] != sources:
-        held = op._freq_cache[key] = (sources, compute(), tensors)
+        held = op._freq_cache[key] = (sources, compute())
     return held[1]
 
 
@@ -622,7 +611,7 @@ class LongRoPEFwdOp(_RoPEOpBase):
         head_dim: int,
         seq_len: int,
         base: float = 10000.0,
-        rescale_factors: torch.Tensor | None = None,
+        rescale_factors: Sequence[float] | None = None,
         max_position: int = 4096,
         original_max_position: int = 4096,
         dtype: torch.dtype = torch.float32,
@@ -644,9 +633,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
             head_dim: Head dimension.
             seq_len: Sequence length.
             base: Frequency base.
-            rescale_factors: Per-dimension rescale factors (ext_factors) of
-                shape (head_dim // 2,). These multiply the divisor in the
-                inverse-frequency formula.
+            rescale_factors: Per-dimension rescale factors (ext_factors), head_dim // 2
+                of them. These multiply the divisor in the inverse-frequency formula.
             max_position: Extended max position length.
             original_max_position: Original max position length.
             dtype: Output dtype.
@@ -661,8 +649,7 @@ class LongRoPEFwdOp(_RoPEOpBase):
 
         # ext_factors multiply the divisor (matching canonical formula)
         if rescale_factors is not None:
-            rf = rescale_factors.to(device=device, dtype=torch.float32)
-            divisor = rf * divisor
+            divisor = torch.tensor(rescale_factors, device=device, dtype=torch.float32) * divisor
 
         freqs = 1.0 / divisor
 
@@ -683,7 +670,7 @@ class LongRoPEFwdOp(_RoPEOpBase):
         self,
         input_layout: str = "1d",
         base: float = 10000.0,
-        rescale_factors: torch.Tensor | None = None,
+        rescale_factors: Sequence[float] | None = None,
         max_position: int = 4096,
         original_max_position: int = 4096,
         *,
@@ -694,8 +681,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
         Args:
             input_layout: "1d" or "2d".
             base: Frequency base (default 10000).
-            rescale_factors: Per-dimension rescale factors (ext_factors) of shape
-                (head_dim // 2,). These multiply the divisor.
+            rescale_factors: Per-dimension rescale factors (ext_factors), one per
+                frequency pair, head_dim // 2 of them. These multiply the divisor.
             max_position: Extended max position length (default 4096).
             original_max_position: Original max position length
                 (default 4096).
@@ -705,11 +692,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
         Raises:
             ValueError: A rescale factor is zero or NaN; the frequency divides by it.
         """
-        # A meta tensor holds no values to check.
-        if rescale_factors is not None and not rescale_factors.is_meta:
-            defined = (rescale_factors != 0) & ~torch.isnan(rescale_factors)
-            if not bool(defined.all()):
-                raise ValueError("rescale_factors must be nonzero and not NaN")
+        if rescale_factors is not None and any(f == 0 or math.isnan(f) for f in rescale_factors):
+            raise ValueError("rescale_factors must be nonzero and not NaN")
         self.rescale_factors = rescale_factors
         self.max_position = max_position
         self.original_max_position = original_max_position

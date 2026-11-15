@@ -413,5 +413,5 @@ def test_grouped_routing_with_the_shared_expert() -> None:
         some=["correction_bias", "shared_w_gate_up"],
     )
     workload = FusedMoESharedExpertWorkload(call)
-    op = FusedMoESharedExpertFwdOp(**call.arguments({}))
+    op = FusedMoESharedExpertFwdOp(**call.arguments())
     TestBase.check(workload, op, *workload.gen_inputs())

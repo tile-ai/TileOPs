@@ -890,10 +890,6 @@ class FusedQKNormRoPECall(CallWorkload, FusedQKNormRoPEWorkload):
     gen_inputs = FusedQKNormRoPEWorkload.gen_inputs
     ref_program = FusedQKNormRoPEWorkload.ref_program
 
-    def arguments(self):
-        """The op is built from its parameters alone; nothing is materialized for it."""
-        return self.call.arguments({})
-
 
 def fused_add_rms_norm_per_token_quant(x, residual, weight, quant_dtype, eps, scale_ub):
     """vLLM's ``rms_norm_dynamic_per_token_quant`` with a residual, in torch.

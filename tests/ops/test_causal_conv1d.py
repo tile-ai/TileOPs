@@ -108,7 +108,7 @@ def test_causal_conv1d(seq_lens, dim, width, dtype, some, activation) -> None:
         some=some,
     )
     test = CausalConv1dFwdTest(call)
-    op = CausalConv1dFwdOp(**call.arguments({}))
+    op = CausalConv1dFwdOp(**call.arguments())
     test.check(op, *test.gen_inputs(), runs=lambda *args: conv_state_result(op, *args))
 
 
@@ -133,7 +133,7 @@ def test_causal_conv1d_update(batch, dim, width, dtype, some, activation) -> Non
         some=some,
     )
     test = CausalConv1dUpdateFwdTest(call)
-    op = CausalConv1dUpdateFwdOp(**call.arguments({}))
+    op = CausalConv1dUpdateFwdOp(**call.arguments())
     test.check(op, *test.gen_inputs(), runs=lambda *args: conv_state_result(op, *args))
 
 
@@ -179,7 +179,7 @@ def test_prefill_bias(dtype: str) -> None:
     inputs[4].copy_(bias)
     assert inputs[4].is_contiguous() and inputs[4].data_ptr() % 16 != 0
     original = storage.clone()
-    op = CausalConv1dFwdOp(**call.arguments({}))
+    op = CausalConv1dFwdOp(**call.arguments())
 
     def run(*args):
         result = conv_state_result(op, *args)

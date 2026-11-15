@@ -18,12 +18,12 @@ and, in its pyproject::
     [project.entry-points."tileops.backends"]
     acme = "tileops_acme"
 
-A target serves the whole op. ``build_kernel`` takes one positional argument per
-``signature.inputs`` entry in that order, a ``kw_only`` one included, with an
-``optional: true`` input the call did not pass arriving as ``None``, then the
-construction params under ``signature.params`` names. The kernel it returns is called with
-those tensors in the same order, plus a caller-supplied output buffer such as ``out`` by
-keyword. Every tensor is on one device, every input the call does not write is contiguous,
+A target serves the whole op. ``build_kernel`` takes one positional description per
+``signature.inputs`` entry in that order, a ``kw_only`` one included: a ``TensorSpec`` for a
+tensor, a tuple of them for a tensor sequence, the Python type of a call-time scalar, and
+``None`` for an input holding None. The construction params follow under
+``signature.params`` names. The kernel it returns is called with the call's arguments in
+the same order, plus a caller-supplied output buffer such as ``out`` by keyword. Every tensor is on one device, every input the call does not write is contiguous,
 and the call meets the input dtypes and shape rules the manifest states.
 
 Choosing among its own kernels, constructing, caching and compiling all happen inside it, so

@@ -47,25 +47,24 @@ def test_a_call_is_solved_from_its_tensors_as_the_manifest_row_states_it(name):
 
     plan, expected = _smallest_call(name)
     tensors = {}
-    for t in plan.sig.call_tensors:
+    for t in plan.sig.inputs:
         spec = expected.specs[t]
         if spec is None:
-            tensors[t] = None
+            tensors[t] = expected.scalars.get(t)
+        elif isinstance(spec, tuple):
+            tensors[t] = [
+                torch.empty(e.shape, dtype=getattr(torch, e.dtype), device="meta") for e in spec
+            ]
         elif spec.values is not None:
             tensors[t] = torch.tensor(spec.values, dtype=getattr(torch, spec.dtype))
         else:
-            # A construction-time tensor reaches the target with its values; an input's
-            # values are not read.
-            device = "cpu" if t in plan.sig.ctor_tensors else "meta"
-            tensors[t] = torch.empty(spec.shape, dtype=getattr(torch, spec.dtype), device=device)
+            tensors[t] = torch.empty(spec.shape, dtype=getattr(torch, spec.dtype), device="meta")
     inputs = {t: tensors[t] for t in plan.sig.inputs}
-    params = expected.arguments(tensors)
+    params = expected.arguments()
 
     call = _call(name, inputs, params)
 
-    generated = set().union(
-        *(names(parse(t.values)) for t in plan.sig.call_tensors.values() if t.values)
-    )
+    generated = set().union(*(names(parse(t.values)) for t in plan.sig.inputs.values() if t.values))
     assert set(expected.indices) - set(call.indices) <= generated
     assert {n: _comparable(v) for n, v in call.indices.items()} == {
         n: _comparable(expected.indices[n]) for n in call.indices
@@ -80,6 +79,6 @@ def test_a_call_whose_reference_reads_another_input_form_is_refused():
 
     _, call = _smallest_call("GEMMW4A8FwdOp")
     tensors = call.materialize(run_device())
-    kernel = _Reference("GEMMW4A8FwdOp", call.arguments(tensors))
+    kernel = _Reference("GEMMW4A8FwdOp", call.arguments())
     with pytest.raises(UnservedError, match="does not read the call's own inputs"):
         kernel(*(tensors[t] for t in call.signature.inputs))

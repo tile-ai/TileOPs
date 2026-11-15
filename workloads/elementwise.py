@@ -554,9 +554,8 @@ class ElementwiseCall(CallWorkload, ElementwiseWorkload):
         )
 
     def arguments(self) -> dict:
-        # No elementwise op takes a construction-time tensor. A tensorless op's unset
-        # `device` parameter follows the workload's device.
-        arguments = self.call.arguments({})
+        # A tensorless op's unset `device` parameter follows the workload's device.
+        arguments = self.call.arguments()
         if "device" in arguments and arguments["device"] is None:
             arguments["device"] = self.device
         return arguments
