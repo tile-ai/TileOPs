@@ -281,7 +281,7 @@ def _masked_scatter(p, t):
 
 def _rms_norm_gated(p, t):
     # mamba_ssm.ops.triton.layernorm_gated.rms_norm_ref; the sigmoid gate follows
-    # fla.modules.fused_norm_gate.rms_norm_gated
+    # fla.modules.norm.fused_norm_gate.rms_norm_gated
     x, z, weight, bias = t["x"], t["z"], t["weight"], t["bias"]
     n = x.shape[-1]
     group = n if p["group_size"] is None else p["group_size"]

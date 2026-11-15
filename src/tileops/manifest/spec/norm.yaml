@@ -388,8 +388,8 @@ RMSNormGatedFwdOp:
   # RMSNorm over each group of group_size columns (all N when group_size is None), scaled by
   # weight and shifted by bias, gated by act(z) when z is passed: norm(x) * act(z) with
   # norm_before_gate, else norm(x * act(z)). act is silu, or sigmoid as `activation` selects
-  # in fla.modules.fused_norm_gate.rms_norm_gated. Computed in float32, rounded once to x's
-  # dtype.
+  # in fla.modules.norm.fused_norm_gate.rms_norm_gated. Computed in float32, rounded once
+  # to x's dtype.
   family: norm
   status: spec-only
   ref_api: mamba_ssm.ops.triton.layernorm_gated.rmsnorm_fn
