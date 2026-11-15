@@ -346,14 +346,13 @@ class Op(ABC):
     _keys_by_interface: Mapping[str, tuple[str, ...]] = MappingProxyType({})
     # The binding caches, built empty by ``__init__`` and emptied by ``_reset_binding``: resolved
     # entries by ``(interface, call spec)``, built entries by interface and
-    # ``(implementation, identity)``, and the kernels a target built by device and inputs, alone
-    # and with the versions of the tensor params each was built at.
+    # ``(implementation, identity)``, and the kernels a target built by device and inputs, each
+    # with the versions of the tensor params it was built at.
     _entries_by_call: dict[tuple[str, Hashable], object]
     # The most call specs ``_entries_by_call`` holds; the oldest is evicted past it.
     _MAX_DISPATCHED_CALLS: ClassVar[int] = 256
     _built_entries: dict[str, dict[Hashable, object]]
-    _target_kernels: dict[tuple, object]
-    _target_built: dict[tuple, tuple]
+    _target_kernels: dict[tuple, tuple[object, tuple]]
     # Held sub-ops, ``{stage: {identity: op}}``, and which stage holds each sub-op, by its
     # ``id``. Built empty by ``__init__``; a failed call keeps them.
     _delegates: dict[str, dict[Hashable, "Op"]]
@@ -483,7 +482,6 @@ class Op(ABC):
         # The binding caches and the sub-op tables, so no method asks whether they exist;
         # installing built the two entry caches.
         self._target_kernels = {}
-        self._target_built = {}
         # Held while an entry is built; reentrant, since a build may resolve another entry.
         self._building = threading.RLock()
         self._delegates = {}
@@ -1246,7 +1244,7 @@ class Op(ABC):
         )
         named = dict(zip(names, inputs, strict=True))
         # Each kernel with the versions it was built at, read and written as one entry.
-        built = self._target_built
+        built = self._target_kernels
         entry = built.get(signature)
         if entry is None or entry[1] != versions or None in versions:
             # Concurrent misses build one kernel, from copies of the non-tensor params.
@@ -1261,7 +1259,6 @@ class Op(ABC):
                     entry = (kernel, versions)
                     if None not in versions:
                         built[signature] = entry
-                        self._target_kernels[signature] = kernel
         kernel = entry[0]
         result = kernel(*inputs, **writes, **(execution or {}))
         # An op whose every output is an input it writes returns nothing, as its forward does.
@@ -1301,7 +1298,7 @@ class Op(ABC):
             kernel = builder(*specs, **params)
         if not callable(kernel):
             raise OpNotAvailableError(
-                f"target {self._serving_target!r} built {kernel!r} for "
+                f"the kernel builder {builder!r} returned {kernel!r} for "
                 f"{type(self).__name__}, which is not callable; a builder returns "
                 f"something the op can call with the tensors it was described"
             )
@@ -1316,7 +1313,7 @@ class Op(ABC):
         """
         tune = getattr(kernel, "request_tune", None)
         if not callable(tune):
-            self._warn_untunable_target_kernel()
+            self._warn_untunable_target_kernel(kernel)
             return
         with device_context(device):
             tune()
@@ -1357,7 +1354,7 @@ class Op(ABC):
         """
         builder = self._target_builder
         if builder is not None and builder is not _UNRESOLVED:
-            return MappingProxyType(self._target_kernels)
+            return MappingProxyType({s: kernel for s, (kernel, _) in self._target_kernels.items()})
         return MappingProxyType(self._built_entries.get(interface, {}))
 
     def delegate_for(
@@ -1542,7 +1539,7 @@ class Op(ABC):
         """
         seen: set[tuple] = set()
         for op in self._walk_ops():
-            for signature, kernel in op._target_kernels.items():
+            for signature, (kernel, _) in op._target_kernels.items():
                 device = signature[0]
                 if (device, id(kernel)) not in seen:
                     seen.add((device, id(kernel)))
@@ -1622,14 +1619,13 @@ class Op(ABC):
         for op, device, kernel in self._target_kernels_by_device():
             op._tune_target_kernel(device, kernel)
 
-    def _warn_untunable_target_kernel(self) -> None:
+    def _warn_untunable_target_kernel(self, kernel: object) -> None:
         """Warn, once per instance, that a kernel of this op's target cannot be tuned."""
         if self._tune_warned:
             return
         self._tune_warned = True
         warnings.warn(
-            f"{type(self).__name__} is served by target {self._serving_target!r}, whose "
-            f"kernel defines no request_tune",
+            f"{type(self).__name__}'s target kernel {kernel!r} defines no request_tune",
             UserWarning,
             stacklevel=4,
         )
@@ -1725,7 +1721,6 @@ class Op(ABC):
         self._entries_by_call = {}
         self._built_entries = {}
         self._target_kernels = {}
-        self._target_built = {}
 
     def _bind_target(self, device: "torch.device | None") -> object:
         """Decide which target serves this instance on the call *device*, remember its
