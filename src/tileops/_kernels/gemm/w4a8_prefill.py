@@ -351,7 +351,9 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                         "int32", "tileops::w4a8_take_partials", cnt.data, wsi, parts
                     )
                 else:
-                    flag_s[0] = T.call_extern("int32", "tileops::w4a8_signal", cnt.data, wsi, parts)
+                    flag_s[0] = T.call_extern(
+                        "int32", "tileops::w4a8_count_partial", cnt.data, wsi, parts
+                    )
             T.sync_threads(barrier_id=6, arrive_count=consumers)
 
         @T.macro
@@ -715,22 +717,37 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                             T.wait_wgmma(0)
                             if tx % WARP_LANES == 0:
                                 release_stage(empty, c_idx)
-                            # Stream-K: contributor 0 holds the tile's first K steps, which end its
-                            # range, so it tends to reach the tile last. Finding every other partial
-                            # stored, it adds them without storing its own; otherwise it stores its
-                            # own like the others, and the contributor whose count completes the
-                            # tile adds the rest and runs the epilogue. No CTA waits.
+                            # Stream-K, in a program with stream-K tiles: contributor 0 holds the
+                            # tile's first K steps, which end its range, so it tends to reach the
+                            # tile last. Finding every other partial stored, it adds them without
+                            # storing its own; otherwise it stores its own like the others, and the
+                            # contributor whose count completes the tile adds the rest and runs the
+                            # epilogue. No CTA waits. A program without stream-K tiles never enters
+                            # this branch and keeps the exchange in which every contributor stores
+                            # and the last to arrive finishes: ptxas removes it, but numbers the
+                            # producer loop's registers from the code it removes.
                             do_epi = 1
                             if seg[3] >= 0 and (seg[1] > 0 or seg[2] < kg):
                                 t = seg[3]
                                 nc = contributor_counts[t]
                                 wsi = t * cluster + rank
                                 base = wsi * max_contributors * acc_regs * consumers
-                                do_epi = 0
-                                if seg[4] == 0:
-                                    count_partials(True, flag_s, cnt, wsi, nc - 1, tx)
-                                    do_epi = flag_s[0]
-                                if do_epi == 0:
+                                if sk_tiles > 0:
+                                    do_epi = 0
+                                    if seg[4] == 0:
+                                        count_partials(True, flag_s, cnt, wsi, nc - 1, tx)
+                                        do_epi = flag_s[0]
+                                    if do_epi == 0:
+                                        T.call_extern(
+                                            "handle",
+                                            f"tileops::w4a8_store_partial<{active_regs}, {consumers}, false>",
+                                            acc.data,
+                                            ws.data,
+                                            base + seg[4] * acc_regs * consumers + lt * 4,
+                                        )
+                                        count_partials(False, flag_s, cnt, wsi, nc, tx)
+                                        do_epi = flag_s[0]
+                                else:
                                     T.call_extern(
                                         "handle",
                                         f"tileops::w4a8_store_partial<{active_regs}, {consumers}>",
@@ -738,7 +755,12 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                         ws.data,
                                         base + seg[4] * acc_regs * consumers + lt * 4,
                                     )
-                                    count_partials(False, flag_s, cnt, wsi, nc, tx)
+                                    T.sync_threads(barrier_id=5, arrive_count=consumers)
+                                    if tx == WARPGROUP_THREADS:
+                                        flag_s[0] = T.call_extern(
+                                            "int32", "tileops::w4a8_signal", cnt.data, wsi, nc
+                                        )
+                                    T.sync_threads(barrier_id=6, arrive_count=consumers)
                                     do_epi = flag_s[0]
                                 # The contributor that completes the tile keeps its accumulator,
                                 # so FP32 addition order can vary between launches (see the op API).
