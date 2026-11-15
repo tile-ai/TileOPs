@@ -11,6 +11,9 @@ in this process. The ordinal resolves a key to one instance; the digest makes tw
 agree on a key only when their instances' fakes agree, so a later process reuses an earlier
 one's graphs. A state holding a value with no stable encoding is digested with a token of this
 process, so graphs holding its key are never reused by another.
+
+Assigning a param re-keys its op, so a compiled callable retraces; a param edited in place
+leaves the key stale and is refused when a compile traces the op.
 """
 
 import enum
