@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import math
 import numbers
+import random
+from collections.abc import Callable, Sequence
 from types import SimpleNamespace
+from typing import Any
 
 from tileops.manifest._dtype_rules import DTYPE_BITS, DTYPE_CATEGORY
 
@@ -61,7 +64,7 @@ def _axes(dim) -> list[int]:
     return [dim] if isinstance(dim, int) else list(dim)
 
 
-def broadcast(*shapes):
+def broadcast(*shapes: Sequence[int]) -> tuple[int, ...]:
     """PyTorch broadcasting of the shapes; raises when they do not broadcast."""
     rank = max(len(s) for s in shapes)
     out = []
@@ -73,7 +76,9 @@ def broadcast(*shapes):
     return tuple(out)
 
 
-def reduced(shape, dim, keepdim, mode):
+def reduced(
+    shape: Sequence[int], dim: int | Sequence[int] | None, keepdim: bool, mode: str
+) -> tuple[int, ...]:
     """The shape after reducing `dim`; `None` reduces every axis, an empty sequence follows `mode` (all, none, raise)."""
     rank = len(shape)
     if dim is None:
@@ -89,7 +94,7 @@ def reduced(shape, dim, keepdim, mode):
     return tuple(1 if i in axes else s for i, s in enumerate(shape) if keepdim or i not in axes)
 
 
-def valid_axes(dim, rank):
+def valid_axes(dim: int | Sequence[int] | None, rank: int) -> bool:
     """Whether every axis normalizes at `rank`; `None` is valid."""
     try:
         if dim is not None:
@@ -99,14 +104,19 @@ def valid_axes(dim, rank):
     return True
 
 
-def unique_axes(dim, rank):
+def unique_axes(dim: int | Sequence[int] | None, rank: int) -> bool:
     """Whether the normalized axes are distinct."""
     if dim is None or isinstance(dim, int):
         return True
     return len({normalize_axis(d, rank) for d in dim}) == len(dim)
 
 
-def per_axis(value, i, n, fallback=None):
+def per_axis(
+    value: int | list[int | None] | tuple[int | None, ...] | None,
+    i: int,
+    n: int,
+    fallback: int | None = None,
+) -> int:
     """Item `i` of a length-`n` sequence, a scalar itself, or `fallback` for `None`."""
     if isinstance(value, (list, tuple)):
         if len(value) != n:
@@ -119,7 +129,7 @@ def per_axis(value, i, n, fallback=None):
     return value
 
 
-def ceil_div(a, b):
+def ceil_div(a: int, b: int) -> int:
     """`a / b` rounded up, for a positive `b`."""
     if b <= 0:
         raise ValueError(f"ceil_div needs a positive divisor, got {b}")
@@ -139,12 +149,14 @@ def _seq_extreme(fn):
     return extreme
 
 
-def conv_out(length, kernel, stride, padding, dilation):
+def conv_out(length: int, kernel: int, stride: int, padding: int, dilation: int) -> int:
     """The convolution output length."""
     return (length + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
 
 
-def pool_out(length, kernel, stride, padding, dilation, ceil_mode):
+def pool_out(
+    length: int, kernel: int, stride: int, padding: int, dilation: int, ceil_mode: bool
+) -> int:
     """The pooling output length, never negative."""
     span = dilation * (kernel - 1) + 1
     out = (length + 2 * padding - span + (stride - 1 if ceil_mode else 0)) // stride + 1
@@ -153,7 +165,7 @@ def pool_out(length, kernel, stride, padding, dilation, ceil_mode):
     return max(out, 0)
 
 
-def moe_capacity(layout, rows, experts):
+def moe_capacity(layout: Any, rows: int, experts: int) -> int:
     """Rows the layout materializes: `E * max_m` masked, `R + E * (alignment - 1)` rounded up to `alignment` aligned, else `R`."""
     if layout.kind == "masked":
         return experts * layout.max_m
@@ -163,17 +175,17 @@ def moe_capacity(layout, rows, experts):
     return rows
 
 
-def promote_int_to_float(dtype):
+def promote_int_to_float(dtype: str) -> str:
     """float32 for an integral dtype, else the dtype itself."""
     return "float32" if category(dtype) == "int" else dtype
 
 
-def coalesce_dtype(value, dtype):
+def coalesce_dtype(value: str | None, dtype: str) -> str:
     """`value` when present, else `dtype`."""
     return dtype if value is None else value
 
 
-def mhc_expansion(q):
+def mhc_expansion(q: int) -> int:
     """The positive `n` with `n * n + 2 * n == q`."""
     n = math.isqrt(q + 1) - 1
     if n <= 0 or n * n + 2 * n != q:
@@ -181,21 +193,21 @@ def mhc_expansion(q):
     return n
 
 
-def balanced_sizes(total, count):
+def balanced_sizes(total: int, count: int) -> list[int]:
     """`count` sizes summing to `total`, each `total // count`, the first `total % count` one larger."""
     if count <= 0 or total < 0:
         raise ValueError(f"balanced_sizes needs count > 0 and total >= 0, got {total}, {count}")
     return [total // count + (i < total % count) for i in range(count)]
 
 
-def repeat(value, count):
+def repeat(value: int, count: int) -> list[int]:
     """`count` copies of the integer `value`."""
     if count < 0 or not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"repeat needs an integer value and count >= 0, got {value!r}, {count}")
     return [value] * count
 
 
-def category(x):
+def category(x: str | complex) -> str:
     """`'bool'`, `'int'`, `'float'` or `'complex'`: the category of a number or a dtype name."""
     if isinstance(x, str):
         return DTYPE_CATEGORY.get(x, "int")
@@ -212,7 +224,7 @@ def _fits_float(v, dtype):
     return math.isnan(v) or -_FLOAT_MAX[dtype] <= v <= _FLOAT_MAX[dtype]
 
 
-def representable(v, dtype):
+def representable(v: complex, dtype: str) -> bool:
     """Whether `v` converts to `dtype` without overflow, by PyTorch's scalar conversion rule."""
     if dtype == "bool":
         return True
@@ -233,7 +245,7 @@ def representable(v, dtype):
     return math.isfinite(v) and lo <= v <= hi
 
 
-PRIMITIVES = {
+PRIMITIVES: dict[str, Callable[..., Any]] = {
     "broadcast": broadcast,
     "reduced": reduced,
     "valid_axes": valid_axes,
@@ -259,9 +271,9 @@ PRIMITIVES = {
 }
 
 
-def namespace() -> dict:
+def namespace() -> dict[str, object]:
     """The names an expression evaluates against: every primitive, dotted ones as attributes."""
-    scope: dict = {"__builtins__": {}, "inf": math.inf}
+    scope: dict[str, object] = {"__builtins__": {}, "inf": math.inf}
     for name, fn in PRIMITIVES.items():
         head, _, attr = name.partition(".")
         if attr:
@@ -303,14 +315,14 @@ PRIMITIVE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
 # ---------------------------------------------------------------- generators
 
 
-def as_tensor(values):
+def as_tensor(values: Sequence[int]) -> list[int]:
     """The non-negative list itself."""
     if any(v < 0 for v in values):
         raise ValueError(f"as_tensor needs a non-negative list, got {values}")
     return list(values)
 
 
-def prefix_sum(lengths):
+def prefix_sum(lengths: Sequence[int]) -> list[int]:
     """`[0]` followed by the running sums of the lengths."""
     out = [0]
     for n in as_tensor(lengths):
@@ -318,42 +330,42 @@ def prefix_sum(lengths):
     return out
 
 
-def exclusive_prefix_sum(lengths):
+def exclusive_prefix_sum(lengths: Sequence[int]) -> list[int]:
     """Item `i` is the sum of the lengths before it."""
     if not lengths:
         raise ValueError("exclusive_prefix_sum needs a non-empty list")
     return prefix_sum(lengths)[:-1]
 
 
-def chunk_indices(lengths, chunk):
+def chunk_indices(lengths: Sequence[int], chunk: int) -> list[list[int]]:
     """One `(request, chunk)` row per `chunk`-sized piece of each length."""
     if chunk <= 0:
         raise ValueError(f"chunk must be positive, got {chunk}")
     return [[i, j] for i, n in enumerate(as_tensor(lengths)) for j in range(ceil_div(n, chunk))]
 
 
-def token_indices(lengths):
+def token_indices(lengths: Sequence[int]) -> list[list[int]]:
     """One `(sequence, position)` row per token."""
     if not lengths or any(n <= 0 for n in lengths):
         raise ValueError(f"token_indices needs a non-empty positive list, got {lengths}")
     return [[i, j] for i, n in enumerate(lengths) for j in range(n)]
 
 
-def packed_positions(lengths):
+def packed_positions(lengths: Sequence[int]) -> list[int]:
     """Positions restarting at 0 for each sequence."""
     if not lengths or any(n <= 0 for n in lengths):
         raise ValueError(f"packed_positions needs a non-empty positive list, got {lengths}")
     return [j for n in lengths for j in range(n)]
 
 
-def chunk_offsets(lengths, chunk):
+def chunk_offsets(lengths: Sequence[int], chunk: int) -> list[int]:
     """The prefix sum of each length's chunk count."""
     if chunk <= 0:
         raise ValueError(f"chunk must be positive, got {chunk}")
     return prefix_sum([ceil_div(n, chunk) for n in as_tensor(lengths)])
 
 
-def paged_block_table(rng, batch, width, pool):
+def paged_block_table(rng: random.Random, batch: int, width: int, pool: int) -> list[list[int]]:
     """Disjoint random pages per request when the pool holds them all, else the first `width` of a permutation per request."""
     if not 0 < width <= pool:
         raise ValueError(f"paged_block_table needs 0 < width <= pool, got {width}, {pool}")
@@ -363,7 +375,9 @@ def paged_block_table(rng, batch, width, pool):
     return [rng.sample(range(pool), width) for _ in range(batch)]
 
 
-def nsa_block_indices(rng, lengths, block_size, selected, heads_kv):
+def nsa_block_indices(
+    rng: random.Random, lengths: Sequence[int], block_size: int, selected: int, heads_kv: int
+) -> list[list[list[int]]]:
     """Position `j` sees `max(ceil_div(j, block_size), 1)` blocks and draws up to `selected` distinct ones per head, ascending, padded with the sentinel `sum(lengths)`."""
     if not lengths or any(n <= 0 for n in lengths) or min(block_size, selected, heads_kv) <= 0:
         raise ValueError("nsa_block_indices needs positive arguments and a non-empty positive list")
@@ -380,35 +394,46 @@ def nsa_block_indices(rng, lengths, block_size, selected, heads_kv):
     return rows
 
 
-def nsa_block_counts(rng, tokens, heads_kv, selected):
+def nsa_block_counts(
+    rng: random.Random, tokens: int, heads_kv: int, selected: int
+) -> list[list[int]]:
     """Each count uniform in `[1, selected]`."""
     if min(tokens, heads_kv, selected) <= 0:
         raise ValueError("nsa_block_counts needs positive arguments")
     return [[rng.randint(1, selected) for _ in range(heads_kv)] for _ in range(tokens)]
 
 
-def topk_ids(rng, rows, k, experts):
+def topk_ids(rng: random.Random, rows: int, k: int, experts: int) -> list[list[int]]:
     """`rows` rows of `k` distinct random values in `[0, experts)`."""
     if not 0 < k <= experts:
         raise ValueError(f"topk_ids needs 0 < K <= E, got K={k}, E={experts}")
     return [rng.sample(range(experts), k) for _ in range(rows)]
 
 
-def random_ids(rng, rows, width, upper):
+def random_ids(rng: random.Random, rows: int, width: int, upper: int) -> list[list[int]]:
     """Rows of independent indices in [0, upper), allowing repeated tokens."""
     if min(rows, width, upper) <= 0:
         raise ValueError("random_ids needs positive arguments")
     return [[rng.randrange(upper) for _ in range(width)] for _ in range(rows)]
 
 
-def sample_indices(rng, n, hi):
+def sample_indices(rng: random.Random, n: int, hi: int) -> list[int]:
     """`n` distinct random values in `[0, hi)`."""
     if not 0 <= n <= hi:
         raise ValueError(f"sample_indices needs 0 <= n <= hi, got n={n}, hi={hi}")
     return rng.sample(range(hi), n)
 
 
-def causal_topk_indices(rng, batch, seq, heads_kv, k, extent, start, stride):
+def causal_topk_indices(
+    rng: random.Random,
+    batch: int,
+    seq: int,
+    heads_kv: int,
+    k: int,
+    extent: int,
+    start: int,
+    stride: int,
+) -> list[list[list[list[int]]]]:
     """Per token and head, up to `k` distinct keys it can see, padded with `extent`."""
     if min(batch, seq, heads_kv, k, extent, stride) <= 0 or start < 0:
         raise ValueError(
@@ -428,7 +453,9 @@ def causal_topk_indices(rng, batch, seq, heads_kv, k, extent, start, stride):
     return rows
 
 
-def sparse_topk_positions(rng, lengths, queries, k):
+def sparse_topk_positions(
+    rng: random.Random, lengths: Sequence[int], queries: int, k: int
+) -> list[list[list[int]]]:
     """Per request of length `n` and query `s`, up to `k` distinct positions in `[0, n - queries + s]`, padded with -1."""
     if queries <= 0 or k <= 0 or any(n < queries for n in lengths):
         raise ValueError(
@@ -446,7 +473,7 @@ def sparse_topk_positions(rng, lengths, queries, k):
     return rows
 
 
-def key_windows(lengths, first, count, side):
+def key_windows(lengths: Sequence[int], first: int, count: int, side: str) -> list[int]:
     """Per query position, the first key of its sequence (`start`) or one past itself (`end`)."""
     if not lengths or any(n <= 0 for n in lengths):
         raise ValueError(f"key_windows needs a non-empty positive list, got {lengths}")
@@ -466,7 +493,7 @@ def key_windows(lengths, first, count, side):
     return out
 
 
-def full(shape, value):
+def full(shape: Sequence[int], value: int) -> object:
     """A nested list of `shape` holding `value`."""
     if any(n < 0 for n in shape):
         raise ValueError(f"full needs non-negative extents, got {shape}")
@@ -481,7 +508,7 @@ def _segment_ids(sizes, scale=1):
     return [i for i, n in enumerate(sizes) for _ in range(n * scale)]
 
 
-def moe_layout_metadata(layout, rows, experts):
+def moe_layout_metadata(layout: Any, rows: int, experts: int) -> list[int]:
     """Metadata of `layout` for `rows` rows split across `experts` as evenly as the layout allows."""
     if experts <= 0 or rows < 0:
         raise ValueError(f"moe.layout_metadata needs E > 0 and R >= 0, got R={rows}, E={experts}")
@@ -503,7 +530,7 @@ def moe_layout_metadata(layout, rows, experts):
     return [a * starts[i] + (a * t - a // 2 if t > 0 else 0) for i, t in enumerate(tiles)]
 
 
-def moe_masked_routed_metadata(layout, experts, tokens):
+def moe_masked_routed_metadata(layout: Any, experts: int, tokens: int) -> list[int]:
     """Valid counts of a masked `layout` when `tokens` routed rows land on `experts` experts.
 
     `idle = round(experts * exp(-tokens / experts))` experts get no rows: the number uniform
@@ -548,17 +575,20 @@ def moe_masked_routed_metadata(layout, experts, tokens):
 
 
 def _contiguous_runs(layout, routed):
-    """Rows each expert's run takes in a contiguous `layout`: its routed rows, padded to a
-    multiple of the alignment under aligned packing."""
+    """Rows each expert's run takes in a contiguous `layout`.
+
+    A run is its routed rows, padded to a multiple of the alignment under aligned packing.
+    """
     if layout.packing == "tight":
         return routed
     return [ceil_div(n, layout.alignment) * layout.alignment for n in routed]
 
 
-def moe_routed_metadata(layout, experts, routed):
-    """Metadata of `layout` for routed rows: `routed` is `(T,)` for a masked layout, whose counts
-    for `T` routed rows `moe.masked_routed_metadata` gives, and one row count per expert for a
-    contiguous layout.
+def moe_routed_metadata(layout: Any, experts: int, routed: Sequence[int]) -> list[int]:
+    """Metadata of `layout` for routed rows.
+
+    `routed` is `(T,)` for a masked layout, whose counts for `T` routed rows
+    `moe.masked_routed_metadata` gives, and one row count per expert for a contiguous layout.
 
     Contiguous experts run in order; aligned packing pads each run to a multiple of the
     alignment, and per-row ids mark a run's padding rows as its expert's.
@@ -578,7 +608,7 @@ def moe_routed_metadata(layout, experts, routed):
 
 
 # Deterministic generators take no RNG; pseudo-random ones take it as their first argument.
-GENERATORS = {
+GENERATORS: dict[str, Callable[..., Any]] = {
     "as_tensor": as_tensor,
     "prefix_sum": prefix_sum,
     "exclusive_prefix_sum": exclusive_prefix_sum,
@@ -646,7 +676,7 @@ GENERATOR_RANKS = {
     "key_windows": 1,
 }
 # The shape of each generator's result, from its arguments.
-GENERATOR_SHAPES = {
+GENERATOR_SHAPES: dict[str, Callable[..., tuple[int, ...]]] = {
     "as_tensor": lambda L: (len(L),),
     "prefix_sum": lambda L: (len(L) + 1,),
     "exclusive_prefix_sum": lambda L: (len(L),),
@@ -700,7 +730,7 @@ def _flat(values):
     return [y for x in values for y in _flat(x)] if isinstance(values, list) else [values]
 
 
-def prefix_offsets(x, total):
+def prefix_offsets(x: Sequence[int], total: int) -> bool:
     """`x` starts at 0, is non-decreasing and ends at `total`."""
     return (
         bool(x)
@@ -710,27 +740,27 @@ def prefix_offsets(x, total):
     )
 
 
-def max_segment(x, bound):
+def max_segment(x: Sequence[int], bound: int) -> bool:
     """Adjacent differences of `x` are at most `bound`."""
     return all(b - a <= bound for a, b in zip(x, x[1:], strict=False))
 
 
-def in_range(x, lo, hi):
+def in_range(x: object, lo: int, hi: int) -> bool:
     """Every element of `x` lies in `[lo, hi)`."""
     return all(lo <= v < hi for v in _flat(x))
 
 
-def sums_to(x, total):
+def sums_to(x: Sequence[int], total: int) -> bool:
     """The elements of `x` sum to `total`."""
     return sum(x) == total
 
 
-def exclusive_prefix_of(x, lengths):
+def exclusive_prefix_of(x: Sequence[int], lengths: Sequence[int]) -> bool:
     """`x` has one element per length; element `i` is the sum of the lengths before it."""
     return len(x) == len(lengths) and all(v == sum(lengths[:i]) for i, v in enumerate(x))
 
 
-def chunk_offsets_of(x, offsets, chunk):
+def chunk_offsets_of(x: Sequence[int], offsets: Sequence[int], chunk: int) -> bool:
     """`x` counts, cumulatively, the `chunk`-sized pieces of each segment of `offsets`."""
     if chunk <= 0:
         return False
@@ -738,7 +768,7 @@ def chunk_offsets_of(x, offsets, chunk):
     return all(n >= 0 for n in sizes) and x == prefix_sum(sizes)
 
 
-def token_rows_of(x, offsets):
+def token_rows_of(x: Sequence[Sequence[int]], offsets: Sequence[int]) -> bool:
     """Row `t` of `x` is `(i, t - offsets[i])` for the segment `i` of `offsets` holding `t`."""
     rows = [
         [i, t - offsets[i]]
@@ -748,7 +778,7 @@ def token_rows_of(x, offsets):
     return [list(row) for row in x] == rows
 
 
-def paged_fits(x, cu, cap):
+def paged_fits(x: Sequence[int], cu: Sequence[int], cap: int) -> bool:
     """Element `i` of `x` plus segment `i` of `cu` is at most `cap`."""
     flat = all(isinstance(v, int) for v in (*x, *cu))
     return (
@@ -758,7 +788,7 @@ def paged_fits(x, cu, cap):
     )
 
 
-def moe_layout_valid(x, layout, rows, experts):
+def moe_layout_valid(x: Sequence[int], layout: Any, rows: int, experts: int) -> bool:
     """`x` is valid metadata of `layout` for `rows` rows and `experts` experts."""
     ordered = all(a <= b for a, b in zip(x, x[1:], strict=False))
     if layout.kind == "masked":
@@ -802,7 +832,7 @@ PREDICATE_RANKS = {
     "moe.layout_valid": 1,
 }
 # The constrained tensor's contents are each predicate's first argument.
-PREDICATES = {
+PREDICATES: dict[str, Callable[..., bool]] = {
     "prefix_offsets": prefix_offsets,
     "max_segment": max_segment,
     "in_range": in_range,

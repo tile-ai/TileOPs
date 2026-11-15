@@ -319,6 +319,32 @@ jobs:
           git fetch --quiet --tags --depth=1 origin
           python scripts/ci/check_api_compat.py
 
+      # A public package below a 100% type-completeness score, or with an undocumented
+      # public symbol, fails here.
+      - name: Check the public packages are fully typed
+        env:
+          PYTHONPATH: src
+        run: |
+          for package in tileops.backend tileops.authoring tileops.manifest; do
+            npx --yes pyright@1.1.407 --pythonpath "$(command -v python)" \
+              --verifytypes "$package" --ignoreexternal --outputjson > verifytypes.json || true
+            python - "$package" verifytypes.json <<'EOF'
+          import json
+          import sys
+
+          package, path = sys.argv[1:]
+          with open(path) as f:
+              report = json.load(f)["typeCompleteness"]
+          for symbol in report["symbols"]:
+              for diagnostic in symbol["diagnostics"]:
+                  print(f"{symbol['name']}: {diagnostic['message']}")
+          score = report["completenessScore"]
+          undocumented = report["missingFunctionDocStringCount"] + report["missingClassDocStringCount"]
+          print(f"{package}: {score:.1%} complete, {undocumented} undocumented")
+          sys.exit(score < 1 or undocumented > 0)
+          EOF
+          done
+
       - name: Check every op family has a packaging case
         run: python scripts/ci/check_packaging_coverage.py
 

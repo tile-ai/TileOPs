@@ -202,8 +202,10 @@ class _Generation:
 
 
 class Kernel(ABC):
+    """A TileLang kernel: its build device, its published ``config`` and its autotuning."""
+
     dtype: Optional[torch.dtype] = None
-    autotune_configs: Optional[list[dict]] = None
+    autotune_configs: Optional[list[Dict[str, Any]]] = None
     supported_archs: Optional[list[int]] = None
     kernel: Callable[[dict], Callable]
     _AUTOTUNE_PARAM_ALIASES = {
@@ -245,7 +247,7 @@ class Kernel(ABC):
                 names.append(str(param.name))
         return names
 
-    def __init__(self, *args, device_index: "int | None" = None, **kwargs) -> None:
+    def __init__(self, *args: object, device_index: "int | None" = None, **kwargs: object) -> None:
         self.device_index = device_index
         # The op constructs a kernel with the call's device current and passes its index, if
         # any; a kernel constructed with another index builds for that one.
@@ -682,7 +684,7 @@ class Kernel(ABC):
 
     def tuning_candidates(
         self, configs: Sequence[Dict[str, Any]], untuned: Optional[Dict[str, Any]] = None
-    ) -> list[dict]:
+    ) -> list[Dict[str, Any]]:
         """Return *configs* with the untuned config added when none of them is it.
 
         Tuning keeps the fastest config it times, so a search space that leaves out the
@@ -723,7 +725,7 @@ class Kernel(ABC):
     def tune_jit_kernel(
         self,
         jit_kernel: Callable,
-        configs: list[dict],
+        configs: list[Dict[str, Any]],
         warmup: int = 25,
         rep: int = 50,
         seed_config: Optional[Dict[str, Any]] = None,
@@ -800,6 +802,10 @@ class Kernel(ABC):
             raise
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        """Time ``autotune_configs`` and publish the fastest; do nothing without candidates.
+
+        A kernel whose program is built at launch tunes at its next launch instead.
+        """
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
         if getattr(self, "kernel", None) is None:

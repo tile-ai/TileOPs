@@ -37,17 +37,19 @@ __all__ = [
 
 @dataclass(frozen=True)
 class Kind:
+    """The kind of a manifest value: a `tag` and the structure that tag carries."""
+
     # One of Int, Bool, Str, DType, Seq, Maybe, Union, ADT, None, Value.
     tag: str
     # Int: never negative (`Dim`).
     nonneg: bool = False
     # Str: its literals; DType: its members; None where any value is possible.
-    values: frozenset | None = None
+    values: frozenset[str] | None = None
     # Seq: its element kind (None for the empty tuple); Maybe: its payload.
     item: Kind | None = None
     # Seq: its fixed length, where known.
     length: int | None = None
-    members: tuple = field(default=())
+    members: tuple[Kind, ...] = field(default=())
     # ADT: its name.
     name: str | None = None
 
@@ -70,6 +72,7 @@ class Kind:
         return "NoneType" if self.tag == "None" else self.tag
 
     def payload(self) -> Kind:
+        """The payload of a `Maybe`; any other kind is its own payload."""
         return self.item if self.tag == "Maybe" else self
 
     def sequence(self) -> Kind | None:
@@ -355,8 +358,10 @@ def _literal_tag(value) -> str:
 
 
 def restrict(kind: Kind | None, values: frozenset) -> Kind | None:
-    """`kind` where it equals one of the literal `values`: the members some literal inhabits,
-    an enum or dtype set intersected with the strings."""
+    """`kind` where it equals one of the literal `values`.
+
+    The members some literal inhabits remain, an enum or dtype set intersected with the strings.
+    """
     if kind is None:
         return kind
     strings = frozenset(v for v in values if isinstance(v, str))
@@ -374,8 +379,11 @@ def restrict(kind: Kind | None, values: frozenset) -> Kind | None:
 
 
 def exclude(kind: Kind | None, values: frozenset) -> Kind | None:
-    """`kind` where it equals none of the literal `values`: enum and dtype members lose those
-    strings, and a member left without values, or the `None` a `None` literal names, drops."""
+    """`kind` where it equals none of the literal `values`.
+
+    Enum and dtype members lose those strings, and a member left without values, or the `None`
+    a `None` literal names, drops.
+    """
     if kind is None:
         return kind
     kept = []

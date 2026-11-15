@@ -120,8 +120,8 @@ select = [
     "SIM",
     # isort
     "I",
-    # pydocstyle (Google Docstrings)
-    # "D",
+    # pydocstyle (Google Docstrings); scoped by per-file-ignores below
+    "D",
     # pep8-naming (naming conventions)
     "N",
     # pydoclint: a documented parameter the signature does not have
@@ -167,6 +167,9 @@ ignore = [
     "N806",  # Variable in function should be lowercase
 ]
 
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
 [tool.ruff.lint.isort]
 known-first-party = ["tileops"]
 
@@ -182,6 +185,8 @@ ban-relative-imports = "all"
 
 [tool.ruff.lint.per-file-ignores]
 "!tests/**" = ["TID253"]
+# Docstring rules hold for the public packages only.
+"!src/tileops/{backend,authoring,manifest}/**" = ["D"]
 "__init__.py" = ["F401"]
 
 [tool.pytest.ini_options]

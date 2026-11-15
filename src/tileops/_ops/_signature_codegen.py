@@ -18,13 +18,15 @@ import copy
 import enum
 import inspect
 import itertools
+import json
 import string
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import torch
-from torch._guards import detect_fake_mode
+from torch._guards import TracingContext, detect_fake_mode
 from torch.fx.experimental.symbolic_shapes import sym_and, sym_or
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
@@ -294,27 +296,27 @@ class SignatureCall(CallView):
     metadata tensors whose values decide its traffic, and the checked calls its sub-ops
     completed during it (docs/design/roofline.md)."""
 
-    indices: dict
+    indices: dict[str, Any]
     # Present tensors, outputs included, as `(shape, dtype name)`.
-    tensors: dict
+    tensors: dict[str, tuple[tuple[int, ...], str]]
     # `(tensor, reads, writes)` per tensor the effect rules charge.
     traffic: tuple[tuple[str, int, int], ...]
     device: object = None
     # The inputs this call writes, and whether a caller passed `out`.
-    written: frozenset = frozenset()
+    written: frozenset[str] = frozenset()
     has_out: bool = False
     # The discriminant point the call took, as its plan keys it.
-    branch_key: tuple = ()
+    branch_key: tuple[object, ...] = ()
     # The metadata tensors the call passed: inputs declaring `values`.
-    metadata: dict = None
+    metadata: dict[str, torch.Tensor] = None
     # The checked calls the op's sub-ops completed during this call, by stage.
-    stages: dict = None
+    stages: Mapping[str, tuple[SignatureCall, ...]] | None = None
 
     def materialize(self) -> "SignatureCall":
         """Return this call, as a call record's ``materialize`` returns the call it holds."""
         return self
 
-    def metadata_values(self, name: str) -> list:
+    def metadata_values(self, name: str) -> list[Any]:
         """The contents of metadata tensor *name*.
 
         Raises:
@@ -326,6 +328,7 @@ class SignatureCall(CallView):
         return tensor.tolist()
 
     def derived_bytes(self) -> int:
+        """The bytes the call moves: each charged tensor's size times its reads plus writes."""
         return sum(self.bytes(t) * (r + w) for t, r, w in self.traffic)
 
     def derived(self, name: str) -> bool:
@@ -1602,7 +1605,7 @@ class _CompileBoundary:
             op = get_instance(key)
             # A traced key that the op's state no longer yields would put this fake's shapes
             # in a cache entry that another process's op of the old state reads.
-            tracing = detect_fake_mode() is not None
+            tracing = TracingContext.try_get() is not None
             if tracing and key != instance_key(op._instance_identity, op._instance_key_state()):
                 raise RuntimeError(
                     f"{sig.name}: a param or construction-time tensor changed in place since "
@@ -1923,6 +1926,7 @@ def install_compile_boundary(cls: type, entry: dict) -> None:
     boundary = _CompileBoundary(cls, cls._signature, entry["family"])
     sig = cls._signature.sig
     cls._instance_key_names = (*sig.params, *sig.ctor_tensors)
+    cls._instance_key_entry = json.dumps(entry, sort_keys=True, default=repr)
     cls._call_boundary = boundary.build_call_boundary(cls)
 
 

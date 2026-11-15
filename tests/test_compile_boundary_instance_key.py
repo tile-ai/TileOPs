@@ -71,3 +71,27 @@ def test_a_state_without_a_stable_encoding_keys_apart_in_each_process():
     )
     expr = "instance_key(register_instance(made()), ())"
     assert probe(setup, expr) != probe(setup, expr)
+
+
+class _Size(int):
+    """An `int` subclass: its value lives in the builtin base, not in `__dict__`."""
+
+
+def test_values_that_differ_only_where_the_encoding_cannot_see_key_apart():
+    """Unequal `int` subclass values; and, across processes, enum members of one name whose
+    values differ, which expressions read."""
+    identity = register_instance(_Marker())
+    assert instance_key(identity, (_Size(1),)) != instance_key(identity, (_Size(2),))
+    setup = (
+        "import enum\n"
+        "from tileops._ops.compile_boundary import instance_key, register_instance\n"
+        "class E(enum.Enum):\n    A = {}"
+    )
+    expr = "instance_key(register_instance(E), (E.A,))"
+    assert probe(setup.format(1), expr) != probe(setup.format(2), expr)
+
+
+def test_a_class_name_holding_the_separators_resolves_its_instance():
+    marker = type("Odd#-Name", (), {})()
+    key = instance_key(register_instance(marker), (1,))
+    assert get_instance(key) is marker

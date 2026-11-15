@@ -873,6 +873,10 @@ def test_a_compiled_call_keys_on_the_params_the_op_holds():
     assert compiled(torch.ones(3)).tolist() == [2.0] * 3
     assert len(set(seen)) == 2 and op._instance_key in seen
     op.dims.append(3)
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    with FakeTensorMode():
+        assert op(torch.empty(3)).shape == (3,)
     torch._dynamo.reset()
     with pytest.raises(Exception, match="changed in place"):
         torch.compile(op, fullgraph=True, backend=backend)(torch.ones(3))

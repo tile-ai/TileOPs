@@ -57,7 +57,8 @@ def get_instance(key: str) -> object:
         RuntimeError: The op instance was garbage-collected while a compiled callable still
             holds its key.
     """
-    name, _, rest = key.partition("#")
+    # The digest and ordinal hold neither `#` nor `-`; a class name may hold both.
+    name, _, rest = key.rpartition("#")
     op = _OP_REGISTRY.get(f"{name}-{rest.rpartition('-')[2]}")
     if op is None:
         raise RuntimeError(
@@ -88,14 +89,17 @@ def _encode(value: object, depth: int, local: list) -> str:
         return f"{kind.__name__}:{value!r}"
     if kind in (torch.dtype, torch.device):
         return f"{kind.__name__}:{value}"
-    if isinstance(value, torch.Tensor):
+    if kind in (torch.Tensor, torch.nn.Parameter):
         # The fake reads a construction-time tensor's layout, never its contents.
         return f"Tensor:{tuple(value.shape)}:{value.stride()}:{value.dtype}:{value.device}"
     if isinstance(value, (type, enum.Enum)):
         cls = value if isinstance(value, type) else kind
         name = _qualified_name(cls)
         local[0] |= name.startswith("~")
-        return name if isinstance(value, type) else f"{name}.{value.name}"
+        if isinstance(value, type):
+            return name
+        # Expressions read a member's value, so it is part of what the fake reads.
+        return f"{name}.{value.name}={_encode(value.value, depth + 1, local)}"
     depth += 1
     if depth > _MAX_DEPTH:
         local[0] = True
@@ -108,7 +112,9 @@ def _encode(value: object, depth: int, local: list) -> str:
     if kind is ADTValue:
         return f"ADT:{value.adt}.{value.kind}{_encode(value.fields, depth, local)}"
     fields = getattr(value, "__dict__", None)
-    if type(fields) is not dict or hasattr(kind, "__slots__"):
+    # A builtin base, such as an `int` subclass's, holds state its `__dict__` does not show.
+    builtin = any(c.__module__ == "builtins" for c in kind.__mro__[:-1])
+    if type(fields) is not dict or builtin or hasattr(kind, "__slots__"):
         local[0] = True
         return f"@{id(value)}"
     return f"{_encode(kind, depth, local)}{_encode(fields, depth, local)}"

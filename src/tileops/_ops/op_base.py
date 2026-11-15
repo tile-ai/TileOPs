@@ -9,6 +9,7 @@ import weakref
 from abc import ABC, abstractmethod
 from types import MappingProxyType
 from typing import (
+    Any,
     Callable,
     ClassVar,
     Hashable,
@@ -302,6 +303,10 @@ def _open_calls() -> list:
     return calls
 
 
+# Serializes the assignments that change an op's compile-boundary key.
+_KEY_LOCK = threading.Lock()
+
+
 class Op(ABC):
     """Base class of every TileOPs op.
 
@@ -449,6 +454,8 @@ class Op(ABC):
     # The attributes the compile boundary's fake reads, in key order: the signature's params,
     # then its construction-time tensors. Assigning one changes `_instance_key`.
     _instance_key_names: ClassVar[tuple[str, ...]] = ()
+    # The manifest entry the fake is generated from, as text.
+    _instance_key_entry: ClassVar[str] = ""
 
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
@@ -495,14 +502,21 @@ class Op(ABC):
         self._plans = {}
 
     def __setattr__(self, name: str, value: object) -> None:
-        object.__setattr__(self, name, value)
-        # Dynamo guards on the key, so a compiled callable retraces once a param changes.
-        if name in self._instance_key_names and "_instance_identity" in self.__dict__:
+        if name not in self._instance_key_names or "_instance_identity" not in self.__dict__:
+            object.__setattr__(self, name, value)
+            return
+        # Dynamo guards on the key, so a compiled callable retraces once a param changes. The
+        # lock keeps a concurrent assignment from publishing the key of a value it replaced.
+        with _KEY_LOCK:
+            object.__setattr__(self, name, value)
             self._instance_key = instance_key(self._instance_identity, self._instance_key_state())
 
     def _instance_key_state(self) -> tuple:
         """What the compile boundary's fake reads of this op, in `_instance_key_names` order."""
-        return tuple(getattr(self, n, None) for n in self._instance_key_names)
+        return (
+            self._instance_key_entry,
+            *(getattr(self, n, None) for n in self._instance_key_names),
+        )
 
     def _infer_output_shapes(self, *shapes: tuple[int, ...], dtypes=None) -> dict:
         """Infer output tensor shapes from input shapes, in ``signature.inputs`` order.
@@ -1487,7 +1501,7 @@ class Op(ABC):
             return BUILTIN
         return self._serving_target
 
-    def kernel_config(self) -> Optional[dict]:
+    def kernel_config(self) -> Optional[dict[str, Any]]:
         """The configuration the op's kernels published, or ``None``.
 
         An op given a config of its own answers with it; otherwise the first configured
@@ -1630,7 +1644,9 @@ class Op(ABC):
         )
 
     @abstractmethod
-    def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
+    def forward(
+        self, *args: object, **kwargs: object
+    ) -> Union[torch.Tensor, tuple[torch.Tensor, ...]]:
         """Run the op.
 
         Returns:
@@ -1639,7 +1655,9 @@ class Op(ABC):
         """
         raise NotImplementedError("forward method is not implemented")
 
-    def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
+    def __call__(
+        self, *args: object, **kwargs: object
+    ) -> Union[torch.Tensor, tuple[torch.Tensor, ...]]:
         """Make the op callable.
 
         ``forward`` is the op's computation, and it runs inside :meth:`_execute`. An op with

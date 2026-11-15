@@ -1,5 +1,6 @@
-"""The dtype registry: every dtype name a manifest may write, with its bits per element and
-its category.
+"""The dtype registry: every dtype name a manifest may write.
+
+Each name maps to its bits per element and its category.
 
 This package depends on nothing beyond the standard library and PyYAML, so dtypes are names.
 """
