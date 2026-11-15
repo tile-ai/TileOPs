@@ -45,10 +45,76 @@ FP8LightningIndexerFwdOp:
   roofline:
     func: tileops._perf.formulas.fp8_lightning_indexer_roofline
 
+GatedPoolCompressFwdOp:
+  # Pools every ratio tokens of a request into one entry: per channel, softmax over the
+  # window's tokens of score + ape[j] (j the token's slot in the window) in float32, the
+  # weights and their products with kv rounded to kv's dtype and summed in float32, rounded
+  # once to bfloat16. With overlap the window also takes the first D channels of the
+  # previous window's tokens, the current window giving the last D; the first window has no
+  # previous one. Windows start at each sequence's position 0 (DeepSeek-V4-Flash
+  # inference/model.py Compressor.forward, transformers
+  # Glm5NextTextIndexer.get_pooled_states).
+  # Request i holds tokens cu_seqlens[i]:cu_seqlens[i + 1] at positions from start_pos[i].
+  # The token at position p with (p + 1) % ratio == 0 closes a window: valid is true at it
+  # and entries holds the window's entry; elsewhere entries is unspecified.
+  # The state of slot state_slots[i] is a ring: row p % (C * ratio) holds the request's
+  # token at position p, kv in kv_state and score + ape in score_state. A call writes the
+  # rows of its tokens among the request's last C * ratio positions and reads the earlier
+  # positions its windows need.
+  # start_pos[i] 0 starts a request afresh; otherwise start_pos[i] is the end of the
+  # request's last call or one position before it, so the caller may roll back at most the
+  # last token it passed. Distinct state_slots are the caller's obligation.
+  family: attention
+  status: spec-only
+  ref_api: workloads.attention.gated_pool_compress.gated_pool_compress
+  signature:
+    forall: {N: Dim, T_q: Dim, NS: Dim, D: Dim, T: "DType[bfloat16 | float32]", A: "DType[bfloat16 | float32]", seq_lens: "Seq[Int]", positions: "Seq[Int]"}
+    params:
+      ratio: {type: int}
+      overlap: {type: bool, default: false}
+      validate_inputs: {type: bool, default: false, kw_only: true}
+    let:
+      C: "2 if overlap else 1"
+    inputs:
+      kv: {dtype: T, shape: "[T_q, C * D]"}
+      score: {dtype: T, shape: "[T_q, C * D]"}
+      ape: {dtype: A, shape: "[ratio, C * D]"}
+      kv_state: {dtype: float32, shape: "[NS, C * ratio, C * D]", mutated: true}
+      score_state: {dtype: float32, shape: "[NS, C * ratio, C * D]", mutated: true}
+      cu_seqlens: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
+      start_pos: {dtype: int32, shape: "[N]", values: "as_tensor(positions)"}
+      state_slots: {dtype: int32, shape: "[N]", values: "sample_indices(N, NS)", requires: ["in_range(0, NS)"]}
+    outputs:
+      entries: {dtype: bfloat16, shape: "[T_q, D]"}
+      valid: {dtype: bool, shape: "[T_q]"}
+    shape_rules:
+    - "ratio > 0"
+  workloads:
+  # DeepSeek-V4-Flash: CSA attention (ratio 4, overlapping), HCA attention (ratio 128) and
+  # the indexer (ratio 4, overlapping, 128 channels), float32 kv and score. Decode positions
+  # end a window; MTP verification passes two tokens a request.
+  - {T_q: 4096, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: [4096], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-csa-4k}
+  - {T_q: 32768, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: [32768], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-csa-32k}
+  - {T_q: 64, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-csa-b64}
+  - {T_q: 32, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: "repeat(2, 16)", positions: "repeat(32766, 16)", dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-csa-mtp}
+  - {T_q: 4096, NS: 64, D: 512, ratio: 128, seq_lens: [4096], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-hca-4k}
+  - {T_q: 32768, NS: 64, D: 512, ratio: 128, seq_lens: [32768], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-hca-32k}
+  - {T_q: 64, NS: 64, D: 512, ratio: 128, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-hca-b64}
+  - {T_q: 4096, NS: 64, D: 128, ratio: 4, overlap: true, seq_lens: [4096], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-idx-4k}
+  - {T_q: 64, NS: 64, D: 128, ratio: 4, overlap: true, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-idx-b64}
+  # GLM-5.3-Flash indexer key pools: ratio 4, 128 channels, bfloat16 k and gate.
+  - {T_q: 4096, NS: 64, D: 128, ratio: 4, seq_lens: [4096], positions: [0], dtype_cases: [{T: bfloat16, A: bfloat16}], label: glm-5.3-flash-4k}
+  - {T_q: 32768, NS: 64, D: 128, ratio: 4, seq_lens: [1000, 31768], positions: [0, 0], dtype_cases: [{T: bfloat16, A: bfloat16}], label: glm-5.3-flash-ragged}
+  - {T_q: 64, NS: 64, D: 128, ratio: 4, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: bfloat16, A: bfloat16}], label: glm-5.3-flash-b64}
+  roofline:
+    # The windows that close in the call, and the state rows they read and write.
+    func: "tileops._perf.formulas.gated_pool_compress_roofline"
+
 TopKSelectFwdOp:
   # Unordered along the top_k axis: a row selects the same positions every call and may
-  # place them in different slots. A window holding fewer than top_k positions fills the
-  # rest with S_kv, which selects nothing.
+  # place them in different slots. A window holding fewer than top_k positions selects all
+  # of them and fills the rest with fill_value, S_kv when it is None, as DeepSeek-V4-Flash
+  # inference/model.py Indexer.forward selects topk(min(k, n)) and fills with -1.
   family: attention
   status: implemented
   ref_api: flashinfer.top_k
@@ -56,6 +122,7 @@ TopKSelectFwdOp:
     forall: {B: Dim, S: Dim, S_kv: Dim, G: Dim}
     params:
       top_k: {type: int}
+      fill_value: {type: "int | None", default: null}
     inputs:
       logits: {dtype: float32, shape: "[B, S, S_kv, G]"}
       # Row (b, s) selects from logits[b, s, starts[b, s]:ends[b, s]].
@@ -64,10 +131,20 @@ TopKSelectFwdOp:
     outputs:
       indices: {dtype: int32, shape: "[B, S, G, top_k]"}
     shape_rules:
-    - "0 < top_k and top_k <= S_kv"
+    - "0 < top_k"
   workloads:
   - {B: 1, S: 32768, S_kv: 65536, G: 1, top_k: 1024, label: prefill-k1024}
   - {B: 1, S: 32768, S_kv: 65536, G: 1, top_k: 2048, label: prefill-k2048}
   - {B: 1, S: 1, S_kv: 16384, G: 1, top_k: 2048, label: ds-v32-topk-decode-b1}
+  # Top-512 of ratio-4 compressed keys (DeepSeek-V4-Flash entries, GLM-5.3-Flash pools,
+  # Qwen3.8-Flash-Next blocks): S_kv is the context over 4.
+  - {B: 1, S: 4096, S_kv: 1024, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-prefill-4k}
+  - {B: 1, S: 32768, S_kv: 8192, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-prefill-32k}
+  - {B: 64, S: 1, S_kv: 8192, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-decode-b64}
+  # Fewer compressed keys than top_k: a 100-token context.
+  - {B: 1, S: 1, S_kv: 25, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-short-ctx}
+  - {B: 64, S: 2, S_kv: 8192, G: 1, top_k: 512, fill_value: -1, label: glm-5.3-flash-mtp-b64}
+  - {B: 1, S: 4096, S_kv: 1024, G: 1, top_k: 512, label: qwen3.8-flash-prefill}
+  - {B: 64, S: 1, S_kv: 65536, G: 1, top_k: 512, label: qwen3.8-flash-256k-b64}
   roofline:
     func: tileops._perf.formulas.topk_select_roofline

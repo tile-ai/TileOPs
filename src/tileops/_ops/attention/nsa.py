@@ -137,7 +137,9 @@ class NSAVarlenFwdOp(Op):
 
     A causal token sees the keys of its selected blocks up to its own position, a
     non-causal one up to the end of its sequence; a block starting past that bound
-    contributes nothing, and a token no block gives a key outputs zeros.
+    contributes nothing, and a token no block gives a key outputs zeros. With
+    ``cu_seqlens_k`` each request's queries are the last of its keys, as in FLA's
+    ``parallel_nsa_fwd``; the in-tree kernels serve only keys that are the queries' tokens.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -165,9 +167,9 @@ class NSAVarlenFwdOp(Op):
                 ``D ** -0.5``.
             is_causal: Whether a token sees keys only up to its own position. Default
                 ``True``, as FLA's ``parallel_nsa``, which has no switch.
-            validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never
-                decreases and ends at the token count, and that ``block_indices`` and
-                ``block_counts`` lie in their manifest ranges.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` and ``cu_seqlens_k`` start
+                at 0, never decrease and end at the query and key counts, and that
+                ``block_indices`` and ``block_counts`` lie in their manifest ranges.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -202,22 +204,25 @@ class NSAVarlenFwdOp(Op):
         block_counts: torch.Tensor,
         cu_seqlens: torch.Tensor,
         token_indices: torch.Tensor,
+        *,
+        cu_seqlens_k: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Attend each token to its selected blocks.
 
         Args:
             q: Queries, packed over the batch [c_seq_len, heads, dim].
-            k: Keys [c_seq_len, head_kv, dim].
-            v: Values [c_seq_len, head_kv, dim].
+            k: Keys [c_seq_len, head_kv, dim], or one row per key with ``cu_seqlens_k``.
+            v: Values, shaped as ``k``.
             block_indices: Selected block ids [c_seq_len, head_kv, selected_blocks].
             block_counts: Valid block count per token and KV head [c_seq_len, head_kv].
             cu_seqlens: Request boundaries into the packed sequence [batch + 1].
             token_indices: Request id and in-request position per token [c_seq_len, 2].
+            cu_seqlens_k: Key boundaries [batch + 1]; ``None`` means ``cu_seqlens``.
 
         Returns:
             Attention output [c_seq_len, heads, dim].
         """
-        tensors = (q, k, v, block_indices, block_counts, cu_seqlens, token_indices)
+        tensors = (q, k, v, block_indices, block_counts, cu_seqlens, token_indices, cu_seqlens_k)
         c_seq_len, heads, dim = q.shape
         return self.kernel_for(
             "nsa_fwd_varlen_kernel",
@@ -232,6 +237,7 @@ class NSAVarlenFwdOp(Op):
                 scale=dim**-0.5 if self.sm_scale is None else self.sm_scale,
                 is_causal=self.is_causal,
                 dtype=q.dtype,
+                separate_keys=cu_seqlens_k is not None,
                 device=q.device,
             ),
         )(*tensors)

@@ -114,7 +114,7 @@ _PAGED_ROPE = {
     "cache_lens": [3, 4],
     "is_causal": True,
 }
-_NSA = {"H": 16, "H_kv": 1, "D": 64, "SEL": 1, "block_size": 32, "seq_lens": [1]}
+_NSA = {"H": 16, "H_kv": 1, "D": 64, "SEL": 1, "block_size": 32, "seq_lens": [1], "kv_lens": [1]}
 _NSA_CMP = {"C": 3, "H": 16, "H_kv": 1, "DK": 64, "DV": 64, "block_size": 32, "seq_lens": [16, 40]}
 _SENTINEL = {"indices": [[[[1]]]]}
 _INDEXER_ROW = {"B": 1, "S": 2, "H": 1, "D": 64, "S_kv": 2, "G": 1, "seq_lens": [2], "first": 0}
@@ -382,6 +382,15 @@ class TestBytesOracle:
         row = _manifest_rows("NSAVarlenFwdOp")[0]
         for is_causal in (True, False):
             self._nsa_forward_case(_manifest_call("NSAVarlenFwdOp", dict(row, is_causal=is_causal)))
+        # Decode over cached keys: each request's queries are the last of its keys.
+        decode = {
+            "T_kv": 22, "H": 16, "H_kv": 1, "D": 64, "SEL": 2, "block_size": 4,
+            "seq_lens": [1, 2], "kv_lens": [9, 13], "some": ["cu_seqlens_k"],
+            "label": "decode", "dtype_cases": [{"T": "float16"}],
+        }  # fmt: skip
+        for is_causal in (True, False):
+            call = _manifest_call("NSAVarlenFwdOp", dict(decode, is_causal=is_causal))
+            self._nsa_forward_case(call)
 
     @staticmethod
     def _nsa_forward_case(call):
@@ -393,8 +402,16 @@ class TestBytesOracle:
         # Key rows some token scores, per KV head: each kept block cut at the token (causal)
         # or the sequence end; a row several tokens score is read once.
         cu_seqlens = call.metadata_values("cu_seqlens")
+        separate = call.present("cu_seqlens_k")
+        keys = call.metadata_values("cu_seqlens_k") if separate else cu_seqlens
+
+        def bound(request, position):
+            length = keys[request + 1] - keys[request]
+            queries = cu_seqlens[request + 1] - cu_seqlens[request]
+            return length - queries + position + 1 if indices["is_causal"] else length
+
         rows = {
-            (h, cu_seqlens[request] + r)
+            (h, keys[request] + r)
             for (request, position), counts, picks in zip(
                 call.metadata_values("token_indices"),
                 call.metadata_values("block_counts"),
@@ -405,12 +422,7 @@ class TestBytesOracle:
             for start in picks[h][: counts[h]]
             for r in range(
                 start * block_size,
-                min(
-                    (start + 1) * block_size,
-                    position + 1
-                    if indices["is_causal"]
-                    else cu_seqlens[request + 1] - cu_seqlens[request],
-                ),
+                min((start + 1) * block_size, bound(request, position)),
             )
         }
         gathered = len(rows) * dim
@@ -425,6 +437,7 @@ class TestBytesOracle:
             block_counts=((c_seq_len, head_kv), torch.int32),
             cu_seqlens=((len(cu_seqlens),), torch.int32),
             token_indices_unread=True,
+            cu_seqlens_k=((len(keys),), torch.int32) if separate else None,
             o=((c_seq_len, heads, dim), torch.float16),
         )
         assert nsa_fwd_varlen_roofline(call)[1] == oracle
@@ -615,11 +628,13 @@ class TestBytesOracle:
             }
             dtype = getattr(torch, call.tensors["q"][1])
             width = indices["D"] + indices["dim_tail"]
+            sink = ((indices["H"],), torch.float32) if call.present("attn_sink") else None
             oracle = _ledger(
                 op_name,
                 q=((indices["B"], indices["S"], indices["H"], width), dtype),
                 kv=((len(rows), width), dtype),
                 indices=((indices["B"], indices["S"], indices["H_kv"], indices["K"]), torch.int32),
+                attn_sink=sink,
                 o=((indices["B"], indices["S"], indices["H"], indices["D"]), dtype),
             )
             assert dsa_decode_roofline(call)[1] == oracle, row["label"]
@@ -786,13 +801,21 @@ class TestSpecOnlyRecounts:
             heads * rows if fp8 else 0
         )
 
-    def test_dsa_paged_scores_each_valid_slot_and_reads_the_rows_they_name(self):
+    @pytest.mark.parametrize(
+        "extra,case",
+        [
+            ({"D": 512}, {"KV": "uint8"}),
+            # A bfloat16 row of 8 values, 2 of them past the value; a sink per head.
+            ({"D": 6, "dim_tail": 2, "some": ["attn_sink"]}, {"KV": "bfloat16"}),
+        ],
+    )
+    def test_dsa_paged_scores_each_valid_slot_and_reads_the_rows_they_name(self, extra, case):
         name = "DSAPagedFwdOp"
-        row = {"S_q": 2, "H": 2, "K": 4, "NP": 6, "PS": 4, "W": 3, "cache_lens": [5, 10]}
+        row = {"S_q": 2, "H": 2, "K": 4, "NP": 6, "PS": 4, "W": 3, "cache_lens": [5, 10], **extra}
         # Request 0: query 0 selects nothing, query 1 three positions on two pages.
         # Request 1: a repeated slot, then nothing.
         indices = [[[-1, -1, -1, -1], [0, 4, 3, -1]], [[3, 3, -1, -1], [-1, -1, -1, -1]]]
-        (flops, moved), call = _evaluated(name, row, {}, indices=indices)
+        (flops, moved), call = _evaluated(name, row, case, indices=indices)
         table, lengths, page = (
             call.metadata_values("block_table"),
             call.metadata_values("cache_seqlens"),
@@ -811,18 +834,64 @@ class TestSpecOnlyRecounts:
             for j in v
         }
         pages = {(b, j // page) for b, per_q in enumerate(valid) for v in per_q for j in v}
+        fp8 = case["KV"] == "uint8"
+        value = row["D"]
+        width = value + (64 if fp8 else row["dim_tail"])
+        cache = ((len(cache_rows), 656), torch.uint8) if fp8 else ((len(cache_rows), width), _BF16)
         assert moved == _ledger(
             name,
-            q=((rows, row["H"], 576), _BF16),  # the query rows that score something
-            kv_cache=((len(cache_rows), 656), torch.uint8),
+            q=((rows, row["H"], width), _BF16),  # the query rows that score something
+            kv_cache=cache,
             block_table=((len(pages),), _I32),
             cache_seqlens=((2,), _I32),
             indices=((2, 2, 4), _I32),
-            o=((2, 2, row["H"], 512), _BF16),
+            attn_sink=None if fp8 else ((row["H"],), _F32),
+            o=((2, 2, row["H"], value), _BF16),
             lse=((2, 2, row["H"]), _F32),
         )
-        # Each distinct row's 512 latent values are dequantized once.
-        assert flops == _attention_flops(row["H"], 576, 512, scores, rows) + 512 * len(cache_rows)
+        # Each distinct FP8 row's 512 latent values are dequantized once; a sink adds its
+        # subtract, exponential and add per head of a row with a score.
+        extra_flops = 512 * len(cache_rows) if fp8 else 3 * row["H"] * rows
+        assert flops == _attention_flops(row["H"], width, value, scores, rows) + extra_flops
+
+    @pytest.mark.parametrize(
+        "row,slots,emitted,state_reads,state_writes,ape_rows",
+        [
+            # Request 0 prefills 5 tokens, closing windows 0 (2 slots) and 1 (4 slots);
+            # request 1 resumes at position 5 and closes window 2, reading position 4 from
+            # the state for the current window and positions 2 and 3 for the previous one.
+            ({"T_q": 7, "seq_lens": [5, 2], "positions": [0, 5]}, 2 + 4 + 4, 3, 3, 4 + 2, 2),
+            # One decode token at position 7 takes one ape row and writes one state row.
+            ({"T_q": 1, "seq_lens": [1], "positions": [7]}, 4, 1, 3, 1, 1),
+        ],
+    )
+    def test_gated_pool_compress_moves_the_state_rows_its_windows_use(
+        self, row, slots, emitted, state_reads, state_writes, ape_rows
+    ):
+        name = "GatedPoolCompressFwdOp"
+        tokens, requests = row["T_q"], len(row["seq_lens"])
+        row = {"NS": 4, "D": 2, "ratio": 2, "overlap": True, **row}
+        (flops, moved), _call = _evaluated(name, row, {"T": "float32", "A": "float32"})
+        read = ((state_reads, 2), _F32)  # D channels per role
+        write = ((state_writes, 4), _F32)  # whole rows
+        assert moved == _ledger(
+            name,
+            kv=((tokens, 4), _F32),
+            score=((tokens, 4), _F32),
+            ape=((ape_rows, 4), _F32),
+            kv_state=read,
+            kv_state_write=write,
+            score_state=read,
+            score_state_write=write,
+            cu_seqlens=((requests + 1,), _I32),
+            start_pos=((requests,), _I32),
+            state_slots=((requests,), _I32),
+            entries=((emitted, 2), _BF16),
+            valid=((tokens,), torch.bool),
+        )
+        # The ape add per token and channel; per slot and channel max, subtract,
+        # exponential, sum, divide, multiply and add.
+        assert flops == tokens * 4 + 2 * 7 * slots
 
     def test_paged_kv_cache_write_moves_only_the_tokens_with_a_slot(self):
         name = "PagedKVCacheWriteFwdOp"
@@ -1253,6 +1322,7 @@ HAND_WRITTEN = {
     "YaRNFwdOp": "it reads only the cos/sin cache rows the positions name",
     "LongRoPEFwdOp": "it reads only the cos/sin cache rows the positions and offsets name",
     "ChainSpeculativeSamplingFwdOp": "where the chain stops is drawn at run time, so it prices the cheaper outcome",
+    "GatedPoolCompressFwdOp": "the state rows it reads and the entries it writes follow the positions",
 }
 
 

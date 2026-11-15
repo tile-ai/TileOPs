@@ -461,7 +461,7 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
             return "requires topk a multiple of 128"
         if call.dim != 512 or call.tail_dim not in (0, 64):
             return "requires dim 512 and tail_dim 0 or 64"
-        return None
+        return super().refusal(call)
 
     def __init__(
         self,
@@ -510,7 +510,13 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
     def default_config(self) -> dict:
         return {}
 
-    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv: torch.Tensor,
+        indices: torch.Tensor,
+        attn_sink: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         self._require_devices(q=q, kv=kv, indices=indices)
         out = torch.empty(
             (self.batch, self.seq_len, self.heads, self.dim), dtype=q.dtype, device=q.device

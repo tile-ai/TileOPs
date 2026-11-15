@@ -251,13 +251,16 @@ class DSADecodeCall(CallSpec):
     sm_scale: float | None = None
     is_causal: bool = True
     cp0: bool = True
+    has_attn_sink: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
 class DSAPagedCall(CallSpec):
-    """One sparse Multi-head Latent Attention (MLA) decode call over a paged FP8 cache.
+    """One sparse Multi-head Latent Attention (MLA) decode call over a paged cache.
 
-    The cache contents, the block table and the selected positions stay device data.
+    ``cache_dtype`` ``uint8`` is the FP8 656-byte row; ``bfloat16`` rows hold ``dim`` value
+    columns and ``dim_tail`` more key columns. The cache contents, the block table and the
+    selected positions stay device data.
     """
 
     batch: int = 0
@@ -266,6 +269,10 @@ class DSAPagedCall(CallSpec):
     topk: int = 0
     page_size: int = 0
     sm_scale: float | None = None
+    dim: int = 512
+    dim_tail: int = 64
+    cache_dtype: torch.dtype | None = None
+    has_attn_sink: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -289,6 +296,7 @@ class NSACall(CallSpec):
     scale: float = 1.0
     is_causal: bool = True
     dtype: torch.dtype | None = None
+    separate_keys: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -772,7 +780,13 @@ class SparseMLADecodeFwdInterface(KernelInterface):
     request = DSADecodeCall
 
     @abstractmethod
-    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv: torch.Tensor,
+        indices: torch.Tensor,
+        attn_sink: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Attend each query row to its selected rows; nothing is written in place.
 
         Every tensor is contiguous on ``call.device``; *q* and *kv* are in ``call.dtype``.
@@ -781,7 +795,10 @@ class SparseMLADecodeFwdInterface(KernelInterface):
             q: ``(batch, seq_len, heads, dim + tail_dim)``.
             kv: ``(batch, seq_len_kv, kv_group, dim + tail_dim)``, the first ``dim`` columns
                 also the values.
-            indices: ``int32`` ``(batch, seq_len, kv_group, topk)``; ``seq_len_kv`` pads.
+            indices: ``int32`` ``(batch, seq_len, kv_group, topk)``; ``seq_len_kv`` pads, and
+                -1 when ``call.is_causal`` is false.
+            attn_sink: ``float32`` ``(heads,)`` logits that join each head's softmax
+                denominator, passed exactly when ``call.has_attn_sink``.
 
         Returns:
             A new ``(batch, seq_len, heads, dim)`` output.
@@ -801,20 +818,24 @@ class DSAPagedFwdInterface(KernelInterface):
         block_table: torch.Tensor,
         cache_seqlens: torch.Tensor,
         indices: torch.Tensor,
+        attn_sink: torch.Tensor | None = None,
     ) -> "tuple[torch.Tensor, torch.Tensor]":
         """Attend each query row to its selected positions; nothing is written in place.
 
         Every tensor is contiguous on ``call.device``.
 
         Args:
-            q: ``bfloat16`` ``(batch, seq_len, heads, 576)``.
-            kv_cache: ``uint8`` ``(num_pages, page_size, 656)`` FP8 latent rows.
+            q: ``bfloat16`` ``(batch, seq_len, heads, dim + dim_tail)``.
+            kv_cache: ``(num_pages, page_size, 656)`` ``uint8`` FP8 latent rows, or
+                ``(num_pages, page_size, dim + dim_tail)`` ``bfloat16`` rows.
             block_table: ``int32`` ``(batch, table_width)`` physical page of each page slot.
             cache_seqlens: ``int32`` ``(batch,)``; a position at or past it is dead.
             indices: ``int32`` ``(batch, seq_len, topk)`` positions; -1 is dead.
+            attn_sink: ``float32`` ``(heads,)`` logits that join each head's softmax
+                denominator, passed exactly when ``call.has_attn_sink``.
 
         Returns:
-            A new ``(batch, seq_len, heads, 512)`` output and its float32
+            A new ``(batch, seq_len, heads, dim)`` output and its float32
             ``(batch, heads, seq_len)`` natural-log sum of exponentials.
         """
 
@@ -864,6 +885,7 @@ class NSAFwdInterface(KernelInterface):
         block_counts: torch.Tensor,
         offsets: torch.Tensor,
         token_indices: torch.Tensor,
+        offsets_k: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Attend each token to its selected blocks; nothing is written in place.
 
@@ -871,12 +893,14 @@ class NSAFwdInterface(KernelInterface):
 
         Args:
             q: ``(c_seq_len, heads, dim)`` in ``call.dtype``.
-            k: ``(c_seq_len, heads_kv, dim)``.
+            k: ``(c_seq_len, heads_kv, dim)``, or one row per key with ``offsets_k``.
             v: The same, for the values.
             block_indices: ``(c_seq_len, heads_kv, selected_blocks)``.
             block_counts: ``(c_seq_len, heads_kv)`` valid entries of ``block_indices``.
             offsets: ``(batch + 1,)`` request boundaries.
             token_indices: ``(c_seq_len, 2)`` request id and in-request position.
+            offsets_k: ``(batch + 1,)`` key boundaries, passed exactly when
+                ``call.separate_keys``; each request's queries are its last keys.
 
         Returns:
             A new ``(c_seq_len, heads, dim)`` output in ``call.dtype``.

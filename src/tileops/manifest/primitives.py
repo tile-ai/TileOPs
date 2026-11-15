@@ -436,15 +436,25 @@ def paged_block_table(rng: random.Random, batch: int, width: int, pool: int) -> 
 
 
 def nsa_block_indices(
-    rng: random.Random, lengths: Sequence[int], block_size: int, selected: int, heads_kv: int
+    rng: random.Random,
+    lengths: Sequence[int],
+    block_size: int,
+    selected: int,
+    heads_kv: int,
+    key_lengths: Sequence[int] | None = None,
 ) -> list[list[list[int]]]:
-    """Position `j` sees `max(ceil_div(j, block_size), 1)` blocks and draws up to `selected` distinct ones per head, ascending, padded with the sentinel `sum(lengths)`."""
+    """Position `j` sees `max(ceil_div(j, block_size), 1)` blocks and draws up to `selected` distinct ones per head, ascending, padded with the sentinel `sum(key_lengths)`. A sequence's `lengths[i]` queries are the last ones of its `key_lengths[i]` keys, which default to `lengths`."""
     if not lengths or any(n <= 0 for n in lengths) or min(block_size, selected, heads_kv) <= 0:
         raise ValueError("nsa_block_indices needs positive arguments and a non-empty positive list")
-    sentinel = sum(lengths)
+    keys = lengths if key_lengths is None else key_lengths
+    if len(keys) != len(lengths) or any(k < n for k, n in zip(keys, lengths, strict=False)):
+        raise ValueError(
+            "nsa_block_indices needs one key length per sequence, at least its queries"
+        )
+    sentinel = sum(keys)
     rows = []
-    for n in lengths:
-        for j in range(n):
+    for n, k in zip(lengths, keys, strict=True):
+        for j in range(k - n, k):
             visible = max(ceil_div(j, block_size), 1)
             per_head = []
             for _ in range(heads_kv):
@@ -708,7 +718,7 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "token_indices": (("Seq[Int]",), "Value"),
     "packed_positions": (("Seq[Int]",), "Value"),
     "chunk_offsets": (("Seq[Int]", "Int"), "Value"),
-    "nsa_block_indices": (("Seq[Int]", "Int", "Int", "Int"), "Value"),
+    "nsa_block_indices": (("Seq[Int]", "Int", "Int", "Int", "key_lengths=Seq[Int]"), "Value"),
     "nsa_block_counts": (("Int", "Int", "Int"), "Value"),
     "topk_ids": (("Int", "Int", "Int"), "Value"),
     "random_ints": (("Seq[Int]", "Int", "Int"), "Value"),
@@ -753,7 +763,11 @@ GENERATOR_SHAPES: dict[str, Callable[..., tuple[int, ...]]] = {
     "token_indices": lambda L: (sum(L), 2),
     "packed_positions": lambda L: (sum(L),),
     "chunk_offsets": lambda L, c: (len(L) + 1,),
-    "nsa_block_indices": lambda L, block, selected, heads: (sum(L), heads, selected),
+    "nsa_block_indices": lambda L, block, selected, heads, key_lengths=None: (
+        sum(L),
+        heads,
+        selected,
+    ),
     "nsa_block_counts": lambda tokens, heads, selected: (tokens, heads),
     "topk_ids": lambda rows, k, experts: (rows, k),
     "random_ints": lambda shape, lo, hi: tuple(shape),

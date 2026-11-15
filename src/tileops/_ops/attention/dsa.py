@@ -33,8 +33,11 @@ class DSADenseFwdOp(Op):
 
     The layout of the operation is BSHD.
 
-    The in-tree kernels serve causal calls with a power-of-two value dimension
-    and a zero or power-of-two tail dimension, subject to shared-memory limits.
+    With ``is_causal`` false only the indices select keys, and -1 pads; ``attn_sink`` adds
+    ``exp(attn_sink[h])`` to head ``h``'s softmax denominator.
+
+    The in-tree kernels serve causal calls without ``attn_sink``, with a power-of-two value
+    dimension and a zero or power-of-two tail dimension, subject to shared-memory limits.
     """
 
     # The WGMMA warp-specialized kernels serve SM90 -- the seesaw kernel value dim 512,
@@ -78,9 +81,10 @@ class DSADenseFwdOp(Op):
             sm_scale (float | None, default=None): Scaling factor for the softmax
                 function; ``None`` means ``(D + dim_tail) ** -0.5``, the query-key head
                 dimension including the tail.
-            is_causal (bool, default=True): Whether the attention is causal. The
-                ``indices`` already name the keys each query attends to, and the in-tree
-                kernels serve only causal calls, so the default stays ``True``.
+            is_causal (bool, default=True): Whether an index past the query's position
+                selects nothing. ``False`` lets the indices alone select keys, as
+                ``flash_mla_sparse_fwd`` does; the in-tree kernels serve only causal calls,
+                so the default stays ``True``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -96,7 +100,11 @@ class DSADenseFwdOp(Op):
         super().__init__(target=target)
 
     def _dsa_decode_call(
-        self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor
+        self,
+        q: torch.Tensor,
+        kv: torch.Tensor,
+        indices: torch.Tensor,
+        attn_sink: torch.Tensor | None,
     ) -> DSADecodeCall:
         """State what one call is, for selection to filter against."""
         batch, seq_len, heads, q_dim = q.shape
@@ -116,10 +124,18 @@ class DSADenseFwdOp(Op):
             sm_scale=self.sm_scale,
             is_causal=self.is_causal,
             cp0=self._cp0,
+            has_attn_sink=attn_sink is not None,
             device=q.device,
         )
 
-    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv: torch.Tensor,
+        indices: torch.Tensor,
+        *,
+        attn_sink: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Performs the forward pass of the sparse attention operation.
 
@@ -129,14 +145,17 @@ class DSADenseFwdOp(Op):
             kv (torch.Tensor): The key-value tensor with shape
                         (batch, seq_len_kv, heads_kv, dim + dim_tail).
             indices (torch.Tensor): Indices tensor for sparse attention.
+            attn_sink (torch.Tensor | None): ``float32`` logits (heads,) that join each
+                head's softmax denominator.
 
         Returns:
             torch.Tensor: The result of applying the sparse attention
                             operation on the input tensors.
         """
-        inputs = (q, kv, indices)
-        kernel = self.kernel_for("dsa_decode", lambda: self._dsa_decode_call(q, kv, indices))
-        return kernel(*inputs)
+        kernel = self.kernel_for(
+            "dsa_decode", lambda: self._dsa_decode_call(q, kv, indices, attn_sink)
+        )
+        return kernel(q, kv, indices, attn_sink)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -144,19 +163,22 @@ class DSADenseFwdOp(Op):
 
 
 class DSAPagedFwdOp(Op):
-    """DeepSeek Sparse Attention (DSA) decode over a paged FP8 latent cache.
+    """DeepSeek Sparse Attention (DSA) decode over a paged latent cache.
 
     Each query row attends to the cache positions ``indices`` names, resolved through the
-    request's ``block_table`` page by page. A cache row is FlashMLA's DeepSeek-V3.2 FP8
-    layout: 512 float8_e4m3fn latent values, one float32 scale per 128 of them, then 64
-    bfloat16 rope values. The key is the dequantized latent and the rope; the value is the
-    dequantized latent. A position of -1, or at or past ``cache_seqlens``, is dead.
+    request's ``block_table`` page by page. A ``uint8`` cache row is FlashMLA's
+    DeepSeek-V3.2 FP8 layout: 512 float8_e4m3fn latent values, one float32 scale per 128 of
+    them, then 64 bfloat16 rope values. The key is the dequantized latent and the rope; the
+    value is the dequantized latent. A ``bfloat16`` cache row holds ``D + dim_tail`` values:
+    the key is the row, the value its first ``D`` columns. A position of -1, or at or past
+    ``cache_seqlens``, is dead. ``attn_sink`` adds ``exp(attn_sink[h])`` to head ``h``'s
+    softmax denominator and leaves ``lse`` unchanged.
 
     The kernel rounds the dequantized key and the softmax weights to bfloat16 before their
     matmuls, which accumulate in float32. ``lse`` is the natural-log sum of exponentials of
     the scaled scores; a row with no live position returns zeros and ``lse`` -inf.
-    Serves SM89 and SM90, 64 or a multiple of 64 heads, ``topk`` a multiple of 64, and a cache
-    below 2^32 bytes.
+    Serves the FP8 cache without ``attn_sink`` on SM89 and SM90, 64 or a multiple of 64
+    heads, ``topk`` a multiple of 64, and a cache below 2^32 bytes.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -166,16 +188,20 @@ class DSAPagedFwdOp(Op):
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dsa_paged": DSAPagedFwdInterface}
 
-    def __init__(self, sm_scale: float | None = None, *, target: Target = None) -> None:
+    def __init__(
+        self, sm_scale: float | None = None, dim_tail: int = 64, *, target: Target = None
+    ) -> None:
         """Build the op. Shapes are taken from each call.
 
         Args:
-            sm_scale: Scale of the query-key scores; ``None`` means ``576 ** -0.5``, the
-                query-key head dimension (512 latent plus 64 rope columns).
+            sm_scale: Scale of the query-key scores; ``None`` means ``(D + dim_tail) ** -0.5``,
+                the query-key head dimension (576 for the FP8 row).
+            dim_tail: Key columns past the value; the FP8 row's 64 rope values.
             target: Which set of kernels serves this op -- a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.sm_scale = sm_scale
+        self.dim_tail = dim_tail
         super().__init__(target=target)
 
     def forward(
@@ -185,21 +211,26 @@ class DSAPagedFwdOp(Op):
         block_table: torch.Tensor,
         cache_seqlens: torch.Tensor,
         indices: torch.Tensor,
+        *,
+        attn_sink: torch.Tensor | None = None,
     ) -> "tuple[torch.Tensor, torch.Tensor]":
         """Attend each query row to the cache rows its positions resolve to.
 
         Args:
-            q: ``bfloat16`` ``(batch, seq_len, heads, 576)``.
-            kv_cache: ``uint8`` ``(num_pages, page_size, 656)`` FP8 latent rows.
+            q: ``bfloat16`` ``(batch, seq_len, heads, D + dim_tail)``.
+            kv_cache: ``uint8`` ``(num_pages, page_size, 656)`` FP8 latent rows, or
+                ``bfloat16`` ``(num_pages, page_size, D + dim_tail)`` rows.
             block_table: ``int32`` ``(batch, table_width)`` page of each page slot.
             cache_seqlens: ``int32`` ``(batch,)`` cache length of each request.
             indices: ``int32`` ``(batch, seq_len, topk)`` positions; -1 pads.
+            attn_sink: ``float32`` ``(heads,)`` logits that join each head's softmax
+                denominator.
 
         Returns:
-            ``(o, lse)``: ``bfloat16`` ``(batch, seq_len, heads, 512)`` and ``float32``
+            ``(o, lse)``: ``bfloat16`` ``(batch, seq_len, heads, D)`` and ``float32``
             ``(batch, heads, seq_len)``, the head-major layout flash-attn returns.
         """
-        batch, seq_len, heads, _ = q.shape
+        batch, seq_len, heads, q_dim = q.shape
         return self.kernel_for(
             "dsa_paged",
             lambda: DSAPagedCall(
@@ -209,9 +240,13 @@ class DSAPagedFwdOp(Op):
                 topk=indices.shape[-1],
                 page_size=kv_cache.shape[1],
                 sm_scale=self.sm_scale,
+                dim=q_dim - self.dim_tail,
+                dim_tail=self.dim_tail,
+                cache_dtype=kv_cache.dtype,
+                has_attn_sink=attn_sink is not None,
                 device=q.device,
             ),
-        )(q, kv_cache, block_table, cache_seqlens, indices)
+        )(q, kv_cache, block_table, cache_seqlens, indices, attn_sink)
 
     def roof_key(self) -> str:
         """FLOPs are bfloat16 matmul contractions; priced on tensor cores."""

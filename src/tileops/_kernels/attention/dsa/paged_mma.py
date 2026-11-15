@@ -165,7 +165,7 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
         )
         return CompiledProgram(kernel), combine
 
-    def forward(self, q, kv_cache, block_table, cache_seqlens, indices):
+    def forward(self, q, kv_cache, block_table, cache_seqlens, indices, attn_sink=None):
         self._require_devices(
             q=q,
             kv_cache=kv_cache,

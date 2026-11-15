@@ -15,12 +15,14 @@ from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCal
 def _fla_nsa_fwd(workload: NSAFwdCall):
     """Selected-block attention. None where fla cannot serve the row."""
     # parallel_nsa_fwd masks each selected block against the query's own position, so it has no
-    # non-causal form.
-    if not workload.is_causal:
+    # non-causal form; its tiles take a power-of-two query group of at least 16 and blocks of
+    # at least 16 keys.
+    group = workload.groups
+    if not workload.is_causal or workload.block_size < 16 or group < 16 or group & (group - 1):
         return None
     fwd = fla_op("ops.nsa.parallel.parallel_nsa_fwd")
 
-    def fn(q, k, v, block_indices, block_counts, cu_seqlens, token_indices):
+    def fn(q, k, v, block_indices, block_counts, cu_seqlens, token_indices, cu_seqlens_k=None):
         o, _ = fwd(
             q=q.unsqueeze(0),
             k=k.unsqueeze(0),
@@ -30,7 +32,7 @@ def _fla_nsa_fwd(workload: NSAFwdCall):
             block_size=workload.block_size,
             scale=workload.scale,
             cu_seqlens_q=cu_seqlens,
-            cu_seqlens_k=cu_seqlens,
+            cu_seqlens_k=cu_seqlens if cu_seqlens_k is None else cu_seqlens_k,
             token_indices_q=token_indices,
         )
         return o.squeeze(0)

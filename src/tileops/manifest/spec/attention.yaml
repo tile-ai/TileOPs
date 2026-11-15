@@ -449,6 +449,12 @@ MLADenseDecodeFwdOp:
     flops: "B * H * (N_kv * (2 * (D + PE) + 2 * D + 5) + D)"
 
 DSADenseFwdOp:
+  # Each query row attends to the kv rows its indices name; the first D columns of a row
+  # are its value. is_causal also drops an index j whose last position
+  # (j + 1) * stride_kv - 1 is past the query's q_start_index_s + s; with is_causal false
+  # only the indices select keys, as in flash_mla_sparse_fwd and DeepSeek-V4-Flash
+  # inference/kernel.py sparse_attn, whose indices address [window | compressed] rows.
+  # attn_sink adds exp(attn_sink[h]) to the softmax denominator of head h.
   family: attention
   status: implemented
   ref_api: vllm.v1.attention.ops.flashmla.flash_mla_sparse_fwd
@@ -463,19 +469,19 @@ DSADenseFwdOp:
     inputs:
       q: {dtype: T, shape: "[B, S, H, D + dim_tail]"}
       kv: {dtype: T, shape: "[B, S_kv, H_kv, D + dim_tail]"}
-      # The keys each query row attends to; S_kv pads a row that selects fewer than K.
+      # The keys each query row attends to; S_kv, and -1 with is_causal false, pad a row
+      # that selects fewer than K.
       indices:
         dtype: int32
         shape: "[B, S, H_kv, K]"
         values: "causal_topk_indices(B, S, H_kv, K, S_kv, q_start_index_s, stride_kv)"
-        requires: ["in_range(0, S_kv + 1)"]
+        requires: ["in_range(0 if is_causal else -1, S_kv + 1)"]
+      attn_sink: {dtype: float32, shape: "[H]", type: "Tensor | None", default: null, kw_only: true}
     outputs:
       o: {dtype: T, shape: "[B, S, H, D]"}
     shape_rules:
     - "H_kv > 0 and H % H_kv == 0"
     - "dim_tail >= 0 and stride_kv > 0"
-    # The kernel's first stride_kv - 1 outputs are undefined when queries start at 0.
-    - "q_start_index_s > stride_kv or (q_start_index_s == 0 and stride_kv == 1)"
     - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {B: 1, S: 1024, S_kv: 2048, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v32-kv2k}
@@ -494,6 +500,16 @@ DSADenseFwdOp:
   - {B: 1, S: 4096, S_kv: 32768, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 28672, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv32k}
   - {B: 1, S: 4096, S_kv: 49152, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 45056, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv48k}
   - {B: 1, S: 4096, S_kv: 65536, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 61440, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv64k}
+  # DeepSeek-V4-Flash prefill: kv holds the S window rows, then the compressed entries.
+  # CSA layers attend to 128 window and 512 indexer-selected entries of ratio 4, HCA layers
+  # to 128 window and every entry of ratio 128. q_start_index_s puts every kv row in the
+  # generator's reach; with is_causal false the op does not read it.
+  - {B: 1, S: 4096, S_kv: 5120, H: 64, H_kv: 1, D: 512, K: 640, dim_tail: 0, stride_kv: 1, q_start_index_s: 5120, is_causal: false, some: [attn_sink], dtype_cases: [{T: bfloat16}], label: dsv4-flash-csa-4k}
+  - {B: 1, S: 32768, S_kv: 40960, H: 64, H_kv: 1, D: 512, K: 640, dim_tail: 0, stride_kv: 1, q_start_index_s: 40960, is_causal: false, some: [attn_sink], dtype_cases: [{T: bfloat16}], label: dsv4-flash-csa-32k}
+  - {B: 1, S: 4096, S_kv: 4128, H: 64, H_kv: 1, D: 512, K: 160, dim_tail: 0, stride_kv: 1, q_start_index_s: 4128, is_causal: false, some: [attn_sink], dtype_cases: [{T: bfloat16}], label: dsv4-flash-hca-4k}
+  - {B: 1, S: 32768, S_kv: 33024, H: 64, H_kv: 1, D: 512, K: 384, dim_tail: 0, stride_kv: 1, q_start_index_s: 33024, is_causal: false, some: [attn_sink], dtype_cases: [{T: bfloat16}], label: dsv4-flash-hca-32k}
+  # MTP verification over a 32k context: kv is the 128-row window and 8192 entries.
+  - {B: 16, S: 2, S_kv: 8320, H: 64, H_kv: 1, D: 512, K: 640, dim_tail: 0, stride_kv: 1, q_start_index_s: 8320, is_causal: false, some: [attn_sink], dtype_cases: [{T: bfloat16}], label: dsv4-flash-csa-mtp}
   roofline:
     func: tileops._perf.formulas.dsa_decode_roofline
 
@@ -570,11 +586,23 @@ NSATopKVarlenFwdOp:
     func: "tileops._perf.formulas.nsa_topk_varlen_roofline"
 
 NSAVarlenFwdOp:
+  # With cu_seqlens_k (parallel_nsa_fwd's cu_seqlens_k; cu_seqlens is its cu_seqlens_q),
+  # request i's queries are the last of its keys cu_seqlens_k[i]:cu_seqlens_k[i + 1],
+  # which hold at least as many tokens; without it the keys are the queries' own tokens.
   family: attention
   status: implemented
   ref_api: fla.ops.nsa.parallel.parallel_nsa_fwd
   signature:
-    forall: {N: Dim, T_q: Dim, H: Dim, H_kv: Dim, D: Dim, SEL: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
+    forall: {N: Dim, T_q: Dim, T_kv: Dim, H: Dim, H_kv: Dim, D: Dim, SEL: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]", kv_lens: "Seq[Int]"}
+    types:
+      KeyRows:
+        params: {separate: Bool, T_q: Dim, T_kv: Dim, H_kv: Dim, D: Dim}
+        match: separate
+        cases:
+        - {when: false, is: "[T_q, H_kv, D]"}
+        - {when: true, is: "[T_kv, H_kv, D]"}
+    let:
+      keys: "T_kv if present(cu_seqlens_k) else T_q"
     params:
       block_size: {type: int, kw_only: true}
       sm_scale: {type: "float | None", default: null, kw_only: true}
@@ -583,25 +611,36 @@ NSAVarlenFwdOp:
       validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       q: {dtype: T, shape: "[T_q, H, D]"}
-      k: {dtype: T, shape: "[T_q, H_kv, D]"}
-      v: {dtype: T, shape: "[T_q, H_kv, D]"}
-      block_indices: {dtype: int32, shape: "[T_q, H_kv, SEL]", values: "nsa_block_indices(seq_lens, block_size, SEL, H_kv)", requires: ["in_range(0, T_q + 1)"]}
+      k: {dtype: T, shape: "KeyRows[present(cu_seqlens_k), T_q, T_kv, H_kv, D]"}
+      v: {dtype: T, shape: "KeyRows[present(cu_seqlens_k), T_q, T_kv, H_kv, D]"}
+      block_indices:
+        dtype: int32
+        shape: "[T_q, H_kv, SEL]"
+        values: "nsa_block_indices(seq_lens, block_size, SEL, H_kv, kv_lens)"
+        requires: ["in_range(0, keys + 1)"]
       block_counts: {dtype: int32, shape: "[T_q, H_kv]", values: "nsa_block_counts(T_q, H_kv, SEL)", requires: ["in_range(0, SEL + 1)"]}
       cu_seqlens: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
       token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["token_rows_of(cu_seqlens)"]}
+      cu_seqlens_k: {dtype: int32, shape: "[N + 1]", type: "Tensor | None", default: null, kw_only: true, values: "prefix_sum(kv_lens)", requires: ["prefix_offsets(T_kv)"]}
     outputs:
       o: {dtype: T, shape: "[T_q, H, D]"}
     shape_rules:
-    - "H_kv > 0 and H % H_kv == 0 and H // H_kv % 16 == 0"
-    # The kernel tiles the head dimension whole; a wider one silently truncates.
-    - "D <= 128"
+    - "H_kv > 0 and H % H_kv == 0"
     - "block_size > 0"
     - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
-  - {H: 16, H_kv: 1, D: 64, SEL: 1, is_causal: true, sm_scale: 0.1, block_size: 32, seq_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}], label: prefill-4x2k}
-  - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: true, sm_scale: 0.1, block_size: 32, seq_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], label: prefill-2x4k}
-  - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: false, sm_scale: 0.1, block_size: 32, seq_lens: [4000, 4190], dtype_cases: [{T: float16}], label: prefill-noncausal-2x4k}
-  - {H: 32, H_kv: 2, D: 128, SEL: 8, is_causal: true, sm_scale: 0.08838834764831845, block_size: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: prefill-ragged}
+  - {H: 16, H_kv: 1, D: 64, SEL: 1, is_causal: true, sm_scale: 0.1, block_size: 32, seq_lens: "repeat(2048, 4)", kv_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}], label: prefill-4x2k}
+  - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: true, sm_scale: 0.1, block_size: 32, seq_lens: "repeat(4096, 2)", kv_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], label: prefill-2x4k}
+  - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: false, sm_scale: 0.1, block_size: 32, seq_lens: [4000, 4190], kv_lens: [4000, 4190], dtype_cases: [{T: float16}], label: prefill-noncausal-2x4k}
+  - {H: 32, H_kv: 2, D: 128, SEL: 8, is_causal: true, sm_scale: 0.08838834764831845, block_size: 32, seq_lens: [257, 767], kv_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: prefill-ragged}
+  # Qwen3.8-Flash-Next full attention: the top-512 complete 4-token blocks plus the
+  # token's own incomplete block, at most 2051 keys.
+  - {H: 24, H_kv: 2, D: 256, SEL: 513, is_causal: true, sm_scale: 0.0625, block_size: 4, seq_lens: [4096], kv_lens: [4096], dtype_cases: [{T: bfloat16}], label: qwen3.8-flash-4k}
+  - {H: 24, H_kv: 2, D: 256, SEL: 513, is_causal: true, sm_scale: 0.0625, block_size: 4, seq_lens: [1000, 3096], kv_lens: [1000, 3096], dtype_cases: [{T: bfloat16}], label: qwen3.8-flash-ragged}
+  # Decode and MTP verification over a cached context, and a 256k context.
+  - {T_kv: 524288, H: 24, H_kv: 2, D: 256, SEL: 513, is_causal: true, sm_scale: 0.0625, block_size: 4, seq_lens: "repeat(1, 64)", kv_lens: "repeat(8192, 64)", some: [cu_seqlens_k], dtype_cases: [{T: bfloat16}], label: qwen3.8-flash-decode-b64}
+  - {T_kv: 524288, H: 24, H_kv: 2, D: 256, SEL: 513, is_causal: true, sm_scale: 0.0625, block_size: 4, seq_lens: "repeat(2, 16)", kv_lens: "repeat(32768, 16)", some: [cu_seqlens_k], dtype_cases: [{T: bfloat16}], label: qwen3.8-flash-mtp-b16}
+  - {T_kv: 262144, H: 24, H_kv: 2, D: 256, SEL: 513, is_causal: true, sm_scale: 0.0625, block_size: 4, seq_lens: [1], kv_lens: [262144], some: [cu_seqlens_k], dtype_cases: [{T: bfloat16}], label: qwen3.8-flash-256k}
   roofline:
     # The blocks the selection keeps decide the scores and the key/value rows read.
     func: "tileops._perf.formulas.nsa_fwd_varlen_roofline"
@@ -843,6 +882,12 @@ MLAKVCacheWriteFwdOp:
   - {DC: 512, PE: 64, NP: 2048, PS: 64, P: 163840, seq_lens: "repeat(1024, 4)", fuse_rope: true, rope_layout: interleaved, some: [kv_scale, positions, cos_sin_cache], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn, C: float32}], label: ds-v3-fp8-rope}
   - {DC: 512, PE: 64, NP: 2048, PS: 64, P: 131072, seq_lens: [128], fuse_rope: true, rope_layout: interleaved, some: [positions, cos_sin_cache], dtype_cases: [{T: bfloat16, KV: bfloat16, C: bfloat16}], label: kimi-k2-rope}
   - {DC: 512, PE: 64, NP: 5, PS: 7, P: 64, seq_lens: [3, 4], fuse_rope: true, rope_layout: neox, some: [kv_scale, positions, cos_sin_cache], dtype_cases: [{T: float16, KV: float8_e4m3fn, C: float16}], label: odd-tokens-neox-fp8}
+  # The bfloat16 rows DSAPagedFwdOp reads: GLM-5.3-Flash's NoPE latent, and
+  # DeepSeek-V4-Flash's 448 non-rope and 64 rope values of a window or compressed entry.
+  - {N: 64, DC: 512, PE: 0, NP: 32768, PS: 64, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: glm-5.3-flash-decode}
+  - {N: 4096, DC: 512, PE: 0, NP: 32768, PS: 64, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: glm-5.3-flash-prefill}
+  - {N: 64, DC: 448, PE: 64, NP: 8320, PS: 64, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: dsv4-flash-decode}
+  - {N: 4096, DC: 448, PE: 64, NP: 8320, PS: 64, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: dsv4-flash-prefill}
   roofline:
     # Only the tokens with a slot are read and written; the rotation reads the cos/sin
     # rows their positions name.
@@ -888,34 +933,50 @@ MergeAttentionStatesFwdOp:
 
 DSAPagedFwdOp:
   # DeepSeek Sparse Attention: MLA decode over the key positions indices names, read from
-  # a paged cache in the FlashMLA DeepSeek-V3.2 FP8 row format. A 656-byte row holds 512
+  # a paged cache. A uint8 cache holds the FlashMLA DeepSeek-V3.2 FP8 row: 656 bytes of 512
   # float8_e4m3fn latent values, 4 float32 scales (one per 128 of them) and 64 bfloat16
-  # rope values; the value is the dequantized latent. -1 pads indices; every other entry
-  # below cache_seqlens[b] is the caller's obligation. sm_scale defaults to 576 ** -0.5.
+  # rope values; the key is the dequantized latent and the rope, the value the dequantized
+  # latent. A bfloat16 cache holds D + dim_tail values; the key is the row, the value its
+  # first D columns. -1 pads indices; every other entry below cache_seqlens[b] is the
+  # caller's obligation. attn_sink adds exp(attn_sink[h]) to head h's softmax denominator
+  # and leaves lse unchanged. sm_scale defaults to (D + dim_tail) ** -0.5.
   family: attention
   status: implemented
   ref_api: vllm.v1.attention.ops.flashmla.flash_mla_with_kvcache
   signature:
-    forall: {B: Dim, S_q: Dim, H: Dim, K: Dim, NP: Dim, PS: Dim, W: Dim, cache_lens: "Seq[Int]"}
+    forall: {B: Dim, S_q: Dim, H: Dim, D: Dim, K: Dim, NP: Dim, PS: Dim, W: Dim, KV: "DType[uint8 | bfloat16]", cache_lens: "Seq[Int]"}
     params:
       sm_scale: {type: "float | None", default: null}
+      # The FP8 row's rope width; flash_mla_with_kvcache states the value width instead.
+      dim_tail: {type: int, default: 64}
     inputs:
-      q: {dtype: bfloat16, shape: "[B, S_q, H, 576]", contiguous: true}
-      kv_cache: {dtype: uint8, shape: "[NP, PS, 656]", contiguous: true}
+      q: {dtype: bfloat16, shape: "[B, S_q, H, D + dim_tail]", contiguous: true}
+      kv_cache: {dtype: KV, shape: "[NP, PS, 656 if KV == 'uint8' else D + dim_tail]", contiguous: true}
       block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"], contiguous: true}
       cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(S_q, W * PS + 1)"], contiguous: true}
       indices: {dtype: int32, shape: "[B, S_q, K]", values: "attn.sparse_topk_positions(cache_lens, S_q, K)", requires: ["in_range(-1, W * PS)"], contiguous: true}
+      attn_sink: {dtype: float32, shape: "[H]", type: "Tensor | None", default: null, kw_only: true}
     outputs:
-      o: {dtype: bfloat16, shape: "[B, S_q, H, 512]"}
+      o: {dtype: bfloat16, shape: "[B, S_q, H, D]"}
       lse: {dtype: float32, shape: "[B, H, S_q]"}
     shape_rules:
-    - "S_q > 0 and PS > 0"
+    - "S_q > 0 and PS > 0 and dim_tail >= 0"
+    - "KV != 'uint8' or (D == 512 and dim_tail == 64)"
     - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
-  - {S_q: 1, H: 128, K: 2048, NP: 32768, PS: 64, W: 512, cache_lens: "repeat(32768, 64)", label: ds-v32-32k}
-  - {S_q: 2, H: 128, K: 2048, NP: 32768, PS: 64, W: 2048, cache_lens: "repeat(131072, 16)", label: ds-v32-mtp-128k}
+  - {S_q: 1, H: 128, D: 512, K: 2048, NP: 32768, PS: 64, W: 512, cache_lens: "repeat(32768, 64)", dtype_cases: [{KV: uint8}], label: ds-v32-32k}
+  - {S_q: 2, H: 128, D: 512, K: 2048, NP: 32768, PS: 64, W: 2048, cache_lens: "repeat(131072, 16)", dtype_cases: [{KV: uint8}], label: ds-v32-mtp-128k}
   # Tensor parallel 2 early in decode: each context is shorter than K, so -1 pads every row.
-  - {S_q: 1, H: 64, K: 2048, NP: 1056, PS: 64, W: 22, cache_lens: "balanced_sizes(65544, 48)", label: ds-v32-tp2-1k}
+  - {S_q: 1, H: 64, D: 512, K: 2048, NP: 1056, PS: 64, W: 22, cache_lens: "balanced_sizes(65544, 48)", dtype_cases: [{KV: uint8}], label: ds-v32-tp2-1k}
+  # GLM-5.3-Flash absorbed NoPE MLA: 512 pools of 4 and the 3-token tail over the bf16
+  # latent, a 32k context.
+  - {S_q: 1, H: 64, D: 512, K: 2051, NP: 32768, PS: 64, W: 512, cache_lens: "repeat(32768, 64)", dim_tail: 0, sm_scale: 0.0625, dtype_cases: [{KV: bfloat16}], label: glm-5.3-flash-b64}
+  - {S_q: 2, H: 64, D: 512, K: 2051, NP: 8192, PS: 64, W: 512, cache_lens: "repeat(32768, 16)", dim_tail: 0, sm_scale: 0.0625, dtype_cases: [{KV: bfloat16}], label: glm-5.3-flash-mtp}
+  # DeepSeek-V4-Flash MQA over the 128-row window and the compressed entries of a 32k
+  # context: 512 indexer-selected of 8192 (CSA layers) or all 256 (HCA layers).
+  - {S_q: 1, H: 64, D: 512, K: 640, NP: 8320, PS: 64, W: 130, cache_lens: "repeat(8320, 64)", dim_tail: 0, some: [attn_sink], dtype_cases: [{KV: bfloat16}], label: dsv4-flash-csa-b64}
+  - {S_q: 2, H: 64, D: 512, K: 640, NP: 2080, PS: 64, W: 130, cache_lens: "repeat(8320, 16)", dim_tail: 0, some: [attn_sink], dtype_cases: [{KV: bfloat16}], label: dsv4-flash-csa-mtp}
+  - {S_q: 1, H: 64, D: 512, K: 384, NP: 384, PS: 64, W: 6, cache_lens: "repeat(384, 64)", dim_tail: 0, some: [attn_sink], dtype_cases: [{KV: bfloat16}], label: dsv4-flash-hca-b64}
   roofline:
     # The selected scores, and the cache rows they resolve to through the block table.
     func: "tileops._perf.formulas.dsa_paged_fwd_roofline"

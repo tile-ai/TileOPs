@@ -21,6 +21,7 @@ class TopKSelectCall(CallSpec):
     seq_len_kv: int = 0
     kv_group: int = 0
     topk: int = 0
+    fill_value: int | None = None
     dtype: torch.dtype | None = None
     out_dtype: torch.dtype | None = None
 
@@ -38,7 +39,8 @@ class TopKSelectFwdInterface(KernelInterface):
 
         Row ``(b, s, g)`` selects from ``index_score[b, s, starts[b, s]:ends[b, s], g]``. The
         positions come back in no particular order along the ``topk`` axis, and a window
-        holding fewer than ``call.topk`` positions fills the rest with ``call.seq_len_kv``.
+        holding fewer than ``call.topk`` positions fills the rest with ``call.fill_value``,
+        or with ``call.seq_len_kv`` when it is ``None``.
         Nothing is written in place, and the output aliases no input.
 
         Args:
@@ -399,6 +401,14 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def refusal(cls, call: TopKSelectCall) -> str | None:
+        if call.fill_value is not None:
+            return "fills unused slots with seq_len_kv only"
+        if call.topk > call.seq_len_kv:
+            return "requires topk at most seq_len_kv"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: TopKSelectCall) -> Entry:

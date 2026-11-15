@@ -27,6 +27,7 @@ from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._workload import TensorSpec, instantiate
 from workloads import sampling
+from workloads.attention.gated_pool_compress import gated_pool_compress
 from workloads.attention.merge_states import MergeAttentionStatesWorkload
 from workloads.quantization import int8_dequant
 from workloads.quantization import quantize as quantization
@@ -175,6 +176,36 @@ def _paged_kv_cache_write(p, t):
     return {}
 
 
+def _nsa_varlen(p, t):
+    # fla.ops.nsa.parallel.parallel_nsa_fwd: request i's queries are the last of its keys
+    q, k, v, picks, counts = (t[n] for n in ("q", "k", "v", "block_indices", "block_counts"))
+    if k.shape != v.shape or q.shape[-1] != k.shape[-1] or q.shape[1] % k.shape[1]:
+        raise ValueError("q, k and v must agree")
+    cu = t["cu_seqlens"].tolist()
+    keys = cu if t["cu_seqlens_k"] is None else t["cu_seqlens_k"].tolist()
+    size, group = p["block_size"], q.shape[1] // k.shape[1]
+    scale = p["sm_scale"] if p["sm_scale"] is not None else q.shape[-1] ** -0.5
+    outs = []
+    for a, e, a_k, e_k in zip(cu, cu[1:], keys, keys[1:], strict=False):
+        n, m = e - a, e_k - a_k
+        blocks = -(-m // size)
+        # Each slot past block_counts, or naming no block of the keys, selects nothing; a
+        # block selected twice is attended twice.
+        slot = picks[a:e].long()
+        live = torch.arange(slot.shape[-1]) < counts[a:e, :, None]
+        slot = torch.where(live & (slot >= 0) & (slot < blocks), slot, blocks)
+        times = torch.zeros(n, k.shape[1], blocks + 1).scatter_add(2, slot, torch.ones(slot.shape))
+        times = times[..., torch.arange(m) // size]
+        if p["is_causal"]:
+            times *= torch.arange(m)[None, None] <= torch.arange(m - n, m)[:, None, None]
+        times = times.repeat_interleave(group, 1).permute(1, 0, 2).to(q.device)
+        kh, vh = (x[a_k:e_k].float().repeat_interleave(group, 1) for x in (k, v))
+        scores = torch.einsum("shd,mhd->hsm", q[a:e].float(), kh) * scale + times.log()
+        weights = scores.softmax(-1).nan_to_num(0.0)
+        outs.append(torch.einsum("hsm,mhd->shd", weights, vh))
+    return {"o": torch.cat(outs).to(q.dtype)}
+
+
 def _rope(x, cos_sin, positions, layout):
     """Rotate ``x [N, ..., R']`` on its first ``R`` columns by ``cos_sin [P, R]`` at ``positions``."""
     half = cos_sin.shape[1] // 2
@@ -232,18 +263,29 @@ def _dsa_paged(p, t):
     page_size = cache.shape[1]
     scale = p["sm_scale"] if p["sm_scale"] is not None else dk**-0.5
     flat = cache.view(-1, cache.shape[-1])
+    fp8 = cache.dtype == torch.uint8
+    if (cache.shape[-1] != 656 or dk != 576) if fp8 else cache.shape[-1] != dk:
+        raise ValueError("q and the cache row disagree")
+    sink = t["attn_sink"]
     outs, lses = [], []
     for b in range(batch):
         for s in range(s_q):
             pos = indices[b, s].long()
             pos = pos[(pos >= 0) & (pos < lens[b])]
             rows = flat[table[b][pos // page_size].long() * page_size + pos % page_size]
-            latent = rows[:, :512].view(torch.float8_e4m3fn).float()
-            scales = rows[:, 512:528].view(torch.float32).repeat_interleave(128, 1)
-            value = latent * scales
-            key = torch.cat([value, rows[:, 528:].view(torch.bfloat16).float()], -1)
+            if fp8:
+                latent = rows[:, :512].view(torch.float8_e4m3fn).float()
+                scales = rows[:, 512:528].view(torch.float32).repeat_interleave(128, 1)
+                value = latent * scales
+                key = torch.cat([value, rows[:, 528:].view(torch.bfloat16).float()], -1)
+            else:
+                key = rows.float()
+                value = key[:, : dk - p["dim_tail"]]
             visible = torch.ones(1, key.shape[0], dtype=torch.bool)
             o, lse = _attend(q[b, s : s + 1], key, value, scale, visible)
+            if sink is not None:
+                # The sink joins the denominator: o * e^lse / (e^lse + e^sink); lse unchanged.
+                o = o * torch.sigmoid(lse - sink.float()).nan_to_num(0.0)[..., None]
             outs.append(o[0])
             lses.append(lse[0])
     shape = (batch, s_q)
@@ -263,6 +305,14 @@ def _paged_kv_cache_gather(p, t):
             rows = rows.float() * t["kv_scale"]
         out[a:e] = rows.to(out.dtype)
     return {"output": out}
+
+
+def _gated_pool_compress(p, t):
+    names = ("kv", "score", "ape", "kv_state", "score_state", "cu_seqlens", "start_pos")
+    entries, valid = gated_pool_compress(
+        *(t[n] for n in names), t["state_slots"], p["ratio"], p["overlap"]
+    )
+    return {"entries": entries, "valid": valid}
 
 
 # ---------------------------------------------------------------- indexing
@@ -427,6 +477,8 @@ REFERENCES = {
     "RMSNormGatedFwdOp": (_rms_norm_gated, _narrow("weight")),
     "RoPECosSinFwdOp": (_rope_cos_sin, _narrow("sin")),
     "ConcatFwdOp": (_concat, _narrow_element("tensors", 1, 0)),
+    "GatedPoolCompressFwdOp": (_gated_pool_compress, _narrow("ape")),
+    "NSAVarlenFwdOp": (_nsa_varlen, _narrow("v")),
 }
 
 
@@ -545,3 +597,19 @@ def test_a_write_only_buffer_is_written_whole():
     tensors["out"].fill_(math.nan)
     _paged_kv_cache_gather(call.arguments(), {n: tensors[n] for n in plan.sig.inputs})
     assert not tensors["out"].isnan().any()
+
+
+def test_the_nsa_reference_attends_a_block_selected_twice_twice():
+    """parallel_nsa_fwd attends each selected slot, so a repeated block weighs double."""
+    params = {"block_size": 1, "sm_scale": None, "is_causal": False}
+    tensors = {
+        "q": torch.zeros(1, 1, 1),
+        "k": torch.zeros(2, 1, 1),
+        "v": torch.tensor([0.0, 3.0]).view(2, 1, 1),
+        "block_indices": torch.tensor([[[0, 0, 1]]], dtype=torch.int32),
+        "block_counts": torch.tensor([[3]], dtype=torch.int32),
+        "cu_seqlens": torch.tensor([0, 1], dtype=torch.int32),
+        "token_indices": torch.tensor([[0, 0]], dtype=torch.int32),
+        "cu_seqlens_k": torch.tensor([0, 2], dtype=torch.int32),
+    }
+    assert _nsa_varlen(params, tensors)["o"].item() == pytest.approx(1.0)

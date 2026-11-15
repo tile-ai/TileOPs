@@ -18,6 +18,18 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
     """Shared shape checks, construction and tuning inputs for sparse MLA decode."""
 
     @classmethod
+    def refusal(cls, call: DSADecodeCall) -> str | None:
+        if call.has_attn_sink:
+            return "does not serve attn_sink"
+        # The first stride_kv - 1 outputs are left unwritten when queries start at 0.
+        if not (
+            call.q_start_index_s > call.kv_stride
+            or (call.q_start_index_s == 0 and call.kv_stride == 1)
+        ):
+            return "requires q_start_index_s past kv_stride, or 0 with kv_stride 1"
+        return super().refusal(call)
+
+    @classmethod
     def entry_for(cls, call: DSADecodeCall) -> Entry:
         """The call spec is the identity; the kernel is built on its device."""
         return call, lambda: cls(
@@ -774,28 +786,29 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
             call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal
         )
         limit = BLOCK_SHARED_BYTES_OPT_IN.get(call.arch)
-        if reason is not None or limit is None:
+        if reason is not None:
             return reason
-        head_kv = call.heads // call.kv_group
-        itemsize = call.dtype.itemsize
-        config = cls._default_config_for(
-            call.arch, head_kv, call.dim, call.tail_dim, itemsize, call.topk
-        )
-        need = cls._shared_bytes(
-            cls.heads_per_block(head_kv, config["block_h"]),
-            call.dim,
-            call.tail_dim,
-            itemsize,
-            config["block_i"],
-            config["threads"],
-            call.topk,
-        )
-        if need > limit:
-            return (
-                f"needs {need} bytes of shared memory per block, over the {limit} bytes "
-                f"sm{call.arch} allows"
+        if limit is not None:
+            head_kv = call.heads // call.kv_group
+            itemsize = call.dtype.itemsize
+            config = cls._default_config_for(
+                call.arch, head_kv, call.dim, call.tail_dim, itemsize, call.topk
             )
-        return None
+            need = cls._shared_bytes(
+                cls.heads_per_block(head_kv, config["block_h"]),
+                call.dim,
+                call.tail_dim,
+                itemsize,
+                config["block_i"],
+                config["threads"],
+                call.topk,
+            )
+            if need > limit:
+                return (
+                    f"needs {need} bytes of shared memory per block, over the {limit} bytes "
+                    f"sm{call.arch} allows"
+                )
+        return super().refusal(call)
 
     @staticmethod
     def heads_per_block(head_kv: int, block_h: int) -> int:
@@ -941,7 +954,13 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
             for block_i, threads in itertools.product((32, 64), (128, 256))
         ]
 
-    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv: torch.Tensor,
+        indices: torch.Tensor,
+        attn_sink: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Performs the forward pass of the sparse multi-head attention kernel.
 
@@ -989,7 +1008,7 @@ class DSADecodeKernel(DSADecodeKernelBase):
         # The default block_i of 64, taken an even number of times.
         if call.topk % 128 != 0:
             return "requires topk a multiple of 128"
-        return None
+        return super().refusal(call)
 
     def __init__(
         self,
@@ -1075,7 +1094,13 @@ class DSADecodeKernel(DSADecodeKernelBase):
             for c in _configs
         ]
 
-    def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv: torch.Tensor,
+        indices: torch.Tensor,
+        attn_sink: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Performs the forward pass of the sparse multi-head attention kernel.
 

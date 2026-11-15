@@ -8,15 +8,18 @@ from benchmarks.baselines import vllm_op
 from tileops.attention import DSAPagedFwdOp
 
 
-def _flashmla(case: bench.Case) -> bench.Implementation:
-    """FlashMLA's sparse FP8 decode on the case's cache.
+def _flashmla(case: bench.Case) -> "bench.Implementation | None":
+    """FlashMLA's sparse FP8 decode on the case's cache, or None for a bfloat16 cache or a
+    sink, which its sparse decode does not take together.
 
     Positions resolve to physical rows outside the timed call. The SM90 kernel takes no
     ``topk_length``, so it reads every slot.
     """
+    q, kv_cache, block_table, cache_seqlens, indices, attn_sink = case.inputs
+    if kv_cache.dtype != torch.uint8 or attn_sink is not None:
+        return None
     run = vllm_op("flash_mla_with_kvcache", "v1.attention.ops.flashmla")
     metadata = vllm_op("get_mla_metadata", "v1.attention.ops.flashmla")
-    q, kv_cache, block_table, cache_seqlens, indices = case.inputs
     page_size = kv_cache.shape[1]
     pos = indices.long()
     live = (pos >= 0) & (pos < cache_seqlens.long()[:, None, None])
@@ -42,4 +45,5 @@ def _flashmla(case: bench.Case) -> bench.Implementation:
 @pytest.mark.parametrize("case", bench.cases(DSAPagedFwdOp), ids=lambda case: case.id)
 def test_dsa_paged_bench(case) -> None:
     op = DSAPagedFwdOp(**case.arguments)
-    bench.Runner(op, case).compare({"flashmla": _flashmla(case)})
+    flashmla = _flashmla(case)
+    bench.Runner(op, case).compare({} if flashmla is None else {"flashmla": flashmla})

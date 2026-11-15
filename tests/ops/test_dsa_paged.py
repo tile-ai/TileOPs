@@ -8,7 +8,7 @@ from workloads.workload_base import manifest_call
 
 
 def _call(**row):
-    return manifest_call("DSAPagedFwdOp", **row)
+    return manifest_call("DSAPagedFwdOp", {"KV": "uint8"}, D=512, **row)
 
 
 def _check(call):
@@ -18,7 +18,7 @@ def _check(call):
     of -1: both are dead.
     """
     workload = DSAPagedCall(call)
-    q, kv_cache, block_table, cache_seqlens, indices = workload.gen_inputs()
+    q, kv_cache, block_table, cache_seqlens, indices, _attn_sink = workload.gen_inputs()
     length = cache_seqlens.long()[:, None, None]
     room = block_table.shape[1] * kv_cache.shape[1] - length
     flat = torch.arange(indices.numel(), device=indices.device).view_as(indices)
@@ -102,6 +102,6 @@ def test_dsa_paged(row, arch) -> None:
 def test_dsa_paged_refuses(row, reason, arch) -> None:
     """The in-tree kernel serves 64-head blocks and 64-slot key blocks only."""
     call = _call(**row)
-    inputs = DSAPagedCall(call).gen_inputs()
+    inputs = DSAPagedCall(call).gen_inputs()[:5]
     with pytest.raises(Exception, match=reason):
         DSAPagedFwdOp(**call.arguments())(*inputs)
