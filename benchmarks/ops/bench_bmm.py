@@ -1,7 +1,5 @@
 """Benchmark TileOPs batched matmul and its FP8 variant, one case per manifest call, against cuBLAS, FlagGems and FlashInfer."""
 
-from typing import Optional
-
 import pytest
 import torch
 
@@ -47,7 +45,7 @@ def _flashinfer_bmm_fp8_per_tensor_ref(
 
 def _flashinfer_bmm_fp8_row(
     workload: BMMFP8Workload, *inputs: torch.Tensor
-) -> Optional[bench.Implementation]:
+) -> bench.Implementation | None:
     """The flashinfer entry for this case, or ``None`` when it cannot serve it.
 
     Preferred, not selected: a flashinfer row that cannot run drops its tag

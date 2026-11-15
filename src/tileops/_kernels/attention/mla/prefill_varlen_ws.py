@@ -16,8 +16,6 @@ own 64 query rows each and overlap the QK of tile ``k`` with the PV of tile
 ``k - 1``.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -461,7 +459,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
     _MAX_BATCH: int = 256
 
     @classmethod
-    def refusal(cls, call: MLAVarlenCall) -> Optional[str]:
+    def refusal(cls, call: MLAVarlenCall) -> str | None:
         """Why *call* is outside the shapes this schedule serves."""
         if call.dtype not in ATTENTION_DTYPES:
             return f"serves float16 and bfloat16, got {call.dtype}"
@@ -498,10 +496,10 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
         dim_v: int,
         is_causal: bool,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        config: Optional[dict] = None,
+        sm_scale: float | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         """Build the program for one call shape.
 

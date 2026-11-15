@@ -1,5 +1,5 @@
 import math
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import torch
@@ -609,7 +609,7 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
         bs: int,
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.seq_num = seq_num

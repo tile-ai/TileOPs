@@ -14,7 +14,8 @@ import contextlib
 import ctypes
 import logging
 import statistics
-from typing import Any, Callable, NamedTuple, Optional
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 import torch
 
@@ -52,7 +53,7 @@ _buffer_bytes = _BUFFER_BYTES
 _KERNELS: list[dict[str, Any]] = []
 _ITERATION_OF: dict[int, int] = {}
 _DROPPED_COUNT_UNREADABLE = False
-_DROP_COUNTER_LIVE: Optional[bool] = None
+_DROP_COUNTER_LIVE: bool | None = None
 # Pushed around the L2 flush and anything else run between iterations. Labelling that
 # work is what lets a kernel with no id at all mean one thing only: a thread the id was
 # never pushed on launched it. Out of range of any iteration index.
@@ -102,7 +103,7 @@ def _buffer_requested():
     return _buffer_bytes, buffer_alignment
 
 
-def _read_dropped() -> Optional[int]:
+def _read_dropped() -> int | None:
     """Read CUPTI's drop counter, which resets on every read. None if the call fails."""
     global _DROPPED_COUNT_UNREADABLE
     cupti = _load_cupti()
@@ -263,7 +264,7 @@ class Trace(NamedTuple):
     kernels: list[dict[str, Any]]
     iteration_of: dict[int, int]
     """Which iteration each correlation id belongs to."""
-    dropped: Optional[int]
+    dropped: int | None
     """Records discarded for want of buffer space, or None if the count is unproven."""
 
 
@@ -355,7 +356,7 @@ def attributed_samples(
     kernels: list[dict],
     iteration_of: dict[int, int],
     n_repeat: int,
-    dropped: Optional[int] = 0,
+    dropped: int | None = 0,
     count_copies: bool = False,
 ) -> list[Sample]:
     """Return one Sample per iteration.
@@ -440,7 +441,7 @@ def collect_attributed(
     n_repeat: int,
     prepare_one: Callable[[int], None],
     count_copies: bool = False,
-    on_retry: Optional[Callable[[int], None]] = None,
+    on_retry: Callable[[int], None] | None = None,
     every_record: bool = False,
 ) -> list[Sample]:
     """Collect one fully attributed phase, re-measuring what CUPTI loses.

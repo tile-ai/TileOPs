@@ -173,7 +173,7 @@ def _try_load_entry(op_name: str) -> dict[str, Any] | None:
     return entry
 
 
-def _manifest_key(op: "str | type") -> str:
+def _manifest_key(op: str | type) -> str:
     """Return the manifest key naming *op*, which may be an Op class or that key.
 
     A manifest key is its op class's name, so a caller that holds the class does
@@ -182,7 +182,7 @@ def _manifest_key(op: "str | type") -> str:
     return op.__name__ if isinstance(op, type) else op
 
 
-def load_workloads(op: "str | type") -> list[dict[str, Any]]:
+def load_workloads(op: str | type) -> list[dict[str, Any]]:
     """Return the workloads list for *op*, an Op class or its manifest key.
 
     ```python linenums="1"

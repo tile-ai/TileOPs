@@ -5,7 +5,8 @@ Provides:
     an optional skip and gate, a carried state and packed sequences
 """
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -72,11 +73,11 @@ class SelectiveScanFwdOp(Op):
         A: torch.Tensor,
         B: torch.Tensor,
         C: torch.Tensor,
-        D: Optional[torch.Tensor] = None,
-        z: Optional[torch.Tensor] = None,
-        delta_bias: Optional[torch.Tensor] = None,
-        seq_idx: Optional[torch.Tensor] = None,
-        initial_states: Optional[torch.Tensor] = None,
+        D: torch.Tensor | None = None,
+        z: torch.Tensor | None = None,
+        delta_bias: torch.Tensor | None = None,
+        seq_idx: torch.Tensor | None = None,
+        initial_states: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Scan every channel's states along the sequence axis.
 

@@ -5,7 +5,8 @@ Provides:
     scales, in bf16; deep_gemm.m_grouped_fp8_gemm_nt_masked and _nt_contiguous semantics
 """
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -104,7 +105,7 @@ class MoEGroupedGEMMFP8FwdOp(Op):
         b_scale: torch.Tensor,
         layout_metadata: torch.Tensor,
         *,
-        out: Optional[torch.Tensor] = None,
+        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run one block-scaled GEMM per expert over its rows.
 

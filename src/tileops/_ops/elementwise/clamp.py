@@ -1,6 +1,7 @@
 """Clamp ops: Tensor-bound bounds, and the scalar-bound form."""
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -52,8 +53,8 @@ class ClampTensorFwdOp(Op):
     def forward(
         self,
         input: torch.Tensor,
-        min: Optional[torch.Tensor] = None,
-        max: Optional[torch.Tensor] = None,
+        min: torch.Tensor | None = None,
+        max: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the op on ``input`` and whichever bounds the call passes.
 
@@ -94,8 +95,8 @@ class ClampScalarFwdOp(UnaryOp):
     def __init__(
         self,
         *,
-        min: Optional[float] = None,
-        max: Optional[float] = None,
+        min: float | None = None,
+        max: float | None = None,
         target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.

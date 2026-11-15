@@ -1,5 +1,5 @@
 import itertools
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -41,7 +41,7 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
     @staticmethod
     def shape_refusal(
         dim: int, tail_dim: int, heads: int, kv_group: int, is_causal: bool
-    ) -> Optional[str]:
+    ) -> str | None:
         """Why neither implementation serves this shape, or ``None``; its builders ask too."""
         if not is_causal:
             return "requires the causal mask"
@@ -768,7 +768,7 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
     general = True
 
     @classmethod
-    def refusal(cls, call: DSADecodeCall) -> Optional[str]:
+    def refusal(cls, call: DSADecodeCall) -> str | None:
         """The shared shape region, where the default config fits the block's shared memory."""
         reason = cls.shape_refusal(
             call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal
@@ -866,8 +866,8 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         sm_scale: float = None,
         is_causal: bool = True,
         cp0: bool = True,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -960,7 +960,7 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         return self.kernel(cfg["block_i"], cfg["threads"], cfg["num_stages"], cfg["block_h"])
 
     @property
-    def autotune_supply_prog(self) -> Optional[Callable]:
+    def autotune_supply_prog(self) -> Callable | None:
         # supply_prog generates inputs from instance shape attributes and takes
         # no JIT params; discard whatever TileLang passes in.
         return lambda *args, **kwargs: self.supply_prog()
@@ -972,14 +972,14 @@ class DSADecodeKernel(DSADecodeKernelBase):
     supported_archs: list[int] = [90]
 
     @staticmethod
-    def gather_refusal(dim: int, tail_dim: int) -> Optional[str]:
+    def gather_refusal(dim: int, tail_dim: int) -> str | None:
         """Why the warp-specialized KV gather cannot copy these widths; its builder asks too."""
         if dim % 128 != 0 or tail_dim != 64:
             return "requires dim a multiple of 128 and tail_dim 64"
         return None
 
     @classmethod
-    def refusal(cls, call: DSADecodeCall) -> Optional[str]:
+    def refusal(cls, call: DSADecodeCall) -> str | None:
         """The shared shape region, narrowed to what the warp-specialized gather covers."""
         reason = cls.shape_refusal(
             call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal
@@ -1007,8 +1007,8 @@ class DSADecodeKernel(DSADecodeKernelBase):
         sm_scale: float = None,
         is_causal: bool = True,
         cp0: bool = True,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch

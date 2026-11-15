@@ -1,6 +1,6 @@
 """Per-block symmetric INT8 quantization: a group of lanes owns each 128-element block."""
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -345,14 +345,14 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
     autotune_accepts_random_int_inputs = True
 
     @classmethod
-    def refusal(cls, call: QuantizeCall) -> Optional[str]:
+    def refusal(cls, call: QuantizeCall) -> str | None:
         reason = super().refusal(call)
         # Element indices reach one block past M * K.
         if reason is None and call.rows * call.cols > 2**31 - 1 - QUANT_SCALE_BLOCK:
             return f"indexes elements with int32, and M * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype

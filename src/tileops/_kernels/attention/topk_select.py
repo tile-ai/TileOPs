@@ -1,6 +1,5 @@
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -22,8 +21,8 @@ class TopKSelectCall(CallSpec):
     seq_len_kv: int = 0
     kv_group: int = 0
     topk: int = 0
-    dtype: Optional[torch.dtype] = None
-    out_dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
+    out_dtype: torch.dtype | None = None
 
 
 class TopKSelectFwdInterface(KernelInterface):
@@ -422,7 +421,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         topk: int,
         dtype: torch.dtype,
         out_dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.batch = batch

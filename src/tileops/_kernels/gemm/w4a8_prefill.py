@@ -1,7 +1,7 @@
 """W4A8 GEMM for prefill token counts over the unified INT4 weight order."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -816,7 +816,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def refusal(cls, call: GEMMW4A8Call) -> Optional[str]:
+    def refusal(cls, call: GEMMW4A8Call) -> str | None:
         """Serve prefill token counts with 128-wide groups, N a multiple of 16 and K of 128."""
         if call.m <= GEMMW4A8DecodeKernel.base_token_limit:
             return (
@@ -844,8 +844,8 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
         m: int,
         n: int,
         k: int,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.m = m

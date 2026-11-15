@@ -8,8 +8,6 @@ With an FP8 query, 128-key tiles take row sums from a product with ones beside
 the value product; narrower tiles keep per-thread partial sums.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -888,7 +886,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
     _SPLIT_WORKSPACE: int = 64 << 20
 
     @staticmethod
-    def block_n_for(page_size: int) -> Optional[int]:
+    def block_n_for(page_size: int) -> int | None:
         """The widest key tile up to 128 rows that is part of one page or a run of whole
         pages, a multiple of the 16 rows one WGMMA step reduces over; ``None`` when none is."""
         for block_n in (128, 112, 96, 80, 64, 48, 32, 16):
@@ -969,7 +967,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
             block_n //= 2
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
         if call.dtype not in ATTENTION_DTYPES:
             return "requires a float16 or bfloat16 output"
@@ -1025,13 +1023,13 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         max_pages_per_req: int,
         is_causal: bool,
         dtype: torch.dtype = torch.float16,
-        query_dtype: Optional[torch.dtype] = None,
+        query_dtype: torch.dtype | None = None,
         per_request_kv_scale: bool = False,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
         tiling: "tuple[int, int, int, bool]" = (128, 2, 2, False),
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -1241,13 +1239,13 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         v_pool: torch.Tensor,
         cache_seqlens: torch.Tensor,
         page_table: torch.Tensor,
-        cu_seqlens_q: Optional[torch.Tensor] = None,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        cu_seqlens_q: torch.Tensor | None = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if q.shape[0] == 0:
             return torch.empty(q.shape, dtype=self.dtype, device=q.device)

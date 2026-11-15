@@ -1,6 +1,7 @@
 """Cumulative scan operators (cumsum, cumprod)."""
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -36,7 +37,7 @@ class CumulativeOp(Op):
         self,
         dim: int,
         *,
-        dtype: Optional[torch.dtype] = None,
+        dtype: torch.dtype | None = None,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.

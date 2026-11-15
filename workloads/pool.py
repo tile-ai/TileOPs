@@ -1,7 +1,7 @@
 """Workload definitions for the pool op family."""
 
-from collections.abc import Sequence
-from typing import Any, Callable, Optional
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -20,11 +20,11 @@ class AvgPoolWorkload(WorkloadBase):
         self,
         ndim: int,
         kernel_size: int | tuple[int, ...],
-        stride: Optional[int | tuple[int, ...]],
+        stride: int | tuple[int, ...] | None,
         padding: int | tuple[int, ...],
         ceil_mode: bool,
         count_include_pad: bool,
-        divisor_override: Optional[int],
+        divisor_override: int | None,
         dtype: torch.dtype,
     ) -> None:
         self.ndim = ndim
@@ -64,7 +64,7 @@ class MaxPoolWorkload(WorkloadBase):
         self,
         ndim: int,
         kernel_size: tuple[int, ...],
-        stride: Optional[tuple[int, ...]],
+        stride: tuple[int, ...] | None,
         padding: tuple[int, ...],
         dilation: tuple[int, ...],
         ceil_mode: bool,
@@ -282,7 +282,7 @@ class MeanPoolingWorkload(WorkloadBase):
         chunk_size: int,
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
-        seq_lens: Optional[Sequence[int]] = None,
+        seq_lens: Sequence[int] | None = None,
     ) -> None:
         self.batch = batch
         self.seq_len = seq_len
@@ -304,8 +304,8 @@ class MeanPoolingWorkload(WorkloadBase):
     def chunk_slices(
         self,
         x: torch.Tensor,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        chunk_indices: Optional[torch.Tensor] = None,
+        cu_seqlens: torch.Tensor | None = None,
+        chunk_indices: torch.Tensor | None = None,
     ) -> tuple[tuple[int, int], ...]:
         """Resolve metadata outside a compiled reference; the math stays shared."""
         if cu_seqlens is None:
@@ -337,16 +337,16 @@ class MeanPoolingWorkload(WorkloadBase):
     def ref_program(
         self,
         x: torch.Tensor,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        chunk_indices: Optional[torch.Tensor] = None,
+        cu_seqlens: torch.Tensor | None = None,
+        chunk_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self.reference_slices(x, self.chunk_slices(x, cu_seqlens, chunk_indices))
 
     def torch_program(
         self,
         x: torch.Tensor,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        chunk_indices: Optional[torch.Tensor] = None,
+        cu_seqlens: torch.Tensor | None = None,
+        chunk_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self.torch_slices(x, self.chunk_slices(x, cu_seqlens, chunk_indices))
 

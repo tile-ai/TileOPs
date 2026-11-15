@@ -1,4 +1,5 @@
-from typing import ClassVar, Dict, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -77,7 +78,7 @@ class MeanPoolingFwdOp(Op):
         self.accum_dtype = accum_dtype
         # Keyed by (device, shape): the uniform path hands the kernel tensors it never
         # reads, and a placeholder on the wrong device would route the launch there.
-        self._placeholders: Dict[tuple, torch.Tensor] = {}
+        self._placeholders: dict[tuple, torch.Tensor] = {}
         super().__init__(target=target)
 
     def _placeholder(self, shape: tuple[int, ...], device: torch.device) -> torch.Tensor:
@@ -89,8 +90,8 @@ class MeanPoolingFwdOp(Op):
     def forward(
         self,
         x: torch.Tensor,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        chunk_indices: Optional[torch.Tensor] = None,
+        cu_seqlens: torch.Tensor | None = None,
+        chunk_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Average each chunk of ``x``'s sequence axis.
 

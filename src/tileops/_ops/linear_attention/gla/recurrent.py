@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -40,7 +41,7 @@ class GLARecurrentFwdOp(Op):
 
     def __init__(
         self,
-        scale: Optional[float] = None,
+        scale: float | None = None,
         *,
         target: Target = None,
     ) -> None:
@@ -61,7 +62,7 @@ class GLARecurrentFwdOp(Op):
         v: torch.Tensor,
         g: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run one decode step.
 
         Args:

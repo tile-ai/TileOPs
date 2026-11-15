@@ -7,7 +7,6 @@ renormalization, and output scaling. Ties select the lower expert or group.
 """
 
 import math
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -533,8 +532,8 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
         topk_group: int = 1,
         routed_scaling_factor: float = 1.0,
         dtype: torch.dtype = torch.float32,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         # These are the two score branches the kernel builds.
@@ -611,7 +610,7 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
     def forward(
         self,
         gating_output: torch.Tensor,
-        correction_bias: Optional[torch.Tensor] = None,
+        correction_bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run scoring + top-k selection.
 

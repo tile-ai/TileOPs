@@ -12,7 +12,7 @@ Rows of whole 16-byte vectors fold in `ReduceFoldKernel`. The row programs here 
 Output dtype matches input dtype unless one is given; l1 and l2 compute in fp32.
 """
 
-from typing import Callable
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T

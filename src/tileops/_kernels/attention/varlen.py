@@ -1,6 +1,6 @@
 """Shared construction contract for packed variable-length attention kernels."""
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import torch
 
@@ -46,7 +46,7 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
         window_size_left: int = -1,
         window_size_right: int = -1,
@@ -55,9 +55,9 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         accum_dtype: torch.dtype = torch.float32,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
         has_sinks: bool = False,
     ) -> None:
         super().__init__(device_index=device_index)

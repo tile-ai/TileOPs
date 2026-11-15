@@ -11,8 +11,9 @@ read as declared.
 """
 
 import math
+from collections.abc import Callable, Mapping
 from math import prod
-from typing import Callable, ClassVar, Mapping, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -428,7 +429,7 @@ class LogicalReduceKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInte
         op_kind: str,
         dtype: torch.dtype,
         keepdim: bool = False,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)
@@ -660,7 +661,7 @@ class LogicalReduceEdgeFusedKernel(Kernel, LogicalReduceFwdInterface, CountNonze
         op_kind: str,
         dtype: torch.dtype,
         keepdim: bool = False,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)

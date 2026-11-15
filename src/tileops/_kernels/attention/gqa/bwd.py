@@ -1,7 +1,7 @@
 import functools
 import itertools
 import math
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -29,7 +29,7 @@ def _flashattn_bwd_preprocess_kernel(
     dtype: str,
     with_dq_accum: bool,
     launch_dependents: bool,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
 ) -> Callable:
     accum_dtype = "float"
     shape = (batch, seq_len, heads, dim)
@@ -138,8 +138,8 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         seq_len: int,
         dim: int,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        config: Optional[dict] = None,
+        sm_scale: float | None = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -158,7 +158,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         lse: torch.Tensor,
         with_dq_accum: bool = True,
         launch_dependents: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Return ``(delta, lse_log2, dq_accum)``: ``dq_accum`` zero-filled when
         ``with_dq_accum``, else ``None``.
 
@@ -234,7 +234,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(
     dim: int,
     is_causal: bool,
     dtype: str = "float16",
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
 ) -> Callable:
     sm_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
     scale = sm_scale * LOG2E
@@ -386,7 +386,7 @@ def _gqa_bwd_mma_kernel(
     dim: int,
     is_causal: bool,
     dtype: str = "float16",
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
 ) -> Callable:
     sm_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
     scale = sm_scale * LOG2E
@@ -534,10 +534,10 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        config: Optional[dict] = None,
+        sm_scale: float | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -571,7 +571,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
     )
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Require complete WGMMA contractions and shared memory for the narrowest default."""
         if call.softcap != 0.0:
             return "does not serve softcap"
@@ -647,7 +647,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
         lse: torch.Tensor,
         delta: torch.Tensor,
         dq_accum: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return ``(dq, dk, dv)`` in the input dtype; ``dq_accum`` arrives zero-filled."""
         dq_accum = dq_accum.view(q.shape)
         grouped = self.heads_kv != self.heads
@@ -665,7 +665,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
         land_dq(dq_accum, dq)
         return dq, dk, dv
 
-    def _compile(self, cfg: dict) -> Tuple[CompiledProgram, CompiledProgram]:
+    def _compile(self, cfg: dict) -> tuple[CompiledProgram, CompiledProgram]:
         """The backward program for *cfg*, and the program that lands its f32 dQ."""
         land_dq = _flashattn_bwd_postprocess_kernel(
             self.batch, self.heads, self.seq_len, self.dim, self.dtype_str
@@ -684,7 +684,7 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
     _KEY_BLOCKS = ((128, 256), (64, 128))
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Require complete MMA contractions and enough shared memory for the narrowest tile."""
         if call.softcap != 0.0:
             return "does not serve softcap"

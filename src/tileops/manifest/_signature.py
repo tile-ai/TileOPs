@@ -11,7 +11,9 @@ import ast
 import copy
 import functools
 import itertools
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 from tileops.manifest._dtype_rules import DTYPE_BITS
 from tileops.manifest._expr import (
@@ -74,10 +76,10 @@ class Tensor:
     name: str
     dtype: str
     shape: str
-    optional: "bool | str" = False
+    optional: bool | str = False
     nullable: str | None = None
     buffer: bool = False
-    mutated: "bool | str" = False
+    mutated: bool | str = False
     values: str | None = None
     requires: tuple[str, ...] = ()
     cpu: bool = False
@@ -97,24 +99,26 @@ class Tensor:
 
 @dataclass
 class Signature:
+    """An entry's parsed `signature`: its indices, parameters, tensors, `let`s and rules."""
+
     name: str
     forall: dict[str, str]
-    params: dict[str, dict]
+    params: dict[str, dict[str, Any]]
     ctor_tensors: dict[str, Tensor]
     inputs: dict[str, Tensor]
     outputs: dict[str, Tensor]
-    types: dict[str, dict]
+    types: dict[str, dict[str, Any]]
     let: dict[str, str]
     rules: list[str]
-    adts: dict[str, dict] = field(default_factory=dict)
-    dtype_combos: list[dict] = field(default_factory=list)
+    adts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    dtype_combos: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def call_tensors(self) -> dict[str, Tensor]:
         """Tensors unification reads: construction-time tensors, then call-time inputs."""
         return {**self.ctor_tensors, **self.inputs}
 
-    def written(self, point: dict, present: set[str]) -> frozenset:
+    def written(self, point: dict[str, object], present: set[str]) -> frozenset[str]:
         """The inputs a call at `point` writes: `mutated` where its condition holds, `write_only`."""
         return frozenset(
             t.name
@@ -127,7 +131,7 @@ class Signature:
             )
         )
 
-    def forward_arguments(self, inputs) -> tuple[tuple, dict]:
+    def forward_arguments[T](self, inputs: Iterable[T]) -> tuple[tuple[T, ...], dict[str, T]]:
         """*inputs*, call-time inputs in `inputs` order, as `forward` takes them.
 
         Returns the positional ones in order, and each `kw_only` one by name. *inputs* may stop
@@ -147,6 +151,7 @@ class Signature:
         )
 
     def kind(self, name: str) -> Kind | None:
+        """The kind of index or parameter `name`; None for any other name."""
         if name in self.forall:
             return _spec(self.forall[name])
         if name in self.params:
@@ -300,8 +305,11 @@ def adt_fields(adts: dict) -> dict:
 def kind_env(
     sig: Signature, lets: dict[str, ast.expr], kinds: dict | None = None
 ) -> tuple[KindEnv, list[str]]:
-    """The `KindEnv` of `sig`: every index, parameter and `let`, lets in dependency order, and
-    the misuse inferring the lets finds. `kinds` overrides what the declarations give."""
+    """The `KindEnv` of `sig`, and the misuse inferring its lets finds.
+
+    The env holds every index, parameter and `let`, lets in dependency order. `kinds`
+    overrides what the declarations give.
+    """
     base = {n: sig.kind(n) for n in (*sig.forall, *sig.params)} | (kinds or {})
     env = KindEnv(
         base,
@@ -482,8 +490,10 @@ def _inlined(sig: Signature, node: ast.expr) -> ast.expr:
 
 
 def _invariant_fails(adts: dict, p: str, kind: Kind, point: dict) -> str | None:
-    """The invariant of the constructor ADT-valued *p* holds at `point`, when it is false there;
-    a `Maybe[ADT]` payload's, where it is present."""
+    """The invariant of the constructor ADT-valued *p* holds at `point`, when it is false there.
+
+    For a `Maybe[ADT]` it is the payload's, where it is present.
+    """
     if kind.tag == "Maybe" and kind.item.tag == "ADT":
         if point.get(f"present({p})") is not True:
             return None
@@ -516,7 +526,7 @@ def rejecting_rule(sig: Signature, point: dict) -> str | None:
     return None
 
 
-def holds(expr: "bool | str | None", point: dict) -> bool:
+def holds(expr: bool | str | None, point: dict) -> bool:
     """A presence or effect condition at `point`; it must read only discriminants."""
     if expr is None or isinstance(expr, bool):
         return expr is not False

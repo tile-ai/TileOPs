@@ -1,6 +1,7 @@
 """MaskedFill ops (Tensor-value and scalar-value variants)."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

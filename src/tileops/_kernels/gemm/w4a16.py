@@ -5,8 +5,9 @@ import itertools
 import math
 import operator
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, NamedTuple, Optional
+from typing import Any, NamedTuple
 
 import tilelang
 import tilelang.language as T
@@ -236,7 +237,7 @@ def _smem_bytes(
 
 
 @target_cache(maxsize=8)
-def _warn_off_calibration_board(calibration: Optional[str], device: Optional[torch.device]) -> None:
+def _warn_off_calibration_board(calibration: str | None, device: torch.device | None) -> None:
     """Warn once per device that the tile ranking is running off its fit."""
     if calibration not in _CALIBRATIONS:
         warnings.warn(
@@ -248,7 +249,7 @@ def _warn_off_calibration_board(calibration: Optional[str], device: Optional[tor
         )
 
 
-def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] = None):
+def _legal_configs(m: int, n: int, k: int, group_size: int, sms: int | None = None):
     """Every tile the builder accepts for a shape the signature admits; stream-K variants only
     when ``sms`` is given. The signature requires ``k`` a multiple of ``group_size`` and the
     builder raises without it, so this enumeration assumes it rather than testing it."""
@@ -1405,7 +1406,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
     autotune_configs = None
 
     @classmethod
-    def refusal(cls, call: GEMMW4A16Call) -> Optional[str]:
+    def refusal(cls, call: GEMMW4A16Call) -> str | None:
         """Serve every call with 128-wide groups that some legal config covers.
 
         `GEMMW4A16FwdOp` declares the repacked weight order, so a call that
@@ -1415,7 +1416,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
         return cls._region_refusal(call)
 
     @staticmethod
-    def _region_refusal(call: GEMMW4A16Call) -> Optional[str]:
+    def _region_refusal(call: GEMMW4A16Call) -> str | None:
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
         if not _has_legal_config(call.m, call.n, call.k, call.group_size):
@@ -1441,9 +1442,9 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
         n: int,
         k: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         group_size: int = GROUP_SIZE,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.m = m
@@ -1605,7 +1606,7 @@ class GEMMW4A16MMAKernel(GEMMW4A16Kernel):
     autotune = Kernel.autotune
 
     @staticmethod
-    def _region_refusal(call: GEMMW4A16Call) -> Optional[str]:
+    def _region_refusal(call: GEMMW4A16Call) -> str | None:
         step_k = W4A16_LAYOUT.mma_step_k
         if call.group_size != step_k:
             return f"needs one {step_k}-wide group per K step, got group_size {call.group_size}"
@@ -1619,9 +1620,9 @@ class GEMMW4A16MMAKernel(GEMMW4A16Kernel):
         n: int,
         k: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         group_size: int = GROUP_SIZE,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         Kernel.__init__(self, device_index=device_index)
         self.m = m

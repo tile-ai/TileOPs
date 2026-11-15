@@ -1,6 +1,5 @@
 import math
 from types import SimpleNamespace
-from typing import Optional
 
 import pytest
 import torch
@@ -57,8 +56,8 @@ class GQABwdTest(GQABwdWorkload, TestBase):
 def test_gqa_dense_prefill_matches_reference(
     _architecture: int,
     is_causal: bool,
-    rope_layout: Optional[str],
-    rotary_dim: Optional[int],
+    rope_layout: str | None,
+    rotary_dim: int | None,
     dtype: torch.dtype,
 ) -> None:
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 160, 270, 8, 2, 128
@@ -140,8 +139,8 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     seq_len_kv: int,
     sm_scale: float,
     softcap: float,
-    rope_layout: Optional[str],
-    rotary_dim: Optional[int],
+    rope_layout: str | None,
+    rotary_dim: int | None,
     out_dtype: torch.dtype,
 ) -> None:
     """Two batches with their own per-KV-head scales: each row reads its batch's scales."""
@@ -445,8 +444,8 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     dim: int,
     dtype: torch.dtype,
     seq_lens_kv: tuple[int, ...],
-    rope_layout: Optional[str],
-    rotary_dim: Optional[int],
+    rope_layout: str | None,
+    rotary_dim: int | None,
     kernel_type: type[Kernel],
 ) -> None:
     heads, heads_kv = head_shape
@@ -504,7 +503,7 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
         pytest.param(128, 5.0, marks=pytest.mark.full, id="softcap"),
     ],
 )
-def test_gqa_dense_batch1_decode_serves_d64_and_softcap(dim: int, softcap: Optional[float]) -> None:
+def test_gqa_dense_batch1_decode_serves_d64_and_softcap(dim: int, softcap: float | None) -> None:
     """Batch-1 decode serves D64 and a softcap without RoPE."""
     workload = GQADensePrefillWorkload(1, 1, 16385, 64, 1, dim, torch.float16, softcap=softcap)
     op = GQADenseFwdOp(is_causal=True, softcap=softcap, target=BUILTIN)
@@ -1710,7 +1709,7 @@ def test_gqa_dense_sink_large_logits(case):
     ],
 )
 def test_gqa_dense_with_lse_fwd_feeds_the_bwd(
-    dim: int, is_causal: bool, sm_scale: Optional[float]
+    dim: int, is_causal: bool, sm_scale: float | None
 ) -> None:
     """GQADenseWithLSEFwdOp's ``o`` and natural-log ``lse`` go into GQADenseBwdOp as they
     are, and the gradients are torch autograd's of the same attention."""

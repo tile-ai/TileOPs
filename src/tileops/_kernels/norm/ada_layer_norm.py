@@ -5,8 +5,6 @@ Loads fill reduction tails with the row's first element; centered variance exclu
 and stores mask output tails. Selected non-aligned shapes prefetch modulation tensors
 with predicated ``cp.async``; aligned shapes use vectorized copies."""
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -258,7 +256,7 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
         eps: float,
         dtype: torch.dtype,
         has_gate: bool = False,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         """Build for a hidden size, dtype and variant.
 
@@ -288,7 +286,7 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
         x: torch.Tensor,
         scale: torch.Tensor,
         shift: torch.Tensor,
-        gate: Optional[torch.Tensor] = None,
+        gate: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Normalize and modulate ``x`` over its trailing ``N`` elements.
 

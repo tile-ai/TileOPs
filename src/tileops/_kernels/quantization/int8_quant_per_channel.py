@@ -5,7 +5,7 @@ divides each column by its smoothing factor.
 """
 
 import math
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -454,14 +454,14 @@ class _INT8QuantPerRowKernel(Kernel):
     _EVICT_FIRST_BYTES: ClassVar[int] = 96 << 20
 
     @classmethod
-    def refusal(cls, call: QuantizeCall) -> Optional[str]:
+    def refusal(cls, call: QuantizeCall) -> str | None:
         int32_max = 2**31 - 1
         reason = super().refusal(call)
         if reason is None and call.rows * call.cols > int32_max - VECTOR_ACCESS_BYTES:
             return f"indexes elements with int32, and N * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.dtype = call.dtype
         self.rows = call.rows
@@ -576,7 +576,7 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
             "ctas": -(-self.rows // rows_per_cta),
         }
 
-    def _launch(self, rows_per_cta: Optional[int]) -> dict:
+    def _launch(self, rows_per_cta: int | None) -> dict:
         """The fitted launch, with ``rows_per_cta`` rows a CTA or as many as fill the SMs once."""
         vec = VECTOR_ACCESS_BYTES // self.dtype.itemsize
         paired = (

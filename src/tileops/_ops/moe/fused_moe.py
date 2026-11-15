@@ -11,7 +11,8 @@ The shared core (`FusedMoE`) wires `FusedTopKFwdOp` (routing),
 expert handling belongs to `FusedMoESharedExpertFwdOp`.
 """
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -39,7 +40,7 @@ class FusedMoE(Op):
     }
     injected_parameters: ClassVar[tuple[str, ...]] = ("experts",)
 
-    def _settle_activation(self, experts: Optional[FusedMoEExpertsFwdOp]) -> None:
+    def _settle_activation(self, experts: FusedMoEExpertsFwdOp | None) -> None:
         """Take ``activation`` from injected ``experts``, before ``Op.__init__`` checks it.
 
         Raises:
@@ -57,7 +58,7 @@ class FusedMoE(Op):
             )
         self.activation = experts.activation
 
-    def _build_pipeline(self, experts: Optional[FusedMoEExpertsFwdOp]) -> None:
+    def _build_pipeline(self, experts: FusedMoEExpertsFwdOp | None) -> None:
         """Hold the routing sub-op, the prepare/finalize stage and the experts.
 
         The routing keeps its own ``routed_scaling_factor`` at 1: the experts' epilogue
@@ -78,7 +79,7 @@ class FusedMoE(Op):
             topk_group=self.topk_group,
         )
 
-    def _experts(self, given: Optional[FusedMoEExpertsFwdOp] = None) -> FusedMoEExpertsModular:
+    def _experts(self, given: FusedMoEExpertsFwdOp | None = None) -> FusedMoEExpertsModular:
         """Return the experts stage; *given* is an implementation the caller injected."""
         return self.delegate_for(
             "routed_experts",
@@ -104,9 +105,9 @@ class FusedMoE(Op):
         gating_output: torch.Tensor,
         w_gate_up: torch.Tensor,
         w_down: torch.Tensor,
-        correction_bias: Optional[torch.Tensor],
-        b_gate_up: Optional[torch.Tensor] = None,
-        b_down: Optional[torch.Tensor] = None,
+        correction_bias: torch.Tensor | None,
+        b_gate_up: torch.Tensor | None = None,
+        b_down: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Route, prepare, run the experts and finalize; the ``[T, H]`` routed output."""
         topk_weights, topk_ids = self._fused_topk()(gating_output, correction_bias)
@@ -169,7 +170,7 @@ class FusedMoEFwdOp(FusedMoE):
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
-        experts: Optional[FusedMoEExpertsFwdOp] = None,
+        experts: FusedMoEExpertsFwdOp | None = None,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -209,9 +210,9 @@ class FusedMoEFwdOp(FusedMoE):
         gating_output: torch.Tensor,
         w_gate_up: torch.Tensor,
         w_down: torch.Tensor,
-        correction_bias: Optional[torch.Tensor] = None,
-        b_gate_up: Optional[torch.Tensor] = None,
-        b_down: Optional[torch.Tensor] = None,
+        correction_bias: torch.Tensor | None = None,
+        b_gate_up: torch.Tensor | None = None,
+        b_down: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Route each token to its top-k experts and return the ``[T, H]`` weighted sum.
 

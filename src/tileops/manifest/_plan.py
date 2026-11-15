@@ -14,6 +14,7 @@ import contextlib
 import copy
 import importlib
 from dataclasses import dataclass
+from typing import Any
 
 from tileops.manifest._dtype_rules import DTYPE_BITS
 from tileops.manifest._expr import (
@@ -136,16 +137,18 @@ def _call_or_none(text: object) -> ast.Call | None:
 
 @dataclass
 class PlanBranch(SignatureBranch):
-    """The branch view: the signature's branch plus the generator arguments, `requires` and
-    roofline expressions at the same point, all folded there."""
+    """The branch view: the signature's branch plus what generators and `requires` read.
+
+    The generator arguments, `requires` and roofline expressions are folded at the same point.
+    """
 
     # Each passed generated tensor's generator arguments, and each `requires` call.
-    generators: dict = None
-    requires: dict = None
+    generators: dict[str, list[ast.expr]] | None = None
+    requires: dict[str, list[ast.Call]] | None = None
     # The inline roofline `{"flops": tree, "bytes": tree or None}`; None for `func` or none.
-    roofline: dict | None = None
+    roofline: dict[str, ast.expr | None] | None = None
     # What a call reads: `relevant` less what only generators and `requires` read.
-    called: set = None
+    called: set[str] | None = None
 
 
 @dataclass
@@ -154,9 +157,9 @@ class EntryPlan:
 
     sig: Signature
     # `{"func": callable}` or `{"flops": tree, "bytes": tree or None}`; None without one.
-    roofline: dict | None = None
+    roofline: dict[str, Any] | None = None
 
-    def branch(self, point: dict, complete: bool = True) -> PlanBranch:
+    def branch(self, point: dict[str, object], complete: bool = True) -> PlanBranch:
         """Every per-call quantity at `point`, folded there."""
         sig = self.sig
         b = branch(sig, point, complete)
@@ -198,9 +201,13 @@ class EntryPlan:
         )
 
 
-def entry_plan(name: str, entry: dict, adts: dict, resolve: bool = True) -> EntryPlan:
-    """The plan of an entry; `SignatureError` on a malformed signature. A roofline with
-    diagnostics leaves the plan without one."""
+def entry_plan(
+    name: str, entry: dict[str, Any], adts: dict[str, dict[str, Any]], resolve: bool = True
+) -> EntryPlan:
+    """The plan of an entry; `SignatureError` on a malformed signature.
+
+    A roofline with diagnostics leaves the plan without one.
+    """
     sig = parse_signature(name, entry, adts)
     errors, roofline = roofline_plan(sig, entry.get("roofline"), resolve=resolve)
     return EntryPlan(sig, None if errors else roofline)
@@ -283,9 +290,11 @@ def roofline_plan(
 
 
 def effect_errors(sig: Signature) -> list[str]:
-    """Effect declarations: `write_only` is written, an alias names a written input,
-    one output at most is buffered, and `overlaps` sits on a written tensor and names other
-    inputs, once each."""
+    """Diagnostics of the effect declarations.
+
+    `write_only` is written, an alias names a written input, one output at most is buffered,
+    and `overlaps` sits on a written tensor and names other inputs, once each.
+    """
     errors = [
         f"tensor {t.name!r}: `write_only` needs `mutated: true`"
         for t in sig.call_tensors.values()
@@ -425,7 +434,9 @@ def signature_schema_errors(sig: dict) -> list[str]:
 
 
 def _input_order_errors(inputs: dict) -> list[str]:
-    """An optional input may not precede a required positional one, nor a `kw_only` input a
+    """Diagnostics of the input order.
+
+    An optional input may not precede a required positional one, nor a `kw_only` input a
     positional one, and a `kw_only` input is optional unless it is the required buffer `out`.
 
     Input order is the generated signature's parameter order, and an optional input becomes a
@@ -823,8 +834,10 @@ def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str
 
 
 def inference_errors(plan: EntryPlan, point: dict, b: PlanBranch) -> list[str]:
-    """Why the inference plan fails at `point`, or nothing: an index a call reads that no input,
-    parameter or `let` solves."""
+    """Why the inference plan fails at `point`, or nothing.
+
+    It fails on an index a call reads that no input, parameter or `let` solves.
+    """
     sig = plan.sig
     solvable = {n for n, k in sig.forall.items() if k != "Seq[Int]"}
     inputs = {t: node for t, node in b.shapes.items() if t in sig.call_tensors}

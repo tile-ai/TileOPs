@@ -3,7 +3,7 @@ the kernel interfaces their implementations inherit."""
 
 import dataclasses
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -52,7 +52,7 @@ class FusedTopKCall(CallSpec):
     num_expert_group: int = 1
     topk_group: int = 1
     routed_scaling_factor: float = 1.0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -71,7 +71,7 @@ class SharedExpertMLPCall(CallSpec):
     num_tokens: int = 0
     hidden_size: int = 0
     ffn_size: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -83,7 +83,7 @@ class IndexedExpertCall(CallSpec):
     num_experts: int = 0
     hidden_size: int = 0
     ffn_size: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     routed_scaling_factor: float = 1.0
 
     @property
@@ -189,7 +189,7 @@ class FusedTopKFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(
-        self, gating_output: torch.Tensor, correction_bias: Optional[torch.Tensor] = None
+        self, gating_output: torch.Tensor, correction_bias: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Score the router logits, then select each token's ``call.top_k`` experts.
 
@@ -305,9 +305,9 @@ class MGroupedGEMMFwdInterface(KernelInterface):
         a: torch.Tensor,
         b: torch.Tensor,
         layout_metadata: torch.Tensor,
-        out: Optional[torch.Tensor] = None,
+        out: torch.Tensor | None = None,
         *,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Contract each expert's rows of *a* with its weights and add its bias.
 
@@ -350,7 +350,7 @@ class MGroupedGEMMFP8FwdInterface(KernelInterface):
         b: torch.Tensor,
         b_scale: torch.Tensor,
         layout_metadata: torch.Tensor,
-        out: Optional[torch.Tensor] = None,
+        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Contract each expert's rows with its weights under their block scales.
 
@@ -394,7 +394,7 @@ class PostPermuteFwdInterface(KernelInterface):
         expert_output: torch.Tensor,
         inverse_indices: torch.Tensor,
         topk_weights: torch.Tensor,
-        out: Optional[torch.Tensor] = None,
+        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Weight each route's row, sum a token's routes, and store in ``call.output_dtype``.
 
@@ -460,8 +460,8 @@ class IndexedExpertGateUpFwdInterface(KernelInterface):
         a: torch.Tensor,
         weights: torch.Tensor,
         expert_ids: torch.Tensor,
-        route_metadata: Optional[torch.Tensor] = None,
-        out: Optional[torch.Tensor] = None,
+        route_metadata: torch.Tensor | None = None,
+        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Project each token onto its routed experts and apply ``silu(gate) * up``.
 
@@ -494,8 +494,8 @@ class IndexedExpertDownFwdInterface(KernelInterface):
         a: torch.Tensor,
         weights: torch.Tensor,
         expert_ids: torch.Tensor,
-        route_metadata: Optional[torch.Tensor] = None,
-        out: Optional[torch.Tensor] = None,
+        route_metadata: torch.Tensor | None = None,
+        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Contract each route's row with its expert's down projection.
 

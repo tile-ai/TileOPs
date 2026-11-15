@@ -1,6 +1,7 @@
 """Arg-reduction operators (argmax, argmin)."""
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -29,7 +30,7 @@ class _ArgreduceOpBase(_ReduceOpBase):
 
     def __init__(
         self,
-        dim: Optional[int] = None,
+        dim: int | None = None,
         keepdim: bool = False,
         *,
         target: Target = None,

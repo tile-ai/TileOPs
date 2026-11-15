@@ -12,8 +12,6 @@ shared memory. :class:`FusedAddRMSNormPerTokenQuantStreamKernel` serves the rows
 hold: it reads a row's inputs once per reduction and once to write the codes.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -38,7 +36,7 @@ def _vec(n: int) -> int:
     return next(v for v in (VECTOR_ACCESS_BYTES // 2, 4, 2, 1) if n % v == 0)
 
 
-def _held_cluster(n: int, rows: int, arch: int, sm_count: int) -> Optional[int]:
+def _held_cluster(n: int, rows: int, arch: int, sm_count: int) -> int | None:
     """CTAs a row is split across in registers, or ``None`` when no cluster holds it.
 
     A row of more than 8192 elements splits on SM90 into the widest power-of-two cluster,
@@ -496,8 +494,8 @@ class _FusedAddRMSNormPerTokenQuantBase(Kernel, FusedAddRMSNormPerTokenQuantFwdI
         eps: float,
         dtype: torch.dtype,
         quant_dtype: torch.dtype,
-        scale_ub: Optional[float],
-        config: Optional[dict] = None,
+        scale_ub: float | None,
+        config: dict | None = None,
     ):
         """Build for a hidden size, the storage and code dtypes and the amax bound.
 

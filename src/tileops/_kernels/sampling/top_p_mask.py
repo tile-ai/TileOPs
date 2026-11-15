@@ -1,6 +1,6 @@
 """Per-row top-p logit mask: a radix search over the row's values, run on chip."""
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -367,7 +367,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
     _SEARCH_BINS: ClassVar[int] = 256
 
     @classmethod
-    def refusal(cls, call: SamplingCall) -> Optional[str]:
+    def refusal(cls, call: SamplingCall) -> str | None:
         reason = super().refusal(call)
         if reason is not None:
             return reason
@@ -380,7 +380,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
             return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
         return None
 
-    def __init__(self, call: SamplingCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: SamplingCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype

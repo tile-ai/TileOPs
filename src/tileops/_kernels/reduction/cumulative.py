@@ -2,7 +2,7 @@
 
 import itertools
 import math
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -137,7 +137,7 @@ def _row_scan_kernel(
     dtype: str,
     out_dtype: str,
     threads: int,
-    chunk_len: Optional[int] = None,
+    chunk_len: int | None = None,
 ):
     """Build an inclusive prefix scan of each row, one block a segment of it.
 
@@ -594,7 +594,7 @@ class _CumulativeKernelBase(Kernel):
         row_bytes = call.n * max(torch_dtype_nbytes(call.dtype), torch_dtype_nbytes(call.out_dtype))
         return row_bytes >= 64 * 1024 and call.m * 4096 <= row_bytes
 
-    def __init__(self, call: CumulativeCall, config: Optional[dict] = None):
+    def __init__(self, call: CumulativeCall, config: dict | None = None):
         super().__init__(device_index=call.device.index if call.device is not None else None)
         if call.op_kind not in ("sum", "prod"):
             raise ValueError(
@@ -686,7 +686,7 @@ class CumulativeParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cu
     amortizes the block's fixed steps, a short one spreads few rows over the SMs.
     """
 
-    def __init__(self, call: CumulativeCall, config: Optional[dict] = None):
+    def __init__(self, call: CumulativeCall, config: dict | None = None):
         self._sm_count = call.sm_count
         super().__init__(call, config)
 

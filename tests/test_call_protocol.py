@@ -844,14 +844,41 @@ def test_calls_of_several_plans_missing_one_sub_op_together_build_it_once():
 
 
 def test_a_compiled_call_whose_op_was_collected_says_the_op_must_outlive_it():
-    from tileops._ops.compile_boundary import get_instance, register_instance
+    from tileops._ops.compile_boundary import get_instance
 
     op = _probe(lambda self, x: x.clone())()
-    key = register_instance(op)
+    key = op._instance_key
+    assert get_instance(key) is op
     del op
     gc.collect()
     with pytest.raises(RuntimeError, match="keep the op instance alive"):
         get_instance(key)
+
+
+def test_a_compiled_call_keys_on_the_params_the_op_holds():
+    """An assigned param retraces with the new key; one edited in place is refused at the trace,
+    whose fake would otherwise be cached under the old param's key."""
+    seen = []
+
+    def backend(gm, inputs):
+        seen.extend(a for n in gm.graph.nodes for a in n.args if isinstance(a, str))
+        return gm
+
+    op = _probe(lambda self, x: x * len(self.dims), params={"dims": {"type": "list[int]"}})(
+        dims=[1]
+    )
+    torch._dynamo.reset()
+    compiled = torch.compile(op, fullgraph=True, backend=backend)
+    assert compiled(torch.ones(3)).tolist() == [1.0] * 3
+    op.dims = [1, 2]
+    assert compiled(torch.ones(3)).tolist() == [2.0] * 3
+    assert len(set(seen)) == 2 and op._instance_key in seen
+    op.dims.append(3)
+    with FakeTensorMode():
+        assert op(torch.empty(3)).shape == (3,)
+    torch._dynamo.reset()
+    with pytest.raises(Exception, match="changed in place"):
+        torch.compile(op, fullgraph=True, backend=backend)(torch.ones(3))
 
 
 def _offset(values: list, at: int = 1) -> torch.Tensor:

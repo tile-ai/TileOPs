@@ -1,7 +1,7 @@
 """SM90 warp-specialized DSA decode: a gathering producer and two seesaw consumers."""
 
 import re
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -448,7 +448,7 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
     preferred_over: ClassVar[frozenset[str]] = frozenset({"dsa_decode_kernel"})
 
     @classmethod
-    def refusal(cls, call: DSADecodeCall) -> Optional[str]:
+    def refusal(cls, call: DSADecodeCall) -> str | None:
         if not call.is_causal:
             return "requires the causal mask"
         if call.dtype not in (torch.float16, torch.bfloat16):
@@ -476,10 +476,10 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         kv_stride: int,
         q_start_index_s: int,
         kv_group: int = 1,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         is_causal: bool = True,
         cp0: bool = True,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch

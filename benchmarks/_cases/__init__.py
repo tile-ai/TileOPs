@@ -7,7 +7,8 @@ merge here, and a name registered twice fails. The workload of an op's call come
 
 import dataclasses
 import importlib
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from benchmarks.api import Implementation
 
@@ -36,7 +37,7 @@ class Entry:
 
     count_copies: bool = False
     binder: Callable[[Any, Any], Implementation] = default_binder
-    inputs: Optional[Callable[[Any], tuple]] = None
+    inputs: Callable[[Any], tuple] | None = None
 
 
 _FAMILIES = (
@@ -54,7 +55,7 @@ _FAMILIES = (
 
 @dataclasses.dataclass
 class _Registry:
-    entries: Optional[dict[str, Entry]] = None
+    entries: dict[str, Entry] | None = None
 
 
 _registry = _Registry()

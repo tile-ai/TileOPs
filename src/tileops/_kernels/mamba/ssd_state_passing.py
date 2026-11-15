@@ -5,7 +5,7 @@ The output stores the state entering every chunk and the final state. The
 ``items`` and ``vectorize`` configurations choose the per-thread load shape.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -306,7 +306,7 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
         d_state: int,
         has_initial_states: bool = True,
         dtype: torch.dtype = torch.float16,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.batch = batch

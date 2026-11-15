@@ -1,6 +1,5 @@
 import itertools
 import re
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -843,7 +842,7 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
     _build = staticmethod(_mla_decode_ws_kernel)
 
     @classmethod
-    def refusal(cls, call: MLADecodeCall) -> Optional[str]:
+    def refusal(cls, call: MLADecodeCall) -> str | None:
         """Why *call* is outside the shapes the warp-specialized schedule serves."""
         if call.heads_kv != 1:
             return f"serves one KV head, got {call.heads_kv}"
@@ -877,9 +876,9 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
         dim,
         pe_dim,
         dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -976,7 +975,7 @@ class MLADecodeMMAKernel(MLADecodeWSKernel):
     _NUM_SPLIT = 2
 
     @classmethod
-    def refusal(cls, call: MLADecodeCall) -> Optional[str]:
+    def refusal(cls, call: MLADecodeCall) -> str | None:
         """Why *call* is outside the shapes this schedule serves. An empty cache builds no program;
         otherwise shared memory is read at the narrowest head block."""
         if call.heads_kv != 1:
@@ -1093,7 +1092,7 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
     preferred_over = frozenset({"mla_decode_kernel"})
 
     @classmethod
-    def refusal(cls, call: MLADecodeCall) -> Optional[str]:
+    def refusal(cls, call: MLADecodeCall) -> str | None:
         """Why *call* is outside the shapes this schedule serves."""
         if call.dtype not in ATTENTION_DTYPES:
             return f"serves float16 and bfloat16, got {call.dtype}"
@@ -1120,9 +1119,9 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
         dim: int,
         pe_dim: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ):
         """Build the program for one model's decode geometry; the batch and length vary.
 

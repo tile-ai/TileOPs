@@ -14,8 +14,6 @@ Backward (split for SM utilisation):
      -> dk, dv, dbeta (grid: num_chunks x B x H)
 """
 
-from typing import Optional, Tuple
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -328,7 +326,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         return (*arguments, index), lambda: cls(*arguments)
 
     @classmethod
-    def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
+    def refusal(cls, call: DeltaNetChunkCall) -> str | None:
         """Why no program serves this call, or ``None``.
 
         Reads the shared memory the three programs hold as written at their smallest
@@ -364,7 +362,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         dim_k: int,
         dim_v: int,
         dtype: str = "float32",
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.batch = batch
@@ -564,7 +562,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         Au: torch.Tensor,
         w: torch.Tensor,
         u: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         bwd_parallel_fn, dh_walk_fn, wu_bwd_fn = self.program(self._programs)
         dq, dk_partial, du_partial, v_new, dh_local, neg_wk = bwd_parallel_fn(do, q, k, w, u, S)
         dh = dh_walk_fn(neg_wk, dh_local)

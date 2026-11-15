@@ -4,8 +4,8 @@ A ``@tilelang.jit`` builder may close over scalars only, so the body lives here 
 builder closes over its name.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import tilelang.language as T
 import tvm.tirx as tirx

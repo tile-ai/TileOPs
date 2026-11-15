@@ -9,7 +9,7 @@ synchronizes. An FP8 cache divides by the scale and uses a saturating cast that 
 NaN.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -32,7 +32,7 @@ def _mla_cache_write_kernel(
     physical_tokens: int,
     in_dtype: str,
     cache_dtype: str,
-    rope_layout: Optional[str],
+    rope_layout: str | None,
     max_position: int,
     cos_sin_dtype: str,
 ) -> Callable:
@@ -260,11 +260,11 @@ class MLAKVCacheWriteKernel(Kernel, MLAKVCacheWriteFwdInterface):
         page_size: int,
         dtype: torch.dtype,
         cache_dtype: torch.dtype,
-        rope_layout: Optional[str] = None,
-        cos_sin_dtype: Optional[torch.dtype] = None,
+        rope_layout: str | None = None,
+        cos_sin_dtype: torch.dtype | None = None,
         max_position: int = 0,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ):
         """Build the program for one cache geometry and RoPE form.
 
@@ -348,9 +348,9 @@ class MLAKVCacheWriteKernel(Kernel, MLAKVCacheWriteFwdInterface):
         k_pe: torch.Tensor,
         kv_cache: torch.Tensor,
         slot_mapping: torch.Tensor,
-        scale: Optional[torch.Tensor] = None,
-        positions: Optional[torch.Tensor] = None,
-        cos_sin_cache: Optional[torch.Tensor] = None,
+        scale: torch.Tensor | None = None,
+        positions: torch.Tensor | None = None,
+        cos_sin_cache: torch.Tensor | None = None,
     ) -> None:
         """Write the rows the slots name; see the interface for the contract."""
         # A call of no tokens writes nothing. The cache it is handed still holds elements,

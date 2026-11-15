@@ -6,7 +6,7 @@ reads. See docs/design/ops-design.md § Kernel selection.
 
 import dataclasses
 from abc import abstractmethod
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import torch
 
@@ -59,7 +59,7 @@ class AttentionCall(CallSpec):
     FP8. Mutable device metadata is consumed by kernels, never read to construct this spec. The device fields come from ``CallSpec``.
     """
 
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     batch: int = 0
     heads: int = 0
     heads_kv: int = 0
@@ -69,7 +69,7 @@ class AttentionCall(CallSpec):
     page_size: int = 0
     max_pages_per_req: int = 0
     is_causal: bool = False
-    sm_scale: Optional[float] = None
+    sm_scale: float | None = None
     softcap: float = 0.0
     window_size_left: int = -1
     window_size_right: int = -1
@@ -78,14 +78,14 @@ class AttentionCall(CallSpec):
     # Every packed KV range is empty, so a TMA descriptor over K/V has no extent.
     empty_kv: bool = False
     has_sinks: bool = False
-    cache_dtype: Optional[torch.dtype] = None
+    cache_dtype: torch.dtype | None = None
     # The query's element type: ``dtype``, or FP8 for a query computed in a 16-bit ``dtype``.
-    query_dtype: Optional[torch.dtype] = None
+    query_dtype: torch.dtype | None = None
     # An FP8 cache's scales are per request and KV head rather than one per tensor.
     per_request_kv_scale: bool = False
     fuse_rope: bool = False
-    max_position: Optional[int] = None
-    rotary_dim: Optional[int] = None
+    max_position: int | None = None
+    rotary_dim: int | None = None
     rope_layout: str = "neox"
     # The call also returns each query row's natural-log log-sum-exp.
     return_lse: bool = False
@@ -111,7 +111,7 @@ class AttentionCall(CallSpec):
         return not self.is_fp8 and self.max_seqlen_q == 1 and not self.uses_sliding_window
 
     @property
-    def dense_decode_program(self) -> Optional[str]:
+    def dense_decode_program(self) -> str | None:
         """The SM90 decode program that serves this contiguous call: ``"split"`` (the general
         program with its keys in 32 parts), ``"batch1"`` (the batch-1 program) or ``"ws"``
         (the warp-specialized program); ``None`` where a prefill program or the general
@@ -161,7 +161,7 @@ class AttentionCall(CallSpec):
         return 1 <= self.heads // self.heads_kv <= 64
 
     @property
-    def paged_decode_refusal(self) -> Optional[str]:
+    def paged_decode_refusal(self) -> str | None:
         """Why the paged-decode kernels cannot serve this call, or ``None`` when they can.
 
         They serve one query length shared by every request against a 16-bit cache of
@@ -184,7 +184,7 @@ class AttentionCall(CallSpec):
         return None
 
     @property
-    def tensor_core_dim_refusal(self) -> Optional[str]:
+    def tensor_core_dim_refusal(self) -> str | None:
         """The contiguous prefill and windowed kernels step the head dimension by one MMA
         k-slice."""
         return None if self.dim % 16 == 0 else "requires head dimension a multiple of 16"
@@ -200,7 +200,7 @@ class MLADecodeCall(CallSpec):
     seqlen_kv: int = 0
     dim: int = 0
     pe_dim: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -218,9 +218,9 @@ class MLAPagedCall(CallSpec):
     dim_v: int = 0
     page_size: int = 0
     is_causal: bool = True
-    sm_scale: Optional[float] = None
-    dtype: Optional[torch.dtype] = None
-    cache_dtype: Optional[torch.dtype] = None
+    sm_scale: float | None = None
+    dtype: torch.dtype | None = None
+    cache_dtype: torch.dtype | None = None
 
     @property
     def rows(self) -> int:
@@ -243,12 +243,12 @@ class DSADecodeCall(CallSpec):
     heads: int = 0
     dim: int = 0
     tail_dim: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     topk: int = 0
     kv_stride: int = 0
     q_start_index_s: int = 0
     kv_group: int = 1
-    sm_scale: Optional[float] = None
+    sm_scale: float | None = None
     is_causal: bool = True
     cp0: bool = True
 
@@ -265,7 +265,7 @@ class DSAPagedCall(CallSpec):
     heads: int = 0
     topk: int = 0
     page_size: int = 0
-    sm_scale: Optional[float] = None
+    sm_scale: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -288,7 +288,7 @@ class NSACall(CallSpec):
     block_size: int = 0
     scale: float = 1.0
     is_causal: bool = True
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -305,8 +305,8 @@ class MLAVarlenCall(CallSpec):
     dim_pe: int = 0
     dim_v: int = 0
     is_causal: bool = True
-    sm_scale: Optional[float] = None
-    dtype: Optional[torch.dtype] = None
+    sm_scale: float | None = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -326,8 +326,8 @@ class MLABwdCall(CallSpec):
     seqlen_q: int = 0
     seqlen_kv: int = 0
     is_causal: bool = True
-    sm_scale: Optional[float] = None
-    dtype: Optional[torch.dtype] = None
+    sm_scale: float | None = None
+    dtype: torch.dtype | None = None
 
 
 class GQADenseFwdInterface(KernelInterface):
@@ -341,12 +341,12 @@ class GQADenseFwdInterface(KernelInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Attend each query row to the keys the call's mask and window admit.
 
@@ -386,12 +386,12 @@ class GQAVarlenFwdInterface(KernelInterface):
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Attend each request's queries to its own keys; nothing is written in place.
 
@@ -428,13 +428,13 @@ class GQAPagedFwdInterface(KernelInterface):
         v_pool: torch.Tensor,
         cache_seqlens: torch.Tensor,
         page_table: torch.Tensor,
-        cu_seqlens_q: Optional[torch.Tensor] = None,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        cu_seqlens_q: torch.Tensor | None = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Attend each request's queries, aligned to the end of its cache.
 
@@ -512,7 +512,7 @@ class GQAPreprocessBwdInterface(KernelInterface):
         lse: torch.Tensor,
         with_dq_accum: bool = True,
         launch_dependents: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Return ``delta = rowsum(o * do) * sm_scale``, the base-2 ``lse`` and a zeroed
         ``dq`` accumulator.
 
@@ -559,7 +559,7 @@ class GQABwdInterface(KernelInterface):
         do: torch.Tensor,
         lse: torch.Tensor,
         delta: torch.Tensor,
-        dq_accum: Optional[torch.Tensor],
+        dq_accum: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return the gradients of *q*, *k* and *v*; ``dq_accum`` is written in place.
 
@@ -593,7 +593,7 @@ class MLAPagedFwdInterface(KernelInterface):
         kv_cache: torch.Tensor,
         block_table: torch.Tensor,
         cache_seqlens: torch.Tensor,
-        kv_scale: Optional[torch.Tensor] = None,
+        kv_scale: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Attend each request's query rows to its cache; nothing is written in place.
 
@@ -922,7 +922,7 @@ class MergeAttentionStatesCall(CallSpec):
     """Value width, dtype and LSE base; the flattened token/head count stays dynamic."""
 
     dim: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     lse_base: str = "e"
 
 
@@ -960,8 +960,8 @@ class PagedKVCacheWriteCall(CallSpec):
     dim: int = 0
     num_pages: int = 0
     page_size: int = 0
-    dtype: Optional[torch.dtype] = None
-    cache_dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
+    cache_dtype: torch.dtype | None = None
 
     @property
     def row_width(self) -> int:
@@ -992,8 +992,8 @@ class PagedKVCacheWriteFwdInterface(KernelInterface):
         k_pages: torch.Tensor,
         v_pages: torch.Tensor,
         slot_mapping: torch.Tensor,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
     ) -> None:
         """Write the rows of the tokens whose slot is not ``-1``; returns no tensor.
 
@@ -1034,11 +1034,11 @@ class MLAKVCacheWriteCall(CallSpec):
     rope_dim: int = 0
     num_pages: int = 0
     page_size: int = 0
-    dtype: Optional[torch.dtype] = None
-    cache_dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
+    cache_dtype: torch.dtype | None = None
     fuse_rope: bool = False
     rope_layout: str = "neox"
-    cos_sin_dtype: Optional[torch.dtype] = None
+    cos_sin_dtype: torch.dtype | None = None
     max_position: int = 0
 
     @property
@@ -1069,9 +1069,9 @@ class MLAKVCacheWriteFwdInterface(KernelInterface):
         k_pe: torch.Tensor,
         kv_cache: torch.Tensor,
         slot_mapping: torch.Tensor,
-        scale: Optional[torch.Tensor] = None,
-        positions: Optional[torch.Tensor] = None,
-        cos_sin_cache: Optional[torch.Tensor] = None,
+        scale: torch.Tensor | None = None,
+        positions: torch.Tensor | None = None,
+        cos_sin_cache: torch.Tensor | None = None,
     ) -> None:
         """Write the rows of the tokens whose slot is not ``-1``; returns no tensor.
 

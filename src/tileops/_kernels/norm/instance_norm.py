@@ -11,8 +11,6 @@ inputs ``InstanceNormFwdOp``'s signature declares. The training kernels, which a
 update the running statistics, have bodies of their own.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -63,10 +61,10 @@ class InstanceNormKernel(GroupNormKernel, InstanceNormFwdInterface):
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: Optional[torch.Tensor] = None,
-        running_var: Optional[torch.Tensor] = None,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        running_mean: torch.Tensor | None = None,
+        running_var: torch.Tensor | None = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return super().forward(x, weight, bias)
 
@@ -86,10 +84,10 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel, InstanceNormFwdInterfa
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: Optional[torch.Tensor] = None,
-        running_var: Optional[torch.Tensor] = None,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        running_mean: torch.Tensor | None = None,
+        running_var: torch.Tensor | None = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return super().forward(x, weight, bias)
 
@@ -537,7 +535,7 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         dtype: torch.dtype,
         has_weight: bool,
         has_bias: bool,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         self.N = N
         self.C = C
@@ -606,8 +604,8 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         x: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Normalize *x* by its instance statistics and update the running ones in place.
 

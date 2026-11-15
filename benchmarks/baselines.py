@@ -16,7 +16,8 @@ import importlib
 import importlib.abc
 import importlib.util
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 import torch

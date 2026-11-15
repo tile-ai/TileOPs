@@ -9,8 +9,6 @@ What they hold in different forms stays in each file: how a slot is addressed an
 which the fused mask reads in a different order, and the buffers the kernel body allocates.
 """
 
-from typing import Optional
-
 import tilelang.language as T
 import torch
 
@@ -91,7 +89,7 @@ def widest_row(dtype: torch.dtype, threads: int, max_slots: int, arch: int) -> i
     return cluster_limit(arch) * threads * (VECTOR_ACCESS_BYTES // dtype.itemsize) * max_slots
 
 
-def row_refusal(call, threads: int, max_slots: int, max_slots_one_cta: int) -> Optional[str]:
+def row_refusal(call, threads: int, max_slots: int, max_slots_one_cta: int) -> str | None:
     """Why a launch of ``threads`` a CTA cannot hold the call's rows, or ``None``.
 
     ``max_slots_one_cta`` bounds a thread's slots where ``cluster_limit`` keeps a row in one

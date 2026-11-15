@@ -17,6 +17,7 @@ import yaml
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops import op_base
+from tileops._ops.compile_boundary import instance_key
 from tileops._ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
@@ -529,20 +530,12 @@ class TestInstanceKeys:
         keys = set()
         for _ in range(50):
             op = _Dummy()
-            keys.add(op_base.register_instance(op))
+            keys.add(instance_key(op_base.register_instance(op), ()))
             ref = weakref.ref(op)
             del op
             assert ref() is None
 
         assert len(keys) == 50
-
-    def test_a_key_names_the_class_it_belongs_to(self):
-        """Graph dumps and guard failures show the key, not the instance."""
-
-        class _Dummy:
-            pass
-
-        assert op_base.register_instance(_Dummy()).startswith("_Dummy")
 
 
 def test_no_abstract_op_class_is_instantiated_anywhere():

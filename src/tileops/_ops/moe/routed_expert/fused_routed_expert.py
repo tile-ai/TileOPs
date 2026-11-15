@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 from torch import Tensor
 
@@ -85,7 +86,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         epilogue = RoutingEpilogueSpec(routed_scaling_factor=self.routed_scaling_factor)
         return self.delegate_for("post_permute", None, layout=_TIGHT, epilogue=epilogue)
 
-    def _indexed_mlp(self) -> "Op | None":
+    def _indexed_mlp(self) -> Op | None:
         """The indexed small-route pipeline, which fuses only the SiLU activation."""
         if self.activation != "silu_and_mul":
             return None

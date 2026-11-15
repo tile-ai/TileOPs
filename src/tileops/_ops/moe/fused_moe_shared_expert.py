@@ -23,7 +23,8 @@ Usage (TP, tp_size>1):
     # Must use the TP process group, not the default group (important in EP/DP setups).
 """
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -82,7 +83,7 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
-        experts: Optional[FusedMoEExpertsFwdOp] = None,
+        experts: FusedMoEExpertsFwdOp | None = None,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -124,10 +125,10 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
         gating_output: torch.Tensor,
         w_gate_up: torch.Tensor,
         w_down: torch.Tensor,
-        correction_bias: Optional[torch.Tensor] = None,
-        shared_w_gate_up: Optional[torch.Tensor] = None,
-        shared_w_down: Optional[torch.Tensor] = None,
-    ) -> tuple[Optional[torch.Tensor], torch.Tensor]:
+        correction_bias: torch.Tensor | None = None,
+        shared_w_gate_up: torch.Tensor | None = None,
+        shared_w_down: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor | None, torch.Tensor]:
         """Run shared + routed MoE FFN.
 
         Args:

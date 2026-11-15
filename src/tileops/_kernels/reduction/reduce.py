@@ -6,7 +6,7 @@ each class runs in and the shape of its result are its own business.
 """
 
 import math
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -168,7 +168,7 @@ class RowReduceKernelBase(ReduceKernelBase):
         config: Optional kernel configuration dict.
     """
 
-    def __init__(self, call: ReduceCall, config: Optional[dict] = None):
+    def __init__(self, call: ReduceCall, config: dict | None = None):
         super().__init__(call)
         self._planner = self.row_planner(call)
         self._needs_tiling = self._planner.needs_tiling
@@ -237,7 +237,7 @@ class ReduceFoldKernel(
             return f"requires a row of whole {VECTOR_ACCESS_BYTES}-byte vectors"
         return super().refusal(call)
 
-    def __init__(self, call: ReduceCall, config: Optional[dict] = None):
+    def __init__(self, call: ReduceCall, config: dict | None = None):
         super().__init__(call)
         self._planner = self.row_planner(call)
         self._lead = self.edge_plan(call)[0] if self.reduces_edge_axes(call) else 1

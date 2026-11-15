@@ -3,7 +3,6 @@ interfaces their implementations inherit."""
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import torch
 
@@ -32,7 +31,7 @@ class EngramGateConvCall(CallSpec):
     seq_len: int = 0
     d: int = 0
     eps: float = 0.0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,7 +45,7 @@ class EngramDecodeCall(CallSpec):
     conv_kernel_size: int = 0
     dilation: int = 0
     eps: float = 0.0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 class EngramGateConvFwdInterface(KernelInterface):

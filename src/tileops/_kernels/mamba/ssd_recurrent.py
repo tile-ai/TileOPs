@@ -6,7 +6,7 @@ gate, normalization, and projection after this kernel.
 """
 
 import math
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -215,7 +215,7 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
         d_state: int,
         n_groups: int = 1,
         dtype: torch.dtype = torch.float16,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.batch = batch

@@ -1,6 +1,7 @@
 """The shared expert of an MoE layer: a dense gated MLP."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

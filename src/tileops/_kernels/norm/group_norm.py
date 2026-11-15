@@ -8,7 +8,6 @@ memory or cut across blocks by ``GroupNormSplitKernel``.
 """
 
 import math
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -70,7 +69,7 @@ class _RowNormKernel(Kernel):
         D: int,
         eps: float,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.D = D
@@ -111,16 +110,16 @@ class _RowNormKernel(Kernel):
         """Block widths this row admits, narrowed while it is held in registers."""
         return self._row_widths_for(self.D, self.D_padded)
 
-    def _warp_row_vector(self) -> Optional[int]:
+    def _warp_row_vector(self) -> int | None:
         """Vector width of the warp-a-row body for this row, or ``None`` if it does not apply."""
         return self._warp_row_vector_for(self.D, self.dtype)
 
     @classmethod
-    def _warp_row_vector_for(cls, D: int, dtype: torch.dtype) -> Optional[int]:
+    def _warp_row_vector_for(cls, D: int, dtype: torch.dtype) -> int | None:
         """`_warp_row_vector` for a row of *D* elements of *dtype*, before construction."""
         return warp_row_vector(D, dtype.itemsize)
 
-    def _held_row_vector(self) -> Optional[int]:
+    def _held_row_vector(self) -> int | None:
         """Elements of one access of the block-a-row body, or ``None`` if it does not apply."""
         vec = VECTOR_ACCESS_BYTES // self.dtype.itemsize
         if not self._holds_row_in_registers(self.D, self.D_padded):
@@ -851,7 +850,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
         dtype: torch.dtype,
         num_groups: int,
         channels_per_group: int,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         """Build for a row length, dtype and group layout.
 
@@ -861,15 +860,15 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
         self.channels_per_group = channels_per_group
         super().__init__(D, eps, dtype, config=config)
 
-    def _warp_row_vector(self) -> Optional[int]:
+    def _warp_row_vector(self) -> int | None:
         # The warp-a-row body applies one channel's affine to the whole row.
         return super()._warp_row_vector() if self.channels_per_group == 1 else None
 
     def forward(
         self,
         x: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Normalize ``D``-long rows and apply the per-channel affine.
 
@@ -1015,8 +1014,8 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
     def forward(
         self,
         x: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Normalize ``D``-long rows without an affine.
 

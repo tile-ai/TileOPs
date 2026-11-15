@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -76,7 +77,7 @@ class FP8LightningIndexerFwdOp(Op):
         weights: torch.Tensor,
         starts: torch.Tensor,
         ends: torch.Tensor,
-        index_k_scale: Optional[torch.Tensor] = None,
+        index_k_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
 

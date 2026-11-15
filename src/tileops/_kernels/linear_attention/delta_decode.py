@@ -7,7 +7,7 @@ gate and applies no decay, and a build without a starting state reads no state a
 the step from zero.
 """
 
-from typing import Callable
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T

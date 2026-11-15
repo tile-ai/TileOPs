@@ -1,6 +1,7 @@
 """Per-group asymmetric INT4 quantization operator."""
 
-from typing import ClassVar, Mapping, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -55,7 +56,7 @@ class INT4QuantPerGroupFwdOp(Op):
         self.group_size = group_size
         super().__init__(target=target)
 
-    def forward(self, w: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Quantize and pack the groups of ``w``.
 
         Args:

@@ -14,7 +14,7 @@ A fixed-length call is the packed one with every request ``seqlen`` long; only t
 of ``lse`` and ``delta`` differs, batch-major ``(B, H, S)`` against head-major ``(H, T)``.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -271,7 +271,7 @@ class _MLABwdKernelBase(Kernel):
     general: bool = True
 
     @classmethod
-    def refusal(cls, call: MLABwdCall) -> Optional[str]:
+    def refusal(cls, call: MLABwdCall) -> str | None:
         if call.dtype not in ATTENTION_DTYPES:
             return f"runs float16 and bfloat16, got {call.dtype}"
         if call.dim_qk % 16 != 0 or call.dim_v % 16 != 0:
@@ -306,10 +306,10 @@ class _MLABwdKernelBase(Kernel):
         seqlen_kv: int,
         is_causal: bool,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        config: Optional[dict] = None,
+        sm_scale: float | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch, self.heads = batch, heads

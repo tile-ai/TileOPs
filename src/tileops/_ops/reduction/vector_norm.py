@@ -1,7 +1,8 @@
 """The vector-norm reduction operator, one ``ord`` of ``torch.linalg.vector_norm`` per call."""
 
+from collections.abc import Mapping
 from math import inf
-from typing import ClassVar, List, Mapping, Optional, Tuple, Union
+from typing import ClassVar
 
 import torch
 
@@ -36,11 +37,11 @@ class VectorNormFwdOp(ReduceCallOp):
 
     def __init__(
         self,
-        ord: Union[int, float] = 2,
-        dim: Union[int, List[int], Tuple[int, ...], None] = None,
+        ord: int | float = 2,
+        dim: int | list[int] | tuple[int, ...] | None = None,
         keepdim: bool = False,
         *,
-        dtype: Optional[torch.dtype] = None,
+        dtype: torch.dtype | None = None,
         target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.

@@ -20,7 +20,6 @@ Layouts:
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -57,7 +56,7 @@ class RoPECall(CallSpec):
     input_layout: str = "1d"
     batch: int = 1
     num_heads: int = 1
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,7 +68,7 @@ class RoPENeoxPositionIdsCall(CallSpec):
     head_dim: int = 0
     rotary_dim: int = 0
     max_position: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 class RoPENeoxFwdInterface(KernelInterface):

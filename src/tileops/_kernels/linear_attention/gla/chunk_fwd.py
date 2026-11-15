@@ -1,5 +1,5 @@
 import warnings
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import torch
@@ -599,7 +599,7 @@ class GLAChunkedFwdKernel(Kernel):
         scale: float,
         output_final_state: bool = False,
         dtype: torch.dtype = torch.float16,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -618,7 +618,7 @@ class GLAChunkedFwdKernel(Kernel):
         self.program(self._programs)
 
     @staticmethod
-    def region_refusal(dim_k: int, dim_v: int, chunk_size: int) -> Optional[str]:
+    def region_refusal(dim_k: int, dim_v: int, chunk_size: int) -> str | None:
         """Why the default tiling cannot build these extents, or ``None`` when it can.
 
         Its three GEMMs run on two warps: the state update over
@@ -759,7 +759,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
     """
 
     # The one-element state a walk from zeros is handed and never reads, made on first use.
-    _unread_state: Optional[torch.Tensor] = None
+    _unread_state: torch.Tensor | None = None
 
     @staticmethod
     def _shared_bytes(c: int, k: int, v: int, elem: int) -> int:
@@ -840,7 +840,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         dtype = getattr(torch, self.dtype_name)
         q, k, v, g = (t.to(dtype) for t in (q, k, v, g))
@@ -860,7 +860,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
         return o, final_state, h
 
     @classmethod
-    def refusal(cls, call: GLAChunkCall) -> Optional[str]:
+    def refusal(cls, call: GLAChunkCall) -> str | None:
         """Why no program serves this call, or ``None``.
 
         Refuses a call whose launches need more shared memory at once than the device gives.

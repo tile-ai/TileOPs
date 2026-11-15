@@ -5,8 +5,6 @@ to normalize and write it, the second time from the far end: the tiles it read l
 the likeliest still in L2.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -134,7 +132,7 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
         rows = x.reshape(-1, self.n)
         has_weight = weight is not None
         weight = weight.reshape(self.n) if has_weight else rows.new_empty(1)

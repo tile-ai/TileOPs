@@ -8,8 +8,9 @@ import inspect
 import sys
 import threading
 import types
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import torch
 from tilelang import env as tilelang_env
@@ -312,7 +313,7 @@ def _qualname(value: object) -> str:
     return getattr(value, "__qualname__", None) or type(value).__qualname__
 
 
-def supply_fingerprint(supply_prog: Optional[Callable]) -> str:
+def supply_fingerprint(supply_prog: Callable | None) -> str:
     """Fingerprint supplier code and captured state for persistent autotune results.
 
     First-party function bytecode, module source and referenced runtime attributes
@@ -375,14 +376,14 @@ class _BusyTimedKernel:
         profiler = self._kernel.get_profiler(**kwargs)
 
         def do_bench(
-            func: Optional[Callable] = None,
+            func: Callable | None = None,
             *,
             n_warmup: int,
             n_repeat: int,
             input_tensors: list,
             backend: str,
             device: Any = None,
-            early_stop_baseline: Optional[float] = None,
+            early_stop_baseline: float | None = None,
         ) -> float:
             fn = functools.partial(func or profiler.func, *input_tensors)
             with torch.cuda.device(device):  # lint: device-api allow: CUPTI runs on CUDA only
@@ -450,7 +451,7 @@ class _SupplyKeyedAutoTune(AutoTuneImpl):
         return tuner
 
 
-def autotune(*, supply_prog: Optional[Callable] = None, **kwargs: Any) -> Callable:
+def autotune(*, supply_prog: Callable | None = None, **kwargs: Any) -> Callable:
     """``tilelang.autotuner.autotune``, keying each result by the fingerprint of *supply_prog*.
 
     Takes the arguments TileLang's ``autotune`` takes. The key is TileLang's key hashed with

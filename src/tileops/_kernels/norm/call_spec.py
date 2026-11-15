@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import torch
 
@@ -93,7 +92,7 @@ class RMSNormQuantCall(CallSpec):
     eps: float = 1e-6
     dtype: torch.dtype = torch.bfloat16
     quant_dtype: torch.dtype = torch.float8_e4m3fn
-    scale_ub: Optional[float] = None
+    scale_ub: float | None = None
 
 
 class BatchNormTrainFwdInterface(KernelInterface):
@@ -105,10 +104,10 @@ class BatchNormTrainFwdInterface(KernelInterface):
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: Optional[torch.Tensor],
-        running_var: Optional[torch.Tensor],
-        weight: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
+        running_mean: torch.Tensor | None,
+        running_var: torch.Tensor | None,
+        weight: torch.Tensor | None,
+        bias: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Normalize *x* per channel by its batch statistics.
 
@@ -143,8 +142,8 @@ class BatchNormInferFwdInterface(KernelInterface):
         x: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
-        weight: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
+        weight: torch.Tensor | None,
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         """Normalize *x* per channel by the running statistics; nothing is written in place.
 
@@ -202,10 +201,10 @@ class InstanceNormFwdInterface(KernelInterface):
     def forward(
         self,
         x: torch.Tensor,
-        running_mean: Optional[torch.Tensor] = None,
-        running_var: Optional[torch.Tensor] = None,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        running_mean: torch.Tensor | None = None,
+        running_var: torch.Tensor | None = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Normalize each row of *x* by its own statistics; nothing is written in place.
 
@@ -235,8 +234,8 @@ class InstanceNormTrainFwdInterface(KernelInterface):
         x: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Normalize *x* per instance and update the running statistics in place.
 
@@ -266,8 +265,8 @@ class InstanceNormInferFwdInterface(KernelInterface):
         x: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
-        weight: Optional[torch.Tensor],
-        bias: Optional[torch.Tensor],
+        weight: torch.Tensor | None,
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         """Normalize *x* per channel by the running statistics; nothing is written in place.
 
@@ -309,7 +308,7 @@ class LayerNormFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(
-        self, x: torch.Tensor, weight: Optional[torch.Tensor], bias: Optional[torch.Tensor]
+        self, x: torch.Tensor, weight: torch.Tensor | None, bias: torch.Tensor | None
     ) -> torch.Tensor:
         """Normalize each run of ``call.n`` trailing elements; nothing is written in place.
 
@@ -331,7 +330,7 @@ class RMSNormFwdInterface(KernelInterface):
     request = LayerNormCall
 
     @abstractmethod
-    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
         """Normalize each run of ``call.n`` trailing elements; nothing is written in place.
 
         Every tensor is contiguous on ``call.device``.
@@ -458,8 +457,8 @@ class GroupNormFwdInterface(KernelInterface):
     def forward(
         self,
         x: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Normalize each group of *x* by its own statistics; nothing is written in place.
 
@@ -486,8 +485,8 @@ class FusedQKNormRoPECall(CallSpec):
     rot: int = 0
     interleaved: bool = False
     eps: float = 1e-6
-    dtype: Optional[torch.dtype] = None
-    cache_dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
+    cache_dtype: torch.dtype | None = None
 
 
 class FusedQKNormRoPEFwdInterface(KernelInterface):

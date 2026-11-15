@@ -16,7 +16,6 @@ Optimization:
 """
 
 import warnings
-from typing import Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -38,7 +37,7 @@ __all__ = [
 ]
 
 
-def _k_tile_refusal(dim_k: int, k_tile: int) -> Optional[str]:
+def _k_tile_refusal(dim_k: int, k_tile: int) -> str | None:
     """Why a decode program with this default key tile cannot split this key dim, or ``None``."""
     if dim_k % k_tile != 0:
         return f"requires dim_k a multiple of {k_tile}, got {dim_k}"
@@ -284,7 +283,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
     general = True
 
     @classmethod
-    def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
+    def refusal(cls, call: DeltaNetDecodeCall) -> str | None:
         return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k, cls._DEFAULT_K_TILE)
 
     @classmethod
@@ -298,7 +297,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         dim_k: int,
         dim_v: int,
         dtype: str = "float32",
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.batch = batch
@@ -384,7 +383,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         v: torch.Tensor,
         beta: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.program(self._compile)(q, k, v, beta, state)
 
 
@@ -399,13 +398,13 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
+    def refusal(cls, call: DeltaNetDecodeCall) -> str | None:
         return head_count_refusal(call.heads) or cls.shape_refusal(
             Kernel.dtype_to_str(call.dtype), call.dim_k, call.dim_v
         )
 
     @staticmethod
-    def shape_refusal(dtype: str, dim_k: int, dim_v: int) -> Optional[str]:
+    def shape_refusal(dtype: str, dim_k: int, dim_v: int) -> str | None:
         """Why this kernel cannot serve this shape, or ``None``.
 
         *dtype* is the TileLang name the builder takes, which the region converts the
@@ -428,7 +427,7 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
         dim_k: int,
         dim_v: int,
         dtype: str = "bfloat16",
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.batch = batch
@@ -472,7 +471,7 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
         """Sweep the register cap, then publish the fastest config."""
         best_time = float("inf")
-        best_config: Optional[dict] = None
+        best_config: dict | None = None
         failures: list[str] = []
 
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
@@ -529,7 +528,7 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
         v: torch.Tensor,
         beta: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.program(self._compile)(q, k, v, beta, state)
 
 
@@ -645,7 +644,7 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
     _DEFAULT_K_TILE = 16
 
     @classmethod
-    def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
+    def refusal(cls, call: DeltaNetDecodeCall) -> str | None:
         if call.dtype != torch.float32:
             return "requires float32"
         return head_count_refusal(call.heads) or _k_tile_refusal(call.dim_k, cls._DEFAULT_K_TILE)
@@ -661,7 +660,7 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         dim_k: int,
         dim_v: int,
         dtype: str = "float32",
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         if dtype != "float32":
@@ -741,5 +740,5 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         v: torch.Tensor,
         beta: torch.Tensor,
         state: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.program(self._compile)(q, k, v, beta, state)

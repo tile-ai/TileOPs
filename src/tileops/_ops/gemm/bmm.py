@@ -5,7 +5,8 @@ batch item is an independent GEMM, no broadcasting.
 """
 
 import warnings
-from typing import ClassVar, Mapping, Set, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -140,7 +141,7 @@ class BMMFP8FwdOp(Op):
         self.trans_b = trans_b
         super().__init__(target=target)
         # ``b`` shapes already warned about, so one op warns once per shape.
-        self._kn_warned: Set[Tuple[int, int, int]] = set()
+        self._kn_warned: set[tuple[int, int, int]] = set()
 
     def forward(
         self,

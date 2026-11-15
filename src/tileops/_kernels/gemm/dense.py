@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -43,7 +43,7 @@ __all__ = [
 
 def _tma_misalignment(
     m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool
-) -> Optional[str]:
+) -> str | None:
     """Why TMA cannot address these operands, or ``None`` when it can.
 
     Every structure ``GEMMTMAKernel`` builds loads its tiles through TMA, whose
@@ -73,7 +73,7 @@ def _tma_misalignment(
     )
 
 
-def _b_eviction(m: int, block_m: int) -> Optional[str]:
+def _b_eviction(m: int, block_m: int) -> str | None:
     """``"evict_first"`` for a ``B`` tile the grid reads at most twice, else ``None``.
 
     Each of the ``ceil(m / block_m)`` M-tiles reads the whole of ``B``. At one or two of
@@ -177,7 +177,7 @@ def _main(
     body: Callable,
     operands: tuple,
     c: tuple,
-    bias: Optional[tuple] = None,
+    bias: tuple | None = None,
 ) -> Callable:
     """The program running ``body(*operands, bias, c)``, with ``bias`` a parameter
     between the operands and C, or ``None`` when *bias* is ``None``.
@@ -278,7 +278,7 @@ class _GEMMFP8Kernel(Kernel, GEMMFP8FwdInterface):
     _CONSUMER_BAR_WG1 = 9
 
     @staticmethod
-    def _ws_refusal(m: int, n: int, k: int, dtype: torch.dtype, arch: int) -> Optional[str]:
+    def _ws_refusal(m: int, n: int, k: int, dtype: torch.dtype, arch: int) -> str | None:
         """Why the warp-specialized variant cannot serve this call, or ``None``.
 
         It loads through TMA, and its epilogue releases a ring slot the mainloop
@@ -324,11 +324,11 @@ class _GEMMFP8Kernel(Kernel, GEMMFP8FwdInterface):
         k: int,
         dtype: torch.dtype,
         out_dtype: torch.dtype,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
         b_scale_rows: int = 1,
-        arch: Optional[int] = None,
-        sm_count: Optional[int] = None,
+        arch: int | None = None,
+        sm_count: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.b_scale_rows = b_scale_rows
@@ -342,7 +342,7 @@ class _GEMMFP8Kernel(Kernel, GEMMFP8FwdInterface):
         self.ws_refusal = self._ws_refusal(m, n, k, dtype, arch)
         self.kernel = self._builder()
         self.init_config(config)
-        self._unused_bias: Optional[torch.Tensor] = None
+        self._unused_bias: torch.Tensor | None = None
 
     def _builder(self) -> Callable:
         if self.ws_refusal is None:
@@ -418,7 +418,7 @@ class _GEMMFP8Kernel(Kernel, GEMMFP8FwdInterface):
             "threads": 256,
         }
 
-    def _bias_operand(self, bias: Optional[torch.Tensor], like: torch.Tensor) -> torch.Tensor:
+    def _bias_operand(self, bias: torch.Tensor | None, like: torch.Tensor) -> torch.Tensor:
         """The bias operand, or a one-element stand-in the no-bias build never reads."""
         if bias is not None:
             return bias
@@ -432,7 +432,7 @@ class _GEMMFP8Kernel(Kernel, GEMMFP8FwdInterface):
         b: torch.Tensor,
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.dtype != torch.float8_e4m3fn:
             raise NotImplementedError(
@@ -4097,7 +4097,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
     _CONSUMER_BAR_WG0 = 8
     _CONSUMER_BAR_WG1 = 9
 
-    def init_config(self, config: Optional[dict] = None) -> None:
+    def init_config(self, config: dict | None = None) -> None:
         """Take a flagged config verbatim, and fill an unflagged one into the basic schema.
 
         The base merge walks ``default_config``'s keys — right for one schema per
@@ -4119,7 +4119,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         )
 
     @classmethod
-    def refusal(cls, call: GEMMCall) -> Optional[str]:
+    def refusal(cls, call: GEMMCall) -> str | None:
         return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
     @classmethod
@@ -4132,10 +4132,10 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         n: int,
         k: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         trans_a: bool = False,
         trans_b: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
         activation: str = "none",
     ) -> None:
         super().__init__(device_index=device_index)
@@ -4180,7 +4180,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         return scored if scored is not None else dict(self._MODAL_CONFIG)
 
     def forward(
-        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         # The traced build is another program, chosen by the switch at launch.
         if bias is None:
@@ -4478,7 +4478,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
     BANDS: tuple[str, ...] = ("lhs_row", "rhs_col", "lhs_rows")
 
     @classmethod
-    def _vector_operand(cls, call: GEMMCall) -> Optional[str]:
+    def _vector_operand(cls, call: GEMMCall) -> str | None:
         """Which operand is the vector: ``"lhs_row"``, ``"rhs_col"``, or neither.
 
         ``a`` is a single row with ``b`` transposed, or ``b`` is a single column with
@@ -4493,7 +4493,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         return None
 
     @classmethod
-    def band_for(cls, call: GEMMCall) -> Optional[str]:
+    def band_for(cls, call: GEMMCall) -> str | None:
         """The band serving *call*, or ``None`` when this class does not serve it.
 
         Read by :meth:`refusal` and by :meth:`entry_for`, so the region is stated once.
@@ -4539,8 +4539,8 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         n: int,
         k: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         if band not in self.BANDS:
@@ -4575,7 +4575,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         )
 
     def forward(
-        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         kernel = self.program(self._compile, bias is not None)
         biases = () if bias is None else (bias,)
@@ -4782,7 +4782,7 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
     general = True
 
     @staticmethod
-    def _narrow_row(axis: str, extent: int, dtype: torch.dtype) -> Optional[str]:
+    def _narrow_row(axis: str, extent: int, dtype: torch.dtype) -> str | None:
         """Why an operand row of *extent* elements along *axis* is too narrow for one
         vectorized load, or ``None``.
 
@@ -4801,7 +4801,7 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
         )
 
     @classmethod
-    def refusal(cls, call: GEMMCall) -> Optional[str]:
+    def refusal(cls, call: GEMMCall) -> str | None:
         # At k=0 the operands hold no element and the mainloop runs no K step, so no row is
         # loaded and the program writes the bias, or zeros.
         if call.k == 0:
@@ -4825,10 +4825,10 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
         n: int,
         k: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         trans_a: bool = False,
         trans_b: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.m = m
@@ -4883,7 +4883,7 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
         ]
 
     def forward(
-        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         if bias is None:
             return self.program(self._launcher, False)(a, b)

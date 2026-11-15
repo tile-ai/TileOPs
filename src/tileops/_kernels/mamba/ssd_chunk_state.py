@@ -7,7 +7,7 @@ clamped to zero from above for numerical safety.
 """
 
 import itertools
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -215,8 +215,8 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
         n_groups: int,
         dtype: torch.dtype,
         has_seq_idx: bool = False,
-        config: Optional[dict] = None,
-        dt_dtype: Optional[torch.dtype] = None,
+        config: dict | None = None,
+        dt_dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__()
         self.batch = batch

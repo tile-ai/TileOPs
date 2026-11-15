@@ -1,5 +1,5 @@
 import math
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import pytest
 import torch
@@ -472,11 +472,11 @@ def _run_avg_pool_case(
     ndim: int,
     shape: tuple[int, ...],
     kernel_size: int | tuple[int, ...],
-    stride: Optional[int | tuple[int, ...]],
+    stride: int | tuple[int, ...] | None,
     padding: int | tuple[int, ...],
     ceil_mode: bool,
     count_include_pad: bool,
-    divisor_override: Optional[int],
+    divisor_override: int | None,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
@@ -539,11 +539,11 @@ def test_avg_pool2d(
     h_in: int,
     w_in: int,
     kernel_size: tuple[int, int],
-    stride: Optional[tuple[int, int]],
+    stride: tuple[int, int] | None,
     padding: tuple[int, int],
     ceil_mode: bool,
     count_include_pad: bool,
-    divisor_override: Optional[int],
+    divisor_override: int | None,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
@@ -569,11 +569,11 @@ def test_avg_pool3d(
     h_in: int,
     w_in: int,
     kernel_size: tuple[int, int, int],
-    stride: Optional[tuple[int, int, int]],
+    stride: tuple[int, int, int] | None,
     padding: tuple[int, int, int],
     ceil_mode: bool,
     count_include_pad: bool,
-    divisor_override: Optional[int],
+    divisor_override: int | None,
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
@@ -1145,7 +1145,7 @@ def _run_max_pool_case(
     ndim: int,
     shape: tuple[int, ...],
     kernel_size: tuple[int, ...],
-    stride: Optional[tuple[int, ...]],
+    stride: tuple[int, ...] | None,
     padding: tuple[int, ...],
     dilation: tuple[int, ...],
     ceil_mode: bool,
@@ -1184,7 +1184,7 @@ def test_max_pool1d(
     c_in: int,
     l_in: int,
     kernel_size: tuple[int],
-    stride: Optional[tuple[int]],
+    stride: tuple[int] | None,
     padding: tuple[int],
     dilation: tuple[int],
     ceil_mode: bool,
@@ -1213,7 +1213,7 @@ def test_max_pool2d(
     h_in: int,
     w_in: int,
     kernel_size: tuple[int, int],
-    stride: Optional[tuple[int, int]],
+    stride: tuple[int, int] | None,
     padding: tuple[int, int],
     dilation: tuple[int, int],
     ceil_mode: bool,
@@ -1243,7 +1243,7 @@ def test_max_pool3d(
     h_in: int,
     w_in: int,
     kernel_size: tuple[int, int, int],
-    stride: Optional[tuple[int, int, int]],
+    stride: tuple[int, int, int] | None,
     padding: tuple[int, int, int],
     dilation: tuple[int, int, int],
     ceil_mode: bool,

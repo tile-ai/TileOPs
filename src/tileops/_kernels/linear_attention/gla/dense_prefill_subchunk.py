@@ -1,7 +1,5 @@
 """GLA prefill with tiled, gate-aware intra-chunk products."""
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -241,7 +239,7 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
     general = True
 
     @classmethod
-    def refusal(cls, call: GLACall) -> Optional[str]:
+    def refusal(cls, call: GLACall) -> str | None:
         reason = dense_refusal(call)
         if reason is not None:
             return reason
@@ -272,7 +270,7 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         scale: float,
         dtype: torch.dtype,
         has_initial_state: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         self.has_initial_state = has_initial_state
         super().__init__(
@@ -334,9 +332,9 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if cu_seqlens is not None or cu_seqlens_cpu is not None:
             raise ValueError("the in-tree GLA dense-prefill kernel does not support packed varlen")

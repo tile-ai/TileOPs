@@ -20,7 +20,8 @@ import contextlib
 import logging
 import sys
 import threading
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -140,9 +141,9 @@ def bench_kernel(
     max_iters: int = _MAX_ITERS,
     min_iters: int = _MIN_ITERS,
     count_copies: bool = False,
-    allow_events_fallback: Optional[bool] = None,
-    reset: Optional[Callable[[], None]] = None,
-    device: Optional[torch.device] = None,
+    allow_events_fallback: bool | None = None,
+    reset: Callable[[], None] | None = None,
+    device: torch.device | None = None,
 ) -> list[Sample]:
     """Time *fn* on *device*, one :class:`Sample` per iteration.
 
@@ -212,8 +213,8 @@ def _bench_kernel(
     max_iters: int = _MAX_ITERS,
     min_iters: int = _MIN_ITERS,
     count_copies: bool = False,
-    allow_events_fallback: Optional[bool] = None,
-    reset: Optional[Callable[[], None]] = None,
+    allow_events_fallback: bool | None = None,
+    reset: Callable[[], None] | None = None,
 ) -> list[Sample]:
     allow_fallback = (
         events_fallback_allowed() if allow_events_fallback is None else allow_events_fallback

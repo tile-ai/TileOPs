@@ -1,6 +1,6 @@
 """Seeded categorical draw: one inverse-CDF search per row, over one read of the row."""
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -345,7 +345,7 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
         return vec, parts, -(-row_tiles // parts) * (cls._THREADS // WARP_LANES)
 
     @classmethod
-    def refusal(cls, call: SamplingCall) -> Optional[str]:
+    def refusal(cls, call: SamplingCall) -> str | None:
         reason = super().refusal(call)
         if reason is not None:
             return reason
@@ -365,7 +365,7 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
             )
         return None
 
-    def __init__(self, call: SamplingCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: SamplingCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype

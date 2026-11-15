@@ -1,6 +1,6 @@
 """Helpers shared by the normalization Op family."""
 
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import torch
 
@@ -8,7 +8,7 @@ __all__ = ["affine_or_constant"]
 
 
 def affine_or_constant(
-    tensor: Optional[torch.Tensor],
+    tensor: torch.Tensor | None,
     shape: Sequence[int],
     value: float,
     dtype: torch.dtype,

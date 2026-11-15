@@ -51,7 +51,7 @@ class LogicalReduceCall(CallSpec):
     keepdim: bool = False
 
     @property
-    def device_index(self) -> "int | None":
+    def device_index(self) -> int | None:
         return self.device.index if self.device is not None else None
 
     @property
@@ -122,7 +122,7 @@ class ReduceCall(CallSpec):
     op_kind: str = ""
     dtype: torch.dtype = torch.float16
     # The ``dtype`` parameter; ``None`` keeps the input's.
-    out_dtype: "torch.dtype | None" = None
+    out_dtype: torch.dtype | None = None
     # The Welford kinds' correction; 0 where the op divides by zero degrees of freedom itself.
     correction: float = 0
 

@@ -75,7 +75,7 @@ def test_batch_norm_fwd_bench(case):
     training, momentum, eps = (case.params[k] for k in ("training", "momentum", "eps"))
     torch_fn = case.torch
     implementations = {}
-    if all((t is not None for t in inputs)):
+    if all(t is not None for t in inputs):
         flaggems_fn = _flaggems_bn_fwd(training, momentum, eps)
         implementations[FLAGGEMS_TAG] = private_inputs(flaggems_fn, inputs, 1, 2)
     implementations["torch-cudnn"] = torch_fn

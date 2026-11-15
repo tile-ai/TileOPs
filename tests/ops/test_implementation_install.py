@@ -115,7 +115,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
 def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     """``supported_archs=None`` means no restriction, and the op runs.
 
-    The base ``Kernel`` declares it ``Optional[list[int]]`` defaulting to
+    The base ``Kernel`` declares it ``list[int] | None`` defaulting to
     ``None``. Anything testing membership against it would raise ``TypeError``
     instead of admitting the call, so this drives a forward through such a
     kernel rather than inspecting where it was installed.

@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -205,9 +205,9 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
         use_offsets: int,
         dtype: torch.dtype,
         accum_dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch_size = batch_size

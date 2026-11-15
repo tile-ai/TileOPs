@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -45,10 +46,10 @@ class _MaxPoolFwdOpBase(Op):
 
     def __init__(
         self,
-        kernel_size: "int | Tuple[int, ...]",
-        stride: "Optional[int | Tuple[int, ...]]" = None,
-        padding: "int | Tuple[int, ...]" = 0,
-        dilation: "int | Tuple[int, ...]" = 1,
+        kernel_size: "int | tuple[int, ...]",
+        stride: "int | tuple[int, ...] | None" = None,
+        padding: "int | tuple[int, ...]" = 0,
+        dilation: "int | tuple[int, ...]" = 1,
         ceil_mode: bool = False,
         *,
         target: Target = None,
@@ -111,10 +112,10 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
 
     def __init__(
         self,
-        kernel_size: int | Tuple[int],
-        stride: Optional[int | Tuple[int]] = None,
-        padding: int | Tuple[int] = 0,
-        dilation: int | Tuple[int] = 1,
+        kernel_size: int | tuple[int],
+        stride: int | tuple[int] | None = None,
+        padding: int | tuple[int] = 0,
+        dilation: int | tuple[int] = 1,
         ceil_mode: bool = False,
         *,
         target: Target = None,
@@ -152,10 +153,10 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
 
     def __init__(
         self,
-        kernel_size: int | Tuple[int],
-        stride: Optional[int | Tuple[int]] = None,
-        padding: int | Tuple[int] = 0,
-        dilation: int | Tuple[int] = 1,
+        kernel_size: int | tuple[int],
+        stride: int | tuple[int] | None = None,
+        padding: int | tuple[int] = 0,
+        dilation: int | tuple[int] = 1,
         ceil_mode: bool = False,
         *,
         target: Target = None,
@@ -179,7 +180,7 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
             target=target,
         )
 
-    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the op on the inputs the manifest declares.
 
         Args:
@@ -203,10 +204,10 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
 
     def __init__(
         self,
-        kernel_size: int | Tuple[int, int],
-        stride: Optional[int | Tuple[int, int]] = None,
-        padding: int | Tuple[int, int] = 0,
-        dilation: int | Tuple[int, int] = 1,
+        kernel_size: int | tuple[int, int],
+        stride: int | tuple[int, int] | None = None,
+        padding: int | tuple[int, int] = 0,
+        dilation: int | tuple[int, int] = 1,
         ceil_mode: bool = False,
         *,
         target: Target = None,
@@ -245,10 +246,10 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
 
     def __init__(
         self,
-        kernel_size: int | Tuple[int, int],
-        stride: Optional[int | Tuple[int, int]] = None,
-        padding: int | Tuple[int, int] = 0,
-        dilation: int | Tuple[int, int] = 1,
+        kernel_size: int | tuple[int, int],
+        stride: int | tuple[int, int] | None = None,
+        padding: int | tuple[int, int] = 0,
+        dilation: int | tuple[int, int] = 1,
         ceil_mode: bool = False,
         *,
         target: Target = None,
@@ -272,7 +273,7 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
             target=target,
         )
 
-    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the op on the inputs the manifest declares.
 
         Args:
@@ -293,10 +294,10 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
 
     def __init__(
         self,
-        kernel_size: int | Tuple[int, int, int],
-        stride: Optional[int | Tuple[int, int, int]] = None,
-        padding: int | Tuple[int, int, int] = 0,
-        dilation: int | Tuple[int, int, int] = 1,
+        kernel_size: int | tuple[int, int, int],
+        stride: int | tuple[int, int, int] | None = None,
+        padding: int | tuple[int, int, int] = 0,
+        dilation: int | tuple[int, int, int] = 1,
         ceil_mode: bool = False,
         *,
         target: Target = None,
@@ -334,10 +335,10 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
 
     def __init__(
         self,
-        kernel_size: int | Tuple[int, int, int],
-        stride: Optional[int | Tuple[int, int, int]] = None,
-        padding: int | Tuple[int, int, int] = 0,
-        dilation: int | Tuple[int, int, int] = 1,
+        kernel_size: int | tuple[int, int, int],
+        stride: int | tuple[int, int, int] | None = None,
+        padding: int | tuple[int, int, int] = 0,
+        dilation: int | tuple[int, int, int] = 1,
         ceil_mode: bool = False,
         *,
         target: Target = None,
@@ -361,7 +362,7 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
             target=target,
         )
 
-    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the op on the inputs the manifest declares.
 
         Args:

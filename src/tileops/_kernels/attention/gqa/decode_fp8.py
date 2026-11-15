@@ -1,7 +1,5 @@
 """Native-FP8 Dense GQA decode kernels for SM90."""
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -267,7 +265,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
     _MAX_SPLITS = 32
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Batch 1, one query position, a long cache, at most 16 heads per KV head."""
         if call.return_lse:
             return "does not return the log-sum-exp"
@@ -311,12 +309,12 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
         heads_kv: int,
         dim: int,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
         has_sinks: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
         **unused,
     ) -> None:
         del unused
@@ -354,12 +352,12 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v, q_scale=q_scale, k_scale=k_scale, v_scale=v_scale)
         if rope_cos is not None or rope_sin is not None:

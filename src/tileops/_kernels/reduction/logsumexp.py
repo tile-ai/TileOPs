@@ -16,8 +16,8 @@ vectorized T.copy path since their columns are fully in-bounds.
 """
 
 import functools
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import tilelang
 import tilelang.language as T

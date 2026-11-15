@@ -4,7 +4,8 @@ Provides:
   - HadamardTransformFwdOp: y = x @ kron(B, H_m) / sqrt(n) along the last axis
 """
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

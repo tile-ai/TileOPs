@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Callable, Final, Union
+from collections.abc import Callable
+from typing import Final, Union
 
 import torch
 
 # One call's result. A purely mutating op returns ``None``: ``torch.library.custom_op``
 # cannot express a return value aliasing an input.
-KernelResult = Union[torch.Tensor, tuple[torch.Tensor, ...], None]
+KernelResult = Union[torch.Tensor, tuple[torch.Tensor, ...], None]  # noqa: UP007 -- released alias kind
 # Called ``build_kernel(*inputs, **params)``: a `TensorSpec` per input in
 # ``signature.inputs`` order — ``None`` for an ``optional: true`` input the call did not
 # pass, so presence is read off the slot rather than off how many slots there are — then
@@ -56,7 +57,7 @@ class TensorSpec:
     shape: tuple[int, ...]
 
     @staticmethod
-    def of(tensor: torch.Tensor) -> "TensorSpec":
+    def of(tensor: torch.Tensor) -> TensorSpec:
         """Describe *tensor*."""
         return TensorSpec(device=tensor.device, dtype=tensor.dtype, shape=tuple(tensor.shape))
 
@@ -75,4 +76,4 @@ class _Builtin:
 BUILTIN: Final = _Builtin()
 
 # What ``target=`` and the process default accept.
-Target = Union[str, _Builtin, None]
+Target = Union[str, _Builtin, None]  # noqa: UP007 -- released alias kind

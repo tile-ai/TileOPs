@@ -1,4 +1,5 @@
-from typing import Any, Callable, ClassVar, NamedTuple, Optional, Tuple
+from collections.abc import Callable
+from typing import Any, ClassVar, NamedTuple
 
 import tilelang
 import tilelang.language as T
@@ -96,7 +97,7 @@ def _plan(shape: _Shape, ceil_mode: bool, with_indices: bool) -> _SignaturePlan:
     return _SignaturePlan("windowed", out_l, always_in_bounds, 0, 0, 0)
 
 
-def _stage_rows(rows: int, out_l: int, span: int, itemsize: int, threads: int) -> Tuple[int, int]:
+def _stage_rows(rows: int, out_l: int, span: int, itemsize: int, threads: int) -> tuple[int, int]:
     """Rows one staged tile holds, and the elements between two of them.
 
     The count divides ``rows``, so no block is left ragged, and fits the shared budget.
@@ -327,7 +328,7 @@ def _windowed_indices_builder(shape: _Shape, plan: _SignaturePlan):
     return _build
 
 
-def _staged_extents(l_in: int, head: int, span: int) -> Tuple[int, int]:
+def _staged_extents(l_in: int, head: int, span: int) -> tuple[int, int]:
     """Elements of a row the tile holds, and elements of -inf past them.
 
     The span reaches no further than the last window's access width, which is short of
@@ -621,7 +622,7 @@ class _MaxPool1dKernelBase(Kernel):
         dilation_w: int,
         ceil_mode: bool,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         if dtype not in {torch.float16, torch.bfloat16, torch.float32}:
@@ -715,7 +716,7 @@ class MaxPool1dKernel(_MaxPool1dKernelBase, MaxPool1dFwdInterface):
     _with_indices = False
 
     @staticmethod
-    def _shaped(result: torch.Tensor, shape: Tuple[int, int, int]) -> torch.Tensor:
+    def _shaped(result: torch.Tensor, shape: tuple[int, int, int]) -> torch.Tensor:
         return result.view(shape)
 
 
@@ -727,7 +728,7 @@ class MaxPool1dWithIndicesKernel(_MaxPool1dKernelBase, MaxPool1dIndicesFwdInterf
 
     @staticmethod
     def _shaped(
-        result: Tuple[torch.Tensor, torch.Tensor], shape: Tuple[int, int, int]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        result: tuple[torch.Tensor, torch.Tensor], shape: tuple[int, int, int]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         values, indices = result
         return values.view(shape), indices.view(shape)

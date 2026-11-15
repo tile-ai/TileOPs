@@ -1,7 +1,8 @@
 """Benchmark TileOPs GEMM, FP8 GEMM, INT8 W8A8 GEMM, W4A8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
 
 import contextlib
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 import torch
@@ -63,7 +64,7 @@ class _CublasLtBestGEMM:
         trans_b: bool,
         advanced: Any,
         cublaslt: Any,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> None:
         if a.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError(f"unsupported dtype {a.dtype}")
@@ -118,7 +119,7 @@ class _CublasLtBestGEMM:
             self.free()
 
     def __call__(
-        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         rhs = b.t() if self.trans_b else b
         if a is not self._a or b is not self._b or bias is not self._bias:
@@ -136,11 +137,11 @@ class _CublasLtBestGEMM:
 def cublaslt_best(
     a: torch.Tensor,
     b: torch.Tensor,
-    bias: Optional[torch.Tensor] = None,
+    bias: torch.Tensor | None = None,
     *,
     trans_a: bool,
     trans_b: bool,
-) -> Optional[Callable]:
+) -> Callable | None:
     """Build a cuBLASLt searched-best GEMM callable, or None for a row it cannot take.
 
     Returns ``None`` — the caller keeps the plain ``torch-cublas`` baseline — when
@@ -238,7 +239,7 @@ def _deepgemm_fp8(workload: GEMMFP8Workload) -> Callable[..., torch.Tensor]:
 
 def _deepgemm_bf16_nt(
     workload: GEMMWorkload, a: torch.Tensor, b: torch.Tensor
-) -> Optional[Callable[..., torch.Tensor]]:
+) -> Callable[..., torch.Tensor] | None:
     """DeepGEMM's dense bf16 GEMM, or None for a row its kernel cannot take.
 
     It reads both operands K-major and bf16 only, which is the N-T layout here, and
@@ -271,7 +272,7 @@ def _deepgemm_bf16_nt(
 
 def _flashinfer_fp8_per_tensor_unsupported_reason(
     device: torch.device, n: int, k: int
-) -> Optional[str]:
+) -> str | None:
     if device.type != "cuda":
         return f"flashinfer runs on cuda, not {device}"
     arch = get_sm_version(device.index)
@@ -282,7 +283,7 @@ def _flashinfer_fp8_per_tensor_unsupported_reason(
     return None
 
 
-def _quack_gemm_unsupported_reason(workload: GEMMWorkload) -> Optional[str]:
+def _quack_gemm_unsupported_reason(workload: GEMMWorkload) -> str | None:
     """Quack's non-unit operand strides and output row stride must be 16-byte aligned."""
     if not workload.m or not workload.n or not workload.k:
         return None
@@ -294,7 +295,7 @@ def _quack_gemm_unsupported_reason(workload: GEMMWorkload) -> Optional[str]:
     return None
 
 
-def _marlin_w4a16_unsupported_reason(n: int, k: int, group_size: int) -> Optional[str]:
+def _marlin_w4a16_unsupported_reason(n: int, k: int, group_size: int) -> str | None:
     """Marlin's positive group sizes and aligned affine INT4 matrix domain."""
     if get_sm_version() < 80:
         return "Marlin W4A16 requires compute capability at least 80"
@@ -400,7 +401,7 @@ def _prepare_marlin_w4a16_baseline(
     return _run_marlin, (activation, qweight, scales, zeros, workspace)
 
 
-def _vllm_w4a8_unsupported_reason(n: int, k: int, group_size: int) -> Optional[str]:
+def _vllm_w4a8_unsupported_reason(n: int, k: int, group_size: int) -> str | None:
     """Why vLLM's ``cutlass_w4a8_mm`` cannot take this call, or ``None`` when it can.
 
     CUTLASS's INT4 reorder copies a K row in groups of 128 threads times two nibbles

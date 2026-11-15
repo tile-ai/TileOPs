@@ -1,7 +1,5 @@
 """3-D convolution kernels: dense and grouped."""
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -46,9 +44,9 @@ def _conv3d_kernel(
     dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
-    pad_d_end: Optional[int] = None,
-    pad_h_end: Optional[int] = None,
-    pad_w_end: Optional[int] = None,
+    pad_d_end: int | None = None,
+    pad_h_end: int | None = None,
+    pad_w_end: int | None = None,
 ):
     # Swizzle panel: a power of two so the block remap divides by shift, and the
     # narrowest one because long grids lose as it widens.
@@ -201,9 +199,9 @@ def _conv3d_group_kernel(
     groups: int = 1,
     c_in_g: int = 0,
     c_out_g: int = 0,
-    pad_d_end: Optional[int] = None,
-    pad_h_end: Optional[int] = None,
-    pad_w_end: Optional[int] = None,
+    pad_d_end: int | None = None,
+    pad_h_end: int | None = None,
+    pad_w_end: int | None = None,
 ):
     # Swizzle panel: a power of two so the block remap divides by shift, and the
     # narrowest one because long grids lose as it widens.
@@ -375,9 +373,9 @@ def _conv3d_ndhwc_kernel(
     has_bias: bool,
     out_pad_cols: int,
     dtype: str = "float16",
-    pad_d_end: Optional[int] = None,
-    pad_h_end: Optional[int] = None,
-    pad_w_end: Optional[int] = None,
+    pad_d_end: int | None = None,
+    pad_h_end: int | None = None,
+    pad_w_end: int | None = None,
 ):
     """Dense Conv3d over NDHWC-staged input and ODHW(I)-staged weights.
 
@@ -596,7 +594,7 @@ class Conv3dKernel(Kernel, Conv3dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def refusal(cls, call: Conv3dCall) -> Optional[str]:
+    def refusal(cls, call: Conv3dCall) -> str | None:
         if call.groups != 1:
             return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
@@ -651,10 +649,10 @@ class Conv3dKernel(Kernel, Conv3dFwdInterface):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
-        pad_end: Optional[tuple[int, ...]] = None,
-        config: Optional[dict] = None,
+        pad_end: tuple[int, ...] | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -743,7 +741,7 @@ class Conv3dKernel(Kernel, Conv3dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return launch(self, x, weight, bias=bias)
 
@@ -754,7 +752,7 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def refusal(cls, call: Conv3dCall) -> Optional[str]:
+    def refusal(cls, call: Conv3dCall) -> str | None:
         if call.groups <= 1:
             return "serves grouped convolution"
         operands = (
@@ -822,13 +820,13 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
-        pad_end: Optional[tuple[int, ...]] = None,
+        pad_end: tuple[int, ...] | None = None,
         groups: int = 1,
-        c_in_g: Optional[int] = None,
-        c_out_g: Optional[int] = None,
-        config: Optional[dict] = None,
+        c_in_g: int | None = None,
+        c_out_g: int | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -933,7 +931,7 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return launch(self, x, weight, bias=bias)
 
@@ -957,7 +955,7 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
     _OUT_PAD_COLS = 2
 
     @classmethod
-    def refusal(cls, call: Conv3dCall) -> Optional[str]:
+    def refusal(cls, call: Conv3dCall) -> str | None:
         """Dense 16-bit calls whose output amortizes the two layout transforms."""
         # The staging is a fixed cost paid before any math, so pointwise and small-output
         # calls stay on the dense implementation even though this one computes them.
@@ -1026,10 +1024,10 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
-        pad_end: Optional[tuple[int, ...]] = None,
-        config: Optional[dict] = None,
+        pad_end: tuple[int, ...] | None = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.n = n
@@ -1116,7 +1114,7 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x_ndhwc = torch.empty(
             (self.n, self.d, self.h, self.w, self.c_in),

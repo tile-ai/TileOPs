@@ -1,7 +1,5 @@
 """Tests for the chunked sequence mean."""
 
-from typing import List, Optional
-
 import pytest
 import torch
 
@@ -67,7 +65,7 @@ def test_mean_pooling_op(
     chunk_size: int,
     dtype: torch.dtype,
     tune: bool,
-    seq_lens: Optional[List[int]],
+    seq_lens: list[int] | None,
 ) -> None:
     test = MeanPoolingTest(
         batch=batch,

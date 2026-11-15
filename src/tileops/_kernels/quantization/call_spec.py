@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import torch
 
@@ -32,7 +31,7 @@ class DequantizeCall(CallSpec):
 
     m: int = 0
     k: int = 0
-    out_dtype: Optional[torch.dtype] = None
+    out_dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -49,7 +48,7 @@ class QuantizeCall(CallSpec):
     cols: int = 0
     dtype: torch.dtype = torch.float16
     # ``INT4QuantPerGroupFwdOp``'s ``group_size``; ``None`` for an op without one.
-    group_size: "int | None" = None
+    group_size: int | None = None
 
 
 class INT8DequantPerTensorFwdInterface(KernelInterface):

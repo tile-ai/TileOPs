@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -56,7 +57,7 @@ class SSDChunkStateFwdOp(Op):
         B: torch.Tensor,
         dt: torch.Tensor,
         dA_cumsum: torch.Tensor,
-        seq_idx: Optional[torch.Tensor] = None,
+        seq_idx: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the SSD chunk state forward pass.
 

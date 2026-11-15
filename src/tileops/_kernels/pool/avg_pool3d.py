@@ -1,4 +1,4 @@
-from typing import ClassVar, NamedTuple, Optional
+from typing import ClassVar, NamedTuple
 
 import tilelang
 import tilelang.language as T
@@ -39,7 +39,7 @@ class _WideRun(NamedTuple):
     vector_elems: int
 
 
-def _wide_run(window: AvgPoolWindow, dtype: str) -> Optional[_WideRun]:
+def _wide_run(window: AvgPoolWindow, dtype: str) -> _WideRun | None:
     """The narrowest run of outputs whose taps reach the widest access the w axis admits.
 
     ``run`` consecutive outputs cover ``run * stride_w`` consecutive inputs, and the
@@ -345,9 +345,9 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
         pad_w: int,
         ceil_mode: bool,
         count_include_pad: bool,
-        divisor_override: Optional[int],
+        divisor_override: int | None,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.n = n

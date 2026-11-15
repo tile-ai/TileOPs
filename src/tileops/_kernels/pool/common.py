@@ -1,6 +1,7 @@
 import itertools
 import math
-from typing import Any, Callable, ClassVar, NamedTuple, Optional, Tuple
+from collections.abc import Callable
+from typing import Any, ClassVar, NamedTuple
 
 import torch
 
@@ -127,16 +128,16 @@ class AvgPoolWindow(NamedTuple):
     """
 
     rows: int
-    size: Tuple[int, ...]
-    kernel: Tuple[int, ...]
-    stride: Tuple[int, ...]
-    pad: Tuple[int, ...]
+    size: tuple[int, ...]
+    kernel: tuple[int, ...]
+    stride: tuple[int, ...]
+    pad: tuple[int, ...]
     ceil_mode: bool
     count_include_pad: bool
-    divisor_override: Optional[int]
+    divisor_override: int | None
 
     @property
-    def out(self) -> Tuple[int, ...]:
+    def out(self) -> tuple[int, ...]:
         return tuple(
             pool_output_dim(size, k, s, p, self.ceil_mode)
             for size, k, s, p in zip(self.size, self.kernel, self.stride, self.pad, strict=True)
@@ -181,7 +182,7 @@ class AvgPoolWindow(NamedTuple):
         return math.prod(self.kernel)
 
     @property
-    def overlap(self) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    def overlap(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         """Per axis, the half-open range a window's own divisor counts.
 
         Uncounted padding cuts the range back to the input itself.
@@ -245,7 +246,7 @@ class AdaptivePool2dKernelBase(Kernel):
         out_h: int,
         out_w: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         if dtype not in {torch.float16, torch.bfloat16}:

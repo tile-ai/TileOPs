@@ -7,7 +7,8 @@ Consumers record CheckResult and own pytest/timing policy, never numerical polic
 
 import dataclasses
 import traceback
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -158,10 +159,10 @@ class Exact:
     Explicit tolerances override dtype defaults. ``normalized`` adds a bound on each
     output's normalized squared error, for an atol scaled past the output itself."""
 
-    rtol: Optional[float] = None
-    atol: Optional[float] = None
+    rtol: float | None = None
+    atol: float | None = None
     controls: tuple[NegativeControl, ...] = ()
-    normalized: Optional[float] = None
+    normalized: float | None = None
     kind: str = "exact"
 
     def tolerance(self, default: dict) -> dict:
@@ -180,8 +181,8 @@ class Partial:
 
     outputs: int
     reason: str
-    rtol: Optional[float] = None
-    atol: Optional[float] = None
+    rtol: float | None = None
+    atol: float | None = None
     controls: tuple[NegativeControl, ...] = ()
     kind: str = "partial"
 
@@ -213,7 +214,7 @@ class Custom:
     validator: Callable[[Any, Any], None]
     reason: str
     controls: tuple[NegativeControl, ...] = ()
-    probe: Optional[Callable[[Callable, tuple], None]] = None
+    probe: Callable[[Callable, tuple], None] | None = None
     kind: str = "custom"
 
 
@@ -237,7 +238,7 @@ class ReferenceInfeasible:
 Evidence = Exact | Partial | Custom | Noncomparable | ReferenceInfeasible | Unestablished
 
 
-def describe(evidence: Evidence) -> Optional[str]:
+def describe(evidence: Evidence) -> str | None:
     """The text a published row carries, or None where the tag was checked."""
     if evidence.kind == "exact":
         return None
@@ -421,7 +422,7 @@ class Request:
 
     run: Callable
     args: tuple
-    reset: Optional[Callable[[], None]] = None
+    reset: Callable[[], None] | None = None
     preserve_inputs: bool = False
 
 

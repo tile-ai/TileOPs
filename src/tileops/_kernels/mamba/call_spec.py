@@ -3,7 +3,6 @@ interfaces their implementations inherit."""
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import torch
 
@@ -38,7 +37,7 @@ class CausalConv1dCall(CallSpec):
 
     dim: int = 0
     width: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     has_bias: bool = False
     has_init: bool = False
     silu: bool = True
@@ -50,7 +49,7 @@ class CausalConv1dUpdateCall(CallSpec):
 
     dim: int = 0
     width: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     has_bias: bool = False
     silu: bool = True
 
@@ -64,7 +63,7 @@ class SSDChunkCouplingCall(CallSpec):
     n_groups: int = 0
     d_state: int = 0
     chunk_len: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -79,7 +78,7 @@ class SSDChunkCumsumCall(CallSpec):
     dt_softplus: bool = False
     dt_min: float = 0.0
     dt_max: float = float("inf")
-    out_dtype: Optional[torch.dtype] = None
+    out_dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -93,7 +92,7 @@ class SSDChunkScanCall(CallSpec):
     d_head: int = 0
     d_state: int = 0
     n_groups: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -107,8 +106,8 @@ class SSDChunkStateCall(CallSpec):
     d_head: int = 0
     d_state: int = 0
     n_groups: int = 0
-    dtype: Optional[torch.dtype] = None
-    dt_dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
+    dt_dtype: torch.dtype | None = None
     has_seq_idx: bool = False
 
 
@@ -121,7 +120,7 @@ class SSDDecodeCall(CallSpec):
     d_head: int = 0
     d_state: int = 0
     n_groups: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -133,7 +132,7 @@ class SSDStatePassingCall(CallSpec):
     n_heads: int = 0
     d_state: int = 0
     has_initial_states: bool = False
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -144,7 +143,7 @@ class SelectiveScanCall(CallSpec):
     seqlen: int = 0
     dstate: int = 0
     groups: int = 1
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     has_skip: bool = False
     has_gate: bool = False
     has_bias: bool = False
@@ -165,8 +164,8 @@ class CausalConv1dFwdInterface(KernelInterface):
         weight: torch.Tensor,
         conv_state: torch.Tensor,
         cu_seqlens: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-        has_initial_state: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
+        has_initial_state: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Convolve each sequence along the token axis and leave its last W-1 tokens in its state.
 
@@ -199,7 +198,7 @@ class CausalConv1dUpdateFwdInterface(KernelInterface):
         x: torch.Tensor,
         weight: torch.Tensor,
         conv_state: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Convolve each sequence's new token with its state, then shift the token into it.
 
@@ -246,7 +245,7 @@ class SSDChunkCumsumFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(
-        self, dt: torch.Tensor, A: torch.Tensor, dt_bias: Optional[torch.Tensor] = None
+        self, dt: torch.Tensor, A: torch.Tensor, dt_bias: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Transform dt, then scan ``dt * A`` within each chunk; nothing is written in place.
 
@@ -406,11 +405,11 @@ class SelectiveScanFwdInterface(KernelInterface):
         A: torch.Tensor,
         B_in: torch.Tensor,
         C_in: torch.Tensor,
-        D_in: Optional[torch.Tensor] = None,
-        z: Optional[torch.Tensor] = None,
-        delta_bias: Optional[torch.Tensor] = None,
-        seq_idx: Optional[torch.Tensor] = None,
-        initial_states: Optional[torch.Tensor] = None,
+        D_in: torch.Tensor | None = None,
+        z: torch.Tensor | None = None,
+        delta_bias: torch.Tensor | None = None,
+        seq_idx: torch.Tensor | None = None,
+        initial_states: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the recurrence over the sequence axis; nothing is written in place.
 

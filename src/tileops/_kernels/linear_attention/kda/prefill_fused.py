@@ -1,7 +1,5 @@
 """Kimi Delta Attention (KDA) prefill with the chunk step and the scan in one CTA."""
 
-from typing import Optional, Tuple
-
 import torch
 
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -29,7 +27,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     preferred_over = frozenset({"kda_chunk_prefill"})
 
     @classmethod
-    def refusal(cls, call: KDACall) -> Optional[str]:
+    def refusal(cls, call: KDACall) -> str | None:
         """Why this kernel does not serve *call*, or ``None`` when it does."""
         chunked = call.chunk_refusal
         if chunked is not None:
@@ -95,7 +93,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         l2norm: bool,
         dtype: torch.dtype,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
         compact: bool = False,
         two_launch: bool = False,
     ) -> None:
@@ -118,12 +116,12 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
-        A_log: Optional[torch.Tensor] = None,
-        dt_bias: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
+        A_log: torch.Tensor | None = None,
+        dt_bias: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run every chunk inside its own CTA; see the interface for the tensors."""
         del cu_seqlens_cpu, A_log, dt_bias
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)

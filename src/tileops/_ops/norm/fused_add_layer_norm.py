@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -64,7 +65,7 @@ class FusedAddLayerNormFwdOp(Op):
 
     def forward(
         self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply fused residual addition and normalization.
 
         Args:

@@ -3,7 +3,7 @@ interfaces the implementations serving it inherit."""
 
 import dataclasses
 from abc import abstractmethod
-from typing import Literal, Optional
+from typing import Literal
 
 import torch
 
@@ -42,7 +42,7 @@ class GEMMCall(CallSpec):
     m: int = 0
     n: int = 0
     k: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     trans_a: bool = False
     trans_b: bool = False
     has_bias: bool = False
@@ -58,10 +58,10 @@ class GEMMFP8Call(CallSpec):
     m: int = 0
     n: int = 0
     k: int = 0
-    dtype: Optional[torch.dtype] = None
-    scale_a_shape: Optional[tuple] = None
-    scale_b_shape: Optional[tuple] = None
-    out_dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
+    scale_a_shape: tuple | None = None
+    scale_b_shape: tuple | None = None
+    out_dtype: torch.dtype | None = None
     has_bias: bool = False
 
 
@@ -79,7 +79,7 @@ class GEMMINT8W8A8Call(CallSpec):
     k: int = 0
     per_token: bool = False
     per_channel: bool = False
-    out_dtype: Optional[torch.dtype] = None
+    out_dtype: torch.dtype | None = None
     has_bias: bool = False
 
 
@@ -90,7 +90,7 @@ class GEMMW4A16Call(CallSpec):
     m: int = 0
     n: int = 0
     k: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     # The dequantization group along K its kernels are compiled for.
     group_size: int = 0
 
@@ -131,7 +131,7 @@ class BMMCall(CallSpec):
     m: int = 0
     n: int = 0
     k: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -142,8 +142,8 @@ class BMMFP8Call(CallSpec):
     m: int = 0
     n: int = 0
     k: int = 0
-    dtype: Optional[torch.dtype] = None
-    out_dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
+    out_dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -153,7 +153,7 @@ class BMMFP8TransposeCall(CallSpec):
     batch: int = 0
     rows: int = 0
     cols: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 class GEMMFwdInterface(KernelInterface):
@@ -163,7 +163,7 @@ class GEMMFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(
-        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+        self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
         """Multiply the two matrices and add the bias; nothing is written in place.
 
@@ -195,7 +195,7 @@ class GEMMFP8FwdInterface(KernelInterface):
         b: torch.Tensor,
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Multiply, apply both scales and add the bias; nothing is written in place.
 
@@ -218,7 +218,7 @@ class GEMMFP8FwdInterface(KernelInterface):
         """
 
     @classmethod
-    def block_scale_grid(cls, call: GEMMFP8Call) -> Optional[Literal["1d1d", "1d2d"]]:
+    def block_scale_grid(cls, call: GEMMFP8Call) -> Literal["1d1d", "1d2d"] | None:
         """Which block128 grid the scales form, or ``None`` for any other pair.
 
         Both grids take ``scale_a`` per 1x128 block, ``[m, ceil(k / 128)]``. ``"1d1d"``
@@ -248,7 +248,7 @@ class GEMMINT8W8A8FwdInterface(KernelInterface):
         b: torch.Tensor,
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Multiply exactly in int32, scale in fp32, add the bias; nothing is written in place.
 

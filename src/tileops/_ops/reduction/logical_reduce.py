@@ -1,6 +1,7 @@
 """Logical reduction operators (all, any, count_nonzero)."""
 
-from typing import ClassVar, List, Mapping, Tuple, Union
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -97,7 +98,7 @@ class CountNonzeroFwdOp(_LogicalReduceOpBase):
 
     def __init__(
         self,
-        dim: Union[int, List[int], Tuple[int, ...], None] = None,
+        dim: int | list[int] | tuple[int, ...] | None = None,
         *,
         target: Target = None,
     ):

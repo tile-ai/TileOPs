@@ -1,4 +1,4 @@
-from typing import ClassVar, Optional, Tuple
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -28,10 +28,10 @@ class _WindowStaging:
 
     # Tile widths a launch may take, widest first. The tail below 128 is for a window
     # too wide to stage at 128 outputs.
-    _TILE_CHOICES: ClassVar[Tuple[int, ...]] = (2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
+    _TILE_CHOICES: ClassVar[tuple[int, ...]] = (2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
     # Outputs a block covers before the shared budget or the output row narrows it.
     _TILE_OUTPUTS: ClassVar[int] = 512
-    _THREAD_CHOICES: ClassVar[Tuple[int, ...]] = (64, 128, 256)
+    _THREAD_CHOICES: ClassVar[tuple[int, ...]] = (64, 128, 256)
     # Taken when every block size is ruled out.
     _FALLBACK_THREADS: ClassVar[int] = 128
     # Threads a launch needs before a narrow block is offered; under this the blocks
@@ -250,7 +250,7 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
         ceil_mode: bool,
         count_include_pad: bool,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.n = n

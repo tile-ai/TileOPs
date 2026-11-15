@@ -14,8 +14,6 @@ lanes of a warp and joins the lanes' segments with a warp scan; ``SelectiveScanS
 walks it in order, one thread a group of states, for sequences too short to fill a warp.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -485,8 +483,8 @@ class _SelectiveScanKernel(Kernel, SelectiveScanFwdInterface):
         has_seq_idx: bool,
         has_init: bool,
         softplus: bool,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dim, self.seqlen, self.dstate, self.groups, self.dtype = (
@@ -522,11 +520,11 @@ class _SelectiveScanKernel(Kernel, SelectiveScanFwdInterface):
         A: torch.Tensor,
         B_in: torch.Tensor,
         C_in: torch.Tensor,
-        D_in: Optional[torch.Tensor] = None,
-        z: Optional[torch.Tensor] = None,
-        delta_bias: Optional[torch.Tensor] = None,
-        seq_idx: Optional[torch.Tensor] = None,
-        initial_states: Optional[torch.Tensor] = None,
+        D_in: torch.Tensor | None = None,
+        z: torch.Tensor | None = None,
+        delta_bias: torch.Tensor | None = None,
+        seq_idx: torch.Tensor | None = None,
+        initial_states: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch = u.shape[0]
         y = torch.empty_like(u)
@@ -612,7 +610,7 @@ class SelectiveScanStepKernel(_SelectiveScanKernel):
     max_seqlen = 48
 
     @classmethod
-    def refusal(cls, call: SelectiveScanCall) -> Optional[str]:
+    def refusal(cls, call: SelectiveScanCall) -> str | None:
         if call.seqlen > cls.max_seqlen:
             return f"walks at most {cls.max_seqlen} steps in order, not {call.seqlen}"
         return None

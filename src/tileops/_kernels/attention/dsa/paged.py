@@ -4,7 +4,7 @@ The cache row is FlashMLA's DeepSeek-V3.2 FP8 layout: 512 float8_e4m3fn latent v
 float32 scale per 128 of them, then 64 bfloat16 rope values, 656 bytes in all.
 """
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -510,7 +510,7 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
     cluster: ClassVar[int]
 
     @classmethod
-    def refusal(cls, call: DSAPagedCall) -> Optional[str]:
+    def refusal(cls, call: DSAPagedCall) -> str | None:
         if call.heads % (64 * cls.cluster) != 0:
             return f"requires a multiple of {64 * cls.cluster} heads"
         if call.topk % 64 != 0:

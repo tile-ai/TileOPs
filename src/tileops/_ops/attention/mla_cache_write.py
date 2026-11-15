@@ -4,7 +4,8 @@ Provides:
   - MLAKVCacheWriteFwdOp: kv_cache.view(-1, DC + PE)[slot_mapping] = cat(kv_c, rope(k_pe) or k_pe)
 """
 
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -70,9 +71,9 @@ class MLAKVCacheWriteFwdOp(Op):
         k_pe: torch.Tensor,
         kv_cache: torch.Tensor,
         slot_mapping: torch.Tensor,
-        kv_scale: Optional[torch.Tensor] = None,
-        positions: Optional[torch.Tensor] = None,
-        cos_sin_cache: Optional[torch.Tensor] = None,
+        kv_scale: torch.Tensor | None = None,
+        positions: torch.Tensor | None = None,
+        cos_sin_cache: torch.Tensor | None = None,
     ) -> None:
         """Write each token's ``kv_c`` and ``k_pe`` into the cache row its slot names.
 

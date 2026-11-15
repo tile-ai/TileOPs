@@ -1,6 +1,7 @@
 """Activation elementwise ops (ReLU + parametric/param-free families)."""
 
-from typing import ClassVar, Mapping
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 

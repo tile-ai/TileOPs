@@ -5,7 +5,7 @@ float32 value before that cast. Optional bias, softplus, and clamp match the
 Mamba-2 chunk-cumsum contract.
 """
 
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -222,7 +222,7 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         has_dt_bias: bool = False,
         dt_min: float = 0.0,
         dt_max: float = float("inf"),
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ) -> None:
         super().__init__()
         self.batch = batch
@@ -276,8 +276,8 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         self,
         dt: torch.Tensor,
         A: torch.Tensor,
-        dt_bias: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        dt_bias: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the dA_cumsum forward pass.
 
         Args:

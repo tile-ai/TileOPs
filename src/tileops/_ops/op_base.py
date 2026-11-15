@@ -7,16 +7,11 @@ import threading
 import warnings
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from types import MappingProxyType
 from typing import (
-    Callable,
+    Any,
     ClassVar,
-    Hashable,
-    Iterator,
-    Mapping,
-    Optional,
-    Sequence,
-    Union,
 )
 
 import torch
@@ -35,7 +30,7 @@ from tileops._ops._signature_codegen import (
     in_tree,
     param_state,
 )
-from tileops._ops.compile_boundary import register_instance
+from tileops._ops.compile_boundary import instance_key, register_instance
 from tileops._utils.device import current_device, device_context
 from tileops.backend import (
     BUILTIN,
@@ -375,7 +370,7 @@ class Op(ABC):
     _MAX_PLANS: ClassVar[int] = 256
     # The generated signature plan; None for a class without a manifest entry.
     _signature: ClassVar[object] = None
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     # Whether a call's packed offsets are checked against its tensors; set by every op whose
     # signature declares packed offsets.
     validate_inputs: bool
@@ -446,6 +441,14 @@ class Op(ABC):
     # is class state.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
+    # The attributes the compile boundary's fake reads, in key order: the signature's params,
+    # then its construction-time tensors. Assigning one changes `_instance_key`.
+    _instance_key_names: ClassVar[tuple[str, ...]] = ()
+    # The manifest entry the fake is generated from, as text.
+    _instance_key_entry: ClassVar[str] = ""
+    # Serializes the assignments that change an op's compile-boundary key.
+    _instance_key_lock: ClassVar[threading.Lock] = threading.Lock()
+
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
     injected_parameters: ClassVar[tuple[str, ...]] = ()
@@ -475,7 +478,8 @@ class Op(ABC):
         if check is not None:
             self._construction_indices = check(self)
         self._install_kernel_types()
-        self._instance_key = register_instance(self)
+        self._instance_identity = register_instance(self)
+        self._instance_key = instance_key(self._instance_identity, self._instance_key_state())
         # The binding caches and the sub-op tables, so no method asks whether they exist;
         # installing built the two entry caches.
         self._target_kernels = {}
@@ -488,6 +492,22 @@ class Op(ABC):
         self._settled_tensors = {}
         self._effect_branches = {}
         self._plans = {}
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name not in self._instance_key_names or "_instance_identity" not in self.__dict__:
+            object.__setattr__(self, name, value)
+            return
+        # Keeps a concurrent assignment from publishing the key of a value it replaced.
+        with self._instance_key_lock:
+            object.__setattr__(self, name, value)
+            self._instance_key = instance_key(self._instance_identity, self._instance_key_state())
+
+    def _instance_key_state(self) -> tuple:
+        """What the compile boundary's fake reads of this op, in `_instance_key_names` order."""
+        return (
+            self._instance_key_entry,
+            *(getattr(self, n, None) for n in self._instance_key_names),
+        )
 
     def _infer_output_shapes(self, *shapes: tuple[int, ...], dtypes=None) -> dict:
         """Infer output tensor shapes from input shapes, in ``signature.inputs`` order.
@@ -522,7 +542,7 @@ class Op(ABC):
             f"states its manifest entry as the class attribute `spec`"
         )
 
-    def eval_roofline_read_bytes(self) -> Optional[int]:
+    def eval_roofline_read_bytes(self) -> int | None:
         """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
 
         ``bytes`` minus the write half, which the signature settles: every
@@ -1472,7 +1492,7 @@ class Op(ABC):
             return BUILTIN
         return self._serving_target
 
-    def kernel_config(self) -> Optional[dict]:
+    def kernel_config(self) -> dict[str, Any] | None:
         """The configuration the op's kernels published, or ``None``.
 
         An op given a config of its own answers with it; otherwise the first configured
@@ -1568,7 +1588,7 @@ class Op(ABC):
     def _walk_ops(self) -> Iterator["Op"]:
         """Yield this op and the ops it runs kernels through, each one once."""
         seen: set[int] = set()
-        stack: list["Op"] = [self]
+        stack: list[Op] = [self]
         while stack:
             op = stack.pop()
             if id(op) in seen:
@@ -1615,7 +1635,7 @@ class Op(ABC):
         )
 
     @abstractmethod
-    def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
+    def forward(self, *args: object, **kwargs: object) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """Run the op.
 
         Returns:
@@ -1624,7 +1644,7 @@ class Op(ABC):
         """
         raise NotImplementedError("forward method is not implemented")
 
-    def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
+    def __call__(self, *args: object, **kwargs: object) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """Make the op callable.
 
         ``forward`` is the op's computation, and it runs inside :meth:`_execute`. An op with

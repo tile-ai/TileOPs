@@ -9,8 +9,6 @@ expands the producer into a warpgroup so lookup-table loads and K rotation overl
 consumer.  SM90-only, low-level ``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -523,7 +521,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         return selected
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """The calls :attr:`AttentionCall.dense_decode_program` names ``"batch1"``, within
         the group and head dimension one 64-row consumer tile holds."""
         if call.return_lse:
@@ -548,16 +546,16 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         seq_len_kv,
         dim,
         dtype="float16",
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         has_sinks: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.has_sinks = has_sinks
@@ -588,12 +586,12 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         del q_scale, k_scale, v_scale

@@ -133,8 +133,11 @@ def _field_ok(text: str, value) -> bool:
 
 
 def _adt(name: str, value, adts: dict):
-    """An ADT literal checked against its constructor's fields and invariant, as an
-    `ADTValue`; a Python object checked against its constructor's class, as itself."""
+    """`value` checked as a value of ADT `name`.
+
+    An ADT literal is checked against its constructor's fields and invariant and returned as an
+    `ADTValue`; a Python object is checked against its constructor's class and returned as is.
+    """
     ctors = adts[name]["sum"]
     if isinstance(value, dict):
         if len(value) != 1 or next(iter(value)) not in ctors:

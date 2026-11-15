@@ -8,8 +8,9 @@ kernel as the graph API, so neither is faster than the other.
 import atexit
 import ctypes
 import os
+from collections.abc import Callable
 from enum import IntEnum
-from typing import Callable, Optional
+from typing import Optional
 
 import torch
 
@@ -282,9 +283,9 @@ def cudnn_pool_fn(
     ceil_mode: bool,
     count_include_pad: bool = True,
     dilation: tuple = (1, 1),
-    divisor_override: Optional[int] = None,
+    divisor_override: int | None = None,
     return_indices: bool = False,
-) -> Optional[Callable[[torch.Tensor], torch.Tensor]]:
+) -> Callable[[torch.Tensor], torch.Tensor] | None:
     """Return a direct-cuDNN pooling callable, or None where Resample cannot express it.
 
     ``kernel_size`` / ``stride`` / ``padding`` are per-spatial-dim tuples, 2D or 3D.

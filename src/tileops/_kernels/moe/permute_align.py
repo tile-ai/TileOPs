@@ -14,7 +14,6 @@ Reference: sglang/sgl-kernel/csrc/moe/moe_align_kernel.cu
 """
 
 import math
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -385,9 +384,9 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
         numel: int,
         num_experts: int,
         block_size: int,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.numel = numel

@@ -8,7 +8,7 @@ import logging
 import subprocess
 import threading
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 import torch
 
@@ -90,7 +90,7 @@ def _get_env_metadata() -> list[str]:
     return lines
 
 
-def _kernel_config(op: object) -> Optional[dict]:
+def _kernel_config(op: object) -> dict | None:
     """What the op ran with, as the op itself reports it.
 
     An Op answers through ``kernel_config()``. A baseline that is not an Op has no

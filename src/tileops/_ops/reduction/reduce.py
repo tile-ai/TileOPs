@@ -9,7 +9,8 @@ belong to the kernel. Kernels are cached by shape, axes, dtype and device.
 
 import math
 import warnings
-from typing import ClassVar, List, Mapping, Optional, Tuple, Union
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -46,7 +47,7 @@ __all__ = [
     "VarMeanFwdOp",
 ]
 
-Dim = Union[int, List[int], Tuple[int, ...], None]
+Dim = int | list[int] | tuple[int, ...] | None
 
 
 def reduce_axes(dim: Dim, rank: int, empty: str) -> "tuple[int, ...]":
@@ -193,7 +194,7 @@ class _CastReduceOp(ReduceCallOp):
         dim: Dim = None,
         keepdim: bool = False,
         *,
-        dtype: Optional[torch.dtype] = None,
+        dtype: torch.dtype | None = None,
         target: Target = None,
     ):
         """Construct the op.
@@ -252,7 +253,7 @@ class ProdFwdOp(_CastReduceOp):
         dim: int,
         keepdim: bool = False,
         *,
-        dtype: Optional[torch.dtype] = None,
+        dtype: torch.dtype | None = None,
         target: Target = None,
     ):
         """Construct ProdFwdOp.

@@ -15,6 +15,7 @@ import math
 import random
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 from zlib import crc32
 
 from tileops.manifest._dtype_rules import DTYPE_BITS
@@ -58,6 +59,9 @@ from tileops.manifest.primitives import (
     WORKLOAD_SEED,
 )
 
+if TYPE_CHECKING:
+    import torch
+
 __all__ = [
     "Call",
     "CallView",
@@ -85,8 +89,8 @@ class CallView:
     `let`s; `tensors` maps each present tensor to its `(shape, dtype name)`.
     """
 
-    indices: dict
-    tensors: dict
+    indices: dict[str, Any]
+    tensors: dict[str, tuple[tuple[int, ...], str]]
     has_out: bool = False
 
     def present(self, name: str) -> bool:
@@ -98,13 +102,16 @@ class CallView:
         shape, dtype = self.tensors[name]
         return (math.prod(shape) * DTYPE_BITS[dtype] + 7) // 8
 
-    def metadata_values(self, name: str) -> list:
+    def metadata_values(self, name: str) -> list[Any]:
         """The contents of metadata tensor `name`, as nested lists."""
         raise NotImplementedError
 
     def derived(self, name: str) -> bool:
-        """Whether the call moves none of input `name`: a determining predicate fixes its
-        contents, so it is not read, and the call does not write it."""
+        """Whether the call moves none of input `name`.
+
+        A determining predicate fixes its contents, so it is not read, and the call does not
+        write it.
+        """
         return False
 
 
@@ -118,29 +125,35 @@ class TensorSpec:
 
 @dataclass(frozen=True)
 class Call(CallView):
+    """One workload row instantiated for one dtype case: its parameters and tensor specs."""
+
     case_id: str
     # Parameter values as expressions read them: a dtype by name, an ADT by its fields.
-    params: dict
+    params: dict[str, Any]
     specs: dict[str, TensorSpec | None]
-    indices: dict = dataclasses.field(default_factory=dict)
+    indices: dict[str, Any] = dataclasses.field(default_factory=dict)
     signature: Signature | None = dataclasses.field(default=None, repr=False, compare=False)
     # The inputs the call writes.
-    written: frozenset = frozenset()
+    written: frozenset[str] = frozenset()
 
     @property
-    def tensors(self) -> dict:
+    def tensors(self) -> dict[str, tuple[tuple[int, ...], str]]:
+        """Each present tensor's `(shape, dtype name)`."""
         return {n: (s.shape, s.dtype) for n, s in self.specs.items() if s is not None}
 
-    def metadata_values(self, name: str) -> list:
+    def metadata_values(self, name: str) -> list[Any]:
+        """The generated contents of metadata tensor `name`, as nested lists."""
         return self.specs[name].values
 
     def derived(self, name: str) -> bool:
+        """Whether a determining predicate fixes input `name` and the call does not write it."""
         tensor = self.signature.inputs.get(name) if self.signature is not None else None
         return tensor is not None and tensor.derived and name not in self.written
 
-    def arguments(self, tensors: dict) -> dict:
-        """The op's constructor arguments, its construction-time
-        tensors taken from *tensors*, as `materialize` returns them.
+    def arguments(self, tensors: dict[str, torch.Tensor | None]) -> dict[str, Any]:
+        """The op's constructor arguments.
+
+        Its construction-time tensors are taken from *tensors*, as `materialize` returns them.
 
         A dtype is a `torch.dtype`; an ADT is its constructor's `python` class called with its
         fields as keyword arguments, an enum field built from its own `python` class.
@@ -148,7 +161,7 @@ class Call(CallView):
         values = {p: _python_value(self.signature, p, v) for p, v in self.params.items()}
         return values | {t: tensors[t] for t in self.signature.ctor_tensors}
 
-    def materialize(self, device="cuda"):
+    def materialize(self, device: str | torch.device = "cuda") -> dict[str, torch.Tensor | None]:
         """Build the tensors the call passes: generated values where declared, random data elsewhere.
 
         A `device` parameter that is set decides where they go; *device* is the fallback.
@@ -399,7 +412,9 @@ def _fixed_rank(node: ast.List, length) -> int | None:
     return None if None in lengths else sum(lengths)
 
 
-def instantiate(plan: EntryPlan, row: dict, dtype_case: dict, *, metadata: bool = True) -> Call:
+def instantiate(
+    plan: EntryPlan, row: dict[str, Any], dtype_case: dict[str, str], *, metadata: bool = True
+) -> Call:
     """The call one row and one dtype case state; raises `RowError` when they state none.
 
     With `metadata=False`, describe tensor shapes and dtypes without generating or
@@ -528,8 +543,9 @@ def instantiate(plan: EntryPlan, row: dict, dtype_case: dict, *, metadata: bool 
 
 
 def call_from_tensors(plan: EntryPlan, known: dict, inputs: dict) -> Call:
-    """The call of `plan` on the call tensors `inputs`, its indices solved from their shapes and
-    dtypes as the op's checks solve them.
+    """The call of `plan` on the call tensors `inputs`.
+
+    Its indices are solved from their shapes and dtypes as the op's checks solve them.
 
     `known` holds every signature parameter, as expressions read it, and may hold indices the
     tensors do not determine, such as a generator's arguments. `inputs` maps each call tensor
@@ -568,8 +584,11 @@ def call_from_tensors(plan: EntryPlan, known: dict, inputs: dict) -> Call:
 
 
 def _indices(sig: Signature, b: PlanBranch, scope: dict) -> dict:
-    """The `indices` a call's formulas read: the parameters, the indices other than a
-    generator's value sequences, and the `let`s, as `scope` binds them."""
+    """The `indices` a call's formulas read, as `scope` binds them.
+
+    They are the parameters, the indices other than a generator's value sequences, and the
+    `let`s.
+    """
     values = {n for n, k in sig.forall.items() if k == "Seq[Int]"}
     return {
         n: v
@@ -581,8 +600,10 @@ def _indices(sig: Signature, b: PlanBranch, scope: dict) -> dict:
 def _generate(
     sig: Signature, t: str, b: PlanBranch, scope: dict, *, metadata: bool = True
 ) -> tuple[list | None, tuple]:
-    """The values tensor `t`'s generator yields for this row, seeded per op and tensor, and
-    their shape, checked against the rank `t` declares.
+    """The values tensor `t`'s generator yields for this row, and their shape.
+
+    The generator is seeded per op and tensor, and the shape is checked against the rank `t`
+    declares.
 
     With `metadata=False`, the values are None and only the shape is computed.
     """
@@ -653,8 +674,11 @@ def equal_inputs(sig: Signature) -> list[tuple[str, ...]]:
 
 
 def _declaration_errors(sig: Signature) -> list[str]:
-    """Every `values` and `requires` call: a built-in callee, its arity, arguments in the language;
-    and the `requires` contract on every discriminant point."""
+    """Diagnostics of every `values` and `requires` call.
+
+    Each has a built-in callee, its arity and arguments in the language; the `requires`
+    contract holds on every discriminant point.
+    """
     errors, valid = [], {}
     declared = {*sig.forall, *sig.params, *sig.let}
     env, _ = kind_env(sig, {n: parse(e) for n, e in sig.let.items()})
@@ -696,9 +720,11 @@ def _declaration_errors(sig: Signature) -> list[str]:
 
 
 def _requires_errors(sig: Signature, valid: dict, env) -> list[str]:
-    """On every discriminant point where its tensor is present, a `requires` reads only metadata
-    tensors that are present, and its predicate reads the rank the tensor declares there, which
-    must be fixed."""
+    """Diagnostics of the `requires` contract on every discriminant point.
+
+    Where its tensor is present, a `requires` reads only metadata tensors that are present, and
+    its predicate reads the rank the tensor declares there, which must be fixed.
+    """
 
     def length(e: ast.expr) -> int | None:
         kind = infer_kinds(e, env, "")[0]

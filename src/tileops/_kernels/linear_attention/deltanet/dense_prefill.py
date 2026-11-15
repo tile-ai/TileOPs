@@ -1,7 +1,7 @@
 """SM90 DeltaNet prefill with its own dense partition orchestration."""
 
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import torch
 
@@ -44,7 +44,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def refusal(cls, call: DeltaNetCall) -> Optional[str]:
+    def refusal(cls, call: DeltaNetCall) -> str | None:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
         The pipeline runs chunks of 64 tokens over a square 16-bit state, equal-length or
@@ -99,7 +99,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         scale: float,
         dtype: torch.dtype,
         l2norm: bool = False,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
         *,
         device_index: int | None = None,
     ) -> None:
@@ -244,7 +244,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         k_rnorm: torch.Tensor,
         initial_state: torch.Tensor | None,
         split: tuple[torch.Tensor, ...],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Partitioned prefill on the GDN programs with a zero gate."""
         _, states_program, scan_program, forward_program = programs
         raw_cu, offsets, sequence_of, first_of, _, replay_per_head = split
@@ -282,7 +282,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
 
     def _programs(
         self,
-        cfg: Dict[str, Any],
+        cfg: dict[str, Any],
         offsets_dtype: torch.dtype,
         beta_dtype: torch.dtype,
         state_dtype: torch.dtype | None,
@@ -359,7 +359,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         return CompiledProgram(solve), states, None, CompiledProgram(forward)
 
     @property
-    def default_config(self) -> Dict[str, Any]:
+    def default_config(self) -> dict[str, Any]:
         # A partition holds at most this many 64-token chunks; a longer sequence is split.
         num_chunks = -(-self.batch * self.seq_len // 64)
         return {
@@ -377,7 +377,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         initial_state: torch.Tensor | None = None,
         cu_seqlens: torch.Tensor | None = None,
         cu_seqlens_cpu: torch.Tensor | None = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_devices(q=q, k=k, v=v, beta=beta)
         batch, seq_len, heads, dim = q.shape
         q_flat, k_flat, v_flat, beta_flat = (

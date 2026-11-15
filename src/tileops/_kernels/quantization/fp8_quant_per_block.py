@@ -1,6 +1,6 @@
 """Block-scaled FP8 quantization: a CTA owns one 128x128 tile and holds it in registers."""
 
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -51,7 +51,7 @@ def _fp8_quant_per_block_kernel(n: int, k: int, dtype: str, aligned: bool):
     largest = torch.finfo(torch.float32).max
 
     @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
-    def _fp8_quant_per_block_func(threads: int, min_blocks: Optional[int], evict_first: bool):
+    def _fp8_quant_per_block_func(threads: int, min_blocks: int | None, evict_first: bool):
         cols = QUANT_SCALE_BLOCK // vec
         rows = threads // cols
         slots = QUANT_SCALE_BLOCK // rows
@@ -192,18 +192,18 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
     # 16-byte vectors per thread; threads = tile bytes / (16 * _SLOTS).
     _SLOTS: ClassVar[int] = 8
     # Register cap controls CTA residency; None leaves allocation to the compiler.
-    _REGISTERS: ClassVar[Optional[int]] = 64
+    _REGISTERS: ClassVar[int | None] = 64
     # Use evict-first loads below this fraction of L2 capacity.
     _EVICT_FIRST_L2_SHARE: ClassVar[float] = 0.5
 
     @classmethod
-    def refusal(cls, call: QuantizeCall) -> Optional[str]:
+    def refusal(cls, call: QuantizeCall) -> str | None:
         reason = super().refusal(call)
         if reason is None and call.rows * call.cols > 2**31 - 1:
             return f"indexes elements with int32, and N * K = {call.rows * call.cols}"
         return reason
 
-    def __init__(self, call: QuantizeCall, config: Optional[dict] = None) -> None:
+    def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype

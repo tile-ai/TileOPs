@@ -3,7 +3,7 @@
 Inputs and output shapes are documented by ``GEMMTemplate``.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -1205,15 +1205,15 @@ class GEMMTemplate(Kernel):
         gemm_type: GEMMType,
         *,
         num_groups: int = 1,
-        cd_dtype: Optional[torch.dtype] = None,
+        cd_dtype: torch.dtype | None = None,
         activation: str = "none",
         static_dims: str = "nk",
         m_alignment: int = 128,
         expected_m: int = 0,
-        sm_count: Optional[int] = None,
-        config: Optional[dict] = None,
+        sm_count: int | None = None,
+        config: dict | None = None,
         group_starts: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         """Fix the template's operand-side parameters; the schedule is chosen per call.
 
@@ -1264,7 +1264,7 @@ class GEMMTemplate(Kernel):
         # The selector picks per call; nothing to author here.
         return {}
 
-    def init_config(self, config: Optional[dict] = None) -> None:
+    def init_config(self, config: dict | None = None) -> None:
         """Pin every key *config* states; an empty config leaves the choice to the selector."""
         self.config = dict(config or {})
 
@@ -1334,7 +1334,7 @@ class GEMMTemplate(Kernel):
         return a.dtype if self.cd_dtype is None else self.cd_dtype
 
     @staticmethod
-    def refusal_for(a: torch.Tensor, b: torch.Tensor) -> Optional[str]:
+    def refusal_for(a: torch.Tensor, b: torch.Tensor) -> str | None:
         """Why TMA cannot address these operands or the output, or ``None`` when it can.
 
         Every TMA-addressed row pitch must be a multiple of 16 bytes: the contiguous
@@ -1354,7 +1354,7 @@ class GEMMTemplate(Kernel):
             return f"N={b.shape[-2]} is not a multiple of 8 elements (the output row pitch)"
         return None
 
-    def _check_layout(self, desc: GEMMDesc, grouped_layout: Optional[torch.Tensor]) -> None:
+    def _check_layout(self, desc: GEMMDesc, grouped_layout: torch.Tensor | None) -> None:
         gtype = self.gemm_type
         if gtype in (GEMMType.DENSE, GEMMType.BATCHED):
             if grouped_layout is not None:
@@ -1383,9 +1383,9 @@ class GEMMTemplate(Kernel):
         self,
         a: torch.Tensor,
         b: torch.Tensor,
-        grouped_layout: Optional[torch.Tensor] = None,
-        out: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        grouped_layout: torch.Tensor | None = None,
+        out: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run dense ``C = A @ B^T`` or its grouped/batched forms.
 

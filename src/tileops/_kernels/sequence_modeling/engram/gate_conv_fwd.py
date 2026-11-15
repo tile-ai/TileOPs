@@ -18,8 +18,6 @@ Grid: (T, M) — one thread block per (batch, position).
 Uses 2D fragments (1, d_padded) to leverage T.reduce_sum for safe reductions.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -207,7 +205,7 @@ class EngramGateConvFwdKernel(Kernel, EngramGateConvFwdInterface):
         d: int,
         eps: float,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.M = M

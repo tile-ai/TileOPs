@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -32,7 +32,7 @@ def _gqa_bwd_ws_kernel(
     block_n: int,
     dq_row: int,
     dtype: str,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
 ) -> Callable:
     sm_scale = dim**-0.5 if sm_scale is None else sm_scale
     scale = sm_scale * LOG2E
@@ -743,9 +743,9 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        sm_scale: float | None = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -812,7 +812,7 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
         self.init_config(config)
         self.program(self._compile)
 
-    def _compile(self, cfg: dict) -> Tuple[CompiledProgram, CompiledProgram]:
+    def _compile(self, cfg: dict) -> tuple[CompiledProgram, CompiledProgram]:
         """The backward program and the program that lands its dQ accumulator."""
         land_dq = _gqa_bwd_ws_post_kernel(
             self.batch,
@@ -848,8 +848,8 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
         do: torch.Tensor,
         lse: torch.Tensor,
         delta: torch.Tensor,
-        dq_accum: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        dq_accum: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return ``(dq, dk, dv)`` in the input dtype; ``dq_accum`` is ``None``."""
         dk, dv = torch.empty_like(k), torch.empty_like(v)
         backward, land_dq = self.program(self._compile)

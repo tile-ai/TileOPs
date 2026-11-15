@@ -7,7 +7,7 @@ the windows reach past it on either side; no block stages the plane in shared me
 maxima and their positions.
 """
 
-from typing import ClassVar, Tuple
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -345,7 +345,7 @@ class MaxPool2dIndicesRegisterKernel(_MaxPool2dRegisterKernelBase, MaxPool2dIndi
             return f"holds a position in int32, and the plane has {call.size[0] * call.size[1]}"
         return reason
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch, (y, indices) = self._launch(x)
         shape = (*batch, *y.shape[-2:])
         return y.view(shape), indices.view(shape)

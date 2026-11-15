@@ -6,8 +6,6 @@ convolution, and adds the residual. ``forward`` pads history to the compiled
 maximum cache length.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -279,7 +277,7 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
         dilation: int,
         eps: float,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.batch = batch

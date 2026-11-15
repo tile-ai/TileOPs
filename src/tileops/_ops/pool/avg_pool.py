@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -76,9 +77,9 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
 
     def __init__(
         self,
-        kernel_size: int | Tuple[int],
-        stride: Optional[int | Tuple[int]] = None,
-        padding: int | Tuple[int] = 0,
+        kernel_size: int | tuple[int],
+        stride: int | tuple[int] | None = None,
+        padding: int | tuple[int] = 0,
         ceil_mode: bool = False,
         count_include_pad: bool = True,
         *,
@@ -115,12 +116,12 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
 
     def __init__(
         self,
-        kernel_size: int | Tuple[int, int],
-        stride: Optional[int | Tuple[int, int]] = None,
-        padding: int | Tuple[int, int] = 0,
+        kernel_size: int | tuple[int, int],
+        stride: int | tuple[int, int] | None = None,
+        padding: int | tuple[int, int] = 0,
         ceil_mode: bool = False,
         count_include_pad: bool = True,
-        divisor_override: Optional[int] = None,
+        divisor_override: int | None = None,
         *,
         target: Target = None,
     ) -> None:
@@ -153,12 +154,12 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
 
     def __init__(
         self,
-        kernel_size: int | Tuple[int, int, int],
-        stride: Optional[int | Tuple[int, int, int]] = None,
-        padding: int | Tuple[int, int, int] = 0,
+        kernel_size: int | tuple[int, int, int],
+        stride: int | tuple[int, int, int] | None = None,
+        padding: int | tuple[int, int, int] = 0,
         ceil_mode: bool = False,
         count_include_pad: bool = True,
-        divisor_override: Optional[int] = None,
+        divisor_override: int | None = None,
         *,
         target: Target = None,
     ) -> None:

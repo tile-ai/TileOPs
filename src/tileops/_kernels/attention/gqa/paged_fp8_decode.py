@@ -14,8 +14,6 @@ The score tile is then keys by rows, and the softmax reduces over its first axis
 one row tile combine by their log-sum-exp in a second kernel.
 """
 
-from typing import Optional
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -353,7 +351,7 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
     _MAX_ROWS: int = 64
 
     @staticmethod
-    def block_n_for(page_size: int) -> Optional[int]:
+    def block_n_for(page_size: int) -> int | None:
         """The key tile: one WGMMA's 64 rows, part of one page or a run of whole pages."""
         if page_size % WGMMA_ROWS == 0 or WGMMA_ROWS % page_size == 0:
             return WGMMA_ROWS
@@ -366,7 +364,7 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         return max(8, -(-rows // 8) * 8)
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
         if call.dtype not in ATTENTION_DTYPES:
             return "requires a float16 or bfloat16 output"
@@ -426,13 +424,13 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         window_size_left: int = -1,
         window_size_right: int = -1,
         dtype: torch.dtype = torch.float16,
-        query_dtype: Optional[torch.dtype] = None,
+        query_dtype: torch.dtype | None = None,
         per_request_kv_scale: bool = False,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
         block_m: int = 8,
-        config: Optional[dict] = None,
-        device_index: Optional[int] = None,
+        config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -488,13 +486,13 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         v_pool: torch.Tensor,
         cache_seqlens: torch.Tensor,
         page_table: torch.Tensor,
-        cu_seqlens_q: Optional[torch.Tensor] = None,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        cu_seqlens_q: torch.Tensor | None = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         c = self.config
         group = self.heads // self.heads_kv

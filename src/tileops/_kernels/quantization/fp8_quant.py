@@ -1,6 +1,6 @@
 import dataclasses
 from abc import abstractmethod
-from typing import ClassVar, Optional, Tuple
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -22,7 +22,7 @@ class FP8QuantCall(CallSpec):
     seq_len_kv: int = 0
     kv_group: int = 0
     index_dim: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
 
 
 class FP8QuantFwdInterface(KernelInterface):
@@ -31,7 +31,7 @@ class FP8QuantFwdInterface(KernelInterface):
     request = FP8QuantCall
 
     @abstractmethod
-    def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Scale each row by its own maximum; nothing is written in place.
 
         A row is the trailing ``call.index_dim`` axis. Its scale is the absolute maximum
@@ -159,7 +159,7 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
         kv_group: int,
         index_dim: int,
         dtype: torch.dtype,
-        config: Optional[dict] = None,
+        config: dict | None = None,
     ):
         super().__init__()
         self.batch = batch
@@ -202,7 +202,7 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch, seq_len_kv, kv_group = self.batch, self.seq_len_kv, self.kv_group
         rows = batch * seq_len_kv * kv_group
         scale, quant = self.program(self._compile)(input_tensor.view(rows, self.index_dim))

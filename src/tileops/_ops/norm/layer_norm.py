@@ -1,7 +1,8 @@
 """Layer normalization operator."""
 
 import math
-from typing import ClassVar, Mapping, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import ClassVar
 
 import torch
 
@@ -62,8 +63,8 @@ class LayerNormFwdOp(Op):
     def forward(
         self,
         input: torch.Tensor,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Apply layer normalization over the trailing ``normalized_shape``.
 

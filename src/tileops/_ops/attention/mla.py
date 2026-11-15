@@ -1,4 +1,5 @@
-from typing import ClassVar, Mapping, Optional
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -129,7 +130,7 @@ class MLAPagedFwdOp(Op):
         self,
         kv_lora_rank: int,
         is_causal: bool = False,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         *,
         target: Target = None,
     ) -> None:
@@ -155,7 +156,7 @@ class MLAPagedFwdOp(Op):
         kv_cache: torch.Tensor,
         block_table: torch.Tensor,
         cache_seqlens: torch.Tensor,
-        kv_scale: Optional[torch.Tensor] = None,
+        kv_scale: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Attend each request's query tokens to its cache.
 
@@ -222,7 +223,7 @@ class MLAVarlenFwdOp(Op):
     def __init__(
         self,
         is_causal: bool = False,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         *,
         validate_inputs: bool = False,
         target: Target = None,
@@ -316,7 +317,7 @@ class MLADenseBwdOp(Op):
     def __init__(
         self,
         is_causal: bool = False,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         *,
         target: Target = None,
     ) -> None:
@@ -412,7 +413,7 @@ class MLAVarlenBwdOp(Op):
     def __init__(
         self,
         is_causal: bool = False,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         *,
         validate_inputs: bool = False,
         target: Target = None,

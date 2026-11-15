@@ -1,6 +1,7 @@
 """MoE permute-align op: routes tokens to experts and pads to tile boundary."""
 
-from typing import ClassVar, Mapping, Tuple
+from collections.abc import Mapping
+from typing import ClassVar
 
 import torch
 
@@ -67,7 +68,7 @@ class MoEPermuteAlignFwdOp(Op):
         self.block_size = block_size
         super().__init__(target=target)
 
-    def forward(self, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, topk_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run permute-align.
 
         Args:

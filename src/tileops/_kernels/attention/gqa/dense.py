@@ -2,7 +2,7 @@
 
 import itertools
 import re
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
@@ -208,8 +208,8 @@ class _DenseQKRoPEPreprocessor:
         rotary_dim: int,
         rope_layout: str,
         dtype: str,
-        rope_dtype: Optional[str] = None,
-        out_dtype: Optional[str] = None,
+        rope_dtype: str | None = None,
+        out_dtype: str | None = None,
     ) -> None:
         self.out_dtype = out_dtype
         self.args = (
@@ -233,8 +233,8 @@ class _DenseQKRoPEPreprocessor:
         def rotate(
             q: torch.Tensor,
             k: torch.Tensor,
-            rope_cos: Optional[torch.Tensor],
-            rope_sin: Optional[torch.Tensor],
+            rope_cos: torch.Tensor | None,
+            rope_sin: torch.Tensor | None,
         ) -> tuple[torch.Tensor, torch.Tensor]:
             if rope_cos is None or rope_sin is None:
                 raise ValueError("fused RoPE requires rope_cos and rope_sin")
@@ -257,9 +257,9 @@ def make_dense_qk_rope_preprocessor(
     rotary_dim: int,
     rope_layout: str,
     dtype: str,
-    rope_dtype: Optional[str] = None,
-    out_dtype: Optional[str] = None,
-) -> Optional[_DenseQKRoPEPreprocessor]:
+    rope_dtype: str | None = None,
+    out_dtype: str | None = None,
+) -> _DenseQKRoPEPreprocessor | None:
     """Build the shared Dense Q/K RoPE stage when requested."""
     if not fuse_rope:
         return None
@@ -791,7 +791,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         return (2 * 64 + 2 * 128 + 2 * 128 + 2 * 64) * dim * 2
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """The contiguous prefill region: more than one query position, no window, not FP8,
         at head dimensions whose buffers fit the device."""
         if call.is_fp8 or call.max_seqlen_q == 1 or call.uses_sliding_window:
@@ -842,9 +842,9 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
@@ -852,7 +852,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         rope_layout: str = "neox",
         has_sinks: bool = False,
         return_lse: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.has_sinks = has_sinks
@@ -895,7 +895,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         rope = self.rope.build() if self.rope is not None else None
         return CompiledProgram(kernel), rope
 
-    def _program_args(self, dim: int, device_index: Optional[int]) -> dict:
+    def _program_args(self, dim: int, device_index: int | None) -> dict:
         """Build arguments beyond the call's shape; the two-consumer program takes none."""
         return {}
 
@@ -908,12 +908,12 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         attention, rope = self.program(self._compile)
@@ -1551,7 +1551,7 @@ def _gqa_dense_persistent_d128_kernel(
             for ki in T.unroll(D // k_step if steps is None else steps):
                 k_off = ki % per_panel * k_step * elem_bytes
                 T.ptx_wgmma_ss(
-                    "float32", "m64n%dk16" % n, True, True, mma_dtype, mma_dtype, "fp32",
+                    "float32", f"m64n{n}k16", True, True, mma_dtype, mma_dtype, "fp32",
                     desc_q.data, (ki // per_panel * q_panel_elems * elem_bytes + k_off) >> 4,
                     desc_k.data, (ki // per_panel * kv_panel_elems * elem_bytes + k_off) >> 4,
                     acc_s.data, 0, T.Select(ki > 0, 1, 0), 1, 1,
@@ -2230,7 +2230,7 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
         return sum(-(-b // 1024) * 1024 for b in buffers)
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """As the WS kernel, with its own buffers; only the D128 program writes the
         log-sum-exp."""
         if call.return_lse and call.dim != 128:
@@ -2286,7 +2286,7 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
         self.diag_aligned = diag_aligned
         super().__init__(*args, **kwargs)
 
-    def _program_args(self, dim: int, device_index: Optional[int]) -> dict:
+    def _program_args(self, dim: int, device_index: int | None) -> dict:
         return {"block_M": self._block_m(dim), "num_ctas": self.build_target.sm_count}
 
     def _compile(self, cfg: dict) -> tuple:
@@ -2317,12 +2317,12 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """As the WS kernel; with key parts, the parts' outputs are merged into the result."""
         if self.num_splits == 1:
@@ -2360,7 +2360,7 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     is_causal: bool,
     window_size_left: int,
     window_size_right: int,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
     softcap: float = 0.0,
     dtype: str = "float16",
     has_sinks: bool = False,
@@ -2556,7 +2556,7 @@ def _gqa_sw_fwd_packed_kernel(
     dim: int,
     window_size_left: int,
     block_m: int,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
     softcap: float = 0.0,
     dtype: str = "float16",
     has_sinks: bool = False,
@@ -2733,7 +2733,7 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """The contiguous windowed region, which FP8 has its own implementation for."""
         if call.return_lse:
             return "does not return the log-sum-exp"
@@ -2775,16 +2775,16 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         window_size_left: int,
         window_size_right: int,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         has_sinks: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.has_sinks = has_sinks
@@ -2855,12 +2855,12 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         attention, rope = self.program(self._compile)
@@ -2888,7 +2888,7 @@ class GQADenseSlidingWindowBandKernel(Kernel, GQADenseFwdInterface):
     _BAND_TILE = 128
 
     @classmethod
-    def refusal(cls, call: AttentionCall) -> Optional[str]:
+    def refusal(cls, call: AttentionCall) -> str | None:
         """A causal window of at most one key tile whose band fits shared memory."""
         if call.return_lse:
             return "does not return the log-sum-exp"
@@ -2931,16 +2931,16 @@ class GQADenseSlidingWindowBandKernel(Kernel, GQADenseFwdInterface):
         dim: int,
         window_size_left: int,
         dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
+        sm_scale: float | None = None,
         softcap: float = 0.0,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
         fuse_rope: bool = False,
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         has_sinks: bool = False,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.has_sinks = has_sinks
@@ -2986,12 +2986,12 @@ class GQADenseSlidingWindowBandKernel(Kernel, GQADenseFwdInterface):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         attention, rope = self.program(self._compile)

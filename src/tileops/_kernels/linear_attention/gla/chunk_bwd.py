@@ -15,7 +15,7 @@ Reference:
 """
 
 import warnings
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import tilelang
 import torch
@@ -429,7 +429,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def refusal(cls, call: GLAChunkCall) -> Optional[str]:
+    def refusal(cls, call: GLAChunkCall) -> str | None:
         """Why no program serves this call, or ``None``.
 
         Refuses a call whose chunk pass needs more shared memory than the device gives. It
@@ -478,9 +478,9 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         chunk_size: int,
         scale: float,
         dtype: torch.dtype = torch.float32,
-        config: Optional[dict] = None,
+        config: dict | None = None,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -501,7 +501,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     @staticmethod
     def region_refusal(
         dim_k: int, dim_v: int, chunk_size: int, dtype: torch.dtype, arch: int
-    ) -> Optional[str]:
+    ) -> str | None:
         """Why the default tiling cannot build these extents, or ``None`` when it can.
 
         The chunk-parallel passes run their GEMMs on four warps, which take whole 16-row
@@ -664,7 +664,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         do: torch.Tensor,
         dht: torch.Tensor,
         has_initial_state: bool = False,
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, ...]:
         q, k, v, g, do = (t.to(self.dtype) for t in (q, k, v, g, do))
         update_fn, walk_fn, chunk_fn = self.program(self._programs)
         update, g_last = update_fn(q, do, g)

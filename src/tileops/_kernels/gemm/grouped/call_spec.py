@@ -2,7 +2,6 @@
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
 
 import torch
 
@@ -24,7 +23,7 @@ class GroupedGEMMCall(CallSpec):
     num_experts: int = 0
     n: int = 0
     k: int = 0
-    dtype: Optional[torch.dtype] = None
+    dtype: torch.dtype | None = None
     transpose_a: bool = False
     transpose_b: bool = True
 

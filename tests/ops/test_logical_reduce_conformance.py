@@ -6,7 +6,7 @@ The cases cover manifest-supported ``dim`` forms, shape, dtype, and values;
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 import pytest
 import torch

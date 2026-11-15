@@ -1,7 +1,5 @@
 """Single-token Kimi Delta Attention (KDA) decode over a caller-owned state."""
 
-from typing import Optional, Tuple
-
 import torch
 
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -21,7 +19,7 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
     supported_archs = [80, 89, 90]
 
     @classmethod
-    def refusal(cls, call: KDACall) -> Optional[str]:
+    def refusal(cls, call: KDACall) -> str | None:
         """Why this kernel does not serve *call*, or ``None`` when it does."""
         chunked = call.chunk_refusal
         if chunked is not None:
@@ -73,10 +71,10 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
         l2norm: bool,
         dtype: torch.dtype,
         *,
-        device_index: Optional[int] = None,
+        device_index: int | None = None,
         gate_in_kernel: bool = False,
         has_dt_bias: bool = False,
-        lower_bound: Optional[float] = None,
+        lower_bound: float | None = None,
     ) -> None:
         """Hold the call facts the decode program is built from."""
         super().__init__(device_index=device_index)
@@ -135,12 +133,12 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
-        initial_state: Optional[torch.Tensor] = None,
-        cu_seqlens: Optional[torch.Tensor] = None,
-        cu_seqlens_cpu: Optional[torch.Tensor] = None,
-        A_log: Optional[torch.Tensor] = None,
-        dt_bias: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        initial_state: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        cu_seqlens_cpu: torch.Tensor | None = None,
+        A_log: torch.Tensor | None = None,
+        dt_bias: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Advance every sequence by one token; see the interface for the tensors."""
         del cu_seqlens, cu_seqlens_cpu
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)

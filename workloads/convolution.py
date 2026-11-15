@@ -1,6 +1,6 @@
 """Workload definitions for the convolution op family."""
 
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -66,7 +66,7 @@ class Conv1dWorkload(WorkloadBase):
             bias=call.present("bias"),
         )
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         x = torch.randn(
             self.n, self.c_in, self.l_in, device=run_device(), dtype=self.dtype
         ).contiguous()
@@ -84,7 +84,7 @@ class Conv1dWorkload(WorkloadBase):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         return _float32_conv(self.torch_program, x, weight, bias)
 
@@ -92,7 +92,7 @@ class Conv1dWorkload(WorkloadBase):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         out = F.conv1d(
             x,
@@ -159,7 +159,7 @@ class Conv2dWorkload(WorkloadBase):
             bias=call.present("bias"),
         )
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         x = torch.randn(
             self.n, self.c_in, self.h, self.w, device=run_device(), dtype=self.dtype
         ).contiguous()
@@ -178,7 +178,7 @@ class Conv2dWorkload(WorkloadBase):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         return _float32_conv(self.torch_program, x, weight, bias)
 
@@ -186,7 +186,7 @@ class Conv2dWorkload(WorkloadBase):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         out = F.conv2d(
             x,
@@ -256,7 +256,7 @@ class Conv3dWorkload(WorkloadBase):
             bias=call.present("bias"),
         )
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         x = torch.randn(
             self.n,
             self.c_in,
@@ -282,7 +282,7 @@ class Conv3dWorkload(WorkloadBase):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         return _float32_conv(self.torch_program, x, weight, bias)
 
@@ -290,7 +290,7 @@ class Conv3dWorkload(WorkloadBase):
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
-        bias: Optional[torch.Tensor],
+        bias: torch.Tensor | None,
     ) -> torch.Tensor:
         out = F.conv3d(
             x,
