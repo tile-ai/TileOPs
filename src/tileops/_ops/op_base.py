@@ -35,7 +35,7 @@ from tileops._ops._signature_codegen import (
     in_tree,
     param_state,
 )
-from tileops._ops.compile_boundary import register_instance
+from tileops._ops.compile_boundary import instance_key, register_instance
 from tileops._utils.device import current_device, device_context
 from tileops.backend import (
     BUILTIN,
@@ -446,6 +446,10 @@ class Op(ABC):
     # is class state.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
+    # The attributes the compile boundary's fake reads, in key order: the signature's params,
+    # then its construction-time tensors. Assigning one changes `_instance_key`.
+    _instance_key_names: ClassVar[tuple[str, ...]] = ()
+
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
     injected_parameters: ClassVar[tuple[str, ...]] = ()
@@ -475,7 +479,8 @@ class Op(ABC):
         if check is not None:
             self._construction_indices = check(self)
         self._install_kernel_types()
-        self._instance_key = register_instance(self)
+        self._instance_identity = register_instance(self)
+        self._instance_key = instance_key(self._instance_identity, self._instance_key_state())
         # The binding caches and the sub-op tables, so no method asks whether they exist;
         # installing built the two entry caches.
         self._target_kernels = {}
@@ -488,6 +493,16 @@ class Op(ABC):
         self._settled_tensors = {}
         self._effect_branches = {}
         self._plans = {}
+
+    def __setattr__(self, name: str, value: object) -> None:
+        object.__setattr__(self, name, value)
+        # Dynamo guards on the key, so a compiled callable retraces once a param changes.
+        if name in self._instance_key_names and "_instance_identity" in self.__dict__:
+            self._instance_key = instance_key(self._instance_identity, self._instance_key_state())
+
+    def _instance_key_state(self) -> tuple:
+        """What the compile boundary's fake reads of this op, in `_instance_key_names` order."""
+        return tuple(getattr(self, n, None) for n in self._instance_key_names)
 
     def _infer_output_shapes(self, *shapes: tuple[int, ...], dtypes=None) -> dict:
         """Infer output tensor shapes from input shapes, in ``signature.inputs`` order.

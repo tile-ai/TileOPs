@@ -30,7 +30,7 @@ from torch.fx.experimental.symbolic_shapes import sym_and, sym_or
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._ops._naming import operator_name
 from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-from tileops._ops.compile_boundary import get_instance
+from tileops._ops.compile_boundary import get_instance, instance_key
 from tileops._utils.device import current_device
 from tileops.backend import OpNotAvailableError
 from tileops.manifest import _try_load_entry, load_adts
@@ -1600,6 +1600,15 @@ class _CompileBoundary:
         def fake(*args):
             *tensors, key = args
             op = get_instance(key)
+            # A traced key that the op's state no longer yields would put this fake's shapes
+            # in a cache entry that another process's op of the old state reads.
+            tracing = detect_fake_mode() is not None
+            if tracing and key != instance_key(op._instance_identity, op._instance_key_state()):
+                raise RuntimeError(
+                    f"{sig.name}: a param or construction-time tensor changed in place since "
+                    f"it was assigned; assign the new value to the op, which keys its "
+                    f"compiled graphs on it"
+                )
             passed = dict(zip(sig.inputs, tensors[:count], strict=True))
             # What construction solved, for the params as they are: an eager call that reused
             # a plan solved nothing.
@@ -1909,8 +1918,11 @@ def install_compile_boundary(cls: type, entry: dict) -> None:
     """
     if not has_compile_boundary(entry):
         cls.compile_op_names = ()
+        cls._instance_key_names = ()
         return
     boundary = _CompileBoundary(cls, cls._signature, entry["family"])
+    sig = cls._signature.sig
+    cls._instance_key_names = (*sig.params, *sig.ctor_tensors)
     cls._call_boundary = boundary.build_call_boundary(cls)
 
 

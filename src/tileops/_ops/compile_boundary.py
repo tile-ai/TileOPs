@@ -1,50 +1,114 @@
 """Resolve an op instance inside a ``torch.compile`` custom-op boundary.
 
-The schema passes a string key because it cannot carry ``self`` and Dynamo keeps
-string arguments constant. The registered instance runs outside tracing, keeping
-kernel construction out of the graph. Keys are process-unique so cached artifacts
-cannot resolve a shape to a different instance.
+The schema passes a string key because it cannot carry ``self`` and Dynamo keeps string
+arguments constant. The registered instance runs outside tracing, keeping kernel
+construction out of the graph.
+
+Inductor caches a compiled graph on disk with the fake's output shapes in it, and the key is
+one of the graph's constants. A key is ``<class>#<state>-<n>``: the class's qualified name, a
+digest of the state the fake reads, and the instance's ordinal among the instances of its class
+in this process. The ordinal resolves a key to one instance; the digest makes two processes
+agree on a key only when their instances' fakes agree, so a later process reuses an earlier
+one's graphs. A state holding a value with no stable encoding is digested with a token of this
+process, so graphs holding its key are never reused by another.
 """
 
+import enum
+import hashlib
 import itertools
+import sys
 import uuid
 import weakref
+from collections.abc import Iterable
+
+import torch
+
+from tileops.manifest._values import ADTValue
 
 _OP_REGISTRY: "weakref.WeakValueDictionary[str, object]" = weakref.WeakValueDictionary()
-_KEY_COUNTER = itertools.count()
-# FIXME(staged-rollout): a per-process uuid buys that uniqueness by giving up disk-cache
-# reuse entirely.
-#
-# Broken invariant: the key should be the op's specialization, so that two interchangeable
-#   instances share one artifact. It is an identity instead, so no two ever share, and no
-#   process reuses a previous one's compile.
-# Why: the specialization is `_manifest_params()` digested, and no op on this boundary has
-#   had its param set audited as complete; an incomplete one shares an artifact silently.
-# Cleanup: key on the digest, which `Op.__init__` can compute since every op assigns its
-#   params before calling it, once every op on this boundary has a param set audited as
-#   complete, with a digest that refuses a value it cannot hash stably.
+_ORDINALS: dict[str, "itertools.count[int]"] = {}
 _RUN = uuid.uuid4().hex
+# Deeper nesting is taken for a cycle.
+_MAX_DEPTH = 32
 
 
 def register_instance(op: object) -> str:
-    """Register ``op`` and return the key its dispatch custom op passes back."""
-    # ``#`` cannot appear in a class name, so no two classes can produce the same key.
-    key = f"{type(op).__name__}#{_RUN}-{next(_KEY_COUNTER)}"
-    _OP_REGISTRY[key] = op
-    return key
+    """Register ``op`` and return its identity, ``<class>-<n>``, which `instance_key` extends."""
+    name = _qualified_name(type(op))
+    identity = f"{name}-{next(_ORDINALS.setdefault(name, itertools.count()))}"
+    _OP_REGISTRY[identity] = op
+    return identity
+
+
+def instance_key(identity: str, state: Iterable[object]) -> str:
+    """The key of the instance registered as *identity* while it holds *state*."""
+    name, _, ordinal = identity.rpartition("-")
+    local = [name.startswith("~")]
+    text = "\0".join(_encode(v, 0, local) for v in state)
+    if local[0]:
+        text = f"{_RUN}\0{text}"
+    return f"{name}#{hashlib.sha256(text.encode()).hexdigest()[:32]}-{ordinal}"
 
 
 def get_instance(key: str) -> object:
-    """Resolve a key registered by `register_instance`.
+    """Resolve a key `instance_key` returned.
 
     Raises:
         RuntimeError: The op instance was garbage-collected while a compiled callable still
             holds its key.
     """
-    op = _OP_REGISTRY.get(key)
+    name, _, rest = key.partition("#")
+    op = _OP_REGISTRY.get(f"{name}-{rest.rpartition('-')[2]}")
     if op is None:
         raise RuntimeError(
-            f"the op instance {key.partition('#')[0]} that this compiled callable calls no "
+            f"the op instance {name.rpartition('.')[2]} that this compiled callable calls no "
             f"longer exists; keep the op instance alive as long as the compiled callable"
         )
     return op
+
+
+def _qualified_name(cls: type) -> str:
+    """``module.qualname`` when that path names *cls*; otherwise it prefixed with ``~``, which
+    marks a class another process may give the same name to a different body."""
+    name = f"{cls.__module__}.{cls.__qualname__}"
+    found = sys.modules.get(cls.__module__)
+    for part in cls.__qualname__.split("."):
+        found = getattr(found, part, None)
+    return name if found is cls else f"~{name}"
+
+
+def _encode(value: object, depth: int, local: list) -> str:
+    """*value* as text equal across processes exactly when the values are equal.
+
+    A value nothing describes beyond its identity is encoded by its `id`, and *local* is set,
+    so that the text is compared only within this process.
+    """
+    kind = type(value)
+    if value is None or kind in (bool, int, float, str):
+        return f"{kind.__name__}:{value!r}"
+    if kind in (torch.dtype, torch.device):
+        return f"{kind.__name__}:{value}"
+    if isinstance(value, torch.Tensor):
+        # The fake reads a construction-time tensor's layout, never its contents.
+        return f"Tensor:{tuple(value.shape)}:{value.stride()}:{value.dtype}:{value.device}"
+    if isinstance(value, (type, enum.Enum)):
+        cls = value if isinstance(value, type) else kind
+        name = _qualified_name(cls)
+        local[0] |= name.startswith("~")
+        return name if isinstance(value, type) else f"{name}.{value.name}"
+    depth += 1
+    if depth > _MAX_DEPTH:
+        local[0] = True
+        return f"@{id(value)}"
+    if kind in (list, tuple):
+        return f"{kind.__name__}({','.join(_encode(v, depth, local) for v in value)})"
+    if kind is dict:
+        items = (f"{_encode(k, depth, local)}={_encode(v, depth, local)}" for k, v in value.items())
+        return f"dict({','.join(items)})"
+    if kind is ADTValue:
+        return f"ADT:{value.adt}.{value.kind}{_encode(value.fields, depth, local)}"
+    fields = getattr(value, "__dict__", None)
+    if type(fields) is not dict or hasattr(kind, "__slots__"):
+        local[0] = True
+        return f"@{id(value)}"
+    return f"{_encode(kind, depth, local)}{_encode(fields, depth, local)}"
