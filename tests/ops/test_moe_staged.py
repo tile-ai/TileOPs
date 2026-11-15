@@ -454,15 +454,19 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
 def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, activation, some):
     """Uneven experts, an empty one included, into a poisoned ``out``: every defined row is
     written and matches the reference."""
+    _check_every_defined_row_written(layout, sizes, activation, some, n=256)
+
+
+def _check_every_defined_row_written(layout, sizes, activation, some, n):
     rows, metadata = _uneven_rows(layout, sizes)
     extra = {} if activation is None else {"activation": activation}
     extra |= {"some": list(some)} if some else {}
     rows_arg = {} if "masked" in layout else {"P": rows}
-    call = _gemm_call(torch.bfloat16, layout, K=512, E=len(sizes), N=256, **rows_arg, **extra)
+    call = _gemm_call(torch.bfloat16, layout, K=512, E=len(sizes), N=n, **rows_arg, **extra)
     workload = MoEGroupedGEMMWorkload(call)
     a, b, _, bias = workload.gen_inputs()
     metadata = torch.tensor(metadata, dtype=torch.int32, device=a.device)
-    out = torch.full((*a.shape[:-1], 256), 1e4, dtype=torch.bfloat16, device=a.device)
+    out = torch.full((*a.shape[:-1], n), 1e4, dtype=torch.bfloat16, device=a.device)
     op = MoEGroupedGEMMFwdOp(**call.arguments({}))
     assert op(a, b, metadata, out=out, bias=bias) is out
     compare_outputs(
@@ -470,6 +474,15 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, 
         workload.ref_program(a, b, metadata, bias),
         workload.verification(a, b, metadata, bias),
     )
+
+
+@pytest.mark.smoke
+def test_grouped_gemm_writes_every_defined_row_of_short_experts_on_pingpong_tiles():
+    """16 experts of a few rows, one past a 64-row tile, at the width where H200's selector
+    takes 64x256 ping-pong tiles: a CTA's two warp-groups run partly filled tiles of
+    different experts."""
+    sizes = [100, 0, 30, 64, 7, 0, 20, 5, 1, 2, 3, 4, 8, 6, 3, 3]
+    _check_every_defined_row_written(_TIGHT_MOE_GROUPED_GEMM, sizes, None, (), n=4096)
 
 
 # WGMMA exists on SM90 and not on SM80, SM86 or SM89, so the grouped GEMM takes a different

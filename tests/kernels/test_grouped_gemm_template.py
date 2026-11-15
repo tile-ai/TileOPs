@@ -206,6 +206,29 @@ def test_selector_pingpong_group_h200_band():
 
 
 @pytest.mark.smoke
+def test_selector_runs_its_own_pingpong_tile_on_two_math_warp_groups():
+    """Below the bands, an unfused tight GEMM whose tile the cost model sets at the ping-pong
+    tile, staged whole, runs it ping-pong; the same tile given a staged epilogue, a stated
+    group size or a fused activation keeps one math warp-group."""
+    tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=256, calibration="h200")
+    # 16 rows a group at N 7168 K 2048: the cost model's tile is 64x256x64.
+    down = get_best_config(_desc(4096, 7168, 2048, **tight))
+    assert (down.block_m, down.block_n, down.block_k) == (64, 256, 64)
+    assert down.pingpong and down.num_math_warpgroups == 2
+    # 64 rows a group at K 512: the same tile, staged in two 64-wide buffers for a fifth stage.
+    staged = get_best_config(_desc(512, 7168, 512, **{**tight, "num_groups": 8}))
+    assert (staged.block_m, staged.block_n, staged.epilogue_buffers) == (64, 256, 2)
+    assert not staged.pingpong
+    stated = get_best_config(_desc(4096, 7168, 2048, expected_m=16, **tight))
+    assert not stated.pingpong
+    # 2 rows a group, gated, at K 512: the cost model's tile is 64x256; a fused call keeps it.
+    fused = get_best_config(
+        _desc(16, 4096, 512, activation="silu_and_mul", **{**tight, "num_groups": 8})
+    )
+    assert (fused.block_m, fused.block_n, fused.pingpong) == (64, 256, False)
+
+
+@pytest.mark.smoke
 def test_selector_pingpong_past_the_unfused_band_where_its_slots_hold_more_rows():
     """Past 192 rows a group, an unfused tight GEMM takes the ping-pong tile only where its
     slot share beats the 128x256 tile's by ``pingpong_slot_share_ratio``; an unbiased tile is
