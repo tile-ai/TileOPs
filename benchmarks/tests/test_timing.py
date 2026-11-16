@@ -489,20 +489,24 @@ class _Blocker:
     """The blocking kernel's host side, logging into *order*. The queue behind it takes
     *fits* samples, or behind each block in turn the next of a list of them, counting the
     block that loads it before warm-up; queueing one more makes it release on its own, as a
-    full queue does."""
+    full queue does. Each block whose entry in *late* is true releases on its own after the
+    host queued every sample, before the host releases it."""
 
-    def __init__(self, order: list, fits: int | list | None = None):
+    def __init__(self, order: list, fits: int | list | None = None, late: list | None = None):
         self._order, self._fits = order, iter(fits) if isinstance(fits, list) else fits
         self.held, self.queued, self._timed_out, self._room = False, 0, False, None
+        self._late, self._releases_late = iter(late or []), False
 
     def block(self):
         self._order.append("block")
         self.held, self.queued, self._timed_out = True, 0, False
         self._room = next(self._fits, None) if hasattr(self._fits, "__next__") else self._fits
+        self._releases_late = next(self._late, False)
 
     def unblock(self):
         if self.held:
             self._order.append("unblock")
+            self._timed_out = self._timed_out or self._releases_late
         self.held = False
 
     def timed_out(self):
@@ -534,7 +538,7 @@ class _Clocks:
         return [1.5e9] * n
 
 
-def _time_on_fakes(monkeypatch, device, spoil, fits=None, call=None, repeats=2):
+def _time_on_fakes(monkeypatch, device, spoil, fits=None, call=None, repeats=2, late=None):
     """Run ``_bench_kernel`` on stand-ins for every device-facing piece, timing *call* (by
     default one that only launches) *repeats* times; returns the steps it took in order, and
     its samples."""
@@ -544,7 +548,7 @@ def _time_on_fakes(monkeypatch, device, spoil, fits=None, call=None, repeats=2):
 
     order = []
     cupti = _FakeCupti(spoil)
-    blocker = _Blocker(order, fits)
+    blocker = _Blocker(order, fits, late)
     monkeypatch.setattr(timing, "l2_flush_buffer", lambda device: _ReadOnlySweep(order))
     monkeypatch.setattr(_l2_sweep, "read_sweep", lambda buffer: order.append("read"))
     monkeypatch.setattr(timing, "reset_persisting_l2_cache", lambda: order.append("persist"))
@@ -662,6 +666,24 @@ def test_a_block_the_queue_cannot_hold_is_measured_again_in_what_it_took(monkeyp
     spans = _held_spans(order)
     held = [[c for c in retaken if b < c < u] for b, u in spans]
     assert [h for h in held if h] == [[c] for c in retaken]
+
+
+def test_a_block_that_times_out_after_its_last_sample_is_retaken_one_smaller(monkeypatch):
+    """The host saw every sample of the block of 3 queued before the blocker released on
+    its own, so no sample says how many fitted: the block is retaken in blocks of 2."""
+    from benchmarks import timing
+
+    # The load block, then the block of 3 that releases itself after its last sample.
+    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, repeats=3, late=[False, True])
+
+    assert len(samples) == 3
+    assert timing._capture_bench_meta()["block_samples"] == 2
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    # 4 calls before warm-up, 3 warm-up calls, the discarded block of 3, then 2 and 1.
+    assert len(calls) == 4 + 3 + 3 + 3
+    retaken = calls[10:]
+    held = [[c for c in retaken if b < c < u] for b, u in _held_spans(order)]
+    assert [h for h in held if h] == [retaken[:2], retaken[2:]]
 
 
 def test_a_row_counts_the_retries_of_the_blocks_it_keeps(monkeypatch):
