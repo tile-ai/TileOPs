@@ -12,7 +12,11 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from tileops._kernels.autotune import TUNING_FATAL
-from tileops._kernels.linear_attention.v_tile import gemm_threads, resolve_block_v
+from tileops._kernels.linear_attention.v_tile import (
+    gemm_threads,
+    min_gemm_n_threads,
+    resolve_block_v,
+)
 
 __all__ = [
     "OUTPUT_CONFIGS",
@@ -39,17 +43,18 @@ OUTPUT_CONFIGS: tuple[dict[str, int], ...] = tuple(
 
 
 def _fitted(
-    configs: Sequence[dict[str, int]], *outputs: tuple[int, int]
+    configs: Sequence[dict[str, int]], wgmma: bool, *outputs: tuple[int, int]
 ) -> tuple[dict[str, int], ...]:
     """*configs* with each launch narrowed by ``gemm_threads`` over *outputs*, deduplicated."""
     fitted = [
-        {**config, "threads": gemm_threads(config["threads"], *outputs)} for config in configs
+        {**config, "threads": gemm_threads(config["threads"], wgmma, *outputs)}
+        for config in configs
     ]
     return tuple(config for i, config in enumerate(fitted) if config not in fitted[:i])
 
 
 def chunk_gemm_configs(
-    chunk_size: int, dim_k: int, dim_v: int, walk: bool = False
+    chunk_size: int, dim_k: int, dim_v: int, wgmma: bool, walk: bool = False
 ) -> tuple[tuple[dict[str, int], ...], tuple[dict[str, int], ...]]:
     """Preparation and output launches, each narrowed by ``gemm_threads`` over its GEMM outputs.
 
@@ -57,11 +62,15 @@ def chunk_gemm_configs(
         chunk_size: Chunk length.
         dim_k: Key dimension.
         dim_v: Value dimension.
+        wgmma: Whether the target lowers the gemms to WGMMA.
         walk: Whether the preparation also writes the state walk's operands.
     """
     c, k, v = chunk_size, dim_k, dim_v
     fused = [(c, c), (c, k), (c, v)] + ([(k, k), (k, v)] if walk else [])
-    return _fitted(PIPELINE_CONFIGS, *fused), _fitted(OUTPUT_CONFIGS, (c, c), (c, v))
+    return (
+        _fitted(PIPELINE_CONFIGS, wgmma, *fused),
+        _fitted(OUTPUT_CONFIGS, wgmma, (c, c), (c, v)),
+    )
 
 
 def h_block_v_candidates(dim_v: int) -> tuple[int, ...]:
@@ -130,15 +139,16 @@ def default_h_block_v(dim_v: int, chunk_size: int) -> int:
 
 
 def _recurrence_configs(
-    dim_v: int, block_v: int, chunk_size: int, dim_k: int
+    dim_v: int, block_v: int, chunk_size: int, dim_k: int, wgmma: bool
 ) -> tuple[dict[str, int], ...]:
     """Recurrence launches over a V tile: its chunk-by-width and key-by-width products."""
     width = resolve_block_v(dim_v, block_v)
-    return _fitted(PIPELINE_CONFIGS, (chunk_size, width), (dim_k, width))
+    declared = [{**c, "threads": min_gemm_n_threads(c["threads"], width)} for c in PIPELINE_CONFIGS]
+    return _fitted(declared, wgmma, (chunk_size, width), (dim_k, width))
 
 
 def delta_rule_fwd_autotune_configs(
-    dim_v: int, chunk_size: int, dim_k: int
+    dim_v: int, chunk_size: int, dim_k: int, wgmma: bool
 ) -> list[dict[str, int]]:
     """Return every merged config the sweep can select at this value dimension.
 
@@ -150,12 +160,13 @@ def delta_rule_fwd_autotune_configs(
         dim_v: Value dimension.
         chunk_size: Chunk length.
         dim_k: Key dimension.
+        wgmma: Whether the target lowers the gemms to WGMMA.
 
     Raises:
         ValueError: if no V-tile width is admissible at *dim_v*. An empty set
             would read as "tunable, with nothing to try".
     """
-    fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_k, dim_v)
+    fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_k, dim_v, wgmma)
     return [
         {
             "fused_num_stages": fused["num_stages"],
@@ -170,11 +181,11 @@ def delta_rule_fwd_autotune_configs(
             _require_h_block_v_candidates(dim_v),
             output_configs,
         )
-        for recurrence in _recurrence_configs(dim_v, block_v, chunk_size, dim_k)
+        for recurrence in _recurrence_configs(dim_v, block_v, chunk_size, dim_k, wgmma)
     ]
 
 
-def default_h_threads(dim_v: int, block_v: int, chunk_size: int, dim_k: int) -> int:
+def default_h_threads(dim_v: int, block_v: int, chunk_size: int, dim_k: int, wgmma: bool) -> int:
     """Return the widest recurrence launch ``gemm_threads`` admits for this V tile.
 
     Args:
@@ -182,8 +193,10 @@ def default_h_threads(dim_v: int, block_v: int, chunk_size: int, dim_k: int) -> 
         block_v: V-tile width, as ``default_h_block_v`` returns it.
         chunk_size: Chunk length.
         dim_k: Key dimension.
+        wgmma: Whether the target lowers the gemms to WGMMA.
     """
-    return max(c["threads"] for c in _recurrence_configs(dim_v, block_v, chunk_size, dim_k))
+    configs = _recurrence_configs(dim_v, block_v, chunk_size, dim_k, wgmma)
+    return max(c["threads"] for c in configs)
 
 
 def tune_delta_rule_fwd(
@@ -208,8 +221,8 @@ def tune_delta_rule_fwd(
     survives.
 
     Args:
-        kernel: The forward kernel being tuned. Supplies the shape, the default
-            config, and the per-sub-kernel sweep through ``tune_jit_kernel``.
+        kernel: The forward kernel being tuned. Supplies the shape, ``wgmma``, the
+            default config, and the per-sub-kernel sweep through ``tune_jit_kernel``.
         fused_builder: ``(*shape) -> jit`` for the fused w/u preparation.
         h_builder: ``(*shape, block_v=...) -> jit`` for the state recurrence.
         o_builder: ``(*shape) -> jit`` for the output projection.
@@ -219,7 +232,8 @@ def tune_delta_rule_fwd(
     Returns:
         A config with the flat ``fused_`` / ``h_`` / ``o_`` keys the wrapped
         kernel reads, always a member of
-        ``delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size, kernel.dim_k)``.
+        ``delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size, kernel.dim_k,
+        kernel.wgmma)``.
 
     Raises:
         ValueError: if no V-tile width is admissible at this shape.
@@ -304,7 +318,7 @@ def tune_delta_rule_fwd(
     )
     default = kernel.default_config
     fused_configs, output_configs = chunk_gemm_configs(
-        kernel.chunk_size, kernel.dim_k, kernel.dim_v
+        kernel.chunk_size, kernel.dim_k, kernel.dim_v, kernel.wgmma
     )
     candidates = _require_h_block_v_candidates(kernel.dim_v)  # before any sweep
 
@@ -334,7 +348,9 @@ def tune_delta_rule_fwd(
                 kernel,
                 label,
                 h_builder(*shape, block_v=block_v),
-                _recurrence_configs(kernel.dim_v, block_v, kernel.chunk_size, kernel.dim_k),
+                _recurrence_configs(
+                    kernel.dim_v, block_v, kernel.chunk_size, kernel.dim_k, kernel.wgmma
+                ),
                 warmup,
                 rep,
                 h_untuned if block_v == default["h_block_v"] else None,
@@ -386,7 +402,9 @@ def tune_delta_rule_fwd(
         "h_threads": _tuned_value(
             h_config,
             "threads",
-            default_h_threads(kernel.dim_v, h_block_v, kernel.chunk_size, kernel.dim_k),
+            default_h_threads(
+                kernel.dim_v, h_block_v, kernel.chunk_size, kernel.dim_k, kernel.wgmma
+            ),
         ),
         "h_block_v": h_block_v,
         "o_threads": _tuned_value(o_config, "threads", default["o_threads"]),

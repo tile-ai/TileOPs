@@ -43,6 +43,7 @@ class _StubKernel:
         self.batch, self.head, self.seq_len = 2, 2, 128
         self.chunk_size, self.dim_k, self.dim_v = chunk_size, 64, dim_v
         self.dtype_str = "bfloat16"
+        self.wgmma = True
         self.sweeps: list[tuple[str, dict, tuple[dict, ...]]] = []
         #: ``(sub-kernel name, block_v) -> seed_config`` each sweep was handed.
         self.seeds: dict[tuple[str, int], dict] = {}
@@ -116,9 +117,13 @@ def test_chunk_16_sweep_and_default_stay_in_the_declared_candidates(monkeypatch,
     """At chunk16 the 16-by-16 GEMMs hold two warp tiles, so preparation and output take at
     most two warps, and every column split divides the 8-column tiles."""
     kernel = _StubKernel(chunk_size=16, dim_v=dim_v)
-    default = deltanet_fwd.DeltaNetChunkFwdKernel._default_config_for(99 * 1024, 16, 64, dim_v, 2)
+    default = deltanet_fwd.DeltaNetChunkFwdKernel._default_config_for(
+        99 * 1024, 16, 64, dim_v, 2, True
+    )
     monkeypatch.setattr(_StubKernel, "default_config", property(lambda self: default))
-    declared = la.delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size, kernel.dim_k)
+    declared = la.delta_rule_fwd_autotune_configs(
+        kernel.dim_v, kernel.chunk_size, kernel.dim_k, kernel.wgmma
+    )
 
     for config in declared:
         for key in ("fused_threads", "o_threads"):
@@ -139,6 +144,7 @@ def test_small_walk_declares_only_state_tiles_with_enough_warp_owners() -> None:
     kernel.chunk_size, kernel.dim_k, kernel.dim_v = 16, 16, 64
     kernel.dtype = "bfloat16"
     kernel._walk = True
+    kernel.wgmma = True
     kernel.build_target = SimpleNamespace(smem_budget=99 * 1024, sm_count=128)
     kernel.config = kernel.default_config
 
@@ -150,7 +156,9 @@ def test_small_walk_declares_only_state_tiles_with_enough_warp_owners() -> None:
 
 def test_unmeasured_narrow_width_uses_its_own_thread_limit(monkeypatch) -> None:
     kernel = _StubKernel(chunk_size=16)
-    default = deltanet_fwd.DeltaNetChunkFwdKernel._default_config_for(99 * 1024, 16, 64, 64, 2)
+    default = deltanet_fwd.DeltaNetChunkFwdKernel._default_config_for(
+        99 * 1024, 16, 64, 64, 2, True
+    )
     monkeypatch.setattr(_StubKernel, "default_config", property(lambda self: default))
     original = kernel.tune_jit_kernel
 
@@ -168,7 +176,7 @@ def test_unmeasured_narrow_width_uses_its_own_thread_limit(monkeypatch) -> None:
     assert config["h_block_v"] == 32
     assert config["h_threads"] == 128
     assert config in la.delta_rule_fwd_autotune_configs(
-        kernel.dim_v, kernel.chunk_size, kernel.dim_k
+        kernel.dim_v, kernel.chunk_size, kernel.dim_k, kernel.wgmma
     )
 
 
@@ -248,7 +256,9 @@ def test_untunable_sub_kernel_falls_back_to_default_config() -> None:
 
 def test_selected_config_is_always_a_declared_candidate() -> None:
     kernel = _StubKernel()
-    declared = la.delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size, kernel.dim_k)
+    declared = la.delta_rule_fwd_autotune_configs(
+        kernel.dim_v, kernel.chunk_size, kernel.dim_k, kernel.wgmma
+    )
 
     assert _run(kernel) in declared
     kernel.results = {
@@ -287,7 +297,7 @@ def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> No
 
     assert kernel.default_config["h_block_v"] == 32, "stub must diverge for this to bite"
     assert config["h_block_v"] == 0
-    declared = la.delta_rule_fwd_autotune_configs(48, kernel.chunk_size, kernel.dim_k)
+    declared = la.delta_rule_fwd_autotune_configs(48, kernel.chunk_size, kernel.dim_k, kernel.wgmma)
     # The stub's untuned preparation and output launches are wider than V48 builds at.
     assert (config["h_block_v"], config["h_threads"]) in {
         (c["h_block_v"], c["h_threads"]) for c in declared
@@ -304,13 +314,15 @@ def test_a_shape_with_no_admissible_width_is_refused_by_both_entry_points() -> N
     with pytest.raises(ValueError, match="no admissible"):
         la.default_h_block_v(8, 64)
     with pytest.raises(ValueError, match="no admissible"):
-        la.delta_rule_fwd_autotune_configs(8, 64, 64)
+        la.delta_rule_fwd_autotune_configs(8, 64, 64, True)
 
 
 def test_widths_resolving_to_one_tile_are_a_single_candidate() -> None:
     """At dim_v=32 both widths give a 32-column tile, so building both is waste."""
     assert la.h_block_v_candidates(32) == (0,)
-    assert {config["h_block_v"] for config in la.delta_rule_fwd_autotune_configs(32, 64, 64)} == {0}
+    assert {
+        config["h_block_v"] for config in la.delta_rule_fwd_autotune_configs(32, 64, 64, True)
+    } == {0}
 
 
 def test_a_width_that_fails_to_tune_does_not_sink_the_sweep() -> None:
@@ -334,7 +346,7 @@ def test_a_width_that_fails_to_tune_does_not_sink_the_sweep() -> None:
 
     assert config["h_block_v"] == 0
     assert config in la.delta_rule_fwd_autotune_configs(
-        kernel.dim_v, kernel.chunk_size, kernel.dim_k
+        kernel.dim_v, kernel.chunk_size, kernel.dim_k, kernel.wgmma
     )
     # When a width is dropped but the sweep survives, the warning is the only
     # diagnostic, so it is bounded the same way the raised error is.
@@ -446,7 +458,7 @@ def test_default_h_block_v_prefers_a_tiled_width_and_stays_declared() -> None:
     assert la.default_h_block_v(64, 32) == 0  # short chunk prefers no tiling
     for dim_v, chunk_size in ((64, 64), (96, 64), (48, 64), (64, 32)):
         declared = {
-            c["h_block_v"] for c in la.delta_rule_fwd_autotune_configs(dim_v, chunk_size, 64)
+            c["h_block_v"] for c in la.delta_rule_fwd_autotune_configs(dim_v, chunk_size, 64, True)
         }
         assert la.default_h_block_v(dim_v, chunk_size) in declared
 
@@ -497,7 +509,7 @@ def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
 
     assert calls == [kernel_cls.__name__]
     assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(
-        64, kernel.chunk_size, kernel.dim_k
+        64, kernel.chunk_size, kernel.dim_k, kernel.wgmma
     )
 
 
