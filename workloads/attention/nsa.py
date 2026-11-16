@@ -1,5 +1,5 @@
 import torch
-from einops import einsum, repeat
+from einops import einsum
 
 from workloads.device import run_device
 from workloads.sequence_metadata import prepare_chunk_offsets, prepare_token_indices
@@ -150,51 +150,50 @@ class NSAFwdWorkload(WorkloadBase):
         block_counts: torch.Tensor,
         cu_seqlens: torch.Tensor,
         token_indices: torch.Tensor,
+        cu_seqlens_k: torch.Tensor | None = None,
     ) -> torch.Tensor:
         _ = token_indices
+        cu_seqlens_k = cu_seqlens if cu_seqlens_k is None else cu_seqlens_k
         dtype, device = q.dtype, q.device
         bs = self.block_size
         scale = self.scale if self.scale is not None else k.shape[-1] ** -0.5
-        group = q.shape[1] // k.shape[1]
+        heads_kv, dim = k.shape[1], k.shape[2]
+        group = q.shape[1] // heads_kv
         n_slot = block_indices.shape[-1] * bs
-
-        k, v, block_indices = (
-            repeat(x, "t h d -> t (h g) d", g=group) for x in (k, v, block_indices)
-        )
-        block_counts = repeat(block_counts, "t h -> t (h g)", g=group)
         q, k, v = (x.float() for x in (q, k, v))
-        heads = q.shape[1]
         # Which selected block each gathered position came from, for the count mask.
-        slot_block = (torch.arange(n_slot, device=device) // bs).view(1, n_slot, 1)
-        head = torch.arange(heads, device=device)
+        slot_block = (torch.arange(n_slot, device=device) // bs).view(1, 1, n_slot)
+        head = torch.arange(heads_kv, device=device).view(1, heads_kv, 1)
+        # Tokens a step gathers, bounding its k and v rows to 256 MiB.
+        step = max(1, (256 * 1024**2) // (2 * heads_kv * max(n_slot, 1) * dim * 4))
 
-        o_slc = torch.zeros_like(v)
+        o_slc = q.new_zeros(q.shape[0], q.shape[1], v.shape[-1])
         for i in range(len(cu_seqlens) - 1):
             bos, eos = cu_seqlens[i].item(), cu_seqlens[i + 1].item()
-            n_token = eos - bos
-            q_b, k_b, v_b = q[bos:eos], k[bos:eos], v[bos:eos]
-
-            # [t, s*bs, hq]: the token each selected block contributes, per head.
-            pos = block_indices[bos:eos].unsqueeze(-1) * bs + torch.arange(bs, device=device)
-            pos = pos.view(n_token, heads, n_slot).transpose(1, 2)
-            # Out-of-range positions are masked below; clamping only keeps the gather legal.
-            k_slc, v_slc = (x[pos.clamp(0, n_token - 1), head] for x in (k_b, v_b))
-
-            # A causal token sees keys up to itself, a non-causal one up to the sequence end.
-            i_q = torch.arange(n_token, device=device).view(n_token, 1, 1)
-            beyond = pos > i_q if self.is_causal else pos >= n_token
-            attn = (
-                einsum(q_b * scale, k_slc, "t h d, t n h d -> t n h")
-                .masked_fill(
-                    (pos < 0) | beyond | (slot_block >= block_counts[bos:eos].unsqueeze(1)),
-                    float("-inf"),
+            bos_k, eos_k = cu_seqlens_k[i].item(), cu_seqlens_k[i + 1].item()
+            n_token, n_key = eos - bos, eos_k - bos_k
+            k_b, v_b = k[bos_k:eos_k], v[bos_k:eos_k]
+            for lo in range(bos, eos, step):
+                hi = min(lo + step, eos)
+                # [t, h_kv, s*bs]: the key each selected block contributes, per KV head.
+                pos = block_indices[lo:hi].unsqueeze(-1) * bs + torch.arange(bs, device=device)
+                pos = pos.flatten(2)
+                # Out-of-range positions are masked below; clamping keeps the gather legal.
+                k_slc, v_slc = (x[pos.clamp(0, n_key - 1), head] for x in (k_b, v_b))
+                # A causal token sees keys up to itself, a non-causal one up to the sequence
+                # end; the queries are the last n_token of the n_key keys.
+                i_q = torch.arange(lo - bos, hi - bos, device=device) + n_key - n_token
+                beyond = pos > i_q.view(-1, 1, 1) if self.is_causal else pos >= n_key
+                dead = (pos < 0) | beyond | (slot_block >= block_counts[lo:hi].unsqueeze(-1))
+                q_g = q[lo:hi].view(hi - lo, heads_kv, group, dim) * scale
+                attn = (
+                    einsum(q_g, k_slc, "t k g d, t k n d -> t k g n")
+                    .masked_fill(dead.unsqueeze(2), float("-inf"))
+                    .softmax(-1)
+                    .nan_to_num(0.0)  # a token no selected block gives a key outputs zeros
                 )
-                .softmax(1)
-                .nan_to_num(0.0)  # a token no selected block gives a key outputs zeros
-            )
-            o_slc[bos:eos] = einsum(attn, v_slc, "t n h, t n h v -> t h v") * self.g_slc[
-                0, bos:eos
-            ].unsqueeze(-1)
+                out = einsum(attn, v_slc, "t k g n, t k n v -> t k g v").flatten(1, 2)
+                o_slc[lo:hi] = out * self.g_slc[0, lo:hi].unsqueeze(-1)
 
         return o_slc.to(dtype)
 

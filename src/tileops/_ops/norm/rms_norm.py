@@ -15,7 +15,7 @@ from tileops._kernels.norm import (
     RMSNormStreamingKernel,
     RMSNormTwoPassKernel,
 )
-from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
+from tileops._kernels.norm.call_spec import RMSNormCall, RMSNormFwdInterface
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
@@ -33,6 +33,13 @@ class RMSNormFwdOp(Op):
     ``weight`` scales by one; ``eps=None`` is ``torch.finfo(torch.float32).eps``, the value
     ``torch.nn.functional.rms_norm`` uses for float16 and bfloat16 inputs: torch takes the
     machine epsilon of the float32 accumulation type, not of the input dtype.
+
+    ``group_size`` splits the flattened trailing axes into runs of that many elements, each
+    divided by its own root mean square, the weight still spanning all of them.
+    ``zero_centered`` scales by ``1 + weight``, as vLLM's ``GemmaRMSNorm`` does: the
+    arithmetic is float32 and the result rounds once to the input dtype. The in-tree kernels
+    serve neither ``zero_centered`` nor runs shorter than the normalized row; such a call
+    raises ``OpNotAvailableError`` when a kernel is selected.
 
     Example:
         ```python linenums="1"
@@ -58,6 +65,8 @@ class RMSNormFwdOp(Op):
         normalized_shape: Sequence[int],
         eps: float | None = None,
         *,
+        group_size: int | None = None,
+        zero_centered: bool = False,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
@@ -66,11 +75,16 @@ class RMSNormFwdOp(Op):
             normalized_shape: Trailing-axis shape over which the reduction runs.
             eps: Epsilon for numerical stability; ``None`` takes the machine epsilon of
                 float32, the dtype the reduction accumulates in, as torch does.
+            group_size: Elements each root mean square covers; ``None`` for all of
+                ``normalized_shape``.
+            zero_centered: Whether to scale by ``1 + weight`` instead of ``weight``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
         """
         self.normalized_shape = normalized_shape
         self.eps = eps
+        self.group_size = group_size
+        self.zero_centered = zero_centered
         super().__init__(target=target)
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor | None = None) -> torch.Tensor:
@@ -88,11 +102,13 @@ class RMSNormFwdOp(Op):
         n = math.prod(self.normalized_shape)
         return self.kernel_for(
             "rms_norm",
-            lambda: LayerNormCall(
+            lambda: RMSNormCall(
                 device=x.device,
                 n=n,
                 eps=torch.finfo(torch.float32).eps if self.eps is None else float(self.eps),
                 dtype=x.dtype,
                 rows=x.numel() // n,
+                zero_centered=self.zero_centered,
+                group_size=self.group_size,
             ),
         )(x, weight)

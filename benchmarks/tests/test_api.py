@@ -13,12 +13,14 @@ import torch
 from torch._inductor.exc import InductorError, TritonMissing
 
 from benchmarks import api as bench
-from benchmarks import timing
+from benchmarks import conftest, timing
 from benchmarks._cases import Entry, default_binder
 from benchmarks.baselines import compiled_reference, private_inputs
+from benchmarks.outcomes import UNAVAILABLE_PROPERTY
 from benchmarks.report import BenchmarkReport
 from benchmarks.timing import Sample
 from tileops._utils.device import current_accelerator_type
+from tileops.backend import OpNotAvailableError
 from tileops.backend import _registry as registry
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._signature import parse_signature
@@ -154,6 +156,42 @@ def test_the_reference_row_is_unverified_where_the_reference_could_not_run(timed
     case = _case(reference=_out_of_memory)
     bench.Runner(SumFwdOp(), case).compare({"torch": case.reference})
     assert all(row["ratio"] is False and "memory" in row["unverified"] for row in timed.rows)
+
+
+@pytest.mark.parametrize("serves", [False, True])
+def test_a_row_whose_reference_fails_is_unavailable_only_where_the_op_says_so(timed, serves):
+    def unserved(self, x):
+        raise OpNotAvailableError("no implementation serves this call")
+
+    def reference(x):
+        raise RuntimeError("the reference has no such mode")
+
+    op = SumFwdOp() if serves else type("SumFwdOp", (SumFwdOp,), {"__call__": unserved})()
+    with pytest.raises(RuntimeError if serves else OpNotAvailableError):
+        bench.Runner(op, _case(reference=reference)).compare({})
+
+
+@pytest.mark.parametrize("error", [OpNotAvailableError("unserved"), ValueError("bad")])
+def test_only_an_unserved_row_is_reported_as_an_unavailable_skip(error):
+    item = SimpleNamespace(
+        path="b.py",
+        location=("b.py", 4, "t"),
+        user_properties=[],
+        callspec=SimpleNamespace(params={"case": _case()}),
+    )
+    report = SimpleNamespace(outcome="failed", longrepr=None)
+    hook = conftest.pytest_runtest_makereport(
+        item, SimpleNamespace(when="call", excinfo=SimpleNamespace(value=error))
+    )
+    next(hook)
+    with pytest.raises(StopIteration):
+        hook.send(SimpleNamespace(get_result=lambda: report))
+    unserved = isinstance(error, OpNotAvailableError)
+    assert report.outcome == ("skipped" if unserved else "failed")
+    expected = [(UNAVAILABLE_PROPERTY, "unserved"), ("ops", "SumFwdOp")] if unserved else []
+    assert item.user_properties == expected
+    if unserved:
+        assert report.longrepr == ("b.py", 5, "unavailable: unserved")
 
 
 def test_a_callable_that_overwrites_the_shared_inputs_fails_before_timing(timed):

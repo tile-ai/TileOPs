@@ -41,20 +41,27 @@ def test_fp8_quant_op(shape, group_size: int, dtype: torch.dtype, tune: bool) ->
 def test_fp8_quant_writes_out_q_and_returns_it() -> None:
     test = FP8QuantTest((64, 256), 128, torch.bfloat16, out_q=True)
     x, out_q = test.gen_inputs()
-    q, _scale = FP8QuantPerTokenGroupFwdOp(128)(x, out_q)
+    q, _scale, _output = FP8QuantPerTokenGroupFwdOp(128)(x, out_q)
     assert q is out_q
     test.check(FP8QuantPerTokenGroupFwdOp(128), *test.gen_inputs())
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "layout", [{"column_major_scales": True}, {"use_ue8m0": True}], ids=["column-major", "ue8m0"]
+    "layout, reason",
+    [
+        ({"column_major_scales": True}, "does not serve"),
+        ({"use_ue8m0": True}, "does not serve"),
+        ({"use_ue8m0": True, "scale_dtype": torch.float8_e8m0fnu}, "float32 scales"),
+        ({"inplace": True, "use_ue8m0": True}, "in place"),
+    ],
+    ids=["column-major", "ue8m0", "e8m0-scales", "inplace"],
 )
-def test_fp8_quant_refuses_what_no_kernel_serves(layout) -> None:
+def test_fp8_quant_refuses_what_no_kernel_serves(layout, reason) -> None:
     from tileops.backend import OpNotAvailableError
 
     x = torch.randn(4, 128, dtype=torch.bfloat16, device=run_device())
-    with pytest.raises(OpNotAvailableError, match="does not serve"):
+    with pytest.raises(OpNotAvailableError, match=reason):
         FP8QuantPerTokenGroupFwdOp(128, **layout)(x)
 
 

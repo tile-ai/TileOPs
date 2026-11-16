@@ -372,6 +372,28 @@ def _gated(activation):
     return _in_float32(torch_gated)
 
 
+def _silu_and_mul_torch(
+    a: dict, x: torch.Tensor, scale: torch.Tensor | None = None
+) -> torch.Tensor:
+    """silu(gate) * value, the halves clamped under a positive ``swiglu_limit``, as torch
+    computes it in *x*'s dtype; a ``scale`` multiplies each row in float32 before one cast."""
+    half = x.shape[-1] // 2
+    gate, value = x[..., :half], x[..., half:]
+    limit = a.get("swiglu_limit", 0.0)
+    if limit > 0:
+        gate, value = gate.clamp(max=limit), value.clamp(-limit, limit)
+    out = F.silu(gate) * value
+    return out if scale is None else (out.float() * scale.float().unsqueeze(-1)).to(out.dtype)
+
+
+def _silu_and_mul(a: dict, x: torch.Tensor, scale: torch.Tensor | None = None) -> torch.Tensor:
+    """:func:`_silu_and_mul_torch` in float32, rounded once to *x*'s dtype."""
+    return _silu_and_mul_torch(a, x.float(), scale).to(x.dtype)
+
+
+_silu_and_mul.torch = _silu_and_mul_torch
+
+
 # Each op's reference: its constructor arguments, then its inputs in signature order.
 _REFERENCES = {
     "ExpFwdOp": _in_float32(lambda a, x: torch.exp(x)),
@@ -449,7 +471,7 @@ _REFERENCES = {
     "BitwiseXorFwdOp": lambda a, x, y: torch.bitwise_xor(x, y),
     "WhereFwdOp": lambda a, c, x, y: torch.where(c, x, y),
     "LerpFwdOp": _in_float32(lambda a, x, e, w: torch.lerp(x, e, w)),
-    "SiLUAndMulFwdOp": _gated(lambda a, g: F.silu(g)),
+    "SiLUAndMulFwdOp": _silu_and_mul,
     "GELUAndMulFwdOp": _gated(lambda a, g: F.gelu(g, approximate=a.get("approximate", "none"))),
     "AlibiFwdOp": lambda a: alibi_reference(
         a["seq_len"], a["num_heads"], a["out_dtype"], a["device"]

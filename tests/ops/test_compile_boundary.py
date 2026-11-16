@@ -219,9 +219,18 @@ def _attention_cases():
 
     def dsa_paged():
         call = manifest_call(
-            "DSAPagedFwdOp", S_q=1, H=64, K=128, NP=8, PS=64, W=2, cache_lens="repeat(128, 2)"
+            "DSAPagedFwdOp",
+            {"KV": "uint8"},
+            DK=576,
+            S_q=1,
+            H=64,
+            K=128,
+            NP=8,
+            PS=64,
+            W=2,
+            cache_lens="repeat(128, 2)",
         )
-        return DSAPagedFwdOp(), DSAPagedCall(call).gen_inputs()
+        return DSAPagedFwdOp(), DSAPagedCall(call).gen_inputs()[:5]
 
     def fp8_lightning_indexer():
         case = FP8LightningIndexerWorkload(1, 2048, 8, 64, 4096, 1)

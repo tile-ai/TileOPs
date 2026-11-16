@@ -29,16 +29,19 @@ class CausalConv1dFwdOp(Op):
     """Causal depthwise convolution (width 2 to 4) with SiLU; writes ``conv_state`` in place.
 
     ``x`` holds the sequences token-major, ``cu_seqlens`` delimiting them. For a sequence on
-    tokens ``[a, e)`` and channel ``c``, with ``h`` the ``W - 1`` tokens before it
-    (``conv_state[s]`` where ``has_initial_state[s]``, zeros otherwise)::
+    tokens ``[a, e)`` and channel ``c``, with ``d`` the dilation and ``h`` the
+    ``(W - 1) * d`` tokens before it (the first ``(W - 1) * d`` columns of ``conv_state[s]``
+    where ``has_initial_state[s]``, zeros otherwise)::
 
         xp = concat(h[c, :], x[a:e, c])
-        output[a + i, c] = act(bias[c] + sum_k weight[c, k] * xp[i + k])
+        output[a + i, c] = act(bias[c] + sum_k weight[c, k] * xp[i + k * d])
 
-    and ``conv_state[s]`` is overwritten in place with the sequence's last ``W - 1`` tokens
-    of ``xp``; an empty sequence keeps its state. The products accumulate in float32 and each output rounds once to the input
-    dtype. SiLU uses the hardware's approximate exponential and reciprocal, each within two
-    float32 units in the last place.
+    and those columns of ``conv_state[s]`` are overwritten in place with the sequence's last
+    ``(W - 1) * d`` tokens of ``xp``; an empty sequence keeps its state. With
+    ``cache_indices``, sequence ``s``'s state is ``conv_state[cache_indices[s]]``. The
+    products accumulate in float32, a float16 or bfloat16 weight and bias read as float32,
+    and each output rounds once to the input dtype. SiLU uses the hardware's approximate
+    exponential and reciprocal, each within two float32 units in the last place.
 
     The caller guarantees well-formed ``cu_seqlens``, or passes ``validate_inputs=True``, which
     checks it on the CPU on every call.
@@ -53,6 +56,7 @@ class CausalConv1dFwdOp(Op):
         self,
         activation: str | None = "silu",
         *,
+        dilation: int = 1,
         validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
@@ -60,12 +64,15 @@ class CausalConv1dFwdOp(Op):
 
         Args:
             activation: ``"silu"`` to apply SiLU to the convolution, or ``None`` for none.
+            dilation: Tokens between adjacent filter taps.
             validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never decreases
-                and ends at ``x``'s token count.
+                and ends at ``x``'s token count, and that ``cache_indices`` lies in its
+                manifest range.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.activation = activation
+        self.dilation = dilation
         self.validate_inputs = validate_inputs
         super().__init__(target=target)
 
@@ -77,18 +84,23 @@ class CausalConv1dFwdOp(Op):
         cu_seqlens: torch.Tensor,
         bias: torch.Tensor | None,
         has_initial_state: torch.Tensor | None = None,
+        *,
+        cache_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Convolve every packed sequence and leave its last ``W - 1`` tokens in its state.
+        """Convolve every packed sequence and leave its last tokens in its state.
 
         Args:
             x: ``(Tt, D)`` float16 or bfloat16, the sequences packed token-major.
-            weight: ``(D, W)``, one filter a channel.
-            conv_state: ``(B, D, W - 1)``, contiguous; read where ``has_initial_state`` is
-                set and overwritten in place.
+            weight: ``(D, W)``, one filter a channel, in ``x``'s dtype or float32.
+            conv_state: ``(B, D, L)``, or ``(P, D, L)`` with ``cache_indices``, contiguous,
+                ``L >= (W - 1) * dilation``; read where ``has_initial_state`` is set and
+                overwritten in place.
             cu_seqlens: int32 ``(B + 1,)`` packed offsets, from 0 to ``Tt``.
-            bias: ``(D,)`` bias, or ``None``.
+            bias: ``(D,)`` bias in ``weight``'s dtype, or ``None``.
             has_initial_state: Optional bool ``(B,)``; absent, every sequence starts from
                 zeros.
+            cache_indices: Optional int32 ``(B,)``, each sequence's distinct row of
+                ``conv_state``.
 
         Returns:
             A new ``(Tt, D)`` tensor in ``x``'s dtype.
@@ -102,6 +114,10 @@ class CausalConv1dFwdOp(Op):
                 has_bias=bias is not None,
                 has_init=has_initial_state is not None,
                 silu=self.activation is not None,
+                weight_dtype=weight.dtype,
+                state_len=conv_state.shape[2],
+                dilation=self.dilation,
+                pooled=cache_indices is not None,
                 device=x.device,
             ),
         )
@@ -116,13 +132,22 @@ class CausalConv1dFwdOp(Op):
 
 
 class CausalConv1dUpdateFwdOp(Op):
-    """One decode step of ``CausalConv1dFwdOp``; advances ``conv_state`` in place.
+    """Decode steps of ``CausalConv1dFwdOp``; advances ``conv_state`` in place.
 
     For sequence ``b`` and channel ``c``, with ``s = conv_state[b, c]`` its last ``W - 1``
     tokens::
 
         output[b, c] = act(bias[c] + sum_{k < W-1} weight[c, k] * s[k] + weight[c, W-1] * x[b, c])
         conv_state[b, c] <- (s[1], ..., s[W-2], x[b, c])
+
+    In general, with ``d`` the dilation, a state is the first ``(W - 1) * d`` of its ``L``
+    columns and the taps are ``d`` tokens apart, as in ``CausalConv1dFwdOp``.
+    ``conv_state_indices`` maps sequence ``b`` to state ``conv_state[conv_state_indices[b]]``;
+    ``query_start_loc`` packs several tokens a sequence in ``x``, each convolved in turn.
+    With ``num_accepted_tokens``, as vLLM's ``causal_conv1d_update`` takes it, sequence ``b``
+    with ``a = num_accepted_tokens[b]`` and ``q`` tokens reads its history from column
+    ``a - 1``, and its first ``(W - 1) * d + q - 1`` columns become its last that many
+    tokens, so the next call resumes after whichever draft was accepted.
 
     The products accumulate in float32 and each output rounds once to the input dtype.
     SiLU uses the hardware's approximate exponential and reciprocal, each within two float32
@@ -136,15 +161,31 @@ class CausalConv1dUpdateFwdOp(Op):
         "causal_conv1d_update": CausalConv1dUpdateFwdInterface
     }
 
-    def __init__(self, activation: str | None = "silu", *, target: Target = None) -> None:
+    def __init__(
+        self,
+        activation: str | None = "silu",
+        *,
+        dilation: int = 1,
+        max_query_len: int = -1,
+        validate_inputs: bool = False,
+        target: Target = None,
+    ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             activation: ``"silu"`` to apply SiLU to the convolution, or ``None`` for none.
+            dilation: Tokens between adjacent filter taps.
+            max_query_len: The most tokens a sequence holds, with ``query_start_loc``.
+            validate_inputs: Check on the CPU that ``query_start_loc`` starts at 0, never
+                decreases and ends at ``x``'s token count, and that ``conv_state_indices`` and
+                ``num_accepted_tokens`` lie in their manifest ranges.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.activation = activation
+        self.dilation = dilation
+        self.max_query_len = max_query_len
+        self.validate_inputs = validate_inputs
         super().__init__(target=target)
 
     def forward(
@@ -153,17 +194,28 @@ class CausalConv1dUpdateFwdOp(Op):
         weight: torch.Tensor,
         conv_state: torch.Tensor,
         bias: torch.Tensor | None = None,
+        *,
+        conv_state_indices: torch.Tensor | None = None,
+        num_accepted_tokens: torch.Tensor | None = None,
+        query_start_loc: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Convolve each sequence's new token with its state and shift the token into it.
+        """Convolve each sequence's new tokens with its state and shift them into it.
 
         Args:
-            x: ``(B, D)`` float16 or bfloat16, one token a sequence.
-            weight: ``(D, W)``, one filter a channel.
-            conv_state: ``(B, D, W - 1)``, contiguous, advanced by one token in place.
-            bias: Optional ``(D,)`` bias.
+            x: ``(B, D)`` float16 or bfloat16, one token a sequence; ``(Tt, D)``, the
+                sequences packed, with ``query_start_loc``.
+            weight: ``(D, W)``, one filter a channel, in ``x``'s dtype or float32.
+            conv_state: ``(B, D, L)``, or ``(P, D, L)`` with ``conv_state_indices``,
+                contiguous, advanced in place.
+            bias: Optional ``(D,)`` bias, in ``weight``'s dtype.
+            conv_state_indices: Optional int32 ``(B,)``, each sequence's distinct row of
+                ``conv_state``.
+            num_accepted_tokens: Optional int32 ``(B,)``, the drafts of the previous call
+                each sequence accepted, at least one.
+            query_start_loc: Optional int32 ``(B + 1,)`` packed offsets, from 0 to ``Tt``.
 
         Returns:
-            A new ``(B, D)`` tensor in ``x``'s dtype.
+            A new tensor shaped like ``x``, in ``x``'s dtype.
         """
         kernel = self.kernel_for(
             "causal_conv1d_update",
@@ -173,6 +225,12 @@ class CausalConv1dUpdateFwdOp(Op):
                 dtype=x.dtype,
                 has_bias=bias is not None,
                 silu=self.activation is not None,
+                weight_dtype=weight.dtype,
+                state_len=conv_state.shape[2],
+                dilation=self.dilation,
+                pooled=conv_state_indices is not None,
+                varlen=query_start_loc is not None,
+                rollback=num_accepted_tokens is not None,
                 device=x.device,
             ),
         )

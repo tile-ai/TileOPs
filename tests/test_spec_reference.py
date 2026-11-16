@@ -26,10 +26,14 @@ from tileops._ops._signature_codegen import leaves
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._workload import TensorSpec, instantiate
-from workloads import sampling
+from workloads import mamba, moe, sampling
+from workloads.attention.gated_pool_compress import gated_pool_compress
 from workloads.attention.merge_states import MergeAttentionStatesWorkload
+from workloads.attention.nsa import NSAFwdWorkload
+from workloads.norm import mrope_rows
 from workloads.quantization import int8_dequant
 from workloads.quantization import quantize as quantization
+from workloads.sequence_modeling import hc_head, ngram_hash
 
 pytestmark = pytest.mark.smoke
 
@@ -67,6 +71,15 @@ _int4_per_group = _outputs(
     group_size="group_size",
 )
 _smooth_quant = _outputs(("q", "scale"), quantization.smooth_quant, "x", "smooth")
+
+
+def _fp4_per_group(p, t):
+    q, scale, output = quantization.fp4_quant_per_group(t["x"], p["block_size"], p["inplace"])
+    if p["inplace"]:
+        assert q is None and scale is None and output is t["x"]
+        return {"output": output}
+    assert output is None
+    return {"q": q, "scale": scale}
 
 
 # ---------------------------------------------------------------- sampling
@@ -175,10 +188,40 @@ def _paged_kv_cache_write(p, t):
     return {}
 
 
+def _nsa_varlen(p, t):
+    q, k = t["q"], t["k"]
+    if k.shape != t["v"].shape:
+        raise ValueError("k and v must agree")
+    group, selected = q.shape[1] // k.shape[1], t["block_indices"].shape[-1]
+    workload = NSAFwdWorkload(
+        0, q.shape[1], q.shape[0], q.shape[-1], p["is_causal"], p["sm_scale"],
+        p["block_size"], group, selected, q.dtype,
+    )  # fmt: skip
+    workload.g_slc = torch.ones(1, q.shape[0], q.shape[1], device=q.device)
+    # The selection meets q's device; the offsets are read on the host.
+    picks = (t[n].to(q.device) for n in ("block_indices", "block_counts"))
+    names = ("cu_seqlens", "token_indices", "cu_seqlens_k")
+    return {"o": workload.ref_program(q, k, t["v"], *picks, *(t[n] for n in names))}
+
+
+def _mrope_angles(cos_sin, positions, sections, interleaved):
+    """The ``[N, R]`` cos ‖ sin rows of ``positions [3, N]``: each frequency from the row of
+    the temporal, height or width position its section names.
+
+    vllm.model_executor.layers.rotary_embedding.mrope.MRotaryEmbedding.forward_native.
+    """
+    if positions.dim() != 2 or positions.shape[0] != 3 or sum(sections) != cos_sin.shape[1] // 2:
+        raise ValueError("MRoPE takes [3, N] positions and sections summing to R / 2")
+    halves = cos_sin[positions].chunk(2, -1)
+    return torch.cat([mrope_rows(part, sections, interleaved) for part in halves], -1)
+
+
 def _rope(x, cos_sin, positions, layout):
-    """Rotate ``x [N, ..., R']`` on its first ``R`` columns by ``cos_sin [P, R]`` at ``positions``."""
+    """Rotate ``x [N, ..., R']`` on its first ``R`` columns by ``cos_sin [P, R]`` at ``positions``;
+    ``positions`` may instead be the ``[N, R]`` cos ‖ sin rows themselves, a floating tensor."""
     half = cos_sin.shape[1] // 2
-    cos, sin = cos_sin[positions].float().chunk(2, -1)
+    rows = positions if positions.is_floating_point() else cos_sin[positions]
+    cos, sin = rows.float().chunk(2, -1)
     shape = (x.shape[0],) + (1,) * (x.dim() - 2) + (half,)
     cos, sin = cos.view(shape), sin.view(shape)
     rot, rest = x[..., : 2 * half].float(), x[..., 2 * half :]
@@ -203,14 +246,19 @@ def _mla_kv_cache_write(p, t):
 
 
 def _fused_qk_norm_rope(p, t):
-    qkv, eps = t["qkv"], p["eps"]
+    # vLLM fused_qk_norm_rope; GemmaRMSNorm for zero_centered, MRotaryEmbedding for MRoPE.
+    qkv, eps, cos_sin = t["qkv"], p["eps"], t["cos_sin_cache"]
     heads, kv_heads = p["num_heads"], p["num_kv_heads"]
     dim = t["q_weight"].shape[0]
     tokens = qkv.shape[0]
+    positions = t["positions"]
+    if p["mrope_section"] is not None:
+        positions = _mrope_angles(cos_sin, positions, p["mrope_section"], p["mrope_interleaved"])
     for first, count, weight in ((0, heads, t["q_weight"]), (heads, kv_heads, t["k_weight"])):
         view = qkv[:, first * dim : (first + count) * dim].view(tokens, count, dim)
-        normed = F.rms_norm(view.float(), (dim,), weight.float(), eps).to(qkv.dtype)
-        view.copy_(_rope(normed, t["cos_sin_cache"], t["positions"], p["rope_layout"]))
+        scale = weight.float() + 1 if p["zero_centered"] else weight.float()
+        normed = F.rms_norm(view.float(), (dim,), scale, eps)
+        view.copy_(_rope(normed, cos_sin, positions, p["rope_layout"]))
     return {}
 
 
@@ -232,18 +280,29 @@ def _dsa_paged(p, t):
     page_size = cache.shape[1]
     scale = p["sm_scale"] if p["sm_scale"] is not None else dk**-0.5
     flat = cache.view(-1, cache.shape[-1])
+    fp8 = cache.dtype == torch.uint8
+    if (cache.shape[-1] != 656 or dk != 576) if fp8 else cache.shape[-1] != dk:
+        raise ValueError("q and the cache row disagree")
+    sink = t["attn_sink"]
     outs, lses = [], []
     for b in range(batch):
         for s in range(s_q):
             pos = indices[b, s].long()
             pos = pos[(pos >= 0) & (pos < lens[b])]
             rows = flat[table[b][pos // page_size].long() * page_size + pos % page_size]
-            latent = rows[:, :512].view(torch.float8_e4m3fn).float()
-            scales = rows[:, 512:528].view(torch.float32).repeat_interleave(128, 1)
-            value = latent * scales
-            key = torch.cat([value, rows[:, 528:].view(torch.bfloat16).float()], -1)
+            if fp8:
+                latent = rows[:, :512].view(torch.float8_e4m3fn).float()
+                scales = rows[:, 512:528].view(torch.float32).repeat_interleave(128, 1)
+                value = latent * scales
+                key = torch.cat([value, rows[:, 528:].view(torch.bfloat16).float()], -1)
+            else:
+                key = rows.float()
+                value = key[:, : p["head_dim_v"]]
             visible = torch.ones(1, key.shape[0], dtype=torch.bool)
             o, lse = _attend(q[b, s : s + 1], key, value, scale, visible)
+            if sink is not None:
+                # The sink joins the denominator: o * e^lse / (e^lse + e^sink); lse unchanged.
+                o = o * torch.sigmoid(lse - sink.float()).nan_to_num(0.0)[..., None]
             outs.append(o[0])
             lses.append(lse[0])
     shape = (batch, s_q)
@@ -263,6 +322,65 @@ def _paged_kv_cache_gather(p, t):
             rows = rows.float() * t["kv_scale"]
         out[a:e] = rows.to(out.dtype)
     return {"output": out}
+
+
+def _gated_pool_compress(p, t):
+    names = ("kv", "score", "ape", "kv_state", "score_state", "cu_seqlens", "start_pos")
+    entries, valid = gated_pool_compress(
+        *(t[n] for n in names), t["state_slots"], p["ratio"], p["overlap"]
+    )
+    return {"entries": entries, "valid": valid}
+
+
+# ---------------------------------------------------------------- moe
+
+
+def _moe_grouped_gemm_mxfp4(p, t):
+    names = ("a", "a_scale", "b", "b_scale", "layout_metadata")
+    return {"output": moe.ref_moe_grouped_gemm_mxfp4(*(t[n] for n in names), p["layout"])}
+
+
+# ---------------------------------------------------------------- sequence modeling
+
+
+def _hyper_connection_pre(p, t):
+    # vllm.model_executor.kernels.mhc.torch.mhc_pre_torch
+    residual, fn, scale, base = t["residual"], t["fn"], t["hc_scale"], t["hc_base"]
+    n, c = residual.shape[-2:]
+    x = residual.flatten(-2).float()
+    mixes = (x @ fn.T) * torch.rsqrt(x.square().mean(-1, keepdim=True) + p["rms_eps"])
+    pre = torch.sigmoid(mixes[..., :n] * scale[0] + base[:n]) + p["hc_pre_eps"]
+    post = torch.sigmoid(mixes[..., n : 2 * n] * scale[1] + base[n : 2 * n])
+    comb = mixes[..., 2 * n :].unflatten(-1, (n, n)) * scale[2] + base[2 * n :].view(n, n)
+    eps = p["hc_sinkhorn_eps"]
+    comb = comb.softmax(-1) + eps
+    comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    for _ in range(p["sinkhorn_repeat"] - 1):
+        comb = comb / (comb.sum(-1, keepdim=True) + eps)
+        comb = comb / (comb.sum(-2, keepdim=True) + eps)
+    layer_input = (pre.unsqueeze(-1) * residual.float()).sum(-2).to(torch.bfloat16)
+    post_mix = (post * p["hc_post_mult_value"]).unsqueeze(-1)
+    return {"post_mix": post_mix, "comb_mix": comb, "layer_input": layer_input}
+
+
+def _hyper_connection_post(p, t):
+    # vllm.model_executor.kernels.mhc.torch.mhc_post_torch
+    x, residual = t["x"], t["residual"]
+    mixed = torch.einsum("...ij,...ih->...jh", t["comb_res_mix"].float(), residual.float())
+    out = t["post_layer_mix"].float() * x.unsqueeze(-2).float() + mixed
+    return {"output": out.to(residual.dtype)}
+
+
+def _hyper_connection_head(p, t):
+    names = ("hidden_states", "hc_fn", "hc_scale", "hc_base")
+    return {"output": hc_head(*(t[n] for n in names), p["rms_norm_eps"], p["hc_eps"])}
+
+
+def _ngram_hash(p, t):
+    names = ("input_ids", "context", "multipliers", "primes", "offsets")
+    optional = ("cu_seqlens", "context_indices", "num_accepted_tokens")
+    ids = ngram_hash(*(t[n] for n in names), p["eos_token_id"], *(t[n] for n in optional))
+    return {"ngram_ids": ids}
 
 
 # ---------------------------------------------------------------- indexing
@@ -307,6 +425,28 @@ def _rms_norm_gated(p, t):
     if gate is not None and p["norm_before_gate"]:
         h = h * gate
     return {"output": h.to(x.dtype)}
+
+
+# ---------------------------------------------------------------- mamba
+
+
+def _causal_conv1d(p, t):
+    names = ("x", "weight", "conv_state", "cu_seqlens", "bias", "has_initial_state")
+    silu = p["activation"] is not None
+    output = mamba.causal_conv1d_ref(
+        *(t[n] for n in names), silu, t["cache_indices"], p["dilation"]
+    )
+    return {"output": output}
+
+
+def _causal_conv1d_update(p, t):
+    names = ("conv_state_indices", "num_accepted_tokens", "query_start_loc")
+    silu = p["activation"] is not None
+    output = mamba.causal_conv1d_update_ref(
+        t["x"], t["weight"], t["conv_state"], t["bias"], silu, *(t[n] for n in names),
+        p["dilation"],
+    )  # fmt: skip
+    return {"output": output}
 
 
 # ---------------------------------------------------------------- rope
@@ -427,6 +567,16 @@ REFERENCES = {
     "RMSNormGatedFwdOp": (_rms_norm_gated, _narrow("weight")),
     "RoPECosSinFwdOp": (_rope_cos_sin, _narrow("sin")),
     "ConcatFwdOp": (_concat, _narrow_element("tensors", 1, 0)),
+    "GatedPoolCompressFwdOp": (_gated_pool_compress, _narrow("ape")),
+    "NSAVarlenFwdOp": (_nsa_varlen, _narrow("v")),
+    "FP4QuantPerGroupFwdOp": (_fp4_per_group, _narrow("x")),
+    "MoEGroupedGEMMMXFP4FwdOp": (_moe_grouped_gemm_mxfp4, _narrow("b_scale")),
+    "HyperConnectionPreFwdOp": (_hyper_connection_pre, _narrow("hc_base")),
+    "HyperConnectionPostFwdOp": (_hyper_connection_post, _narrow("comb_res_mix")),
+    "HyperConnectionHeadFwdOp": (_hyper_connection_head, _narrow("hc_base")),
+    "NGramHashFwdOp": (_ngram_hash, _narrow("offsets")),
+    "CausalConv1dFwdOp": (_causal_conv1d, _narrow("weight", 0)),
+    "CausalConv1dUpdateFwdOp": (_causal_conv1d_update, _narrow("weight", 0)),
 }
 
 
@@ -501,7 +651,7 @@ def test_reference_agrees_with_the_signature(name):
         inputs = {n: host[n] for n in plan.sig.inputs}
         with _Writes() as writes:
             outputs = reference(call.arguments(), inputs)
-        declared = {n: call.tensors[n] for n in plan.sig.outputs}
+        declared = {n: call.tensors[n] for n in plan.sig.outputs if n in call.tensors}
         got = {n: (tuple(v.shape), str(v.dtype).removeprefix("torch.")) for n, v in outputs.items()}
         assert got == {n: (tuple(s), d) for n, (s, d) in declared.items()}, where
         written = {
@@ -545,3 +695,19 @@ def test_a_write_only_buffer_is_written_whole():
     tensors["out"].fill_(math.nan)
     _paged_kv_cache_gather(call.arguments(), {n: tensors[n] for n in plan.sig.inputs})
     assert not tensors["out"].isnan().any()
+
+
+def test_the_nsa_reference_attends_a_block_selected_twice_twice():
+    """parallel_nsa_fwd attends each selected slot, so a repeated block weighs double."""
+    params = {"block_size": 1, "sm_scale": None, "is_causal": False}
+    tensors = {
+        "q": torch.zeros(1, 1, 1),
+        "k": torch.zeros(2, 1, 1),
+        "v": torch.tensor([0.0, 3.0]).view(2, 1, 1),
+        "block_indices": torch.tensor([[[0, 0, 1]]], dtype=torch.int32),
+        "block_counts": torch.tensor([[3]], dtype=torch.int32),
+        "cu_seqlens": torch.tensor([0, 1], dtype=torch.int32),
+        "token_indices": torch.tensor([[0, 0]], dtype=torch.int32),
+        "cu_seqlens_k": torch.tensor([0, 2], dtype=torch.int32),
+    }
+    assert _nsa_varlen(params, tensors)["o"].item() == pytest.approx(1.0)

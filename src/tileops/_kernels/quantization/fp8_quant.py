@@ -28,6 +28,8 @@ class FP8QuantCall(CallSpec):
     column_major_scales: bool = False
     tma_aligned_scales: bool = False
     use_ue8m0: bool | None = None
+    scale_dtype: torch.dtype = torch.float32
+    inplace: bool = False
 
 
 class FP8QuantFwdInterface(KernelInterface):
@@ -38,7 +40,7 @@ class FP8QuantFwdInterface(KernelInterface):
     @abstractmethod
     def forward(
         self, input_tensor: torch.Tensor, out_q: torch.Tensor | None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """Scale each group by its own maximum, writing the codes into *out_q* when given.
 
         A group is ``call.group_size`` adjacent columns of the last axis. Its scale is the
@@ -58,7 +60,9 @@ class FP8QuantFwdInterface(KernelInterface):
         Returns:
             ``(q, scale)`` on ``call.device``: the codes, *out_q* where given and otherwise a
             new contiguous ``float8_e4m3fn`` tensor shaped as the input, and new contiguous
-            ``float32`` ``[*S, call.k // call.group_size]`` scales.
+            ``call.scale_dtype`` ``[*S, call.k // call.group_size]`` scales. With
+            ``call.inplace``, *input_tensor* is overwritten with each element's code times its
+            scale and ``(None, None)`` returns.
         """
 
 
@@ -198,6 +202,10 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
         # vLLM reads ``tma_aligned_scales`` only for column-major scales.
         if call.column_major_scales:
             return "does not serve column-major scales"
+        if call.scale_dtype != torch.float32:
+            return f"writes float32 scales, not {call.scale_dtype}"
+        if call.inplace:
+            return "writes q and scale, not x fake-quantized in place"
         if call.use_ue8m0:
             return "does not serve UE8M0 scales"
         if call.dtype is not None:

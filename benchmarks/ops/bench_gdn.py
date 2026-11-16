@@ -20,7 +20,7 @@ def test_gdn_fwd_bench(case) -> None:
     op = GDNFwdOp(**case.arguments)
     prefill = flashinfer_op("gdn_prefill.chunk_gated_delta_rule")
 
-    def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
+    def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias, *_serving):
         fla_rule = baseline_module("fla.ops.gated_delta_rule", "fla")
         chunk_gated_delta_rule = fla_rule.chunk_gated_delta_rule
         fused_recurrent_gated_delta_rule = fla_rule.fused_recurrent_gated_delta_rule
@@ -44,7 +44,7 @@ def test_gdn_fwd_bench(case) -> None:
             return fused_recurrent_gated_delta_rule(q, k, v, g=g, beta=beta, **arguments)
         return chunk_gated_delta_rule(q, k, v, g=g, beta=beta, cu_seqlens_cpu=cu_cpu, **arguments)
 
-    def flashinfer_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
+    def flashinfer_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias, *_serving):
         offsets = cu
         if offsets is None:
             offsets = torch.arange(q.shape[0] + 1, dtype=torch.int64, device=q.device) * q.shape[1]
@@ -87,7 +87,7 @@ def test_gdn_fwd_bench(case) -> None:
 
     decode = flashinfer_op("gated_delta_rule_decode_pretranspose", "gdn_decode")
 
-    def decode_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
+    def decode_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias, *_serving):
         if not params["use_gate_in_kernel"]:
             a_log = torch.zeros(v.shape[2], device=q.device, dtype=torch.float32)
             dt_bias = torch.zeros_like(a_log)
@@ -144,4 +144,7 @@ def test_gdn_fwd_bench(case) -> None:
                     "the workload's log decay and step size rounds both"
                 ),
             )
+    if inputs[10] is not None:
+        # The baselines take one state a sequence, not slots of a pool.
+        implementations = {}
     bench.Runner(op, case).compare(implementations)

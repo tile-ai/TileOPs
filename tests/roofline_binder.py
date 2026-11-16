@@ -22,6 +22,7 @@ from math import prod
 import torch
 
 from tileops._ops._signature_codegen import install
+from tileops._ops.moe.moe_grouped_gemm_fp8 import MoEGroupedGEMMFP8FwdOp
 from tileops._ops.op_base import Op
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
@@ -50,6 +51,8 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
 
     body = {"__init__": construct}
     body["forward"] = lambda self, *args: None
+    if "output" in _SLAB_ROWS.get(op_name, ()):
+        body["eval_roofline_read_bytes"] = MoEGroupedGEMMFP8FwdOp.eval_roofline_read_bytes
     cls = type(f"Signature{op_name}", (Op,), body)
     if not install(cls, entry):
         raise ValueError(f"{op_name}: the signature does not generate")
@@ -60,11 +63,13 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
 _EXPERT_WEIGHTS = {
     "MoEGroupedGEMMFwdOp": ("b", "bias"),
     "MoEGroupedGEMMFP8FwdOp": ("b", "b_scale"),
+    "MoEGroupedGEMMMXFP4FwdOp": ("b", "b_scale"),
     "MoEExpertMLPFwdOp": ("w_gate_up", "w_down", "b_gate_up", "b_down"),
 }
 _SLAB_ROWS = {
     "MoEGroupedGEMMFwdOp": ("a", "output"),
     "MoEGroupedGEMMFP8FwdOp": ("a", "a_scale", "output"),
+    "MoEGroupedGEMMMXFP4FwdOp": ("a", "a_scale", "output"),
     "MoEExpertMLPFwdOp": ("expert_input", "output"),
 }
 

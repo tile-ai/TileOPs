@@ -119,6 +119,8 @@ def assert_quantized(got: Any, expected: Any, scale_rtol: float = 1e-6) -> None:
     outputs = got if isinstance(got, (tuple, list)) else (got,)
     targets = expected if isinstance(expected, (tuple, list)) else (expected,)
     for output, target in zip(outputs, targets, strict=True):
+        if output is None and target is None:
+            continue
         assert output.shape == target.shape and output.dtype == target.dtype
         if output.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
             step = (output.view(torch.uint8).int() - target.view(torch.uint8).int()).abs()
@@ -129,6 +131,11 @@ def assert_quantized(got: Any, expected: Any, scale_rtol: float = 1e-6) -> None:
         elif output.dtype == torch.int8:
             step = (output.int() - target.int()).abs()
             assert not step.numel() or step.max().item() <= 1, "INT8 code differs by > 1"
+        elif output.dtype == torch.float8_e8m0fnu:
+            # A power-of-two scale has no neighbour within any relative tolerance below 1.
+            assert torch.equal(output.view(torch.uint8), target.view(torch.uint8)), (
+                "E8M0 scales differ"
+            )
         else:
             torch.testing.assert_close(output, target, rtol=scale_rtol, atol=0)
 

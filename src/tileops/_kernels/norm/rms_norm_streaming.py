@@ -13,7 +13,12 @@ from tvm import DataType
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
+from tileops._kernels.norm.call_spec import (
+    LayerNormCall,
+    RMSNormCall,
+    RMSNormFwdInterface,
+    whole_row_scale_refusal,
+)
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES
 
@@ -107,7 +112,9 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
     preferred_over = frozenset({"rms_norm", "rms_norm_two_pass"})
 
     @classmethod
-    def refusal(cls, call: LayerNormCall) -> "str | None":
+    def refusal(cls, call: RMSNormCall) -> "str | None":
+        if (reason := whole_row_scale_refusal(call)) is not None:
+            return reason
         element_bytes = call.dtype.itemsize
         budget = call.smem_budget
         if align_up(call.n, ALIGNMENT) * element_bytes <= budget:

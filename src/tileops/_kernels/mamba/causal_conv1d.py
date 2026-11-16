@@ -42,6 +42,20 @@ def _activate(acc, silu: bool):
     return approx_fdiv(acc, T.float32(1.0) + T.exp2(-acc * T.float32(LOG2E)))
 
 
+def _dense_state_refusal(call: "CausalConv1dCall | CausalConv1dUpdateCall") -> str | None:
+    """Why a kernel holding one ``W - 1``-token state a sequence, in batch order, and filters
+    in the activation dtype does not serve *call*, or ``None`` when it does."""
+    if call.weight_dtype != call.dtype:
+        return f"the filters are read in the activation dtype; a {call.weight_dtype} weight is not"
+    if call.dilation != 1:
+        return f"the filter taps are adjacent tokens; dilation {call.dilation} is not served"
+    if call.state_len != call.width - 1:
+        return f"a state is {call.width - 1} tokens wide; {call.state_len} columns are not served"
+    if call.pooled:
+        return "the states are read in batch order; a state pool is not served"
+    return None
+
+
 def _vector(dim: int, dtype: torch.dtype) -> int:
     """Channels a thread holds: the widest of one 16-byte vector, 4, 2 or 1 that divides *dim*."""
     widest = 16 // torch.empty((), dtype=dtype).element_size()
@@ -337,6 +351,10 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
+    def refusal(cls, call: CausalConv1dCall) -> str | None:
+        return _dense_state_refusal(call) or super().refusal(call)
+
+    @classmethod
     def entry_for(cls, call: CausalConv1dCall) -> Entry:
         args = (call.dim, call.width, call.dtype, call.has_bias, call.has_init, call.silu)
         index = call.device.index if call.device is not None else None
@@ -483,6 +501,14 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def refusal(cls, call: CausalConv1dUpdateCall) -> str | None:
+        if call.varlen:
+            return "the kernel convolves one token a sequence; query_start_loc is not served"
+        if call.rollback:
+            return "the kernel shifts the state by one token; num_accepted_tokens is not served"
+        return _dense_state_refusal(call) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: CausalConv1dUpdateCall) -> Entry:

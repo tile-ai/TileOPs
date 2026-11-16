@@ -498,7 +498,7 @@ def test_spelling_out_the_ungrouped_defaults_changes_nothing() -> None:
         some=["correction_bias"],
     )
     workload = FusedTopKWorkload(call)
-    gating, bias = workload.gen_inputs()
+    gating, bias, _ids = workload.gen_inputs()
     default = FusedTopKFwdOp(8, "sigmoid", True)
     spelled = FusedTopKFwdOp(
         8, "sigmoid", True, num_expert_group=1, topk_group=1, routed_scaling_factor=1.0

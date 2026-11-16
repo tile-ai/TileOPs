@@ -755,7 +755,18 @@ def _norm_reference(name, inputs, p, native=False):
         weight, *bias = inputs[1:]
     shape = tuple(p.get("normalized_shape", (x.shape[-1],)))
     if name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
-        out = F.rms_norm(wide(x), shape, wide(weight), eps).to(x.dtype)
+        # A zero-centered weight scales by 1 + weight in float32, as vLLM's GemmaRMSNorm.
+        zero_centered = p.get("zero_centered") and weight is not None
+        h = x.float() if zero_centered else wide(x)
+        scale = weight.float() + 1 if zero_centered else wide(weight)
+        group = p.get("group_size")
+        if group is None:
+            out = F.rms_norm(h, shape, scale, eps)
+        else:
+            rows = h.flatten(-len(shape)).unflatten(-1, (-1, group))
+            normed = F.rms_norm(rows, (group,), None, eps).flatten(-2).view(x.shape)
+            out = normed if scale is None else normed * scale
+        out = out.to(x.dtype)
     else:
         b = wide(bias[0]) if bias else None
         out = F.layer_norm(wide(x), shape, wide(weight), b, eps).to(x.dtype)
@@ -769,16 +780,32 @@ def fused_qk_norm_rope_result(subject, *inputs):
 
 
 def fused_qk_norm_rope_heads(
-    qkv, q_weight, k_weight, cos_sin_cache, positions, num_heads, num_kv_heads, eps, rope_layout
+    qkv,
+    q_weight,
+    k_weight,
+    cos_sin_cache,
+    positions,
+    num_heads,
+    num_kv_heads,
+    eps,
+    rope_layout,
+    zero_centered=False,
+    mrope_section=None,
+    mrope_interleaved=False,
 ):
     """The q and k columns of ``qkv`` after the op, ``(N, (num_heads + num_kv_heads) * D)``.
 
-    Float32 throughout; each value rounds once to the ``qkv`` dtype.
+    Float32 throughout; each value rounds once to the ``qkv`` dtype. ``zero_centered``
+    scales by ``1 + weight``; with ``mrope_section``, ``positions`` is ``(3, N)`` and each
+    frequency takes the cache row of the position its section names, as vLLM's
+    ``MRotaryEmbedding`` does.
     """
     dim = q_weight.shape[0]
     tokens = qkv.shape[0]
     half = cos_sin_cache.shape[1] // 2
     cos, sin = cos_sin_cache[positions].float().chunk(2, -1)
+    if mrope_section is not None:
+        cos, sin = (mrope_rows(x, mrope_section, mrope_interleaved) for x in (cos, sin))
     cos, sin = cos[:, None, :], sin[:, None, :]
     heads = []
     for first, count, weight in (
@@ -786,7 +813,8 @@ def fused_qk_norm_rope_heads(
         (num_heads, num_kv_heads, k_weight),
     ):
         x = qkv[:, first * dim : (first + count) * dim].float().view(tokens, count, dim)
-        y = x * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps) * weight.float()
+        scale = weight.float() + 1 if zero_centered else weight.float()
+        y = x * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps) * scale
         rot, rest = y[..., : 2 * half], y[..., 2 * half :]
         if rope_layout == "neox":
             a, b = rot[..., :half], rot[..., half:]
@@ -796,6 +824,17 @@ def fused_qk_norm_rope_heads(
             rotated = torch.stack([a * cos - b * sin, b * cos + a * sin], -1).flatten(-2)
         heads.append(torch.cat([rotated, rest], -1).reshape(tokens, count * dim))
     return torch.cat(heads, -1).to(qkv.dtype)
+
+
+def mrope_rows(part, sections, interleaved):
+    """The ``(N, R / 2)`` cosines or sines of ``part`` ``(3, N, R / 2)``, each frequency from
+    the temporal, height or width row its section names."""
+    if interleaved:
+        picked = part[0].clone()
+        picked[..., 1 : sections[1] * 3 : 3] = part[1, ..., 1 : sections[1] * 3 : 3]
+        picked[..., 2 : sections[2] * 3 : 3] = part[2, ..., 2 : sections[2] * 3 : 3]
+        return picked
+    return torch.cat([m[i] for i, m in enumerate(part.split(list(sections), -1))], -1)
 
 
 class FusedQKNormRoPEWorkload(WorkloadBase):
@@ -819,18 +858,24 @@ class FusedQKNormRoPEWorkload(WorkloadBase):
         cache_dtype: torch.dtype,
         rope_layout: str = "neox",
         eps: float = 1e-6,
+        zero_centered: bool = False,
+        mrope_section: "list[int] | None" = None,
+        mrope_interleaved: bool = False,
     ) -> None:
         self.positions = positions
         self.num_heads, self.num_kv_heads = num_heads, num_kv_heads
         self.dim, self.rot, self.positions_max = dim, rot, positions_max
         self.dtype, self.cache_dtype = dtype, cache_dtype
         self.rope_layout, self.eps = rope_layout, eps
+        self.zero_centered = zero_centered
+        self.mrope_section, self.mrope_interleaved = mrope_section, mrope_interleaved
 
     def gen_inputs(self):
         device = run_device()
         width = (self.num_heads + 2 * self.num_kv_heads) * self.dim
+        tokens = len(self.positions[-1]) if self.mrope_section is not None else len(self.positions)
         qkv = torch.randn(
-            (len(self.positions), width),
+            (tokens, width),
             dtype=torch.float32,
             device=device,
             generator=self.rng("qkv", device=device),
@@ -864,6 +909,9 @@ class FusedQKNormRoPEWorkload(WorkloadBase):
             self.num_kv_heads,
             self.eps,
             self.rope_layout,
+            self.zero_centered,
+            self.mrope_section,
+            self.mrope_interleaved,
         )
         return out
 
@@ -885,6 +933,9 @@ class FusedQKNormRoPECall(CallWorkload, FusedQKNormRoPEWorkload):
             cache_dtype=getattr(torch, call.tensors["cos_sin_cache"][1]),
             rope_layout=call.params["rope_layout"],
             eps=call.params["eps"],
+            zero_centered=call.params["zero_centered"],
+            mrope_section=call.params["mrope_section"],
+            mrope_interleaved=call.params["mrope_interleaved"],
         )
 
     gen_inputs = FusedQKNormRoPEWorkload.gen_inputs

@@ -11,6 +11,8 @@ from workloads.workload_base import manifest_call
 def empty_selection(request):
     call = manifest_call(
         "DSAPagedFwdOp",
+        {"KV": "uint8"},
+        DK=576,
         S_q=2,
         H=64,
         K=64,
@@ -20,7 +22,7 @@ def empty_selection(request):
         cache_lens="repeat(100, 2)",
     )
     workload = DSAPagedCall(call, device="cpu")
-    inputs = workload.gen_inputs()
+    inputs = workload.gen_inputs()[:5]
     if request.param == "all":
         inputs[-1].fill_(-1)
     else:

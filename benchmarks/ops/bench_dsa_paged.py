@@ -8,15 +8,18 @@ from benchmarks.baselines import vllm_op
 from tileops.attention import DSAPagedFwdOp
 
 
-def _flashmla(case: bench.Case) -> bench.Implementation:
-    """FlashMLA's sparse FP8 decode on the case's cache.
+def _flashmla(case: bench.Case) -> "bench.Implementation | None":
+    """FlashMLA's sparse FP8 decode on the case's cache, or None for a bfloat16 cache, which
+    its sparse decode does not take.
 
     Positions resolve to physical rows outside the timed call. The SM90 kernel takes no
     ``topk_length``, so it reads every slot.
     """
+    q, kv_cache, block_table, cache_seqlens, indices, attn_sink = case.inputs
+    if kv_cache.dtype != torch.uint8:
+        return None
     run = vllm_op("flash_mla_with_kvcache", "v1.attention.ops.flashmla")
     metadata = vllm_op("get_mla_metadata", "v1.attention.ops.flashmla")
-    q, kv_cache, block_table, cache_seqlens, indices = case.inputs
     page_size = kv_cache.shape[1]
     pos = indices.long()
     live = (pos >= 0) & (pos < cache_seqlens.long()[:, None, None])
@@ -25,13 +28,12 @@ def _flashmla(case: bench.Case) -> bench.Implementation:
     rows = torch.where(live, page * page_size + slot % page_size, -1).to(torch.int32)
     schedule, _ = metadata()
     cache = kv_cache.unsqueeze(2)
-    sm_scale = case.arguments["sm_scale"]
-    head_dim_v = 512  # the latent width, which is also the value width
+    sm_scale, head_dim_v = case.arguments["sm_scale"], case.arguments["head_dim_v"]
 
     def fn():
         o, lse = run(
             q, cache, None, None, head_dim_v, schedule, softmax_scale=sm_scale, is_fp8_kvcache=True,
-            indices=rows,
+            indices=rows, attn_sink=attn_sink,
         )  # fmt: skip
         # FlashMLA returns the log-sum-exp as (batch, heads, seq_len), the op's layout.
         return o, lse
@@ -42,4 +44,5 @@ def _flashmla(case: bench.Case) -> bench.Implementation:
 @pytest.mark.parametrize("case", bench.cases(DSAPagedFwdOp), ids=lambda case: case.id)
 def test_dsa_paged_bench(case) -> None:
     op = DSAPagedFwdOp(**case.arguments)
-    bench.Runner(op, case).compare({"flashmla": _flashmla(case)})
+    flashmla = _flashmla(case)
+    bench.Runner(op, case).compare({} if flashmla is None else {"flashmla": flashmla})

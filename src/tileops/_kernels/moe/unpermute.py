@@ -108,6 +108,8 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
             return f"requires float16 or bfloat16, got {call.input_dtype}"
         if call.output_dtype != call.input_dtype:
             return f"writes {call.input_dtype}, not {call.output_dtype}"
+        if call.has_residual:
+            return "adds no residual to the reduction"
         return super().refusal(call)
 
     @classmethod
@@ -178,6 +180,7 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         inverse_indices: torch.Tensor,
         topk_weights: torch.Tensor,
         out: torch.Tensor | None = None,
+        residual: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run moe_unpermute.
 
@@ -188,6 +191,7 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
             out: optional [T, H] output buffer to write into and reuse across
                 calls. Must not overlap any input. Allocated internally with
                 ``torch.empty`` if omitted.
+            residual: Never passed: ``refusal`` declines a call with a residual.
 
         Returns:
             output: [T, H] bf16/fp16 (``out`` if provided).

@@ -14,7 +14,12 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
+from tileops._kernels.norm.call_spec import (
+    LayerNormCall,
+    RMSNormCall,
+    RMSNormFwdInterface,
+    whole_row_scale_refusal,
+)
 from tileops._kernels.streaming_load import load16
 from tileops._utils import WARP_LANES
 
@@ -208,7 +213,9 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
         return None
 
     @classmethod
-    def refusal(cls, call: LayerNormCall) -> "str | None":
+    def refusal(cls, call: RMSNormCall) -> "str | None":
+        if (reason := whole_row_scale_refusal(call)) is not None:
+            return reason
         if cls._plan(call.n, call.dtype, call.smem_budget) is None:
             return f"a row of {call.n} {call.dtype} elements does not fit on chip"
         return super().refusal(call)

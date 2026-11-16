@@ -481,6 +481,25 @@ def test_category_and_representable_follow_torch(dtype):
     ]
 
 
+def test_e8m0_takes_its_torch_width_and_category():
+    import torch
+
+    from tileops.manifest._dtype_rules import DTYPE_BITS, FLOAT8_DTYPES
+
+    assert DTYPE_BITS["float8_e8m0fnu"] == 8 * torch.float8_e8m0fnu.itemsize
+    assert PRIMITIVES["category"]("float8_e8m0fnu") == "float"
+    assert "float8_e8m0fnu" in FLOAT8_DTYPES
+
+
+def test_e8m0_holds_powers_of_two_up_to_its_largest_and_no_infinity():
+    import torch
+
+    largest = torch.finfo(torch.float8_e8m0fnu).max
+    assert PRIMITIVES["representable"](largest, "float8_e8m0fnu")
+    assert not PRIMITIVES["representable"](2 * largest, "float8_e8m0fnu")
+    assert not PRIMITIVES["representable"](math.inf, "float8_e8m0fnu")
+
+
 def test_adt_invariant_narrows_the_domain():
     adts = {
         "Flagged": {

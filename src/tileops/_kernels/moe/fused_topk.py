@@ -489,6 +489,16 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
+    def refusal(cls, call: FusedTopKCall) -> str | None:
+        if call.scoring_func not in ("softmax", "sigmoid"):
+            return f"scores with softmax or sigmoid, not {call.scoring_func}"
+        if call.with_correction_bias and call.scoring_func != "sigmoid":
+            return f"adds the correction bias to sigmoid scores, not {call.scoring_func} ones"
+        if call.with_expert_ids:
+            return "selects the experts itself and takes none from the caller"
+        return super().refusal(call)
+
+    @classmethod
     def entry_for(cls, call: FusedTopKCall) -> Entry:
         """One build per routing shape, scoring and grouping semantics, bias presence, dtype
         and device."""
@@ -611,6 +621,7 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
         self,
         gating_output: torch.Tensor,
         correction_bias: torch.Tensor | None = None,
+        expert_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run scoring + top-k selection.
 
@@ -618,6 +629,7 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             gating_output: [T, E] router logits, any float dtype.
             correction_bias: [E] float32 per-expert bias (required when
                 with_correction_bias=True, must be None otherwise).
+            expert_ids: Never passed: ``refusal`` declines a call with caller-given experts.
 
         Returns:
             topk_weights: [T, K] float32 routing weights.

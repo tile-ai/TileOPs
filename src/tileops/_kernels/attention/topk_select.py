@@ -401,6 +401,12 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
+    def refusal(cls, call: TopKSelectCall) -> str | None:
+        if call.topk > call.seq_len_kv:
+            return "requires topk at most seq_len_kv"
+        return super().refusal(call)
+
+    @classmethod
     def entry_for(cls, call: TopKSelectCall) -> Entry:
         return call, lambda: cls(
             call.batch,

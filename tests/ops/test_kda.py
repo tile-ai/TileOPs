@@ -357,14 +357,16 @@ def test_kda_raw_gate_graph_replay(seqlen, lower_bound):
     """Replay reads changed gates and initial state and overwrites both returned tensors."""
     test, op = _raw_gate_test(1, seqlen, 64, lower_bound, ["initial_state", "dt_bias"])
     inputs = test.gen_inputs()
+    # The keyword-only state slot inputs are absent; the rest go by position.
+    positional = inputs[:-2]
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(stream):
-        op(*inputs)
+        op(*positional)
     torch.cuda.current_stream().wait_stream(stream)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        output, state = op(*inputs)
+        output, state = op(*positional)
     for _ in range(2):
         inputs[0].neg_()
         inputs[2].mul_(0.75)
@@ -375,7 +377,7 @@ def test_kda_raw_gate_graph_replay(seqlen, lower_bound):
         output.fill_(float("nan"))
         state.fill_(float("nan"))
         graph.replay()
-        test.check(op, *inputs, runs=lambda *args: (output, state))
+        test.check(op, *inputs, runs=lambda *args, **keywords: (output, state))
 
 
 @pytest.mark.smoke
@@ -511,10 +513,10 @@ def test_kda_raw_gate_decode_continues_from_prefill() -> None:
     test, op = _raw_gate_test(1, 65, 64, None, ["initial_state", "dt_bias"])
     inputs = test.gen_inputs()
     op = op
-    first = list(inputs)
+    first = list(inputs[:-2])
     first[:5] = [tensor[:, :-1] for tensor in inputs[:5]]
     first_o, carried = op(*first)
-    second = list(inputs)
+    second = list(inputs[:-2])
     second[:5] = [tensor[:, -1:] for tensor in inputs[:5]]
     second[5] = carried
     second_o, final = op(*second)

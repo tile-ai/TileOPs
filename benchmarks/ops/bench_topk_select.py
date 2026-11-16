@@ -34,7 +34,7 @@ def _flashinfer_topk(workload: TopKSelectCall, starts: torch.Tensor, ends: torch
     It selects over the last dimension, which is ``seq_len_kv`` only while
     ``kv_group`` is 1, and over the whole row, so a narrowed ``[start, end)`` is out.
     """
-    if workload.kv_group != 1:
+    if workload.kv_group != 1 or workload.topk > workload.seq_len_kv:
         return None
     if not (bool((starts == 0).all()) and bool((ends == workload.seq_len_kv).all())):
         return None

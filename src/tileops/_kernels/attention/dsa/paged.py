@@ -511,11 +511,15 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
 
     @classmethod
     def refusal(cls, call: DSAPagedCall) -> str | None:
+        if call.cache_dtype != torch.uint8:
+            return "reads the FP8 656-byte cache row only"
+        if call.has_attn_sink:
+            return "does not serve attn_sink"
         if call.heads % (64 * cls.cluster) != 0:
             return f"requires a multiple of {64 * cls.cluster} heads"
         if call.topk % 64 != 0:
             return "requires topk a multiple of 64"
-        return None
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: DSAPagedCall) -> Entry:
@@ -560,7 +564,7 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         )
         return CompiledProgram(kernel), combine
 
-    def forward(self, q, kv_cache, block_table, cache_seqlens, indices):
+    def forward(self, q, kv_cache, block_table, cache_seqlens, indices, attn_sink=None):
         self._require_devices(
             q=q, kv_cache=kv_cache, block_table=block_table, cache_seqlens=cache_seqlens,
             indices=indices,

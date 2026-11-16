@@ -31,6 +31,8 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         One token continuing a 64- or 128-wide square state, in either layout, under
         any combination of the recurrence flags the operator fixes.
         """
+        if call.pooled or call.rollback:
+            return "reads and writes the states in batch order; a state pool is not served"
         heads = head_count_refusal(call.heads, call.value_heads)
         if heads is not None:
             return heads

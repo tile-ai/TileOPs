@@ -15,8 +15,14 @@ def _ssd_decode_binder(op: Any, case: Any) -> Implementation:
 
 def _conv_state_binder(op: Any, case: Any) -> Implementation:
     """The op on a private copy of the convolution state it overwrites, returning output and
-    state."""
-    return private_inputs(lambda *args: conv_state_result(op, *args), case.inputs, 2)
+    state; it receives a ``kw_only`` input by name, as its ``forward`` takes it."""
+    signature = case._call.signature
+
+    def run(*inputs: Any) -> Any:
+        args, keywords = signature.forward_arguments(inputs)
+        return conv_state_result(op, *args, **keywords)
+
+    return private_inputs(run, case.inputs, 2)
 
 
 ENTRIES = {

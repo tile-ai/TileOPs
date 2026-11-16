@@ -36,14 +36,14 @@ def matmul_fp32_reduction(
 
 
 def _summation_order_verification(dtype: torch.dtype, length: int):
-    """Tolerances of a 16-bit product that sums *length* terms per output element.
+    """Tolerances of a product rounded to *dtype* that sums *length* terms per output element.
 
     The kernel sums them in another order than the float32 reference; a cancelled output
     keeps only that order's error, which grows with *length*.
     """
     from workloads.numerics import Exact
 
-    tol = 1e-3 if dtype == torch.float16 else 1.6e-2
+    tol = {torch.float16: 1e-3, torch.float32: 1e-5}.get(dtype, 1.6e-2)
     return Exact(atol=tol * max(1.0, length / 2048), rtol=tol)
 
 
@@ -57,6 +57,7 @@ class GEMMWorkload(WorkloadBase):
         trans_a: bool = False,
         trans_b: bool = False,
         bias: bool = False,
+        out_dtype: torch.dtype | None = None,
     ):
         self.m = m
         self.n = n
@@ -65,6 +66,7 @@ class GEMMWorkload(WorkloadBase):
         self.trans_a = trans_a
         self.trans_b = trans_b
         self.bias = bias
+        self.out_dtype = out_dtype
 
     @classmethod
     def from_call(cls, call: Any) -> "GEMMWorkload":
@@ -78,6 +80,9 @@ class GEMMWorkload(WorkloadBase):
             indices["trans_a"],
             indices["trans_b"],
             bias=call.present("bias"),
+            out_dtype=None
+            if call.params["out_dtype"] is None
+            else getattr(torch, call.params["out_dtype"]),
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -99,15 +104,20 @@ class GEMMWorkload(WorkloadBase):
         out = torch.matmul(a.float(), b.float())
         if bias is not None:
             out = out + bias.float()
-        return out.to(a.dtype)
+        return out.to(self.out_dtype or a.dtype)
 
     def torch_program(
         self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
     ) -> torch.Tensor:
-        return matmul_fp32_reduction(a.T if self.trans_a else a, b.T if self.trans_b else b, bias)
+        a, b = a.T if self.trans_a else a, b.T if self.trans_b else b
+        if self.out_dtype is not None:
+            # F.linear on float32-cast operands, as DeepSeek-V4-Flash computes router logits.
+            out = torch.matmul(a.float(), b.float())
+            return out if bias is None else out + bias.float()
+        return matmul_fp32_reduction(a, b, bias)
 
     def verification(self, *inputs):
-        return _summation_order_verification(self.dtype, self.k)
+        return _summation_order_verification(self.out_dtype or self.dtype, self.k)
 
 
 class GEMMFP8Workload(WorkloadBase):

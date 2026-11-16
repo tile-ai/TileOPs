@@ -30,6 +30,15 @@ MANIFEST = {
     "SpecFwdOp": {**_ENTRY, "status": "spec-only"},
 }
 CASE = "siluandmul-0-bfloat16"
+# FooFwdOp with a second, float16 case.
+TWO_CASES = {
+    "FooFwdOp": {
+        **MANIFEST["FooFwdOp"],
+        "workloads": [
+            {**_ENTRY["workloads"][0], "dtype_cases": [{"T": "bfloat16"}, {"T": "float16"}]}
+        ],
+    }
+}
 
 
 def _report(tmp_path: Path, *testcases: str) -> Path:
@@ -45,9 +54,21 @@ def _passed(name: str, ops: str, prop: str = "ops") -> str:
     return f'<testcase classname="benchmarks.ops.bench_foo" name="{name}">{props}</testcase>'
 
 
+def _unavailable(name: str, ops: str) -> str:
+    """A testcase benchmarks/conftest.py skipped because no implementation serves its row."""
+    props = (
+        f'<properties><property name="unavailable" value="no implementation serves this call"/>'
+        f'<property name="ops" value="{ops}"/></properties>'
+    )
+    skipped = '<skipped message="unavailable: no implementation serves this call"/>'
+    return (
+        f'<testcase classname="benchmarks.ops.bench_foo" name="{name}">{skipped}{props}</testcase>'
+    )
+
+
 def _verdicts(path: Path) -> dict[str, str]:
-    recorded, _ = coverage.parse_run(path)
-    return {op: verdict for op, verdict, _ in coverage.verdicts(recorded, MANIFEST)}
+    recorded, unavailable, _ = coverage.parse_run(path)
+    return {op: verdict for op, verdict, _ in coverage.verdicts(recorded, MANIFEST, unavailable)}
 
 
 class TestVerdicts:
@@ -72,6 +93,14 @@ class TestVerdicts:
         assert set(_verdicts(both).values()) == {coverage.OK}
         first = _report(tmp_path, _passed(f"test_foo[{CASE}]", "FooFwdOp", prop="op"))
         assert _verdicts(first)["FooFwdOp"] == coverage.OK
+
+    def test_a_case_no_implementation_serves_is_unavailable_unless_every_case_is(self, tmp_path):
+        path = _report(
+            tmp_path,
+            _unavailable(f"test_foo[{CASE}]", "FooFwdOp"),
+            _passed(f"test_bar[{CASE}]", "BarFwdOp"),
+        )
+        assert _verdicts(path) == {"FooFwdOp": coverage.FAIL, "BarFwdOp": coverage.OK}
 
 
 class TestExitCodes:
@@ -105,6 +134,25 @@ class TestExitCodes:
                 '<property name="tileops_unverified" value="no reference"/>'
                 '<property name="tileops_no_ratio" value="True"/></properties>',
             )
+        assert coverage.main(["--bench-xml", str(_report(tmp_path, case))]) == coverage.EXIT_GAP
+
+    def test_an_unavailable_case_is_neither_a_failure_nor_a_gap(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(coverage, "load_manifest", lambda: TWO_CASES)
+        path = _report(
+            tmp_path,
+            _unavailable(f"test_a[{CASE}]", "FooFwdOp"),
+            _passed("test_a[siluandmul-0-float16]", "FooFwdOp"),
+        )
+        out = tmp_path / "coverage.md"
+        assert coverage.main(["--bench-xml", str(path), "--output", str(out)]) == coverage.EXIT_OK
+        assert "| `FooFwdOp` | UNAVAILABLE |" in out.read_text()
+
+    def test_an_unavailable_case_that_also_errored_fails(self, tmp_path, monkeypatch):
+        """A teardown error after the skip writes both elements; the error wins."""
+        monkeypatch.setattr(coverage, "load_manifest", lambda: MANIFEST)
+        case = _unavailable(f"test_a[{CASE}]", "BarFwdOp,FooFwdOp").replace(
+            "</testcase>", '<error message="teardown"/></testcase>'
+        )
         assert coverage.main(["--bench-xml", str(_report(tmp_path, case))]) == coverage.EXIT_GAP
 
     def test_declared_partial_verification_counts_as_evidence(self, tmp_path, monkeypatch):

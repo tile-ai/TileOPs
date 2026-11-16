@@ -63,7 +63,9 @@ class GEMMFwdOp(Op):
 
     A bias is added to every row of the product: the contraction accumulates in
     ``float32``, the bias is added to that sum, and the result is rounded once to the
-    input dtype, as ``torch.nn.functional.linear`` rounds it.
+    input dtype, as ``torch.nn.functional.linear`` rounds it. ``out_dtype=torch.float32``
+    returns that sum unrounded; the in-tree kernels do not serve it, and such a call raises
+    ``OpNotAvailableError`` when a kernel is selected.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -78,6 +80,7 @@ class GEMMFwdOp(Op):
         trans_a: bool = False,
         trans_b: bool = True,
         *,
+        out_dtype: torch.dtype | None = None,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtypes are taken from the first call.
@@ -85,11 +88,14 @@ class GEMMFwdOp(Op):
         Args:
             trans_a: Whether ``a`` is stored transposed ($[K \\times M]$).
             trans_b: Whether ``b`` is stored transposed ($[N \\times K]$). Default ``True`` (NT).
+            out_dtype: ``torch.float32`` for an unrounded float32 ``d``; ``None`` rounds to
+                the operands' dtype.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.trans_a = trans_a
         self.trans_b = trans_b
+        self.out_dtype = out_dtype
         super().__init__(target=target)
 
     def forward(
@@ -105,7 +111,8 @@ class GEMMFwdOp(Op):
             bias: Optional bias, $[N]$, in the dtype of the inputs.
 
         Returns:
-            The product plus bias, $[M \\times N]$, in the dtype of the inputs.
+            The product plus bias, $[M \\times N]$, in ``out_dtype``, or the dtype of the
+            inputs when it is ``None``.
 
         Example:
             ```python linenums="1"
@@ -128,6 +135,7 @@ class GEMMFwdOp(Op):
                 trans_a=self.trans_a,
                 trans_b=self.trans_b,
                 has_bias=bias is not None,
+                out_dtype=self.out_dtype,
                 device=a.device,
             )
 

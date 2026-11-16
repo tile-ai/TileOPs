@@ -130,6 +130,9 @@ IndexedExpertMLPFwdOp:
     func: "tileops._perf.formulas.routed_expert_mlp_roofline"
 
 FusedTopKFwdOp:
+  # sqrtsoftplus scores sqrt(softplus(x)), and expert_ids replaces the selection with the
+  # caller's experts; grouped_topk takes neither. Both follow DeepSeek-V4-Flash
+  # inference/model.py Gate.forward, whose hash-routed layers look the experts up by token id.
   family: moe
   status: implemented
   ref_api: vllm.model_executor.layers.fused_moe.router.grouped_topk_router.grouped_topk
@@ -137,7 +140,7 @@ FusedTopKFwdOp:
     forall: {T: Dim, E: Dim, G: "DType[float16 | bfloat16 | float32]"}
     params:
       top_k: {type: int}
-      scoring_func: {type: "'softmax' | 'sigmoid'", default: softmax}
+      scoring_func: {type: "'softmax' | 'sigmoid' | 'sqrtsoftplus'", default: softmax}
       renormalize: {type: bool, default: false}
       # DeepSeek grouped routing: the experts split into num_expert_group groups of
       # E // num_expert_group consecutive experts, the topk_group best groups are kept, and
@@ -149,23 +152,26 @@ FusedTopKFwdOp:
       routed_scaling_factor: {type: float, default: 1.0}
     inputs:
       gating_output: {dtype: G, shape: "[T, E]", contiguous: true}
-      # Added to the sigmoid scores for the selection only; the returned weights stay the
-      # unbiased scores (Kimi K2 routing).
+      # Added to the scores for the selection only; the returned weights stay the unbiased
+      # scores (Kimi K2 routing).
       correction_bias: {dtype: float32, shape: "[E]", type: "Tensor | None", default: null, contiguous: true}
+      # Each token's experts, chosen by the caller and distinct within a row: nothing is
+      # selected, topk_ids returns these experts, and topk_weights their scores.
+      expert_ids: {dtype: int32, shape: "[T, top_k]", type: "Tensor | None", default: null, kw_only: true, contiguous: true, values: "topk_ids(T, top_k, E)", requires: ["in_range(0, E)"]}
     outputs:
       topk_weights: {dtype: float32, shape: "[T, top_k]", contiguous: true}
       topk_ids: {dtype: int32, shape: "[T, top_k]", contiguous: true}
     shape_rules:
     - "0 < top_k"
     - "top_k <= E"
-    - "not present(correction_bias) or scoring_func == 'sigmoid'"
-    - "1 <= num_expert_group"
-    - "1 <= topk_group"
-    - "topk_group <= num_expert_group"
-    - "E % num_expert_group == 0"
-    - "top_k <= topk_group * (E // num_expert_group)"
+    # The grouping only restricts a selection, which caller-given experts skip.
+    - "present(expert_ids) or 1 <= num_expert_group"
+    - "present(expert_ids) or 1 <= topk_group"
+    - "present(expert_ids) or topk_group <= num_expert_group"
+    - "present(expert_ids) or E % num_expert_group == 0"
+    - "present(expert_ids) or top_k <= topk_group * (E // num_expert_group)"
     # The biased group score sums two experts, so each group holds at least two.
-    - "num_expert_group == 1 or not present(correction_bias) or E // num_expert_group >= 2"
+    - "present(expert_ids) or num_expert_group == 1 or not present(correction_bias) or E // num_expert_group >= 2"
     - "routed_scaling_factor > 0"
   workloads:
     # Kimi K2 routing, then Qwen3-235B-A22B, over the decode-to-prefill token range.
@@ -183,14 +189,26 @@ FusedTopKFwdOp:
   - {T: 32, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: "ds-v3-grouped-t32"}
   - {T: 64, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "ds-v3-grouped-t64"}
   - {T: 4096, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: "ds-v3-grouped-t4096"}
+    # DeepSeek-V4-Flash: 256 experts, top 6 of the biased sqrt-softplus scores of float32
+    # logits, renormalized and scaled by 1.5; its first three layers route by token id.
+  - {T: 1, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [correction_bias], dtype_cases: [{G: float32}], label: "dsv4-flash-t1"}
+  - {T: 64, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [correction_bias], dtype_cases: [{G: float32}], label: "dsv4-flash-t64"}
+  - {T: 4096, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [correction_bias], dtype_cases: [{G: float32}], label: "dsv4-flash-t4096"}
+  - {T: 32768, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [correction_bias], dtype_cases: [{G: float32}], label: "dsv4-flash-t32768"}
+  - {T: 1, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [expert_ids], dtype_cases: [{G: float32}], label: "dsv4-flash-hash-t1"}
+  - {T: 4096, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [expert_ids], dtype_cases: [{G: float32}], label: "dsv4-flash-hash-t4096"}
   roofline:
-    # Per token: scoring (sigmoid 4 per logit; softmax 3, plus the row sum and a divide per
-    # kept weight unless renormalizing), top_k compare-and-selects per logit, the bias add,
-    # and 2 * top_k to renormalize. Grouping adds the group scores (2 compare-and-selects
-    # per logit for the two best and an add per group with a bias, a max per logit without),
-    # topk_group compare-and-selects per group to keep the best groups, and a select per
-    # logit to drop the rest; a scaling factor other than one, a multiply per kept weight.
-    flops: "T * (top_k * E + (4 * E if scoring_func == 'sigmoid' else 3 * E + (0 if renormalize else E + top_k)) + (E if present(correction_bias) else 0) + (2 * top_k if renormalize else 0) + (((2 * E + num_expert_group if present(correction_bias) else E) + topk_group * num_expert_group + E) if num_expert_group > 1 else 0) + (top_k if routed_scaling_factor != 1.0 else 0))"
+    # Per token: scoring (sigmoid and sqrtsoftplus 4 per score, softmax 3 plus the row sum and
+    # a divide per kept weight unless renormalizing, or per logit when a bias selects), top_k compare-and-selects per logit,
+    # the bias add, and 2 * top_k to renormalize. Grouping adds the group scores (2
+    # compare-and-selects per logit for the two best and an add per group with a bias, a max
+    # per logit without), topk_group compare-and-selects per group to keep the best groups,
+    # and a select per logit to drop the rest; a scaling factor other than one, a multiply
+    # per kept weight. With expert_ids nothing is selected, and only the given experts are
+    # scored and read unless an unrenormalized softmax needs the whole row; the bias is not
+    # read.
+    flops: "T * ((top_k if present(expert_ids) and (scoring_func != 'softmax' or renormalize) else E) * (4 if scoring_func in ('sigmoid', 'sqrtsoftplus') else 3) + (2 * E if scoring_func == 'softmax' and present(correction_bias) and not present(expert_ids) else E + top_k if scoring_func == 'softmax' and not renormalize else 0) + (0 if present(expert_ids) else top_k * E + (E if present(correction_bias) else 0) + (((2 * E + num_expert_group if present(correction_bias) else E) + topk_group * num_expert_group + E) if num_expert_group > 1 else 0)) + (2 * top_k if renormalize else 0) + (top_k if routed_scaling_factor != 1.0 else 0))"
+    bytes: "(bytes(gating_output) * top_k // E if present(expert_ids) and (scoring_func != 'softmax' or renormalize) else bytes(gating_output)) + (bytes(correction_bias) if present(correction_bias) and not present(expert_ids) else 0) + (bytes(expert_ids) if present(expert_ids) else 0) + bytes(topk_weights) + bytes(topk_ids)"
 
 FusedMoEFwdOp:
   family: moe
@@ -457,6 +475,9 @@ MoEPostPermuteFwdOp:
       topk_weights: {dtype: float32, shape: "[T, K]", contiguous: true}
       # The materialized row each route's result sits in.
       inverse_indices: {dtype: int32, shape: "[T * K]", contiguous: true, values: "sample_indices(T * K, R)", requires: ["in_range(0, R)"]}
+      # Added to the scaled float32 reduction before the cast, as DeepSeek-V4-Flash
+      # inference/model.py MoE.forward adds its shared expert.
+      residual: {dtype: D, shape: "[T, H]", type: "Tensor | None", default: null, kw_only: true, contiguous: true}
     let:
       # Materialized rows of `expert_output`.
       R: "E * layout.max_m if layout.kind == 'masked' else P"
@@ -473,6 +494,11 @@ MoEPostPermuteFwdOp:
     # DeepSeek-V3 under EP=8: H=7168, K=8.
   - {T: 100, K: 8, P: 800, H: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
   - {T: 1, K: 8, P: 8, H: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-b1}
+    # DeepSeek-V4-Flash: hidden 4096, top 6, and the shared expert added before the cast. The
+    # model applies its routing weights before the down projection and passes ones.
+  - {T: 1, K: 6, P: 6, H: 4096, some: [residual], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: dsv4-flash-t1}
+  - {T: 4096, K: 6, P: 24576, H: 4096, some: [residual], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: dsv4-flash-t4096}
+  - {T: 32768, K: 6, P: 196608, H: 4096, some: [residual], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: dsv4-flash-t32768}
   roofline:
     # The epilogue's scale is a float field of an object the language does not read.
     func: "tileops._perf.formulas.moe_post_permute_roofline"
@@ -677,3 +703,80 @@ MoEGroupedGEMMFP8FwdOp:
     - {N: 2048, K: 768, E: 16, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: qwen3-30b-ep8-skew-down}
     - {N: 4096, K: 7168, E: 32, sizes: 'balanced_sizes(4096, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-ep8-prefill-up}
     - {N: 7168, K: 2048, E: 32, sizes: 'balanced_sizes(4096, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-ep8-prefill-down}
+
+MoEGroupedGEMMMXFP4FwdOp:
+  # MoEGroupedGEMMFP8FwdOp with MXFP4 weights: output = a * a_scale @ (e2m1(b) * b_scale)^T
+  # per expert, in float32 and rounded once to bfloat16, a_scale per 128 and b_scale per 32
+  # elements along K. b holds two e2m1 codes per byte along K, the even k in the low nibble:
+  # float4_e2m1fn_x2 in a uint8 carrier.
+  # DeepSeek-V4-Flash inference/kernel.py fp4_gemm, per expert as inference/model.py
+  # Expert.forward calls it; its one scale_dtype covers both scales.
+  family: moe
+  status: spec-only
+  ref_api: workloads.moe.ref_moe_grouped_gemm_mxfp4
+  signature:
+    types:
+      Rows:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
+        match: layout
+        cases:
+          - {when: {masked: "_"}, is: "[E, layout.max_m, C]"}
+          - {when: {contiguous: "_"}, is: "[P, C]"}
+      LayoutMetadata:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim}
+        match: layout
+        cases:
+          - {when: {masked: "_"}, is: "[E]"}
+          - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
+          - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
+    forall:
+      P: Dim
+      K: Dim
+      N: Dim
+      E: Dim
+      # Routed rows a masked shard receives, spread over its E experts; read only by `values`.
+      T: Dim
+      # Each expert's rows in a contiguous layout; read only by `values`.
+      sizes: "Seq[Int]"
+      S: "DType[float8_e8m0fnu | float32]"
+    params:
+      layout: {type: MGroupedLayout}
+    inputs:
+      a: {dtype: float8_e4m3fn, shape: "Rows[layout, E, P, K]", contiguous: true}
+      a_scale: {dtype: S, shape: "Rows[layout, E, P, K // 128]", contiguous: true}
+      b: {dtype: uint8, shape: "[E, N, K // 2]", contiguous: true}
+      b_scale: {dtype: S, shape: "[E, N, K // 32]", contiguous: true}
+      layout_metadata:
+        dtype: int32
+        shape: "LayoutMetadata[layout, E, P]"
+        contiguous: true
+        values: "moe.routed_metadata(layout, E, (T,) if layout.kind == 'masked' else sizes)"
+        requires: ["moe.layout_valid(layout, R, E)"]
+    let:
+      # Materialized rows of `a`.
+      R: "E * layout.max_m if layout.kind == 'masked' else P"
+    shape_rules:
+      - "E > 0"
+      # The activation scales tile K in exact 128-element blocks.
+      - "K % 128 == 0"
+      # An aligned layout materializes whole runs.
+      - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
+    outputs:
+      output: {dtype: bfloat16, shape: "Rows[layout, E, P, N]", buffer: out, contiguous: true}
+  roofline:
+    func: tileops._perf.formulas.moe_grouped_gemm_fp8_roofline
+  workloads:
+    # DeepSeek-V4-Flash under EP8: 32 local experts, hidden 4096, intermediate 2048, top 6.
+    # The up row is gate and up together, N = 2 * 2048 over K = 4096; the down row N = 4096
+    # over K = 2048. Decode, one token per request: a shard receives T = batch rows, and
+    # max_m = batch is the slab one expert taking every token needs.
+    - {N: 4096, K: 4096, E: 32, T: 64, layout: {masked: {max_m: 64}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-dec-b64-up}
+    - {N: 4096, K: 2048, E: 32, T: 64, layout: {masked: {max_m: 64}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-dec-b64-down}
+    - {N: 4096, K: 4096, E: 32, T: 256, layout: {masked: {max_m: 256}}, dtype_cases: [{S: float8_e8m0fnu}, {S: float32}], label: dsv4-dec-b256-up}
+    - {N: 4096, K: 2048, E: 32, T: 256, layout: {masked: {max_m: 256}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-dec-b256-down}
+    # Prefill in the contiguous layout, each expert's run padded to 128 rows: 4096 and 32768
+    # tokens at top 6 spread evenly over the 256 experts, a shard taking an eighth.
+    - {N: 4096, K: 4096, E: 32, sizes: 'balanced_sizes(3072, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-4k-up}
+    - {N: 4096, K: 2048, E: 32, sizes: 'balanced_sizes(3072, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-4k-down}
+    - {N: 4096, K: 4096, E: 32, sizes: 'balanced_sizes(24576, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-32k-up}
+    - {N: 4096, K: 2048, E: 32, sizes: 'balanced_sizes(24576, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-32k-down}

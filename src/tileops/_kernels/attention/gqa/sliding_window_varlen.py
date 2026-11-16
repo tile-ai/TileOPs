@@ -47,6 +47,9 @@ class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
             return "serves a sliding window only"
         if call.dim > 128:
             return f"requires head dimension at most 128, got {call.dim}"
+        # The score GEMM contracts the head dim in MMA steps of 16.
+        if call.dim % 16:
+            return f"requires a head dim that is a multiple of 16, got {call.dim}"
         if call.is_fp8:
             return "does not serve FP8"
         if call.has_sinks:

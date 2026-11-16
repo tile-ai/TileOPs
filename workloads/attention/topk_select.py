@@ -45,9 +45,13 @@ class TopKSelectWorkload(WorkloadBase):
         positions = torch.arange(logits.shape[2], device=logits.device)[None, None, :, None]
         valid = (positions >= starts[:, :, None, None]) & (positions < ends[:, :, None, None])
         masked = logits.masked_fill(~valid, -float("inf"))
-        indexes = torch.topk(masked, self.topk, dim=2).indices
+        selected = min(self.topk, logits.shape[2])
+        indexes = torch.topk(masked, selected, dim=2).indices
         in_window = valid.expand_as(logits).gather(2, indexes)
         indexes = torch.where(in_window, indexes, logits.shape[2])
+        indexes = torch.nn.functional.pad(
+            indexes, (0, 0, 0, self.topk - selected), value=logits.shape[2]
+        )
         return indexes.permute(0, 1, 3, 2).to(self.out_dtype)
 
     def verification(self, *inputs):

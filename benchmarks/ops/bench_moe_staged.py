@@ -33,7 +33,7 @@ def test_moe_pre_permute_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(MoEPostPermuteFwdOp), ids=lambda case: case.id)
 def test_moe_post_permute_bench(case) -> None:
-    expert_output, weights, _ = case.inputs
+    expert_output, weights, _, residual = case.inputs
     op = MoEPostPermuteFwdOp(**case.arguments)
     tokens, hidden = weights.shape[0], expert_output.shape[-1]
     out_vllm = torch.empty(tokens, hidden, dtype=expert_output.dtype, device=expert_output.device)
@@ -48,13 +48,16 @@ def test_moe_post_permute_bench(case) -> None:
         output: torch.Tensor,
         routing_weights: torch.Tensor,
         inverse_indices: torch.Tensor,
+        _residual: None = None,
     ) -> torch.Tensor:
         # The inverse indices address the flat rows of every layout's expert output.
         moe_unpermute(out_vllm, output.reshape(-1, hidden), routing_weights, inverse_indices)
         return out_vllm if scale == 1.0 else out_vllm * scale
 
     implementations = {"torch-ref": case.reference}
-    if op.out_dtype in (None, expert_output.dtype):
+    if residual is not None:
+        print(f"  [skip] {VLLM_TAG}: moe_unpermute adds no residual before its cast")
+    elif op.out_dtype in (None, expert_output.dtype):
         implementations[VLLM_TAG] = _vllm_reference
     else:
         print(

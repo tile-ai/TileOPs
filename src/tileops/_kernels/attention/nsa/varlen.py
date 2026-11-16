@@ -346,6 +346,18 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
+    def refusal(cls, call: NSACall) -> str | None:
+        if call.separate_keys:
+            return "attends to the queries' own tokens only"
+        if call.dim > 128:
+            return f"tiles the head dimension whole, at most 128, got {call.dim}"
+        if (call.heads // call.heads_kv) % 16 != 0:
+            return (
+                f"feeds each query group to a 16-row MMA, got {call.heads // call.heads_kv} heads"
+            )
+        return super().refusal(call)
+
+    @classmethod
     def entry_for(cls, call: NSACall) -> Entry:
         return call, lambda: cls(
             batch=call.batch,
@@ -414,6 +426,7 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
         block_counts: torch.Tensor,
         offsets: torch.Tensor,
         token_indices: torch.Tensor,
+        offsets_k: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self.program(self._compile)(
             q, k, v, block_indices, block_counts, offsets, token_indices
@@ -449,7 +462,7 @@ class NSAFwdVarlenTMAKernel(NSAFwdVarlenKernel):
             return f"head dim {call.dim} is not a multiple of the MMA K step 16"
         if call.selected_blocks >= 32:
             return f"{call.selected_blocks} selected blocks overflow the int32 slot mask"
-        return None
+        return super().refusal(call)
 
     def _compile(self, cfg: dict):
         """The SM90 TMA program ``forward`` launches, compiled from *cfg*."""

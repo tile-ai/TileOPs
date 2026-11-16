@@ -1,6 +1,10 @@
 # norm.yaml -- manifest entries for the norm family (docs/design/manifest.md).
 
 RMSNormFwdOp:
+  # Not torch's: group_size splits the flattened normalized_shape into runs of group_size
+  # elements, each divided by its own RMS, the weight spanning all of them (transformers
+  # Qwen4ExpTextRMSNorm); zero_centered scales by 1 + weight in float32, the result rounded
+  # once (vLLM GemmaRMSNorm).
   ref_api: torch.nn.functional.rms_norm
   family: norm
   status: implemented
@@ -9,6 +13,8 @@ RMSNormFwdOp:
     params:
       normalized_shape: {type: "list[int] | tuple[int, ...]"}
       eps: {type: "float | None", default: null}
+      group_size: {type: "int | None", default: null, kw_only: true}
+      zero_centered: {type: bool, default: false, kw_only: true}
     inputs:
       x: {dtype: T, shape: "[*B, *normalized_shape]"}
       weight: {dtype: T, shape: "[*normalized_shape]", type: "Tensor | None", default: null}
@@ -16,6 +22,7 @@ RMSNormFwdOp:
       output: {dtype: T, shape: "[*B, *normalized_shape]"}
     shape_rules:
     - "len(normalized_shape) > 0"
+    - "not present(group_size) or (group_size > 0 and prod(normalized_shape) % group_size == 0)"
   workloads:
   - {B: [2048], normalized_shape: [4096], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
   - {B: [1], normalized_shape: [4096], eps: 1.0e-6, some: [weight], dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
@@ -37,9 +44,22 @@ RMSNormFwdOp:
   - {B: [16384], normalized_shape: [131072], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-131072}
   - {B: [8192], normalized_shape: [262144], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: quack-throughput-262144}
   - {B: [1, 32], normalized_shape: [128], eps: 1.0e-06, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3-8b-qk-norm-decode}
+  # Zero-centered decoder norms and per-head q norms (Qwen3.6-27B: 5120, 24 q heads of 256;
+  # Qwen3.6-35B-A3B: 2048, 16 q heads of 256).
+  - {B: [4096], normalized_shape: [5120], eps: 1.0e-6, zero_centered: true, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-prefill}
+  - {B: [64], normalized_shape: [5120], eps: 1.0e-6, zero_centered: true, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-decode}
+  - {B: [4096, 24], normalized_shape: [256], eps: 1.0e-6, zero_centered: true, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-q-norm}
+  - {B: [4096], normalized_shape: [2048], eps: 1.0e-6, zero_centered: true, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3.6-35b-a3b-prefill}
+  - {B: [64], normalized_shape: [2048], eps: 1.0e-6, zero_centered: true, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3.6-35b-a3b-decode}
+  - {B: [4096, 16], normalized_shape: [256], eps: 1.0e-6, zero_centered: true, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3.6-35b-a3b-q-norm}
+  # Qwen3.8-Flash-Next residual-stream norms: 4 streams of 2560 normalized apart, one weight.
+  - {B: [64], normalized_shape: [10240], eps: 1.0e-6, group_size: 2560, zero_centered: true, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3.8-flash-hc-decode}
+  - {B: [4096], normalized_shape: [10240], eps: 1.0e-6, group_size: 2560, zero_centered: true, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3.8-flash-hc-pf4k}
+  - {B: [32768], normalized_shape: [10240], eps: 1.0e-6, group_size: 2560, zero_centered: true, some: [weight], dtype_cases: [{T: bfloat16}], label: qwen3.8-flash-hc-pf32k}
   roofline:
-    # Square and accumulate (2), normalize (1), and the weight (1) when present.
-    flops: "(4 if present(weight) else 3) * prod(B) * prod(normalized_shape)"
+    # Square and accumulate (2), normalize (1), and the weight (1) when present; once per
+    # weight element, the 1 + weight of a zero-centered weight.
+    flops: "(4 if present(weight) else 3) * prod(B) * prod(normalized_shape) + (prod(normalized_shape) if zero_centered and present(weight) else 0)"
 
 LayerNormFwdOp:
   ref_api: torch.nn.functional.layer_norm
@@ -144,6 +164,8 @@ FusedAddLayerNormFwdOp:
     flops: "8 * prod(B) * N"
 
 FusedAddRMSNormFwdOp:
+  # zero_centered scales by 1 + weight in float32, the output rounded once, as
+  # flashinfer.norm.gemma_fused_add_rmsnorm does.
   family: norm
   status: implemented
   ref_api: flashinfer.norm.fused_add_rmsnorm
@@ -151,6 +173,7 @@ FusedAddRMSNormFwdOp:
     forall: {B: Shape, N: Dim, T: "DType[float16 | bfloat16]"}
     params:
       eps: {type: float, default: 1.0e-6}
+      zero_centered: {type: bool, default: false, kw_only: true}
     inputs:
       input: {dtype: T, shape: "[*B, N]"}
       residual: {dtype: T, shape: "[*B, N]"}
@@ -166,8 +189,14 @@ FusedAddRMSNormFwdOp:
   - {B: [2048], N: 16384, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-405b-prefill}
   - {B: [1], N: 16384, dtype_cases: [{T: bfloat16}], label: llama-405b-decode}
   - {B: [2048], N: 5120, dtype_cases: [{T: bfloat16}], label: llama-13b-prefill}
+  # Zero-centered decoder norms of Qwen3.6-27B (5120) and Qwen3.6-35B-A3B (2048).
+  - {B: [4096], N: 5120, zero_centered: true, dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-prefill}
+  - {B: [64], N: 5120, zero_centered: true, dtype_cases: [{T: bfloat16}], label: qwen3.6-27b-decode}
+  - {B: [4096], N: 2048, zero_centered: true, dtype_cases: [{T: bfloat16}], label: qwen3.6-35b-a3b-prefill}
+  - {B: [64], N: 2048, zero_centered: true, dtype_cases: [{T: bfloat16}], label: qwen3.6-35b-a3b-decode}
   roofline:
-    flops: "5 * prod(B) * N"
+    # Once per weight element, the 1 + weight of a zero-centered weight.
+    flops: "5 * prod(B) * N + (N if zero_centered else 0)"
 
 FusedAddRMSNormPerTokenQuantFwdOp:
   # Residual add, RMSNorm and dynamic per-token quantization in one kernel. `residual_out`
@@ -355,32 +384,58 @@ FusedQKNormRoPEFwdOp:
   # RMSNorm over each q head (q_weight) and each k head (k_weight), then RoPE at
   # positions[n] on the first R columns of each q and k head, from cos_sin_cache (cos ‖ sin
   # halves). The v columns are untouched.
+  # Not vLLM's fused_qk_norm_rope: zero_centered scales by 1 + weight in float32 (vLLM
+  # GemmaRMSNorm). mrope_section and mrope_interleaved are vLLM MRotaryEmbedding's: each token
+  # has temporal, height and width positions, and rotary frequency i takes its angle from the
+  # cache row of one of them, by section (chunked) or by i % 3 within the sections
+  # (interleaved, transformers Qwen3_5TextRotaryEmbedding.apply_interleaved_mrope).
   family: norm
   status: implemented
   ref_api: vllm._custom_ops.fused_qk_norm_rope
   signature:
-    forall: {N: Dim, D: Dim, P: Dim, R: Dim, T: "DType[float16 | bfloat16]", C: "DType[float16 | bfloat16 | float32]", seq_lens: "Seq[Int]"}
+    types:
+      Positions:
+        params: {mrope: Bool, N: Dim}
+        match: mrope
+        cases:
+        - {when: false, is: "[N]"}
+        - {when: true, is: "[3, N]"}
+    forall: {N: Dim, D: Dim, P: Dim, R: Dim, T: "DType[float16 | bfloat16]", C: "DType[float16 | bfloat16 | float32]", seq_lens: "Seq[Int]", image: "Seq[Int]"}
     params:
       num_heads: {type: int}
       num_kv_heads: {type: int}
       eps: {type: float, default: 1.0e-6}
       rope_layout: {type: "'neox' | 'interleaved'", default: neox}
+      zero_centered: {type: bool, default: false, kw_only: true}
+      mrope_section: {type: "list[int] | None", default: null, kw_only: true}
+      mrope_interleaved: {type: bool, default: false, kw_only: true}
     inputs:
       qkv: {dtype: T, shape: "[N, (num_heads + 2 * num_kv_heads) * D]", mutated: true, contiguous: true}
       q_weight: {dtype: T, shape: "[D]"}
       k_weight: {dtype: T, shape: "[D]"}
       cos_sin_cache: {dtype: C, shape: "[P, R]"}
-      positions: {dtype: int64, shape: "[N]", values: "packed_positions(seq_lens)", requires: ["in_range(0, P)"]}
+      positions: {dtype: int64, shape: "Positions[present(mrope_section), N]", values: "stacked_positions((3,) if present(mrope_section) else (), seq_lens, image if present(mrope_section) else ())", requires: ["in_range(0, P)"]}
     outputs: {}
     shape_rules:
     - "num_heads > 0 and num_kv_heads > 0"
     - "R > 0 and R % 2 == 0 and R <= D"
+    - "not present(mrope_section) or (len(mrope_section) == 3 and min(mrope_section) >= 0 and sum(mrope_section) == R // 2)"
   workloads:
   - {D: 128, P: 40960, R: 128, num_heads: 32, num_kv_heads: 8, seq_lens: [64], dtype_cases: [{T: bfloat16, C: bfloat16}, {T: float16, C: float32}], label: qwen3-8b-t64}
   - {D: 128, P: 40960, R: 128, num_heads: 32, num_kv_heads: 8, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3-8b-t8192}
   - {D: 128, P: 40960, R: 128, num_heads: 64, num_kv_heads: 4, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3-235b-t4096}
   - {D: 128, P: 131072, R: 64, num_heads: 96, num_kv_heads: 8, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, C: float32}], label: glm-4.5-partial-rope}
   - {D: 128, P: 40960, R: 128, num_heads: 32, num_kv_heads: 8, seq_lens: [1000, 537, 13], rope_layout: interleaved, dtype_cases: [{T: float16, C: float16}, {T: bfloat16, C: float32}], label: interleaved-ragged}
+  # Zero-centered q/k norms and interleaved MRoPE on the first 64 of 256 columns, NeoX pairs,
+  # sections [11, 11, 10]: Qwen3.6-27B (24/4 heads), Qwen3.6-35B-A3B (16/2) and
+  # Qwen3.8-Flash-Next (24/2). A prefill opens with a 32 x 32 patch image, then text; a decode
+  # token is text.
+  - {D: 256, P: 65536, R: 64, num_heads: 24, num_kv_heads: 4, seq_lens: [4096], image: [32, 32], zero_centered: true, mrope_section: [11, 11, 10], mrope_interleaved: true, dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3.6-27b-prefill}
+  - {D: 256, P: 65536, R: 64, num_heads: 24, num_kv_heads: 4, seq_lens: "repeat(1, 64)", image: [], zero_centered: true, mrope_section: [11, 11, 10], mrope_interleaved: true, dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3.6-27b-decode}
+  - {D: 256, P: 65536, R: 64, num_heads: 16, num_kv_heads: 2, seq_lens: [4096], image: [32, 32], zero_centered: true, mrope_section: [11, 11, 10], mrope_interleaved: true, dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3.6-35b-a3b-prefill}
+  - {D: 256, P: 65536, R: 64, num_heads: 16, num_kv_heads: 2, seq_lens: "repeat(1, 64)", image: [], zero_centered: true, mrope_section: [11, 11, 10], mrope_interleaved: true, dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3.6-35b-a3b-decode}
+  - {D: 256, P: 65536, R: 64, num_heads: 24, num_kv_heads: 2, seq_lens: [4096], image: [32, 32], zero_centered: true, mrope_section: [11, 11, 10], mrope_interleaved: true, dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3.8-flash-prefill}
+  - {D: 256, P: 65536, R: 64, num_heads: 24, num_kv_heads: 2, seq_lens: "repeat(1, 64)", image: [], zero_centered: true, mrope_section: [11, 11, 10], mrope_interleaved: true, dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3.8-flash-decode}
   roofline:
     # The q and k columns are read and written, the v columns not touched, and only the
     # cos/sin rows the positions name are read.

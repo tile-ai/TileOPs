@@ -51,6 +51,8 @@ from tileops._kernels.norm.call_spec import (
     FusedAddRMSNormFwdInterface,
     LayerNormCall,
     LayerNormFwdInterface,
+    RMSNormCall,
+    whole_row_scale_refusal,
 )
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES
@@ -1221,6 +1223,10 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def refusal(cls, call: RMSNormCall) -> "str | None":
+        return whole_row_scale_refusal(call) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:

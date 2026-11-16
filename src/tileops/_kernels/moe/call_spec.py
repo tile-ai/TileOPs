@@ -49,6 +49,8 @@ class FusedTopKCall(CallSpec):
     scoring_func: str = "softmax"
     renormalize: bool = False
     with_correction_bias: bool = False
+    # Whether the caller passes each token's experts, so that nothing is selected.
+    with_expert_ids: bool = False
     num_expert_group: int = 1
     topk_group: int = 1
     routed_scaling_factor: float = 1.0
@@ -180,6 +182,8 @@ class PostPermuteCall(CallSpec):
     num_tokens: int = 0
     hidden_size: int = 0
     top_k: int = 0
+    # Whether a residual is added to the reduction before the cast.
+    has_residual: bool = False
 
 
 class FusedTopKFwdInterface(KernelInterface):
@@ -189,7 +193,10 @@ class FusedTopKFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(
-        self, gating_output: torch.Tensor, correction_bias: torch.Tensor | None = None
+        self,
+        gating_output: torch.Tensor,
+        correction_bias: torch.Tensor | None = None,
+        expert_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Score the router logits, then select each token's ``call.top_k`` experts.
 
@@ -204,8 +211,12 @@ class FusedTopKFwdInterface(KernelInterface):
             gating_output: Contiguous ``(call.num_tokens, call.num_experts)`` in
                 ``call.dtype`` on ``call.device``.
             correction_bias: Contiguous ``float32`` ``(call.num_experts,)``, passed exactly
-                when ``call.with_correction_bias``. It is added to the sigmoid scores for the
+                when ``call.with_correction_bias``. It is added to the scores for the
                 selection only; the returned weights stay the unbiased scores.
+            expert_ids: Contiguous ``int32`` ``(call.num_tokens, call.top_k)`` in
+                ``[0, call.num_experts)``, passed exactly when ``call.with_expert_ids``. They
+                replace the selection: ``topk_ids`` holds them, and the weights are their
+                scores.
 
         Returns:
             New ``(topk_weights, topk_ids)``: ``float32`` and ``int32``, both
@@ -395,12 +406,13 @@ class PostPermuteFwdInterface(KernelInterface):
         inverse_indices: torch.Tensor,
         topk_weights: torch.Tensor,
         out: torch.Tensor | None = None,
+        residual: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Weight each route's row, sum a token's routes, and store in ``call.output_dtype``.
 
         The reduction accumulates in float32 and is scaled by
-        ``call.epilogue.routed_scaling_factor`` before the cast. *out* shares no byte with
-        an input, all of which are read concurrently.
+        ``call.epilogue.routed_scaling_factor``, and *residual* is added, before the cast.
+        *out* shares no byte with an input, all of which are read concurrently.
 
         Args:
             expert_output: Contiguous ``(call.materialized_rows, call.hidden_size)`` in
@@ -410,6 +422,8 @@ class PostPermuteFwdInterface(KernelInterface):
             topk_weights: Contiguous ``float32`` ``(call.num_tokens, call.top_k)``.
             out: An optional contiguous ``(call.num_tokens, call.hidden_size)`` buffer in
                 ``call.output_dtype``, written in place and returned; ``None`` allocates one.
+            residual: Contiguous ``(call.num_tokens, call.hidden_size)`` in
+                ``call.input_dtype``, passed exactly when ``call.has_residual``.
 
         Returns:
             ``(call.num_tokens, call.hidden_size)`` in ``call.output_dtype``.

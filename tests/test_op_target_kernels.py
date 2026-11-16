@@ -96,7 +96,12 @@ def test_a_target_takes_over_the_op_and_is_asked_with_the_manifest_signature():
     ((inputs, params),) = recorder.calls
     assert inputs == (TensorSpec.of(x), TensorSpec.of(weight)), "signature.inputs order"
     # A backend gets the manifest parameters as the caller set them, ``eps=None`` included.
-    assert params == {"normalized_shape": NORMALIZED_SHAPE, "eps": None}
+    assert params == {
+        "normalized_shape": NORMALIZED_SHAPE,
+        "eps": None,
+        "group_size": None,
+        "zero_centered": False,
+    }
     assert torch.equal(out, torch.full_like(x, 7)), "the target's kernel produced the result"
 
     RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, eps=1e-5)(x, weight)
@@ -771,7 +776,12 @@ def test_params_are_this_ops_manifest_params_and_not_an_inherited_set():
         __module__ = "tileops._test_stub"
 
     assert Untyped.__manifest_param_names__ == ()
-    assert RMSNormFwdOp.__manifest_param_names__ == ("normalized_shape", "eps")
+    assert RMSNormFwdOp.__manifest_param_names__ == (
+        "normalized_shape",
+        "eps",
+        "group_size",
+        "zero_centered",
+    )
 
 
 def test_a_call_that_fails_validation_pins_nothing():

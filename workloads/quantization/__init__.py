@@ -18,12 +18,14 @@ from workloads.quantization.quantize import (
     INT8QuantPerChannelWorkload,
     INT8QuantPerTensorWorkload,
     SmoothQuantWorkload,
+    fp4_quant_per_group,
     fp8_quant_per_block,
     int4_quant_per_group,
     int8_quant_per_block,
     int8_quant_per_channel,
     int8_quant_per_tensor,
     smooth_quant,
+    unpack_e2m1,
 )
 
 __all__ = [
@@ -37,6 +39,7 @@ __all__ = [
     "INT8QuantPerChannelWorkload",
     "INT8QuantPerTensorWorkload",
     "SmoothQuantWorkload",
+    "fp4_quant_per_group",
     "fp8_quant_per_block",
     "int4_quant_per_group",
     "int8_dequant_per_block",
@@ -46,4 +49,5 @@ __all__ = [
     "int8_quant_per_channel",
     "int8_quant_per_tensor",
     "smooth_quant",
+    "unpack_e2m1",
 ]

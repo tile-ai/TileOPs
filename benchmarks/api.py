@@ -27,6 +27,7 @@ from benchmarks.timing import (
     bench_kernel,
 )
 from tileops._utils.cupti import Sample, median_busy_ms
+from tileops.backend import OpNotAvailableError
 from tileops.manifest import _manifest_key, load_adts, load_manifest, load_workloads
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
@@ -82,6 +83,18 @@ class Implementation:
     args: tuple | None = None
     reset: Callable[[], None] | None = None
     noncomparable_reason: str | None = None
+
+
+def _raise_if_unavailable(impl: Implementation, inputs: tuple, cause: Exception) -> None:
+    """Raise the op's ``OpNotAvailableError`` from *cause* where *impl* raises one."""
+    if impl.reset is not None:
+        impl.reset()
+    try:
+        impl.run(*(inputs if impl.args is None else impl.args))
+    except OpNotAvailableError as exc:
+        raise exc from cause
+    except Exception:
+        return
 
 
 def _report_value(value: Any) -> Any:
@@ -238,7 +251,15 @@ class Runner:
                 raise ValueError(
                     f"{name}: noncomparable_reason needs a reason, and the TileOps op cannot carry one"
                 )
-        checks = self._verify(plan)
+        try:
+            checks = self._verify(plan)
+        except OpNotAvailableError:
+            raise
+        except Exception as exc:
+            # The reference and the baselines run first; where one fails on a row no
+            # implementation serves yet, the row is unavailable, which the op states when called.
+            _raise_if_unavailable(plan[TILEOPS], self.case.inputs, exc)
+            raise
         if verifying():
             return {}
         torch.accelerator.synchronize()

@@ -99,9 +99,10 @@ _PREFILL = (
 def test_causal_conv1d(seq_lens, dim, width, dtype, some, activation) -> None:
     call = manifest_call(
         "CausalConv1dFwdOp",
-        {"T": dtype},
+        {"T": dtype, "Tw": dtype},
         D=dim,
         W=width,
+        L=width - 1,
         Tt=sum(seq_lens),
         seq_lens=seq_lens,
         activation=activation,
@@ -110,7 +111,7 @@ def test_causal_conv1d(seq_lens, dim, width, dtype, some, activation) -> None:
     )
     test = CausalConv1dFwdTest(call)
     op = CausalConv1dFwdOp(**call.arguments())
-    test.check(op, *test.gen_inputs(), runs=lambda *args: conv_state_result(op, *args))
+    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
 
 
 _DECODE = (
@@ -126,16 +127,17 @@ _DECODE = (
 def test_causal_conv1d_update(batch, dim, width, dtype, some, activation) -> None:
     call = manifest_call(
         "CausalConv1dUpdateFwdOp",
-        {"T": dtype},
+        {"T": dtype, "Tw": dtype},
         B=batch,
         D=dim,
         W=width,
+        L=width - 1,
         activation=activation,
         some=some,
     )
     test = CausalConv1dUpdateFwdTest(call)
     op = CausalConv1dUpdateFwdOp(**call.arguments())
-    test.check(op, *test.gen_inputs(), runs=lambda *args: conv_state_result(op, *args))
+    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
 
 
 @pytest.mark.smoke
@@ -153,7 +155,14 @@ def test_causal_conv1d_update_unaligned_state() -> None:
     got = CausalConv1dUpdateFwdOp()(x, weight, state)
 
     workload = CausalConv1dUpdateFwdCall(
-        manifest_call("CausalConv1dUpdateFwdOp", {"T": "bfloat16"}, B=batch, D=dim, W=width)
+        manifest_call(
+            "CausalConv1dUpdateFwdOp",
+            {"T": "bfloat16", "Tw": "bfloat16"},
+            B=batch,
+            D=dim,
+            W=width,
+            L=width - 1,
+        )
     )
     evidence = workload.verification(x, weight, state, None)
     compare_outputs((got, state), (expected, expected_state), evidence)
@@ -165,9 +174,10 @@ def test_prefill_bias(dtype: str) -> None:
     """A contiguous bias with an offset address preserves outputs and the final state."""
     call = manifest_call(
         "CausalConv1dFwdOp",
-        {"T": dtype},
+        {"T": dtype, "Tw": dtype},
         D=256,
         W=4,
+        L=3,
         Tt=72,
         seq_lens=[7, 65],
         some=["bias", "has_initial_state"],
@@ -182,8 +192,8 @@ def test_prefill_bias(dtype: str) -> None:
     original = storage.clone()
     op = CausalConv1dFwdOp(**call.arguments())
 
-    def run(*args):
-        result = conv_state_result(op, *args)
+    def run(*args, **keywords):
+        result = conv_state_result(op, *args, **keywords)
         torch.testing.assert_close(storage, original, rtol=0, atol=0)
         return result
 

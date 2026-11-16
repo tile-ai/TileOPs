@@ -223,27 +223,40 @@ def test_mamba2_fwd_bench(case):
     bench.Runner(op, case).compare(implementations)
 
 
-def _vllm_state_lines(conv_state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """vLLM's cache lines for *conv_state*, and the indices of the sequences' lines.
+def _vllm_state_lines(
+    conv_state: torch.Tensor, slots: torch.Tensor | None, count: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """vLLM's cache lines for *conv_state*, and the line of each of the *count* sequences.
 
-    vLLM skips cache line 0, its null block, so the sequences use lines 1 to B.
+    vLLM skips cache line 0, its null block, so a state or pool slot ``i`` is line ``i + 1``.
     """
     lines = torch.empty(
         (conv_state.shape[0] + 1, *conv_state.shape[1:]),
         dtype=conv_state.dtype,
         device=conv_state.device,
     )
-    indices = torch.arange(1, conv_state.shape[0] + 1, dtype=torch.int32, device=conv_state.device)
-    return lines, indices
+    if slots is None:
+        slots = torch.arange(count, dtype=torch.int32, device=conv_state.device)
+    return lines, slots + 1
+
+
+def _vllm_conv_differs(case) -> str | None:
+    """Why vLLM's convolution computes something else than *case*, or None."""
+    arguments = case.arguments
+    if arguments.get("dilation", 1) != 1:
+        return "vLLM convolves adjacent taps only"
+    if case.inputs[1].dtype != case.inputs[0].dtype:
+        return "vLLM takes the weight in the activation dtype"
+    return None
 
 
 @pytest.mark.parametrize("case", bench.cases(CausalConv1dFwdOp), ids=lambda case: case.id)
 def test_causal_conv1d_bench(case) -> None:
     """Prefill against vLLM, which takes the (D, Tt) transposed view of the same storage."""
-    x, weight, conv_state, cu_seqlens, bias, has_initial_state = case.inputs
+    x, weight, conv_state, cu_seqlens, bias, has_initial_state, cache_indices = case.inputs
     op = CausalConv1dFwdOp(**case.arguments)
     causal_conv1d_fn = vllm_op("causal_conv1d_fn", module=VLLM_CONV1D)
-    lines, indices = _vllm_state_lines(conv_state)
+    lines, indices = _vllm_state_lines(conv_state, cache_indices, cu_seqlens.numel() - 1)
     # vLLM reads the flags unconditionally; absent, no sequence has a state.
     flags = (
         has_initial_state
@@ -267,27 +280,38 @@ def test_causal_conv1d_bench(case) -> None:
         )
         return out.t(), lines[1:]
 
-    bench.Runner(op, case).compare({VLLM_TAG: bench.Implementation(run=run, args=(), reset=reset)})
+    vllm = bench.Implementation(
+        run=run, args=(), reset=reset, noncomparable_reason=_vllm_conv_differs(case)
+    )
+    bench.Runner(op, case).compare({VLLM_TAG: vllm})
 
 
 @pytest.mark.parametrize("case", bench.cases(CausalConv1dUpdateFwdOp), ids=lambda case: case.id)
 def test_causal_conv1d_update_bench(case) -> None:
-    x, weight, conv_state, bias = case.inputs
+    x, weight, conv_state, bias, slots, accepted, query_start_loc = case.inputs
     op = CausalConv1dUpdateFwdOp(**case.arguments)
     causal_conv1d_update = vllm_op("causal_conv1d_update", module=VLLM_CONV1D)
-    lines, indices = _vllm_state_lines(conv_state)
+    count = x.shape[0] if query_start_loc is None else query_start_loc.numel() - 1
+    lines, indices = _vllm_state_lines(conv_state, slots, count)
     out = torch.empty_like(x)
+    varlen = {}
+    if query_start_loc is not None:
+        varlen = {"query_start_loc": query_start_loc, "max_query_len": op.max_query_len}
 
     def reset() -> None:
         lines[1:].copy_(conv_state)
 
     def run() -> tuple[torch.Tensor, torch.Tensor]:
         causal_conv1d_update(
-            x, lines, weight, bias, activation=op.activation, conv_state_indices=indices, out=out
-        )
+            x, lines, weight, bias, activation=op.activation, conv_state_indices=indices,
+            num_accepted_tokens=accepted, out=out, **varlen,
+        )  # fmt: skip
         return out, lines[1:]
 
-    bench.Runner(op, case).compare({VLLM_TAG: bench.Implementation(run=run, args=(), reset=reset)})
+    vllm = bench.Implementation(
+        run=run, args=(), reset=reset, noncomparable_reason=_vllm_conv_differs(case)
+    )
+    bench.Runner(op, case).compare({VLLM_TAG: vllm})
 
 
 def _vllm_selective_scan(case) -> bench.Implementation:

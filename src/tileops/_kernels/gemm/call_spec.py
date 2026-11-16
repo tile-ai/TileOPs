@@ -36,8 +36,8 @@ __all__ = [
 
 @dataclasses.dataclass(frozen=True)
 class GEMMCall(CallSpec):
-    """One dense matmul, as the op knows it after inferring ``(m, n, k)``, and whether it
-    adds a bias."""
+    """One dense matmul, as the op knows it after inferring ``(m, n, k)``, whether it adds a
+    bias, and its output dtype: ``None`` for the operands' dtype."""
 
     m: int = 0
     n: int = 0
@@ -46,6 +46,7 @@ class GEMMCall(CallSpec):
     trans_a: bool = False
     trans_b: bool = False
     has_bias: bool = False
+    out_dtype: torch.dtype | None = None
 
 
 @dataclasses.dataclass(frozen=True)

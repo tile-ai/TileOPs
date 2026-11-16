@@ -15,10 +15,10 @@ def _torch_sdpa_dsa(workload: DSADecodeCall):
     Same computation, without the reference's float32 upcast and materialized score
     tensor. A single kv head lets the mask and the cache broadcast over the query heads.
     """
-    if workload.heads_kv != 1:
+    if workload.heads_kv != 1 or workload.call.present("attn_sink"):
         return None
 
-    def fn(q, kv, indices):
+    def fn(q, kv, indices, attn_sink=None):
         b, sq, h, dim_q = q.shape
         sk = kv.shape[1]
         dim = workload.dim
@@ -42,10 +42,14 @@ def _torch_gather_dsa(workload: DSADecodeCall):
 
     Gathering beats masking only where the selection is smaller than the cache.
     """
-    if workload.heads_kv != 1 or workload.topk >= workload.seq_len_kv:
+    if (
+        workload.heads_kv != 1
+        or workload.topk >= workload.seq_len_kv
+        or workload.call.present("attn_sink")
+    ):
         return None
 
-    def fn(q, kv, indices):
+    def fn(q, kv, indices, attn_sink=None):
         b, sq, h, dim_q = q.shape
         sk = kv.shape[1]
         dim, topk = workload.dim, indices.shape[-1]
@@ -69,15 +73,18 @@ def _flashmla_sparse(workload: DSADecodeCall):
     if scale is None:
         scale = (workload.dim + workload.dim_tail) ** -0.5
 
-    def fn(q, kv, indices):
+    def fn(q, kv, indices, attn_sink=None):
         query_pos = torch.arange(q.shape[1], device=q.device) + workload.q_start_index_s
         valid = (indices >= 0) & (indices < kv.shape[1])
-        valid &= (
-            indices * workload.stride_kv + workload.stride_kv - 1 <= query_pos[None, :, None, None]
-        )
+        if workload.is_causal:
+            valid &= (
+                indices * workload.stride_kv + workload.stride_kv - 1
+                <= query_pos[None, :, None, None]
+            )
         selected = indices.masked_fill(~valid, -1)
         outputs = [
-            run(q[b], kv[b], selected[b], scale, d_v=workload.dim)[0] for b in range(q.shape[0])
+            run(q[b], kv[b], selected[b], scale, d_v=workload.dim, attn_sink=attn_sink)[0]
+            for b in range(q.shape[0])
         ]
         return outputs[0].unsqueeze(0) if len(outputs) == 1 else torch.stack(outputs)
 

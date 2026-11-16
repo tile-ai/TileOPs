@@ -47,10 +47,11 @@ _FLOAT_MAX = {
     "float8_e5m2": 57344.0,
     "float8_e4m3fnuz": 240.0,
     "float8_e5m2fnuz": 57344.0,
+    "float8_e8m0fnu": 1.7014118346046923e38,
 }
 _COMPLEX_PART = {"complex64": "float32", "complex128": "float64"}
 # Floating formats without an infinity.
-_NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz"})
+_NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz", "float8_e8m0fnu"})
 
 
 def normalize_axis(axis: int, rank: int) -> int:
@@ -418,6 +419,35 @@ def packed_positions(lengths: Sequence[int]) -> list[int]:
     return [j for n in lengths for j in range(n)]
 
 
+def stacked_positions(
+    lead: Sequence[int], lengths: Sequence[int], image: Sequence[int] = ()
+) -> object:
+    """`packed_positions(lengths)` repeated over the leading shape `lead`; `lead` empty gives it once.
+
+    With `image` `(h, w)`, `lead` is `(3,)` and each sequence opens with an `h` by `w` image:
+    its tokens take temporal position 0 and their row and column as height and width
+    positions, and the text after it takes `max(h, w)` onwards on all three axes. A sequence
+    shorter than the image takes its first tokens.
+    """
+    if any(n < 0 for n in lead):
+        raise ValueError(f"stacked_positions needs non-negative leading extents, got {lead}")
+    if not image:
+        return full(lead, packed_positions(lengths))
+    if tuple(lead) != (3,) or len(image) != 2 or min(image) <= 0:
+        raise ValueError(f"an image needs lead (3,) and a positive (h, w), got {lead}, {image}")
+    if not lengths or any(n <= 0 for n in lengths):
+        raise ValueError(f"stacked_positions needs a non-empty positive list, got {lengths}")
+    height, width = image
+    grid = [(0, r, c) for r in range(height) for c in range(width)]
+    rows: list[list[int]] = [[], [], []]
+    for n in lengths:
+        for j in range(n):
+            point = grid[j] if j < len(grid) else (max(height, width) + j - len(grid),) * 3
+            for axis in range(3):
+                rows[axis].append(point[axis])
+    return rows
+
+
 def chunk_offsets(lengths: Sequence[int], chunk: int) -> list[int]:
     """The prefix sum of each length's chunk count."""
     if chunk <= 0:
@@ -436,15 +466,25 @@ def paged_block_table(rng: random.Random, batch: int, width: int, pool: int) -> 
 
 
 def nsa_block_indices(
-    rng: random.Random, lengths: Sequence[int], block_size: int, selected: int, heads_kv: int
+    rng: random.Random,
+    lengths: Sequence[int],
+    block_size: int,
+    selected: int,
+    heads_kv: int,
+    key_lengths: Sequence[int] | None = None,
 ) -> list[list[list[int]]]:
-    """Position `j` sees `max(ceil_div(j, block_size), 1)` blocks and draws up to `selected` distinct ones per head, ascending, padded with the sentinel `sum(lengths)`."""
+    """Position `j` sees `max(ceil_div(j, block_size), 1)` blocks and draws up to `selected` distinct ones per head, ascending, padded with the sentinel `sum(key_lengths)`. A sequence's `lengths[i]` queries are the last ones of its `key_lengths[i]` keys, which default to `lengths`."""
     if not lengths or any(n <= 0 for n in lengths) or min(block_size, selected, heads_kv) <= 0:
         raise ValueError("nsa_block_indices needs positive arguments and a non-empty positive list")
-    sentinel = sum(lengths)
+    keys = lengths if key_lengths is None else key_lengths
+    if len(keys) != len(lengths) or any(k < n for k, n in zip(keys, lengths, strict=False)):
+        raise ValueError(
+            "nsa_block_indices needs one key length per sequence, at least its queries"
+        )
+    sentinel = sum(keys)
     rows = []
-    for n in lengths:
-        for j in range(n):
+    for n, k in zip(lengths, keys, strict=True):
+        for j in range(k - n, k):
             visible = max(ceil_div(j, block_size), 1)
             per_head = []
             for _ in range(heads_kv):
@@ -490,6 +530,21 @@ def sample_indices(rng: random.Random, n: int, hi: int) -> list[int]:
     if not 0 <= n <= hi:
         raise ValueError(f"sample_indices needs 0 <= n <= hi, got n={n}, hi={hi}")
     return rng.sample(range(hi), n)
+
+
+def distinct_ids(rng: random.Random, shape: Sequence[int], hi: int) -> object:
+    """Distinct random values in `[0, hi)` filling `shape` in row-major order."""
+    if any(n < 0 for n in shape):
+        raise ValueError(f"distinct_ids needs non-negative extents, got {shape}")
+    flat = sample_indices(rng, math.prod(shape), hi)
+
+    def fill(axes: list[int], at: int) -> object:
+        if not axes:
+            return flat[at]
+        step = math.prod(axes[1:])
+        return [fill(axes[1:], at + i * step) for i in range(axes[0])]
+
+    return fill(list(shape), 0)
 
 
 def causal_topk_indices(
@@ -683,6 +738,7 @@ GENERATORS: dict[str, Callable[..., Any]] = {
     "chunk_indices": chunk_indices,
     "token_indices": token_indices,
     "packed_positions": packed_positions,
+    "stacked_positions": stacked_positions,
     "chunk_offsets": chunk_offsets,
     "paged_block_table": paged_block_table,
     "nsa_block_indices": nsa_block_indices,
@@ -690,6 +746,7 @@ GENERATORS: dict[str, Callable[..., Any]] = {
     "topk_ids": topk_ids,
     "random_ints": random_ints,
     "sample_indices": sample_indices,
+    "distinct_ids": distinct_ids,
     "moe.layout_metadata": moe_layout_metadata,
     "moe.masked_routed_metadata": moe_masked_routed_metadata,
     "moe.routed_metadata": moe_routed_metadata,
@@ -707,12 +764,14 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "chunk_indices": (("Seq[Int]", "Int"), "Value"),
     "token_indices": (("Seq[Int]",), "Value"),
     "packed_positions": (("Seq[Int]",), "Value"),
+    "stacked_positions": (("Seq[Int]", "Seq[Int]", "image=Seq[Int]"), "Value"),
     "chunk_offsets": (("Seq[Int]", "Int"), "Value"),
-    "nsa_block_indices": (("Seq[Int]", "Int", "Int", "Int"), "Value"),
+    "nsa_block_indices": (("Seq[Int]", "Int", "Int", "Int", "key_lengths=Seq[Int]"), "Value"),
     "nsa_block_counts": (("Int", "Int", "Int"), "Value"),
     "topk_ids": (("Int", "Int", "Int"), "Value"),
     "random_ints": (("Seq[Int]", "Int", "Int"), "Value"),
     "sample_indices": (("Int", "Int"), "Value"),
+    "distinct_ids": (("Seq[Int]", "Int"), "Value"),
     "moe.layout_metadata": (("ADT", "Int", "Int"), "Value"),
     "moe.masked_routed_metadata": (("ADT", "Int", "Int"), "Value"),
     "moe.routed_metadata": (("ADT", "Int", "Seq[Int]"), "Value"),
@@ -752,12 +811,18 @@ GENERATOR_SHAPES: dict[str, Callable[..., tuple[int, ...]]] = {
     "chunk_indices": lambda L, c: (sum(ceil_div(n, c) for n in L), 2),
     "token_indices": lambda L: (sum(L), 2),
     "packed_positions": lambda L: (sum(L),),
+    "stacked_positions": lambda lead, L, image=(): (*lead, sum(L)),
     "chunk_offsets": lambda L, c: (len(L) + 1,),
-    "nsa_block_indices": lambda L, block, selected, heads: (sum(L), heads, selected),
+    "nsa_block_indices": lambda L, block, selected, heads, key_lengths=None: (
+        sum(L),
+        heads,
+        selected,
+    ),
     "nsa_block_counts": lambda tokens, heads, selected: (tokens, heads),
     "topk_ids": lambda rows, k, experts: (rows, k),
     "random_ints": lambda shape, lo, hi: tuple(shape),
     "sample_indices": lambda n, hi: (n,),
+    "distinct_ids": lambda shape, hi: tuple(shape),
     "moe.layout_metadata": lambda layout, rows, experts: (
         (rows,) if layout.kind == "contiguous" and layout.metadata_kind == "per_row" else (experts,)
     ),
@@ -785,6 +850,7 @@ RANDOM_GENERATORS = frozenset(
         "topk_ids",
         "random_ints",
         "sample_indices",
+        "distinct_ids",
         "causal_topk_indices",
         "attn.sparse_topk_positions",
     }

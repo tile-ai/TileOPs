@@ -16,7 +16,7 @@ __all__ = ["FP8QuantPerTokenGroupFwdOp"]
 
 
 class FP8QuantPerTokenGroupFwdOp(Op):
-    """Quantize each group of columns to FP8, into ``out_q`` in place when it is passed.
+    """Quantize each group of columns to FP8, or fake-quantize ``x`` in place.
 
     vLLM's ``per_token_group_quant_fp8``. A group is ``group_size`` adjacent columns of the
     last axis.
@@ -36,6 +36,10 @@ class FP8QuantPerTokenGroupFwdOp(Op):
     ``use_ue8m0=None`` gives float32 scales, as vLLM resolves None where DeepGEMM's UE8M0
     scales are not in use; ``tma_aligned_scales`` takes effect only with
     ``column_major_scales``, as in vLLM.
+
+    ``scale_dtype`` ``float8_e8m0fnu`` stores the power-of-two scales ``use_ue8m0`` makes. With
+    ``inplace``, ``x`` is overwritten with ``q * scale`` in its own dtype and returned in the
+    third slot, ``q`` and ``scale`` being ``None``; otherwise the third slot is ``None``.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp8_quant_kernel": FP8QuantKernel}
@@ -49,6 +53,8 @@ class FP8QuantPerTokenGroupFwdOp(Op):
         column_major_scales: bool = False,
         tma_aligned_scales: bool = False,
         use_ue8m0: bool | None = None,
+        scale_dtype: torch.dtype = torch.float32,
+        inplace: bool = False,
         *,
         target: Target = None,
     ):
@@ -62,6 +68,9 @@ class FP8QuantPerTokenGroupFwdOp(Op):
             tma_aligned_scales: Pad the column-major scales to TMA alignment; read only with
                 ``column_major_scales``.
             use_ue8m0: Round each scale up to a power of two; None for float32 scales.
+            scale_dtype: ``torch.float32``, or ``torch.float8_e8m0fnu`` with ``use_ue8m0``.
+            inplace: Overwrite ``x`` with its fake-quantized values instead of returning
+                ``q`` and ``scale``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -71,11 +80,13 @@ class FP8QuantPerTokenGroupFwdOp(Op):
         self.column_major_scales = column_major_scales
         self.tma_aligned_scales = tma_aligned_scales
         self.use_ue8m0 = use_ue8m0
+        self.scale_dtype = scale_dtype
+        self.inplace = inplace
         super().__init__(target=target)
 
     def forward(
         self, x: torch.Tensor, out_q: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
         """Quantize ``x`` group by group.
 
         Args:
@@ -84,8 +95,9 @@ class FP8QuantPerTokenGroupFwdOp(Op):
                 to, or None.
 
         Returns:
-            ``q`` $[*S \\times K]$ in ``float8_e4m3fn`` (``out_q`` where given) and
-            ``scale`` $[*S \\times K / group\\_size]$ in ``float32``.
+            ``(q, scale, None)``: ``q`` $[*S \\times K]$ in ``float8_e4m3fn`` (``out_q`` where
+            given) and ``scale`` $[*S \\times K / group\\_size]$ in ``scale_dtype``; with
+            ``inplace``, ``(None, None, x)``.
         """
         x = x.contiguous()
         kernel = self.kernel_for(
@@ -99,6 +111,9 @@ class FP8QuantPerTokenGroupFwdOp(Op):
                 column_major_scales=self.column_major_scales,
                 tma_aligned_scales=self.tma_aligned_scales,
                 use_ue8m0=self.use_ue8m0,
+                scale_dtype=self.scale_dtype,
+                inplace=self.inplace,
             ),
         )
-        return kernel(x, out_q)
+        q, scale = kernel(x, out_q)
+        return q, scale, None

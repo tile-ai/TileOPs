@@ -60,6 +60,8 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         state key-major or value-major, and with the Q/K normalization, the gate and the
         beta transform taken in kernel.
         """
+        if call.pooled or call.rollback:
+            return "reads and writes the states in batch order; a state pool is not served"
         heads = head_count_refusal(call.heads, call.value_heads)
         if heads is not None:
             return heads

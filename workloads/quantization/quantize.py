@@ -92,6 +92,69 @@ def smooth_quant(x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, t
     return _to_int8(xs, scale[:, None]), scale
 
 
+def round_up_to_power_of_two(t: torch.Tensor) -> torch.Tensor:
+    """``2 ** ceil(log2(t))`` of a positive float32 *t*, subnormals included."""
+    mantissa, exponent = torch.frexp(t)
+    return torch.ldexp(torch.ones_like(t), exponent - (mantissa == 0.5).to(exponent.dtype))
+
+
+# Midpoints between adjacent e2m1 magnitudes 0, 0.5, 1, 1.5, 2, 3, 4, 6.
+_E2M1_MIDPOINTS = (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0)
+
+
+def _e2m1_codes(y: torch.Tensor) -> torch.Tensor:
+    """The e2m1 code of each float32 in ``[-6, 6]``, rounded to nearest, ties to the even code."""
+    a = y.abs()
+    magnitude = torch.zeros_like(a, dtype=torch.int32)
+    for i, mid in enumerate(_E2M1_MIDPOINTS):
+        # A value on a midpoint goes to the even code: down from an even one, up from an odd one.
+        magnitude += (a > mid if i % 2 == 0 else a >= mid).to(torch.int32)
+    return magnitude | (torch.signbit(y).to(torch.int32) << 3)
+
+
+def _e2m1_values(codes: torch.Tensor) -> torch.Tensor:
+    grid = torch.tensor((0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0), device=codes.device)
+    value = grid[(codes & 7).long()]
+    return torch.where((codes & 8) != 0, -value, value)
+
+
+def unpack_e2m1(packed: torch.Tensor) -> torch.Tensor:
+    """The float32 values of ``uint8`` e2m1 pairs, the low nibble first, along a last axis
+    twice as long."""
+    codes = torch.stack((packed & 15, packed >> 4), dim=-1).flatten(-2)
+    return _e2m1_values(codes.to(torch.int32))
+
+
+def fp4_quant_per_group(
+    x: torch.Tensor,
+    block_size: int = 32,
+    inplace: bool = False,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    """``FP4QuantPerGroupFwdOp``'s reference, DeepSeek-V4-Flash ``inference/kernel.py``
+    ``fp4_act_quant``: per *block_size* elements along the last axis the scale is
+    ``2 ** ceil(log2(max(amax, 6 * 2 ** -126) * fp32(1 / 6)))``, and each element is
+    ``clamp(x / scale, -6, 6)`` rounded to e2m1.
+
+    Returns ``(codes, scales, None)``, the ``uint8`` codes two per byte with the even element
+    in the low nibble; with *inplace*, *x* holds ``codes * scale`` in its own dtype and
+    ``(None, None, x)`` returns.
+    """
+    n = x.shape[-1]
+    if block_size <= 0 or n % block_size or (n % 2 and not inplace):
+        raise ValueError(f"the last axis {n} is not whole groups of {block_size} and bytes")
+    groups = x.float().unflatten(-1, (n // block_size, block_size))
+    amax = groups.abs().amax(-1, keepdim=True).clamp(min=6 * 2.0**-126)
+    # A Python scalar multiplies in float32, as the kernel's reciprocal does.
+    scale = round_up_to_power_of_two(amax * (1 / 6))
+    codes = _e2m1_codes((groups / scale).clamp(-6, 6))
+    if inplace:
+        x.copy_((_e2m1_values(codes) * scale).flatten(-2))
+        return None, None, x
+    pairs = codes.flatten(-2).unflatten(-1, (n // 2, 2))
+    packed = (pairs[..., 0] | (pairs[..., 1] << 4)).to(torch.uint8)
+    return packed, scale.squeeze(-1).to(torch.float8_e8m0fnu), None
+
+
 class _QuantizeWorkload(WorkloadBase):
     """One random ``[rows, cols]`` input of a quantize op."""
 
