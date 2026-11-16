@@ -1,0 +1,108 @@
+import pytest
+import torch
+
+from tests.workload_test_base import TestBase
+from tileops.backend import OpNotAvailableError
+from tileops.indexing import EmbeddingFwdOp
+from workloads.device import run_device
+from workloads.indexing import EmbeddingWorkload
+from workloads.workload_base import manifest_call
+
+
+class EmbeddingTest(EmbeddingWorkload, TestBase):
+    pass
+
+
+def _test(S, V, D, index_dtype, dtype, **params) -> EmbeddingTest:
+    return EmbeddingTest(
+        manifest_call("EmbeddingFwdOp", {"I": index_dtype, "T": dtype}, S=S, V=V, D=D, **params)
+    )
+
+
+_SMOKE = pytest.mark.smoke
+_FULL = pytest.mark.full
+# One case per dtype and per tiling path. Every case reads the table's last row.
+_CASES = (
+    # A row of more vectors than a CTA has threads: two passes.
+    pytest.param([4, 33], 1000, 2304, "int64", "bfloat16", {}, marks=_SMOKE, id="bf16-two-passes"),
+    pytest.param([129], 300, 1152, "int64", "float32", {}, marks=_SMOKE, id="fp32"),
+    # Fewer ids than a tile of narrow rows holds: a partial row tile. The gradient-only
+    # params ride on it.
+    pytest.param(
+        [3, 5],
+        700,
+        64,
+        "int32",
+        "float16",
+        {"padding_idx": -1, "sparse": True},
+        marks=_SMOKE,
+        id="fp16-row-tail",
+    ),  # fmt: skip
+    pytest.param([500], 129, 6, "int64", "int64", {}, marks=_SMOKE, id="int64-table"),
+    # 12-byte rows: 4-byte vectors.
+    pytest.param([2, 9], 40, 3, "int32", "int32", {}, marks=_SMOKE, id="int32-table"),
+    # 24-byte rows: 8-byte vectors.
+    pytest.param([5, 7], 90, 3, "int32", "int64", {}, marks=_FULL, id="eight-byte-vectors"),
+    # An odd row of 2-byte elements: 2-byte vectors, which cp.async does not move.
+    pytest.param([7], 50, 1001, "int64", "bfloat16", {}, marks=_FULL, id="two-byte-vectors"),
+    # 1021 vectors, a prime: no thread count divides them, so the last pass is guarded.
+    pytest.param([2], 1, 8168, "int64", "bfloat16", {}, marks=_FULL, id="guarded-pass"),
+    # 1025-vector rows: two column tiles, the second holding one vector; more than 2**20
+    # tiles, so the grid's y axis holds the rest.
+    pytest.param([2**19 + 1], 4, 1025, "int64", "float16", {}, marks=_FULL, id="column-tiles"),
+    pytest.param([], 10, 128, "int64", "bfloat16", {}, marks=_FULL, id="rank-0"),
+    pytest.param([0, 4], 10, 128, "int64", "bfloat16", {}, marks=_FULL, id="empty"),
+    pytest.param([3], 10, 0, "int64", "bfloat16", {}, marks=_FULL, id="zero-width"),
+    # A table of more rows than an int32 extent holds.
+    pytest.param([3], 2**31 + 1, 1, "int64", "bfloat16", {}, marks=_FULL, id="rows-past-int32"),
+    # Column offsets past 2**31 elements in one row, on 16-byte vectors; the last column
+    # tile holds one vector.
+    pytest.param([2], 1, 2**31 + 8, "int64", "float16", {}, marks=_FULL, id="widest-row"),
+)
+
+
+@pytest.mark.parametrize("S, V, D, index_dtype, dtype, params", _CASES)
+def test_embedding(S, V, D, index_dtype, dtype, params) -> None:
+    test = _test(S, V, D, index_dtype, dtype, **params)
+    test.check(EmbeddingFwdOp(**test.arguments()), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_embedding_strided_inputs() -> None:
+    """Every second element of a wider id tensor and of a wider table."""
+    test = _test([4, 33], 1000, 2304, "int64", "bfloat16")
+    input, weight = test.gen_inputs()
+    wide_input = torch.zeros(4, 66, dtype=input.dtype, device=run_device())
+    wide_input[:, ::2] = input
+    wide_weight = torch.zeros(1000, 4608, dtype=weight.dtype, device=run_device())
+    wide_weight[:, ::2] = weight
+    test.check(EmbeddingFwdOp(), wide_input[:, ::2], wide_weight[:, ::2])
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("bad", [-1, 1000], ids=["negative", "past-end"])
+def test_embedding_validate_inputs_rejects_out_of_range_ids(bad: int) -> None:
+    input, weight = _test([4, 33], 1000, 2304, "int64", "bfloat16").gen_inputs()
+    input[1, 3] = bad
+    with pytest.raises(ValueError, match="input"):
+        EmbeddingFwdOp(validate_inputs=True)(input, weight)
+
+
+@pytest.mark.smoke
+def test_embedding_rejects_float_ids() -> None:
+    input, weight = _test([4, 33], 1000, 2304, "int64", "bfloat16").gen_inputs()
+    with pytest.raises(ValueError, match="dtype is outside"):
+        EmbeddingFwdOp()(input.float(), weight)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_embedding_refuses_max_norm() -> None:
+    """No in-tree kernel renormalizes the table in place; the op refuses before building."""
+    input, weight = _test([129], 300, 1152, "int64", "float32").gen_inputs()
+    before = weight.clone()
+    op = EmbeddingFwdOp(max_norm=1.0)
+    with pytest.raises(OpNotAvailableError, match="max_norm"):
+        op(input, weight)
+    assert not op._entries_built("embedding")
+    assert torch.equal(weight, before)

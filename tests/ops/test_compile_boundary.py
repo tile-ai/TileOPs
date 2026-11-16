@@ -52,7 +52,7 @@ from tileops._ops.gemm.gemm import (
     GEMMW4A16FwdOp,
 )
 from tileops._ops.gemm.grouped_gemm import GroupedGEMMFwdOp
-from tileops._ops.indexing import MaskedScatterFwdOp
+from tileops._ops.indexing import EmbeddingFwdOp, MaskedScatterFwdOp
 from tileops._ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops._ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
 from tileops._ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
@@ -598,7 +598,7 @@ def _linear_attention_cases():
 
 
 def _other_cases():
-    """The FFT, Hadamard, masked scatter, quantization and mean pooling ops, with the inputs they are built for."""
+    """The FFT, Hadamard, embedding, masked scatter, quantization and mean pooling ops, with the inputs they are built for."""
 
     def fft_c2c():
         x = torch.randn(2, 64, dtype=torch.complex64, device=run_device())
@@ -607,6 +607,11 @@ def _other_cases():
     def hadamard_transform():
         x = torch.randn(2, 128, dtype=torch.bfloat16, device=run_device())
         return HadamardTransformFwdOp(), (x,)
+
+    def embedding():
+        weight = torch.randn(100, 64, dtype=torch.bfloat16, device=run_device())
+        index = torch.randint(0, 100, (3, 5), device=run_device())
+        return EmbeddingFwdOp(), (index, weight)
 
     def masked_scatter():
         x = torch.randn(6, 64, dtype=torch.bfloat16, device=run_device())
@@ -671,6 +676,7 @@ def _other_cases():
     return (
         ("fft-c2c", fft_c2c),
         ("hadamard-transform", hadamard_transform),
+        ("embedding", embedding),
         ("masked-scatter", masked_scatter),
         ("fp8-quant", fp8_quant),
         ("fp8-quant-per-block", fp8_quant_per_block),
@@ -951,6 +957,7 @@ for _op_cls in (
     KDAFwdOp,
     FFTC2CFwdOp,
     HadamardTransformFwdOp,
+    EmbeddingFwdOp,
     MaskedScatterFwdOp,
     FP8QuantPerTokenGroupFwdOp,
     ChainSpeculativeSamplingFwdOp,
