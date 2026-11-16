@@ -6,6 +6,7 @@ from tileops._ops.sequence_modeling import (
     EngramGateConvFwdOp,
     MHCPostFwdOp,
     MHCPreFwdOp,
+    NGramHashFwdOp,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "EngramGateConvFwdOp",
     "MHCPostFwdOp",
     "MHCPreFwdOp",
+    "NGramHashFwdOp",
 ]

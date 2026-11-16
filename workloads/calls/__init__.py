@@ -23,6 +23,7 @@ _FAMILIES = (
     "mamba",
     "mhc",
     "moe",
+    "ngram_hash",
     "norm",
     "pool",
     "quantization",

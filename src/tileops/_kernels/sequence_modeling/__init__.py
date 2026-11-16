@@ -16,6 +16,11 @@ from tileops._kernels.sequence_modeling.mhc import (
     MHCPreFwdInterface,
     MHCPreKernel,
 )
+from tileops._kernels.sequence_modeling.ngram_hash import (
+    NGramHashCall,
+    NGramHashFwdInterface,
+    NGramHashKernel,
+)
 
 __all__ = [
     "EngramDecodeCall",
@@ -32,4 +37,7 @@ __all__ = [
     "MHCPreCall",
     "MHCPreFwdInterface",
     "MHCPreKernel",
+    "NGramHashCall",
+    "NGramHashFwdInterface",
+    "NGramHashKernel",
 ]

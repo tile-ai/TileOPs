@@ -2,7 +2,11 @@
 
 import torch
 
-__all__ = ["ngram_hash"]
+from workloads.device import run_device
+from workloads.numerics import Exact
+from workloads.workload_base import CallWorkload, WorkloadBase
+
+__all__ = ["NGramHashWorkload", "NGramHashWorkloadCall", "ngram_hash", "ngram_hash_result"]
 
 
 def _shift_right_ignore_eos(tokens: torch.Tensor, shift: int, eos: int) -> torch.Tensor:
@@ -89,3 +93,183 @@ def ngram_hash(
         if results
         else input_ids.new_empty((0, *input_ids.shape[1:], primes.shape[0]))
     )
+
+
+def ngram_hash_result(subject, *inputs):
+    """Expose both ids and the complete mutated pool for numerical verification."""
+    ids = subject(*inputs)
+    return ids, inputs[1]
+
+
+class NGramHashWorkload(WorkloadBase):
+    """Dense or packed tokens with EOS boundaries, overflow and optional state slots."""
+
+    def __init__(
+        self,
+        lengths,
+        *,
+        n=3,
+        heads=16,
+        packed=False,
+        slots=None,
+        pool=None,
+        width=None,
+        accepted=None,
+        eos_token_id=248044,
+        extremes=False,
+    ):
+        self.lengths = list(lengths)
+        self.n, self.heads, self.packed = n, heads, packed
+        self.slots, self.accepted = slots, accepted
+        self.pool = len(lengths) if pool is None else pool
+        self.width = n - 1 if width is None else width
+        self.eos_token_id = eos_token_id
+        self.extremes = extremes
+
+    def gen_inputs(self):
+        device = run_device()
+        tokens = torch.randint(
+            0, 248044, (sum(self.lengths),), dtype=torch.int64, generator=self.rng("tokens")
+        ).to(device)
+        pos = 0
+        for length in self.lengths:
+            if length:
+                tokens[pos + length // 2] = self.eos_token_id
+            if length > 3:
+                tokens[pos] = self.eos_token_id
+                tokens[pos + length // 2 + 1] = self.eos_token_id
+            pos += length
+        context = torch.randint(
+            0, 248044, (self.pool, self.width), dtype=torch.int64, generator=self.rng("context")
+        ).to(device)
+        if self.pool:
+            context[0, 0] = self.eos_token_id
+        # Large, odd multipliers force signed overflow in normal vocabulary inputs.
+        mult = torch.tensor(
+            [6364136223846793005 - 2 * i for i in range(self.n)], dtype=torch.int64, device=device
+        )
+        primes = torch.tensor(
+            [20000003 + 2 * i for i in range(self.heads)], dtype=torch.int64, device=device
+        )
+        offsets = torch.arange(self.heads, dtype=torch.int64, device=device) * 20000003
+        if self.extremes:
+            values = torch.tensor([-(2**63), 2**63 - 1, -1, 0, 1], device=device)
+            tokens.copy_(values.repeat((tokens.numel() + 4) // 5)[: tokens.numel()])
+            primes.copy_(
+                torch.tensor([1, 2**63 - 1, 20000003], device=device).repeat((self.heads + 2) // 3)[
+                    : self.heads
+                ]
+            )
+            offsets.fill_(2**63 - 1)
+        cu = (
+            torch.tensor(
+                [0, *torch.tensor(self.lengths).cumsum(0).tolist()],
+                dtype=torch.int32,
+                device=device,
+            )
+            if self.packed
+            else None
+        )
+        if not self.packed:
+            tokens = tokens.reshape(len(self.lengths), self.lengths[0] if self.lengths else 0)
+        slots = (
+            None
+            if self.slots is None
+            else torch.tensor(self.slots, dtype=torch.int32, device=device)
+        )
+        accepted = (
+            None
+            if self.accepted is None
+            else torch.tensor(self.accepted, dtype=torch.int32, device=device)
+        )
+        return tokens, context, mult, primes, offsets, cu, slots, accepted
+
+    def ref_program(
+        self,
+        input_ids,
+        context,
+        multipliers,
+        primes,
+        offsets,
+        cu_seqlens=None,
+        context_indices=None,
+        num_accepted_tokens=None,
+    ):
+        context = context.clone()
+        ids = ngram_hash(
+            input_ids,
+            context,
+            multipliers,
+            primes,
+            offsets,
+            self.eos_token_id,
+            cu_seqlens,
+            context_indices,
+            num_accepted_tokens,
+        )
+        return ids, context
+
+    def torch_program(
+        self,
+        input_ids,
+        context,
+        multipliers,
+        primes,
+        offsets,
+        cu_seqlens=None,
+        context_indices=None,
+        num_accepted_tokens=None,
+    ):
+        """The torch computation on private context, reset by the benchmark."""
+        ids = ngram_hash(
+            input_ids,
+            context,
+            multipliers,
+            primes,
+            offsets,
+            self.eos_token_id,
+            cu_seqlens,
+            context_indices,
+            num_accepted_tokens,
+        )
+        return ids, context
+
+    def verification(self, *inputs):
+        return Exact()
+
+
+class NGramHashWorkloadCall(CallWorkload, NGramHashWorkload):
+    """The manifest call with nontrivial token, multiplier and offset values."""
+
+    def __init__(self, call):
+        CallWorkload.__init__(self, call)
+        lengths = (
+            [
+                b - a
+                for a, b in zip(
+                    call.metadata_values("cu_seqlens")[:-1],
+                    call.metadata_values("cu_seqlens")[1:],
+                    strict=True,
+                )
+            ]
+            if call.present("cu_seqlens")
+            else [call.indices["L"]] * call.indices["B"]
+        )
+        NGramHashWorkload.__init__(
+            self,
+            lengths,
+            n=call.indices["N"],
+            heads=call.indices["Hd"],
+            packed=call.present("cu_seqlens"),
+            slots=call.metadata_values("context_indices")
+            if call.present("context_indices")
+            else None,
+            pool=call.indices.get("S", len(lengths)),
+            width=call.indices["W"],
+            accepted=call.metadata_values("num_accepted_tokens")
+            if call.present("num_accepted_tokens")
+            else None,
+            eos_token_id=call.params["eos_token_id"],
+        )
+
+    gen_inputs = NGramHashWorkload.gen_inputs
