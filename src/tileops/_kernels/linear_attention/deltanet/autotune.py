@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from tileops._kernels.autotune import TUNING_FATAL
-from tileops._kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
+from tileops._kernels.linear_attention.v_tile import gemm_threads, resolve_block_v
 
 __all__ = [
     "OUTPUT_CONFIGS",
@@ -38,26 +38,30 @@ OUTPUT_CONFIGS: tuple[dict[str, int], ...] = tuple(
 )
 
 
-def chunk_gemm_configs(
-    chunk_size: int,
-    dim_v: int,
-) -> tuple[tuple[dict[str, int], ...], tuple[dict[str, int], ...]]:
-    """Preparation and output launches for their chunk-square and value GEMMs.
+def _fitted(
+    configs: Sequence[dict[str, int]], *outputs: tuple[int, int]
+) -> tuple[dict[str, int], ...]:
+    """*configs* with each launch narrowed by ``gemm_threads`` over *outputs*, deduplicated."""
+    fitted = [
+        {**config, "threads": gemm_threads(config["threads"], *outputs)} for config in configs
+    ]
+    return tuple(config for i, config in enumerate(fitted) if config not in fitted[:i])
 
-    A 16-by-16 MMA tile has one 16-row warp tile and two 8-column warp tiles:
-    only two warps can own it. Both programs also contain a chunk-by-V product,
-    whose column extent must divide among those warps. An odd number of
-    8-column tiles therefore uses one warp. The state recurrence has its own
-    launch choices for the chunk-by-V-tile product.
+
+def chunk_gemm_configs(
+    chunk_size: int, dim_k: int, dim_v: int, walk: bool = False
+) -> tuple[tuple[dict[str, int], ...], tuple[dict[str, int], ...]]:
+    """Preparation and output launches, each narrowed by ``gemm_threads`` over its GEMM outputs.
+
+    Args:
+        chunk_size: Chunk length.
+        dim_k: Key dimension.
+        dim_v: Value dimension.
+        walk: Whether the preparation also writes the state walk's operands.
     """
-    if chunk_size == 16:
-        # Valid K is a multiple of 16, so preparation's C-by-K products also fit both warps.
-        threads = 64 if dim_v % 16 == 0 else 32
-        return (
-            tuple({"num_stages": stages, "threads": threads} for stages in (1, 2)),
-            ({"threads": threads},),
-        )
-    return PIPELINE_CONFIGS, OUTPUT_CONFIGS
+    c, k, v = chunk_size, dim_k, dim_v
+    fused = [(c, c), (c, k), (c, v)] + ([(k, k), (k, v)] if walk else [])
+    return _fitted(PIPELINE_CONFIGS, *fused), _fitted(OUTPUT_CONFIGS, (c, c), (c, v))
 
 
 def h_block_v_candidates(dim_v: int) -> tuple[int, ...]:
@@ -125,47 +129,33 @@ def default_h_block_v(dim_v: int, chunk_size: int) -> int:
     return 0 if 0 in candidates else min(tiled)
 
 
-def _recurrence_configs(dim_v: int, block_v: int, chunk_size: int) -> tuple[dict[str, int], ...]:
-    """Launches for both the chunk-by-width and key-by-width state products.
-
-    At chunk16 the former has one row warp tile. Its column warp count must be
-    a power of two dividing width / 8. Coalescing the capped launches
-    keeps the existing search choices without timing duplicates.
-    """
+def _recurrence_configs(
+    dim_v: int, block_v: int, chunk_size: int, dim_k: int
+) -> tuple[dict[str, int], ...]:
+    """Recurrence launches over a V tile: its chunk-by-width and key-by-width products."""
     width = resolve_block_v(dim_v, block_v)
-    limit = max(config["threads"] for config in PIPELINE_CONFIGS)
-    if chunk_size == 16:
-        tiles = width // 8
-        limit = min(limit, 32 * (tiles & -tiles))
-    configs = []
-    seen = set()
-    for config in PIPELINE_CONFIGS:
-        if width < min_gemm_n(config["threads"]):
-            continue
-        launch = (config["num_stages"], min(config["threads"], limit))
-        if launch not in seen:
-            seen.add(launch)
-            configs.append({"num_stages": launch[0], "threads": launch[1]})
-    return tuple(configs)
+    return _fitted(PIPELINE_CONFIGS, (chunk_size, width), (dim_k, width))
 
 
-def delta_rule_fwd_autotune_configs(dim_v: int, chunk_size: int) -> list[dict[str, int]]:
+def delta_rule_fwd_autotune_configs(
+    dim_v: int, chunk_size: int, dim_k: int
+) -> list[dict[str, int]]:
     """Return every merged config the sweep can select at this value dimension.
 
     The three sub-kernels are tuned independently, so the reachable set is their
     product. Declaring it is what makes ``request_tune()`` reach
-    ``autotune`` at all. The chunk-square GEMMs constrain the preparation and
-    output launches; the recurrence's chunk-by-width product bounds its own launches.
+    ``autotune`` at all.
 
     Args:
         dim_v: Value dimension.
-        chunk_size: Chunk length of the square GEMMs.
+        chunk_size: Chunk length.
+        dim_k: Key dimension.
 
     Raises:
         ValueError: if no V-tile width is admissible at *dim_v*. An empty set
             would read as "tunable, with nothing to try".
     """
-    fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_v)
+    fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_k, dim_v)
     return [
         {
             "fused_num_stages": fused["num_stages"],
@@ -180,29 +170,20 @@ def delta_rule_fwd_autotune_configs(dim_v: int, chunk_size: int) -> list[dict[st
             _require_h_block_v_candidates(dim_v),
             output_configs,
         )
-        for recurrence in _recurrence_configs(dim_v, block_v, chunk_size)
+        for recurrence in _recurrence_configs(dim_v, block_v, chunk_size, dim_k)
     ]
 
 
-def default_h_threads(dim_v: int, block_v: int, chunk_size: int) -> int:
-    """Return the widest recurrence thread count this V tile can be built with.
+def default_h_threads(dim_v: int, block_v: int, chunk_size: int, dim_k: int) -> int:
+    """Return the widest recurrence launch ``gemm_threads`` admits for this V tile.
 
     Args:
         dim_v: Value dimension.
         block_v: V-tile width, as ``default_h_block_v`` returns it.
-        chunk_size: Row extent of the local state correction.
-
-    Raises:
-        ValueError: if no declared thread count admits the tile.
+        chunk_size: Chunk length.
+        dim_k: Key dimension.
     """
-    width = resolve_block_v(dim_v, block_v)
-    admitted = [c["threads"] for c in _recurrence_configs(dim_v, block_v, chunk_size)]
-    if not admitted:
-        raise ValueError(
-            f"V-tile width {width} (dim_v={dim_v}) is below the minimum T.gemm N extent "
-            f"at every declared recurrence thread count {sorted({c['threads'] for c in PIPELINE_CONFIGS})}"
-        )
-    return max(admitted)
+    return max(c["threads"] for c in _recurrence_configs(dim_v, block_v, chunk_size, dim_k))
 
 
 def tune_delta_rule_fwd(
@@ -238,7 +219,7 @@ def tune_delta_rule_fwd(
     Returns:
         A config with the flat ``fused_`` / ``h_`` / ``o_`` keys the wrapped
         kernel reads, always a member of
-        ``delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size)``.
+        ``delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size, kernel.dim_k)``.
 
     Raises:
         ValueError: if no V-tile width is admissible at this shape.
@@ -322,7 +303,9 @@ def tune_delta_rule_fwd(
         kernel.dtype_str,
     )
     default = kernel.default_config
-    fused_configs, output_configs = chunk_gemm_configs(kernel.chunk_size, kernel.dim_v)
+    fused_configs, output_configs = chunk_gemm_configs(
+        kernel.chunk_size, kernel.dim_k, kernel.dim_v
+    )
     candidates = _require_h_block_v_candidates(kernel.dim_v)  # before any sweep
 
     fused_config, _ = _tune_sub_kernel(
@@ -351,7 +334,7 @@ def tune_delta_rule_fwd(
                 kernel,
                 label,
                 h_builder(*shape, block_v=block_v),
-                _recurrence_configs(kernel.dim_v, block_v, kernel.chunk_size),
+                _recurrence_configs(kernel.dim_v, block_v, kernel.chunk_size, kernel.dim_k),
                 warmup,
                 rep,
                 h_untuned if block_v == default["h_block_v"] else None,
@@ -401,7 +384,9 @@ def tune_delta_rule_fwd(
         "fused_threads": _tuned_value(fused_config, "threads", default["fused_threads"]),
         "h_num_stages": _tuned_value(h_config, "num_stages", default["h_num_stages"]),
         "h_threads": _tuned_value(
-            h_config, "threads", default_h_threads(kernel.dim_v, h_block_v, kernel.chunk_size)
+            h_config,
+            "threads",
+            default_h_threads(kernel.dim_v, h_block_v, kernel.chunk_size, kernel.dim_k),
         ),
         "h_block_v": h_block_v,
         "o_threads": _tuned_value(o_config, "threads", default["o_threads"]),
