@@ -2442,6 +2442,30 @@ def _leave_nan_in_free_blocks() -> None:
         ),
         # A ragged token count on the 16-row tile.
         pytest.param(11, 8192, 8192, (128, 256, 2, False), id="paired-m11", marks=pytest.mark.full),
+        # Paired slices the four-stage ring holds. A cluster pair is kept where the pick's
+        # own slice of four K tiles fits the ring, and where its 384 CTAs take more than one
+        # wave; it pairs where the pick's eight refill the ring in one wave.
+        pytest.param(
+            16, 8192, 2048, (64, 128, 1, False), id="kept-cluster-in-ring", marks=pytest.mark.full
+        ),
+        pytest.param(
+            16, 24576, 4096, (64, 128, 1, False), id="kept-cluster-waves", marks=pytest.mark.full
+        ),
+        pytest.param(
+            16, 6144, 4096, (128, 256, 2, False), id="paired-cluster", marks=pytest.mark.full
+        ),
+        # A split is kept where it adds K tiles to the longest slice (56 K tiles over 8
+        # slices pair into slices of three and four), and pairs where it adds none.
+        pytest.param(
+            16, 1024, 28672, (64, 128, 8, False), id="kept-uneven-in-ring", marks=pytest.mark.full
+        ),
+        pytest.param(
+            16, 4096, 4096, (128, 256, 4, False), id="paired-even-in-ring", marks=pytest.mark.full
+        ),
+        # 50 K tiles: slices of 17 pair into slices of 9, which still refill the ring.
+        pytest.param(
+            8, 5120, 25600, (128, 256, 6, False), id="paired-uneven-refills", marks=pytest.mark.full
+        ),
         # Stream-K picks: the 132 streamed CTAs become 64 paired N tiles split two ways (128
         # CTAs); 67 N tiles do not pair up and keep the stream.
         pytest.param(
@@ -2467,7 +2491,9 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
     """On 132 SMs a deferred-scale tile on one consumer warpgroup runs twice its weight rows
     on two warpgroups over as many K slices as keep its CTAs, a stream-K pick included; it
     keeps its tile where that split leaves a slice under two K tiles, the paired tile does
-    not fit, or its N tiles do not pair up, the last keeping its stream."""
+    not fit, its N tiles do not pair up, the last keeping its stream, or a paired slice its
+    ring holds would add K tiles to the longest slice or run as a cluster pair whose pick does
+    not refill its ring or whose grid takes more than one wave."""
     cfg = _select_config(m, n, k, 128, 132)
     assert (cfg["block_n"], cfg["threads"], cfg["split_k"], cfg["stream_ctas"] > 0) == tile
     test = GEMMW4A16Test(m, n, k, torch.float16)

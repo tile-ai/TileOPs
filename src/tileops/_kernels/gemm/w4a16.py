@@ -380,7 +380,7 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
     ``cross_tile_stages`` 128-wide K tiles takes that ring instead. Nor has it a term for the
     issue rate of a deferred-scale tile's one consumer warpgroup: such a pick takes twice
     its weight rows on two consumer warpgroups, split over as many K slices as keep its CTA
-    count, where its N tiles pair up and that config is legal.
+    count, where its N tiles pair up, that config is legal, and the pair shortens the CTA.
     """
 
     def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
@@ -430,7 +430,23 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
             "split_k": 2 * ctas // tiles,
             "stream_ctas": 0,
         }
-        if paired in legal:
+        k_iters = -(-k // best["block_k"])
+        k_slice = -(-k_iters // paired["split_k"])
+        pick_slice = -(-k_iters // best["split_k"])
+        cluster = _pair_reduced(paired["threads"], paired["block_n"], paired["split_k"])
+        # The second warpgroup doubles the rate the consumers free ring stages at, which a
+        # paired slice longer than the ring keeps on the path. A slice the ring holds has
+        # every K tile in flight from the start: the pair then pays only if it adds no K
+        # tile to the longest slice, and a cluster pair, which also exchanges halves, only
+        # if the pick's own slice refilled its ring and every cluster launches in the first
+        # wave; a later cluster waits for two SMs of one GPC to free at once.
+        if paired in legal and (
+            k_slice > paired["num_stages"]
+            or (
+                2 * k_slice <= pick_slice
+                and (not cluster or (pick_slice > best["num_stages"] and ctas <= sms))
+            )
+        ):
             return paired
     stages = _CALIBRATION.cross_tile_stages
     deeper = {**best, "block_k": W4A16_LAYOUT.mma_step_k, "num_stages": stages}
