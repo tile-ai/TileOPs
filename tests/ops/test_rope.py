@@ -107,10 +107,17 @@ def test_rope_matches_the_reference_at_positions_past_0(name, dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
-@pytest.mark.parametrize("rotary_dim", [64, 32], ids=["full", "partial"])
-def test_rope_rotates_the_leading_columns_in_either_convention(neox, rotary_dim) -> None:
+@pytest.mark.parametrize(
+    ("head_size", "rotary_dim"),
+    [(64, 64), (64, 32), (65, 32)],
+    ids=["full", "partial", "odd-head"],
+)
+def test_rope_rotates_the_leading_columns_in_either_convention(neox, head_size, rotary_dim) -> None:
+    """An odd head size leaves no column offset on a vector boundary: scalar accesses."""
     dtype = torch.float16
-    op, params = _op("RoPEFwdOp", dtype, rotary_dim=rotary_dim, is_neox_style=neox)
+    op, params = _op(
+        "RoPEFwdOp", dtype, head_size=head_size, rotary_dim=rotary_dim, is_neox_style=neox
+    )
     positions, query, key = _inputs("RoPEFwdOp", params, 64, 8, 2, dtype, first=4000)
     got_q, got_k = op(positions.flip(0), query, key)
     ref_q, ref_k = _reference("RoPEFwdOp", params, positions.flip(0), query, key)
@@ -165,6 +172,20 @@ def test_rope_validate_inputs_rejects_a_position_outside_the_cache(neox, dtype, 
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
+def test_rope_unchecked_position_outside_the_cache_reads_its_nearest_row(neox) -> None:
+    dtype = torch.float16
+    op, params = _op("RoPEFwdOp", dtype, max_position_embeddings=8, is_neox_style=neox)
+    positions = torch.tensor([-1, 8, 3], device=run_device())
+    query = torch.randn(3, 2 * 64, device=run_device(), dtype=dtype)
+    key = torch.randn(3, 64, device=run_device(), dtype=dtype)
+    got_q, got_k = op(positions, query, key)
+    ref_q, ref_k = _reference("RoPEFwdOp", params, positions.clamp(0, 7), query, key)
+    compare_outputs(got_q, ref_q, rope_verification())
+    compare_outputs(got_k, ref_k, rope_verification())
+
+
+@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="RoPEFwdOp")
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
@@ -196,10 +217,15 @@ def test_rope_graph_replay(neox) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
 def test_rope_query_off_a_vector_boundary(neox) -> None:
-    """A contiguous query starting one element past a 16-byte boundary matches the reference."""
+    """A contiguous query starting one element past a 16-byte boundary matches the reference.
+
+    8192 tokens of 8 heads fill more than half of any device's resident threads, so each
+    thread rotates several units.
+    """
     dtype = torch.float16
     op, params = _op("RoPEFwdOp", dtype, is_neox_style=neox)
-    positions, aligned, _ = _inputs("RoPEFwdOp", params, 96, 8, None, dtype, first=7)
+    positions, aligned, _ = _inputs("RoPEFwdOp", params, 8192, 8, None, dtype)
+    positions = positions % params["max_position_embeddings"]
     query = torch.empty(aligned.numel() + 1, device=run_device(), dtype=dtype)[1:]
     query = query.view(aligned.shape).copy_(aligned)
     got_q, _ = op(positions, query)

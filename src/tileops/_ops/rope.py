@@ -23,7 +23,6 @@ import torch
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.rope import (
     RoPECall,
-    RoPENeoxPositionIdsCall,
     RoPENeoxPositionIdsFwdInterface,
     RoPENeoxPositionIdsKernel,
     RoPENonNeoxFwdInterface,
@@ -129,58 +128,33 @@ class _RotaryEmbeddingOp(Op):
             held = self._freq_cache[key] = (sources, tables)
         return held[1]
 
-    def _rotate(
-        self, x: torch.Tensor, index: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-    ) -> torch.Tensor:
-        """*x*, ``[*S, head_size * H]``, with each token's heads rotated at its row *index*.
-
-        A row outside the cache is clamped to it.
-        """
-        tokens, rows = index.numel(), cos.shape[0]
-        heads = x.numel() // max(tokens * self.head_size, 1)
-        flat = x.reshape(tokens, heads, self.head_size).contiguous()
-        if self.is_neox_style:
-            kernel = self.kernel_for(
-                _NEOX,
-                lambda: RoPENeoxPositionIdsCall(
-                    num_tokens=tokens,
-                    num_heads=heads,
-                    head_dim=self.head_size,
-                    rotary_dim=self.rotary_dim,
-                    max_position=rows,
-                    dtype=flat.dtype,
-                    position_dtype=index.dtype,
-                    device=flat.device,
-                ),
-            )
-            return kernel(flat, cos, sin, index.contiguous()).reshape(x.shape)
-        part = flat[..., : self.rotary_dim].contiguous().unsqueeze(0)
+    def _forward(
+        self,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor | None,
+        offsets: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """``query`` and ``key`` with each token's heads rotated at its cache row."""
+        positions, query = positions.contiguous(), query.contiguous()
+        key = None if key is None else key.contiguous()
+        offsets = None if offsets is None else offsets.contiguous()
+        cos, sin = self._tables(query.dtype, query.device)
         kernel = self.kernel_for(
-            _GPTJ,
+            _NEOX if self.is_neox_style else _GPTJ,
             lambda: RoPECall(
-                seq_len=tokens,
-                head_dim=self.rotary_dim,
-                batch=1,
-                num_heads=heads,
-                dtype=flat.dtype,
-                device=flat.device,
+                query_heads=query.shape[-1] // self.head_size,
+                key_heads=0 if key is None else key.shape[-1] // self.head_size,
+                head_size=self.head_size,
+                rotary_dim=self.rotary_dim,
+                max_position=cos.shape[0],
+                dtype=query.dtype,
+                position_dtype=positions.dtype,
+                offset_dtype=None if offsets is None else offsets.dtype,
+                device=query.device,
             ),
         )
-        # Clamped as the NeoX kernel clamps, so the gather never reads past the cache.
-        clamped = index.clamp(0, rows - 1)
-        rotated = kernel(part, cos[clamped].contiguous(), sin[clamped].contiguous())[0]
-        if self.rotary_dim < self.head_size:
-            rotated = torch.cat((rotated, flat[..., self.rotary_dim :]), dim=-1)
-        return rotated.reshape(x.shape)
-
-    def _forward(
-        self, index: torch.Tensor, query: torch.Tensor, key: torch.Tensor | None
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        index = index.reshape(-1)
-        cos, sin = self._tables(query.dtype, query.device)
-        query_out = self._rotate(query, index, cos, sin)
-        key_out = None if key is None else self._rotate(key, index, cos, sin)
-        return query_out, key_out
+        return kernel(positions, query, key, offsets, cos, sin)
 
     def forward(
         self, positions: torch.Tensor, query: torch.Tensor, key: torch.Tensor | None = None
@@ -531,5 +505,4 @@ class LongRoPEFwdOp(_RotaryEmbeddingOp):
         Returns:
             ``(query_out, key_out)``, shaped as ``query`` and ``key``.
         """
-        index = positions if offsets is None else positions + offsets
-        return self._forward(index, query, key)
+        return self._forward(positions, query, key, offsets)
