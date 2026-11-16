@@ -27,8 +27,13 @@ class FP8QuantPerTokenGroupFwdOp(Op):
     448)`` rather than equal to it. With ``out_q`` the codes are written there and it is
     returned as ``q``.
 
-    A group holding an infinity or a NaN has no defined result: whether the group maximum and
-    the clamp carry the non-finite value depends on the kernel serving the call.
+    A group holding an infinity or a NaN, or an all-zero group under ``eps=0``, has no defined
+    result: whether the group maximum and the clamp carry the non-finite value depends on the
+    kernel serving the call.
+
+    ``use_ue8m0=None`` gives float32 scales, as vLLM resolves None where DeepGEMM's UE8M0
+    scales are not in use; ``tma_aligned_scales`` takes effect only with
+    ``column_major_scales``, as in vLLM.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp8_quant_kernel": FP8QuantKernel}
@@ -41,7 +46,7 @@ class FP8QuantPerTokenGroupFwdOp(Op):
         dtype: torch.dtype | None = None,
         column_major_scales: bool = False,
         tma_aligned_scales: bool = False,
-        use_ue8m0: bool = False,
+        use_ue8m0: bool | None = None,
         *,
         target: Target = None,
     ):
@@ -52,8 +57,9 @@ class FP8QuantPerTokenGroupFwdOp(Op):
             eps: Floor of each group's absolute maximum.
             dtype: The codes' dtype, ``torch.float8_e4m3fn``, or None for it.
             column_major_scales: Lay the scales out column-major.
-            tma_aligned_scales: Pad the column-major scales to TMA alignment.
-            use_ue8m0: Round each scale up to a power of two.
+            tma_aligned_scales: Pad the column-major scales to TMA alignment; read only with
+                ``column_major_scales``.
+            use_ue8m0: Round each scale up to a power of two; None for float32 scales.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -72,19 +78,18 @@ class FP8QuantPerTokenGroupFwdOp(Op):
 
         Args:
             x: $[*S \\times K]$, ``float16``, ``bfloat16`` or ``float32``.
-            out_q: $[*S \\times K]$ ``float8_e4m3fn`` buffer the codes are written to, or
-                None.
+            out_q: $[*S \\times K]$ contiguous ``float8_e4m3fn`` buffer the codes are written
+                to, or None.
 
         Returns:
             ``q`` $[*S \\times K]$ in ``float8_e4m3fn`` (``out_q`` where given) and
             ``scale`` $[*S \\times K / group\\_size]$ in ``float32``.
         """
         x = x.contiguous()
-        rows = x.numel() // self.group_size
         kernel = self.kernel_for(
             "fp8_quant",
             lambda: FP8QuantCall(
-                rows=rows,
+                k=x.shape[-1],
                 group_size=self.group_size,
                 eps=self.eps,
                 dtype=x.dtype,
@@ -94,10 +99,4 @@ class FP8QuantPerTokenGroupFwdOp(Op):
                 use_ue8m0=self.use_ue8m0,
             ),
         )
-        scale, q = kernel(x.reshape(rows, self.group_size))
-        q = q.view(x.shape)
-        scale = scale.view(*x.shape[:-1], x.shape[-1] // self.group_size)
-        if out_q is None:
-            return q, scale
-        out_q.copy_(q)
-        return out_q, scale
+        return kernel(x, out_q)

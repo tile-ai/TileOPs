@@ -19,7 +19,7 @@ class FP8QuantFixture(FixtureBase):
                 pytest.param((8192, 64), 64, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((8192, 64), 64, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param((8192, 64), 64, torch.float32, False, marks=pytest.mark.smoke),
-                pytest.param((2, 64, 512), 128, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param((2, 64, 512), 128, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param((4096, 128), 128, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((16384, 32), 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param((1024, 4, 64), 64, torch.float16, False, marks=pytest.mark.full),
@@ -56,3 +56,27 @@ def test_fp8_quant_refuses_what_no_kernel_serves(layout) -> None:
     x = torch.randn(4, 128, dtype=torch.bfloat16, device=run_device())
     with pytest.raises(OpNotAvailableError, match="does not serve"):
         FP8QuantPerTokenGroupFwdOp(128, **layout)(x)
+
+
+@pytest.mark.smoke
+def test_fp8_quant_reads_tma_alignment_only_for_column_major_scales() -> None:
+    test = FP8QuantTest((64, 256), 128, torch.bfloat16)
+    test.check(FP8QuantPerTokenGroupFwdOp(128, tma_aligned_scales=True), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_fp8_quant_serves_new_token_counts_from_one_kernel() -> None:
+    op = FP8QuantPerTokenGroupFwdOp(128)
+    for tokens in (3, 70):
+        test = FP8QuantTest((tokens, 256), 128, torch.bfloat16)
+        test.check(op, *test.gen_inputs())
+    assert len(list(op.iter_kernels())) == 1
+
+
+@pytest.mark.smoke
+def test_fp8_quant_refuses_a_group_past_the_register_budget() -> None:
+    from tileops.backend import OpNotAvailableError
+
+    x = torch.randn(4, 384, dtype=torch.bfloat16, device=run_device())
+    with pytest.raises(OpNotAvailableError, match="register budget"):
+        FP8QuantPerTokenGroupFwdOp(384)(x)

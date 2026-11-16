@@ -39,7 +39,8 @@ def test_fp8_quant_bench(case) -> None:
             column_major_scales=arguments["column_major_scales"],
             tma_aligned_scales=arguments["tma_aligned_scales"],
             out_q=None if out_q is None else out_q.view(rows.shape),
-            use_ue8m0=arguments["use_ue8m0"],
+            # The op's None is float32 scales; vLLM would resolve None from DeepGEMM.
+            use_ue8m0=bool(arguments["use_ue8m0"]),
         )
         return q.view(x.shape), scale.view(*x.shape[:-1], -1)
 
