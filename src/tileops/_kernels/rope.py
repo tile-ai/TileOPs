@@ -434,10 +434,6 @@ class _RoPEPositionsKernel(Kernel):
         # with one against 40.29 with four.
         return {"threads": 128, "units": 1 if self.dtype == torch.float32 else 4}
 
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [{"threads": t, "units": u} for t in (128, 256, 512) for u in (1, 2, 4)]
-
     def forward(
         self,
         positions: torch.Tensor,

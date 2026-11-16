@@ -1263,8 +1263,6 @@ class _SignaturePlan:
         # `forward` takes every input by position, and the observer of a call's specialization
         # key.
         self.positional = not any(t.kw_only for t in sig.inputs.values())
-        # Whether a call passes an argument a call-time scalar may hold, whose value a plan,
-        # keyed without it, does not fix.
         self.observe = _compiled(
             "observe",
             _observer_source(sig),

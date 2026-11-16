@@ -125,6 +125,30 @@ def test_rope_rotates_the_leading_columns_in_either_convention(neox, head_size, 
     compare_outputs(got_k, ref_k, rope_verification())
 
 
+@pytest.mark.parametrize(
+    "first",
+    [
+        pytest.param(True, marks=pytest.mark.smoke, id="tune-first"),
+        pytest.param(False, marks=pytest.mark.full, id="tune-after"),
+    ],
+)
+def test_rope_runs_after_a_tuning_request(first) -> None:
+    """The kernel tunes nothing: a request before or after the first call leaves the call
+    running."""
+    dtype = torch.bfloat16
+    op, params = _op("RoPEFwdOp", dtype)
+    positions = torch.randint(0, 4096, (16,), device=run_device())
+    query = torch.randn(16, 3 * 64, device=run_device(), dtype=dtype)
+    if first:
+        op.request_tune()
+    op(positions, query)
+    if not first:
+        op.request_tune()
+    got_q, _ = op(positions, query)
+    ref_q, _ = _reference("RoPEFwdOp", params, positions, query, None)
+    compare_outputs(got_q, ref_q, rope_verification())
+
+
 @pytest.mark.smoke
 def test_rope_takes_batched_positions_and_a_query_alone() -> None:
     dtype = torch.bfloat16
