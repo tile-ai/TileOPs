@@ -22,6 +22,7 @@ import torch
 _EVIDENCE_MODULES = (
     "tests.ops.test_compile_boundary",
     "tests.ops.test_convolution",
+    "tests.ops.test_embedding",
     "tests.ops.test_elementwise_compile",
     "tests.ops.test_fused_qk_norm_rope",
     "tests.ops.test_moe_compile",
