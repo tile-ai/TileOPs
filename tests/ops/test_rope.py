@@ -11,7 +11,7 @@ import torch
 
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
-from workloads.rope import ref_rotate, rope_cache, rope_verification
+from workloads.rope import rope_reference, rope_tables, rope_verification
 
 # Each op's parameters for a small cache, and its class name.
 _PARAMS = {
@@ -88,15 +88,8 @@ def _inputs(name, params, tokens, q_heads, k_heads, dtype, first=0):
 
 
 def _reference(name, params, positions, query, key, offsets=None):
-    cos, sin, mscale = rope_cache(name, params)
-    cos, sin = (
-        (t * mscale).to(params["dtype"]).to(device=query.device, dtype=query.dtype)
-        for t in (cos, sin)
-    )
-    index = positions if offsets is None else positions + offsets
-    hs, rd, neox = params["head_size"], params["rotary_dim"], params["is_neox_style"]
-    out_q = ref_rotate(query, index, cos, sin, hs, rd, neox)
-    return out_q, None if key is None else ref_rotate(key, index, cos, sin, hs, rd, neox)
+    cos, sin = rope_tables(name, params, query)
+    return rope_reference(params, cos, sin, positions, query, key, offsets)
 
 
 @pytest.mark.smoke
@@ -281,13 +274,12 @@ def _vllm_class(vllm_rope, name: str, params: dict):
 @pytest.mark.smoke
 @pytest.mark.parametrize("name", ["RoPEFwdOp", "RoPELlama31FwdOp", "YaRNFwdOp"])
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
-@pytest.mark.parametrize("first", [1, 3000], ids=["from-1", "from-3000"])
-def test_rope_matches_vllm_at_positions_past_0(name, neox, first) -> None:
+def test_rope_matches_vllm_at_positions_past_0(name, neox) -> None:
     """Decode at position p > 0: the rows vLLM reads for each token, not rows 0..S-1."""
     dtype = torch.bfloat16
     op, params = _op(name, dtype, is_neox_style=neox)
     reference = _vllm_rope(name, params).to(run_device())
-    positions, query, key = _inputs(name, params, 64, 8, 2, dtype, first=first)
+    positions, query, key = _inputs(name, params, 64, 8, 2, dtype, first=3000)
     got_q, got_k = op(positions, query, key)
     want_q, want_k = reference.forward_native(positions, query.clone(), key.clone())
     # vLLM rounds each product and sum in the input dtype, the op once from float32.

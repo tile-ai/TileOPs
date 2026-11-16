@@ -16,7 +16,7 @@ import torch
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from tileops._ops.rope import LongRoPEFwdOp, RoPEFwdOp, RoPELlama31FwdOp, YaRNFwdOp
-from workloads.rope import ref_rotate, rope_cache
+from workloads.rope import rope_reference, rope_tables
 
 
 def _vllm_rope(case: bench.Case, cache: torch.Tensor) -> bench.Implementation:
@@ -43,39 +43,21 @@ def _vllm_rope(case: bench.Case, cache: torch.Tensor) -> bench.Implementation:
     return bench.Implementation(run=run, args=(index, query_i, key_i), reset=reset)
 
 
-def _torch_rope(case: bench.Case, cos: torch.Tensor, sin: torch.Tensor):
-    """The reference rotation over caches built before timing."""
-    params = case.arguments
-
-    def run(positions, query, key=None, offsets=None):
-        index = positions if offsets is None else positions + offsets
-
-        def rotate(x):
-            head_size, rotary_dim = params["head_size"], params["rotary_dim"]
-            return ref_rotate(x, index, cos, sin, head_size, rotary_dim, params["is_neox_style"])
-
-        return rotate(query), None if key is None else rotate(key)
-
-    return run
-
-
 def _bench_rope(op_cls, case: bench.Case) -> None:
     """Check and time the rotation against vLLM's kernel, torch and inductor."""
     op = op_cls(**case.arguments)
-    query = case.inputs[1]
-    angles_cos, angles_sin, mscale = rope_cache(op_cls.__name__, case.arguments)
-    cos, sin = (
-        (t * mscale).to(case.arguments["dtype"]).to(device=query.device, dtype=query.dtype)
-        for t in (angles_cos, angles_sin)
-    )
+    params = case.arguments
+    cos, sin = rope_tables(op_cls.__name__, params, case.inputs[1])
     cache = torch.cat((cos, sin), dim=-1)
-    reference = _torch_rope(case, cos, sin)
+
+    def reference(*inputs):
+        return rope_reference(params, cos, sin, *inputs)
+
     implementations = {
         "torch-ref": reference,
         TORCH_COMPILE_TAG: compiled_reference(reference),
+        VLLM_TAG: _vllm_rope(case, cache),
     }
-    if query.dtype in (torch.float16, torch.bfloat16, torch.float32):
-        implementations[VLLM_TAG] = _vllm_rope(case, cache)
     bench.Runner(op, case).compare(implementations)
 
 

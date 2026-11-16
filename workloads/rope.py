@@ -78,7 +78,20 @@ def rope_cache(name: str, params: dict) -> tuple[torch.Tensor, torch.Tensor, flo
     return angles.cos(), angles.sin(), mscale
 
 
-def ref_rotate(
+def rope_tables(name: str, params: dict, query: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The cos and sin caches of RoPE op *name* with *params*, as the op holds them.
+
+    Each is scaled by the magnitude, rounded to the ``dtype`` parameter, then to the query's
+    dtype, on the query's device.
+    """
+    angles_cos, angles_sin, mscale = rope_cache(name, params)
+    return tuple(
+        (t * mscale).to(params["dtype"]).to(device=query.device, dtype=query.dtype)
+        for t in (angles_cos, angles_sin)
+    )
+
+
+def _rotate(
     x: torch.Tensor,
     index: torch.Tensor,
     cos: torch.Tensor,
@@ -105,6 +118,23 @@ def ref_rotate(
     return out.reshape(x.shape)
 
 
+def rope_reference(
+    params: dict,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    positions: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor | None = None,
+    offsets: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """``(query_out, key_out)`` of a RoPE op with *params*, reading *cos* and *sin* (from
+    :func:`rope_tables`) at row ``positions + offsets`` (``positions`` without offsets)."""
+    index = positions if offsets is None else positions + offsets
+    hs, rd, neox = params["head_size"], params["rotary_dim"], params["is_neox_style"]
+    query_out = _rotate(query, index, cos, sin, hs, rd, neox)
+    return query_out, None if key is None else _rotate(key, index, cos, sin, hs, rd, neox)
+
+
 class RoPECall(CallWorkload):
     """A manifest rotation checked against independently computed cos/sin caches."""
 
@@ -113,18 +143,8 @@ class RoPECall(CallWorkload):
 
     def ref_program(self, positions, query, key=None, offsets=None):
         name, params = self.call.signature.name, self.arguments()
-        angles_cos, angles_sin, mscale = rope_cache(name, params)
-        cos, sin = (
-            (t * mscale).to(params["dtype"]).to(device=query.device, dtype=query.dtype)
-            for t in (angles_cos, angles_sin)
-        )
-        index = positions if offsets is None else positions + offsets
-
-        def rotate(x):
-            head_size, rotary_dim = params["head_size"], params["rotary_dim"]
-            return ref_rotate(x, index, cos, sin, head_size, rotary_dim, params["is_neox_style"])
-
-        return rotate(query), None if key is None else rotate(key)
+        cos, sin = rope_tables(name, params, query)
+        return rope_reference(params, cos, sin, positions, query, key, offsets)
 
     def __init__(self, call, device=None):
         CallWorkload.__init__(self, call, device)
