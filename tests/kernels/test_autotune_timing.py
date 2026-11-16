@@ -369,32 +369,44 @@ def _linear_attention_kernels() -> list:
         pytest.param(
             deltanet,
             lambda: deltanet.DeltaNetDecodeKernel(1, 2, 64, 64, "bfloat16"),
+            marks=pytest.mark.cuda_only("cuda-kernel"),
             id="deltanet-decode",
         ),
+        # The low-precision warp-decode program serves SM90; generic decode also serves SM80/SM89.
         pytest.param(
             deltanet,
             lambda: deltanet.DeltaNetDecodeWarpKernel(1, 2, 128, 128, "bfloat16"),
+            marks=pytest.mark.sm90,
             id="deltanet-decode-warp",
         ),
         pytest.param(
             deltanet,
             lambda: deltanet.DeltaNetDecodeFP32Kernel(1, 2, 64, 64),
+            marks=pytest.mark.cuda_only("cuda-kernel"),
             id="deltanet-decode-fp32",
         ),
         pytest.param(
-            gla, lambda: gla.GLADecodeKernel(1, 2, 64, 64, 0.125, "bfloat16"), id="gla-decode"
+            gla,
+            lambda: gla.GLADecodeKernel(1, 2, 64, 64, 0.125, "bfloat16"),
+            marks=pytest.mark.cuda_only("cuda-kernel"),
+            id="gla-decode",
         ),
         pytest.param(
-            gla, lambda: gla.GLADecodeFP32Kernel(1, 2, 64, 64, 0.125), id="gla-decode-fp32"
+            gla,
+            lambda: gla.GLADecodeFP32Kernel(1, 2, 64, 64, 0.125),
+            marks=pytest.mark.cuda_only("cuda-kernel"),
+            id="gla-decode-fp32",
         ),
         pytest.param(
             chunk_fwd,
             lambda: chunk_fwd.GLAChunkFwdKernel(1, 128, 2, 64, 64, 64, 0.125),
+            marks=pytest.mark.cuda_only("cuda-kernel"),
             id="gla-chunk-fwd",
         ),
         pytest.param(
             chunk_bwd,
             lambda: chunk_bwd.GLAChunkBwdKernel(1, 128, 2, 64, 64, 64, 0.125, torch.float16),
+            marks=pytest.mark.cuda_only("cuda-kernel"),
             id="gla-chunk-bwd",
         ),
     ]
@@ -412,7 +424,6 @@ def _stubbed(monkeypatch, module, make) -> tuple:
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only("cuda-kernel")
 @pytest.mark.parametrize(("module", "make"), _linear_attention_kernels())
 def test_a_linear_attention_sweep_keeps_the_lowest_busy_reading(monkeypatch, module, make):
     """Every candidate is read by the tuner's reading, and the lowest reading is published."""
@@ -436,7 +447,6 @@ def test_a_linear_attention_sweep_keeps_the_lowest_busy_reading(monkeypatch, mod
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only("cuda-kernel")
 @pytest.mark.parametrize(("module", "make"), _linear_attention_kernels())
 def test_a_linear_attention_sweep_fails_when_no_reading_can_be_taken(monkeypatch, module, make):
     """A loop skips a candidate that fails, but not a reading the collector failed to take."""
