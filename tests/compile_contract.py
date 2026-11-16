@@ -21,6 +21,7 @@ import torch
 # gains contract-backing compile tests.
 _EVIDENCE_MODULES = (
     "tests.ops.test_compile_boundary",
+    "tests.ops.test_concat",
     "tests.ops.test_convolution",
     "tests.ops.test_elementwise_compile",
     "tests.ops.test_fused_qk_norm_rope",
