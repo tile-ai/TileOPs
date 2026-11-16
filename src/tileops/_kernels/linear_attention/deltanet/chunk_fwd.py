@@ -33,8 +33,7 @@ from tileops._kernels.linear_attention.call_spec import (
     head_count_refusal,
 )
 from tileops._kernels.linear_attention.deltanet.autotune import (
-    OUTPUT_CONFIGS,
-    PIPELINE_CONFIGS,
+    chunk_gemm_configs,
     default_h_block_v,
     default_h_threads,
     delta_rule_fwd_autotune_configs,
@@ -51,6 +50,17 @@ from tileops._kernels.linear_attention.deltanet.fused_prepare_compute_w_u import
 from tileops._kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
 
 __all__ = ["DeltaNetChunkFwdKernel"]
+
+
+def _state_threads(dim_k: int, block_v: int) -> int:
+    """Choose a walk launch that its state tile can partition among warps.
+
+    Small state tiles use MMA: each warp needs a 16-by-8 output tile. Head
+    dimensions at least 32 keep the existing walk launch unchanged.
+    """
+    # Sub-tile operands still fail GEMM lowering; a launch always owns at least one warp.
+    capacity = max(32, 32 * (dim_k // 16) * (block_v // 8))
+    return min(walk_threads(block_v), capacity)
 
 
 # Split kernel: h_recurrence  (sequential over chunks, state update only)
@@ -508,6 +518,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         if self._walk:
             return self._walk_default_config_for(
                 budget,
+                self.chunk_size,
                 self.build_target.sm_count,
                 self.batch * self.head,
                 self.dim_k,
@@ -527,18 +538,26 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             h_block_v = min((b for b in h_block_v_candidates(v) if b), default=h_block_v)
         width = resolve_block_v(v, h_block_v)
         h_num_stages = 2 if cls._state_shared_bytes(c, k, width, elem, 2) <= budget else 1
+        fused_configs, output_configs = chunk_gemm_configs(c, v)
         return {
             "fused_num_stages": 2,
-            "fused_threads": 256,
+            "fused_threads": max(config["threads"] for config in fused_configs),
             "h_num_stages": h_num_stages,
-            "h_threads": default_h_threads(v, h_block_v),
+            "h_threads": default_h_threads(v, h_block_v, c),
             "h_block_v": h_block_v,
-            "o_threads": 256,
+            "o_threads": max(config["threads"] for config in output_configs),
         }
 
     @classmethod
     def _walk_default_config_for(
-        cls, budget: int, sm_count: int, heads: int, dim_k: int, dim_v: int, elem: int
+        cls,
+        budget: int,
+        chunk_size: int,
+        sm_count: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        elem: int,
     ) -> dict:
         """The state walk's config at *budget* bytes of shared memory per block.
 
@@ -552,13 +571,14 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         ] or walk_block_v_options(dim_v)[:1]
         block_v = next((b for b in widths if heads * (dim_v // b) <= sm_count), widths[-1])
         two = cls._walk_shared_bytes(dim_k, block_v, elem, 2) <= budget
+        fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_v)
         return {
             "fused_num_stages": 2,
-            "fused_threads": 256,
+            "fused_threads": max(config["threads"] for config in fused_configs),
             "h_num_stages": 2 if two else 1,
-            "h_threads": walk_threads(block_v),
+            "h_threads": _state_threads(dim_k, block_v),
             "h_block_v": block_v,
-            "o_threads": 256,
+            "o_threads": max(config["threads"] for config in output_configs),
         }
 
     def _walk_configs(self) -> list[dict]:
@@ -566,7 +586,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         budget = self.build_target.smem_budget
         elem = getattr(torch, self.dtype_str).itemsize
         return [
-            {"block_v": b, "num_stages": stages, "threads": walk_threads(b)}
+            {"block_v": b, "num_stages": stages, "threads": _state_threads(self.dim_k, b)}
             for b in walk_block_v_options(self.dim_v)
             for stages in (1, 2)
             if stages == 1 or self._walk_shared_bytes(self.dim_k, b, elem, 2) <= budget
@@ -575,7 +595,8 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         if not self._walk:
-            return delta_rule_fwd_autotune_configs(self.dim_v)
+            return delta_rule_fwd_autotune_configs(self.dim_v, self.chunk_size)
+        fused_configs, output_configs = chunk_gemm_configs(self.chunk_size, self.dim_v)
         return [
             {
                 "fused_num_stages": fused["num_stages"],
@@ -586,7 +607,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
                 "o_threads": output["threads"],
             }
             for fused, walk, output in itertools.product(
-                PIPELINE_CONFIGS, self._walk_configs(), OUTPUT_CONFIGS
+                fused_configs, self._walk_configs(), output_configs
             )
         ]
 
@@ -622,6 +643,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             self.dtype_str,
         )
         default = self.default_config
+        fused_configs, output_configs = chunk_gemm_configs(self.chunk_size, self.dim_v)
 
         def tune(jit, configs, untuned):
             configs = self.tuning_candidates(configs, untuned)
@@ -633,7 +655,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
 
         fused = tune(
             fused_builder(*shape),
-            [dict(c) for c in PIPELINE_CONFIGS],
+            [dict(c) for c in fused_configs],
             {"num_stages": default["fused_num_stages"], "threads": default["fused_threads"]},
         )
         walk = tune(
@@ -646,7 +668,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             },
         )
         output = tune(
-            o_builder(*shape), [dict(c) for c in OUTPUT_CONFIGS], {"threads": default["o_threads"]}
+            o_builder(*shape), [dict(c) for c in output_configs], {"threads": default["o_threads"]}
         )
         self._publish_tuned(
             {

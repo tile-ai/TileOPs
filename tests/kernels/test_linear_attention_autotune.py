@@ -8,6 +8,7 @@ tuned. ``tests/ops/test_deltanet.py`` covers the same helper on the device.
 
 import inspect
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -110,6 +111,63 @@ def test_every_candidate_is_swept_and_the_winner_lands_in_its_key() -> None:
     }
 
 
+@pytest.mark.parametrize("dim_v", [16, 24, 32, 48, 64, 96])
+def test_chunk_16_sweep_and_default_stay_in_the_declared_candidates(monkeypatch, dim_v) -> None:
+    """The small square GEMMs must stay buildable when the sweep is changed."""
+    kernel = _StubKernel(chunk_size=16, dim_v=dim_v)
+    default = deltanet_fwd.DeltaNetChunkFwdKernel._default_config_for(99 * 1024, 16, 64, dim_v, 2)
+    monkeypatch.setattr(_StubKernel, "default_config", property(lambda self: default))
+    declared = la.delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size)
+
+    for config in declared:
+        for key in ("fused_threads", "o_threads"):
+            warps = config[key] // 32
+            assert 0 < warps <= 2
+            assert (dim_v // 8) % warps == 0
+        width = config["h_block_v"] or dim_v
+        assert (width // 8) % (config["h_threads"] // 32) == 0
+    assert default in declared
+    assert _run(kernel) in declared
+
+
+def test_small_walk_declares_only_state_tiles_with_enough_warp_owners() -> None:
+    """Selection checks use device facts without compiling or claiming GPU coverage."""
+    kernel = object.__new__(deltanet_fwd.DeltaNetChunkFwdKernel)
+    kernel.batch, kernel.head, kernel.seq_len = 1, 2, 64
+    kernel.chunk_size, kernel.dim_k, kernel.dim_v = 16, 16, 64
+    kernel.dtype = "bfloat16"
+    kernel._walk = True
+    kernel.build_target = SimpleNamespace(smem_budget=99 * 1024, sm_count=128)
+    kernel.config = kernel.default_config
+
+    assert kernel.config in kernel.autotune_configs
+    for config in kernel.autotune_configs:
+        capacity = 32 * (kernel.dim_k // 16) * (config["h_block_v"] // 8)
+        assert 0 < config["h_threads"] <= capacity
+
+
+def test_unmeasured_narrow_width_uses_its_own_thread_limit(monkeypatch) -> None:
+    kernel = _StubKernel(chunk_size=16)
+    default = deltanet_fwd.DeltaNetChunkFwdKernel._default_config_for(99 * 1024, 16, 64, 64, 2)
+    monkeypatch.setattr(_StubKernel, "default_config", property(lambda self: default))
+    original = kernel.tune_jit_kernel
+
+    def tune(jit, *args, **kwargs):
+        if jit.name == "h":
+            if jit.build_kwargs["block_v"] == 0:
+                raise RuntimeError("untiled state cannot build")
+            return _StubTuned(None, None)
+        return original(jit, *args, **kwargs)
+
+    monkeypatch.setattr(kernel, "tune_jit_kernel", tune)
+    with pytest.warns(UserWarning, match="untiled state cannot build"):
+        config = _run(kernel)
+
+    assert config["h_block_v"] == 32
+    assert config["h_threads"] == 128
+    assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size)
+
+
 def test_each_sweep_is_seeded_with_its_sub_kernel_untuned_launch() -> None:
     """``tune_jit_kernel`` times its seed among the candidates.
 
@@ -186,7 +244,7 @@ def test_untunable_sub_kernel_falls_back_to_default_config() -> None:
 
 def test_selected_config_is_always_a_declared_candidate() -> None:
     kernel = _StubKernel()
-    declared = la.delta_rule_fwd_autotune_configs(kernel.dim_v)
+    declared = la.delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size)
 
     assert _run(kernel) in declared
     kernel.results = {
@@ -225,7 +283,7 @@ def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> No
 
     assert kernel.default_config["h_block_v"] == 32, "stub must diverge for this to bite"
     assert config["h_block_v"] == 0
-    assert config in la.delta_rule_fwd_autotune_configs(48)
+    assert config in la.delta_rule_fwd_autotune_configs(48, kernel.chunk_size)
 
 
 def test_a_shape_with_no_admissible_width_is_refused_by_both_entry_points() -> None:
@@ -238,13 +296,13 @@ def test_a_shape_with_no_admissible_width_is_refused_by_both_entry_points() -> N
     with pytest.raises(ValueError, match="no admissible"):
         la.default_h_block_v(8, 64)
     with pytest.raises(ValueError, match="no admissible"):
-        la.delta_rule_fwd_autotune_configs(8)
+        la.delta_rule_fwd_autotune_configs(8, 64)
 
 
 def test_widths_resolving_to_one_tile_are_a_single_candidate() -> None:
     """At dim_v=32 both widths give a 32-column tile, so building both is waste."""
     assert la.h_block_v_candidates(32) == (0,)
-    assert {config["h_block_v"] for config in la.delta_rule_fwd_autotune_configs(32)} == {0}
+    assert {config["h_block_v"] for config in la.delta_rule_fwd_autotune_configs(32, 64)} == {0}
 
 
 def test_a_width_that_fails_to_tune_does_not_sink_the_sweep() -> None:
@@ -267,7 +325,7 @@ def test_a_width_that_fails_to_tune_does_not_sink_the_sweep() -> None:
         config = _run(kernel)
 
     assert config["h_block_v"] == 0
-    assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v)
+    assert config in la.delta_rule_fwd_autotune_configs(kernel.dim_v, kernel.chunk_size)
     # When a width is dropped but the sweep survives, the warning is the only
     # diagnostic, so it is bounded the same way the raised error is.
     dropped = next(str(w.message) for w in warned if "unavailable" in str(w.message))
@@ -377,7 +435,7 @@ def test_default_h_block_v_prefers_a_tiled_width_and_stays_declared() -> None:
     assert la.default_h_block_v(48, 64) == 0  # 32 does not divide 48
     assert la.default_h_block_v(64, 32) == 0  # short chunk prefers no tiling
     for dim_v, chunk_size in ((64, 64), (96, 64), (48, 64), (64, 32)):
-        declared = {c["h_block_v"] for c in la.delta_rule_fwd_autotune_configs(dim_v)}
+        declared = {c["h_block_v"] for c in la.delta_rule_fwd_autotune_configs(dim_v, chunk_size)}
         assert la.default_h_block_v(dim_v, chunk_size) in declared
 
 
@@ -426,7 +484,7 @@ def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
     kernel.autotune()
 
     assert calls == [kernel_cls.__name__]
-    assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(64)
+    assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(64, kernel.chunk_size)
 
 
 @pytest.mark.cuda_only("cuda-kernel")
