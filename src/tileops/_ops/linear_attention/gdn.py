@@ -50,7 +50,10 @@ class GDNFwdOp(Op):
     SM90, equal-length or packed, with a sequence that is not a whole number
     of 64-token chunks. On SM89, shared memory holds the offsets of at most
     703 packed sequences over a 128-wide state. Decode runs one token per
-    sequence on SM80, SM89 and SM90, and does not take ``cu_seqlens``.
+    sequence on SM80, SM89 and SM90, and does not take ``cu_seqlens``. A state
+    pool (``state_indices``) is served by decode and by SM90 prefill; every
+    kernel keeps one state a sequence, so a call with ``num_accepted_tokens``
+    needs an external target implementation.
     Other calls need an external target implementation.
     """
 
@@ -174,11 +177,12 @@ class GDNFwdOp(Op):
                 cu_seqlens_cpu,
                 A_log,
                 dt_bias,
+                state_indices,
             )
         )
         batch, seq_len, heads, dim_k = q.shape
         value_heads, dim_v = v.shape[2:]
-        return self.kernel_for(
+        o, final_state = self.kernel_for(
             "gdn",
             lambda: GDNCall(
                 batch=batch,
@@ -202,3 +206,8 @@ class GDNFwdOp(Op):
                 device=q.device,
             ),
         )(*inputs)
+        if state_indices is not None and final_state is not initial_state:
+            # A strided pool was advanced as a contiguous copy; the call updates the caller's.
+            initial_state.copy_(final_state)
+            final_state = initial_state
+        return o, final_state

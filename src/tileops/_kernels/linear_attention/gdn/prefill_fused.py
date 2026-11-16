@@ -15,6 +15,7 @@ from tileops._kernels.constants import (
     WGMMA_ROWS,
 )
 from tileops._kernels.linear_attention.gdn.prefill_common import step_size
+from tileops._kernels.state_pool import state_row
 
 __all__ = ["FUSED_PREFILL_DIM", "fused_gdr_prefill", "fused_gdr_prefill_program"]
 
@@ -48,6 +49,7 @@ def _build_fused_prefill_kernel(
     state_v_first: bool,
     beta_sigmoid: bool,
     allow_neg_eigval: bool,
+    pooled: bool = False,
 ):
     """One CTA walks one (sequence, value head), its 128 x 128 state value-major in registers.
 
@@ -79,6 +81,9 @@ def _build_fused_prefill_kernel(
     group = heads // key_heads
     state_shape = (batch_size, heads, dim, dim)
     final_shape = (raw_batch_size, heads, dim, dim)
+    pool_shape = (T.dynamic("pool_size"), heads, dim, dim)
+    # A partitioned walk starts from corrected states, one a partition, not from the pool.
+    assert not (pooled and is_cp), "a pooled build walks whole sequences"
     suffix = "bf16" if dtype == "bfloat16" else "fp16"
     # Value rows of S^T one state group holds.
     rows = dim // 2
@@ -332,20 +337,8 @@ def _build_fused_prefill_kernel(
                 else:
                     ht[raw_idx, bh, j, row + i] = s_fragment[i, j]
 
-    @T.prim_func
-    def fused_gdr_prefill_kernel(
-        q: T.Tensor((1, num_tokens, key_heads, dim), dtype),
-        k: T.Tensor((1, num_tokens, key_heads, dim), dtype),
-        v: T.Tensor((1, num_tokens, heads, dim), dtype),
-        g: T.Tensor((1, num_tokens, heads), gate_dtype),
-        b: T.Tensor((1, num_tokens, heads), beta_dtype),
-        h0: T.Tensor(state_shape, accum_dtype),
-        cu_seqlens: T.Tensor([batch_size + 1], seqlen_dtype),
-        cp_seq_map: T.Tensor([batch_size], seqlen_dtype),
-        raw_cu_seqlens: T.Tensor([raw_batch_size + 1], seqlen_dtype),
-        o: T.Tensor((1, num_tokens, heads, dim), dtype),
-        ht: T.Tensor(final_shape, accum_dtype),
-    ):
+    @T.macro
+    def prefill(q, k, v, g, b, h0, slots, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, ht):
         with T.Kernel(batch_size * heads, threads=threads) as (bbh,):
             bb, bh = bbh // heads, bbh % heads
             bhg = bh // group
@@ -405,9 +398,9 @@ def _build_fused_prefill_kernel(
                 T.set_max_nreg(state_regs, 1)
                 state_walk(
                     0,
-                    bb,
+                    state_row(slots, bb),
                     bh,
-                    raw_idx,
+                    state_row(slots, raw_idx),
                     num_iters,
                     q_shared,
                     k_shared,
@@ -432,9 +425,9 @@ def _build_fused_prefill_kernel(
                 T.set_max_nreg(state_regs, 1)
                 state_walk(
                     rows,
-                    bb,
+                    state_row(slots, bb),
                     bh,
-                    raw_idx,
+                    state_row(slots, raw_idx),
                     num_iters,
                     q_shared,
                     k_shared,
@@ -538,6 +531,44 @@ def _build_fused_prefill_kernel(
                             ptx - chunk,
                         )
 
+    if pooled:
+        # Each sequence starts from its slot and writes its final state back to it, through
+        # the one buffer.
+
+        @T.prim_func
+        def fused_gdr_prefill_kernel(
+            q: T.Tensor((1, num_tokens, key_heads, dim), dtype),
+            k: T.Tensor((1, num_tokens, key_heads, dim), dtype),
+            v: T.Tensor((1, num_tokens, heads, dim), dtype),
+            g: T.Tensor((1, num_tokens, heads), gate_dtype),
+            b: T.Tensor((1, num_tokens, heads), beta_dtype),
+            h0: T.Tensor(pool_shape, accum_dtype),
+            slots: T.Tensor([batch_size], "int32"),
+            cu_seqlens: T.Tensor([batch_size + 1], seqlen_dtype),
+            cp_seq_map: T.Tensor([batch_size], seqlen_dtype),
+            raw_cu_seqlens: T.Tensor([raw_batch_size + 1], seqlen_dtype),
+            o: T.Tensor((1, num_tokens, heads, dim), dtype),
+        ):
+            prefill(q, k, v, g, b, h0, slots, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, h0)
+
+    else:
+
+        @T.prim_func
+        def fused_gdr_prefill_kernel(
+            q: T.Tensor((1, num_tokens, key_heads, dim), dtype),
+            k: T.Tensor((1, num_tokens, key_heads, dim), dtype),
+            v: T.Tensor((1, num_tokens, heads, dim), dtype),
+            g: T.Tensor((1, num_tokens, heads), gate_dtype),
+            b: T.Tensor((1, num_tokens, heads), beta_dtype),
+            h0: T.Tensor(state_shape, accum_dtype),
+            cu_seqlens: T.Tensor([batch_size + 1], seqlen_dtype),
+            cp_seq_map: T.Tensor([batch_size], seqlen_dtype),
+            raw_cu_seqlens: T.Tensor([raw_batch_size + 1], seqlen_dtype),
+            o: T.Tensor((1, num_tokens, heads, dim), dtype),
+            ht: T.Tensor(final_shape, accum_dtype),
+        ):
+            prefill(q, k, v, g, b, h0, None, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, ht)
+
     return fused_gdr_prefill_kernel
 
 
@@ -594,8 +625,10 @@ def fused_gdr_prefill_program(
     state_v_first: bool = False,
     beta_sigmoid: bool = False,
     allow_neg_eigval: bool = False,
+    pooled: bool = False,
 ):
-    """The program :func:`fused_gdr_prefill` launches for these heads, dtypes and flags."""
+    """The program :func:`fused_gdr_prefill` launches for these heads, dtypes and flags;
+    under *pooled*, each sequence's state is its slot of a state pool, updated in place."""
     return _build_fused_prefill_kernel(
         heads,
         key_heads,
@@ -609,6 +642,7 @@ def fused_gdr_prefill_program(
         state_v_first,
         beta_sigmoid,
         allow_neg_eigval,
+        pooled,
     )
 
 
@@ -623,6 +657,7 @@ def fused_gdr_prefill(
     initial_state: torch.Tensor | None = None,
     cp_seq_map: torch.Tensor | None = None,
     raw_cu_seqlens: torch.Tensor | None = None,
+    state_indices: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Packed GDN prefill output and final state in one kernel, one CTA a (sequence, value head).
 
@@ -638,14 +673,20 @@ def fused_gdr_prefill(
         initial_state: ``[rows, heads, 128, 128]`` float32 starting state, or ``None``.
         cp_seq_map: The sequence each row belongs to where sequences are partitioned.
         raw_cu_seqlens: The sequences' offsets where they are partitioned.
+        state_indices: ``int32`` ``[rows]`` slots, where *initial_state* is a state pool: row
+            ``r`` starts from ``initial_state[state_indices[r]]`` and ends in it.
 
     Returns:
-        The output, like ``v``, and the float32 final state of every sequence.
+        The output, like ``v``, and the float32 final state of every sequence: the pool itself,
+        updated in place, under *state_indices*.
 
     Raises:
         ValueError: A shape, dtype, layout or device the kernel does not serve.
     """
-    _check_inputs(q, k, v, g, b, cu_seqlens, initial_state, cp_seq_map, raw_cu_seqlens)
+    _check_inputs(
+        q, k, v, g, b, cu_seqlens, None if state_indices is not None else initial_state,
+        cp_seq_map, raw_cu_seqlens,
+    )  # fmt: skip
     # The copy engine and the kernel's indexing read dense rows.
     q, k, v, g, b = (tensor.contiguous() for tensor in (q, k, v, g, b))
     if initial_state is not None:
@@ -656,11 +697,16 @@ def fused_gdr_prefill(
     if cp_seq_map is None:
         cp_seq_map = cu_seqlens[:-1]
         raw_cu_seqlens = cu_seqlens
+    o = torch.empty_like(v)
+    if state_indices is not None:
+        program(
+            q, k, v, g, b, initial_state, state_indices, cu_seqlens, cp_seq_map, raw_cu_seqlens, o
+        )
+        return o, initial_state
     if initial_state is None:
         initial_state = torch.empty((rows, heads, dim, dim), dtype=torch.float32, device=k.device)
     final_state = torch.empty(
         (raw_cu_seqlens.shape[0] - 1, heads, dim, dim), dtype=torch.float32, device=k.device
     )
-    o = torch.empty_like(v)
     program(q, k, v, g, b, initial_state, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, final_state)
     return o, final_state

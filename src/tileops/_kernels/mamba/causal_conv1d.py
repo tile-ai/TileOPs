@@ -27,6 +27,7 @@ from tileops._kernels.mamba.call_spec import (
     CausalConv1dUpdateCall,
     CausalConv1dUpdateFwdInterface,
 )
+from tileops._kernels.state_pool import state_row
 
 __all__ = ["CausalConv1dKernel", "CausalConv1dUpdateKernel"]
 
@@ -43,16 +44,15 @@ def _activate(acc, silu: bool):
 
 
 def _dense_state_refusal(call: "CausalConv1dCall | CausalConv1dUpdateCall") -> str | None:
-    """Why a kernel holding one ``W - 1``-token state a sequence, in batch order, and filters
-    in the activation dtype does not serve *call*, or ``None`` when it does."""
+    """Why a kernel holding one ``W - 1``-token state a sequence, in batch order or in the
+    slot of a pool, and filters in the activation dtype does not serve *call*, or ``None``
+    when it does."""
     if call.weight_dtype != call.dtype:
         return f"the filters are read in the activation dtype; a {call.weight_dtype} weight is not"
     if call.dilation != 1:
         return f"the filter taps are adjacent tokens; dilation {call.dilation} is not served"
     if call.state_len != call.width - 1:
         return f"a state is {call.width - 1} tokens wide; {call.state_len} columns are not served"
-    if call.pooled:
-        return "the states are read in batch order; a state pool is not served"
     return None
 
 
@@ -70,6 +70,7 @@ def _causal_conv1d_kernel(
     has_bias: bool,
     has_init: bool,
     silu: bool,
+    pooled: bool,
 ):
     hist = width - 1
 
@@ -78,6 +79,7 @@ def _causal_conv1d_kernel(
     def _func(vec: int, warps: int, seg: int, steps: int, stages: int):
         total = T.dynamic("total")
         batch = T.dynamic("batch")
+        pool = T.dynamic("pool")
         lanes = 32
         block_d = lanes * vec
         chunk = seg * steps
@@ -144,16 +146,8 @@ def _causal_conv1d_kernel(
             for v in T.unroll(vec):
                 part[(n % width) * vec + v] = bf[v]
 
-        @T.prim_func
-        def main(
-            x: T.Tensor((total, dim), dtype),
-            weight: T.Tensor((dim * width,), dtype),
-            bias: T.Tensor((dim,), dtype),
-            conv_state: T.Tensor((batch, dim, hist), dtype),
-            cu_seqlens: T.Tensor((batch + 1,), "int32"),
-            has_initial_state: T.Tensor((batch,), "uint8"),
-            y: T.Tensor((total, dim), dtype),
-        ):
+        @T.macro
+        def walk(x, weight, bias, conv_state, cu_seqlens, has_initial_state, slots, y):
             # A warp walks `chunk` packed tokens of block_d channels; each lane reads only the
             # ring slots it copied, so warps need no barrier.
             #
@@ -243,7 +237,9 @@ def _causal_conv1d_kernel(
                                     hold[k * vec + v] = T.cast(0, dtype)
                                 if has_init and start == cs and has_initial_state[seq] != 0:
                                     for v in T.unroll(vec):
-                                        hold[k * vec + v] = conv_state[seq, c0 + v, k]
+                                        hold[k * vec + v] = conv_state[
+                                            state_row(slots, seq), c0 + v, k
+                                        ]
                         restart(part, hold, wf, bf, 0)
                         for v in T.unroll(vec):
                             part[hist * vec + v] = bf[v]
@@ -280,7 +276,9 @@ def _causal_conv1d_kernel(
                                         if has_init and has_initial_state[seq] != 0:
                                             for k in T.unroll(hist):
                                                 for v in T.unroll(vec):
-                                                    hold[k * vec + v] = conv_state[seq, c0 + v, k]
+                                                    hold[k * vec + v] = conv_state[
+                                                        state_row(slots, seq), c0 + v, k
+                                                    ]
                                         restart(part, hold, wf, bf, i)
                                     for v in T.vectorized(vec):
                                         prev[v] = ring[w, buf, i, lane * vec + v]
@@ -317,12 +315,43 @@ def _causal_conv1d_kernel(
                                     elif has_init and has_initial_state[seq] != 0:
                                         for v in T.unroll(vec):
                                             hold[p * vec + v] = conv_state[
-                                                seq, c0 + v, end - start + p
+                                                state_row(slots, seq), c0 + v, end - start + p
                                             ]
                                 for p in T.unroll(hist):
                                     for v in T.unroll(vec):
-                                        conv_state[seq, c0 + v, p] = hold[p * vec + v]
+                                        conv_state[state_row(slots, seq), c0 + v, p] = hold[
+                                            p * vec + v
+                                        ]
                             seq = seq + 1
+
+        if pooled:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor((total, dim), dtype),
+                weight: T.Tensor((dim * width,), dtype),
+                bias: T.Tensor((dim,), dtype),
+                conv_state: T.Tensor((pool, dim, hist), dtype),
+                cu_seqlens: T.Tensor((batch + 1,), "int32"),
+                has_initial_state: T.Tensor((batch,), "uint8"),
+                slots: T.Tensor((batch,), "int32"),
+                y: T.Tensor((total, dim), dtype),
+            ):
+                walk(x, weight, bias, conv_state, cu_seqlens, has_initial_state, slots, y)
+
+        else:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor((total, dim), dtype),
+                weight: T.Tensor((dim * width,), dtype),
+                bias: T.Tensor((dim,), dtype),
+                conv_state: T.Tensor((batch, dim, hist), dtype),
+                cu_seqlens: T.Tensor((batch + 1,), "int32"),
+                has_initial_state: T.Tensor((batch,), "uint8"),
+                y: T.Tensor((total, dim), dtype),
+            ):
+                walk(x, weight, bias, conv_state, cu_seqlens, has_initial_state, None, y)
 
         return main
 
@@ -344,6 +373,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         has_init: Whether ``has_initial_state`` is read; without it every sequence starts
             from zeros.
         silu: Whether SiLU follows the convolution.
+        pooled: Whether each sequence's state is the pool row its slot names.
         config: Optional ``{"vec", "warps", "seg", "steps", "stages"}`` override.
         device_index: The device the kernel runs on.
     """
@@ -358,7 +388,9 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     def entry_for(cls, call: CausalConv1dCall) -> Entry:
         args = (call.dim, call.width, call.dtype, call.has_bias, call.has_init, call.silu)
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        return (*args, call.pooled, index), lambda: cls(
+            *args, device_index=index, pooled=call.pooled
+        )
 
     def __init__(
         self,
@@ -370,10 +402,15 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         silu: bool,
         config: dict | None = None,
         device_index: int | None = None,
+        *,
+        pooled: bool = False,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dim, self.width, self.dtype = dim, width, dtype
-        self.kernel = _causal_conv1d_kernel(dim, width, self.dtype_str, has_bias, has_init, silu)
+        self.pooled = pooled
+        self.kernel = _causal_conv1d_kernel(
+            dim, width, self.dtype_str, has_bias, has_init, silu, pooled
+        )
         self.init_config(config)
 
     @property
@@ -399,6 +436,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         cu_seqlens: torch.Tensor,
         bias: torch.Tensor | None = None,
         has_initial_state: torch.Tensor | None = None,
+        cache_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         y = torch.empty_like(x)
         batch = cu_seqlens.shape[0] - 1
@@ -407,6 +445,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
             flags = cu_seqlens.view(torch.uint8)[:batch]
         else:
             flags = has_initial_state.view(torch.uint8)
+        slots = (cache_indices,) if self.pooled else ()
         self.program(self._compile)(
             x,
             weight.view(-1),
@@ -414,6 +453,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
             conv_state,
             cu_seqlens,
             flags,
+            *slots,
             y,
         )
         return y
@@ -421,28 +461,26 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
 
 @target_cache(maxsize=64)
 def _causal_conv1d_update_kernel(
-    dim: int, width: int, dtype: str, has_bias: bool, silu: bool, vec: int
+    dim: int, width: int, dtype: str, has_bias: bool, silu: bool, vec: int, pooled: bool
 ):
     hist = width - 1
 
     @tilelang.jit(out_idx=[])
     def _func(threads: int):
         batch = T.dynamic("batch")
+        pool = T.dynamic("pool")
         block_d = threads * vec
 
-        @T.prim_func
-        def main(
-            x: T.Tensor((batch, dim), dtype),
-            weight: T.Tensor((dim * width,), dtype),
-            bias: T.Tensor((dim,), dtype),
-            conv_state: T.Tensor((batch * dim * hist,), dtype),
-            y: T.Tensor((batch, dim), dtype),
-        ):
+        @T.macro
+        def step(x, weight, bias, conv_state, slots, y):
             # A CTA is block_d channels of one sequence; a thread holds vec of them, whose
             # vec x W weights and vec x (W-1) state elements are each contiguous.
             with T.Kernel(T.ceildiv(dim, block_d), batch, threads=threads) as (bd, b):
                 c0 = bd * block_d + T.get_thread_binding() * vec
+                # A pool is indexed by its rows, so a state's slot stays out of the flat offset
+                # and the accesses stay 16-byte vectors.
                 base = (b * dim + c0) * hist
+                row = c0 * hist
                 st = T.alloc_local((vec * hist,), dtype)
                 wraw = T.alloc_local((vec * width,), dtype)
                 xv = T.alloc_local((vec,), dtype)
@@ -452,7 +490,10 @@ def _causal_conv1d_update_kernel(
                 if c0 < dim:
                     for q in T.unroll(hist):
                         for v in T.vectorized(vec):
-                            st[q * vec + v] = conv_state[base + q * vec + v]
+                            if slots is None:
+                                st[q * vec + v] = conv_state[base + q * vec + v]
+                            else:
+                                st[q * vec + v] = conv_state[state_row(slots, b), row + q * vec + v]
                     for q in T.unroll(width):
                         for v in T.vectorized(vec):
                             wraw[q * vec + v] = weight[c0 * width + q * vec + v]
@@ -480,7 +521,35 @@ def _causal_conv1d_update_kernel(
                         st[v * hist + hist - 1] = xv[v]
                     for q in T.unroll(hist):
                         for v in T.vectorized(vec):
-                            conv_state[base + q * vec + v] = st[q * vec + v]
+                            if slots is None:
+                                conv_state[base + q * vec + v] = st[q * vec + v]
+                            else:
+                                conv_state[state_row(slots, b), row + q * vec + v] = st[q * vec + v]
+
+        if pooled:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor((batch, dim), dtype),
+                weight: T.Tensor((dim * width,), dtype),
+                bias: T.Tensor((dim,), dtype),
+                conv_state: T.Tensor((pool, dim * hist), dtype),
+                slots: T.Tensor((batch,), "int32"),
+                y: T.Tensor((batch, dim), dtype),
+            ):
+                step(x, weight, bias, conv_state, slots, y)
+
+        else:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor((batch, dim), dtype),
+                weight: T.Tensor((dim * width,), dtype),
+                bias: T.Tensor((dim,), dtype),
+                conv_state: T.Tensor((batch * dim * hist,), dtype),
+                y: T.Tensor((batch, dim), dtype),
+            ):
+                step(x, weight, bias, conv_state, None, y)
 
         return main
 
@@ -496,6 +565,7 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         dtype: float16 or bfloat16.
         has_bias: Whether a bias is added.
         silu: Whether SiLU follows the convolution.
+        pooled: Whether each sequence's state is the pool row its slot names.
         config: Optional ``{"threads"}`` override.
         device_index: The device the kernel runs on.
     """
@@ -514,7 +584,9 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
     def entry_for(cls, call: CausalConv1dUpdateCall) -> Entry:
         args = (call.dim, call.width, call.dtype, call.has_bias, call.silu)
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        return (*args, call.pooled, index), lambda: cls(
+            *args, device_index=index, pooled=call.pooled
+        )
 
     def __init__(
         self,
@@ -525,12 +597,15 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         silu: bool,
         config: dict | None = None,
         device_index: int | None = None,
+        *,
+        pooled: bool = False,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dim, self.width, self.dtype = dim, width, dtype
+        self.pooled = pooled
         self.vec = _vector(dim, dtype)
         self.kernel = _causal_conv1d_update_kernel(
-            dim, width, self.dtype_str, has_bias, silu, self.vec
+            dim, width, self.dtype_str, has_bias, silu, self.vec, pooled
         )
         self.init_config(config)
 
@@ -548,13 +623,18 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         weight: torch.Tensor,
         conv_state: torch.Tensor,
         bias: torch.Tensor | None = None,
+        conv_state_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         y = torch.empty_like(x)
+        if self.pooled:
+            states = (conv_state.view(conv_state.shape[0], -1), conv_state_indices)
+        else:
+            states = (conv_state.view(-1),)
         self.program(self._compile)(
             x,
             weight.view(-1),
             bias if bias is not None else x[0],
-            conv_state.view(-1),
+            *states,
             y,
         )
         return y
