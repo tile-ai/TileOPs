@@ -23,8 +23,8 @@ def _merge_counters(batch: int, heads_kv: int, tail_n: int) -> int:
     return (batch * heads_kv + tail_n) * 2
 
 
-# Channels of a 16-bit TMA box under a 128-byte swizzle: the packed program loads its query
-# positions in such boxes, and a head splits into them and an edge.
+# Channels of a 16-bit TMA box under a 128-byte swizzle: a head splits into such boxes and an
+# edge, and the packed program loads its query positions in boxes no wider.
 _BOX = 64
 
 
@@ -80,6 +80,9 @@ def _gqa_prefill_varlen_ws_kernel(
     # them in an edge tile, whose swizzle its own width sets; it fills the channels past the
     # head with zeros on load and drops them on store.
     width, edge = _head_parts(dim)
+    # Channels of one box of the packed query load: one swizzle atom of the tile (128, 64 or
+    # 32 bytes, the widest that divides a row).
+    box = next(b for b in (_BOX, 32, 16) if width % b == 0)
     # Key steps over 128 channels issue their products through attn_wgmma.h.
     step_wgmma = dim == 128 and block_n == 128
     # A K or V stage's size in descriptor address units (16 bytes).
@@ -730,34 +733,34 @@ def _gqa_prefill_varlen_ws_kernel(
 
     @T.macro
     def load_packed_q(Q, Qs, slot, q_bar, q_start, q_end, kv_head):
-        """Load a warpgroup's positions as one box of (position, head, 64 channels): its rows
+        """Load a warpgroup's positions as boxes of (position, head, *box* channels): its rows
         are the packed rows in order. A warpgroup the request does not fill loads its
         positions one by one."""
         for wg in T.unroll(2):
             base = q_start + wg * positions_per_wg
             if q_end - base >= positions_per_wg:
-                for c in T.unroll(dim // _BOX):
+                for c in T.unroll(dim // box):
                     T.tma_copy(
                         Q[
                             base : base + positions_per_wg,
                             kv_head * groups : (kv_head + 1) * groups,
-                            c * _BOX : (c + 1) * _BOX,
+                            c * box : (c + 1) * box,
                         ],
                         T.reshape(Qs, [2, 2, positions_per_wg, groups, dim])[
-                            slot, wg, :, :, c * _BOX : (c + 1) * _BOX
+                            slot, wg, :, :, c * box : (c + 1) * box
                         ],
                         barrier=q_bar[slot],
                     )
             else:
                 for p in T.serial(T.max(0, q_end - base)):
-                    for c in T.unroll(dim // _BOX):
+                    for c in T.unroll(dim // box):
                         T.tma_copy(
                             Q[
                                 base + p,
                                 kv_head * groups : (kv_head + 1) * groups,
-                                c * _BOX : (c + 1) * _BOX,
+                                c * box : (c + 1) * box,
                             ],
-                            Qs[slot, wg, p * groups : (p + 1) * groups, c * _BOX : (c + 1) * _BOX],
+                            Qs[slot, wg, p * groups : (p + 1) * groups, c * box : (c + 1) * box],
                             barrier=q_bar[slot],
                         )
 
@@ -1741,17 +1744,16 @@ def _gqa_prefill_varlen_ws_kernel(
 
 
 class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
-    """SM90 warp-specialized packed prefill for heads of dimension 64 or 128, and for heads
-    up to 128 channels that are 8 channels off the 16-channel step the general kernel
-    contracts in, which only this kernel serves.
+    """SM90 warp-specialized packed prefill for heads of up to 128 channels in 8-channel steps.
 
-    Dimension 256 stays on the general kernel: its shared buffers would need 448 KB,
-    about twice the 227 KB an SM90 block may use.
+    A TMA row is a multiple of 16 bytes, so a 16-bit head is a multiple of 8 channels. The
+    Q, K, V and O tiles of a head take 1792 bytes a channel: 128 channels fill 224 KB of the
+    227 KB an SM90 block may use, and dimension 256 (448 KB) stays on the general kernel.
     """
 
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_varlen_sliding_window"})
-    _DIMS: tuple[int, ...] = (64, 128)
+    _MAX_DIM: int = 128
     # Query rows a tile holds: one m64 WGMMA for each of the two consumer warpgroups.
     _BLOCK_M: int = 128
     _BLOCK_N: int = 128
@@ -1767,11 +1769,8 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     def refusal(cls, call) -> "str | None":
         if call.dtype not in ATTENTION_DTYPES:
             return f"requires float16 or bfloat16, got {call.dtype}"
-        if call.dim not in cls._DIMS and (call.dim % 16 != 8 or call.dim > cls._DIMS[-1]):
-            return (
-                f"requires head dim in {sorted(cls._DIMS)}, or 8 channels off a 16-channel "
-                f"step up to {cls._DIMS[-1]}, got {call.dim}"
-            )
+        if call.dim % 8 or call.dim > cls._MAX_DIM:
+            return f"requires a head dim of 8-channel steps up to {cls._MAX_DIM}, got {call.dim}"
         # RoPE rotates channels of one query tile; a head with an edge spans two.
         if call.fuse_rope and _head_parts(call.dim)[1]:
             return f"fuses RoPE only into a head held in one tile, got head dim {call.dim}"
@@ -1909,8 +1908,8 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
     fewer packed tiles than one-head tiles fills each tile with its KV head's group, position
     by position, and reads its keys once a KV head rather than once a query head.
 
-    It serves every call whose group divides a warpgroup's 64 rows and whose head dim is whole
-    64-channel boxes; a request that does not pack runs one-head tiles, so whether requests
+    It serves every call whose group divides a warpgroup's 64 rows and whose head is held in
+    one unpadded tile; a request that does not pack runs one-head tiles, so whether requests
     are short need not be known on the host. Other groups and head dims keep the one-head
     program.
     """
@@ -1929,9 +1928,9 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
         group = call.heads // call.heads_kv
         if group == 1 or 64 % group != 0:
             return "requires a query group that divides a warpgroup's 64 rows"
-        # A packed tile loads its positions in whole boxes.
-        if call.dim % _BOX:
-            return f"requires a head dim of whole {_BOX}-channel boxes, got {call.dim}"
+        # A packed tile holds a head in one tile: its loads and stores take no edge or padding.
+        if _head_parts(call.dim) != (call.dim, 0):
+            return f"packs only a head held in one unpadded tile, got head dim {call.dim}"
         return super().refusal(call)
 
     @property

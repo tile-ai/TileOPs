@@ -551,6 +551,20 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             marks=pytest.mark.full,
             id="d88",
         ),
+        # A multiple of 16 that 64 does not divide: a 32-channel edge with no padding.
+        pytest.param(
+            [129, 65],
+            [200, 65],
+            6,
+            2,
+            96,
+            True,
+            -1,
+            -1,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="d96",
+        ),
         # A 64-channel edge (56 channels and 8 zeros) under a 128-byte swizzle.
         pytest.param(
             [129, 65],
@@ -578,9 +592,9 @@ def test_varlen_ws_serves_head_dims_off_the_contraction_step_on_sm90(
     wr: int,
     dtype: torch.dtype,
 ) -> None:
-    """A 16-bit WGMMA contracts 16 channels a step, and TMA fills a box past a tensor's last
-    channel with zeros: on SM90 the warp-specialized kernel serves the head dims 8 channels
-    off that step, which the general kernel refuses, on tiles padded to it."""
+    """A TMA row is a multiple of 16 bytes, a 16-bit WGMMA contracts 16 channels a step, and
+    TMA fills a box past a tensor's last channel with zeros: on SM90 the warp-specialized
+    kernel serves head dims of 8-channel steps on tiles padded to the WGMMA step."""
     test = GQAVarlenFwdTest(
         len(q_lens), q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype
     )
@@ -847,6 +861,18 @@ def test_varlen_one_op_selects_packed_programs_by_call() -> None:
             {},
             marks=pytest.mark.full,
             id="unranked-dim-64",
+        ),
+        # A head under one 64-channel box packs in one box of its own width.
+        pytest.param(
+            [1, 3, 24, 5],
+            [900, 300, 24, 5],
+            32,
+            8,
+            48,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="dim-48",
         ),
         pytest.param(
             [1, 2, 5],
