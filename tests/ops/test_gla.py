@@ -210,6 +210,12 @@ class GLAChunkBwdFixture(FixtureBase):
                 pytest.param(
                     1, 256, 4, 128, 128, 32, torch.bfloat16, False, marks=pytest.mark.full
                 ),
+                # Mixed head dimensions must retain their previously served backward calls.
+                pytest.param(1, 256, 4, 128, 64, 32, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 256, 4, 64, 128, 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 256, 4, 64, 128, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                # Tuned mode must preserve the restored mixed-head call's result.
+                pytest.param(1, 256, 4, 128, 128, 32, torch.float16, True, marks=pytest.mark.full),
                 # At chunk 128, head dims 64 / 64, the backward fits only SM90's shared memory.
                 pytest.param(
                     1,
@@ -373,17 +379,27 @@ def test_gla_bwd_in_99_kb_of_shared_memory() -> None:
 @pytest.mark.sm89
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-def test_gla_bwd_refuses_what_99_kb_cannot_hold() -> None:
-    """SM89 gives a block 99 KB of opt-in shared memory, too little for the float32 backward
-    at head dims 128 / 128, so the op refuses it before anything is built."""
-    B, T, H, K, V = 1, 128, 2, 128, 128
+@pytest.mark.parametrize(
+    "chunk_size,dim_v,dtype",
+    [
+        (64, 128, torch.float32),
+        (32, 96, torch.float32),
+        (32, 192, torch.float16),
+        (32, 192, torch.bfloat16),
+    ],
+)
+def test_gla_bwd_refuses_what_99_kb_cannot_hold(
+    chunk_size: int, dim_v: int, dtype: torch.dtype
+) -> None:
+    """Reject both ordinary and compact layouts exceeding 99 KiB before building a kernel."""
+    B, T, H, K, V = 1, 128, 2, 128, dim_v
     device = run_device()
-    q, k = (torch.randn(B, T, H, K, device=device) for _ in range(2))
-    g = -torch.rand(B, T, H, K, device=device)
-    v, do = (torch.randn(B, T, H, V, device=device) for _ in range(2))
-    h = torch.zeros(B, T // 64 + 1, H, K, V, device=device)
+    q, k = (torch.randn(B, T, H, K, device=device, dtype=dtype) for _ in range(2))
+    g = -torch.rand(B, T, H, K, device=device, dtype=dtype)
+    v, do = (torch.randn(B, T, H, V, device=device, dtype=dtype) for _ in range(2))
+    h = torch.zeros(B, T // chunk_size + 1, H, K, V, device=device)
     dht = torch.zeros(B, H, K, V, device=device)
-    op = GLAChunkBwdOp(chunk_size=64)
+    op = GLAChunkBwdOp(chunk_size=chunk_size)
     with pytest.raises(ValueError, match="bytes of shared memory per block"):
         op(do, dht, q, k, v, g, h)
     for interface in GLAChunkBwdOp.interfaces:
