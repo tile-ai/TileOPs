@@ -132,6 +132,21 @@ GEMMFP8FwdOp:
   - {M: 4096, N: 576, K: 7168, SA: [4096, 56], SB: [5, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-a-m4096-s128}
   - {M: 4096, N: 32768, K: 512, SA: [4096, 4], SB: [32768, 4], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-b-m4096-s1}
   - {M: 4096, N: 32768, K: 512, SA: [4096, 4], SB: [256, 4], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-b-m4096-s128}
+  # Pilot-model projections at decode batches, in the scales their FP8 checkpoints carry
+  # (Llama-3 per tensor; Qwen3 and DeepSeek-V3 128x128 weight blocks): one row for each kernel
+  # and config the selector picks below 65 tokens (tile width, consumer warpgroups, split-K)
+  # that no row above runs.
+  - {M: 16, N: 6144, K: 4096, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: llama3-8b-qkv-b16}
+  - {M: 16, N: 10240, K: 8192, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: llama3-70b-qkv-b16}
+  - {M: 16, N: 1280, K: 8192, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: llama3-70b-tp8-qkv-b16}
+  - {M: 8, N: 6144, K: 4096, SA: [8, 32], SB: [48, 32], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-8b-qkv-b8}
+  - {M: 8, N: 24576, K: 4096, SA: [8, 32], SB: [192, 32], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-8b-gate-up-b8}
+  - {M: 8, N: 4096, K: 12288, SA: [8, 96], SB: [32, 96], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-8b-down-b8}
+  - {M: 8, N: 4096, K: 512, SA: [8, 4], SB: [32, 4], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-8b-tp8-o-b8}
+  - {M: 16, N: 4096, K: 4096, SA: [16, 32], SB: [32, 32], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-8b-o-b16}
+  - {M: 8, N: 10240, K: 5120, SA: [8, 40], SB: [80, 40], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-32b-qkv-b8}
+  - {M: 16, N: 10240, K: 5120, SA: [16, 40], SB: [80, 40], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-32b-qkv-b16}
+  - {M: 16, N: 2112, K: 7168, SA: [16, 56], SB: [17, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-qkv-a-b16}
 
   roofline:
     # The contraction; two scale multiplies per result, once per tensor or once per
