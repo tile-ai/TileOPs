@@ -56,6 +56,66 @@ class DeltaNetChunkFwdFixture(FixtureBase):
                 ),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                *[
+                    pytest.param(
+                        1,
+                        64,
+                        2,
+                        dim_k,
+                        dim_v,
+                        16,
+                        dtype,
+                        False,
+                        marks=pytest.mark.smoke,
+                        id=f"chunk16-{dim_k}x{dim_v}-{dtype}",
+                    )
+                    for dim_k, dim_v in ((64, 64), (128, 128), (256, 64), (64, 256), (256, 128))
+                    for dtype in (torch.float16, torch.bfloat16)
+                ],
+                *[
+                    pytest.param(
+                        1,
+                        64,
+                        2,
+                        64,
+                        dim_v,
+                        16,
+                        dtype,
+                        False,
+                        marks=pytest.mark.smoke,
+                        id=f"chunk16-narrow-{dim_v}-{dtype}",
+                    )
+                    for dim_v in (16, 24, 32, 48, 96)
+                    for dtype in (torch.float32, torch.float16, torch.bfloat16)
+                ],
+                pytest.param(
+                    1,
+                    64,
+                    2,
+                    64,
+                    64,
+                    16,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="chunk16-fp32",
+                ),
+                *[
+                    pytest.param(
+                        1,
+                        64,
+                        2,
+                        16,
+                        dim_v,
+                        16,
+                        dtype,
+                        False,
+                        marks=pytest.mark.smoke,
+                        id=f"chunk16-walk-{dim_v}-{dtype}",
+                    )
+                    for dim_v in (24, 64)
+                    for dtype in (torch.float32, torch.float16, torch.bfloat16)
+                ],
                 # dim_k 128 at chunk 128: SM89's 99 KB of shared memory per block holds the
                 # recurrence but not the state walk.
                 pytest.param(
@@ -102,6 +162,66 @@ class DeltaNetChunkFwdFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-tuned",
                 ),
+                *[
+                    pytest.param(
+                        1,
+                        64,
+                        2,
+                        dim_k,
+                        dim_v,
+                        16,
+                        dtype,
+                        True,
+                        marks=pytest.mark.nightly,
+                        id=f"chunk16-tuned-{dim_k}x{dim_v}-{dtype}",
+                    )
+                    for dim_k, dim_v in ((64, 64), (256, 128))
+                    for dtype in (torch.float16, torch.bfloat16)
+                ],
+                *[
+                    pytest.param(
+                        1,
+                        64,
+                        2,
+                        64,
+                        dim_v,
+                        16,
+                        dtype,
+                        True,
+                        marks=pytest.mark.nightly,
+                        id=f"chunk16-narrow-tuned-{dim_v}-{dtype}",
+                    )
+                    for dim_v in (16, 24, 32, 48, 96)
+                    for dtype in (torch.float32, torch.float16, torch.bfloat16)
+                ],
+                pytest.param(
+                    1,
+                    64,
+                    2,
+                    64,
+                    64,
+                    16,
+                    torch.float32,
+                    True,
+                    marks=pytest.mark.nightly,
+                    id="chunk16-tuned-fp32",
+                ),
+                *[
+                    pytest.param(
+                        1,
+                        64,
+                        2,
+                        16,
+                        dim_v,
+                        16,
+                        dtype,
+                        True,
+                        marks=pytest.mark.nightly,
+                        id=f"chunk16-walk-tuned-{dim_v}-{dtype}",
+                    )
+                    for dim_v in (24, 64)
+                    for dtype in (torch.float32, torch.float16, torch.bfloat16)
+                ],
             ],
         ),
     ]
