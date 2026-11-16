@@ -1,7 +1,8 @@
 """Fused Add + Norm forward kernels using TileLang, and the register-held LayerNorm kernels.
 
 FusedAddLayerNorm: y = LayerNorm(x + residual), also outputs (x + residual)
-FusedAddRMSNorm:   y = RMSNorm(x + residual),   also outputs (x + residual)
+FusedAddRMSNorm:   y = RMSNorm(x + residual),   also outputs (x + residual); a zero-centered
+                   call scales by 1 + weight, formed in f32
 
 The register-held kernel family also serves LayerNorm and AdaLayerNorm (with and without the
 Zero gate) unfused; ``layer_norm.py`` and ``ada_layer_norm.py`` dispatch to it.
@@ -40,6 +41,7 @@ from tileops._kernels.norm._config import (
     make_raw_sums_hold,
     pairwise_sum,
     read_first,
+    rms_scale,
     select_row_config,
     select_row_configs,
     warp_sum,
@@ -52,7 +54,6 @@ from tileops._kernels.norm.call_spec import (
     LayerNormCall,
     LayerNormFwdInterface,
     RMSNormCall,
-    whole_row_scale_refusal,
 )
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES
@@ -1105,7 +1106,7 @@ class AdaLayerNormZeroHeldKernel(AdaLayerNormHeldKernel, AdaLayerNormZeroFwdInte
 
 
 @target_cache(maxsize=32)
-def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits, vec):
+def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits, vec, zero_centered):
     """Return the factory for one CTA per ``(row, chunk)`` pair.
 
     A CTA reduces a whole row and writes one chunk of it. Nothing is written until the
@@ -1199,7 +1200,10 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits, vec):
                         b[i] = weight[mine + base + i]
                     for i in T.serial(vec):
                         b[i] = T.cast(
-                            T.cast(a[i], "float32") * scale * T.cast(b[i], "float32"), dtype
+                            T.cast(a[i], "float32")
+                            * scale
+                            * rms_scale(T.cast(b[i], "float32"), zero_centered),
+                            dtype,
                         )
                     for i in T.vectorized(vec):
                         residual_out[row, mine + base + i] = a[i]
@@ -1225,13 +1229,9 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
-    def refusal(cls, call: RMSNormCall) -> "str | None":
-        return whole_row_scale_refusal(call) or super().refusal(call)
-
-    @classmethod
-    def entry_for(cls, call: LayerNormCall) -> Entry:
-        identity = (call.n, call.eps, call.dtype)
-        return identity, lambda: cls(*identity)
+    def entry_for(cls, call: RMSNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype, call.zero_centered)
+        return identity, lambda: cls(call.n, call.eps, call.dtype, zero_centered=call.zero_centered)
 
     # Rows at or below which a row-per-CTA call takes the narrow block: while the shared
     # park is small a narrow block keeps more CTAs resident on an SM, and past this width
@@ -1293,6 +1293,8 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         eps: float,
         dtype: torch.dtype,
         config: dict | None = None,
+        *,
+        zero_centered: bool = False,
     ):
         """Build for a hidden size and dtype.
 
@@ -1303,11 +1305,13 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
             eps: Epsilon for numerical stability.
             dtype: Element type the rows are stored in.
             config: Optional ``{"threads": ...}`` override, for the row-per-CTA case.
+            zero_centered: Whether to scale by ``1 + weight`` instead of ``weight``.
         """
         super().__init__()
         self.N = N
         self.eps = eps
         self.dtype = dtype
+        self.zero_centered = zero_centered
         self._vec = VECTOR_ACCESS_BYTES // 2  # Eight 16-bit elements per access.
         self.N_padded = align_up(N, ALIGNMENT)
         self.init_config(config)
@@ -1373,6 +1377,6 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         splits = self._row_splits(threads, m)
 
         self.kernel = kernel = _fused_add_rms_norm_kernel(
-            m, self.N, self.eps, self.dtype_str, splits, self._vec
+            m, self.N, self.eps, self.dtype_str, splits, self._vec, self.zero_centered
         )
         return kernel(threads)

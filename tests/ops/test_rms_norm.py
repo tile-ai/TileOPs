@@ -20,10 +20,13 @@ from tileops._kernels.tiling import ALIGNMENT
 from tileops._ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
 from tileops._utils import RESIDENT_CTAS, get_shared_memory_optin, get_sm_count
+from tileops.backend import OpNotAvailableError
 from workloads.device import run_device
 from workloads.norm import (
     FusedAddRMSNormWorkload,
+    FusedAddRMSNormZeroCenteredOffsetWorkload,
     RMSNormWorkload,
+    RMSNormZeroCenteredOffsetWorkload,
     norm_verification,
     normalization_verification,
 )
@@ -257,6 +260,57 @@ def test_tuned_rms_norm_in_each_row_body(n: int, many_rows: bool) -> None:
     )
 
 
+class RMSNormZeroCenteredOffsetTest(RMSNormZeroCenteredOffsetWorkload, TestBase):
+    pass
+
+
+@pytest.mark.parametrize(
+    "m, n",
+    [
+        # A held row; warp rows with a lane group past the last row; rows of the fragment body
+        # sharing a block.
+        pytest.param(5, 5120, marks=pytest.mark.smoke),
+        pytest.param(33, 256, marks=pytest.mark.full),
+        pytest.param(17, 96, marks=pytest.mark.full),
+    ],
+)
+def test_rms_norm_zero_centered_in_each_row_body(m: int, n: int) -> None:
+    """Each body scales a zero-centered row by one plus the weight, formed in float32: rounded to
+    bfloat16 first, it moves outputs these inputs hold exactly."""
+    test = RMSNormZeroCenteredOffsetTest(m, n, torch.bfloat16, zero_centered=True)
+    op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6, zero_centered=True)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_rms_norm_zero_centered_float16() -> None:
+    test = RMSNormTest(33, 256, torch.float16, zero_centered=True)
+    op = RMSNormFwdOp(normalized_shape=(256,), eps=1e-6, zero_centered=True)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_rms_norm_zero_centered_without_weight() -> None:
+    """A zero-centered call without a weight scales by one, as by a zero weight's 1 + 0."""
+    test = RMSNormTest(33, 256, torch.bfloat16, zero_centered=True)
+    x, _ = test.gen_inputs()
+    op = RMSNormFwdOp(normalized_shape=(256,), eps=1e-6, zero_centered=True)
+    compare_outputs(op(x), test.ref_program(x, None), test.verification(x))
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_rms_norm_refuses_runs_shorter_than_the_row() -> None:
+    """No in-tree kernel normalizes runs of ``group_size`` elements: the op refuses such a call,
+    naming the reason, before it builds a kernel."""
+    op = RMSNormFwdOp(normalized_shape=(512,), eps=1e-6, group_size=256, zero_centered=True)
+    x = torch.randn(4, 512, dtype=torch.bfloat16, device=run_device())
+    weight = torch.randn(512, dtype=torch.bfloat16, device=run_device())
+    with pytest.raises(OpNotAvailableError, match="group_size is not served"):
+        op(x, weight)
+    assert not op._entries_built("rms_norm")
+
+
 def _check_without_weight(test: RMSNormTest, op: RMSNormFwdOp) -> None:
     """*op* scaling by one matches *test*'s reference at a weight of ones."""
     x, weight = test.gen_inputs()
@@ -453,6 +507,32 @@ def test_fused_add_rms_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+class FusedAddRMSNormZeroCenteredOffsetTest(FusedAddRMSNormZeroCenteredOffsetWorkload, TestBase):
+    pass
+
+
+@pytest.mark.parametrize(
+    "m, n",
+    [
+        # A row a CTA; a row padded to the alignment; several CTAs splitting one row.
+        pytest.param(64, 2048, marks=pytest.mark.smoke),
+        pytest.param(33, 3000, marks=pytest.mark.full),
+        pytest.param(1, 16384, marks=pytest.mark.full),
+    ],
+)
+def test_fused_add_rms_norm_zero_centered(m: int, n: int) -> None:
+    """A zero-centered call scales the normalized sum by one plus the weight, formed in float32:
+    rounded to bfloat16 first, it moves outputs these inputs hold exactly."""
+    test = FusedAddRMSNormZeroCenteredOffsetTest(m, n, torch.bfloat16, zero_centered=True)
+    test.check(FusedAddRMSNormFwdOp(zero_centered=True), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_fused_add_rms_norm_zero_centered_float16() -> None:
+    test = FusedAddRMSNormTest(64, 2048, torch.float16, zero_centered=True)
+    test.check(FusedAddRMSNormFwdOp(zero_centered=True), *test.gen_inputs())
 
 
 class FusedAddRMSNormNonContigFixture(FixtureBase):

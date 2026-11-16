@@ -2,7 +2,8 @@
 
 y = x * rsqrt(mean(x^2) + eps) * weight
 
-``RMSNormKernel`` runs one of three bodies, chosen by ``_row_body`` from the row's width and
+``RMSNormKernel`` also scales by ``1 + weight`` where the call is zero-centered, forming
+``1 + weight`` in f32. ``RMSNormKernel`` runs one of three bodies, chosen by ``_row_body`` from the row's width and
 dtype alone: a group of a warp's lanes a row for rows of 256 to 2048 elements, a row held in
 a block's registers past 4096, and otherwise the fragment body. Tuning sizes the chosen body
 and never switches bodies. ``RMSNormTwoPassKernel`` reads a row of two or more whole thread
@@ -27,11 +28,12 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.norm._config import select_row_config, select_row_configs
+from tileops._kernels.norm._config import rms_scale, select_row_config, select_row_configs
 from tileops._kernels.norm.call_spec import (
     LayerNormCall,
     RMSNormCall,
     RMSNormFwdInterface,
+    whole_row_refusal,
     whole_row_scale_refusal,
 )
 from tileops._kernels.streaming_load import load16, load16_evict_last
@@ -59,12 +61,22 @@ def _square(buf, pair: int, half: int, dtype: str):
     return v * v
 
 
-def _scaled(held, pair: int, half: int, rrms, scale, scale_pair: int, dtype: str, has_weight: bool):
+def _scaled(
+    held,
+    pair: int,
+    half: int,
+    rrms,
+    scale,
+    scale_pair: int,
+    dtype: str,
+    has_weight: bool,
+    zero_centered: bool,
+):
     """Element ``2 * pair + half`` of *held* times *rrms*, times the matching element of *scale*
-    where *has_weight*, rounded once to *dtype*."""
+    where *has_weight*, or one plus it where *zero_centered*, rounded once to *dtype*."""
     v = _widen(held, pair, half, dtype) * rrms
     if has_weight:
-        v = v * _widen(scale, scale_pair, half, dtype)
+        v = v * rms_scale(_widen(scale, scale_pair, half, dtype), zero_centered)
     return T.cast(v, dtype)
 
 
@@ -133,7 +145,7 @@ def _row_body(n: int, n_padded: int, elem_bytes: int) -> str:
     return "fragment"
 
 
-def _held_row(M, N, eps, dtype, has_weight, threads, vec, blocks=1):
+def _held_row(M, N, eps, dtype, has_weight, threads, vec, blocks=1, *, zero_centered=False):
     """One row a block, each thread holding ``N / threads`` elements in registers.
 
     Thread ``t`` holds vectors ``k * threads + t``. The sum of
@@ -181,8 +193,12 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec, blocks=1):
             # N, not a padded width: every column of the row is held.
             part[0] = T.rsqrt(part[0] / float(N) + eps)
             for p in T.unroll(held_n // 2):
-                out[p * 2] = _scaled(held, p, 0, part[0], scale, p, dtype, has_weight)
-                out[p * 2 + 1] = _scaled(held, p, 1, part[0], scale, p, dtype, has_weight)
+                out[p * 2] = _scaled(
+                    held, p, 0, part[0], scale, p, dtype, has_weight, zero_centered
+                )
+                out[p * 2 + 1] = _scaled(
+                    held, p, 1, part[0], scale, p, dtype, has_weight, zero_centered
+                )
             for k in T.unroll(steps):
                 for c in T.vectorized(vec):
                     y[row, (k * threads + tx) * vec + c] = out[k * vec + c]
@@ -275,8 +291,10 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tre
                             scale[k * vec + c] = weight[at + c]
                 for p in T.unroll(width // 2):
                     w = s * width // 2 + p if weight_first else p
-                    out[p * 2] = _scaled(held, p, 0, part[0], scale, w, dtype, has_weight)
-                    out[p * 2 + 1] = _scaled(held, p, 1, part[0], scale, w, dtype, has_weight)
+                    out[p * 2] = _scaled(held, p, 0, part[0], scale, w, dtype, has_weight, False)
+                    out[p * 2 + 1] = _scaled(
+                        held, p, 1, part[0], scale, w, dtype, has_weight, False
+                    )
                 for k in T.unroll(chunk):
                     for c in T.vectorized(vec):
                         y[row, ((s * chunk + k) * threads + tx) * vec + c] = out[k * vec + c]
@@ -284,7 +302,7 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tre
     return main
 
 
-def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps, rows):
+def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps, rows, zero_centered):
     """Rows of ``lanes * per_lane`` vectors, ``lanes`` adjacent lanes of a warp a row, ``rows``
     rows a lane group.
 
@@ -339,8 +357,12 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps, rows):
                 part[r] = T.rsqrt(part[r] / float(N) + eps)
                 for p in T.unroll(held_n // 2):
                     q = r * held_n // 2 + p
-                    out[q * 2] = _scaled(held, q, 0, part[r], scale, p, dtype, has_weight)
-                    out[q * 2 + 1] = _scaled(held, q, 1, part[r], scale, p, dtype, has_weight)
+                    out[q * 2] = _scaled(
+                        held, q, 0, part[r], scale, p, dtype, has_weight, zero_centered
+                    )
+                    out[q * 2 + 1] = _scaled(
+                        held, q, 1, part[r], scale, p, dtype, has_weight, zero_centered
+                    )
             for r in T.unroll(rows):
                 if first + r * groups < M:
                     for k in T.unroll(per_lane):
@@ -353,7 +375,7 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps, rows):
 
 
 @target_cache(maxsize=32)
-def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budget):
+def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budget, zero_centered):
     col_guard = N_padded != N
     elem_bytes = DataType(dtype).bits // 8
 
@@ -366,12 +388,23 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budg
             widths = _held_widths(N, elem_bytes)
             if block_m != 1 or threads not in widths:
                 raise ValueError(f"a held row of {N} takes one row a block at {widths} threads")
-            return _held_row(M, N, eps, dtype, has_weight, threads, vec)
+            return _held_row(
+                M, N, eps, dtype, has_weight, threads, vec, zero_centered=zero_centered
+            )
         if body == "warp_rows":
             # block_m does not apply: a block takes as many rows as its lanes hold.
             lanes, per_lane, rows = _warp_row_shape(N, elem_bytes)
             return _warp_rows(
-                M, N, eps, dtype, has_weight, lanes, per_lane, threads // WARP_LANES, rows
+                M,
+                N,
+                eps,
+                dtype,
+                has_weight,
+                lanes,
+                per_lane,
+                threads // WARP_LANES,
+                rows,
+                zero_centered,
             )
 
         # A partial per thread trades the fp32 fragment's N/threads registers,
@@ -461,7 +494,7 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budg
                                 y[pid_m * block_m + i, j] = T.cast(
                                     T.cast(x_local[i, j], "float32")
                                     * rrms[i]
-                                    * T.cast(weight[j], "float32"),
+                                    * rms_scale(T.cast(weight[j], "float32"), zero_centered),
                                     dtype,
                                 )
                             else:
@@ -485,12 +518,12 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
 
     @classmethod
     def refusal(cls, call: RMSNormCall) -> str | None:
-        return whole_row_scale_refusal(call) or super().refusal(call)
+        return whole_row_refusal(call) or super().refusal(call)
 
     @classmethod
-    def entry_for(cls, call: LayerNormCall) -> Entry:
-        identity = (call.n, call.eps, call.dtype)
-        return identity, lambda: cls(*identity)
+    def entry_for(cls, call: RMSNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype, call.zero_centered)
+        return identity, lambda: cls(call.n, call.eps, call.dtype, zero_centered=call.zero_centered)
 
     # Rows at most this wide share a block of the default 128 threads: one of them gives
     # each thread less than one 16-byte access of a 16-bit dtype.
@@ -502,8 +535,10 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         eps: float,
         dtype: torch.dtype,
         config: dict | None = None,
+        *,
+        zero_centered: bool = False,
     ):
-        """Build for a hidden size and dtype.
+        """Build for a hidden size and dtype, scaling by ``1 + weight`` where *zero_centered*.
 
         The program for a given row count is compiled on the first launch with that row count.
         """
@@ -511,6 +546,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         self.N = N
         self.eps = eps
         self.dtype = dtype
+        self.zero_centered = zero_centered
         # A row sharing a block is held at a power of two, so whole rows tile the fragment.
         self.N_padded = (
             1 << (N - 1).bit_length() if N <= self._SHARED_ROW_MAX else align_up(N, ALIGNMENT)
@@ -594,6 +630,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
             has_weight,
             self.build_target.sm_count,
             self.build_target.smem_budget,
+            self.zero_centered,
         )
         block_m = cfg["block_m"]
         if self.N_padded <= self._SHARED_ROW_MAX:

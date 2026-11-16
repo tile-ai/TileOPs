@@ -24,6 +24,7 @@ __all__ = [
     "pairwise_sum",
     "raw_sums_ratio",
     "read_first",
+    "rms_scale",
     "row_padding",
     "select_row_config",
     "select_row_config_by_width",
@@ -167,6 +168,12 @@ def pairwise_sum(terms):
         pairs = [a + b for a, b in zip(terms[::2], terms[1::2], strict=False)]
         terms = pairs + terms[len(terms) // 2 * 2 :]
     return terms[0]
+
+
+def rms_scale(weight, zero_centered: bool):
+    """The f32 factor an RMS-normalized element takes from its f32 *weight*: the weight, or one
+    plus it where *zero_centered*."""
+    return weight + T.float32(1) if zero_centered else weight
 
 
 def fold_chains(partial, first: int = 0, chains: int = 4):

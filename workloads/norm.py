@@ -10,11 +10,14 @@ from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 class RMSNormWorkload(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
+    def __init__(
+        self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6, zero_centered: bool = False
+    ):
         self.m = m
         self.n = n
         self.dtype = dtype
         self.eps = eps
+        self.zero_centered = zero_centered
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         x = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
@@ -23,7 +26,9 @@ class RMSNormWorkload(WorkloadBase):
 
     def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         return _norm_reference(
-            "RMSNormFwdOp", (x, weight), dict(eps=self.eps, normalized_shape=(self.n,))
+            "RMSNormFwdOp",
+            (x, weight),
+            dict(eps=self.eps, normalized_shape=(self.n,), zero_centered=self.zero_centered),
         )
 
     def verification(self, *inputs):
@@ -134,11 +139,14 @@ class LayerNormOutlierLeadWorkload(OutlierLeadWorkload, LayerNormWorkload):
 
 
 class FusedAddRMSNormWorkload(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
+    def __init__(
+        self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6, zero_centered: bool = False
+    ):
         self.m = m
         self.n = n
         self.dtype = dtype
         self.eps = eps
+        self.zero_centered = zero_centered
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
@@ -155,11 +163,66 @@ class FusedAddRMSNormWorkload(WorkloadBase):
         return _norm_reference(
             "FusedAddRMSNormFwdOp",
             (x, residual, weight),
-            dict(eps=self.eps, normalized_shape=(self.n,)),
+            dict(eps=self.eps, normalized_shape=(self.n,), zero_centered=self.zero_centered),
         )
 
     def verification(self, *inputs):
         return norm_verification(inputs[0].dtype)
+
+
+class ZeroCenteredOffsetWorkload:
+    """A zero-centered RMS norm workload's bfloat16 inputs on which rounding ``1 + weight`` to
+    bfloat16 before the multiply changes the output.
+
+    Each row holds 3 / 8 of its values at +-3 and the rest at +-1, so its root mean square is
+    2 and the normalized values are +-1.5 and +-0.5. The weight is 3 * 2^-10 everywhere: one
+    plus it lies between two bfloat16 values, and 1.5 times it rounds up a step where 1.5 times
+    its rounded value does not. Every output lies at least 3e-4 of its value from a bfloat16
+    rounding boundary, so any float32 evaluation rounds to the reference's value exactly. The
+    fused-add sum splits each value into ``x`` (+-2 or 0) and ``residual`` (+-1).
+    """
+
+    def gen_inputs(self) -> tuple:
+        inputs = list(super().gen_inputs())
+        x = inputs[0]
+        n = x.shape[-1]
+        magnitude = torch.ones(n, device=x.device)
+        magnitude[: 3 * n // 8] = 3
+        sign = torch.ones(n, device=x.device)
+        sign[1::2] = -1
+        rows = (magnitude * sign).expand(x.shape)
+        if len(inputs) == 3:
+            inputs[0], inputs[1] = (rows - sign).to(x.dtype), sign.expand(x.shape).to(x.dtype)
+        else:
+            inputs[0] = rows.to(x.dtype)
+        inputs[-1] = torch.full_like(inputs[-1], 3 * 2**-10)
+        return tuple(inputs)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, NegativeControl
+
+        def offset_rounded(reference, inputs):
+            """The reference with 1 + weight rounded to bfloat16 before the multiply."""
+            changed = list(inputs)
+            weight = changed[-1]
+            changed[-1] = ((weight.float() + 1).to(weight.dtype).float() - 1).to(weight.dtype)
+            return reference(*changed)
+
+        return Exact(
+            rtol=0.0,
+            atol=0.0,
+            controls=(NegativeControl("one-plus-weight-rounded", offset_rounded),),
+        )
+
+
+class RMSNormZeroCenteredOffsetWorkload(ZeroCenteredOffsetWorkload, RMSNormWorkload):
+    """`ZeroCenteredOffsetWorkload` inputs for RMSNormFwdOp."""
+
+
+class FusedAddRMSNormZeroCenteredOffsetWorkload(
+    ZeroCenteredOffsetWorkload, FusedAddRMSNormWorkload
+):
+    """`ZeroCenteredOffsetWorkload` inputs for FusedAddRMSNormFwdOp."""
 
 
 class FusedAddLayerNormWorkload(WorkloadBase):
