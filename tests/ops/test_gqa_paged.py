@@ -1065,6 +1065,10 @@ def _causal_canary(workload: GQAPagedFwdWorkload, inputs: tuple) -> tuple:
     return inputs
 
 
+# A chunk count a case does not bound.
+ANY = (1, None)
+
+
 def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
     return GQAPagedFwdOp(out_dtype=workload.out_dtype, **{"is_causal": True, **semantics})
 
@@ -1072,7 +1076,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("q_lens", "cache_lens", "page_size", "dtype", "semantics", "tile_rows"),
+    ("q_lens", "cache_lens", "page_size", "dtype", "semantics", "tile_rows", "splits"),
     [
         # One copy a key tile; the cache end cuts the last tile of the first request.
         pytest.param(
@@ -1082,6 +1086,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.float16,
             {},
             8,
+            ANY,
             marks=pytest.mark.smoke,
             id="f16-tensor-scale-cut",
         ),  # fmt: skip
@@ -1093,6 +1098,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.bfloat16,
             {"per_request_scales": True},
             16,
+            ANY,
             marks=pytest.mark.smoke,
             id="bf16-request-scales-pages-16",
         ),
@@ -1104,6 +1110,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             FP8,
             {"per_request_scales": True, "softcap": 30.0, "window_size_left": 200},
             8,
+            ANY,
             marks=pytest.mark.smoke,
             id="fp8-softcap-window",
         ),
@@ -1120,6 +1127,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
                 "is_causal": False,
             },
             64,
+            ANY,
             marks=pytest.mark.full,
             id="fp8-rows-on-m-softcap-window-bidirectional",
         ),
@@ -1131,6 +1139,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.float16,
             {"heads": 64, "dim": 64},
             8,
+            ANY,
             marks=pytest.mark.full,
             id="f16-d64-keys-on-m",
         ),
@@ -1142,6 +1151,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.bfloat16,
             {"heads": 64, "dim": 64},
             64,
+            ANY,
             marks=pytest.mark.full,
             id="bf16-d64-rows-on-m",
         ),
@@ -1153,6 +1163,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.float16,
             {"window_size_left": 100, "window_size_right": 0, "is_causal": False},
             8,
+            ANY,
             marks=pytest.mark.full,
             id="f16-right-window-empty-request",
         ),
@@ -1164,6 +1175,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.float16,
             {},
             16,
+            ANY,
             marks=pytest.mark.full,
             id="f16-request-spans-tiles",
         ),  # fmt: skip
@@ -1176,6 +1188,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.float16,
             {"sm_scale": 8.0, "window_size_left": 102},
             16,
+            ANY,
             marks=pytest.mark.full,
             id="f16-keys-on-m-large-scale-hidden-tile",
         ),
@@ -1186,9 +1199,48 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.float16,
             {"sm_scale": 8.0, "window_size_left": 92},
             64,
+            ANY,
             marks=pytest.mark.full,
             id="f16-rows-on-m-large-scale-hidden-tile",
         ),
+        # A table of 64 key tiles takes several chunks: a 70-key request beside a 4096-key one
+        # leaves most of its chunks without a key tile, and they must weigh nothing in the
+        # combine.
+        pytest.param(
+            [16, 16],
+            [70, 4096],
+            64,
+            torch.float16,
+            {},
+            64,
+            (2, None),
+            marks=pytest.mark.full,
+            id="f16-rows-on-m-empty-chunks",
+        ),  # fmt: skip
+        # A table too short for a chunk to outlast filling its ring stays whole, so the tile
+        # writes its rows without the combine.
+        pytest.param(
+            [1, 1],
+            [200, 256],
+            64,
+            torch.float16,
+            {},
+            8,
+            (1, 1),
+            marks=pytest.mark.full,
+            id="f16-keys-on-m-unsplit",
+        ),  # fmt: skip
+        pytest.param(
+            [16, 16],
+            [200, 256],
+            64,
+            torch.float16,
+            {},
+            64,
+            (1, 1),
+            marks=pytest.mark.full,
+            id="f16-rows-on-m-unsplit",
+        ),  # fmt: skip
     ],
 )
 def test_gqa_paged_fp8_decode(
@@ -1198,10 +1250,11 @@ def test_gqa_paged_fp8_decode(
     dtype: torch.dtype,
     semantics: dict,
     tile_rows: int,
+    splits: tuple[int, int | None],
 ) -> None:
     """SM90 FP8 decode widens each stored tile and dequantizes by the scales, holding the rows
-    on M at a full 64-row tile and the keys on M below it; a NaN row past a cache, or a value a
-    causal row must not see, must not reach the output."""
+    on M at a full 64-row tile and the keys on M below it, its chunk count within *splits*; a
+    NaN row past a cache, or a value a causal row must not see, must not reach the output."""
     from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
@@ -1217,34 +1270,9 @@ def test_gqa_paged_fp8_decode(
     kernel = _kernel(op, inputs)
     assert isinstance(kernel, GQAPagedFP8DecodeKernel)
     assert kernel.block_m == tile_rows
-
-
-@pytest.mark.sm90
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    ("q_len", "cache_lens", "chunked"),
-    [
-        pytest.param(1, [200, 256], False, marks=pytest.mark.smoke, id="keys-on-m-unsplit"),
-        pytest.param(16, [200, 256], False, marks=pytest.mark.full, id="rows-on-m-unsplit"),
-        pytest.param(1, [70, 4096], True, marks=pytest.mark.full, id="keys-on-m-split"),
-        pytest.param(16, [70, 4096], True, marks=pytest.mark.full, id="rows-on-m-split"),
-    ],
-)
-def test_gqa_paged_fp8_decode_chunks(q_len: int, cache_lens: list[int], chunked: bool) -> None:
-    """The chunk count follows the table's key tiles. Over 64 of them a 70-key request beside a
-    4096-key one leaves most of its chunks without a tile, which must weigh nothing in the
-    combine; over four, no chunk would run longer than its ring fills and drains, so the tile
-    writes its rows without the combine."""
-    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
-
-    workload = _paged([q_len, q_len], cache_lens, 64, torch.float16, cache_dtype=FP8)
-    op = _fp8_op(workload)
-    inputs = _poisoned_inputs(workload)
-    kernel = _kernel(op, inputs)
-    assert isinstance(kernel, GQAPagedFP8DecodeKernel)
-    splits = kernel._splits_for(2)
-    assert splits > 2 if chunked else splits == 1
-    _check(op, workload, inputs)
+    least, most = splits
+    chunks = kernel._splits_for(len(q_lens))
+    assert least <= chunks <= (most or chunks)
 
 
 @pytest.mark.smoke

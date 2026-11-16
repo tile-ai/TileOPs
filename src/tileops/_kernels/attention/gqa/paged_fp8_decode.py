@@ -160,18 +160,6 @@ def _gqa_paged_fp8_decode_kernel(
                 out = out | (key > q_pos + window_size_right)
             return out
 
-        def cut_tile(key0, kv_len, first_q, last_q):
-            """Whether the key tile at *key0* reaches past some row's visible range: its upper
-            bound is set by the tile's first row and its lower by its last."""
-            cut = key0 + block_n > kv_len
-            if is_causal:
-                cut = cut | (key0 + block_n > first_q + 1)
-            elif window_size_right >= 0:
-                cut = cut | (key0 + block_n > first_q + window_size_right + 1)
-            if window_size_left >= 0:
-                cut = cut | (key0 < last_q - window_size_left)
-            return cut
-
         @T.macro
         def advance_max(m, m_prev, rescale, item_scale):
             """Keep each row's maximum until it grows by 2^8, so its probabilities stay below
@@ -222,10 +210,13 @@ def _gqa_paged_fp8_decode_kernel(
 
         @T.macro
         def widen_values(v_r, v_c, valid, vr_ready, vr_free, t, tx):
-            """Widen tile *t*'s values into stage t % vstages, which no value product in flight
-            reads, and publish them to the consumer's async proxy."""
+            """Widen tile *t*'s values into stage t % vstages, once no warp's value product reads
+            it, and publish them to the consumer's async proxy."""
             s = t % stages
             T.mbarrier_wait_parity(vr_ready[s], (t // stages) % 2)
+            # A warp's WGMMA wait retires only its own share of a value product: every warp
+            # passes its wait for the one that read the stage before any warp writes it.
+            T.sync_threads(1, consumers)
             form = "_prefetched" if dim == 128 else ""
             widen(v_r, v_c, s, t % vstages, tx, valid[s], consumers, form)
             T.mbarrier_arrive(vr_free[s])
@@ -244,7 +235,16 @@ def _gqa_paged_fp8_decode_kernel(
                     scores[at] = T.cast(softcap, accum) * T.tanh(
                         scores[at] * qk_descale * T.cast(sm_scale / softcap, accum)
                     )
-            if cut_tile(key0, kv_len, first_q, last_q):
+            # A tile wholly inside every row's visible range keeps every score; its upper bound
+            # is set by the tile's first row and its lower by its last.
+            cut = key0 + block_n > kv_len
+            if is_causal:
+                cut = cut | (key0 + block_n > first_q + 1)
+            elif window_size_right >= 0:
+                cut = cut | (key0 + block_n > first_q + window_size_right + 1)
+            if window_size_left >= 0:
+                cut = cut | (key0 < last_q - window_size_left)
+            if cut:
                 for i, j in T.Parallel(block_m, block_n):
                     at = (j, i) if keys_on_m else (i, j)
                     scores[at] = T.if_then_else(
@@ -445,19 +445,21 @@ def _gqa_paged_fp8_decode_kernel(
                             T.fence_proxy_async()
                             T.mbarrier_arrive(kc_ready[c])
                     with T.ws(0):
+                        # Each row's running maximum, its previous value, the factor that
+                        # rescales earlier tiles, the row sum and the output scale.
+                        m = T.alloc_fragment([block_m], accum)
+                        m_prev = T.alloc_fragment([block_m], accum)
+                        rescale = T.alloc_fragment([block_m], accum)
+                        logsum = T.alloc_fragment([block_m], accum)
+                        row_sum = T.alloc_fragment([block_m], accum)
                         if rows_on_m:
                             T.set_max_nreg(consumer_regs, 1)
                             q_f = T.alloc_fragment([block_m, dim], wide)
                             acc_s = T.alloc_fragment([block_m, block_n], accum)
                             p_f = T.alloc_fragment([block_m, block_n], wide)
                             acc_o = T.alloc_fragment([block_m, dim], accum)
-                            m = T.alloc_fragment([block_m], accum)
                             red = T.alloc_fragment([block_m, 8], accum)
                             lp = T.alloc_fragment([block_m, 16], accum)
-                            m_prev = T.alloc_fragment([block_m], accum)
-                            rescale = T.alloc_fragment([block_m], accum)
-                            row_sum = T.alloc_fragment([block_m], accum)
-                            logsum = T.alloc_fragment([block_m], accum)
                             # The query is the register operand of every key product.
                             gather_query(Q, q_f, q_start, row0, rows, by)
                             T.clear(acc_o)
@@ -509,11 +511,6 @@ def _gqa_paged_fp8_decode_kernel(
                             st = T.alloc_fragment([block_n, block_m], accum)
                             lt = T.alloc_fragment([block_n, block_m], accum)
                             acc_ot = T.alloc_fragment([dim, block_m], accum)
-                            m = T.alloc_fragment([block_m], accum)
-                            m_prev = T.alloc_fragment([block_m], accum)
-                            rescale = T.alloc_fragment([block_m], accum)
-                            row_sum = T.alloc_fragment([block_m], accum)
-                            logsum = T.alloc_fragment([block_m], accum)
                             gather_query(Q, q_s, q_start, row0, rows, by)
                             T.fence_proxy_async()
                             T.sync_threads(1, consumers)
@@ -786,14 +783,14 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
     @property
     def default_config(self) -> dict:
         # Zero reads the chunk count from the launch geometry; a positive value pins it. With
-        # rows on M, two widened key stages; with keys on M the keys widen in registers and the
-        # one stage is unused.
+        # rows on M, two widened key stages; keys on M widen the keys in registers.
         rows_on_m = self.block_m == WGMMA_ROWS
+        widened_keys = {"cstages": 2} if rows_on_m else {}
         return {
+            **widened_keys,
             "block_n": self.block_n_for(self.page_size),
             "num_split": 0,
             "stages": 2,
-            "cstages": 2 if rows_on_m else 1,
             # The copying warp and the widening helper's 16-byte loads and stores fit without
             # spilling; what the producer warpgroup does not keep goes to the consumer.
             "producer_regs": 56,
@@ -916,8 +913,9 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
             cfg["block_n"],
             splits,
             cfg["stages"],
-            cfg["cstages"],
+            # Keys on M widen no key tile and raise no register count.
+            cfg.get("cstages", 0),
             cfg["producer_regs"],
-            self._consumer_regs(cfg),
+            self._consumer_regs(cfg) if self.block_m == WGMMA_ROWS else 0,
             self.resident_ctas(cfg),
         )

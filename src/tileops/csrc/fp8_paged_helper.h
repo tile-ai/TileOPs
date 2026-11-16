@@ -32,20 +32,6 @@ TL_DEVICE uint32_t fp8x2_to_wide(uint32_t bytes) {
   }
 }
 
-// Widen the 16 e4m3 bytes of `raw` and store them as 16-byte chunks `slot` and
-// `slot + 1` of the 128-byte-swizzled 16-bit row j that starts at `row`.
-template <typename OutT>
-TL_DEVICE void store_wide_chunks(uint4 raw, char* row, int slot, int j) {
-  uint4 const lo_words =
-      make_uint4(fp8x2_to_wide<OutT>(raw.x), fp8x2_to_wide<OutT>(raw.x >> 16),
-                 fp8x2_to_wide<OutT>(raw.y), fp8x2_to_wide<OutT>(raw.y >> 16));
-  uint4 const hi_words =
-      make_uint4(fp8x2_to_wide<OutT>(raw.z), fp8x2_to_wide<OutT>(raw.z >> 16),
-                 fp8x2_to_wide<OutT>(raw.w), fp8x2_to_wide<OutT>(raw.w >> 16));
-  *reinterpret_cast<uint4*>(row + ((slot ^ (j & 7)) << 4)) = lo_words;
-  *reinterpret_cast<uint4*>(row + (((slot + 1) ^ (j & 7)) << 4)) = hi_words;
-}
-
 template <int ROWS, int THREADS, typename OutT, bool CUT>
 TL_DEVICE void fp8_tile_to_wide_rows(const char* in, char* out, int t,
                                      int valid_rows) {
@@ -63,9 +49,19 @@ TL_DEVICE void fp8_tile_to_wide_rows(const char* in, char* out, int t,
         raw = make_uint4(0, 0, 0, 0);
       }
     }
+    uint4 const lo_words = make_uint4(
+        fp8x2_to_wide<OutT>(raw.x), fp8x2_to_wide<OutT>(raw.x >> 16),
+        fp8x2_to_wide<OutT>(raw.y), fp8x2_to_wide<OutT>(raw.y >> 16));
+    uint4 const hi_words = make_uint4(
+        fp8x2_to_wide<OutT>(raw.z), fp8x2_to_wide<OutT>(raw.z >> 16),
+        fp8x2_to_wide<OutT>(raw.w), fp8x2_to_wide<OutT>(raw.w >> 16));
     // Columns 16c .. 16c + 15: 16-bit chunks 2c % 8 and 2c % 8 + 1 of half
     // c / 4.
-    store_wide_chunks<OutT>(raw, half_out + row, 2 * (c & 3), j);
+    char* const dst = half_out + row;
+    *reinterpret_cast<uint4*>(dst + (((2 * (c & 3)) ^ (j & 7)) << 4)) =
+        lo_words;
+    *reinterpret_cast<uint4*>(dst + (((2 * (c & 3) + 1) ^ (j & 7)) << 4)) =
+        hi_words;
   }
 }
 
@@ -108,8 +104,17 @@ TL_DEVICE void fp8_tile_to_wide_sw128_prefetched(const void* src, void* dst,
   for (int k = 0; k < ITERS; ++k) {
     int const j = (t >> 3) + k * STEP;
     uint4 const r = j < valid_rows ? raw[k] : make_uint4(0, 0, 0, 0);
-    store_wide_chunks<OutT>(r, half_out + (j >> 3) * 1024 + (j & 7) * 128,
-                            2 * (c & 3), j);
+    uint4 const lo_words =
+        make_uint4(fp8x2_to_wide<OutT>(r.x), fp8x2_to_wide<OutT>(r.x >> 16),
+                   fp8x2_to_wide<OutT>(r.y), fp8x2_to_wide<OutT>(r.y >> 16));
+    uint4 const hi_words =
+        make_uint4(fp8x2_to_wide<OutT>(r.z), fp8x2_to_wide<OutT>(r.z >> 16),
+                   fp8x2_to_wide<OutT>(r.w), fp8x2_to_wide<OutT>(r.w >> 16));
+    char* const dst_row = half_out + (j >> 3) * 1024 + (j & 7) * 128;
+    *reinterpret_cast<uint4*>(dst_row + (((2 * (c & 3)) ^ (j & 7)) << 4)) =
+        lo_words;
+    *reinterpret_cast<uint4*>(dst_row + (((2 * (c & 3) + 1) ^ (j & 7)) << 4)) =
+        hi_words;
   }
 }
 
@@ -136,8 +141,15 @@ TL_DEVICE void fp8_tile_to_wide_d64(const void* src, void* dst, int t,
     if (j >= valid_rows) {
       raw = make_uint4(0, 0, 0, 0);
     }
-    store_wide_chunks<OutT>(raw, out + (j >> 3) * 1024 + (j & 7) * 128, 2 * c,
-                            j);
+    uint4 const lo_words = make_uint4(
+        fp8x2_to_wide<OutT>(raw.x), fp8x2_to_wide<OutT>(raw.x >> 16),
+        fp8x2_to_wide<OutT>(raw.y), fp8x2_to_wide<OutT>(raw.y >> 16));
+    uint4 const hi_words = make_uint4(
+        fp8x2_to_wide<OutT>(raw.z), fp8x2_to_wide<OutT>(raw.z >> 16),
+        fp8x2_to_wide<OutT>(raw.w), fp8x2_to_wide<OutT>(raw.w >> 16));
+    char* const row = out + (j >> 3) * 1024 + (j & 7) * 128;
+    *reinterpret_cast<uint4*>(row + (((2 * c) ^ (j & 7)) << 4)) = lo_words;
+    *reinterpret_cast<uint4*>(row + (((2 * c + 1) ^ (j & 7)) << 4)) = hi_words;
   }
 }
 
