@@ -133,9 +133,8 @@ def test_gqa_paged_split_combine_row_blocks(
 def test_gqa_paged_window_reaching_the_last_key_is_no_window(
     semantics: dict, kernel_name: str
 ) -> None:
-    """A window reaching the last key the page table holds (four 64-row pages: key 255) hides
-    no key, so the WS kernel serves the 256-query request without RoPE; either bound one key
-    narrower bounds the scan, and the cp.async kernel serves it."""
+    """Without RoPE, the WS kernel serves a window reaching key 255, the last of four 64-row
+    pages, and refuses one a key narrower."""
     workload = GQAPagedFwdWorkload(16, 4, 128, [256], [256], 64, 4, 4, torch.float16, **semantics)
     op = GQAPagedFwdOp(**semantics)
     inputs = workload.gen_inputs()
