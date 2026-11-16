@@ -1092,6 +1092,42 @@ class TestSpecOnlyRecounts:
         )
         assert flops == 3 * tokens * 3 * 4
 
+    def test_longrope_reads_the_rows_positions_plus_offsets_name(self):
+        name, tokens = "LongRoPEFwdOp", 5
+        row = {
+            "head_size": 8,
+            "rotary_dim": 4,
+            "max_position_embeddings": 16,
+            "original_max_position_embeddings": 8,
+            "base": 10000.0,
+            "is_neox_style": True,
+            "dtype": "bfloat16",
+            "rescale_factors": None,
+            "N": tokens,
+            "Hq": 2,
+            "Hk": 1,
+            "some": ["key", "offsets"],
+        }
+        case = {"T": "bfloat16", "I": "int64", "O": "int32"}
+        # Rows 3, 4, 7, 0, 9: five distinct, where the positions alone name three.
+        positions, offsets = [3, 3, 7, 0, 7], [0, 1, 0, 0, 2]
+        (flops, moved), _call = _evaluated(name, row, case, positions=positions, offsets=offsets)
+        q, k = ((tokens, 16), _BF16), ((tokens, 8), _BF16)
+        assert (
+            moved
+            == _ledger(
+                name,
+                positions=((tokens,), _I64),
+                query=q,
+                key=k,
+                offsets=((tokens,), _I32),
+                query_out=q,
+                key_out=k,
+            )
+            + 5 * 4 * 2
+        )
+        assert flops == 3 * tokens * 3 * 4
+
     def test_rope_cos_sin_reads_no_table_row_when_nothing_rotates(self):
         name = "RoPECosSinFwdOp"
         row = {"B": 0, "S": 3, "H": 2, "D": 8, "P": 6, "Rh": 2}
