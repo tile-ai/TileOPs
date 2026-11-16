@@ -18,7 +18,6 @@ _FAMILIES = (
     "engram",
     "fft",
     "gemm",
-    "indexing",
     "linear_attention",
     "mamba",
     "mhc",
