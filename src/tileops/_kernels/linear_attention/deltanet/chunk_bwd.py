@@ -297,6 +297,21 @@ def _wu_outputs(c: int, k: int, v: int) -> tuple[tuple[int, int], ...]:
     return (c, c), (c, k), (c, v)
 
 
+def extent_refusal(call: DeltaNetChunkCall, reduces_v: bool) -> str | None:
+    """Why no launch builds these extents, or ``None``: every matmul output spans whole
+    16-row tiles of chunk_size or dim_k and 8-column tiles of dim_v, and a 16-bit matmul
+    reduces in steps of 16, which a reduction over dim_v (*reduces_v*) also takes."""
+    step_v = 16 if reduces_v and call.dtype.itemsize == 2 else 8
+    for name, extent, step in (
+        ("chunk_size", call.chunk_size, 16),
+        ("dim_k", call.dim_k, 16),
+        ("dim_v", call.dim_v, step_v),
+    ):
+        if extent % step:
+            return f"needs {name} a multiple of {step} in {call.dtype}, got {extent}"
+    return None
+
+
 def walk_threads(dim_k: int, block_v: int, wgmma: bool) -> int:
     """A DeltaNet walk's launch over its ``[dim_k, block_v]`` state tile: one warp group at
     most, narrowed by ``gemm_threads`` over the tile's matmul."""
@@ -346,11 +361,9 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         and such a call is built and fails at launch, or in less, and such a call is refused
         although it would fit.
         """
-        heads = head_count_refusal(call.heads)
-        if heads is not None:
-            return heads
-        if not call.smem_budget:
-            return None
+        reason = head_count_refusal(call.heads) or extent_refusal(call, reduces_v=True)
+        if reason is not None or not call.smem_budget:
+            return reason
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
         need = max(
             cls._parallel_live_bytes(c, k, v, elem),

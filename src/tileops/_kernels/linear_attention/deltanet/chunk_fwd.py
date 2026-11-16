@@ -41,6 +41,7 @@ from tileops._kernels.linear_attention.deltanet.autotune import (
     tune_delta_rule_fwd,
 )
 from tileops._kernels.linear_attention.deltanet.chunk_bwd import (
+    extent_refusal,
     walk_block_v_options,
     walk_threads,
 )
@@ -398,7 +399,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         that TileLang still cannot place in the device's shared memory is built and fails at
         launch.
         """
-        reason = head_count_refusal(call.heads)
+        reason = head_count_refusal(call.heads) or extent_refusal(call, reduces_v=False)
         if reason is not None or not call.smem_budget:
             return reason
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize

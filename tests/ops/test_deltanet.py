@@ -409,6 +409,36 @@ def test_deltanet_bwd_refused_beyond_sm90_shared_memory(
         DeltaNetChunkBwdOp().key_for("deltanet_chunk_bwd", call)
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "op_cls, name, dim_k, dim_v",
+    [
+        (DeltaNetChunkFwdOp, "deltanet_chunk_fwd", 24, 64),
+        (DeltaNetChunkBwdOp, "deltanet_chunk_bwd", 64, 24),
+    ],
+)
+def test_deltanet_chunk_refuses_head_dims_no_matmul_tiles(op_cls, name, dim_k, dim_v) -> None:
+    """No launch builds a dim_k off the 16-row matmul tile, nor a backward that reduces a
+    16-bit dim_v off the 16-wide matmul step, so dispatch refuses them."""
+    (in_tree,) = Kernel.devices
+    call = DeltaNetChunkCall(
+        arch=90,
+        sm_count=132,
+        smem_budget=232448,
+        batch=1,
+        heads=2,
+        seq_len=128,
+        chunk_size=64,
+        dim_k=dim_k,
+        dim_v=dim_v,
+        dtype=torch.bfloat16,
+        device=torch.device(in_tree),
+    )
+    with pytest.raises(OpNotAvailableError, match="multiple of 16"):
+        op_cls().key_for(name, call)
+
+
 class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):
     pass
 
