@@ -4,9 +4,12 @@ The timing layer owns the measurement and nothing else -- it knows how to run a 
 n times and return each run's device latency. What the numbers mean, and where they are
 written, belong to the layers above.
 
-A CUDA device is timed through CUPTI. Another accelerator is timed with torch's device
-events, which bracket each call: its ``timing`` reads ``events``, and the busy time equals
-the latency.
+A CUDA device is timed the way NVIDIA nvbench's cold measurement times a kernel
+(``nvbench/detail/measure_cold.cuh``): every sample flushes L2 before the call, a blocking
+kernel holds the stream while the samples are queued, and each sample records the SM clock
+it ran at. The readings come from CUPTI. Another accelerator is timed with
+torch's device events, which bracket each call: its ``timing`` reads ``events``, and the
+busy time equals the latency.
 
 A kernel belongs to the iteration whose external correlation id it carries, so nothing
 is inferred from timestamps and a kernel shorter than the host overhead around it is
@@ -30,8 +33,8 @@ from tileops._utils.cupti import (
     CUPTIError,
     Sample,
     collect_attributed,
-    flush_l2,
     l2_flush_buffer,
+    reset_persisting_l2_cache,
 )
 from tileops._utils.device import device_context, on_current_index
 from workloads.device import run_device
@@ -48,14 +51,22 @@ REPEAT_MS = 100.0
 _MIN_ITERS = 10
 _MAX_ITERS = 200
 
+# How long the blocking kernel holds the stream before releasing it on its own. A queue too
+# full to take the next launch stalls the host until then, so this is the cost of finding
+# that a block holds too many samples; nvbench's 30 s treats the same event as a failure.
+_BLOCK_TIMEOUT_S = 1.0
+
 # Latest bench_kernel measurement metadata; deviations from the default protocol are
 # surfaced in every recorded result.
 _bench_meta = threading.local()
 
 
-# Cache preparation identifiers separate incompatible historical measurements.
-_L2_FLUSH_CUDA = "triton-read-2x-l2"
-_L2_FLUSH_OTHER = "torch-max-2x-l2"
+# Cache preparation identifiers separate incompatible historical measurements. On CUDA a
+# sample is either queued behind the blocking kernel or, where none can be held, drained
+# before and after its call; elsewhere samples are queued with no drain between them.
+_L2_FLUSH_CUDA = "triton-read-2x-l2-held"
+_L2_FLUSH_CUDA_DRAINED = "triton-read-2x-l2-drained"
+_L2_FLUSH_OTHER = "torch-max-2x-l2-undrained"
 
 
 def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS, min_iters: int = _MIN_ITERS) -> int:
@@ -128,7 +139,13 @@ def _capture_bench_meta() -> dict:
     """Snapshot how the last measurement was taken."""
     return {
         key: value
-        for key in ("timing", "fallback_reason", "attribution_retries", "l2_flush")
+        for key in (
+            "timing",
+            "fallback_reason",
+            "attribution_retries",
+            "l2_flush",
+            "block_samples",
+        )
         if (value := getattr(_bench_meta, key, None)) is not None
     }
 
@@ -147,15 +164,29 @@ def bench_kernel(
 ) -> list[Sample]:
     """Time *fn* on *device*, one :class:`Sample` per iteration.
 
-    Every call uses the same preparation: restore mutable inputs, reset persisting L2
-    priority on CUDA, then read a private eviction buffer. Preparation is excluded from
-    timing. Warm-up and timed calls drain the device after preparation; calibration
+    Every call uses the same preparation: restore mutable inputs, then read a private
+    eviction buffer. On CUDA, persisting L2 priority is reset once before the first call and
+    before each block of timed calls. Preparation is excluded from timing. Calibration
     measures three consecutive prepared calls to set the iteration counts within
-    ``[min_iters, max_iters]``. Each kernel is attributed to the iteration that launched
-    it, so *fn* must launch its own work rather than hand it to another thread.
-    A phase whose records CUPTI discarded is measured again; attribution otherwise
-    fails closed unless ``allow_events_fallback`` is true. ``None`` takes the run's
-    setting, ``--tileops-allow-events-fallback``.
+    ``[min_iters, max_iters]``. Each kernel is attributed to the iteration that launched it,
+    so *fn* must launch its own work rather than hand it to another thread. A phase whose
+    records CUPTI discarded is measured again; attribution otherwise fails closed unless
+    ``allow_events_fallback`` is true. ``None`` takes the run's setting,
+    ``--tileops-allow-events-fallback``.
+
+    On CUDA the samples follow nvbench's cold measurement. Warm-up runs without the
+    blocking kernel, after loading it, each call drained before and after as nvbench's
+    timer drains it. The timed samples are queued behind the blocking
+    kernel with no host synchronization between them, so host launch cost never becomes
+    device idle time between samples. SM 0's clock is read around every call and kept in
+    the sample, which nvbench runs with ``--throttle-threshold 0``: no sample is discarded,
+    since a compute-bound call at the power cap runs throttled in steady state, and the
+    protocol asks only that every implementation run in the same power state. A block whose
+    queue filled before the host released it is measured again in smaller blocks, and
+    without the blocking kernel, as nvbench runs a launcher that cannot be held
+    (``exec_tag::sync``), when one sample alone fills the queue; ``block_samples`` records
+    the most samples a block then held, 0 for none, and ``l2_flush`` names the samples
+    held or drained.
 
     ``count_copies`` adds device-to-device copies to what is attributed, for a row whose
     implementations compute part of the result with one. It is off by default because a
@@ -204,6 +235,10 @@ def bench_kernel(
         )
 
 
+# One blocker per CUDA device: its flags are pinned host memory, allocated once.
+_BLOCKERS: dict[torch.device, Any] = {}
+
+
 def _bench_kernel(
     device: torch.device,
     fn: Callable,
@@ -222,6 +257,7 @@ def _bench_kernel(
     _bench_meta.timing = None
     _bench_meta.fallback_reason = None
     _bench_meta.attribution_retries = None
+    _bench_meta.block_samples = None
     cache = l2_flush_buffer(device)
     on_cuda = device.type == "cuda"
     _bench_meta.l2_flush = _L2_FLUSH_CUDA if on_cuda else _L2_FLUSH_OTHER
@@ -230,13 +266,18 @@ def _bench_kernel(
         if reset is not None:
             reset()
         if on_cuda:
-            flush_l2(cache)
+            read_sweep(cache)
         else:
             cache.max()
 
     def _call_raw():
         return fn(*args) if args else fn()
 
+    if on_cuda:
+        # Imported on first use: Triton is needed only where a CUDA device is timed.
+        from tileops._utils._l2_sweep import read_sweep
+
+        reset_persisting_l2_cache()
     _reset_and_flush()
     _call_raw()
     torch.accelerator.synchronize()
@@ -254,50 +295,145 @@ def _bench_kernel(
     n_repeat = _clamp_iters(repeat_ms / per_iter_ms, max_iters, min_iters)
 
     def _run(i):
-        return fn(*args) if args else fn()
-
-    def _prepare_iteration(i):
-        _reset_and_flush()
-        torch.accelerator.synchronize()
-
-    for i in range(n_warmup):
-        _prepare_iteration(i)
-        _run(i)
-    torch.accelerator.synchronize()
+        return _call_raw()
 
     if _instrument_for(device) == "events":
+        for _ in range(n_warmup):
+            _reset_and_flush()
+            _call_raw()
+        torch.accelerator.synchronize()
         _bench_meta.timing = "events"
-        samples = _event_samples(_run, n_repeat, _prepare_iteration)
+        samples = _event_samples(_run, n_repeat, lambda i: _reset_and_flush())
         torch.accelerator.empty_cache()
         return samples
-    try:
-        with _native_output_suppressor():
-            samples = collect_attributed(
-                _run,
-                n_repeat,
-                _prepare_iteration,
-                count_copies,
-                on_retry=lambda attempts: setattr(_bench_meta, "attribution_retries", attempts),
+
+    from benchmarks.cold import SmClocks, StreamBlocker
+
+    blocker = _BLOCKERS.get(device)
+    if blocker is None:
+        blocker = _BLOCKERS[device] = StreamBlocker(_BLOCK_TIMEOUT_S)
+    clocks = SmClocks(n_repeat, device)
+    # The samples the current block holds; whether the blocker holds them; how many were
+    # fully queued before the blocker released on its own, None while it held; and the
+    # attempts the current block's reading lost records on.
+    size, blocking, fitted, retried = 0, False, None, 0
+
+    def _prepare(i):
+        nonlocal fitted
+        if i == 0:
+            fitted = None
+            clocks.clear()
+            # Before the blocker, not per sample: the reset takes effect when the host calls
+            # it, so queued samples share one either way, and under CUPTI a reset issued
+            # while the stream is held stalls a later launch until the blocker times out.
+            reset_persisting_l2_cache()
+            if blocking:
+                blocker.block()
+        _reset_and_flush()
+        # A sample the blocker does not hold is nvbench's cold sample as its timer takes it
+        # (measure_cold_launch_timer_core): drained after the flush and after the call.
+        if not blocking:
+            torch.accelerator.synchronize()
+        clocks.start(i)
+
+    def _finish(i):
+        nonlocal fitted
+        clocks.stop(i)
+        if not blocking:
+            torch.accelerator.synchronize()
+            return
+        if fitted is None and blocker.timed_out():
+            fitted = i
+        if i == size - 1:
+            blocker.unblock()
+
+    def _count_retries(attempts: int) -> None:
+        nonlocal retried
+        retried = attempts
+
+    def _read(reading: Callable[[int], list[Sample]]) -> list[Sample]:
+        """nvbench's trial loop (``measure_cold::run_trials``) over blocks of samples."""
+        nonlocal size, blocking, retried
+        blocking, per_block = True, n_repeat
+        _bench_meta.block_samples = None
+        _bench_meta.l2_flush = _L2_FLUSH_CUDA
+        # The row's retries are those of the blocks it keeps.
+        _bench_meta.attribution_retries = None
+        kept: list[Sample] = []
+        while len(kept) < n_repeat:
+            size = min(per_block, n_repeat - len(kept))
+            retried = 0
+            readings = reading(size)
+            if blocking and blocker.timed_out():
+                # The queue took fewer samples than the block held: nvbench blocks one cold
+                # sample at a time and never meets this. Measure again in blocks of what it
+                # took, and without the blocker where it took none: then every sample, as
+                # no sample of one reading is held and another not.
+                per_block = fitted if fitted is not None else size - 1
+                if per_block == 0:
+                    blocking, per_block = False, n_repeat
+                    kept.clear()
+                    _bench_meta.l2_flush = _L2_FLUSH_CUDA_DRAINED
+                    _bench_meta.attribution_retries = None
+                _bench_meta.block_samples = per_block if blocking else 0
+                continue
+            kept.extend(
+                sample._replace(sm_clock_hz=hz)
+                for sample, hz in zip(readings, clocks.read_hz(size), strict=True)
             )
-        _bench_meta.timing = "cupti"
-    except (AttributionError, CUPTIError) as exc:
-        if not allow_fallback:
-            raise RuntimeError(
-                f"CUPTI profiling failed: {exc}. CUDA-events fallback is disabled "
-                "(pass --tileops-allow-events-fallback to allow it), which keeps the run "
-                "from silently mixing two timing methods."
-            ) from exc
-        _bench_meta.timing = "cuda-events"
-        _bench_meta.fallback_reason = str(exc)
-        _logger.warning("CUPTI timing failed (%s); falling back to CUDA events.", exc)
-        samples = _event_samples(_run, n_repeat, _prepare_iteration)
+            if retried:
+                _bench_meta.attribution_retries = (_bench_meta.attribution_retries or 0) + retried
+        return kept
+
+    try:
+        # nvbench loads the blocking kernel before warm-up (NVIDIA/nvbench#339), then warms
+        # up without it (NVIDIA/nvbench#240): a kernel loaded lazily while the stream is
+        # blocked stalls the host until the blocker times out.
+        blocker.block()
+        blocker.unblock()
+        for i in range(n_warmup):
+            _prepare(i % n_repeat)
+            _call_raw()
+            _finish(i % n_repeat)
+        try:
+            with _native_output_suppressor():
+                samples = _read(
+                    lambda n: collect_attributed(
+                        _run,
+                        n,
+                        _prepare,
+                        count_copies,
+                        on_retry=_count_retries,
+                        # A call that lost one of its kernels to a full buffer reads short.
+                        every_record=True,
+                        finish_one=_finish,
+                    )
+                )
+            _bench_meta.timing = "cupti"
+        except (AttributionError, CUPTIError) as exc:
+            if not allow_fallback:
+                raise RuntimeError(
+                    f"CUPTI profiling failed: {exc}. CUDA-events fallback is disabled "
+                    "(pass --tileops-allow-events-fallback to allow it), which keeps the run "
+                    "from silently mixing two timing methods."
+                ) from exc
+            _bench_meta.timing = "cuda-events"
+            _bench_meta.fallback_reason = str(exc)
+            _logger.warning("CUPTI timing failed (%s); falling back to CUDA events.", exc)
+            samples = _read(lambda n: _event_samples(_run, n, _prepare, _finish))
+    finally:
+        # A call that raised while queued behind the blocker must not leave the stream held.
+        blocker.unblock()
 
     torch.accelerator.empty_cache()
     return samples
 
 
 def _event_samples(
-    run: Callable[[int], Any], n_repeat: int, prepare: Callable[[int], None]
+    run: Callable[[int], Any],
+    n_repeat: int,
+    prepare: Callable[[int], None],
+    finish: Callable[[int], None] | None = None,
 ) -> list[Sample]:
     """Time *n_repeat* iterations of *run* with device events on the current device.
 
@@ -312,6 +448,8 @@ def _event_samples(
         starts[i].record()
         run(i)
         ends[i].record()
+        if finish is not None:
+            finish(i)
     torch.accelerator.synchronize()
     return [
         Sample(device_busy_ms=elapsed, latency_ms=elapsed, n_kernels=None)

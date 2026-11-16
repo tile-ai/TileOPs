@@ -343,7 +343,7 @@ _READING = threading.RLock()
 
 def candidate_busy_ms(fn: Callable[[], Any], n_warmup: int, n_repeat: int) -> float:
     """The median device-busy time of *fn*, in ms, on the current CUDA device, each call
-    prepared by :func:`~tileops._utils.cupti.flush_l2` as ``bench_kernel`` prepares it.
+    prepared by :func:`~tileops._utils.cupti.flush_l2`.
 
     Raises:
         CUPTIError, AttributionError: The collector failed to take the reading.
@@ -353,6 +353,9 @@ def candidate_busy_ms(fn: Callable[[], Any], n_warmup: int, n_repeat: int) -> fl
         flush = l2_flush_buffer(torch.device("cuda", device))
 
         def prepare(_iteration: int) -> None:
+            # Drained on both sides of the flush, so each candidate call starts on an idle
+            # device after the previous one has finished.
+            torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
             flush_l2(flush)
             torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
 

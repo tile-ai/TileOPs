@@ -350,13 +350,27 @@ class Runner:
                 )
             pass_meta = _capture_bench_meta()
             previous = meta.get(name)
-            if previous is not None and previous["timing"] != pass_meta["timing"]:
+            # The cache preparation is part of the method: samples drained without the
+            # blocker are another measurement than held ones.
+            methods = [
+                " ".join(m[key] for key in ("timing", "l2_flush") if key in m)
+                for m in (previous, pass_meta)
+                if m is not None
+            ]
+            if len(set(methods)) > 1:
                 raise RuntimeError(
                     f"{name}: the two passes timed with different methods "
-                    f"({previous['timing']} then {pass_meta['timing']}); pooling "
-                    "them would report one median over two kinds of measurement. "
-                    "Only reachable with --tileops-allow-events-fallback."
+                    f"({methods[0]} then {methods[1]}); pooling "
+                    "them would report one median over two kinds of measurement."
                 )
+            # The pooled row keeps the smallest block either pass had to fall back to.
+            held = [m["block_samples"] for m in (previous or {}, pass_meta) if "block_samples" in m]
+            if held:
+                pass_meta["block_samples"] = min(held)
+            # And the retries of both passes.
+            retries = sum(m.get("attribution_retries", 0) for m in (previous or {}, pass_meta))
+            if retries:
+                pass_meta["attribution_retries"] = retries
             meta[name] = pass_meta
         return {name: self._result(samples[name], meta[name]) for name in names}
 
@@ -407,6 +421,10 @@ class Runner:
             # The largest count observed: a median would round a call that varies
             # between one and two kernels to a number it never launched.
             result["n_kernels"] = max(counts)
+        clocks = [s.sm_clock_hz for s in samples if s.sm_clock_hz is not None]
+        if clocks:
+            # The mean, as nvbench summarizes a cold measurement's clock.
+            result["sm_clock_mhz"] = statistics.fmean(clocks) * 1e-6
         p10, p90 = _sample_spread_ms([s.device_busy_ms for s in samples])
         if p10 is not None:
             result["device_busy_p10_ms"], result["device_busy_p90_ms"] = p10, p90

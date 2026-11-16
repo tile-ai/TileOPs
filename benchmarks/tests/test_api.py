@@ -292,6 +292,67 @@ def test_a_single_implementation_is_reported_as_baseline(timed):
     assert [row["tag"] for row in timed.rows] == ["tileops", "baseline"]
 
 
+def _passes_reporting(monkeypatch, passes: list) -> None:
+    """Have every implementation's two passes report *passes*' ``block_samples`` in turn,
+    ``None`` for a pass whose blocks held every sample, and the preparation that implies."""
+    metas = iter(
+        {
+            "timing": "cupti",
+            "l2_flush": timing._L2_FLUSH_CUDA_DRAINED if held == 0 else timing._L2_FLUSH_CUDA,
+        }
+        | ({} if held is None else {"block_samples": held})
+        for held in passes * 2
+    )
+    monkeypatch.setattr(bench, "_capture_bench_meta", lambda: next(metas))
+
+
+@pytest.mark.parametrize("passes, pooled", [([3, None], 3), ([None, 3], 3), ([0, 0], 0)])
+def test_a_row_keeps_the_smallest_block_either_pass_fell_back_to(
+    timed, monkeypatch, passes, pooled
+):
+    """A pass whose samples had to be queued in smaller blocks says so in the pooled row,
+    whichever pass it was."""
+    _passes_reporting(monkeypatch, passes)
+    results = bench.Runner(SumFwdOp(), _case()).compare({})
+    assert results["tileops"]["block_samples"] == pooled
+
+
+@pytest.mark.parametrize("retries, pooled", [([2, None], 2), ([2, 1], 3)])
+def test_a_row_counts_the_retries_of_both_passes(timed, monkeypatch, retries, pooled):
+    """Each pass reports the attribution retries of its own reading; the pooled row sums them."""
+    metas = iter(
+        {"timing": "cupti"} | ({} if n is None else {"attribution_retries": n}) for n in retries * 2
+    )
+    monkeypatch.setattr(bench, "_capture_bench_meta", lambda: next(metas))
+    results = bench.Runner(SumFwdOp(), _case()).compare({})
+    assert results["tileops"]["attribution_retries"] == pooled
+
+
+def test_samples_no_blocker_held_are_not_pooled_with_held_ones(timed, monkeypatch):
+    """A pass without the blocker drained its samples, which is another method than a held
+    pass's."""
+    _passes_reporting(monkeypatch, [None, 0])
+    held, drained = timing._L2_FLUSH_CUDA, timing._L2_FLUSH_CUDA_DRAINED
+    with pytest.raises(RuntimeError, match=f"cupti {held} then cupti {drained}"):
+        bench.Runner(SumFwdOp(), _case()).compare({})
+
+
+def test_a_row_reports_the_mean_sm_clock_of_both_passes(timed, monkeypatch):
+    """nvbench summarizes a cold measurement's clock as the mean over its samples; a sample
+    whose clock was not read takes no part."""
+    clocks = iter([[1.4e9, None], [1.6e9]])
+
+    def bench_kernel(*_, **__):
+        return [
+            Sample(device_busy_ms=1.0, latency_ms=1.0, n_kernels=1, sm_clock_hz=hz)
+            for hz in next(clocks)
+        ]
+
+    monkeypatch.setattr(bench, "bench_kernel", bench_kernel)
+    results = bench.Runner(SumFwdOp(), _case()).compare({})
+    assert results["tileops"]["sm_clock_mhz"] == pytest.approx(1500)
+
+
 def test_a_row_records_the_case_params(timed):
     bench.Runner(SumFwdOp(), _case()).compare({})
     assert timed.rows[0]["params"] == {"input": ((4,), "float32"), "dim": [0]}

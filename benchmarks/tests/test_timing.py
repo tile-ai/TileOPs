@@ -1,5 +1,8 @@
 import ast
 import contextlib
+import itertools
+import statistics
+import time
 from pathlib import Path
 
 import pytest
@@ -143,7 +146,7 @@ def _collecting(monkeypatch, *traces) -> list:
     buffer size each collection asked for."""
     requested = []
 
-    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0):
+    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, finish_one=None):
         requested.append(buffer_bytes)
         return traces[min(len(requested), len(traces)) - 1]
 
@@ -225,6 +228,59 @@ def test_a_copy_counts_only_where_the_case_asks_for_copies():
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_a_slow_host_leaves_no_device_idle_between_samples():
+    """A call that spends 2 ms on the host before its kernel still runs its samples back to
+    back: each starts when the previous one ends, not once the host has launched it. Every
+    sample carries the SM clock it ran at."""
+    x = torch.empty(1 << 20, device="cuda")
+    starts = []
+
+    def reset():
+        starts.append(torch.Event(enable_timing=True))
+        starts[-1].record()
+
+    def run():
+        time.sleep(2e-3)
+        x.mul_(2)
+
+    samples = bench_kernel(run, reset=reset)
+    torch.accelerator.synchronize()
+
+    gaps = [a.elapsed_time(b) for a, b in itertools.pairwise(starts[-len(samples) :])]
+    # Had the device waited for the host, every gap would hold the host's 2 ms.
+    assert statistics.median(gaps) < 1.0
+    peak_hz = torch.cuda.get_device_properties(x.device).clock_rate * 1e3
+    assert all(0 < s.sm_clock_hz <= peak_hz * 1.01 for s in samples)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_the_host_sees_a_blocker_time_out_while_the_stream_still_runs():
+    """A block the host releases did not time out; one it leaves held releases itself, and
+    the host reads that before draining the stream, which is how it counts what was queued."""
+    from benchmarks.cold import StreamBlocker
+
+    blocker = StreamBlocker(timeout_s=0.05)
+    blocker.block()
+    blocker.unblock()
+    torch.accelerator.synchronize()
+    assert not blocker.timed_out()
+
+    blocker.block()
+    # Work still queued behind it: a second blocker, released by the host.
+    behind = StreamBlocker(timeout_s=5.0)
+    behind.block()
+    deadline = time.monotonic() + 5.0
+    while not blocker.timed_out() and time.monotonic() < deadline:
+        time.sleep(1e-3)
+    seen, running = blocker.timed_out(), not torch.cuda.current_stream().query()
+    behind.unblock()
+    torch.accelerator.synchronize()
+    assert seen and running and not behind.timed_out()
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_kernel_runtime_error_propagates():
     """Genuine RuntimeErrors must reach the caller, not the fallback path."""
 
@@ -241,10 +297,13 @@ def test_kernel_runtime_error_propagates():
 def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
     """The reset runs before the flush, so what it writes is evicted, and outside the reading."""
     from benchmarks import timing
+    from tileops._utils import _l2_sweep
 
     order = []
-    flush = timing.flush_l2
-    monkeypatch.setattr(timing, "flush_l2", lambda buffer: (order.append("flush"), flush(buffer)))
+    sweep = _l2_sweep.read_sweep
+    monkeypatch.setattr(
+        _l2_sweep, "read_sweep", lambda buffer: (order.append("flush"), sweep(buffer))
+    )
     x = torch.empty(1 << 24, device="cuda")
     private = torch.empty_like(x)
 
@@ -385,6 +444,7 @@ class _FakeCupti:
     """CUPTI's boundary: the id stack, and a phase's records, which a scenario can spoil.
 
     ``spoil`` maps a phase number to how it ends: ``lost`` drops a record and counts it,
+    ``counted`` counts a dropped record while every call kept one,
     ``empty`` returns no record at all, which no retry can mend.
     """
 
@@ -414,37 +474,80 @@ class _FakeCupti:
         self.kernels, self.iteration_of, self.dropped = [], {}, 0
         if spoil == "lost":
             kernels, self.dropped = kernels[:-1], 1
+        elif spoil == "counted":
+            self.dropped = 1
         elif spoil == "empty":
             kernels = []
         return kernels, iteration_of
 
 
-@pytest.mark.parametrize(
-    "device, instrument, spoil, timed_calls, meta",
-    [
-        ("cuda", "cupti", {}, 2, {"timing": "cupti"}),
-        ("cuda", "cupti", {0: "lost"}, 4, {"timing": "cupti", "attribution_retries": 1}),
-        ("cuda", "cupti", {0: "empty"}, 4, {"timing": "cuda-events"}),
-        ("cuda", "events", {}, 2, {"timing": "events"}),
-        ("privateuseone", "events", {}, 2, {"timing": "events"}),
-    ],
-    ids=["cupti", "retry", "events-fallback", "events", "another-device"],
-)
-def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
-    monkeypatch, device, instrument, spoil, timed_calls, meta
-):
-    """First call, calibration, warm-up, timed repeats, retries and fallback prepare alike.
+class _Blocker:
+    """The blocking kernel's host side, logging into *order*. The queue behind it takes
+    *fits* samples, or behind each block in turn the next of a list of them, counting the
+    block that loads it before warm-up; queueing one more makes it release on its own, as a
+    full queue does."""
 
-    Warm-up and timed iterations drain the device between the flush and the call.
-    """
-    from benchmarks import timing
+    def __init__(self, order: list, fits: int | list | None = None):
+        self._order, self._fits = order, iter(fits) if isinstance(fits, list) else fits
+        self.held, self.queued, self._timed_out, self._room = False, 0, False, None
+
+    def block(self):
+        self._order.append("block")
+        self.held, self.queued, self._timed_out = True, 0, False
+        self._room = next(self._fits, None) if hasattr(self._fits, "__next__") else self._fits
+
+    def unblock(self):
+        if self.held:
+            self._order.append("unblock")
+        self.held = False
+
+    def timed_out(self):
+        return self._timed_out
+
+    def queue(self):
+        if self.held:
+            self.queued += 1
+            if self._room is not None and self.queued > self._room:
+                self._timed_out = True
+
+
+class _Clocks:
+    """SM 0's clocks, each sample read at 1.5 GHz."""
+
+    def __init__(self, n, _device):
+        pass
+
+    def clear(self):
+        pass
+
+    def start(self, _i):
+        pass
+
+    def stop(self, _i):
+        pass
+
+    def read_hz(self, n):
+        return [1.5e9] * n
+
+
+def _time_on_fakes(monkeypatch, device, instrument, spoil, fits=None, call=None, repeats=2):
+    """Run ``_bench_kernel`` on stand-ins for every device-facing piece, timing *call* (by
+    default one that only launches) *repeats* times; returns the steps it took in order, and
+    its samples."""
+    from benchmarks import cold, timing
+    from tileops._utils import _l2_sweep
     from tileops._utils import cupti as collector
 
     order = []
     cupti = _FakeCupti(spoil)
+    blocker = _Blocker(order, fits)
     monkeypatch.setattr(timing, "l2_flush_buffer", lambda device: _ReadOnlySweep(order))
-    monkeypatch.setattr(timing, "flush_l2", lambda buffer: order.append("flush-l2"))
+    monkeypatch.setattr(_l2_sweep, "read_sweep", lambda buffer: order.append("read"))
+    monkeypatch.setattr(timing, "reset_persisting_l2_cache", lambda: order.append("persist"))
     monkeypatch.setattr(timing, "_instrument_for", lambda device: instrument)
+    monkeypatch.setattr(timing, "_BLOCKERS", {})
+    monkeypatch.setattr(cold, "StreamBlocker", lambda timeout_s: blocker)
+    monkeypatch.setattr(cold, "SmClocks", _Clocks)
     monkeypatch.setattr(collector, "_load_cupti", lambda: cupti)
     monkeypatch.setattr(collector, "_drop_counter_is_live", lambda: True)
     monkeypatch.setattr(collector, "_read_dropped", lambda: cupti.dropped)
@@ -456,30 +559,187 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
     monkeypatch.setattr(torch.cuda, "synchronize", lambda: order.append("sync"))
 
     def run():
+        if call is not None:
+            call()
         order.append("run")
+        blocker.queue()
         cupti.launch()
 
-    timing._bench_kernel(
+    samples = timing._bench_kernel(
         torch.device(device, 0),
         run,
-        max_iters=2,
-        min_iters=2,
+        max_iters=repeats,
+        min_iters=repeats,
         allow_events_fallback=True,
         reset=lambda: order.append("reset"),
     )
+    return order, samples
 
-    on_cuda = device == "cuda"
-    prepared = ["reset", "flush-l2"] if on_cuda else ["reset", "torch-max"]
-    assert [step for step in order if step != "sync"] == [*prepared, "run"] * (
-        1 + 3 + 2 + timed_calls
-    )
-    # The first call and the three calibration calls come before warm-up.
+
+def _held_spans(order: list) -> list[tuple[int, int]]:
+    """Each block and the unblock that ends it, as indices into *order*."""
+    blocks = [i for i, step in enumerate(order) if step == "block"]
+    return [(b, order.index("unblock", b)) for b in blocks]
+
+
+@pytest.mark.parametrize(
+    "device, instrument, spoil, timed_calls, meta",
+    [
+        ("cuda", "cupti", {}, 2, {"timing": "cupti"}),
+        ("cuda", "cupti", {0: "lost"}, 4, {"timing": "cupti", "attribution_retries": 1}),
+        ("cuda", "cupti", {0: "counted"}, 4, {"timing": "cupti", "attribution_retries": 1}),
+        ("cuda", "cupti", {0: "empty"}, 4, {"timing": "cuda-events"}),
+        ("cuda", "events", {}, 2, {"timing": "events"}),
+        ("privateuseone", "events", {}, 2, {"timing": "events"}),
+    ],
+    ids=["cupti", "retry", "retry-short-call", "events-fallback", "events", "another-device"],
+)
+def test_every_call_is_prepared_by_reset_then_a_read(
+    monkeypatch, device, instrument, spoil, timed_calls, meta
+):
+    """First call, calibration, warm-up, timed repeats, retries and fallback prepare alike.
+
+    On CUDA every timed call is queued behind the blocking kernel with no drain between
+    calls; the kernel loads before warm-up, whose calls it never holds and which are drained
+    before and after; persisting L2 is reset before each block. Off CUDA no call is drained.
+    """
+    from benchmarks import timing
+
+    order, _ = _time_on_fakes(monkeypatch, device, instrument, spoil)
+
+    blocked = instrument == "cupti"
+    prepared = ["reset", "read"] if device == "cuda" else ["reset", "torch-max"]
+    steps = [step for step in order if step not in ("sync", "persist", "block", "unblock")]
+    assert steps == [*prepared, "run"] * (1 + 3 + 2 + timed_calls)
     calls = [i for i, step in enumerate(order) if step == "run"]
-    assert all(order[i - 1] == "sync" for i in calls[4:])
+    # The first call and the three calibration calls come before the two warm-up calls.
+    warmup, timed = calls[4:6], calls[6:]
+    if blocked:
+        # nvbench's warm-up: each call drained before and after, never behind the blocker.
+        assert all(order[c - 1] == order[c + 1] == "sync" for c in warmup)
+    else:
+        assert "sync" not in order[warmup[0] : warmup[-1]] + order[timed[0] : timed[-1]]
+    spans = _held_spans(order)
+    held = [c for c in calls if any(b < c < u for b, u in spans)]
+    assert held == (calls[6:] if blocked else [])
+    for block, unblock in spans:
+        # Neither a drain nor a persisting-L2 reset while the stream is held: under CUPTI the
+        # reset stalls the next launch until the blocker times out.
+        assert "sync" not in order[block:unblock] and "persist" not in order[block:unblock]
+        held_calls = [c for c in calls if block < c < unblock]
+        assert not held_calls or order[block - 1] == "persist"
     recorded = timing._capture_bench_meta()
     assert (recorded.pop("fallback_reason", None) is not None) == (meta["timing"] == "cuda-events")
-    flush = timing._L2_FLUSH_CUDA if on_cuda else timing._L2_FLUSH_OTHER
+    flush = timing._L2_FLUSH_CUDA if device == "cuda" else timing._L2_FLUSH_OTHER
     assert recorded == {**meta, "l2_flush": flush}
+
+
+def test_a_block_the_queue_cannot_hold_is_measured_again_in_what_it_took(monkeypatch):
+    """A blocker released by its timeout leaves samples run while the host was still
+    queueing, so the block is discarded and its samples measured in blocks of what the queue
+    took."""
+    from benchmarks import timing
+
+    order, samples = _time_on_fakes(monkeypatch, "cuda", "cupti", {}, fits=1, repeats=3)
+
+    assert len(samples) == 3
+    assert all(s.sm_clock_hz == 1.5e9 for s in samples)
+    recorded = timing._capture_bench_meta()
+    assert recorded["block_samples"] == 1 and recorded["l2_flush"] == timing._L2_FLUSH_CUDA
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    # 4 calls before warm-up, 3 warm-up calls, the discarded block of 3, then the retaken 3,
+    # one per block.
+    assert len(calls) == 4 + 3 + 3 + 3
+    retaken = calls[10:]
+    spans = _held_spans(order)
+    held = [[c for c in retaken if b < c < u] for b, u in spans]
+    assert [h for h in held if h] == [[c] for c in retaken]
+
+
+def test_a_row_counts_the_retries_of_the_blocks_it_keeps(monkeypatch):
+    """The discarded block of 3 lost records once; of the kept blocks of 1, the first and
+    the last lost records once. The row reports the kept blocks' two retries."""
+    from benchmarks import timing
+
+    _, samples = _time_on_fakes(
+        monkeypatch, "cuda", "cupti", {0: "lost", 2: "lost", 5: "lost"}, fits=1, repeats=3
+    )
+
+    assert len(samples) == 3
+    assert timing._capture_bench_meta()["attribution_retries"] == 2
+
+
+def test_a_queue_that_takes_no_sample_discards_the_held_ones(monkeypatch):
+    """Smaller blocks succeed until one takes no sample: the reading starts over without
+    the blocker, so no reading mixes held samples with unheld ones."""
+    from benchmarks import timing
+
+    # The load block, the block of 2 that took 1, a block of 1, then one that took none.
+    order, samples = _time_on_fakes(monkeypatch, "cuda", "cupti", {}, fits=[None, 1, None, 0])
+
+    assert len(samples) == 2
+    recorded = timing._capture_bench_meta()
+    assert recorded["block_samples"] == 0
+    assert recorded["l2_flush"] == timing._L2_FLUSH_CUDA_DRAINED
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    # 4 calls before warm-up, 2 warm-up calls, 2 + 1 + 1 discarded, then 2 unheld.
+    assert len(calls) == 4 + 2 + 4 + 2
+    # Without the blocker a sample is drained before and after, as nvbench's timer does.
+    assert all(order[c - 1] == order[c + 1] == "sync" for c in calls[-2:])
+    assert not any(b < c < u for b, u in _held_spans(order) for c in calls[-2:])
+
+
+def test_an_events_fallback_reports_only_its_own_blocks(monkeypatch):
+    """CUPTI's reading went without the blocker and then failed; the events reading that
+    replaces it was held, and says so."""
+    from benchmarks import timing
+
+    order, samples = _time_on_fakes(
+        monkeypatch, "cuda", "cupti", {1: "empty"}, fits=[None, 0, None]
+    )
+
+    assert len(samples) == 2
+    recorded = timing._capture_bench_meta()
+    assert recorded["timing"] == "cuda-events" and "block_samples" not in recorded
+    assert recorded["l2_flush"] == timing._L2_FLUSH_CUDA
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    block, unblock = _held_spans(order)[-1]
+    assert [c for c in calls if block < c < unblock] == calls[-2:]
+
+
+def test_a_call_that_raises_while_held_releases_the_stream(monkeypatch):
+    """The error reaches the caller, and the stream is not left held behind it."""
+    calls = []
+
+    def raise_on_the_timed_call():
+        calls.append(None)
+        # A first call, three calibration calls and one warm-up call come before.
+        if len(calls) == 6:
+            raise RuntimeError("kernel failure")
+
+    from benchmarks import timing
+
+    with pytest.raises(RuntimeError, match="kernel failure"):
+        _time_on_fakes(monkeypatch, "cuda", "cupti", {}, call=raise_on_the_timed_call, repeats=1)
+    (blocker,) = timing._BLOCKERS.values()
+    assert not blocker.held
+
+
+def test_a_clock_is_read_only_from_two_written_records():
+    """SM 0 runs 3000 cycles in 2000 ns: 1.5 GHz. A record it never wrote is still zero, and
+    such a sample's clock is unknown rather than a ratio of the other record's counters."""
+    from benchmarks.cold import SmClocks
+
+    clocks = SmClocks.__new__(SmClocks)
+    clocks._stamps = torch.tensor(
+        [
+            [[1_000, 10_000], [3_000, 13_000]],
+            [[0, 0], [3_000, 13_000]],
+            [[1_000, 10_000], [0, 0]],
+        ]
+    )
+
+    assert clocks.read_hz(3) == [pytest.approx(1.5e9), None, None]
 
 
 def _raise_attribution(*_args, **_kwargs):
