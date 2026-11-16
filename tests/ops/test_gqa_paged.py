@@ -112,6 +112,38 @@ def test_gqa_paged_split_combine_row_blocks(
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("semantics", "kernel_name"),
+    [
+        ({"is_causal": True, "window_size_left": 254}, "GQAPagedFwdKernel"),
+        ({"is_causal": True, "window_size_left": 255}, "GQAPagedFwdWSKernel"),
+        (
+            {"is_causal": False, "window_size_left": 255, "window_size_right": 254},
+            "GQAPagedFwdKernel",
+        ),
+        (
+            {"is_causal": False, "window_size_left": 255, "window_size_right": 255},
+            "GQAPagedFwdWSKernel",
+        ),
+    ],
+    ids=["left-inside-table", "left-at-last-key", "right-inside-table", "both-at-last-key"],
+)
+def test_gqa_paged_window_reaching_the_last_key_is_no_window(
+    semantics: dict, kernel_name: str
+) -> None:
+    """A window reaching the last key the page table holds (four 64-row pages: key 255) hides
+    no key, so the WS kernel serves the 256-query request without RoPE; either bound one key
+    narrower bounds the scan, and the cp.async kernel serves it."""
+    workload = GQAPagedFwdWorkload(16, 4, 128, [256], [256], 64, 4, 4, torch.float16, **semantics)
+    op = GQAPagedFwdOp(**semantics)
+    inputs = workload.gen_inputs()
+    assert type(_kernel(op, inputs)).__name__ == kernel_name
+    _check(op, workload, inputs)
+
+
+@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_gqa_paged_decode_keeps_the_narrow_query_tile() -> None:
     """A decode over pages that hold only a key tile narrower than one WGMMA keeps the 64-row

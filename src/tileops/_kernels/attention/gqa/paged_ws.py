@@ -797,12 +797,13 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     16 rows, causal or bidirectional, with a positive scale and an optional softcap, when the
     packed query rows average at least one 128-row tile a request. It does not split a
     request's keys across CTAs, so a decode packing, whose tiles fall short of the
-    multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. Windows bound the scan and sinks add
-    denominator-only mass. RoPE preprocesses private request pages without mutating the cache:
-    over a 16-bit cache they hold the rotated leading key channels, the rest of each key and
-    the values coming from the cache; an FP8 query or cache is served only with RoPE, whose
-    preparation dequantizes all of K and V into those 16-bit pages. A group wider than 16
-    heads is served over one KV head, without windows, sinks or RoPE.
+    multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. Windows bound the scan and
+    sinks add denominator-only mass; without RoPE it serves only windows that hide no key.
+    RoPE preprocesses private request pages without mutating the cache: over a 16-bit cache
+    they hold the rotated leading key channels, the rest of each key and the values coming from
+    the cache; an FP8 query or cache is served only with RoPE, whose preparation dequantizes
+    all of K and V into those 16-bit pages. A group wider than 16 heads is served over one KV
+    head, without windows, sinks or RoPE.
     """
 
     # Host eligibility and the device split schedule must use the same threshold.
@@ -886,8 +887,12 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             return "requires a positive scale"
         if call.page_size <= 0 or cls.block_n_for(call.page_size, call.dim) is None:
             return "requires a page size that is a multiple of 16 rows"
-        if not call.fuse_rope and call.uses_sliding_window:
-            return "requires unrestricted windows when RoPE is disabled"
+        # Query positions and keys lie below max_pages_per_req * page_size, so a window reaching
+        # the last key the page table holds hides no key.
+        last_key = call.max_pages_per_req * call.page_size - 1
+        bounded = (0 <= w < last_key for w in (call.window_size_left, call.window_size_right))
+        if not call.fuse_rope and any(bounded):
+            return "requires windows that hide no key when RoPE is disabled"
         if call.max_seqlen_q * (call.heads // call.heads_kv) < cls._TILE_ROWS * call.batch:
             return "requires packed query rows averaging one 128-row tile a request"
         if call.fuse_rope:
