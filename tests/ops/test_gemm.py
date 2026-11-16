@@ -2335,6 +2335,13 @@ def test_gemm_w4a16_selector_moves_128_row_tiles_onto_the_cross_tile_ring() -> N
     )
 
 
+def _leave_nan_in_free_blocks() -> None:
+    """Free blocks the caching allocator hands out next for outputs under 1 MiB, holding NaN:
+    an output element no kernel writes then reads NaN, not a fresh block's zeros."""
+    blocks = [torch.full((1 << 17,), float("nan"), device=run_device()) for _ in range(16)]
+    del blocks
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
@@ -2370,6 +2377,9 @@ def test_gemm_w4a16_selector_moves_128_row_tiles_onto_the_cross_tile_ring() -> N
         pytest.param(
             1, 4288, 81920, (64, 128, 1, True), id="kept-stream-whole-k", marks=pytest.mark.full
         ),
+        pytest.param(
+            8, 5056, 32896, (64, 128, 1, True), id="kept-stream-eight-rows", marks=pytest.mark.full
+        ),
     ],
 )
 def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tuple) -> None:
@@ -2380,7 +2390,9 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
     cfg = _select_config(m, n, k, 128, 132)
     assert (cfg["block_n"], cfg["threads"], cfg["split_k"], cfg["stream_ctas"] > 0) == tile
     test = GEMMW4A16Test(m, n, k, torch.float16)
-    test.check(GEMMW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
+    inputs = test.gen_inputs()
+    _leave_nan_in_free_blocks()
+    test.check(GEMMW4A16FwdOp(target=BUILTIN), *inputs)
 
 
 @pytest.mark.in_tree_kernels
