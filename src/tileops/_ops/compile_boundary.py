@@ -93,9 +93,8 @@ class _OpaqueStateError(Exception):
 class _Encoder:
     """Encodes values as text equal across processes exactly when the values are equal.
 
-    It reads the values a manifest param holds: scalars, dtypes, devices, strided tensor
-    layouts, enum members, types, lists, tuples, dicts, ADT literals and dataclasses, nested at
-    most `_MAX_DEPTH` deep. Any other value, a subclass of one of these among them, raises
+    It reads the values a manifest param holds: scalars, dtypes, devices, enum members, types,
+    lists, tuples, dicts, ADT literals and dataclasses, nested at most `_MAX_DEPTH` deep. Any other value, a subclass of one of these among them, raises
     `_OpaqueStateError`. A class another process may define otherwise sets `local`.
     """
 

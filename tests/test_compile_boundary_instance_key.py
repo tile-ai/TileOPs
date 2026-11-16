@@ -89,14 +89,13 @@ def test_cyclic_values_key_by_their_shape():
 
 # Each state's key in a fresh process: stable states, then states with no stable encoding.
 _STABLE = (
-    "[(2, None, 'x'), (torch.float16, E.A, [1.5, (2,)], {'k': True}), (torch.zeros(3, 2).t(),),"
-    " (_Layout(1),),"
-    " (1, None, 'x'), (torch.bfloat16, E.A, [1.5, (2,)], {'k': True}), (torch.zeros(2, 3),),"
-    " (_Layout(2),)]"
+    "[(2, None, 'x'), (torch.float16, E.A, [1.5, (2,)], {'k': True}), (_Layout(1),),"
+    " (1, None, 'x'), (torch.bfloat16, E.A, [1.5, (2,)], {'k': True}), (_Layout(2),)]"
 )
-# An extension type, a function, a container subclass and a scalar subclass.
+# A tensor, an extension type, a function, a container subclass and a scalar subclass.
 _LOCAL = (
-    "[(threading.Lock(),), (lambda: 0,), (type('L', (list,), {})(),), (type('I', (int,), {})(1),)]"
+    "[(torch.zeros(2, 3),), (threading.Lock(),), (lambda: 0,), (type('L', (list,), {})(),),"
+    " (type('I', (int,), {})(1),)]"
 )
 
 
@@ -123,11 +122,11 @@ def test_two_processes_share_a_key_exactly_when_the_state_agrees():
     a stride-1 instance in the next, so the second run loaded the first run's artifact and
     asserted on its output shape."""
     first, second, other = _keys(1), _keys(1), _keys(2)
-    stable = 8
+    stable = 6
     assert first[:stable] == second[:stable]
     # Each changed state keys apart from its original.
-    assert not set(first[:4]) & set(first[4:stable])
+    assert not set(first[:3]) & set(first[3:stable])
     # The local values, and a class defined inside a function: never shared.
     assert not set(first[stable:]) & set(second[stable:])
     # One enum name, another member value, which expressions read.
-    assert first[1] != other[1] and first[5] != other[5] and first[0] == other[0]
+    assert first[1] != other[1] and first[4] != other[4] and first[0] == other[0]
