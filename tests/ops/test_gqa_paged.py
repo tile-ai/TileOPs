@@ -1271,7 +1271,7 @@ def test_gqa_paged_fp8_decode(
     assert isinstance(kernel, GQAPagedFP8DecodeKernel)
     assert kernel.block_m == tile_rows
     least, most = splits
-    chunks = kernel._splits_for(len(q_lens))
+    chunks = kernel.chunks(inputs[0].shape[0])
     assert least <= chunks <= (most or chunks)
 
 

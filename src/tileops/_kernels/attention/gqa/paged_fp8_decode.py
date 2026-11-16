@@ -859,6 +859,17 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         steady = [n for n in range(2, span + 1) if -(-span // n) > 2 * cfg["stages"]]
         return min([1, *steady], key=lambda n: (cost(n), n))
 
+    def chunks(self, total_q: int) -> int:
+        """The chunk count a call of *total_q* packed query tokens launches: the pinned one, else
+        the one `_splits_for` picks for the row tiles the packing owns at least.
+
+        A request owning tokens owns at least one tile, and no packing owns fewer than its rows
+        need: exact for packings whose requests fit one tile.
+        """
+        group = self.heads // self.heads_kv
+        tiles = max(min(self.batch, total_q), -(-total_q * group // self.block_m), 1)
+        return self.config["num_split"] or self._splits_for(tiles)
+
     def forward(
         self,
         q: torch.Tensor,
@@ -874,15 +885,11 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         rope_sin: torch.Tensor | None = None,
         sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        c = self.config
         group = self.heads // self.heads_kv
         # Row tiles this packing can need, at most one partial tile per request; read from
         # the shapes, because summing the offsets would synchronize with the device.
         tiles = q.shape[0] * group // self.block_m + self.batch
-        # A request owning tokens owns at least one tile, and no packing owns fewer than its
-        # rows need: exact for packings whose requests fit one tile.
-        estimate = max(min(self.batch, q.shape[0]), -(-q.shape[0] * group // self.block_m), 1)
-        splits = c["num_split"] or self._splits_for(estimate)
+        splits = self.chunks(q.shape[0])
         program = self.program(self._compile, splits)
         glse = torch.empty(
             (tiles, self.heads_kv, splits, self.block_m), dtype=torch.float32, device=q.device
