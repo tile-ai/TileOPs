@@ -51,7 +51,7 @@ MaskedScatterFwdOp:
   # elements of source in row-major order. The caller passes a source holding at least as
   # many elements as mask has true positions after broadcasting.
   family: indexing
-  status: spec-only
+  status: implemented
   ref_api: torch.masked_scatter
   signature:
     forall: {A: Shape, M: Shape, R: Shape, T: "DType[float16 | bfloat16 | float32]"}
