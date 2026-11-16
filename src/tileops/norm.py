@@ -13,6 +13,7 @@ from tileops._ops.norm import (
     InstanceNormFwdOp,
     LayerNormFwdOp,
     RMSNormFwdOp,
+    RMSNormGatedFwdOp,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "InstanceNormFwdOp",
     "LayerNormFwdOp",
     "RMSNormFwdOp",
+    "RMSNormGatedFwdOp",
 ]

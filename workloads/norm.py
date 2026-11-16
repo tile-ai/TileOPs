@@ -1042,3 +1042,77 @@ class FusedAddRMSNormPerTokenQuantCall(CallWorkload, FusedAddRMSNormPerTokenQuan
         )
 
     gen_inputs = CallWorkload.gen_inputs
+
+
+def rms_norm_gated(
+    x, weight, bias, z, eps, group_size, norm_before_gate, activation, exact_gate=True
+):
+    """``mamba_ssm.ops.triton.layernorm_gated.rms_norm_ref`` with fla's sigmoid gate, in
+    float32, rounded once to ``x``'s dtype.
+
+    RMSNorm over each group of ``group_size`` columns (all of them when ``None``), scaled by
+    ``weight`` and shifted by ``bias``, gated by ``act(z)`` when ``z`` is passed: after the
+    norm with ``norm_before_gate``, else on its input. With *exact_gate*, ``act(z)`` is
+    computed in float64 and held as the float32 nearest it: torch's float32 silu and sigmoid
+    overflow ``exp(-z)`` below ``z = -88.7`` and return zero where the float32 gate is not.
+    """
+    n = x.shape[-1]
+    group = n if group_size is None else group_size
+    act = F.silu if activation == "silu" else torch.sigmoid
+    gate = None
+    if z is not None:
+        gate = act(z.double()).float() if exact_gate else act(z.float())
+    h = x.float()
+    if gate is not None and not norm_before_gate:
+        h = h * gate
+    g = h.unflatten(-1, (n // group, group))
+    h = (g * torch.rsqrt(g.square().mean(-1, keepdim=True) + eps)).flatten(-2)
+    h = h * weight.float()
+    if bias is not None:
+        h = h + bias.float()
+    if gate is not None and norm_before_gate:
+        h = h * gate
+    return h.to(x.dtype)
+
+
+class RMSNormGatedCall(CallWorkload):
+    """One manifest call of ``RMSNormGatedFwdOp``; inputs ``(x, weight, bias, z)``."""
+
+    def ref_program(self, x, weight, bias, z):
+        p = self.call.params
+        return rms_norm_gated(
+            x, weight, bias, z, p["eps"], p["group_size"], p["norm_before_gate"], p["activation"]
+        )
+
+    def torch_program(self, x, weight, bias, z):
+        """As vLLM's ``RMSNormGated.forward_native`` runs it, all in float32."""
+        p = self.call.params
+        return rms_norm_gated(
+            x,
+            weight,
+            bias,
+            z,
+            p["eps"],
+            p["group_size"],
+            p["norm_before_gate"],
+            p["activation"],
+            exact_gate=False,
+        )
+
+
+class RMSNormGatedTinyGateCall(RMSNormGatedCall):
+    """A float32 call whose gate before the norm is subnormal or underflows: ``x`` near the
+    float32 maximum, unit weight, and in each row ``z`` within 0.5 of the row's own value
+    between -87.5 and -103.5, so every element of a row has a gate of comparable size.
+    ``sigmoid(z)`` is subnormal below -87.33, ``exp(-z)`` overflows float32 below -88.7, and
+    ``exp(z)`` underflows below -103.3 while ``silu(z)`` is still a float32."""
+
+    def gen_inputs(self):
+        x, weight, bias, z = super().gen_inputs()
+        x.fill_(1e38)
+        weight.fill_(1)
+        rows, n = z.reshape(-1, z.shape[-1]).shape
+        start = torch.linspace(-87.5, -103.5, rows, device=z.device)
+        spread = torch.linspace(0, -0.5, n, device=z.device)
+        z.copy_((start[:, None] + spread).view_as(z))
+        return x, weight, bias, z

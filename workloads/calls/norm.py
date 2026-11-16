@@ -5,6 +5,7 @@ from workloads.norm import (
     FusedAddRMSNormPerTokenQuantCall,
     FusedQKNormRoPECall,
     NormCall,
+    RMSNormGatedCall,
     RunningStatsCall,
 )
 
@@ -26,4 +27,5 @@ WORKLOADS = {
     "InstanceNormFwdOp": RunningStatsCall,
     "FusedQKNormRoPEFwdOp": FusedQKNormRoPECall,
     "FusedAddRMSNormPerTokenQuantFwdOp": FusedAddRMSNormPerTokenQuantCall,
+    "RMSNormGatedFwdOp": RMSNormGatedCall,
 }
