@@ -30,7 +30,7 @@ from workloads import mamba, moe, sampling
 from workloads.attention.gated_pool_compress import gated_pool_compress
 from workloads.attention.merge_states import MergeAttentionStatesWorkload
 from workloads.attention.nsa import NSAFwdWorkload
-from workloads.norm import mrope_rows
+from workloads.norm import mrope_rows, rms_norm_gated
 from workloads.quantization import int8_dequant
 from workloads.quantization import quantize as quantization
 from workloads.sequence_modeling import hc_head, ngram_hash
@@ -412,19 +412,17 @@ def _rms_norm_gated(p, t):
         or n % group
     ):
         raise ValueError("weight, bias, z and group_size must match x")
-    h = x.float()
-    act = F.silu if p["activation"] == "silu" else torch.sigmoid
-    gate = act(z.float()) if z is not None else None
-    if gate is not None and not p["norm_before_gate"]:
-        h = h * gate
-    g = h.unflatten(-1, (n // group, group))
-    h = (g * (1 / torch.sqrt(g.square().mean(-1, keepdim=True) + p["eps"]))).flatten(-2)
-    h = h * weight.float()
-    if bias is not None:
-        h = h + bias.float()
-    if gate is not None and p["norm_before_gate"]:
-        h = h * gate
-    return {"output": h.to(x.dtype)}
+    output = rms_norm_gated(
+        x,
+        weight,
+        bias,
+        z,
+        p["eps"],
+        p["group_size"],
+        p["norm_before_gate"],
+        p["activation"],
+    )
+    return {"output": output}
 
 
 # ---------------------------------------------------------------- mamba

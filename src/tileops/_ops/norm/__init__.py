@@ -9,6 +9,7 @@ from tileops._ops.norm.group_norm import GroupNormFwdOp
 from tileops._ops.norm.instance_norm import InstanceNormFwdOp
 from tileops._ops.norm.layer_norm import LayerNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
+from tileops._ops.norm.rms_norm_gated import RMSNormGatedFwdOp
 
 __all__: list[str] = [
     "AdaLayerNormFwdOp",
@@ -23,4 +24,5 @@ __all__: list[str] = [
     "InstanceNormFwdOp",
     "LayerNormFwdOp",
     "RMSNormFwdOp",
+    "RMSNormGatedFwdOp",
 ]
