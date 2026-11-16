@@ -9,6 +9,7 @@ import benchmarks.baselines  # noqa: F401
 # Imported for its side effect: arming the guard that keeps flag_gems from
 # reaching torch's op registry before vllm. See benchmarks.baselines.
 from benchmarks import api
+from benchmarks.outcomes import UNAVAILABLE_PROPERTY
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
 from tileops._utils.device import current_accelerator_type
@@ -130,11 +131,6 @@ def pytest_unconfigure(config):
         api.set_verifying(config.stash[_OUTER_VERIFYING])
 
 
-# The testcase property, read by scripts/check_bench_coverage.py, that marks a row no
-# implementation serves yet.
-UNAVAILABLE_PROPERTY = "unavailable"
-
-
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     """Report a row whose op raised ``OpNotAvailableError`` as skipped and unavailable.
@@ -151,7 +147,7 @@ def pytest_runtest_makereport(item, call):
         return
     reason = str(call.excinfo.value)
     report.outcome = "skipped"
-    report.longrepr = (str(item.path), item.location[1], f"unavailable: {reason}")
+    report.longrepr = (str(item.path), item.location[1] + 1, f"unavailable: {reason}")
     # The JUnit report writes the item's properties with its teardown report.
     item.user_properties.append((UNAVAILABLE_PROPERTY, reason))
     cases = getattr(getattr(item, "callspec", None), "params", {}).values()

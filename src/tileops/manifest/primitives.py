@@ -52,8 +52,6 @@ _FLOAT_MAX = {
 _COMPLEX_PART = {"complex64": "float32", "complex128": "float64"}
 # Floating formats without an infinity.
 _NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz", "float8_e8m0fnu"})
-# Dtypes whose element packs several values, so no scalar converts to one.
-_PACKED = frozenset({"float4_e2m1fn_x2"})
 
 
 def normalize_axis(axis: int, rank: int) -> int:
@@ -283,8 +281,6 @@ def _fits_float(v, dtype):
 
 def representable(v: complex, dtype: str) -> bool:
     """Whether `v` converts to `dtype` without overflow, by PyTorch's scalar conversion rule."""
-    if dtype in _PACKED:
-        raise ValueError(f"{dtype} packs several values per element; no scalar converts to it")
     if dtype == "bool":
         return True
     if dtype in _COMPLEX_PART:

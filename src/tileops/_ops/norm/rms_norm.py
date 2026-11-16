@@ -37,7 +37,9 @@ class RMSNormFwdOp(Op):
     ``group_size`` splits the flattened trailing axes into runs of that many elements, each
     divided by its own root mean square, the weight still spanning all of them.
     ``zero_centered`` scales by ``1 + weight``, as vLLM's ``GemmaRMSNorm`` does: the
-    arithmetic is float32 and the result rounds once to the input dtype.
+    arithmetic is float32 and the result rounds once to the input dtype. The in-tree kernels
+    serve neither ``zero_centered`` nor runs shorter than the normalized row; such a call
+    raises ``OpNotAvailableError`` when a kernel is selected.
 
     Example:
         ```python linenums="1"

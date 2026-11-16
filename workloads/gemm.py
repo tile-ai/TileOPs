@@ -36,14 +36,14 @@ def matmul_fp32_reduction(
 
 
 def _summation_order_verification(dtype: torch.dtype, length: int):
-    """Tolerances of a 16-bit product that sums *length* terms per output element.
+    """Tolerances of a product rounded to *dtype* that sums *length* terms per output element.
 
     The kernel sums them in another order than the float32 reference; a cancelled output
     keeps only that order's error, which grows with *length*.
     """
     from workloads.numerics import Exact
 
-    tol = 1e-3 if dtype == torch.float16 else 1.6e-2
+    tol = {torch.float16: 1e-3, torch.float32: 1e-5}.get(dtype, 1.6e-2)
     return Exact(atol=tol * max(1.0, length / 2048), rtol=tol)
 
 
@@ -117,7 +117,7 @@ class GEMMWorkload(WorkloadBase):
         return matmul_fp32_reduction(a, b, bias)
 
     def verification(self, *inputs):
-        return _summation_order_verification(self.dtype, self.k)
+        return _summation_order_verification(self.out_dtype or self.dtype, self.k)
 
 
 class GEMMFP8Workload(WorkloadBase):

@@ -92,7 +92,7 @@ def smooth_quant(x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, t
     return _to_int8(xs, scale[:, None]), scale
 
 
-def _round_up_to_power_of_two(t: torch.Tensor) -> torch.Tensor:
+def round_up_to_power_of_two(t: torch.Tensor) -> torch.Tensor:
     """``2 ** ceil(log2(t))`` of a positive float32 *t*, subnormals included."""
     mantissa, exponent = torch.frexp(t)
     return torch.ldexp(torch.ones_like(t), exponent - (mantissa == 0.5).to(exponent.dtype))
@@ -129,7 +129,6 @@ def fp4_quant_per_group(
     x: torch.Tensor,
     block_size: int = 32,
     inplace: bool = False,
-    scale_dtype: torch.dtype = torch.float8_e8m0fnu,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     """``FP4QuantPerGroupFwdOp``'s reference, DeepSeek-V4-Flash ``inference/kernel.py``
     ``fp4_act_quant``: per *block_size* elements along the last axis the scale is
@@ -146,14 +145,14 @@ def fp4_quant_per_group(
     groups = x.float().unflatten(-1, (n // block_size, block_size))
     amax = groups.abs().amax(-1, keepdim=True).clamp(min=6 * 2.0**-126)
     # A Python scalar multiplies in float32, as the kernel's reciprocal does.
-    scale = _round_up_to_power_of_two(amax * (1 / 6))
+    scale = round_up_to_power_of_two(amax * (1 / 6))
     codes = _e2m1_codes((groups / scale).clamp(-6, 6))
     if inplace:
         x.copy_((_e2m1_values(codes) * scale).flatten(-2))
         return None, None, x
     pairs = codes.flatten(-2).unflatten(-1, (n // 2, 2))
     packed = (pairs[..., 0] | (pairs[..., 1] << 4)).to(torch.uint8)
-    return packed, scale.squeeze(-1).to(scale_dtype), None
+    return packed, scale.squeeze(-1).to(torch.float8_e8m0fnu), None
 
 
 class _QuantizeWorkload(WorkloadBase):

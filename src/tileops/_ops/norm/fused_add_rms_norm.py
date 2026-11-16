@@ -29,7 +29,9 @@ class FusedAddRMSNormFwdOp(Op):
     reuse the pre-norm sum without recomputation.
 
     ``zero_centered`` scales by ``1 + w``, as ``flashinfer.norm.gemma_fused_add_rmsnorm``
-    does: the arithmetic is float32 and ``y`` rounds once to the input dtype.
+    does: the arithmetic is float32 and ``y`` rounds once to the input dtype. The in-tree
+    kernel does not serve it; such a call raises ``OpNotAvailableError`` when a kernel is
+    selected.
 
     Supported dtypes:
         ``torch.float16``, ``torch.bfloat16``.

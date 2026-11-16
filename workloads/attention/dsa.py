@@ -242,7 +242,7 @@ class DSAPagedCall(CallWorkload):
         slot = pos.masked_fill(~valid, 0)
         page = torch.gather(block_table.long(), 1, (slot // page_size).flatten(1)).view_as(slot)
         rows = kv_cache.flatten(0, 1)[page * page_size + slot % page_size].float()
-        width = q.shape[-1] - self.call.params["dim_tail"]
+        width = self.call.params["head_dim_v"]
         return rows[..., :width], rows[..., width:], valid
 
     def _scale(self, q):

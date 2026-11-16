@@ -14,7 +14,6 @@ class TopKSelectWorkload(WorkloadBase):
         topk: int,
         in_dtype: torch.dtype,
         out_dtype: torch.dtype,
-        fill_value: int | None = None,
     ):
         self.batch = batch
         self.seq_len = seq_len
@@ -23,7 +22,6 @@ class TopKSelectWorkload(WorkloadBase):
         self.topk = topk
         self.in_dtype = in_dtype
         self.out_dtype = out_dtype
-        self.fill_value = seq_len_kv if fill_value is None else fill_value
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits = torch.randn(
@@ -50,9 +48,9 @@ class TopKSelectWorkload(WorkloadBase):
         selected = min(self.topk, logits.shape[2])
         indexes = torch.topk(masked, selected, dim=2).indices
         in_window = valid.expand_as(logits).gather(2, indexes)
-        indexes = torch.where(in_window, indexes, self.fill_value)
+        indexes = torch.where(in_window, indexes, logits.shape[2])
         indexes = torch.nn.functional.pad(
-            indexes, (0, 0, 0, self.topk - selected), value=self.fill_value
+            indexes, (0, 0, 0, self.topk - selected), value=logits.shape[2]
         )
         return indexes.permute(0, 1, 3, 2).to(self.out_dtype)
 
@@ -62,24 +60,19 @@ class TopKSelectWorkload(WorkloadBase):
         def validate(got, expected):
             assert got.shape == expected.shape and got.dtype == expected.dtype
             scores, starts, ends = inputs
-            padding = got == self.fill_value
+            padding = got == scores.shape[2]
             assert (
                 padding | ((got >= starts[:, :, None, None]) & (got < ends[:, :, None, None]))
             ).all()
-            assert torch.equal(padding.sum(-1), (expected == self.fill_value).sum(-1))
+            assert torch.equal(padding.sum(-1), (expected == scores.shape[2]).sum(-1))
             ordered = got.sort(-1).values
             assert (
-                (ordered[..., 1:] != ordered[..., :-1]) | (ordered[..., 1:] == self.fill_value)
+                (ordered[..., 1:] != ordered[..., :-1]) | (ordered[..., 1:] == scores.shape[2])
             ).all(), "duplicate selected index"
             scores = torch.nn.functional.pad(scores.movedim(2, -1), (0, 1), value=-float("inf"))
-            sentinel = scores.shape[-1] - 1
-
-            def picked(indices):
-                return indices.long().masked_fill(indices == self.fill_value, sentinel)
-
             torch.testing.assert_close(
-                scores.gather(-1, picked(got)).sort(-1).values,
-                scores.gather(-1, picked(expected)).sort(-1).values,
+                scores.gather(-1, got.long()).sort(-1).values,
+                scores.gather(-1, expected.long()).sort(-1).values,
                 rtol=0,
                 atol=0,
             )
@@ -102,7 +95,6 @@ class TopKSelectCall(CallWorkload, TopKSelectWorkload):
             indices["top_k"],
             torch.float32,
             torch.int32,
-            call.params["fill_value"],
         )
 
     gen_inputs = CallWorkload.gen_inputs

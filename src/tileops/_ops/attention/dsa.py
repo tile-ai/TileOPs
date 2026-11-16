@@ -83,8 +83,7 @@ class DSADenseFwdOp(Op):
                 dimension including the tail.
             is_causal (bool, default=True): Whether an index past the query's position
                 selects nothing. ``False`` lets the indices alone select keys, as
-                ``flash_mla_sparse_fwd`` does; the in-tree kernels serve only causal calls,
-                so the default stays ``True``.
+                ``flash_mla_sparse_fwd`` does.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -169,8 +168,8 @@ class DSAPagedFwdOp(Op):
     request's ``block_table`` page by page. A ``uint8`` cache row is FlashMLA's
     DeepSeek-V3.2 FP8 layout: 512 float8_e4m3fn latent values, one float32 scale per 128 of
     them, then 64 bfloat16 rope values. The key is the dequantized latent and the rope; the
-    value is the dequantized latent. A ``bfloat16`` cache row holds ``D + dim_tail`` values:
-    the key is the row, the value its first ``D`` columns. A position of -1, or at or past
+    value is the dequantized latent. A ``bfloat16`` cache row holds the key, ``q``'s width:
+    the value is its first ``head_dim_v`` columns. A position of -1, or at or past
     ``cache_seqlens``, is dead. ``attn_sink`` adds ``exp(attn_sink[h])`` to head ``h``'s
     softmax denominator and leaves ``lse`` unchanged.
 
@@ -189,19 +188,19 @@ class DSAPagedFwdOp(Op):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dsa_paged": DSAPagedFwdInterface}
 
     def __init__(
-        self, sm_scale: float | None = None, dim_tail: int = 64, *, target: Target = None
+        self, sm_scale: float | None = None, head_dim_v: int = 512, *, target: Target = None
     ) -> None:
         """Build the op. Shapes are taken from each call.
 
         Args:
-            sm_scale: Scale of the query-key scores; ``None`` means ``(D + dim_tail) ** -0.5``,
-                the query-key head dimension (576 for the FP8 row).
-            dim_tail: Key columns past the value; the FP8 row's 64 rope values.
+            sm_scale: Scale of the query-key scores; ``None`` means ``q``'s width to the power
+                -0.5, 576 for the FP8 row.
+            head_dim_v: The value width, the leading columns of the key; 512 for the FP8 row.
             target: Which set of kernels serves this op -- a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.sm_scale = sm_scale
-        self.dim_tail = dim_tail
+        self.head_dim_v = head_dim_v
         super().__init__(target=target)
 
     def forward(
@@ -217,9 +216,9 @@ class DSAPagedFwdOp(Op):
         """Attend each query row to the cache rows its positions resolve to.
 
         Args:
-            q: ``bfloat16`` ``(batch, seq_len, heads, D + dim_tail)``.
+            q: ``bfloat16`` ``(batch, seq_len, heads, dk)``.
             kv_cache: ``uint8`` ``(num_pages, page_size, 656)`` FP8 latent rows, or
-                ``bfloat16`` ``(num_pages, page_size, D + dim_tail)`` rows.
+                ``bfloat16`` ``(num_pages, page_size, dk)`` rows.
             block_table: ``int32`` ``(batch, table_width)`` page of each page slot.
             cache_seqlens: ``int32`` ``(batch,)`` cache length of each request.
             indices: ``int32`` ``(batch, seq_len, topk)`` positions; -1 pads.
@@ -227,7 +226,7 @@ class DSAPagedFwdOp(Op):
                 denominator.
 
         Returns:
-            ``(o, lse)``: ``bfloat16`` ``(batch, seq_len, heads, D)`` and ``float32``
+            ``(o, lse)``: ``bfloat16`` ``(batch, seq_len, heads, head_dim_v)`` and ``float32``
             ``(batch, heads, seq_len)``, the head-major layout flash-attn returns.
         """
         batch, seq_len, heads, q_dim = q.shape
@@ -240,8 +239,8 @@ class DSAPagedFwdOp(Op):
                 topk=indices.shape[-1],
                 page_size=kv_cache.shape[1],
                 sm_scale=self.sm_scale,
-                dim=q_dim - self.dim_tail,
-                dim_tail=self.dim_tail,
+                dim=self.head_dim_v,
+                dim_tail=q_dim - self.head_dim_v,
                 cache_dtype=kv_cache.dtype,
                 has_attn_sink=attn_sink is not None,
                 device=q.device,

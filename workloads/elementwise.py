@@ -388,8 +388,7 @@ def _silu_and_mul_torch(
 
 def _silu_and_mul(a: dict, x: torch.Tensor, scale: torch.Tensor | None = None) -> torch.Tensor:
     """:func:`_silu_and_mul_torch` in float32, rounded once to *x*'s dtype."""
-    wide = None if scale is None else scale.float()
-    return _silu_and_mul_torch(a, x.float(), wide).to(x.dtype)
+    return _silu_and_mul_torch(a, x.float(), scale).to(x.dtype)
 
 
 _silu_and_mul.torch = _silu_and_mul_torch

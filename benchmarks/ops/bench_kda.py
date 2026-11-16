@@ -43,4 +43,6 @@ def test_kda_fwd_bench(case) -> None:
         )
         return chunk_kda(q, k, v, g, beta, cu_seqlens_cpu=cu_cpu, safe_gate=safe_gate, **arguments)
 
-    bench.Runner(op, case).compare({"fla": fla_fn})
+    # FLA takes one state a sequence, not slots of a pool.
+    pooled = case.inputs[10] is not None
+    bench.Runner(op, case).compare({} if pooled else {"fla": fla_fn})

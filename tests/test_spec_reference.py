@@ -26,9 +26,11 @@ from tileops._ops._signature_codegen import leaves
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._workload import TensorSpec, instantiate
-from workloads import moe, sampling
+from workloads import mamba, moe, sampling
 from workloads.attention.gated_pool_compress import gated_pool_compress
 from workloads.attention.merge_states import MergeAttentionStatesWorkload
+from workloads.attention.nsa import NSAFwdWorkload
+from workloads.norm import mrope_rows
 from workloads.quantization import int8_dequant
 from workloads.quantization import quantize as quantization
 from workloads.sequence_modeling import hc_head, ngram_hash
@@ -72,10 +74,7 @@ _smooth_quant = _outputs(("q", "scale"), quantization.smooth_quant, "x", "smooth
 
 
 def _fp4_per_group(p, t):
-    result = quantization.fp4_quant_per_group(
-        t["x"], p["block_size"], p["inplace"], p["scale_dtype"]
-    )
-    q, scale, output = result
+    q, scale, output = quantization.fp4_quant_per_group(t["x"], p["block_size"], p["inplace"])
     if p["inplace"]:
         assert q is None and scale is None and output is t["x"]
         return {"output": output}
@@ -190,33 +189,19 @@ def _paged_kv_cache_write(p, t):
 
 
 def _nsa_varlen(p, t):
-    # fla.ops.nsa.parallel.parallel_nsa_fwd: request i's queries are the last of its keys
-    q, k, v, picks, counts = (t[n] for n in ("q", "k", "v", "block_indices", "block_counts"))
-    if k.shape != v.shape or q.shape[-1] != k.shape[-1] or q.shape[1] % k.shape[1]:
-        raise ValueError("q, k and v must agree")
-    cu = t["cu_seqlens"].tolist()
-    keys = cu if t["cu_seqlens_k"] is None else t["cu_seqlens_k"].tolist()
-    size, group = p["block_size"], q.shape[1] // k.shape[1]
-    scale = p["sm_scale"] if p["sm_scale"] is not None else q.shape[-1] ** -0.5
-    outs = []
-    for a, e, a_k, e_k in zip(cu, cu[1:], keys, keys[1:], strict=False):
-        n, m = e - a, e_k - a_k
-        blocks = -(-m // size)
-        # Each slot past block_counts, or naming no block of the keys, selects nothing; a
-        # block selected twice is attended twice.
-        slot = picks[a:e].long()
-        live = torch.arange(slot.shape[-1]) < counts[a:e, :, None]
-        slot = torch.where(live & (slot >= 0) & (slot < blocks), slot, blocks)
-        times = torch.zeros(n, k.shape[1], blocks + 1).scatter_add(2, slot, torch.ones(slot.shape))
-        times = times[..., torch.arange(m) // size]
-        if p["is_causal"]:
-            times *= torch.arange(m)[None, None] <= torch.arange(m - n, m)[:, None, None]
-        times = times.repeat_interleave(group, 1).permute(1, 0, 2).to(q.device)
-        kh, vh = (x[a_k:e_k].float().repeat_interleave(group, 1) for x in (k, v))
-        scores = torch.einsum("shd,mhd->hsm", q[a:e].float(), kh) * scale + times.log()
-        weights = scores.softmax(-1).nan_to_num(0.0)
-        outs.append(torch.einsum("hsm,mhd->shd", weights, vh))
-    return {"o": torch.cat(outs).to(q.dtype)}
+    q, k = t["q"], t["k"]
+    if k.shape != t["v"].shape:
+        raise ValueError("k and v must agree")
+    group, selected = q.shape[1] // k.shape[1], t["block_indices"].shape[-1]
+    workload = NSAFwdWorkload(
+        0, q.shape[1], q.shape[0], q.shape[-1], p["is_causal"], p["sm_scale"],
+        p["block_size"], group, selected, q.dtype,
+    )  # fmt: skip
+    workload.g_slc = torch.ones(1, q.shape[0], q.shape[1], device=q.device)
+    # The selection meets q's device; the offsets are read on the host.
+    picks = (t[n].to(q.device) for n in ("block_indices", "block_counts"))
+    names = ("cu_seqlens", "token_indices", "cu_seqlens_k")
+    return {"o": workload.ref_program(q, k, t["v"], *picks, *(t[n] for n in names))}
 
 
 def _mrope_angles(cos_sin, positions, sections, interleaved):
@@ -227,17 +212,8 @@ def _mrope_angles(cos_sin, positions, sections, interleaved):
     """
     if positions.dim() != 2 or positions.shape[0] != 3 or sum(sections) != cos_sin.shape[1] // 2:
         raise ValueError("MRoPE takes [3, N] positions and sections summing to R / 2")
-    cos, sin = cos_sin[positions].chunk(2, -1)
-    halves = []
-    for part in (cos, sin):
-        if interleaved:
-            picked = part[0].clone()
-            picked[..., 1 : sections[1] * 3 : 3] = part[1, ..., 1 : sections[1] * 3 : 3]
-            picked[..., 2 : sections[2] * 3 : 3] = part[2, ..., 2 : sections[2] * 3 : 3]
-        else:
-            picked = torch.cat([m[i] for i, m in enumerate(part.split(sections, -1))], -1)
-        halves.append(picked)
-    return torch.cat(halves, -1)
+    halves = cos_sin[positions].chunk(2, -1)
+    return torch.cat([mrope_rows(part, sections, interleaved) for part in halves], -1)
 
 
 def _rope(x, cos_sin, positions, layout):
@@ -321,7 +297,7 @@ def _dsa_paged(p, t):
                 key = torch.cat([value, rows[:, 528:].view(torch.bfloat16).float()], -1)
             else:
                 key = rows.float()
-                value = key[:, : dk - p["dim_tail"]]
+                value = key[:, : p["head_dim_v"]]
             visible = torch.ones(1, key.shape[0], dtype=torch.bool)
             o, lse = _attend(q[b, s : s + 1], key, value, scale, visible)
             if sink is not None:
@@ -454,61 +430,23 @@ def _rms_norm_gated(p, t):
 # ---------------------------------------------------------------- mamba
 
 
-def _dilated_taps(history, x, weight, bias, dilation, silu):
-    """Each token of ``x [q, D]`` convolved with the ``(W - 1) * dilation`` tokens of
-    ``history [D, ...]`` before it, taps ``dilation`` apart, in float32."""
-    width = weight.shape[1]
-    span = (width - 1) * dilation
-    xp = torch.cat([history.float().t(), x.float()])
-    w = weight.float()
-    acc = sum(w[:, j] * xp[j * dilation : j * dilation + x.shape[0]] for j in range(width))
-    if bias is not None:
-        acc = acc + bias.float()
-    return (F.silu(acc) if silu else acc), xp, span
-
-
 def _causal_conv1d(p, t):
-    # vLLM causal_conv1d_fn; dilation as transformers Qwen4ExpTextPLELayer's F.conv1d.
-    x, weight, state, cu, bias = t["x"], t["weight"], t["conv_state"], t["cu_seqlens"], t["bias"]
-    flags, rows = t["has_initial_state"], t["cache_indices"]
-    span = (weight.shape[1] - 1) * p["dilation"]
-    if state.shape[2] < span or weight.shape[0] != x.shape[1]:
-        raise ValueError("the state holds the dilated window of x's channels")
-    out = torch.empty_like(x)
-    bounds = cu.tolist()
-    for s, (a, e) in enumerate(zip(bounds, bounds[1:], strict=False)):
-        slot = int(rows[s]) if rows is not None else s
-        history = state[slot, :, :span]
-        if flags is not None:
-            history = torch.where(flags[s], history, torch.zeros_like(history))
-        else:
-            history = torch.zeros_like(history)
-        acc, xp, _ = _dilated_taps(history, x[a:e], weight, bias, p["dilation"], p["activation"])
-        out[a:e] = acc.to(x.dtype)
-        if e > a:
-            state[slot, :, :span] = xp[e - a :].t().to(state.dtype)
-    return {"output": out}
+    names = ("x", "weight", "conv_state", "cu_seqlens", "bias", "has_initial_state")
+    silu = p["activation"] is not None
+    output = mamba.causal_conv1d_ref(
+        *(t[n] for n in names), silu, t["cache_indices"], p["dilation"]
+    )
+    return {"output": output}
 
 
 def _causal_conv1d_update(p, t):
-    # vLLM causal_conv1d_update, its varlen form and num_accepted_tokens rollback.
-    x, weight, state, bias = t["x"], t["weight"], t["conv_state"], t["bias"]
-    rows, accepted, cu = t["conv_state_indices"], t["num_accepted_tokens"], t["query_start_loc"]
-    span = (weight.shape[1] - 1) * p["dilation"]
-    if weight.shape[0] != x.shape[1]:
-        raise ValueError("weight must have x's channels")
-    bounds = cu.tolist() if cu is not None else list(range(x.shape[0] + 1))
-    out = torch.empty_like(x)
-    for s, (a, e) in enumerate(zip(bounds, bounds[1:], strict=False)):
-        slot = int(rows[s]) if rows is not None else s
-        first = int(accepted[s]) - 1 if accepted is not None else 0
-        history = state[slot, :, first : first + span]
-        acc, xp, _ = _dilated_taps(history, x[a:e], weight, bias, p["dilation"], p["activation"])
-        out[a:e] = acc.to(x.dtype)
-        kept = span + (e - a - 1 if accepted is not None else 0)
-        if e > a:
-            state[slot, :, :kept] = xp[xp.shape[0] - kept :].t().to(state.dtype)
-    return {"output": out}
+    names = ("conv_state_indices", "num_accepted_tokens", "query_start_loc")
+    silu = p["activation"] is not None
+    output = mamba.causal_conv1d_update_ref(
+        t["x"], t["weight"], t["conv_state"], t["bias"], silu, *(t[n] for n in names),
+        p["dilation"],
+    )  # fmt: skip
+    return {"output": output}
 
 
 # ---------------------------------------------------------------- rope

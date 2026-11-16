@@ -98,7 +98,7 @@ def whole_row_scale_refusal(call: RMSNormCall) -> str | None:
     *call*, or ``None`` when it does."""
     if call.zero_centered:
         return "the kernel scales by the weight itself; zero_centered is not served"
-    if call.group_size is not None:
+    if call.group_size not in (None, call.n):
         return "the kernel normalizes each whole row; group_size is not served"
     return None
 

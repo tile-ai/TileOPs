@@ -198,7 +198,7 @@ FusedTopKFwdOp:
   - {T: 1, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [expert_ids], dtype_cases: [{G: float32}], label: "dsv4-flash-hash-t1"}
   - {T: 4096, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [expert_ids], dtype_cases: [{G: float32}], label: "dsv4-flash-hash-t4096"}
   roofline:
-    # Per token: scoring (sigmoid 4 per score, sqrtsoftplus 3, softmax 3 plus the row sum and
+    # Per token: scoring (sigmoid and sqrtsoftplus 4 per score, softmax 3 plus the row sum and
     # a divide per kept weight unless renormalizing, or per logit when a bias selects), top_k compare-and-selects per logit,
     # the bias add, and 2 * top_k to renormalize. Grouping adds the group scores (2
     # compare-and-selects per logit for the two best and an add per group with a bias, a max
@@ -207,7 +207,7 @@ FusedTopKFwdOp:
     # per kept weight. With expert_ids nothing is selected, and only the given experts are
     # scored and read unless an unrenormalized softmax needs the whole row; the bias is not
     # read.
-    flops: "T * ((top_k if present(expert_ids) and (scoring_func != 'softmax' or renormalize) else E) * (4 if scoring_func == 'sigmoid' else 3) + (2 * E if scoring_func == 'softmax' and present(correction_bias) and not present(expert_ids) else E + top_k if scoring_func == 'softmax' and not renormalize else 0) + (0 if present(expert_ids) else top_k * E + (E if present(correction_bias) else 0) + (((2 * E + num_expert_group if present(correction_bias) else E) + topk_group * num_expert_group + E) if num_expert_group > 1 else 0)) + (2 * top_k if renormalize else 0) + (top_k if routed_scaling_factor != 1.0 else 0))"
+    flops: "T * ((top_k if present(expert_ids) and (scoring_func != 'softmax' or renormalize) else E) * (4 if scoring_func in ('sigmoid', 'sqrtsoftplus') else 3) + (2 * E if scoring_func == 'softmax' and present(correction_bias) and not present(expert_ids) else E + top_k if scoring_func == 'softmax' and not renormalize else 0) + (0 if present(expert_ids) else top_k * E + (E if present(correction_bias) else 0) + (((2 * E + num_expert_group if present(correction_bias) else E) + topk_group * num_expert_group + E) if num_expert_group > 1 else 0)) + (2 * top_k if renormalize else 0) + (top_k if routed_scaling_factor != 1.0 else 0))"
     bytes: "(bytes(gating_output) * top_k // E if present(expert_ids) and (scoring_func != 'softmax' or renormalize) else bytes(gating_output)) + (bytes(correction_bias) if present(correction_bias) and not present(expert_ids) else 0) + (bytes(expert_ids) if present(expert_ids) else 0) + bytes(topk_weights) + bytes(topk_ids)"
 
 FusedMoEFwdOp:
@@ -495,8 +495,7 @@ MoEPostPermuteFwdOp:
   - {T: 100, K: 8, P: 800, H: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
   - {T: 1, K: 8, P: 8, H: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-b1}
     # DeepSeek-V4-Flash: hidden 4096, top 6, and the shared expert added before the cast. The
-    # model applies its routing weights before the down projection and passes ones; no
-    # generator makes float values, so the rows draw them.
+    # model applies its routing weights before the down projection and passes ones.
   - {T: 1, K: 6, P: 6, H: 4096, some: [residual], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: dsv4-flash-t1}
   - {T: 4096, K: 6, P: 24576, H: 4096, some: [residual], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: dsv4-flash-t4096}
   - {T: 32768, K: 6, P: 196608, H: 4096, some: [residual], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: dsv4-flash-t32768}

@@ -221,7 +221,7 @@ def _attention_cases():
         call = manifest_call(
             "DSAPagedFwdOp",
             {"KV": "uint8"},
-            D=512,
+            DK=576,
             S_q=1,
             H=64,
             K=128,

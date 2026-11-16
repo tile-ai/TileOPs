@@ -64,7 +64,8 @@ class GEMMFwdOp(Op):
     A bias is added to every row of the product: the contraction accumulates in
     ``float32``, the bias is added to that sum, and the result is rounded once to the
     input dtype, as ``torch.nn.functional.linear`` rounds it. ``out_dtype=torch.float32``
-    returns that sum unrounded.
+    returns that sum unrounded; the in-tree kernels do not serve it, and such a call raises
+    ``OpNotAvailableError`` when a kernel is selected.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

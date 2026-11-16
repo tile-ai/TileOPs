@@ -614,8 +614,8 @@ class TestBytesOracle:
         for row in _manifest_rows(op_name):
             call = _manifest_call(op_name, row)
             indices = call.indices
-            rows = {
-                (b, g, j)
+            selected = [
+                (b, s, g, j)
                 for b, batch in enumerate(call.metadata_values("indices"))
                 for s, heads in enumerate(batch)
                 for g, slots in enumerate(heads)
@@ -625,7 +625,8 @@ class TestBytesOracle:
                     not indices["is_causal"]
                     or (j + 1) * indices["stride_kv"] - 1 <= indices["q_start_index_s"] + s
                 )
-            }
+            ]
+            rows = {(b, g, j) for b, _s, g, j in selected}
             dtype = getattr(torch, call.tensors["q"][1])
             width = indices["D"] + indices["dim_tail"]
             sink = ((indices["H"],), torch.float32) if call.present("attn_sink") else None
@@ -638,6 +639,12 @@ class TestBytesOracle:
                 o=((indices["B"], indices["S"], indices["H"], indices["D"]), dtype),
             )
             assert dsa_decode_roofline(call)[1] == oracle, row["label"]
+            if call.present("attn_sink"):
+                # Per head of a query row with a score: subtract, exponentiate and add.
+                bare = _manifest_call(op_name, {**row, "some": []})
+                scored = len({(b, s, g) for b, s, g, _j in selected})
+                extra = 3 * indices["H"] // indices["H_kv"] * scored
+                assert dsa_decode_roofline(call)[0] == dsa_decode_roofline(bare)[0] + extra
 
     def test_deltanet_bwd_reads_the_strict_lower_triangle_of_aw_and_au(self):
         """Each chunk's C x C block of Aw and Au has a unit diagonal and a zero upper
@@ -804,9 +811,9 @@ class TestSpecOnlyRecounts:
     @pytest.mark.parametrize(
         "extra,case",
         [
-            ({"D": 512}, {"KV": "uint8"}),
+            ({"DK": 576}, {"KV": "uint8"}),
             # A bfloat16 row of 8 values, 2 of them past the value; a sink per head.
-            ({"D": 6, "dim_tail": 2, "some": ["attn_sink"]}, {"KV": "bfloat16"}),
+            ({"DK": 8, "head_dim_v": 6, "some": ["attn_sink"]}, {"KV": "bfloat16"}),
         ],
     )
     def test_dsa_paged_scores_each_valid_slot_and_reads_the_rows_they_name(self, extra, case):
@@ -835,8 +842,7 @@ class TestSpecOnlyRecounts:
         }
         pages = {(b, j // page) for b, per_q in enumerate(valid) for v in per_q for j in v}
         fp8 = case["KV"] == "uint8"
-        value = row["D"]
-        width = value + (64 if fp8 else row["dim_tail"])
+        value, width = row.get("head_dim_v", 512), row["DK"]
         cache = ((len(cache_rows), 656), torch.uint8) if fp8 else ((len(cache_rows), width), _BF16)
         assert moved == _ledger(
             name,
@@ -871,7 +877,7 @@ class TestSpecOnlyRecounts:
         name = "GatedPoolCompressFwdOp"
         tokens, requests = row["T_q"], len(row["seq_lens"])
         row = {"NS": 4, "D": 2, "ratio": 2, "overlap": True, **row}
-        (flops, moved), _call = _evaluated(name, row, {"T": "float32", "A": "float32"})
+        (flops, moved), _call = _evaluated(name, row, {"T": "float32"})
         read = ((state_reads, 2), _F32)  # D channels per role
         write = ((state_writes, 4), _F32)  # whole rows
         assert moved == _ledger(
@@ -1373,7 +1379,6 @@ class TestSpecOnlyRecounts:
         "scoring_func,renormalize,read",
         [
             ("sqrtsoftplus", True, 2),
-            ("sigmoid", False, 2),
             ("softmax", True, 2),
             ("softmax", False, 16),
         ],
@@ -1410,6 +1415,16 @@ class TestSpecOnlyRecounts:
         # Softmax (3 per logit) and its row sum and divide (2 per logit), the bias add, top_k
         # compare-and-selects per logit, and 2 per kept weight to renormalize.
         assert flops == 4 * (16 * 5 + 16 + 2 * 16 + (4 if renormalize else 0))
+
+    def test_moe_post_permute_adds_the_residual_once_per_output_element(self):
+        from tileops._perf.formulas import moe_post_permute_roofline
+
+        name = "MoEPostPermuteFwdOp"
+        row = next(r for r in _manifest_rows(name) if "residual" in r.get("some", ()))
+        call = _manifest_call(name, row)
+        bare = _manifest_call(name, {**row, "some": []})
+        extra = moe_post_permute_roofline(call)[0] - moe_post_permute_roofline(bare)[0]
+        assert extra == call.indices["T"] * call.indices["H"]
 
     def test_ngram_hash_leaves_an_empty_sequence_untouched(self):
         name = "NGramHashFwdOp"

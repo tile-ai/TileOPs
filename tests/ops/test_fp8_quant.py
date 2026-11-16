@@ -53,7 +53,7 @@ def test_fp8_quant_writes_out_q_and_returns_it() -> None:
         ({"column_major_scales": True}, "does not serve"),
         ({"use_ue8m0": True}, "does not serve"),
         ({"use_ue8m0": True, "scale_dtype": torch.float8_e8m0fnu}, "float32 scales"),
-        ({"inplace": True}, "in place"),
+        ({"inplace": True, "use_ue8m0": True}, "in place"),
     ],
     ids=["column-major", "ue8m0", "e8m0-scales", "inplace"],
 )

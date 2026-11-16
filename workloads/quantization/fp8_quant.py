@@ -3,7 +3,7 @@ from typing import Any
 import torch
 
 from workloads.device import run_device
-from workloads.quantization.quantize import _round_up_to_power_of_two
+from workloads.quantization.quantize import round_up_to_power_of_two
 from workloads.workload_base import WorkloadBase
 
 
@@ -60,7 +60,7 @@ class FP8QuantWorkload(WorkloadBase):
         amax_value = torch.abs(groups).amax(dim=-1, keepdim=True).clamp(min=self.eps)
         scale = amax_value / 448.0
         if self.use_ue8m0:
-            scale = _round_up_to_power_of_two(scale)
+            scale = round_up_to_power_of_two(scale)
         q = torch.clamp(groups / scale, min=-448.0, max=448.0).to(torch.float8_e4m3fn)
         if self.inplace:
             x.copy_((q.float() * scale).flatten(-2))

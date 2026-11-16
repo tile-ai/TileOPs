@@ -13,7 +13,7 @@ A case id recorded twice for one op fails this check: it keys the op's history, 
 sharing one would write one record. Missing, skipped and wholly unverified cases fail coverage.
 A case skipped with the ``unavailable`` property, which ``benchmarks/conftest.py`` sets where
 the op raised ``OpNotAvailableError`` (no implementation serves the row yet), is listed as
-unavailable and is neither a failure nor a gap.
+unavailable and is neither a failure nor a gap, unless every case of the op is.
 
 Usage:
     python scripts/check_bench_coverage.py --bench-xml bench_results.xml \\
@@ -31,9 +31,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
+for _path in (REPO_ROOT, REPO_ROOT / "src"):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
+from benchmarks.outcomes import UNAVAILABLE_PROPERTY  # noqa: E402
 from tileops.manifest import load_adts, load_manifest  # noqa: E402
 from tileops.manifest._plan import entry_plan  # noqa: E402
 from tileops.manifest._workload import instantiate  # noqa: E402
@@ -49,9 +51,6 @@ OK = "OK"
 
 # Listing order: what needs acting on first.
 _ORDER = {FAIL: 0, NOT_RUN: 1, UNAVAILABLE: 2, OK: 3}
-
-# The testcase property `benchmarks/conftest.py` records on a row no implementation serves.
-UNAVAILABLE_PROPERTY = "unavailable"
 
 
 def _properties(testcase: ET.Element) -> dict[str, str]:
@@ -117,14 +116,14 @@ def _declared(op_name: str, entry: dict) -> set[str]:
 def verdicts(
     recorded: dict[str, list[str]],
     manifest: dict,
-    unavailable: dict[str, list[str]] | None = None,
+    unavailable: dict[str, list[str]],
 ) -> list[tuple[str, str, str]]:
     """One ``(op, verdict, detail)`` row per implemented entry."""
     rows = []
     for op_name, entry in sorted(manifest.items()):
         if entry.get("status") != "implemented":
             continue
-        skipped = (unavailable or {}).get(op_name, [])
+        skipped = unavailable.get(op_name, [])
         cases = recorded.get(op_name, []) + skipped
         repeated = sorted({c for c in cases if cases.count(c) > 1})
         declared = _declared(op_name, entry)
@@ -137,6 +136,8 @@ def verdicts(
                 continue
             detail = f"{len(missing)} of {len(declared)} cases recorded nothing: {missing[0]!r}"
             rows.append((op_name, NOT_RUN, detail))
+        elif not recorded.get(op_name):
+            rows.append((op_name, FAIL, f"every one of {len(declared)} cases is unavailable"))
         elif skipped:
             detail = f"{len(skipped)} of {len(declared)} cases unavailable: {sorted(skipped)[0]!r}"
             rows.append((op_name, UNAVAILABLE, detail))

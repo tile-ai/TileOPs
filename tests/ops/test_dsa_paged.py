@@ -8,7 +8,7 @@ from workloads.workload_base import manifest_call
 
 
 def _call(**row):
-    return manifest_call("DSAPagedFwdOp", {"KV": "uint8"}, D=512, **row)
+    return manifest_call("DSAPagedFwdOp", {"KV": "uint8"}, DK=576, **row)
 
 
 def _check(call):

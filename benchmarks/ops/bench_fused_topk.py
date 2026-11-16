@@ -26,12 +26,32 @@ def test_fused_topk_bench(case) -> None:
     gating_output, *bias = case.inputs
     correction_bias = bias[0] if bias else None
     op = FusedTopKFwdOp(**case.arguments)
-    if len(case.inputs) == 3:
-        # No vLLM router takes each token's experts from the caller.
-        bench.Runner(op, case).compare({})
-        return
     top_k, scoring_func, renormalize = op.top_k, op.scoring_func, op.renormalize
     num_tokens = gating_output.shape[0]
+    # Cast bf16->f32 inside the timed call to match TileOPs' input conditions.
+    hidden_dummy = torch.empty(num_tokens, 1, device=gating_output.device)
+    fused_topk_bias = vllm_op(
+        "fused_topk_bias", "model_executor.layers.fused_moe.router.fused_topk_bias_router"
+    )
+    if len(case.inputs) == 3:
+        # Caller-given experts: vLLM looks token t's experts up in a table at row t.
+        tokens = torch.arange(num_tokens, dtype=torch.int32, device=gating_output.device)
+
+        def _vllm_given(gating_output, correction_bias, expert_ids):
+            return fused_topk_bias(
+                hidden_states=hidden_dummy,
+                gating_output=gating_output.float(),
+                scoring_func=scoring_func,
+                e_score_correction_bias=correction_bias,
+                topk=top_k,
+                renormalize=renormalize,
+                input_tokens=tokens,
+                hash_indices_table=expert_ids,
+                routed_scaling_factor=op.routed_scaling_factor,
+            )[:2]
+
+        bench.Runner(op, case).compare({VLLM_TAG: _vllm_given})
+        return
 
     if op.num_expert_group > 1:
         if correction_bias is None or scoring_func != "sigmoid":
@@ -55,12 +75,7 @@ def test_fused_topk_bench(case) -> None:
         bench.Runner(op, case).compare({VLLM_TAG: _vllm_grouped})
         return
 
-    # Cast bf16->f32 inside the timed call to match TileOPs' input conditions.
-    hidden_dummy = torch.empty(num_tokens, 1, device=gating_output.device)
     if correction_bias is not None:
-        fused_topk_bias = vllm_op(
-            "fused_topk_bias", "model_executor.layers.fused_moe.router.fused_topk_bias_router"
-        )
 
         def _vllm_fn(gating_output, correction_bias):
             return fused_topk_bias(

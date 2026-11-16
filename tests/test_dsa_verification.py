@@ -12,7 +12,7 @@ def empty_selection(request):
     call = manifest_call(
         "DSAPagedFwdOp",
         {"KV": "uint8"},
-        D=512,
+        DK=576,
         S_q=2,
         H=64,
         K=64,

@@ -171,8 +171,7 @@ class KDACall(CallSpec):
     allow_neg_eigval: bool = False
     lower_bound: float | None = None
     has_dt_bias: bool = False
-    # Whether `state_indices` maps each sequence to its slots of a state pool, and
-    # whether `num_accepted_tokens` is passed with a slot a token.
+    # As GDNCall.
     pooled: bool = False
     rollback: bool = False
 

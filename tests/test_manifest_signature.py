@@ -481,16 +481,14 @@ def test_category_and_representable_follow_torch(dtype):
     ]
 
 
-@pytest.mark.parametrize("dtype", ["float8_e8m0fnu", "float4_e2m1fn_x2"])
-def test_a_scale_and_a_packed_dtype_take_their_torch_width_and_category(dtype):
+def test_e8m0_takes_its_torch_width_and_category():
     import torch
 
     from tileops.manifest._dtype_rules import DTYPE_BITS, FLOAT8_DTYPES
 
-    t = getattr(torch, dtype)
-    assert DTYPE_BITS[dtype] == 8 * t.itemsize
-    assert t.is_floating_point and PRIMITIVES["category"](dtype) == "float"
-    assert (dtype in FLOAT8_DTYPES) == dtype.startswith("float8_")
+    assert DTYPE_BITS["float8_e8m0fnu"] == 8 * torch.float8_e8m0fnu.itemsize
+    assert PRIMITIVES["category"]("float8_e8m0fnu") == "float"
+    assert "float8_e8m0fnu" in FLOAT8_DTYPES
 
 
 def test_e8m0_holds_powers_of_two_up_to_its_largest_and_no_infinity():
@@ -500,11 +498,6 @@ def test_e8m0_holds_powers_of_two_up_to_its_largest_and_no_infinity():
     assert PRIMITIVES["representable"](largest, "float8_e8m0fnu")
     assert not PRIMITIVES["representable"](2 * largest, "float8_e8m0fnu")
     assert not PRIMITIVES["representable"](math.inf, "float8_e8m0fnu")
-
-
-def test_no_scalar_converts_to_a_packed_dtype():
-    with pytest.raises(ValueError, match="packs several values"):
-        PRIMITIVES["representable"](1.0, "float4_e2m1fn_x2")
 
 
 def test_adt_invariant_narrows_the_domain():

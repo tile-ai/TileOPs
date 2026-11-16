@@ -38,9 +38,10 @@ FP8QuantPerTokenGroupFwdOp:
       output: {dtype: T, shape: "[*S, K]", nullable: inplace, alias: x}
     shape_rules:
     - "group_size > 0 and K % group_size == 0"
-    # float8_e8m0fnu holds only powers of two; in place, no scale or code is stored.
-    - "inplace or scale_dtype == 'float32' or (present(use_ue8m0) and use_ue8m0)"
-    - "not inplace or not present(out_q)"
+    # float8_e8m0fnu holds only powers of two; in place, no scale or code is stored, and
+    # the power-of-two scale makes q * scale exact.
+    - "scale_dtype == 'float32' or (present(use_ue8m0) and use_ue8m0)"
+    - "not inplace or (present(use_ue8m0) and use_ue8m0 and not present(out_q))"
 
   workloads:
   - {S: [8192], K: 64, group_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: kv-index-flat-8k}
@@ -73,8 +74,7 @@ FP4QuantPerGroupFwdOp:
   # and q = e2m1(clamp(x / scale, -6, 6)), rounded to nearest even; q holds two codes per byte,
   # the even element in the low nibble; its logical dtype is float4_e2m1fn_x2. With inplace,
   # x is overwritten with q * scale and returned as output, and neither q nor scale is
-  # produced. DeepSeek-V4-Flash inference/kernel.py fp4_act_quant;
-  # float32 scales follow TileKernels tile_kernels.torch.cast.cast.
+  # produced. DeepSeek-V4-Flash inference/kernel.py fp4_act_quant.
   family: quantization
   status: spec-only
   ref_api: workloads.quantization.quantize.fp4_quant_per_group
@@ -83,12 +83,11 @@ FP4QuantPerGroupFwdOp:
     params:
       block_size: {type: int, default: 32}
       inplace: {type: bool, default: false}
-      scale_dtype: {type: "float8_e8m0fnu | float32", default: float8_e8m0fnu}
     inputs:
       x: {dtype: bfloat16, shape: "[*S, N]", mutated: inplace}
     outputs:
       q: {dtype: uint8, shape: "[*S, N // 2]", nullable: "not inplace"}
-      scale: {dtype: scale_dtype, shape: "[*S, N // block_size]", nullable: "not inplace"}
+      scale: {dtype: float8_e8m0fnu, shape: "[*S, N // block_size]", nullable: "not inplace"}
       output: {dtype: bfloat16, shape: "[*S, N]", nullable: inplace, alias: x}
     shape_rules:
     - "block_size > 0"
@@ -103,7 +102,6 @@ FP4QuantPerGroupFwdOp:
   - {S: [1024], N: 128, inplace: true, label: dsv4-flash-idx-k-1k}
   - {S: [3000], N: 128, inplace: true, label: dsv4-flash-idx-k-3000}
   - {S: [4096, 64], N: 128, label: dsv4-flash-q-4k-quant}
-  - {S: [4096, 64], N: 128, scale_dtype: float32, label: dsv4-flash-q-4k-quant}
   roofline:
     # Per element: abs, the group-max comparison, the scaling and the clamp, and the multiply
     # back in place; per group: the amax floor, the divide by 6, and the log2, ceil and exp2

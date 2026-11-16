@@ -1015,6 +1015,18 @@ def ssd_decode_result(subject, *inputs):
 
 
 # The depthwise causal convolution ahead of the SSD scan: its references and manifest calls.
+def _dilated_taps(history, x, weight, bias, dilation, silu):
+    """Each token of ``x [q, D]`` convolved in float32 with the ``(W - 1) * dilation`` tokens of
+    ``history [D, ...]`` before it, taps ``dilation`` apart, and that history followed by ``x``."""
+    width = weight.shape[1]
+    xp = torch.cat([history.float().t(), x.float()])
+    w = weight.float()
+    acc = sum(w[:, j] * xp[j * dilation : j * dilation + x.shape[0]] for j in range(width))
+    if bias is not None:
+        acc = acc + bias.float()
+    return (F.silu(acc) if silu else acc), xp
+
+
 def causal_conv1d_ref(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -1023,28 +1035,35 @@ def causal_conv1d_ref(
     bias: torch.Tensor | None = None,
     has_initial_state: torch.Tensor | None = None,
     silu: bool = True,
+    cache_indices: torch.Tensor | None = None,
+    dilation: int = 1,
 ) -> torch.Tensor:
-    """Float32 reference of CausalConv1dFwdOp; overwrites *conv_state* as the op does.
+    """Float32 reference of CausalConv1dFwdOp (vLLM causal_conv1d_fn; dilation as transformers
+    Qwen4ExpTextPLELayer's F.conv1d); overwrites *conv_state* as the op does.
 
-    A sequence on tokens ``[a, e)`` is preceded by its state where ``has_initial_state`` is
-    set and by zeros otherwise; its state becomes its last ``W - 1`` tokens of that history
-    and ``x[a:e]``. An empty sequence keeps its state, as vLLM's causal_conv1d_fn leaves it.
+    A sequence on tokens ``[a, e)`` is preceded by its state, ``conv_state[cache_indices[s]]``
+    or ``conv_state[s]``, where ``has_initial_state`` is set and by zeros otherwise; the first
+    ``(W - 1) * dilation`` columns of its state become its last tokens of that history and
+    ``x[a:e]``. An empty sequence keeps its state.
     """
-    width = weight.shape[1]
-    w = weight.float().t()  # (W, D)
+    span = (weight.shape[1] - 1) * dilation
+    if conv_state.shape[2] < span or weight.shape[0] != x.shape[1]:
+        raise ValueError("the state holds the dilated window of x's channels")
     out = torch.empty_like(x)
-    starts = cu_seqlens.tolist()
-    flags = [False] * (len(starts) - 1) if has_initial_state is None else has_initial_state.tolist()
-    for s in range(len(starts) - 1):
-        a, e = starts[s], starts[s + 1]
-        hist = conv_state[s].float().t() if flags[s] else x.new_zeros(width - 1, x.shape[1]).float()
-        xp = torch.cat([hist, x[a:e].float()])
-        acc = sum(w[k] * xp[k : k + e - a] for k in range(width))
-        if bias is not None:
-            acc = acc + bias.float()
-        out[a:e] = (F.silu(acc) if silu else acc).to(x.dtype)
+    bounds = cu_seqlens.tolist()
+    for s, (a, e) in enumerate(zip(bounds, bounds[1:], strict=False)):
+        slot = int(cache_indices[s]) if cache_indices is not None else s
+        history = conv_state[slot, :, :span]
+        zeros = torch.zeros_like(history)
+        history = (
+            zeros
+            if has_initial_state is None
+            else torch.where(has_initial_state[s], history, zeros)
+        )
+        acc, xp = _dilated_taps(history, x[a:e], weight, bias, dilation, silu)
+        out[a:e] = acc.to(x.dtype)
         if e > a:
-            conv_state[s] = xp[e - a :].t().to(conv_state.dtype)
+            conv_state[slot, :, :span] = xp[e - a :].t().to(conv_state.dtype)
     return out
 
 
@@ -1054,29 +1073,37 @@ def causal_conv1d_update_ref(
     conv_state: torch.Tensor,
     bias: torch.Tensor | None = None,
     silu: bool = True,
+    conv_state_indices: torch.Tensor | None = None,
+    num_accepted_tokens: torch.Tensor | None = None,
+    query_start_loc: torch.Tensor | None = None,
+    dilation: int = 1,
 ) -> torch.Tensor:
-    """Float32 reference of CausalConv1dUpdateFwdOp; advances *conv_state* as the op does."""
-    xp = torch.cat([conv_state.float(), x.float()[:, :, None]], dim=-1)  # (B, D, W)
-    acc = (xp * weight.float()).sum(-1)
-    if bias is not None:
-        acc = acc + bias.float()
-    conv_state.copy_(xp[:, :, 1:].to(conv_state.dtype))
-    return (F.silu(acc) if silu else acc).to(x.dtype)
+    """Float32 reference of CausalConv1dUpdateFwdOp (vLLM causal_conv1d_update with
+    num_accepted_tokens); advances *conv_state* as the op does."""
+    span = (weight.shape[1] - 1) * dilation
+    if weight.shape[0] != x.shape[1]:
+        raise ValueError("weight must have x's channels")
+    if query_start_loc is not None:
+        bounds = query_start_loc.tolist()
+    else:
+        bounds = list(range(x.shape[0] + 1))
+    out = torch.empty_like(x)
+    for s, (a, e) in enumerate(zip(bounds, bounds[1:], strict=False)):
+        slot = int(conv_state_indices[s]) if conv_state_indices is not None else s
+        first = int(num_accepted_tokens[s]) - 1 if num_accepted_tokens is not None else 0
+        history = conv_state[slot, :, first : first + span]
+        acc, xp = _dilated_taps(history, x[a:e], weight, bias, dilation, silu)
+        out[a:e] = acc.to(x.dtype)
+        kept = span + (e - a - 1 if num_accepted_tokens is not None else 0)
+        if e > a:
+            conv_state[slot, :, :kept] = xp[xp.shape[0] - kept :].t().to(conv_state.dtype)
+    return out
 
 
 def conv_state_result(subject, *inputs, **keywords):
     """Observe the returned output and the convolution state, the third input of both ops."""
     output = subject(*inputs, **keywords)
     return output, inputs[2]
-
-
-def _dense_states_only(call, weight, conv_state, indices) -> None:
-    """Raise unless *call* holds ``W - 1``-token states in batch order and adjacent taps."""
-    width = weight.shape[1]
-    if indices is not None or conv_state.shape[2] != width - 1:
-        raise ValueError(f"the reference reads {width - 1}-token states in batch order")
-    if call.arguments().get("dilation", 1) != 1:
-        raise ValueError("the reference convolves adjacent tokens")
 
 
 class CausalConv1dFwdCall(CallWorkload):
@@ -1094,9 +1121,12 @@ class CausalConv1dFwdCall(CallWorkload):
     def ref_program(
         self, x, weight, conv_state, cu_seqlens, bias, has_initial_state, cache_indices=None
     ):
-        _dense_states_only(self.call, weight, conv_state, cache_indices)
-        silu = self.call.arguments().get("activation", "silu") is not None
-        output = causal_conv1d_ref(x, weight, conv_state, cu_seqlens, bias, has_initial_state, silu)
+        arguments = self.call.arguments()
+        silu = arguments.get("activation", "silu") is not None
+        output = causal_conv1d_ref(
+            x, weight, conv_state, cu_seqlens, bias, has_initial_state, silu, cache_indices,
+            arguments.get("dilation", 1),
+        )  # fmt: skip
         return output, conv_state
 
 
@@ -1117,11 +1147,13 @@ class CausalConv1dUpdateFwdCall(CallWorkload):
         num_accepted_tokens=None,
         query_start_loc=None,
     ):
-        if num_accepted_tokens is not None or query_start_loc is not None:
-            raise ValueError("the reference convolves one token a sequence")
-        _dense_states_only(self.call, weight, conv_state, conv_state_indices)
-        silu = self.call.arguments().get("activation", "silu") is not None
-        return causal_conv1d_update_ref(x, weight, conv_state, bias, silu), conv_state
+        arguments = self.call.arguments()
+        silu = arguments.get("activation", "silu") is not None
+        output = causal_conv1d_update_ref(
+            x, weight, conv_state, bias, silu, conv_state_indices, num_accepted_tokens,
+            query_start_loc, arguments.get("dilation", 1),
+        )  # fmt: skip
+        return output, conv_state
 
 
 def selective_scan_ref(

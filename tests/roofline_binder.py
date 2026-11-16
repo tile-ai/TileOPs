@@ -22,6 +22,7 @@ from math import prod
 import torch
 
 from tileops._ops._signature_codegen import install
+from tileops._ops.moe.moe_grouped_gemm_fp8 import MoEGroupedGEMMFP8FwdOp
 from tileops._ops.op_base import Op
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
@@ -51,15 +52,7 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
     body = {"__init__": construct}
     body["forward"] = lambda self, *args: None
     if "output" in _SLAB_ROWS.get(op_name, ()):
-
-        def eval_roofline_read_bytes(self):
-            # A masked slab writes only the valid rows of `output`, as an implementation of
-            # the grouped MoE GEMM states in its own override.
-            from tileops._perf.formulas import moe_slab_bytes
-
-            return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
-
-        body["eval_roofline_read_bytes"] = eval_roofline_read_bytes
+        body["eval_roofline_read_bytes"] = MoEGroupedGEMMFP8FwdOp.eval_roofline_read_bytes
     cls = type(f"Signature{op_name}", (Op,), body)
     if not install(cls, entry):
         raise ValueError(f"{op_name}: the signature does not generate")

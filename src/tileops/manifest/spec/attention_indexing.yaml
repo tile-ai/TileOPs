@@ -68,7 +68,7 @@ GatedPoolCompressFwdOp:
   status: spec-only
   ref_api: workloads.attention.gated_pool_compress.gated_pool_compress
   signature:
-    forall: {N: Dim, T_q: Dim, NS: Dim, D: Dim, T: "DType[bfloat16 | float32]", A: "DType[bfloat16 | float32]", seq_lens: "Seq[Int]", positions: "Seq[Int]"}
+    forall: {N: Dim, T_q: Dim, NS: Dim, D: Dim, T: "DType[bfloat16 | float32]", seq_lens: "Seq[Int]", positions: "Seq[Int]"}
     params:
       ratio: {type: int}
       overlap: {type: bool, default: false}
@@ -78,7 +78,7 @@ GatedPoolCompressFwdOp:
     inputs:
       kv: {dtype: T, shape: "[T_q, C * D]"}
       score: {dtype: T, shape: "[T_q, C * D]"}
-      ape: {dtype: A, shape: "[ratio, C * D]"}
+      ape: {dtype: T, shape: "[ratio, C * D]"}
       kv_state: {dtype: float32, shape: "[NS, C * ratio, C * D]", mutated: true}
       score_state: {dtype: float32, shape: "[NS, C * ratio, C * D]", mutated: true}
       cu_seqlens: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
@@ -93,19 +93,19 @@ GatedPoolCompressFwdOp:
   # DeepSeek-V4-Flash: CSA attention (ratio 4, overlapping), HCA attention (ratio 128) and
   # the indexer (ratio 4, overlapping, 128 channels), float32 kv and score. Decode positions
   # end a window; MTP verification passes two tokens a request.
-  - {T_q: 4096, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: [4096], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-csa-4k}
-  - {T_q: 32768, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: [32768], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-csa-32k}
-  - {T_q: 64, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-csa-b64}
-  - {T_q: 32, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: "repeat(2, 16)", positions: "repeat(32766, 16)", dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-csa-mtp}
-  - {T_q: 4096, NS: 64, D: 512, ratio: 128, seq_lens: [4096], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-hca-4k}
-  - {T_q: 32768, NS: 64, D: 512, ratio: 128, seq_lens: [32768], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-hca-32k}
-  - {T_q: 64, NS: 64, D: 512, ratio: 128, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-hca-b64}
-  - {T_q: 4096, NS: 64, D: 128, ratio: 4, overlap: true, seq_lens: [4096], positions: [0], dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-idx-4k}
-  - {T_q: 64, NS: 64, D: 128, ratio: 4, overlap: true, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: float32, A: float32}], label: dsv4-flash-idx-b64}
+  - {T_q: 4096, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: [4096], positions: [0], dtype_cases: [{T: float32}], label: dsv4-flash-csa-4k}
+  - {T_q: 32768, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: [32768], positions: [0], dtype_cases: [{T: float32}], label: dsv4-flash-csa-32k}
+  - {T_q: 64, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: float32}], label: dsv4-flash-csa-b64}
+  - {T_q: 32, NS: 64, D: 512, ratio: 4, overlap: true, seq_lens: "repeat(2, 16)", positions: "repeat(32766, 16)", dtype_cases: [{T: float32}], label: dsv4-flash-csa-mtp}
+  - {T_q: 4096, NS: 64, D: 512, ratio: 128, seq_lens: [4096], positions: [0], dtype_cases: [{T: float32}], label: dsv4-flash-hca-4k}
+  - {T_q: 32768, NS: 64, D: 512, ratio: 128, seq_lens: [32768], positions: [0], dtype_cases: [{T: float32}], label: dsv4-flash-hca-32k}
+  - {T_q: 64, NS: 64, D: 512, ratio: 128, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: float32}], label: dsv4-flash-hca-b64}
+  - {T_q: 4096, NS: 64, D: 128, ratio: 4, overlap: true, seq_lens: [4096], positions: [0], dtype_cases: [{T: float32}], label: dsv4-flash-idx-4k}
+  - {T_q: 64, NS: 64, D: 128, ratio: 4, overlap: true, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: float32}], label: dsv4-flash-idx-b64}
   # GLM-5.3-Flash indexer key pools: ratio 4, 128 channels, bfloat16 k and gate.
-  - {T_q: 4096, NS: 64, D: 128, ratio: 4, seq_lens: [4096], positions: [0], dtype_cases: [{T: bfloat16, A: bfloat16}], label: glm-5.3-flash-4k}
-  - {T_q: 32768, NS: 64, D: 128, ratio: 4, seq_lens: [1000, 31768], positions: [0, 0], dtype_cases: [{T: bfloat16, A: bfloat16}], label: glm-5.3-flash-ragged}
-  - {T_q: 64, NS: 64, D: 128, ratio: 4, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: bfloat16, A: bfloat16}], label: glm-5.3-flash-b64}
+  - {T_q: 4096, NS: 64, D: 128, ratio: 4, seq_lens: [4096], positions: [0], dtype_cases: [{T: bfloat16}], label: glm-5.3-flash-4k}
+  - {T_q: 32768, NS: 64, D: 128, ratio: 4, seq_lens: [1000, 31768], positions: [0, 0], dtype_cases: [{T: bfloat16}], label: glm-5.3-flash-ragged}
+  - {T_q: 64, NS: 64, D: 128, ratio: 4, seq_lens: "repeat(1, 64)", positions: "repeat(32767, 64)", dtype_cases: [{T: bfloat16}], label: glm-5.3-flash-b64}
   roofline:
     # The windows that close in the call, and the state rows they read and write.
     func: "tileops._perf.formulas.gated_pool_compress_roofline"
@@ -113,8 +113,9 @@ GatedPoolCompressFwdOp:
 TopKSelectFwdOp:
   # Unordered along the top_k axis: a row selects the same positions every call and may
   # place them in different slots. A window holding fewer than top_k positions selects all
-  # of them and fills the rest with fill_value, S_kv when it is None, as DeepSeek-V4-Flash
-  # inference/model.py Indexer.forward selects topk(min(k, n)) and fills with -1.
+  # of them and fills the rest with S_kv, which selects nothing; flashinfer.top_k takes no
+  # such window, DeepSeek-V4-Flash inference/model.py Indexer.forward selects
+  # topk(min(k, n)).
   family: attention
   status: implemented
   ref_api: flashinfer.top_k
@@ -122,7 +123,6 @@ TopKSelectFwdOp:
     forall: {B: Dim, S: Dim, S_kv: Dim, G: Dim}
     params:
       top_k: {type: int}
-      fill_value: {type: "int | None", default: null}
     inputs:
       logits: {dtype: float32, shape: "[B, S, S_kv, G]"}
       # Row (b, s) selects from logits[b, s, starts[b, s]:ends[b, s]].
@@ -138,12 +138,12 @@ TopKSelectFwdOp:
   - {B: 1, S: 1, S_kv: 16384, G: 1, top_k: 2048, label: ds-v32-topk-decode-b1}
   # Top-512 of ratio-4 compressed keys (DeepSeek-V4-Flash entries, GLM-5.3-Flash pools,
   # Qwen3.8-Flash-Next blocks): S_kv is the context over 4.
-  - {B: 1, S: 4096, S_kv: 1024, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-prefill-4k}
-  - {B: 1, S: 32768, S_kv: 8192, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-prefill-32k}
-  - {B: 64, S: 1, S_kv: 8192, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-decode-b64}
+  - {B: 1, S: 4096, S_kv: 1024, G: 1, top_k: 512, label: dsv4-flash-prefill-4k}
+  - {B: 1, S: 32768, S_kv: 8192, G: 1, top_k: 512, label: dsv4-flash-prefill-32k}
+  - {B: 64, S: 1, S_kv: 8192, G: 1, top_k: 512, label: dsv4-flash-decode-b64}
   # Fewer compressed keys than top_k: a 100-token context.
-  - {B: 1, S: 1, S_kv: 25, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-short-ctx}
-  - {B: 64, S: 2, S_kv: 8192, G: 1, top_k: 512, fill_value: -1, label: glm-5.3-flash-mtp-b64}
+  - {B: 1, S: 1, S_kv: 25, G: 1, top_k: 512, label: dsv4-flash-short-ctx}
+  - {B: 64, S: 2, S_kv: 8192, G: 1, top_k: 512, label: glm-5.3-flash-mtp-b64}
   - {B: 1, S: 4096, S_kv: 1024, G: 1, top_k: 512, label: qwen3.8-flash-prefill}
   - {B: 64, S: 1, S_kv: 65536, G: 1, top_k: 512, label: qwen3.8-flash-256k-b64}
   roofline:

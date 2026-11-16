@@ -894,6 +894,16 @@ def test_gemm(
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.smoke
+def test_a_float32_gemm_output_rejects_one_rounded_to_bfloat16() -> None:
+    workload = GEMMWorkload(4, 8, 64, torch.bfloat16, out_dtype=torch.float32)
+    a, b = torch.randn(4, 64, dtype=torch.bfloat16), torch.randn(64, 8, dtype=torch.bfloat16)
+    exact = workload.ref_program(a, b)
+    compare_outputs(exact, exact, workload.verification(a, b))
+    with pytest.raises(AssertionError):
+        compare_outputs(exact.bfloat16().float(), exact, workload.verification(a, b))
+
+
 @GEMMFP8Fixture
 def test_gemm_fp8(
     m: int,

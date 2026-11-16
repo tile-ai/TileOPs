@@ -513,7 +513,6 @@ def test_kda_raw_gate_decode_continues_from_prefill() -> None:
     test, op = _raw_gate_test(1, 65, 64, None, ["initial_state", "dt_bias"])
     inputs = test.gen_inputs()
     op = op
-    # The keyword-only state slot inputs are absent; the rest go by position.
     first = list(inputs[:-2])
     first[:5] = [tensor[:, :-1] for tensor in inputs[:5]]
     first_o, carried = op(*first)

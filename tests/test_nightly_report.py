@@ -844,5 +844,6 @@ def test_an_unavailable_row_is_neither_a_skip_nor_a_failure(report, tmp_path, ex
     rows = report.parse_bench_xml(str(xml))
 
     assert rows[0]["outcome"] == outcome
-    assert report.count_bench_skips(rows) == 0
+    assert report.count_bench_outcome(rows, "skipped") == 0
+    assert report.count_bench_outcome(rows, "unavailable") == (outcome == "unavailable")
     assert len(report.collect_bench_failures(rows)) == (outcome == "failed")

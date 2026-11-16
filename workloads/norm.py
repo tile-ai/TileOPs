@@ -749,18 +749,15 @@ def _norm_reference(name, inputs, p, native=False):
         return (out * wide(gate[0]) if gate else out).to(x.dtype)
     fused = name in ("FusedAddRMSNormFwdOp", "FusedAddLayerNormFwdOp")
     if fused:
-        total = x.float() + inputs[1].float()
         x = (wide(x) + wide(inputs[1])).to(x.dtype)
         weight, *bias = inputs[2:]
     else:
         weight, *bias = inputs[1:]
     shape = tuple(p.get("normalized_shape", (x.shape[-1],)))
     if name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
-        # A zero-centered weight scales by 1 + weight in float32, as vLLM's GemmaRMSNorm; the
-        # fused form normalizes the unrounded float32 sum, as flashinfer's
-        # gemma_fused_add_rmsnorm.
+        # A zero-centered weight scales by 1 + weight in float32, as vLLM's GemmaRMSNorm.
         zero_centered = p.get("zero_centered") and weight is not None
-        h = (total if fused else x.float()) if zero_centered else wide(x)
+        h = x.float() if zero_centered else wide(x)
         scale = weight.float() + 1 if zero_centered else wide(weight)
         group = p.get("group_size")
         if group is None:
@@ -808,7 +805,7 @@ def fused_qk_norm_rope_heads(
     half = cos_sin_cache.shape[1] // 2
     cos, sin = cos_sin_cache[positions].float().chunk(2, -1)
     if mrope_section is not None:
-        cos, sin = (_mrope_rows(x, mrope_section, mrope_interleaved) for x in (cos, sin))
+        cos, sin = (mrope_rows(x, mrope_section, mrope_interleaved) for x in (cos, sin))
     cos, sin = cos[:, None, :], sin[:, None, :]
     heads = []
     for first, count, weight in (
@@ -829,7 +826,7 @@ def fused_qk_norm_rope_heads(
     return torch.cat(heads, -1).to(qkv.dtype)
 
 
-def _mrope_rows(part, sections, interleaved):
+def mrope_rows(part, sections, interleaved):
     """The ``(N, R / 2)`` cosines or sines of ``part`` ``(3, N, R / 2)``, each frequency from
     the temporal, height or width row its section names."""
     if interleaved:

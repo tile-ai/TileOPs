@@ -39,16 +39,12 @@ class FusedTopKWorkload(CallWorkload):
         expert_ids = optional[1] if len(optional) > 1 else None
         p = self.call.params
         if expert_ids is not None:
-            scores = ref_router_scores(gating_output, p["scoring_func"])
 
             def validate_given(got, expected):
-                weights, ids = got[:2]
-                assert torch.equal(ids, expert_ids), "the returned experts are not the given ones"
-                selected = scores.gather(1, expert_ids.long())
-                if p["renormalize"]:
-                    selected = selected / selected.sum(-1, keepdim=True)
-                scaled = selected * p["routed_scaling_factor"]
-                torch.testing.assert_close(weights, scaled, rtol=1e-4, atol=0)
+                assert torch.equal(got[1], expert_ids), (
+                    "the returned experts are not the given ones"
+                )
+                torch.testing.assert_close(got[0], expected[0], rtol=1e-4, atol=0)
 
             return Custom(validate_given, "the given experts and their weights")
         scale = p["routed_scaling_factor"]

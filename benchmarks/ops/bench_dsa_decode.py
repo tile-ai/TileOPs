@@ -15,7 +15,7 @@ def _torch_sdpa_dsa(workload: DSADecodeCall):
     Same computation, without the reference's float32 upcast and materialized score
     tensor. A single kv head lets the mask and the cache broadcast over the query heads.
     """
-    if workload.heads_kv != 1:
+    if workload.heads_kv != 1 or workload.call.present("attn_sink"):
         return None
 
     def fn(q, kv, indices, attn_sink=None):
@@ -42,7 +42,11 @@ def _torch_gather_dsa(workload: DSADecodeCall):
 
     Gathering beats masking only where the selection is smaller than the cache.
     """
-    if workload.heads_kv != 1 or workload.topk >= workload.seq_len_kv:
+    if (
+        workload.heads_kv != 1
+        or workload.topk >= workload.seq_len_kv
+        or workload.call.present("attn_sink")
+    ):
         return None
 
     def fn(q, kv, indices, attn_sink=None):

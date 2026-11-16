@@ -72,7 +72,6 @@ def ngram_hash(
     results = []
     for b, (tokens, slot) in enumerate(zip(sequences, slots, strict=True)):
         if tokens.shape[0] == 0:
-            # An empty sequence leaves its context row as it was.
             results.append(tokens.new_empty((0, primes.shape[0])))
             continue
         start = 0 if accepted is None else accepted[b] - 1

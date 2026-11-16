@@ -30,6 +30,15 @@ MANIFEST = {
     "SpecFwdOp": {**_ENTRY, "status": "spec-only"},
 }
 CASE = "siluandmul-0-bfloat16"
+# FooFwdOp with a second, float16 case.
+TWO_CASES = {
+    "FooFwdOp": {
+        **MANIFEST["FooFwdOp"],
+        "workloads": [
+            {**_ENTRY["workloads"][0], "dtype_cases": [{"T": "bfloat16"}, {"T": "float16"}]}
+        ],
+    }
+}
 
 
 def _report(tmp_path: Path, *testcases: str) -> Path:
@@ -85,13 +94,13 @@ class TestVerdicts:
         first = _report(tmp_path, _passed(f"test_foo[{CASE}]", "FooFwdOp", prop="op"))
         assert _verdicts(first)["FooFwdOp"] == coverage.OK
 
-    def test_a_case_no_implementation_serves_is_unavailable(self, tmp_path):
+    def test_a_case_no_implementation_serves_is_unavailable_unless_every_case_is(self, tmp_path):
         path = _report(
             tmp_path,
             _unavailable(f"test_foo[{CASE}]", "FooFwdOp"),
             _passed(f"test_bar[{CASE}]", "BarFwdOp"),
         )
-        assert _verdicts(path) == {"FooFwdOp": coverage.UNAVAILABLE, "BarFwdOp": coverage.OK}
+        assert _verdicts(path) == {"FooFwdOp": coverage.FAIL, "BarFwdOp": coverage.OK}
 
 
 class TestExitCodes:
@@ -128,8 +137,12 @@ class TestExitCodes:
         assert coverage.main(["--bench-xml", str(_report(tmp_path, case))]) == coverage.EXIT_GAP
 
     def test_an_unavailable_case_is_neither_a_failure_nor_a_gap(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(coverage, "load_manifest", lambda: MANIFEST)
-        path = _report(tmp_path, _unavailable(f"test_a[{CASE}]", "BarFwdOp,FooFwdOp"))
+        monkeypatch.setattr(coverage, "load_manifest", lambda: TWO_CASES)
+        path = _report(
+            tmp_path,
+            _unavailable(f"test_a[{CASE}]", "FooFwdOp"),
+            _passed("test_a[siluandmul-0-float16]", "FooFwdOp"),
+        )
         out = tmp_path / "coverage.md"
         assert coverage.main(["--bench-xml", str(path), "--output", str(out)]) == coverage.EXIT_OK
         assert "| `FooFwdOp` | UNAVAILABLE |" in out.read_text()

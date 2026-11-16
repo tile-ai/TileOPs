@@ -40,8 +40,6 @@ __all__ = [
     "GemvKernel",
 ]
 
-# Every GEMMFwdOp kernel rounds its float32 accumulator to the operands' dtype; the three
-# state the same limit.
 _ROUNDED_TO_OPERANDS = (
     "the epilogue rounds the result to the operands' dtype; out_dtype is not served"
 )

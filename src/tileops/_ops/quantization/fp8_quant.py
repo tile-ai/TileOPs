@@ -99,7 +99,6 @@ class FP8QuantPerTokenGroupFwdOp(Op):
             given) and ``scale`` $[*S \\times K / group\\_size]$ in ``scale_dtype``; with
             ``inplace``, ``(None, None, x)``.
         """
-        source = x
         x = x.contiguous()
         kernel = self.kernel_for(
             "fp8_quant",
@@ -117,9 +116,4 @@ class FP8QuantPerTokenGroupFwdOp(Op):
             ),
         )
         q, scale = kernel(x, out_q)
-        if not self.inplace:
-            return q, scale, None
-        # The kernel overwrote the contiguous copy; a strided x takes it back.
-        if x.data_ptr() != source.data_ptr():
-            source.copy_(x)
-        return None, None, source
+        return q, scale, None

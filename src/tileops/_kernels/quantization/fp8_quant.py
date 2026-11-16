@@ -28,7 +28,6 @@ class FP8QuantCall(CallSpec):
     column_major_scales: bool = False
     tma_aligned_scales: bool = False
     use_ue8m0: bool | None = None
-    # The scales' dtype, and in-place fake quantization of the input.
     scale_dtype: torch.dtype = torch.float32
     inplace: bool = False
 

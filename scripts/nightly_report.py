@@ -15,11 +15,15 @@ import json
 import math
 import re
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from benchmarks.outcomes import UNAVAILABLE_PROPERTY
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -136,7 +140,7 @@ def _testcase_fields(tc: ET.Element, props: dict[str, str]) -> dict:
     if failure is not None or error is not None:
         # A teardown error after a skip writes both elements; the error wins.
         outcome = "failed"
-    elif tc.find("skipped") is not None and "unavailable" in props:
+    elif tc.find("skipped") is not None and UNAVAILABLE_PROPERTY in props:
         # A row no implementation serves yet (benchmarks/conftest.py): neither a skip to
         # warn of nor a failure.
         outcome = "unavailable"
@@ -357,9 +361,10 @@ def _dtypes_of(name: str) -> tuple[str, ...]:
     return tuple(t for t in _case_id(name).split("-") if _DTYPE_TOKEN.fullmatch(t))
 
 
-def count_bench_skips(results: list[dict]) -> int:
-    """Skipped cases, which are neither configs nor failures: without a count they vanish."""
-    return sum(1 for r in results if r["outcome"] == "skipped")
+def count_bench_outcome(results: list[dict], outcome: str) -> int:
+    """Cases with *outcome*, skipped or unavailable, which are neither configs nor failures:
+    without a count they vanish."""
+    return sum(1 for r in results if r["outcome"] == outcome)
 
 
 def collect_bench_failures(results: list[dict]) -> list[dict]:
@@ -1273,6 +1278,7 @@ def generate_report(
     coverage: list[dict] | None = None,
     coverage_prev: dict | None = None,
     bench_skips: int = 0,
+    bench_unavailable: int = 0,
     previous_run_shifts: list[dict] | None = None,
     sol_anomalies: list[dict] | None = None,
     have_gpu_profile: bool = False,
@@ -1322,6 +1328,8 @@ def generate_report(
     bench_fail_icon = f"{_FAIL} {len(bench_failures)}" if bench_failures else f"{_PASS} None"
     if bench_skips:
         bench_fail_icon += f" &ensp;|&ensp; {_WARN} {bench_skips} skipped"
+    if bench_unavailable:
+        bench_fail_icon += f" &ensp;|&ensp; {bench_unavailable} unavailable"
     reg_icon = f"{_PASS} None" if not regressions else f"{_WARN} {len(regressions)}"
     alert_icon = f"{_WARN} {len(baseline_alerts)}" if baseline_alerts else f"{_PASS} None"
 
@@ -1701,12 +1709,13 @@ def main():
 
     bench_ops = None
     bench_failures = []
-    bench_skips = 0
+    bench_skips = bench_unavailable = 0
     if args.bench_xml and Path(args.bench_xml).exists():
         bench_results = parse_bench_xml(args.bench_xml)
         bench_ops = aggregate_bench_results(bench_results)
         bench_failures = collect_bench_failures(bench_results)
-        bench_skips = count_bench_skips(bench_results)
+        bench_skips = count_bench_outcome(bench_results, "skipped")
+        bench_unavailable = count_bench_outcome(bench_results, "unavailable")
 
     # The rebuild can reach past the period when a run gap exceeds it, and the
     # verdicts below are labelled with the 14-day window.
@@ -1742,6 +1751,7 @@ def main():
         coverage=coverage,
         coverage_prev=coverage_prev,
         bench_skips=bench_skips,
+        bench_unavailable=bench_unavailable,
         previous_run_shifts=previous_run_shifts,
         sol_anomalies=sol_anomalies,
         have_gpu_profile=gpu_profile is not None,

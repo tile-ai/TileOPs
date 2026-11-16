@@ -348,8 +348,8 @@ CausalConv1dFwdOp:
 
 CausalConv1dUpdateFwdOp:
   # Not vLLM's causal_conv1d_update: dilation and the float32 weight are
-  # CausalConv1dFwdOp's. With query_start_loc, x packs several tokens a sequence, as vLLM's
-  # varlen form does. With conv_state_indices, sequence b's state is
+  # CausalConv1dFwdOp's, and query_start_loc comes with num_accepted_tokens, x packing a
+  # sequence's draft tokens. With conv_state_indices, sequence b's state is
   # conv_state[conv_state_indices[b]]. A state is the first (W - 1) * dilation tokens of its
   # L columns and is advanced by the sequence's tokens; with num_accepted_tokens, sequence b
   # with a = num_accepted_tokens[b] and q tokens reads the (W - 1) * dilation tokens from
@@ -409,7 +409,7 @@ CausalConv1dUpdateFwdOp:
       - "B > 0 and D > 0"
       - "W >= 2 and W <= 4"
       - "dilation >= 1"
-      - "not present(query_start_loc) or (present(conv_state_indices) and max_query_len > 0)"
+      - "not present(query_start_loc) or (present(conv_state_indices) and present(num_accepted_tokens) and max_query_len > 0)"
       - "L >= (W - 1) * dilation + (max_query_len - 1 if present(num_accepted_tokens) and present(query_start_loc) else 0)"
   roofline:
     flops: "2 * (Tt if present(query_start_loc) else B) * D * W"

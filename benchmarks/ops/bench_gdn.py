@@ -144,4 +144,7 @@ def test_gdn_fwd_bench(case) -> None:
                     "the workload's log decay and step size rounds both"
                 ),
             )
+    if inputs[10] is not None:
+        # The baselines take one state a sequence, not slots of a pool.
+        implementations = {}
     bench.Runner(op, case).compare(implementations)

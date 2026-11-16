@@ -46,7 +46,8 @@ class FusedQKNormRoPEFwdOp(Op):
     position's cache row, the next ``mrope_section[1]`` from the height's and the rest from
     the width's; with ``mrope_interleaved``, frequency ``i`` takes the height's when
     ``i % 3 == 1`` and ``i < 3 * mrope_section[1]``, the width's when ``i % 3 == 2`` and
-    ``i < 3 * mrope_section[2]``, and the temporal's otherwise.
+    ``i < 3 * mrope_section[2]``, and the temporal's otherwise. The in-tree kernel serves
+    neither; such a call raises ``OpNotAvailableError`` when a kernel is selected.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

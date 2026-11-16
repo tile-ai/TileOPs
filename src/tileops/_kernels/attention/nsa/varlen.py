@@ -347,8 +347,6 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
 
     @classmethod
     def refusal(cls, call: NSACall) -> str | None:
-        """Keys that are the queries' own tokens, a head dimension one 128-wide tile holds, and
-        query groups that fill the MMA rows."""
         if call.separate_keys:
             return "attends to the queries' own tokens only"
         if call.dim > 128:
