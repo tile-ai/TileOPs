@@ -1,4 +1,4 @@
-"""MaskedFill ops (Tensor-value and scalar-value variants)."""
+"""MaskedFill op: a Number, bool or 0-dim Tensor fill value."""
 
 from collections.abc import Mapping
 from typing import ClassVar
@@ -15,22 +15,36 @@ from tileops._kernels.elementwise.call_spec import (
     MaskedFillFwdInterface,
     MaskedFillTensorValueFwdInterface,
 )
-from tileops._kernels.kernel_base import KernelInterface
-from tileops._ops.elementwise._base import ELEMENTWISE
+from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
+# The interface of each form of the fill value.
+_NUMBER_VALUE, _TENSOR_VALUE = "number_value", "tensor_value"
 
-class MaskedFillTensorFwdOp(Op):
-    """MaskedFill with 0-dim Tensor value (``torch.Tensor.masked_fill(mask, value: Tensor)``).
 
-    Output shape is the bidirectional broadcast of ``input`` and ``mask``;
-    ``value`` is a 0-dim Tensor, which the kernel reads at forward time.
+class MaskedFillFwdOp(Op):
+    """MaskedFill (``torch.Tensor.masked_fill(mask, value)``) with a scalar or 0-dim Tensor value.
+
+    Output shape is the bidirectional broadcast of ``input`` and ``mask``. A Number value
+    follows PyTorch's coercion to the element type: bool reduces non-zero to ``True``;
+    integer dtypes range-check the real value against ``torch.iinfo`` and truncate floats
+    toward zero (``1.5 -> 1``); ``torch.uint8`` additionally wraps Python ints in
+    ``[-255, 0)`` via two's complement. A Tensor value is read by the kernel at forward time.
+    Every dtype of the manifest union dispatches to a real kernel; a bool operand is served
+    by whatever storage the selected kernel requires.
+
+    Which form a call passes is read off the call, so one instance serves both. A Number
+    value reaches the kernel's cache key, since the kernel is built for it.
     """
 
-    kernel_types = {"masked_fill_tensor_value": MaskedFillTensorValueFwdKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "masked_fill": MaskedFillFwdKernel,
+        "masked_fill_tensor_value": MaskedFillTensorValueFwdKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        ELEMENTWISE: MaskedFillTensorValueFwdInterface
+        _NUMBER_VALUE: MaskedFillFwdInterface,
+        _TENSOR_VALUE: MaskedFillTensorValueFwdInterface,
     }
 
     def __init__(
@@ -50,7 +64,7 @@ class MaskedFillTensorFwdOp(Op):
         self,
         input: torch.Tensor,
         mask: torch.Tensor,
-        value: torch.Tensor,
+        value: bool | int | float | torch.Tensor,
     ) -> torch.Tensor:
         """Run the op on ``input``, ``mask`` and ``value``.
 
@@ -58,7 +72,7 @@ class MaskedFillTensorFwdOp(Op):
             input: Tensor to fill.
             mask: ``torch.bool`` mask, broadcastable with ``input``; ``True`` marks the
                 elements to fill.
-            value: Fill value, a 0-dim tensor in the dtype of ``input``.
+            value: Fill value: a Number, a bool, or a 0-dim tensor in the dtype of ``input``.
 
         Returns:
             A new tensor of the broadcast shape of ``input`` and ``mask``.
@@ -66,67 +80,15 @@ class MaskedFillTensorFwdOp(Op):
         n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
         input = input.contiguous()
         mask = mask.contiguous()
-        value = value.contiguous()
+        if isinstance(value, torch.Tensor):
+            value = value.contiguous()
+            return self.kernel_for(
+                _TENSOR_VALUE,
+                lambda: ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype),
+            )(input, mask, value)
         return self.kernel_for(
-            ELEMENTWISE,
-            lambda: ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype),
-        )(input, mask, value)
-
-
-class MaskedFillScalarFwdOp(Op):
-    """MaskedFill with Number (scalar) value.
-
-    Conforms to ``torch.Tensor.masked_fill(mask, value: Number)``. Output
-    shape follows the bidirectional broadcast of ``input`` and ``mask``.
-    Every dtype of the manifest union dispatches to a real kernel. A bool operand
-    is served by whatever storage the selected kernel requires; the op passes and
-    receives semantic bool either way.
-    """
-
-    kernel_types = {"masked_fill": MaskedFillFwdKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        ELEMENTWISE: MaskedFillFwdInterface
-    }
-
-    def __init__(
-        self,
-        *,
-        value: bool | int | float = 0.0,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            value: Scalar fill value (bool / int / float). Range-validated
-                against the element type of the call with PyTorch
-                ``Tensor.masked_fill`` coercion: bool reduces non-zero to
-                ``True``; integer dtypes range-check the real value against
-                ``torch.iinfo`` and truncate floats toward zero (``1.5 -> 1``);
-                ``torch.uint8`` additionally wraps Python ints in ``[-255, 0)``
-                via two's complement.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-                the in-tree kernels, or ``None`` to decide from the input device.
-        """
-        self.value = value
-        super().__init__(target=target)
-
-    def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``mask``.
-
-        Args:
-            input: Tensor to fill.
-            mask: ``torch.bool`` mask, broadcastable with ``input``; ``True`` marks the
-                elements to fill with ``value``.
-
-        Returns:
-            A new tensor of the broadcast shape of ``input`` and ``mask``.
-        """
-        n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
-        input = input.contiguous()
-        mask = mask.contiguous()
-        return self.kernel_for(
-            ELEMENTWISE,
+            _NUMBER_VALUE,
             lambda: MaskedFillCall(
-                device=input.device, n_total=n_total, dtype=input.dtype, value=self.value
+                device=input.device, n_total=n_total, dtype=input.dtype, value=value
             ),
         )(input, mask)

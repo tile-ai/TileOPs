@@ -62,9 +62,9 @@ def _post_permute(out: "torch.Tensor | None" = None) -> torch.Tensor:
             id="two-outputs",
         ),
         pytest.param(
-            lambda x: FP8QuantPerTokenGroupFwdOp()(x.reshape(0, 4, 1, 2)),
+            lambda x: FP8QuantPerTokenGroupFwdOp(2)(x.reshape(0, 4, 2)),
             lambda x: (
-                torch.empty(0, 4, 1, 2, device=x.device, dtype=torch.float8_e4m3fn),
+                torch.empty(0, 4, 2, device=x.device, dtype=torch.float8_e4m3fn),
                 torch.empty(0, 4, 1, device=x.device),
             ),
             id="output-dtype",

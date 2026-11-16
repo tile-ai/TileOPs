@@ -28,9 +28,9 @@ DeltaNetFwdOp:
       k: {dtype: T, shape: "[B, S, H, K]"}
       v: {dtype: T, shape: "[B, S, H, V]"}
       beta: {dtype: T, shape: "[B, S, H]"}
-      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]", optional: true}
-      cu_seqlens: {dtype: int64, shape: "[N + 1]", optional: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", optional: true, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]", type: "Tensor | None", default: null}
+      cu_seqlens: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
     outputs:
       o: {dtype: T, shape: "[B, S, H, V]"}
       final_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]"}
@@ -38,7 +38,7 @@ DeltaNetFwdOp:
     - "K > 0 and V > 0"
     - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
     - "not present(cu_seqlens) or B == 1"
-    - "not present(scale) or -inf < scale.value < inf"
+    - "not present(scale) or -inf < scale < inf"
   workloads:
   - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-2k}
   - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-8k}
@@ -98,21 +98,23 @@ GDNFwdOp:
       v: {dtype: T, shape: "[B, S, HV, V]"}
       g: {dtype: T, shape: "[B, S, HV]"}
       beta: {dtype: T, shape: "[B, S, HV]"}
-      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]", optional: true}
-      cu_seqlens: {dtype: int64, shape: "[N + 1]", optional: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", optional: true, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      A_log: {dtype: float32, shape: "[HV]", optional: use_gate_in_kernel}
-      dt_bias: {dtype: float32, shape: "[HV]", optional: use_gate_in_kernel}
+      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]", type: "Tensor | None", default: null}
+      cu_seqlens: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      A_log: {dtype: float32, shape: "[HV]", type: "Tensor | None", default: null}
+      dt_bias: {dtype: float32, shape: "[HV]", type: "Tensor | None", default: null}
     outputs:
       o: {dtype: T, shape: "[B, S, HV, V]"}
       final_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]"}
     shape_rules:
+    - "present(dt_bias) == use_gate_in_kernel"
+    - "present(A_log) == use_gate_in_kernel"
     - "H > 0 and HV % H == 0"
     - "K > 0 and V > 0"
     - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
     - "not present(cu_seqlens) or B == 1"
     - "not allow_neg_eigval or use_beta_sigmoid_in_kernel"
-    - "not present(scale) or -inf < scale.value < inf"
+    - "not present(scale) or -inf < scale < inf"
   workloads:
   - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-4k}
   - {B: 1, S: 12288, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-12k}
@@ -124,10 +126,10 @@ GDNFwdOp:
   - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, seq_lens: "repeat(1024, 4)", some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: varlen-4x1k}
   - {B: 1, S: 4096, H: 4, HV: 16, K: 128, V: 128, seq_lens: [1, 63, 1000, 3032], some: [cu_seqlens, initial_state], dtype_cases: [{T: float16}], label: varlen-ragged-grouped}
   - {B: 1, S: 3000, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: prefill-3000}
-  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_beta_sigmoid_in_kernel: true, use_gate_in_kernel: true, dtype_cases: [{T: bfloat16}], label: prefill-raw-4k}
-  - {B: 1, S: 3000, H: 6, HV: 24, K: 64, V: 64, seq_lens: [1, 59, 937, 2003], use_qk_l2norm_in_kernel: true, use_beta_sigmoid_in_kernel: true, use_gate_in_kernel: true, some: [cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: prefill-raw-ragged}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_beta_sigmoid_in_kernel: true, use_gate_in_kernel: true, some: [A_log, dt_bias], dtype_cases: [{T: bfloat16}], label: prefill-raw-4k}
+  - {B: 1, S: 3000, H: 6, HV: 24, K: 64, V: 64, seq_lens: [1, 59, 937, 2003], use_qk_l2norm_in_kernel: true, use_beta_sigmoid_in_kernel: true, use_gate_in_kernel: true, some: [cu_seqlens, cu_seqlens_cpu, A_log, dt_bias], dtype_cases: [{T: bfloat16}], label: prefill-raw-ragged}
   - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: decode-fresh}
-  - {B: 32, S: 1, H: 8, HV: 16, K: 64, V: 64, use_gate_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-gate-fused}
+  - {B: 32, S: 1, H: 8, HV: 16, K: 64, V: 64, use_gate_in_kernel: true, some: [initial_state, A_log, dt_bias], dtype_cases: [{T: bfloat16}], label: decode-gate-fused}
   - {B: 2, S: 1, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_beta_sigmoid_in_kernel: true, allow_neg_eigval: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-beta-l2norm}
   - {B: 17, S: 1, H: 6, HV: 12, K: 128, V: 128, state_v_first: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-vfirst-b17}
   - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, state_v_first: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-v-first-4k}
@@ -307,15 +309,16 @@ KDAFwdOp:
       v: {dtype: T, shape: "[B, S, HV, V]"}
       g: {dtype: T, shape: "[B, S, HV, K]"}
       beta: {dtype: T, shape: "[B, S, HV]"}
-      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]", optional: true}
-      cu_seqlens: {dtype: int64, shape: "[N + 1]", optional: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", optional: true, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      A_log: {dtype: float32, shape: "[HV]", optional: use_gate_in_kernel}
-      dt_bias: {dtype: float32, shape: "[HV * K]", optional: true}
+      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]", type: "Tensor | None", default: null}
+      cu_seqlens: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      A_log: {dtype: float32, shape: "[HV]", type: "Tensor | None", default: null}
+      dt_bias: {dtype: float32, shape: "[HV * K]", type: "Tensor | None", default: null}
     outputs:
       o: {dtype: T, shape: "[B, S, HV, V]"}
       final_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]"}
     shape_rules:
+    - "present(A_log) == use_gate_in_kernel"
     - "H > 0 and HV % H == 0"
     - "K > 0 and V > 0"
     - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
@@ -328,36 +331,36 @@ KDAFwdOp:
   - {B: 1, S: 32768, H: 32, HV: 32, K: 128, V: 128, seq_lens: "repeat(8192, 4)", use_qk_l2norm_in_kernel: true, some: [cu_seqlens], dtype_cases: [{T: bfloat16}], label: kda-tp1-4x8192}
   - {B: 1, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b1}
   - {B: 64, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b64}
-  - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kda-tp1-raw-gate-4096}
-  - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [initial_state, dt_bias], dtype_cases: [{T: bfloat16}], label: kda-raw-gate-decode-b8}
-  - {B: 1, S: 256, H: 4, HV: 4, K: 128, V: 128, seq_lens: [65, 191], use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [initial_state, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kda-bounded-packed}
-  - {B: 1, S: 1024, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp1-s1024}
-  - {B: 1, S: 16384, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp1-s16384}
-  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp2-s4096}
-  - {B: 1, S: 32768, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp2-s32768}
-  - {B: 1, S: 4096, H: 8, HV: 8, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp4-s4096}
-  - {B: 1, S: 65536, H: 8, HV: 8, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp4-s65536}
-  - {B: 1, S: 4096, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp8-s4096}
-  - {B: 1, S: 131072, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp8-s131072}
-  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, seq_lens: [1024, 7168], some: [dt_bias, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kl48-tp1-mixed8k}
-  - {B: 1, S: 32768, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, seq_lens: 'repeat(8192, 4)', some: [dt_bias, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kl48-tp8-4x8192}
-  - {B: 1, S: 256, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, initial_state], dtype_cases: [{T: bfloat16}], label: kl48-tp8-cont256}
-  - {B: 1, S: 4096, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, initial_state], dtype_cases: [{T: bfloat16}], label: kl48-tp8-cont4096}
-  - {B: 32, S: 256, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp8-b32-s256}
-  - {B: 1, S: 1024, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-s1024}
-  - {B: 1, S: 4096, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-s4096}
-  - {B: 1, S: 16384, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-s16384}
-  - {B: 1, S: 4096, H: 48, HV: 48, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp2-s4096}
-  - {B: 1, S: 32768, H: 48, HV: 48, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp2-s32768}
-  - {B: 1, S: 4096, H: 24, HV: 24, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp4-s4096}
-  - {B: 1, S: 65536, H: 24, HV: 24, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp4-s65536}
-  - {B: 1, S: 4096, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-s4096}
-  - {B: 1, S: 131072, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-s131072}
-  - {B: 1, S: 8192, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, seq_lens: [1024, 7168], some: [dt_bias, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-mixed8k}
-  - {B: 1, S: 32768, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, seq_lens: 'repeat(8192, 4)', some: [dt_bias, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-4x8192}
-  - {B: 1, S: 256, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, initial_state], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-cont256}
-  - {B: 1, S: 4096, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, initial_state], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-cont4096}
-  - {B: 32, S: 256, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-b32-s256}
+  - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kda-tp1-raw-gate-4096}
+  - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [initial_state, dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kda-raw-gate-decode-b8}
+  - {B: 1, S: 256, H: 4, HV: 4, K: 128, V: 128, seq_lens: [65, 191], use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [initial_state, cu_seqlens, cu_seqlens_cpu, A_log], dtype_cases: [{T: bfloat16}], label: kda-bounded-packed}
+  - {B: 1, S: 1024, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp1-s1024}
+  - {B: 1, S: 16384, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp1-s16384}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp2-s4096}
+  - {B: 1, S: 32768, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp2-s32768}
+  - {B: 1, S: 4096, H: 8, HV: 8, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp4-s4096}
+  - {B: 1, S: 65536, H: 8, HV: 8, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp4-s65536}
+  - {B: 1, S: 4096, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp8-s4096}
+  - {B: 1, S: 131072, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp8-s131072}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, seq_lens: [1024, 7168], some: [dt_bias, cu_seqlens, cu_seqlens_cpu, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp1-mixed8k}
+  - {B: 1, S: 32768, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, seq_lens: 'repeat(8192, 4)', some: [dt_bias, cu_seqlens, cu_seqlens_cpu, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp8-4x8192}
+  - {B: 1, S: 256, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, initial_state, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp8-cont256}
+  - {B: 1, S: 4096, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, initial_state, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp8-cont4096}
+  - {B: 32, S: 256, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kl48-tp8-b32-s256}
+  - {B: 1, S: 1024, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-s1024}
+  - {B: 1, S: 4096, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-s4096}
+  - {B: 1, S: 16384, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-s16384}
+  - {B: 1, S: 4096, H: 48, HV: 48, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp2-s4096}
+  - {B: 1, S: 32768, H: 48, HV: 48, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp2-s32768}
+  - {B: 1, S: 4096, H: 24, HV: 24, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp4-s4096}
+  - {B: 1, S: 65536, H: 24, HV: 24, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp4-s65536}
+  - {B: 1, S: 4096, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-s4096}
+  - {B: 1, S: 131072, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-s131072}
+  - {B: 1, S: 8192, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, seq_lens: [1024, 7168], some: [dt_bias, cu_seqlens, cu_seqlens_cpu, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-mixed8k}
+  - {B: 1, S: 32768, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, seq_lens: 'repeat(8192, 4)', some: [dt_bias, cu_seqlens, cu_seqlens_cpu, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-4x8192}
+  - {B: 1, S: 256, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, initial_state, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-cont256}
+  - {B: 1, S: 4096, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, initial_state, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-cont4096}
+  - {B: 32, S: 256, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, A_log], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-b32-s256}
   - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-4096}
   - {B: 1, S: 16384, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-16384}
   - {B: 1, S: 65536, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-65536}
@@ -446,7 +449,7 @@ GLARecurrentFwdOp:
       new_state: {dtype: T, shape: "[B, H, DK, DV]"}
     shape_rules:
     - "B > 0 and H > 0 and DK > 0 and DV > 0"
-    - "not present(scale) or 0 < scale.value < inf"
+    - "not present(scale) or 0 < scale < inf"
   workloads:
   - {B: 1, H: 8, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b1-h8}
   - {B: 1, H: 16, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b1-h16}
@@ -579,9 +582,9 @@ GLAFwdOp:
       k: {dtype: T, shape: "[B, S, H, K]"}
       v: {dtype: T, shape: "[B, S, H, V]"}
       g: {dtype: T, shape: "[B, S, H, K]"}
-      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]", optional: true}
-      cu_seqlens: {dtype: int64, shape: "[N + 1]", optional: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", optional: true, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]", type: "Tensor | None", default: null}
+      cu_seqlens: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
     outputs:
       o: {dtype: T, shape: "[B, S, H, V]"}
       final_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]"}
@@ -589,7 +592,7 @@ GLAFwdOp:
     - "K > 0 and V > 0"
     - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
     - "not present(cu_seqlens) or B == 1"
-    - "not present(scale) or 0 < scale.value < inf"
+    - "not present(scale) or 0 < scale < inf"
   workloads:
   - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-2k}
   - {B: 2, S: 4096, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-4k}
@@ -625,7 +628,7 @@ GLAChunkFwdOp:
       k: {dtype: T, shape: "[B, S, H, DK]"}
       v: {dtype: T, shape: "[B, S, H, DV]"}
       g: {dtype: T, shape: "[B, S, H, DK]"}
-      initial_state: {dtype: float32, shape: "[B, H, DK, DV]", optional: true}
+      initial_state: {dtype: float32, shape: "[B, H, DK, DV]", type: "Tensor | None", default: null}
     outputs:
       o: {dtype: T, shape: "[B, S, H, DV]"}
       final_state: {dtype: float32, shape: "[B, H, DK, DV]"}
@@ -634,7 +637,7 @@ GLAChunkFwdOp:
     shape_rules:
     - "B > 0 and S > 0 and H > 0 and DK > 0 and DV > 0"
     - "chunk_size > 0 and S % chunk_size == 0"
-    - "not present(scale) or 0 < scale.value < inf"
+    - "not present(scale) or 0 < scale < inf"
   workloads:
   - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
   - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
@@ -681,7 +684,7 @@ GLAChunkBwdOp:
     shape_rules:
     - "B > 0 and S > 0 and H > 0 and DK > 0 and DV > 0"
     - "chunk_size > 0 and S % chunk_size == 0"
-    - "not present(scale) or 0 < scale.value < inf"
+    - "not present(scale) or 0 < scale < inf"
   workloads:
   - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
   - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}

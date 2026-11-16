@@ -29,19 +29,23 @@ GQADenseFwdOp:
       k: {dtype: T, shape: "[B, S_kv, H_kv, D]"}
       v: {dtype: T, shape: "[B, S_kv, H_kv, D]"}
       # FP8 dequantization scales, one per batch entry and KV head.
-      q_scale: {dtype: float32, shape: "[B, H_kv]", optional: true}
-      k_scale: {dtype: float32, shape: "[B, H_kv]", optional: "present(q_scale)"}
-      v_scale: {dtype: float32, shape: "[B, H_kv]", optional: "present(q_scale)"}
+      q_scale: {dtype: float32, shape: "[B, H_kv]", type: "Tensor | None", default: null}
+      k_scale: {dtype: float32, shape: "[B, H_kv]", type: "Tensor | None", default: null}
+      v_scale: {dtype: float32, shape: "[B, H_kv]", type: "Tensor | None", default: null}
       # RoPE tables indexed by KV position and rotated pair.
-      rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", optional: "pos_encoding_mode == 'rope'"}
-      rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+      rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", type: "Tensor | None", default: null}
+      rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", type: "Tensor | None", default: null}
       # One zero-value logit per query head, added after masking and softcap.
-      sinks: {dtype: float32, shape: "[H]", optional: true}
+      sinks: {dtype: float32, shape: "[H]", type: "Tensor | None", default: null}
     outputs:
       o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[B, S_q, H, D]"}
     let:
-      R: "rotary_dim.value if present(rotary_dim) else D"
+      R: "rotary_dim if present(rotary_dim) else D"
     shape_rules:
+    - "present(rope_sin) == (pos_encoding_mode == 'rope')"
+    - "present(rope_cos) == (pos_encoding_mode == 'rope')"
+    - "present(v_scale) == present(q_scale)"
+    - "present(k_scale) == present(q_scale)"
     - "H_kv > 0 and H % H_kv == 0"
     - "window_size_left >= -1 and window_size_right >= -1"
     - "S_kv > 0"
@@ -49,10 +53,10 @@ GQADenseFwdOp:
     - "pos_encoding_mode != 'rope' or S_q <= S_kv"
     # FP8 input has no FP8 output: it names a 16-bit out_dtype and passes the scales.
     - "(T == 'float8_e4m3fn') == present(q_scale)"
-    - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == T)"
+    - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype == T)"
     - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
-    - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(rotary_dim) or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {is_causal: true, B: 32, S_q: 1, S_kv: 4096, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-4k}
   - {is_causal: true, B: 8, S_q: 1, S_kv: 32768, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-32k}
@@ -78,8 +82,8 @@ GQADenseFwdOp:
   - {is_causal: true, B: 16, S_q: 1, S_kv: 8192, H: 22, H_kv: 1, D: 128, dtype_cases: [{T: bfloat16}], label: starcoderbase-3b-8k}
   - {is_causal: true, B: 1, S_q: 1, S_kv: 8192, H: 8, H_kv: 1, D: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma-2b-8k-bs1}
   - {is_causal: true, B: 16, S_q: 1, S_kv: 8192, H: 8, H_kv: 1, D: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma-2b-8k-b16}
-  - {is_causal: true, B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, pos_encoding_mode: rope, rotary_dim: 64, P_pad: 0, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-rope}
-  - {is_causal: true, B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: prefill-scaled}
+  - {is_causal: true, B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, pos_encoding_mode: rope, rotary_dim: 64, P_pad: 0, some: [rope_cos, rope_sin], dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-rope}
+  - {is_causal: true, B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn}], label: prefill-scaled}
   - {B: 1, S_q: 128, S_kv: 2048, H: 32, H_kv: 8, D: 128, is_causal: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-chunked-prefill}
   - {B: 8, S_q: 128, S_kv: 2048, H: 32, H_kv: 8, D: 128, is_causal: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-chunked-b8}
   - {is_causal: true, B: 1, S_q: 2048, S_kv: 2048, H: 64, H_kv: 8, D: 64, some: [sinks], dtype_cases: [{T: bfloat16}], label: gpt-oss-sinks-prefill-2k}
@@ -87,7 +91,7 @@ GQADenseFwdOp:
   - {is_causal: true, B: 1, S_q: 8192, S_kv: 8192, H: 64, H_kv: 8, D: 64, some: [sinks], dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-sinks-prefill-8k}
   - {is_causal: true, B: 1, S_q: 8192, S_kv: 8192, H: 64, H_kv: 8, D: 64, window_size_left: 127, some: [sinks], dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-sinks-window-128}
   - {is_causal: true, B: 64, S_q: 1, S_kv: 8192, H: 64, H_kv: 8, D: 64, some: [sinks], dtype_cases: [{T: bfloat16}], label: gpt-oss-sinks-decode-8k}
-  - {is_causal: true, B: 1, S_q: 255, S_kv: 1793, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale, sinks], dtype_cases: [{T: float8_e4m3fn}], label: scaled-fp8-sinks-prefill}
+  - {is_causal: true, B: 1, S_q: 255, S_kv: 1793, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale, sinks, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn}], label: scaled-fp8-sinks-prefill}
   roofline:
     # The scores each query row sees under bottom-right alignment, the causal mask and both windows.
     func: "tileops._perf.formulas.gqa_dense_fwd_roofline"
@@ -118,7 +122,7 @@ GQADenseWithLSEFwdOp:
     - "window_size_left >= -1 and window_size_right >= -1"
     - "S_kv > 0"
     - "not is_causal or S_q <= S_kv"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {B: 4, S_q: 512, S_kv: 512, H: 32, H_kv: 8, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-short}
   - {B: 2, S_q: 2048, S_kv: 2048, H: 32, H_kv: 8, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long}
@@ -150,26 +154,30 @@ GQAVarlenFwdOp:
       v: {dtype: T, shape: "[T_kv, H_kv, D]"}
       cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)"]}
       cu_seqlens_kv: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(kv_lens)", requires: ["prefix_offsets(T_kv)"]}
-      q_scale: {dtype: float32, shape: "[B, H_kv]", optional: true}
-      k_scale: {dtype: float32, shape: "[B, H_kv]", optional: "present(q_scale)"}
-      v_scale: {dtype: float32, shape: "[B, H_kv]", optional: "present(q_scale)"}
-      rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
-      rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+      q_scale: {dtype: float32, shape: "[B, H_kv]", type: "Tensor | None", default: null}
+      k_scale: {dtype: float32, shape: "[B, H_kv]", type: "Tensor | None", default: null}
+      v_scale: {dtype: float32, shape: "[B, H_kv]", type: "Tensor | None", default: null}
+      rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", type: "Tensor | None", default: null}
+      rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", type: "Tensor | None", default: null}
       # Per-head unscaled logits add denominator-only mass; -inf disables, +inf yields zero.
-      sinks: {dtype: float32, shape: "[H]", optional: true}
+      sinks: {dtype: float32, shape: "[H]", type: "Tensor | None", default: null}
     outputs:
       o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[T_q, H, D]"}
     let:
-      R: "rotary_dim.value if present(rotary_dim) else D"
+      R: "rotary_dim if present(rotary_dim) else D"
     shape_rules:
+    - "present(rope_sin) == (pos_encoding_mode == 'rope')"
+    - "present(rope_cos) == (pos_encoding_mode == 'rope')"
+    - "present(v_scale) == present(q_scale)"
+    - "present(k_scale) == present(q_scale)"
     - "H_kv > 0 and H % H_kv == 0"
     - "window_size_left >= -1 and window_size_right >= -1"
-    - "(window_size_left == -1 and window_size_right == -1) or (not present(sm_scale) and (not present(softcap) or softcap.value == 0))"
+    - "(window_size_left == -1 and window_size_right == -1) or (not present(sm_scale) and (not present(softcap) or softcap == 0))"
     - "(T == 'float8_e4m3fn') == present(q_scale)"
-    - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == T)"
+    - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype == T)"
     - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
-    - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(rotary_dim) or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-uniform}
   - {T_q: 1024, T_kv: 3072, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-q-lt-kv}
@@ -183,10 +191,10 @@ GQAVarlenFwdOp:
   - {T_q: 4096, T_kv: 4096, H: 32, H_kv: 4, D: 512, q_lens: "repeat(2048, 2)", kv_lens: "repeat(2048, 2)", is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma4-31b-uniform}
   - {T_q: 1024, T_kv: 3072, H: 32, H_kv: 4, D: 512, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma4-31b-q-lt-kv}
   - {T_q: 6048, T_kv: 6048, H: 16, H_kv: 2, D: 512, q_lens: [1000, 2048, 3000], kv_lens: [1000, 2048, 3000], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma4-26b-a4b-ragged}
-  - {T_q: 2048, T_kv: 2048, P: 512, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, pos_encoding_mode: rope, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-uniform-rope}
-  - {T_q: 2048, T_kv: 2048, P: 512, H: 64, H_kv: 8, D: 64, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, pos_encoding_mode: rope, rope_layout: interleaved, dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-rope-interleaved}
-  - {T_q: 1018, T_kv: 2041, P: 1024, H: 32, H_kv: 8, D: 128, q_lens: [1, 0, 1000, 17], kv_lens: [1024, 0, 1000, 17], is_causal: true, pos_encoding_mode: rope, rotary_dim: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-rope-partial}
-  - {T_q: 3018, T_kv: 4017, P: 3000, H: 16, H_kv: 2, D: 128, q_lens: [3000, 1, 17], kv_lens: [3000, 1000, 17], is_causal: true, pos_encoding_mode: rope, rope_layout: interleaved, dtype_cases: [{T: float16}, {T: bfloat16}], label: qwen-ragged-rope}
+  - {T_q: 2048, T_kv: 2048, P: 512, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, pos_encoding_mode: rope, some: [rope_cos, rope_sin], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-uniform-rope}
+  - {T_q: 2048, T_kv: 2048, P: 512, H: 64, H_kv: 8, D: 64, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, pos_encoding_mode: rope, rope_layout: interleaved, some: [rope_cos, rope_sin], dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-rope-interleaved}
+  - {T_q: 1018, T_kv: 2041, P: 1024, H: 32, H_kv: 8, D: 128, q_lens: [1, 0, 1000, 17], kv_lens: [1024, 0, 1000, 17], is_causal: true, pos_encoding_mode: rope, rotary_dim: 64, some: [rope_cos, rope_sin], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-rope-partial}
+  - {T_q: 3018, T_kv: 4017, P: 3000, H: 16, H_kv: 2, D: 128, q_lens: [3000, 1, 17], kv_lens: [3000, 1000, 17], is_causal: true, pos_encoding_mode: rope, rope_layout: interleaved, some: [rope_cos, rope_sin], dtype_cases: [{T: float16}, {T: bfloat16}], label: qwen-ragged-rope}
   # Continuous-batching serving steps (seeded context lengths): prefill beside decodes, decodes, speculative verification.
   - {T_q: 1087, T_kv: 200385, H: 32, H_kv: 8, D: 128, q_lens: [1024, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], kv_lens: [3072, 2257, 3434, 3475, 1434, 1982, 758, 1097, 1521, 2427, 4548, 2115, 3682, 5658, 648, 4161, 4392, 4112, 3598, 4454, 5095, 1974, 3698, 1133, 4373, 2318, 563, 2585, 4661, 3739, 4285, 3505, 1331, 5830, 2516, 1195, 916, 3565, 5480, 3490, 1282, 5813, 875, 3172, 2320, 1104, 4476, 5722, 4633, 2103, 5163, 1564, 5370, 927, 4821, 706, 4403, 1988, 1614, 5142, 4137, 5187, 4046, 2740], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-serve-mixed}
   - {T_q: 543, T_kv: 100304, H: 64, H_kv: 8, D: 128, q_lens: [512, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], kv_lens: [2560, 1370, 2809, 4163, 4086, 1517, 3039, 1275, 1666, 5920, 5931, 5299, 2173, 5881, 3763, 3513, 2322, 3675, 5716, 994, 4534, 3019, 2659, 3483, 4052, 1189, 1166, 659, 4421, 3234, 2715, 1501], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-serve-mixed}
@@ -197,17 +205,17 @@ GQAVarlenFwdOp:
   - {T_q: 128, T_kv: 66351, H: 32, H_kv: 8, D: 128, q_lens: "repeat(4, 32)", kv_lens: [1766, 2042, 1222, 3754, 2422, 2761, 1434, 1169, 1072, 881, 2444, 3050, 1985, 3934, 1041, 1709, 2931, 2998, 2275, 1933, 3993, 1507, 1234, 1872, 1678, 905, 3424, 1866, 1913, 1592, 1475, 2069], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-spec-verify}
   - {T_q: 512, T_kv: 79772, H: 64, H_kv: 8, D: 128, q_lens: "repeat(16, 32)", kv_lens: [2480, 2921, 2968, 2167, 2707, 1928, 2829, 1023, 2677, 3693, 3912, 2060, 1974, 3600, 1911, 1041, 2214, 2237, 2372, 3730, 1581, 3466, 2270, 1090, 1902, 3469, 2038, 1083, 1630, 3482, 3733, 3584], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-spec-verify16}
   - {T_q: 128, T_kv: 144085, H: 64, H_kv: 8, D: 128, q_lens: "repeat(16, 8)", kv_lens: [21582, 21534, 25885, 20999, 12655, 8717, 14614, 18099], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-spec-long}
-  - {T_q: 1087, T_kv: 200385, H: 32, H_kv: 8, D: 128, q_lens: [1024, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], kv_lens: [3072, 2257, 3434, 3475, 1434, 1982, 758, 1097, 1521, 2427, 4548, 2115, 3682, 5658, 648, 4161, 4392, 4112, 3598, 4454, 5095, 1974, 3698, 1133, 4373, 2318, 563, 2585, 4661, 3739, 4285, 3505, 1331, 5830, 2516, 1195, 916, 3565, 5480, 3490, 1282, 5813, 875, 3172, 2320, 1104, 4476, 5722, 4633, 2103, 5163, 1564, 5370, 927, 4821, 706, 4403, 1988, 1614, 5142, 4137, 5187, 4046, 2740], P: 6144, is_causal: true, pos_encoding_mode: rope, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-serve-rope}
+  - {T_q: 1087, T_kv: 200385, H: 32, H_kv: 8, D: 128, q_lens: [1024, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], kv_lens: [3072, 2257, 3434, 3475, 1434, 1982, 758, 1097, 1521, 2427, 4548, 2115, 3682, 5658, 648, 4161, 4392, 4112, 3598, 4454, 5095, 1974, 3698, 1133, 4373, 2318, 563, 2585, 4661, 3739, 4285, 3505, 1331, 5830, 2516, 1195, 916, 3565, 5480, 3490, 1282, 5813, 875, 3172, 2320, 1104, 4476, 5722, 4633, 2103, 5163, 1564, 5370, 927, 4821, 706, 4403, 1988, 1614, 5142, 4137, 5187, 4046, 2740], P: 6144, is_causal: true, pos_encoding_mode: rope, some: [rope_cos, rope_sin], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-serve-rope}
   - {T_q: 543, T_kv: 104589, H: 64, H_kv: 8, D: 64, q_lens: [512, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], kv_lens: [1024, 1638, 2528, 5921, 5607, 1231, 3082, 5093, 1787, 621, 3771, 3732, 1014, 1245, 1424, 3014, 4286, 5156, 4081, 3774, 2109, 2036, 2996, 5523, 5981, 3148, 3093, 3901, 1159, 5541, 4642, 4431], is_causal: true, window_size_left: 128, some: [sinks], dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-serve-window}
-  - {T_q: 8, T_kv: 135938, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", kv_lens: [10536, 14999, 12739, 17932, 30883, 15792, 24261, 8796], P: 32768, is_causal: true, pos_encoding_mode: rope, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long-rope}
+  - {T_q: 8, T_kv: 135938, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", kv_lens: [10536, 14999, 12739, 17932, 30883, 15792, 24261, 8796], P: 32768, is_causal: true, pos_encoding_mode: rope, some: [rope_cos, rope_sin], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long-rope}
   # FP8 Q/K/V carry one dequantization scale per request and KV head, and name a 16-bit
   # out_dtype; bfloat16 is what the FP8 kernels of the comparison libraries return.
-  - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8}
-  - {T_q: 1024, T_kv: 3072, H: 64, H_kv: 8, D: 128, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-70b-fp8-q-lt-kv}
-  - {T_q: 3017, T_kv: 6146, H: 32, H_kv: 4, D: 128, q_lens: [1, 17, 1000, 0, 1999], kv_lens: [1, 17, 1000, 3000, 2128], is_causal: true, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-fp8-ragged}
-  - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, window_size_left: 256, out_dtype: bfloat16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8-w256}
+  - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, out_dtype: bfloat16, some: [q_scale, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8}
+  - {T_q: 1024, T_kv: 3072, H: 64, H_kv: 8, D: 128, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, out_dtype: bfloat16, some: [q_scale, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-70b-fp8-q-lt-kv}
+  - {T_q: 3017, T_kv: 6146, H: 32, H_kv: 4, D: 128, q_lens: [1, 17, 1000, 0, 1999], kv_lens: [1, 17, 1000, 3000, 2128], is_causal: true, out_dtype: bfloat16, some: [q_scale, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn}], label: qwen3-fp8-ragged}
+  - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, window_size_left: 256, out_dtype: bfloat16, some: [q_scale, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8-w256}
   - {is_causal: true, T_q: 1042, T_kv: 2066, H: 64, H_kv: 8, D: 64, q_lens: [1024, 1, 0, 17], kv_lens: [1024, 1025, 0, 17], window_size_left: 128, some: [sinks], dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-sink-mixed}
-  - {is_causal: true, T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", out_dtype: bfloat16, some: [q_scale, sinks], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8-sink}
+  - {is_causal: true, T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", out_dtype: bfloat16, some: [q_scale, sinks, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8-sink}
   roofline:
     func: "tileops._perf.formulas.gqa_varlen_fwd_roofline"
 
@@ -237,18 +245,18 @@ GQAPagedFwdOp:
       # q_len <= cache_seqlens is the caller's obligation.
       cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(0, W * PS + 1)", "in_range(0, P + 1 if pos_encoding_mode == 'rope' else W * PS + 1)"]}
       cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)"]}
-      q_scale: {dtype: float32, shape: "[B, H_kv]", optional: true}
+      q_scale: {dtype: float32, shape: "[B, H_kv]", type: "Tensor | None", default: null}
       # A per-tensor scale is [1]; a per-request, per-KV-head one is [B, H_kv]. The rank
       # tells them apart, B = H_kv = 1 included.
-      k_scale: {dtype: float32, shape: "[*SK]", optional: true}
-      v_scale: {dtype: float32, shape: "[*SK]", optional: "present(k_scale)"}
-      rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
-      rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
-      sinks: {dtype: float32, shape: "[H]", optional: true}
+      k_scale: {dtype: float32, shape: "[*SK]", type: "Tensor | None", default: null}
+      v_scale: {dtype: float32, shape: "[*SK]", type: "Tensor | None", default: null}
+      rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", type: "Tensor | None", default: null}
+      rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", type: "Tensor | None", default: null}
+      sinks: {dtype: float32, shape: "[H]", type: "Tensor | None", default: null}
     outputs:
       o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[T_q, H, D]"}
     let:
-      R: "rotary_dim.value if present(rotary_dim) else D"
+      R: "rotary_dim if present(rotary_dim) else D"
     dtype_combos:
     - {T: float16, KV: float16}
     - {T: bfloat16, KV: bfloat16}
@@ -256,15 +264,18 @@ GQAPagedFwdOp:
     - {T: bfloat16, KV: float8_e4m3fn}
     - {T: float8_e4m3fn, KV: float8_e4m3fn}
     shape_rules:
+    - "present(rope_sin) == (pos_encoding_mode == 'rope')"
+    - "present(rope_cos) == (pos_encoding_mode == 'rope')"
+    - "present(v_scale) == present(k_scale)"
     - "H_kv > 0 and H % H_kv == 0 and PS > 0"
     - "window_size_left >= -1 and window_size_right >= -1"
     - "(T == 'float8_e4m3fn') == present(q_scale)"
     - "(KV == 'float8_e4m3fn') == present(k_scale)"
     - "not present(k_scale) or (len(SK) == 1 and SK[0] == 1) or (len(SK) == 2 and SK[0] == B and SK[1] == H_kv)"
-    - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == T)"
+    - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype == T)"
     - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
-    - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(rotary_dim) or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {is_causal: true, T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b}
   - {is_causal: true, T_q: 32, NP: 2048, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p64}
@@ -287,28 +298,28 @@ GQAPagedFwdOp:
   - {is_causal: true, T_q: 526, NP: 512, PS: 64, W: 32, H: 64, H_kv: 8, D: 64, q_lens: [512, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0], cache_lens: "repeat(2048, 16)", window_size_left: 128, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-120b-window}
   # Irregular: a page no key tile divides, a cache length no page fills, a ragged packing.
   - {is_causal: true, T_q: 1007, NP: 774, PS: 48, W: 86, H: 32, H_kv: 8, D: 128, q_lens: [1000, 1, 1, 1, 1, 1, 1, 1, 0], cache_lens: "repeat(4099, 9)", dtype_cases: [{T: bfloat16, KV: bfloat16}], label: qwen3-ragged-odd}
-  - {is_causal: true, T_q: 8, NP: 512, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [1, 1, 1, 1, 1, 1, 1, 1], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-decode, P: 4096, pos_encoding_mode: rope}
-  - {is_causal: true, T_q: 2048, NP: 256, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-prefill, P: 4096, pos_encoding_mode: rope}
-  - {is_causal: true, T_q: 289, NP: 88, PS: 48, W: 22, H: 32, H_kv: 8, D: 128, q_lens: [257, 1, 0, 31], cache_lens: [1025, 513, 0, 127], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: qwen-ragged-rope, P: 1025, pos_encoding_mode: rope, rotary_dim: 64, rope_layout: interleaved, window_size_left: 256}
+  - {is_causal: true, T_q: 8, NP: 512, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [1, 1, 1, 1, 1, 1, 1, 1], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], some: [rope_cos, rope_sin], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-decode, P: 4096, pos_encoding_mode: rope}
+  - {is_causal: true, T_q: 2048, NP: 256, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], some: [rope_cos, rope_sin], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: llama-8b-rope-prefill, P: 4096, pos_encoding_mode: rope}
+  - {is_causal: true, T_q: 289, NP: 88, PS: 48, W: 22, H: 32, H_kv: 8, D: 128, q_lens: [257, 1, 0, 31], cache_lens: [1025, 513, 0, 127], some: [rope_cos, rope_sin], dtype_cases: [{T: float16, KV: float16}, {T: bfloat16, KV: bfloat16}], label: qwen-ragged-rope, P: 1025, pos_encoding_mode: rope, rotary_dim: 64, rope_layout: interleaved, window_size_left: 256}
   - {is_causal: true, T_q: 288, NP: 68, PS: 64, W: 17, H: 64, H_kv: 8, D: 64, q_lens: [256, 1, 0, 31], cache_lens: [1025, 513, 0, 127], some: [sinks], dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-sink-mixed, window_size_left: 128}
   - {is_causal: true, T_q: 8, NP: 256, PS: 64, W: 32, H: 64, H_kv: 8, D: 64, q_lens: [1, 1, 1, 1, 1, 1, 1, 1], cache_lens: [2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048], some: [sinks], dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-sink-decode}
-  - {is_causal: true, T_q: 32, NP: 2048, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", SK: [1], some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}, {T: bfloat16, KV: float8_e4m3fn}], label: llama-8b-fp8kv-decode}
-  - {is_causal: true, T_q: 8, NP: 2048, PS: 16, W: 256, H: 64, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(4096, 8)", SK: [1], some: [k_scale], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn}], label: llama-70b-fp8kv-p16}
-  - {is_causal: true, T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", SK: [1], some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}, {T: bfloat16, KV: float8_e4m3fn}], label: llama-8b-fp8kv-prefill}
-  - {is_causal: true, T_q: 32, NP: 2048, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", SK: [32, 8], out_dtype: bfloat16, some: [q_scale, k_scale], dtype_cases: [{T: float8_e4m3fn, KV: float8_e4m3fn}], label: llama-8b-fp8-decode}
-  - {is_causal: true, T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", SK: [8, 8], out_dtype: bfloat16, some: [q_scale, k_scale], dtype_cases: [{T: float8_e4m3fn, KV: float8_e4m3fn}], label: llama-8b-fp8-prefill}
-  - {is_causal: true, T_q: 1007, NP: 774, PS: 48, W: 86, H: 32, H_kv: 8, D: 128, q_lens: [1000, 1, 1, 1, 1, 1, 1, 1, 0], cache_lens: "repeat(4099, 9)", SK: [1], out_dtype: bfloat16, some: [q_scale, k_scale], dtype_cases: [{T: float8_e4m3fn, KV: float8_e4m3fn}], label: qwen3-fp8-ragged-odd}
-  - {is_causal: true, T_q: 289, NP: 88, PS: 48, W: 22, H: 32, H_kv: 8, D: 128, q_lens: [257, 1, 0, 31], cache_lens: [1025, 513, 0, 127], SK: [4, 8], some: [k_scale], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn}], label: qwen-fp8kv-ragged-rope, P: 1025, pos_encoding_mode: rope, rotary_dim: 64, rope_layout: interleaved, window_size_left: 256}
-  - {T_q: 8192, NP: 4224, PS: 64, W: 528, H: 32, H_kv: 8, D: 256, q_lens: "repeat(1024, 8)", cache_lens: "repeat(33792, 8)", is_causal: true, P: 33792, pos_encoding_mode: rope, rotary_dim: 64, dtype_cases: [{T: float16, KV: float16}], label: qwen35-9b-rope-chunk}
-  - {T_q: 4608, NP: 4224, PS: 64, W: 528, H: 32, H_kv: 8, D: 256, q_lens: [256, 512, 768, 1024, 384, 640, 896, 128], cache_lens: [4352, 8704, 17152, 33792, 12672, 25216, 31616, 2176], is_causal: true, P: 33792, pos_encoding_mode: rope, rotary_dim: 64, dtype_cases: [{T: float16, KV: float16}], label: qwen35-9b-mixed-chunk}
-  - {T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4608, 8)", is_causal: true, P: 4608, pos_encoding_mode: rope, dtype_cases: [{T: float16, KV: float16}], label: llama-8b-rope-chunk}
+  - {is_causal: true, T_q: 32, NP: 2048, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", SK: [1], some: [k_scale, v_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}, {T: bfloat16, KV: float8_e4m3fn}], label: llama-8b-fp8kv-decode}
+  - {is_causal: true, T_q: 8, NP: 2048, PS: 16, W: 256, H: 64, H_kv: 8, D: 128, q_lens: "repeat(1, 8)", cache_lens: "repeat(4096, 8)", SK: [1], some: [k_scale, v_scale], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn}], label: llama-70b-fp8kv-p16}
+  - {is_causal: true, T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", SK: [1], some: [k_scale, v_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}, {T: bfloat16, KV: float8_e4m3fn}], label: llama-8b-fp8kv-prefill}
+  - {is_causal: true, T_q: 32, NP: 2048, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", SK: [32, 8], out_dtype: bfloat16, some: [q_scale, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn, KV: float8_e4m3fn}], label: llama-8b-fp8-decode}
+  - {is_causal: true, T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", SK: [8, 8], out_dtype: bfloat16, some: [q_scale, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn, KV: float8_e4m3fn}], label: llama-8b-fp8-prefill}
+  - {is_causal: true, T_q: 1007, NP: 774, PS: 48, W: 86, H: 32, H_kv: 8, D: 128, q_lens: [1000, 1, 1, 1, 1, 1, 1, 1, 0], cache_lens: "repeat(4099, 9)", SK: [1], out_dtype: bfloat16, some: [q_scale, k_scale, v_scale], dtype_cases: [{T: float8_e4m3fn, KV: float8_e4m3fn}], label: qwen3-fp8-ragged-odd}
+  - {is_causal: true, T_q: 289, NP: 88, PS: 48, W: 22, H: 32, H_kv: 8, D: 128, q_lens: [257, 1, 0, 31], cache_lens: [1025, 513, 0, 127], SK: [4, 8], some: [k_scale, v_scale, rope_cos, rope_sin], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn}], label: qwen-fp8kv-ragged-rope, P: 1025, pos_encoding_mode: rope, rotary_dim: 64, rope_layout: interleaved, window_size_left: 256}
+  - {T_q: 8192, NP: 4224, PS: 64, W: 528, H: 32, H_kv: 8, D: 256, q_lens: "repeat(1024, 8)", cache_lens: "repeat(33792, 8)", is_causal: true, P: 33792, pos_encoding_mode: rope, rotary_dim: 64, some: [rope_cos, rope_sin], dtype_cases: [{T: float16, KV: float16}], label: qwen35-9b-rope-chunk}
+  - {T_q: 4608, NP: 4224, PS: 64, W: 528, H: 32, H_kv: 8, D: 256, q_lens: [256, 512, 768, 1024, 384, 640, 896, 128], cache_lens: [4352, 8704, 17152, 33792, 12672, 25216, 31616, 2176], is_causal: true, P: 33792, pos_encoding_mode: rope, rotary_dim: 64, some: [rope_cos, rope_sin], dtype_cases: [{T: float16, KV: float16}], label: qwen35-9b-mixed-chunk}
+  - {T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4608, 8)", is_causal: true, P: 4608, pos_encoding_mode: rope, some: [rope_cos, rope_sin], dtype_cases: [{T: float16, KV: float16}], label: llama-8b-rope-chunk}
   - {T_q: 2048, NP: 288, PS: 64, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4608, 4)", is_causal: true, softcap: 50.0, dtype_cases: [{T: float16, KV: float16}], label: synthetic-softcap-chunk}
   - {T_q: 2048, NP: 288, PS: 64, W: 72, H: 71, H_kv: 1, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(2048, 4)", is_causal: true, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: falcon-7b-chunk}
   - {T_q: 2048, NP: 288, PS: 64, W: 72, H: 48, H_kv: 1, D: 128, q_lens: "repeat(512, 4)", cache_lens: "repeat(4608, 4)", is_causal: true, dtype_cases: [{T: float16, KV: float16}], label: starcoder-chunk}
   - {T_q: 2048, NP: 288, PS: 64, W: 72, H: 8, H_kv: 1, D: 256, q_lens: "repeat(512, 4)", cache_lens: "repeat(4608, 4)", is_causal: true, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gemma-2b-chunk}
-  - {T_q: 8192, NP: 4224, PS: 64, W: 528, H: 32, H_kv: 8, D: 256, q_lens: "repeat(1024, 8)", cache_lens: "repeat(33792, 8)", is_causal: true, SK: [1], some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: qwen35-9b-chunk-fp8kv}
-  - {T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4608, 8)", is_causal: true, SK: [1], some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: llama-8b-chunk-fp8kv}
-  - {T_q: 2048, NP: 288, PS: 64, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4608, 4)", is_causal: true, softcap: 50.0, SK: [1], some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: softcap-chunk-fp8kv}
+  - {T_q: 8192, NP: 4224, PS: 64, W: 528, H: 32, H_kv: 8, D: 256, q_lens: "repeat(1024, 8)", cache_lens: "repeat(33792, 8)", is_causal: true, SK: [1], some: [k_scale, v_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: qwen35-9b-chunk-fp8kv}
+  - {T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4608, 8)", is_causal: true, SK: [1], some: [k_scale, v_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: llama-8b-chunk-fp8kv}
+  - {T_q: 2048, NP: 288, PS: 64, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4608, 4)", is_causal: true, softcap: 50.0, SK: [1], some: [k_scale, v_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: softcap-chunk-fp8kv}
   roofline:
     func: "tileops._perf.formulas.gqa_paged_fwd_roofline"
 
@@ -341,7 +352,7 @@ GQADenseBwdOp:
     - "H_kv > 0 and H % H_kv == 0"
     - "S > 0"
     - "window_size_left >= -1 and window_size_right >= -1"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {B: 4, S: 512, H: 32, D: 128, H_kv: 8, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-short}
   - {B: 2, S: 2048, H: 32, D: 128, H_kv: 8, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long}
@@ -465,7 +476,7 @@ DSADenseFwdOp:
     - "dim_tail >= 0 and stride_kv > 0"
     # The kernel's first stride_kv - 1 outputs are undefined when queries start at 0.
     - "q_start_index_s > stride_kv or (q_start_index_s == 0 and stride_kv == 1)"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {B: 1, S: 1024, S_kv: 2048, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v32-kv2k}
   - {B: 1, S: 512, S_kv: 4096, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 64, stride_kv: 1, q_start_index_s: 512, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v32-kv4k}
@@ -515,7 +526,7 @@ NSACompressedVarlenFwdOp:
     # One query group per KV head, and the MMA the group feeds needs 16 rows.
     - "H_kv > 0 and H % H_kv == 0 and H // H_kv % 16 == 0"
     - "block_size > 0"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {C: 256, H: 32, H_kv: 2, DK: 128, DV: 128, sm_scale: 0.08838834764831845, block_size: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}], label: prefill-8x1k}
   - {C: 128, H: 32, H_kv: 2, DK: 128, DV: 128, sm_scale: 0.08838834764831845, block_size: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}], label: prefill-4x1k}
@@ -547,7 +558,7 @@ NSATopKVarlenFwdOp:
     - "H_kv > 0 and H % H_kv == 0 and H // H_kv % 16 == 0"
     # The selection ranks at most one block's worth of chunks against its pool.
     - "0 < selected_block_num and selected_block_num <= block_size"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {C: 256, H: 32, H_kv: 2, D: 128, sm_scale: 1.0, selected_block_num: 16, block_size: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-8x1k}
   - {C: 128, H: 32, H_kv: 2, D: 128, sm_scale: 1.0, selected_block_num: 16, block_size: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-4x1k}
@@ -585,7 +596,7 @@ NSAVarlenFwdOp:
     # The kernel tiles the head dimension whole; a wider one silently truncates.
     - "D <= 128"
     - "block_size > 0"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {H: 16, H_kv: 1, D: 64, SEL: 1, is_causal: true, sm_scale: 0.1, block_size: 32, seq_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}], label: prefill-4x2k}
   - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: true, sm_scale: 0.1, block_size: 32, seq_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], label: prefill-2x4k}
@@ -621,7 +632,7 @@ MLAPagedFwdOp:
       block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
       cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(S_q, W * PS + 1)"]}
       # Per-tensor dequantization scale of an FP8 cache.
-      kv_scale: {dtype: float32, shape: "[1]", optional: true}
+      kv_scale: {dtype: float32, shape: "[1]", type: "Tensor | None", default: null}
     outputs:
       o: {dtype: T, shape: "[B, S_q, H, kv_lora_rank]"}
       # Natural-log log-sum-exp of each row's scaled scores, head-major.
@@ -635,7 +646,7 @@ MLAPagedFwdOp:
     - "S_q > 0 and PS > 0"
     - "0 < kv_lora_rank < DK"
     - "(KV == 'float8_e4m3fn') == present(kv_scale)"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {is_causal: true, S_q: 1, H: 128, DK: 576, NP: 4096, PS: 64, W: 64, kv_lora_rank: 512, cache_lens: "repeat(4096, 64)", dtype_cases: [{T: bfloat16, KV: bfloat16}, {T: float16, KV: float16}], label: ds-v3-4k}
   - {is_causal: true, S_q: 1, H: 128, DK: 576, NP: 32768, PS: 64, W: 512, kv_lora_rank: 512, cache_lens: "repeat(32768, 64)", dtype_cases: [{T: bfloat16, KV: bfloat16}], label: ds-v3-32k}
@@ -672,7 +683,7 @@ MLAVarlenFwdOp:
       lse: {dtype: float32, shape: "[H, T_q]"}
     shape_rules:
     - "DN + PE > 0"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {is_causal: true, T_q: 32768, H: 128, DN: 128, PE: 64, DV: 128, seq_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}, {T: float16}], label: ds-v3-8x4k}
   - {is_causal: true, T_q: 32256, H: 128, DN: 128, PE: 64, DV: 128, seq_lens: [512, 1024, 2048, 4096, 8192, 16384], dtype_cases: [{T: bfloat16}], label: ds-v3-mixed}
@@ -708,7 +719,7 @@ MLADenseBwdOp:
       dv: {dtype: T, shape: "[B, S_kv, H, D_v]"}
     shape_rules:
     - "S_kv > 0"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {is_causal: true, B: 1, S_q: 4096, S_kv: 4096, H: 128, D_qk: 192, D_v: 128, dtype_cases: [{T: bfloat16}, {T: float16}], label: ds-v3-4k}
   - {is_causal: true, B: 2, S_q: 8192, S_kv: 8192, H: 128, D_qk: 192, D_v: 128, dtype_cases: [{T: bfloat16}], label: ds-v3-b2-8k}
@@ -745,7 +756,7 @@ MLAVarlenBwdOp:
       dk: {dtype: T, shape: "[T_kv, H, D_qk]"}
       dv: {dtype: T, shape: "[T_kv, H, D_v]"}
     shape_rules:
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {is_causal: true, T_q: 32768, T_kv: 32768, H: 128, D_qk: 192, D_v: 128, q_lens: "repeat(4096, 8)", kv_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}, {T: float16}], label: ds-v3-8x4k}
   - {is_causal: true, T_q: 32256, T_kv: 32256, H: 128, D_qk: 192, D_v: 128, q_lens: [512, 1024, 2048, 4096, 8192, 16384], kv_lens: [512, 1024, 2048, 4096, 8192, 16384], dtype_cases: [{T: bfloat16}], label: ds-v3-mixed}
@@ -769,8 +780,8 @@ PagedKVCacheWriteFwdOp:
       k_cache: {dtype: KV, shape: "[NP, PS, H_kv, D]", mutated: true, contiguous: true}
       v_cache: {dtype: KV, shape: "[NP, PS, H_kv, D]", mutated: true, contiguous: true}
       slot_mapping: {dtype: int64, shape: "[N]", values: "sample_indices(N, NP * PS)", requires: ["in_range(-1, NP * PS)"]}
-      k_scale: {dtype: float32, shape: "[1]", optional: true}
-      v_scale: {dtype: float32, shape: "[1]", optional: "present(k_scale)"}
+      k_scale: {dtype: float32, shape: "[1]", type: "Tensor | None", default: null}
+      v_scale: {dtype: float32, shape: "[1]", type: "Tensor | None", default: null}
     outputs: {}
     dtype_combos:
     - {T: float16, KV: float16}
@@ -778,15 +789,16 @@ PagedKVCacheWriteFwdOp:
     - {T: float16, KV: float8_e4m3fn}
     - {T: bfloat16, KV: float8_e4m3fn}
     shape_rules:
+    - "present(v_scale) == present(k_scale)"
     - "PS > 0"
     - "(KV == 'float8_e4m3fn') == present(k_scale)"
   workloads:
   - {N: 64, H_kv: 8, D: 128, NP: 4096, PS: 16, dtype_cases: [{T: bfloat16, KV: bfloat16}, {T: float16, KV: float16}], label: llama-8b-decode}
   - {N: 8192, H_kv: 8, D: 128, NP: 4096, PS: 16, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: llama-8b-prefill}
-  - {N: 4096, H_kv: 4, D: 128, NP: 4096, PS: 16, some: [k_scale], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn}], label: qwen3-235b-fp8}
+  - {N: 4096, H_kv: 4, D: 128, NP: 4096, PS: 16, some: [k_scale, v_scale], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn}], label: qwen3-235b-fp8}
   - {N: 256, H_kv: 8, D: 64, NP: 4096, PS: 16, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: gpt-oss-120b}
   - {N: 7, H_kv: 2, D: 64, NP: 5, PS: 7, dtype_cases: [{T: float16, KV: float16}], label: odd-tokens-and-page}
-  - {N: 1024, H_kv: 4, D: 128, NP: 512, PS: 32, some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: qwen3-235b-fp8-fp16}
+  - {N: 1024, H_kv: 4, D: 128, NP: 512, PS: 32, some: [k_scale, v_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: qwen3-235b-fp8-fp16}
   roofline:
     # Only the tokens with a slot are read and written.
     func: "tileops._perf.formulas.paged_kv_cache_write_roofline"
@@ -810,9 +822,9 @@ MLAKVCacheWriteFwdOp:
       k_pe: {dtype: T, shape: "[N, PE]"}
       kv_cache: {dtype: KV, shape: "[NP, PS, DC + PE]", mutated: true, contiguous: true}
       slot_mapping: {dtype: int64, shape: "[N]", values: "sample_indices(N, NP * PS)", requires: ["in_range(-1, NP * PS)"]}
-      kv_scale: {dtype: float32, shape: "[1]", optional: true}
-      positions: {dtype: int64, shape: "[N]", optional: fuse_rope, values: "packed_positions(seq_lens)", requires: ["in_range(0, P)"]}
-      cos_sin_cache: {dtype: C, shape: "[P, PE]", optional: fuse_rope}
+      kv_scale: {dtype: float32, shape: "[1]", type: "Tensor | None", default: null}
+      positions: {dtype: int64, shape: "[N]", type: "Tensor | None", default: null, values: "packed_positions(seq_lens)", requires: ["in_range(0, P)"]}
+      cos_sin_cache: {dtype: C, shape: "[P, PE]", type: "Tensor | None", default: null}
     outputs: {}
     dtype_combos:
     - {T: float16, KV: float16}
@@ -820,15 +832,17 @@ MLAKVCacheWriteFwdOp:
     - {T: float16, KV: float8_e4m3fn}
     - {T: bfloat16, KV: float8_e4m3fn}
     shape_rules:
+    - "present(cos_sin_cache) == fuse_rope"
+    - "present(positions) == fuse_rope"
     - "PS > 0"
     - "not fuse_rope or PE % 2 == 0"
     - "(KV == 'float8_e4m3fn') == present(kv_scale)"
   workloads:
   - {N: 64, DC: 512, PE: 64, NP: 2048, PS: 64, dtype_cases: [{T: bfloat16, KV: bfloat16}], label: ds-v3-decode}
   - {N: 16384, DC: 512, PE: 64, NP: 2048, PS: 64, dtype_cases: [{T: bfloat16, KV: bfloat16}, {T: float16, KV: float16}], label: ds-v3-prefill}
-  - {DC: 512, PE: 64, NP: 2048, PS: 64, P: 163840, seq_lens: "repeat(1024, 4)", fuse_rope: true, rope_layout: interleaved, some: [kv_scale], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn, C: float32}], label: ds-v3-fp8-rope}
-  - {DC: 512, PE: 64, NP: 2048, PS: 64, P: 131072, seq_lens: [128], fuse_rope: true, rope_layout: interleaved, dtype_cases: [{T: bfloat16, KV: bfloat16, C: bfloat16}], label: kimi-k2-rope}
-  - {DC: 512, PE: 64, NP: 5, PS: 7, P: 64, seq_lens: [3, 4], fuse_rope: true, rope_layout: neox, some: [kv_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn, C: float16}], label: odd-tokens-neox-fp8}
+  - {DC: 512, PE: 64, NP: 2048, PS: 64, P: 163840, seq_lens: "repeat(1024, 4)", fuse_rope: true, rope_layout: interleaved, some: [kv_scale, positions, cos_sin_cache], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn, C: float32}], label: ds-v3-fp8-rope}
+  - {DC: 512, PE: 64, NP: 2048, PS: 64, P: 131072, seq_lens: [128], fuse_rope: true, rope_layout: interleaved, some: [positions, cos_sin_cache], dtype_cases: [{T: bfloat16, KV: bfloat16, C: bfloat16}], label: kimi-k2-rope}
+  - {DC: 512, PE: 64, NP: 5, PS: 7, P: 64, seq_lens: [3, 4], fuse_rope: true, rope_layout: neox, some: [kv_scale, positions, cos_sin_cache], dtype_cases: [{T: float16, KV: float8_e4m3fn, C: float16}], label: odd-tokens-neox-fp8}
   roofline:
     # Only the tokens with a slot are read and written; the rotation reads the cos/sin
     # rows their positions name.
@@ -896,7 +910,7 @@ DSAPagedFwdOp:
       lse: {dtype: float32, shape: "[B, H, S_q]"}
     shape_rules:
     - "S_q > 0 and PS > 0"
-    - "not present(sm_scale) or 0 < sm_scale.value < inf"
+    - "not present(sm_scale) or 0 < sm_scale < inf"
   workloads:
   - {S_q: 1, H: 128, K: 2048, NP: 32768, PS: 64, W: 512, cache_lens: "repeat(32768, 64)", label: ds-v32-32k}
   - {S_q: 2, H: 128, K: 2048, NP: 32768, PS: 64, W: 2048, cache_lens: "repeat(131072, 16)", label: ds-v32-mtp-128k}
@@ -923,15 +937,15 @@ PagedKVCacheGatherFwdOp:
       kv_cache: {dtype: KV, shape: "[NP, PS, *E]", contiguous: true}
       block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
       cu_seqlens: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)", "max_segment(W * PS)"]}
-      seq_starts: {dtype: int32, shape: "[B]", optional: true, values: "as_tensor(starts)", requires: ["in_range(0, W * PS)", "attn.paged_fits(cu_seqlens, W * PS)"]}
-      kv_scale: {dtype: float32, shape: "[1]", optional: true}
+      seq_starts: {dtype: int32, shape: "[B]", type: "Tensor | None", default: null, values: "as_tensor(starts)", requires: ["in_range(0, W * PS)", "attn.paged_fits(cu_seqlens, W * PS)"]}
+      kv_scale: {dtype: float32, shape: "[1]", type: "Tensor | None", default: null}
       out: {dtype: "coalesce_dtype(out_dtype, KV)", shape: "[T_q, *E]", mutated: true, write_only: true, kw_only: true}
     outputs:
       output: {dtype: "coalesce_dtype(out_dtype, KV)", shape: "[T_q, *E]", alias: out}
     shape_rules:
     - "PS > 0"
     - "(KV == 'float8_e4m3fn') == present(kv_scale)"
-    - "present(out_dtype) if KV == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == KV)"
+    - "present(out_dtype) if KV == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype == KV)"
   workloads:
   - {T_q: 131072, NP: 2048, PS: 64, W: 256, E: [576], seq_lens: "repeat(16384, 8)", out_dtype: bfloat16, some: [kv_scale], dtype_cases: [{KV: float8_e4m3fn}], label: ds-v3-chunk-fp8}
   - {T_q: 129024, NP: 6144, PS: 64, W: 1024, E: [576], seq_lens: [2048, 4096, 8192, 16384, 32768, 65536], dtype_cases: [{KV: bfloat16}], label: ds-v3-mixed}

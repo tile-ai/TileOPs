@@ -33,8 +33,7 @@ from tileops._ops.elementwise.arithmetic import (
     AddFwdOp,
     DivFwdOp,
     FloorDivideFwdOp,
-    LerpScalarFwdOp,
-    LerpTensorFwdOp,
+    LerpFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MulFwdOp,
@@ -48,7 +47,7 @@ from tileops._ops.elementwise.bitwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
 )
-from tileops._ops.elementwise.clamp import ClampScalarFwdOp, ClampTensorFwdOp
+from tileops._ops.elementwise.clamp import ClampFwdOp
 from tileops._ops.elementwise.comparison import (
     EqFwdOp,
     GeFwdOp,
@@ -62,7 +61,7 @@ from tileops._ops.elementwise.comparison import (
 )
 from tileops._ops.elementwise.dropout import DropoutFwdOp
 from tileops._ops.elementwise.logical import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
-from tileops._ops.elementwise.masked_fill import MaskedFillScalarFwdOp, MaskedFillTensorFwdOp
+from tileops._ops.elementwise.masked_fill import MaskedFillFwdOp
 from tileops._ops.elementwise.math_unary import (
     AbsFwdOp,
     CeilFwdOp,
@@ -97,8 +96,7 @@ __all__ = [
     "BitwiseOrFwdOp",
     "BitwiseXorFwdOp",
     "CeilFwdOp",
-    "ClampScalarFwdOp",
-    "ClampTensorFwdOp",
+    "ClampFwdOp",
     "CosFwdOp",
     "DivFwdOp",
     "DropoutFwdOp",
@@ -122,16 +120,14 @@ __all__ = [
     "IsnanFwdOp",
     "LeFwdOp",
     "LeakyReLUFwdOp",
-    "LerpScalarFwdOp",
-    "LerpTensorFwdOp",
+    "LerpFwdOp",
     "Log1pFwdOp",
     "LogFwdOp",
     "LogicalAndFwdOp",
     "LogicalNotFwdOp",
     "LogicalOrFwdOp",
     "LtFwdOp",
-    "MaskedFillScalarFwdOp",
-    "MaskedFillTensorFwdOp",
+    "MaskedFillFwdOp",
     "MaximumFwdOp",
     "MinimumFwdOp",
     "MishFwdOp",

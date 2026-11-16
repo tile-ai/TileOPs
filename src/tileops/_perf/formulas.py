@@ -14,6 +14,7 @@ from math import prod
 from typing import TYPE_CHECKING
 
 from tileops.manifest._dtype_rules import FLOAT8_DTYPES
+from tileops.manifest.primitives import flat
 
 if TYPE_CHECKING:
     from tileops.manifest._workload import CallView
@@ -65,6 +66,7 @@ __all__ = [
     "paged_kv_cache_write_roofline",
     "pool_roofline",
     "rope_cos_sin_roofline",
+    "rope_positions_roofline",
     "routed_active_experts",
     "routed_expert_mlp_roofline",
     "top_k_mask_roofline",
@@ -1259,15 +1261,7 @@ def embedding_roofline(call: CallView) -> tuple[int, int]:
     square, accumulate), 3 for a general p (abs, power, accumulate); a root per row except
     for p = 1 and p = inf."""
     d, p = call.indices["D"], call.indices["norm_type"]
-    ids = call.metadata_values("input")
-    pending, flat = [ids], []
-    while pending:
-        item = pending.pop()
-        if isinstance(item, list):
-            pending.extend(item)
-        else:
-            flat.append(item)
-    rows = len(set(flat))
+    rows = len(set(flat(call.metadata_values("input"))))
     flops = 0
     if call.indices["max_norm"] is not None:
         per_value = 2 if p in (1.0, 2.0, float("inf")) else 3
@@ -1277,25 +1271,55 @@ def embedding_roofline(call: CallView) -> tuple[int, int]:
     return flops, moved
 
 
+def rope_positions_roofline(call: CallView) -> tuple[int, int]:
+    """3 per rotated value of query and key. Both are read and written whole, positions (and
+    offsets) read, and the cache rows they name read once, cos and sin in the query's dtype."""
+    indices = call.indices
+    index = call.metadata_values("positions")
+    if call.present("offsets"):
+        offsets = call.metadata_values("offsets")
+        index = [p + o for p, o in zip(index, offsets, strict=True)]
+    flat_index = flat(index)
+    rows, tokens = set(flat_index), len(flat_index)
+    rotated, moved = 0, 0
+    for name in ("query", "key"):
+        if call.present(name):
+            heads = prod(call.tensors[name][0]) // max(tokens * indices["head_size"], 1)
+            rotated += tokens * heads * indices["rotary_dim"]
+            moved += 2 * call.bytes(name)
+    for name in ("positions", "offsets"):
+        if call.present(name):
+            moved += call.bytes(name)
+    moved += len(rows) * indices["rotary_dim"] * _elem_bytes(call, "query")
+    return 3 * rotated, moved
+
+
 def rope_cos_sin_roofline(call: CallView) -> tuple[int, int]:
     """3 per rotated value. Out of place every value of x is read and written; in place only
-    the rotated columns. cos and sin are read on the rows the sequences reach: S dense, the
-    longest sequence packed, none when there is nothing to rotate."""
+    the rotated columns. cos and sin are read on the distinct rows the sequences reach: each
+    sequence's rows from its offset, none when there is nothing to rotate."""
     indices = call.indices
     rotated = 2 * indices["Rh"]
     if call.present("cu_seqlens"):
         bounds = call.metadata_values("cu_seqlens")
         tokens = indices["Tt"]
-        rows = max((b - a for a, b in zip(bounds, bounds[1:], strict=False)), default=0)
+        lengths = [b - a for a, b in zip(bounds, bounds[1:], strict=False)]
     else:
-        tokens, rows = indices["B"] * indices["S"], indices["S"]
-    if tokens * indices["H"] == 0:
-        rows = 0
+        tokens, lengths = indices["B"] * indices["S"], [indices["S"]] * indices["B"]
+    if call.member("seqlen_offsets") == "Tensor":
+        offsets = call.metadata_values("seqlen_offsets")
+    else:
+        offsets = [0] * len(lengths)
+    reached = set()
+    for start, length in zip(offsets, lengths, strict=True):
+        reached.update(range(start, start + length))
+    rows = len(reached) if tokens * indices["H"] else 0
     width = rotated if indices["inplace"] else indices["D"]
     moved = 2 * tokens * indices["H"] * width * _elem_bytes(call, "x")
     moved += rows * indices["Rh"] * (_elem_bytes(call, "cos") + _elem_bytes(call, "sin"))
-    if call.present("cu_seqlens"):
-        moved += call.bytes("cu_seqlens")
+    for metadata in ("cu_seqlens", "seqlen_offsets"):
+        if call.member(metadata) == "Tensor":
+            moved += call.bytes(metadata)
     return 3 * tokens * indices["H"] * rotated, moved
 
 

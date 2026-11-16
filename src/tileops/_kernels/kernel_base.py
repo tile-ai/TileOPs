@@ -520,8 +520,7 @@ class Kernel(ABC):
         """Raise unless every named tensor is on a device type this class's ``devices`` names.
 
         Selection already keeps an op's calls on those devices; this guards a kernel called
-        directly. An ``optional: true`` input the call did not pass arrives as ``None`` and is
-        skipped.
+        directly. An input holding None is skipped.
         """
         devices = type(self).devices
         for name, tensor in tensors.items():

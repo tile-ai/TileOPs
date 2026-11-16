@@ -32,67 +32,37 @@ PReLUFwdOp:
     # compare-and-select(1) + mul(1) = 2 per elem.
     flops: "2 * prod(S)"
 
-MaskedFillTensorFwdOp:
-  # Primary entry: PyTorch's torch.Tensor.masked_fill(mask, value: Tensor)
-  # where ``value`` is a 0-dim Tensor. The out-of-place
-  # ``Tensor.masked_fill`` returns a new tensor whose shape is the
-  # bidirectional broadcast of ``input`` and ``mask`` — either operand
-  # may be expanded (verified directly: ``torch.zeros((2,1)).masked_fill(
-  # mask=torch.zeros((2,3), dtype=torch.bool), value=1.0)`` returns shape
-  # ``(2, 3)``). The in-place ``masked_fill_`` is unidirectional, but
-  # the manifest models only the out-of-place form. The scalar (Number)
-  # value form is its own entry, MaskedFillScalarFwdOp below: a Number is
-  # not a tensor, so it cannot be one entry's optional tensor input.
+MaskedFillFwdOp:
+  # PyTorch's torch.Tensor.masked_fill(mask, value): value is a Number, a bool or a 0-dim
+  # Tensor.
+  # The out-of-place masked_fill returns a new tensor whose shape is the bidirectional
+  # broadcast of input and mask, either operand expanded (verified directly:
+  # ``torch.zeros((2,1)).masked_fill(mask=torch.zeros((2,3), dtype=torch.bool), value=1.0)``
+  # returns shape ``(2, 3)``). The in-place ``masked_fill_`` is unidirectional and is not
+  # modelled.
   ref_api: "torch.Tensor.masked_fill"
   family: elementwise
   status: implemented
 
   signature:
-    # Out-of-place masked_fill returns the bidirectional broadcast of
-    # input and mask; value is 0-dim.
     forall: {A: Shape, M: Shape, T: "DType[bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
     inputs:
       input: {dtype: T, shape: "[*A]"}
       mask: {dtype: bool, shape: "[*M]"}
-      value: {dtype: T, shape: "[]"}
-    outputs:
-      output: {dtype: T, shape: "[*broadcast(A, M)]"}
-
-  workloads:
-  - {A: [4096, 4096], M: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
-  - {A: [16384, 16384], M: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
-  - {A: [8, 16, 512, 512], M: [8, 1, 1, 512], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "attn-padding-mask"}
-
-  roofline:
-    flops: "prod(broadcast(A, M))"
-
-MaskedFillScalarFwdOp:
-  # PyTorch's torch.Tensor.masked_fill(mask, value: Number). `value` is a scalar
-  # param here and a 0-dim tensor input in MaskedFillTensorFwdOp above: two signatures,
-  # so two entries.
-  ref_api: "torch.Tensor.masked_fill"
-  family: elementwise
-  status: implemented
-
-  signature:
-    # Out-of-place masked_fill returns the bidirectional broadcast of
-    # input and mask; out shape follows that broadcast (verified against
-    # ``torch.Tensor.masked_fill`` — input may also be expanded up).
-    forall: {A: Shape, M: Shape, T: "DType[bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
-    params:
-      value: {type: Number, default: 0.0, kw_only: true}
-    inputs:
-      input: {dtype: T, shape: "[*A]"}
-      mask: {dtype: bool, shape: "[*M]"}
+      value: {type: "Number | bool | Tensor", dtype: T, shape: "[]"}
     outputs:
       output: {dtype: T, shape: "[*broadcast(A, M)]"}
     shape_rules:
-    - "representable(value, T)"
+    - "member(value) not in ('Number', 'bool') or representable(value, T)"
 
   workloads:
-  - {A: [4096, 4096], M: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
-  - {A: [16384, 16384], M: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
-  - {A: [8, 16, 512, 512], M: [8, 1, 1, 512], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "attn-padding-mask"}
+  - {A: [4096, 4096], M: [4096, 4096], some: [value], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {A: [16384, 16384], M: [16384, 16384], some: [value], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
+  - {A: [8, 16, 512, 512], M: [8, 1, 1, 512], some: [value], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "attn-padding-mask"}
+  - {A: [4096, 4096], M: [4096, 4096], value: 0.0, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M-number"}
+  - {A: [16384, 16384], M: [16384, 16384], value: 0.0, dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M-number"}
+  - {A: [8, 16, 512, 512], M: [8, 1, 1, 512], value: 0.0, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "attn-padding-number"}
+  - {A: [8, 16, 512, 512], M: [8, 1, 1, 512], value: true, dtype_cases: [{T: bool}], label: "attn-padding-bool"}
 
   roofline:
     flops: "prod(broadcast(A, M))"
@@ -290,35 +260,6 @@ FloorDivideFwdOp:
 
   roofline:
     flops: "2 * prod(broadcast(A, B))"
-
-LerpScalarFwdOp:
-  # Scalar-weight variant: PyTorch's torch.lerp also accepts a Tensor
-  # weight (see LerpTensorFwdOp); this entry tracks the scalar (Number)
-  # slice that the existing kernel implements.
-  ref_api: "torch.lerp"
-  family: elementwise
-  status: implemented
-
-  signature:
-    forall: {A: Shape, B: Shape, T: "DType[float16 | bfloat16 | float32]"}
-    params:
-      weight: {type: float, default: 0.5, kw_only: true}
-    inputs:
-      input: {dtype: T, shape: "[*A]"}
-      end: {dtype: T, shape: "[*B]"}
-    outputs:
-      output: {dtype: T, shape: "[*broadcast(A, B)]"}
-
-  workloads:
-  - {A: [2048, 4096], B: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "hidden-state-prefill"}
-  - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
-  - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn"}
-  - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias"}
-  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
-  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn"}
-
-  roofline:
-    flops: "3 * prod(broadcast(A, B))"
 
 MaximumFwdOp:
   ref_api: "torch.maximum"

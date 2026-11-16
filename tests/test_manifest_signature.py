@@ -54,9 +54,16 @@ _UNUSED = {
     "cases": [{"when": True, "is": "[M]"}, {"when": False, "is": "[M]"}],
 }
 
+# ClampOut's cases with a tensor bound; a call with none matches no case.
+_CLAMP_CASES = [
+    {"when": [True, True], "is": "[*broadcast(A, L, U)]"},
+    {"when": [True, False], "is": "[*broadcast(A, L)]"},
+    {"when": [False, True], "is": "[*broadcast(A, U)]"},
+]
+
 _EDITS = [
     (
-        _edit("ClampTensorFwdOp", _set(("shape_rules",), ["min is not None or max is not None"])),
+        _edit("ClampFwdOp", _set(("shape_rules",), ["min is not None or max is not None"])),
         "outside the expression language",
     ),
     (_edit("GEMMFwdOp", _set(("shape_rules",), ["a.shape == (M, K)"])), "read as a value"),
@@ -69,7 +76,14 @@ _EDITS = [
     (_edit("GEMMFwdOp", _set(("forall", "T"), "DType[banana]")), "unknown kind"),
     (_edit("GEMMFwdOp", _set(("let", "L"), "(")), "cannot parse"),
     (_edit("MaxPool2dFwdOp", _set(("let", "kH"), "sH + 1")), "let cycle"),
-    (_edit("ClampTensorFwdOp", _set(("shape_rules",), [])), "0 cases match"),
+    (
+        _edit(
+            "ClampFwdOp",
+            _set(("shape_rules",), []),
+            _set(("types", "ClampOut", "cases"), _CLAMP_CASES[:3]),
+        ),
+        "0 cases match",
+    ),
     (
         _edit(
             "MoEPrePermuteFwdOp",
@@ -90,6 +104,78 @@ _EDITS = [
         _edit("SiLUAndMulFwdOp", _set(("inputs", "x", "shape"), "[M, N * N]")),
         "'N' cannot be solved",
     ),
+    # A known coefficient: a construction parameter whose sign the call checks.
+    (
+        _edit(
+            "SiLUAndMulFwdOp",
+            _set(("params", "k"), {"type": "int"}),
+            _set(("inputs", "x", "shape"), "[M, k * N]"),
+        ),
+        None,
+    ),
+    (
+        _edit("GEMMFwdOp", _set(("params", "w"), {"type": "Tensor | None"})),
+        "a tensor is a call-time input",
+    ),
+    (
+        _edit(
+            "ClampFwdOp",
+            _set(("inputs", "min", "type"), "float | Tensor"),
+            _set(("inputs", "min", "default"), True),
+        ),
+        "default True is not a value of 'float | Tensor'",
+    ),
+    (
+        _edit(
+            "ClampFwdOp",
+            _set(("inputs", "min", "type"), "Number | Tensor | None"),
+            _set(("params", "min__number"), {"type": "int"}),
+        ),
+        "operator slot 'min__number' takes the name of another argument",
+    ),
+    (
+        _edit(
+            "ClampFwdOp",
+            _set(("inputs", "min", "type"), "int | Tensor | None"),
+            _set(("let", "Z"), "min + 1"),
+            _set(("outputs", "output", "shape"), "[Z]"),
+        ),
+        "let 'Z' reads a call-time scalar",
+    ),
+    (
+        _edit(
+            "ClampFwdOp",
+            _set(("inputs", "min", "type"), "int | Tensor | None"),
+            _set(("outputs", "output", "shape"), "[min]"),
+        ),
+        "tensor 'min' is read as a value",
+    ),
+    # A combination outside promote's domain is left out of the output's dtypes.
+    (
+        _edit(
+            "ConcatRowsFwdOp",
+            _set(("forall", "T"), "Seq[DType[float8_e4m3fn | float16]]"),
+            _set(("inputs", "head", "dtype"), "float16"),
+            _set(("outputs", "output", "dtype"), "promote(T)"),
+        ),
+        None,
+    ),
+    # Each member guard narrows what the earlier ones left.
+    (
+        _edit(
+            "ClampFwdOp",
+            _set(("inputs", "min", "type"), "int | Tensor | None"),
+            _set(("inputs", "min", "shape"), "[*A]"),
+            _set(("inputs", "max", "shape"), "[*A]"),
+            _set(("outputs", "output", "shape"), "[*A]"),
+            _set(("types",), {}),
+            _set(
+                ("shape_rules",),
+                ["member(min) == 'Tensor' or member(min) == 'None' or min >= 0"],
+            ),
+        ),
+        None,
+    ),
     (
         _edit(
             "GEMMFwdOp",
@@ -101,9 +187,9 @@ _EDITS = [
     (
         _edit(
             "FusedMoESharedExpertFwdOp",
-            _set(("outputs", "routed_output", "shape"), "[shared_ffn_size.value, hidden_size]"),
+            _set(("outputs", "routed_output", "shape"), "[shared_ffn_size, hidden_size]"),
         ),
-        "present(shared_ffn_size) is false",
+        "shared_ffn_size has kind NoneType, expected Int",
     ),
     (
         _edit("GQAPrefillVarlenFwdOp", _set(("shape_rules",), ["sum(q_lens) == total_q"])),
@@ -125,10 +211,21 @@ _EDITS = [
     ),
     (_edit("GEMMFwdOp", _set(("shape_rules",), ["M == None"])), "compares with None"),
     (_edit("GEMMFwdOp", _set(("types", "Mat", "match"), "len(())")), "not Bool, an enum or an ADT"),
+    (
+        _edit("GEMMFwdOp", _set(("types", "Mat", "params", "t"), "Maybe[Bool]")),
+        "has kind Maybe",
+    ),
     (_edit("GEMMFwdOp", _set(("outputs", "d", "optional"), True)), "unknown key 'optional'"),
     # Input order is the generated signature's parameter order, so a required input after an
     # optional one emits a parameter without a default after one with a default.
-    (_edit("GEMMFwdOp", _set(("inputs", "a", "optional"), True)), "may not follow the optional"),
+    (
+        _edit(
+            "GEMMFwdOp",
+            _set(("inputs", "a", "default"), None),
+            _set(("inputs", "a", "type"), "Tensor | None"),
+        ),
+        "an input without a default may not follow 'a'",
+    ),
     (
         _edit(
             "MoEPrePermuteFwdOp",
@@ -157,7 +254,7 @@ _EDITS = [
             "FusedMoESharedExpertFwdOp",
             _set(
                 ("outputs", "routed_output", "shape"),
-                "[shared_ffn_size.value if present(shared_ffn_size) else num_tokens, hidden_size]",
+                "[shared_ffn_size if present(shared_ffn_size) else num_tokens, hidden_size]",
             ),
         ),
         None,
@@ -184,9 +281,9 @@ _EDITS = [
         _edit(
             "MoEPrePermuteFwdOp",
             _set(("params", "q"), {"type": "MGroupedLayout | None"}),
-            _set(("let", "z"), "q.value.max_m if present(q) else 0"),
+            _set(("let", "z"), "q.max_m if present(q) else 0"),
         ),
-        "reads q.value.max_m, which constructor 'contiguous' lacks",
+        "reads q.max_m, which constructor 'contiguous' lacks",
     ),
     (
         _edit(
@@ -204,7 +301,7 @@ _EDITS = [
             _set(("params", "p"), {"type": "int | 'auto' | None"}),
             _set(
                 ("outputs", "d", "shape"),
-                "[M, N if not present(p) else (1 if p.value == 'auto' else p.value)]",
+                "[M, N if not present(p) else (1 if p == 'auto' else p)]",
             ),
         ),
         None,
@@ -212,7 +309,8 @@ _EDITS = [
     (_edit("GEMMFwdOp", _set(("shape_rules",), ["T == 'bfloat16' or M > 0"])), None),
     (_edit("GEMMFwdOp", _set(("shape_rules",), ["T == 'bflaot16' or M > 0"])), "compares"),
     (_edit("GEMMFwdOp", _set(("params", "p"), {"type": "list[int | None]"})), None),
-    (_edit("GEMMFwdOp", _set(("params", "p"), {"type": "tuple[int, bool]"})), "holds int or"),
+    (_edit("GEMMFwdOp", _set(("params", "p"), {"type": "tuple[int, bool]"})), None),
+    (_edit("GEMMFwdOp", _set(("params", "p"), {"type": "list[float]"})), None),
     (
         _edit(
             "GEMMFwdOp",
@@ -228,6 +326,39 @@ _EDITS = [
             _set(("let", "L"), "reduced((M,), None, False, mode)"),
         ),
         "is not one of",
+    ),
+    (
+        _edit("ConcatRowsFwdOp", _set(("inputs", "parts", "type"), "list[Tensor] | int")),
+        "`list[Tensor]` is not yet a member of a union",
+    ),
+    (
+        _edit("ConcatRowsFwdOp", _set(("inputs", "parts", "type"), "int")),
+        "holds no tensor; a scalar is a parameter",
+    ),
+    (
+        _edit("ConcatRowsFwdOp", _set(("inputs", "parts", "shape"), "[3, *A]")),
+        "a `list[Tensor]` reads an element-wise (`Seq`) index",
+    ),
+    (
+        _edit("ConcatRowsFwdOp", _set(("inputs", "parts", "mutated"), True)),
+        "apply to one tensor",
+    ),
+    (
+        _edit("ConcatRowsFwdOp", _set(("inputs", "parts", "type"), "Tensor | Strings")),
+        "is not a union of distinct members",
+    ),
+    (
+        _edit("ConcatRowsFwdOp", _set(("inputs", "head", "default"), 0)),
+        "default 0 is not a value of 'Tensor'",
+    ),
+    (
+        _edit("ConcatRowsFwdOp", _set(("params",), {"w": {"dtype": "T", "shape": "[2]"}})),
+        "a tensor is a call-time input",
+    ),
+    # Inside the element type N is the element's item, a Dim, which has no length.
+    (
+        _edit("ConcatRowsFwdOp", _set(("inputs", "parts", "shape"), "[N, len(N), *A]")),
+        "N has kind Dim, expected Seq",
     ),
 ]
 
@@ -248,6 +379,8 @@ _LAYOUT = SimpleNamespace(
 )
 _PRIMITIVE_CALLS = [
     ("broadcast", ((8, 1, 16), (4, 16)), (8, 4, 16)),
+    ("concat", ([(2, 3), (2, 5), (2, 0)], -1), (2, 8)),
+    ("concat", ([(2, 3), (4, 3)], 0), (6, 3)),
     ("reduced", ((4, 8, 16), [0, 2], True, "full"), (1, 8, 1)),
     ("reduced", ((), [0], False, "full"), ()),
     ("reduced", ((4, 8), [], False, "noop"), (4, 8)),
@@ -283,6 +416,14 @@ _PRIMITIVE_CALLS = [
 ]
 _PRIMITIVE_DOMAIN_ERRORS = [
     ("broadcast", ((2,), (3,))),
+    ("concat", ([(2, 3), (2, 4)], 0)),
+    ("concat", ([(2, 3), (2, 3, 1)], 0)),
+    ("concat", ([(), ()], 0)),
+    ("concat", ([(2, 3)], 2)),
+    ("concat", ([], 0)),
+    ("promote", ([],)),
+    ("promote", (["complex64"],)),
+    ("promote", (["float8_e4m3fn", "float16"],)),
     ("reduced", ((4,), [], False, "reject")),
     ("per_axis", (None, 0, 2)),
     ("per_axis", ([1, 2, 3], 0, 2)),
@@ -367,7 +508,7 @@ def test_adt_invariant_narrows_the_domain():
     entry["signature"]["params"] = {"f": {"type": "Flagged | None"}}
     entry["signature"]["types"]["G"] = {
         "params": {"g": "Maybe[Flagged]", "M": "Dim"},
-        "match": ["present(g)", "g.value"],
+        "match": ["present(g)", "g"],
         "cases": [
             {"when": [False, "_"], "is": "[M]"},
             {"when": [True, {"on": {"flag": True}}], "is": "[M]"},
@@ -432,3 +573,98 @@ def test_validator_holds_an_implemented_key_to_an_exported_class(monkeypatch):
     assert validator._schema_errors(1, entry, {1: entry}) == [
         "[schema] 1: the key is not an op class name `<Name>FwdOp`"
     ]
+
+
+# ---------------------------------------------------------------- tensor sequences
+
+
+def _plan_of(shapes, sequences, known=()):
+    from tileops.manifest._expr import parse
+    from tileops.manifest._signature import unification
+
+    nodes = {t: parse(text) for t, text in shapes.items()}
+    return unification(nodes, set(known), {}, sequences)
+
+
+def test_an_ordinary_tensor_solves_shared_names_before_any_element():
+    steps = _plan_of({"head": "[*A]", "parts": "[N, *A]"}, {"parts": ("N",)})
+    assert [s.action for s in steps] == ["bind", "each"]
+    assert steps[-1].items == ("N",)
+
+
+def test_element_zero_solves_what_waits_on_the_sequence():
+    # `a` needs S, which the elements solve only once M is known; element 0 breaks the wait.
+    steps = _plan_of({"a": "[M + len(S)]", "xs": "[M, *S]"}, {"xs": ("S",)})
+    assert [(s.action, s.solved) for s in steps] == [
+        ("first", ()),
+        ("bind", ("M",)),
+        ("bind", ("_item_S",)),
+        ("each", ("S",)),
+        ("check", ()),
+    ]
+
+
+def test_a_second_sequence_checks_the_items_the_first_collected():
+    steps = _plan_of({"xs": "[N]", "ys": "[2 * N]"}, {"xs": ("N",), "ys": ("N",)})
+    each = [s for s in steps if s.action == "each"]
+    assert [(s.tensor, s.items) for s in each] == [("xs", ("N",)), ("ys", ())]
+
+
+def test_a_roofline_reads_no_let_of_a_call_time_scalar():
+    from tileops.manifest._plan import roofline_plan
+    from tileops.manifest._signature import parse_signature
+
+    name, entry = _edit(
+        "ClampFwdOp",
+        _set(("inputs", "min", "type"), "int | Tensor | None"),
+        _set(("let", "Z"), "min if member(min) == 'int' else 0"),
+    )
+    sig = parse_signature(name, entry, _ADTS)
+    errors, _ = roofline_plan(sig, {"flops": "Z"})
+    assert any("let 'Z' reads a call-time scalar" in e for e in errors), errors
+
+
+@pytest.mark.parametrize(
+    ("value", "type_text", "accepted"),
+    [
+        ([[1, None], [2]], "list[list[int | None]]", True),
+        ([["bad"]], "list[list[int | None]]", False),
+        ((1, (2, 3)), "tuple[int, tuple[int, int]]", True),
+        ([1.5, 2], "list[float]", True),
+        ([1.5, "x"], "list[float]", False),
+    ],
+)
+def test_a_list_parameter_checks_every_element_by_its_type(value, type_text, accepted):
+    from tileops.manifest._values import convert
+
+    if accepted:
+        assert convert(value, type_text, {}) == value
+    else:
+        with pytest.raises(ValueError):
+            convert(value, type_text, {})
+
+
+def test_a_roofline_member_names_a_call_time_argument():
+    from tileops.manifest._plan import roofline_plan
+    from tileops.manifest._signature import parse_signature
+
+    name, entry = _edit("ClampFwdOp")
+    sig = parse_signature(name, entry, _ADTS)
+    errors, _ = roofline_plan(sig, {"flops": "1 if member(typo) == 'Tensor' else 0"})
+    assert any("member(typo) names no call-time argument" in e for e in errors), errors
+    assert roofline_plan(sig, {"flops": "1 if member(min) == 'Tensor' else 0"})[0] == []
+
+
+@pytest.mark.parametrize(
+    ("value", "members", "expected"),
+    [
+        (2, ("float", "Tensor"), "float"),
+        (2, ("int", "float"), "int"),
+        (2, ("Number", "Tensor"), "Number"),
+        (True, ("float", "Tensor"), None),
+    ],
+)
+def test_an_int_takes_a_float_member_as_the_float_slot_does(value, members, expected):
+    from tileops.manifest._signature import member_of
+
+    assert member_of(value, members) == expected

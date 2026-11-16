@@ -19,20 +19,20 @@ def _extents(call, *names: str) -> dict:
 
 def _gate_conv_fwd(call) -> EngramGateConvFwdWorkload:
     return EngramGateConvFwdWorkload(
-        **_extents(call, "M", "seq_len", "d"), **call.arguments({}), dtype=_dtype(call, "H")
+        **_extents(call, "M", "seq_len", "d"), **call.arguments(), dtype=_dtype(call, "H")
     )
 
 
 def _gate_conv_bwd(call) -> EngramGateConvBwdWorkload:
     return EngramGateConvBwdWorkload(
-        **_extents(call, "M", "seq_len", "d"), **call.arguments({}), dtype=_dtype(call, "dY")
+        **_extents(call, "M", "seq_len", "d"), **call.arguments(), dtype=_dtype(call, "dY")
     )
 
 
 def _decode(call) -> EngramDecodeWorkload:
     return EngramDecodeWorkload(
         **_extents(call, "batch", "d_mem", "d"),
-        **call.arguments({}),
+        **call.arguments(),
         dtype=_dtype(call, "e_t"),
         conv_len=call.indices["L"],
     )

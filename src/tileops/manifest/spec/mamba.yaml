@@ -30,7 +30,7 @@ SSDChunkCumsumFwdOp:
     inputs:
       dt: {dtype: float32, shape: "[B, S, H]"}
       A: {dtype: float32, shape: "[H]"}
-      dt_bias: {dtype: float32, shape: "[H]", optional: true}
+      dt_bias: {dtype: float32, shape: "[H]", type: "Tensor | None", default: null}
     outputs:
       dt_out: {dtype: out_dtype, shape: "[B, H, NC, chunk_size]"}
       dA_cumsum: {dtype: float32, shape: "[B, H, NC, chunk_size]"}
@@ -91,7 +91,7 @@ SSDChunkStateFwdOp:
       B: {dtype: T, shape: "[Bsz, NC * Q, G, N]"}
       dt: {dtype: TD, shape: "[Bsz, H, NC, Q]"}
       dA_cumsum: {dtype: float32, shape: "[Bsz, H, NC, Q]"}
-      seq_idx: {dtype: int32, shape: "[Bsz, NC * Q]", optional: true}
+      seq_idx: {dtype: int32, shape: "[Bsz, NC * Q]", type: "Tensor | None", default: null}
     outputs:
       states: {dtype: float32, shape: "[Bsz, NC, H, P, N]"}
     shape_rules:
@@ -125,7 +125,7 @@ SSDStatePassingFwdOp:
     inputs:
       states: {dtype: T, shape: "[B, NC, H, N]"}
       dA_chunk_cumsum: {dtype: float32, shape: "[B, H, NC]"}
-      initial_states: {dtype: float32, shape: "[B, H, N]", optional: true}
+      initial_states: {dtype: float32, shape: "[B, H, N]", type: "Tensor | None", default: null}
     outputs:
       prev_states: {dtype: float32, shape: "[B, NC, H, N]"}
       final_states: {dtype: float32, shape: "[B, H, N]"}
@@ -222,8 +222,8 @@ Mamba2FwdOp:
       A: {dtype: float32, shape: "[H]"}
       B: {dtype: T, shape: "[Bsz, S, G, N]"}
       C: {dtype: T, shape: "[Bsz, S, G, N]"}
-      dt_bias: {dtype: float32, shape: "[H]", optional: true}
-      initial_states: {dtype: float32, shape: "[Bsz, H, P, N]", optional: true}
+      dt_bias: {dtype: float32, shape: "[H]", type: "Tensor | None", default: null}
+      initial_states: {dtype: float32, shape: "[Bsz, H, P, N]", type: "Tensor | None", default: null}
     outputs:
       y: {dtype: float32, shape: "[Bsz, S, H, P]"}
       final_states: {dtype: float32, shape: "[Bsz, H, P, N]"}
@@ -284,8 +284,8 @@ CausalConv1dFwdOp:
       # sequence keeps its state.
       conv_state: {dtype: T, shape: "[B, D, W - 1]", mutated: true, contiguous: true}
       cu_seqlens: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)"]}
-      bias: {dtype: T, shape: "[D]", optional: true}
-      has_initial_state: {dtype: bool, shape: "[B]", optional: true}
+      bias: {dtype: T, shape: "[D]", type: "Tensor | None"}
+      has_initial_state: {dtype: bool, shape: "[B]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[Tt, D]"}
     shape_rules:
@@ -297,8 +297,8 @@ CausalConv1dFwdOp:
     - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-4k}
     - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-pf4k-nost}
     - {D: 5376, W: 4, Tt: 32768, seq_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-32k}
-    - {D: 8192, W: 4, Tt: 4096, seq_lens: [2500, 1000, 500, 96], dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-pf4k-ragged}
-    - {D: 8192, W: 4, Tt: 32768, seq_lens: "repeat(8192, 4)", dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-prefill-32k}
+    - {D: 8192, W: 4, Tt: 4096, seq_lens: [2500, 1000, 500, 96], dtype_cases: [{T: float16}], bias: null, some: [has_initial_state], label: qwen3-next-pf4k-ragged}
+    - {D: 8192, W: 4, Tt: 32768, seq_lens: "repeat(8192, 4)", dtype_cases: [{T: float16}], bias: null, some: [has_initial_state], label: qwen3-next-prefill-32k}
 
 CausalConv1dUpdateFwdOp:
   family: mamba
@@ -318,7 +318,7 @@ CausalConv1dUpdateFwdOp:
       # The W-1 most recent tokens per sequence, the state CausalConv1dFwdOp leaves.
       # Advanced by one token in place.
       conv_state: {dtype: T, shape: "[B, D, W - 1]", mutated: true, contiguous: true}
-      bias: {dtype: T, shape: "[D]", optional: true}
+      bias: {dtype: T, shape: "[D]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[B, D]"}
     shape_rules:
@@ -353,13 +353,13 @@ SelectiveScanFwdOp:
       B: {dtype: T, shape: "[Bsz, G, N, S]"}
       C: {dtype: T, shape: "[Bsz, G, N, S]"}
       # The skip term `D * u`, and the gate `u * silu(z)`.
-      D: {dtype: float32, shape: "[Di]", optional: true}
-      z: {dtype: T, shape: "[Bsz, Di, S]", optional: true}
-      delta_bias: {dtype: float32, shape: "[Di]", optional: true}
+      D: {dtype: float32, shape: "[Di]", type: "Tensor | None", default: null}
+      z: {dtype: T, shape: "[Bsz, Di, S]", type: "Tensor | None", default: null}
+      delta_bias: {dtype: float32, shape: "[Di]", type: "Tensor | None", default: null}
       # Packed sequences: the id each token belongs to, as the SSD stages take it. A
       # token whose id differs from its predecessor's restarts the recurrence.
-      seq_idx: {dtype: int32, shape: "[Bsz, S]", optional: true}
-      initial_states: {dtype: float32, shape: "[Bsz, Di, N]", optional: true}
+      seq_idx: {dtype: int32, shape: "[Bsz, S]", type: "Tensor | None", default: null}
+      initial_states: {dtype: float32, shape: "[Bsz, Di, N]", type: "Tensor | None", default: null}
     outputs:
       y: {dtype: T, shape: "[Bsz, Di, S]"}
       final_states: {dtype: float32, shape: "[Bsz, Di, N]"}

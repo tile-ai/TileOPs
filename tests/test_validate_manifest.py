@@ -171,7 +171,10 @@ def test_an_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch)
         "family": "probe",
         "signature": {
             "params": {"dim": {"type": "int"}},
-            "inputs": {"x": {"dtype": "T", "shape": "[M]"}, "y": {"optional": True}},
+            "inputs": {
+                "x": {"dtype": "T", "shape": "[M]"},
+                "y": {"type": "Tensor | None", "default": None},
+            },
         },
     }
     assert validator._parity_errors("ProbeFwdOp", entry) == [
@@ -179,6 +182,71 @@ def test_an_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch)
         "[signature] ProbeFwdOp: __init__ parameter 'tune' is not a signature or execution-policy parameter",
         "[signature] ProbeFwdOp: __init__ parameter 'surprise' is not a signature or execution-policy parameter",
         "[signature] ProbeFwdOp: forward 'x' must have no default",
+    ]
+
+
+def _min_forward(self, x, min=0):
+    pass
+
+
+def _min_float_forward(self, x, min=0.0):
+    pass
+
+
+def _min_one_forward(self, x, min=1):
+    pass
+
+
+def _min_slot_forward(self, x, min=0, min__number=None):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("forward", "expected"),
+    [
+        pytest.param(_min_forward, [], id="matching-default"),
+        pytest.param(_min_float_forward, ["forward 'min' must default to 0"], id="default-type"),
+        pytest.param(_min_one_forward, ["forward 'min' must default to 0"], id="default-value"),
+        pytest.param(
+            _min_slot_forward,
+            [
+                "forward execution parameter 'min__number' takes the name of an operator "
+                "slot of 'min'"
+            ],
+            id="slot-name",
+        ),
+    ],
+)
+def test_a_union_input_keeps_its_default_and_its_slot_names(
+    validator, monkeypatch, forward, expected
+):
+    """A non-None `default` is matched in value and type; an execution parameter never takes
+    the name of one of the input's operator slots."""
+
+    class ProbeFwdOp:
+        compile_op_names = ("tileops::probe_fwd",)
+
+        def __init__(self, *, target=None):
+            pass
+
+    ProbeFwdOp.forward = forward
+    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
+    entry = {
+        "family": "probe",
+        "signature": {
+            "inputs": {
+                "x": {"dtype": "T", "shape": "[M]"},
+                "min": {
+                    "type": "Number | Tensor | None",
+                    "dtype": "T",
+                    "shape": "[M]",
+                    "default": 0,
+                },
+            },
+        },
+    }
+    assert validator._parity_errors("ProbeFwdOp", entry) == [
+        f"[signature] ProbeFwdOp: {e}" for e in expected
     ]
 
 
@@ -198,7 +266,13 @@ def _kw_only_probe(forward):
         "signature": {
             "inputs": {
                 "x": {"dtype": "T", "shape": "[M]"},
-                "bias": {"dtype": "T", "shape": "[M]", "optional": True, "kw_only": True},
+                "bias": {
+                    "dtype": "T",
+                    "shape": "[M]",
+                    "type": "Tensor | None",
+                    "default": None,
+                    "kw_only": True,
+                },
             },
             "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}},
         },
@@ -299,20 +373,21 @@ def test_a_required_out_input_is_keyword_only_without_default(
     ("inputs", "expected"),
     [
         pytest.param(
-            {"x": {}, "bias": {"optional": True, "kw_only": True}}, [], id="optional-last"
+            {"x": {}, "bias": {"type": "Tensor | None", "default": None, "kw_only": True}},
+            [],
+            id="optional-last",
         ),
+        pytest.param({"x": {}, "bias": {"kw_only": True}}, [], id="required"),
         pytest.param(
-            {"x": {}, "bias": {"kw_only": True}},
-            ["inputs.bias: a kw_only input must be optional"],
-            id="required",
-        ),
-        pytest.param(
-            {"w": {"optional": True}, "out": {"kw_only": True}},
+            {"w": {"type": "Tensor | None", "default": None}, "out": {"kw_only": True}},
             [],
             id="required-buffer-out-after-an-optional-input",
         ),
         pytest.param(
-            {"bias": {"optional": True, "kw_only": True}, "w": {"optional": True}},
+            {
+                "bias": {"type": "Tensor | None", "default": None, "kw_only": True},
+                "w": {"type": "Tensor | None", "default": None},
+            },
             [
                 "inputs.w: a positional input may not follow the kw_only 'bias'; "
                 "order every kw_only input last"
@@ -320,13 +395,13 @@ def test_a_required_out_input_is_keyword_only_without_default(
             id="before-a-positional-input",
         ),
         pytest.param(
-            {"x": {}, "bias": {"optional": True, "kw_only": "yes"}},
+            {"x": {}, "bias": {"type": "Tensor | None", "default": None, "kw_only": "yes"}},
             ["inputs.bias.kw_only: 'yes' is not a bool"],
             id="not-a-bool",
         ),
     ],
 )
-def test_a_kw_only_input_is_optional_and_last(validator, inputs, expected):
+def test_a_kw_only_input_is_last(validator, inputs, expected):
     entry = _entry()
     entry["signature"]["inputs"] = {
         n: {"dtype": "T", "shape": "[M]", **d} for n, d in inputs.items()

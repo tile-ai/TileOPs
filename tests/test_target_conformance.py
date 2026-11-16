@@ -24,12 +24,25 @@ def _from_call(cls: type, name: str, entry: dict) -> tuple:
     call with the smallest inputs."""
     plan = entry_plan(name, entry, load_adts(), resolve=False)
     call = smallest_call(plan, entry["workloads"], metadata=False)
+
+    def empty(spec):
+        return torch.empty(spec.shape, dtype=getattr(torch, spec.dtype))
+
     tensors = {
-        n: None if spec is None else torch.empty(spec.shape, dtype=getattr(torch, spec.dtype))
+        n: call.scalars.get(n)
+        if spec is None
+        else [empty(e) for e in spec]
+        if isinstance(spec, tuple)
+        else empty(spec)
         for n, spec in call.specs.items()
     }
     args = [tensors[n] for n in plan.sig.inputs]
-    while args and args[-1] is None:
+    # A trailing argument left at its default is not passed.
+    while (
+        args
+        and args[-1] is None
+        and plan.sig.inputs[list(plan.sig.inputs)[len(args) - 1]].default is None
+    ):
         args.pop()
     # An output aliasing an input every call writes is that input object.
     outputs = [
@@ -38,7 +51,7 @@ def _from_call(cls: type, name: str, entry: dict) -> tuple:
         else tensors[o]
         for o, t in plan.sig.outputs.items()
     ]
-    return cls(**call.arguments(tensors)), tuple(args), outputs
+    return cls(**call.arguments()), tuple(args), outputs
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +101,18 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
     op, args, declared_outputs = _from_call(cls, name, entry)
     declared = tuple(entry["signature"].get("inputs") or {})
     passed = args + (None,) * (len(declared) - len(args))
-    described = tuple(None if t is None else TensorSpec.of(t) for t in passed)
+    # A tensor is described by its spec, a tensor sequence element by element, and a
+    # call-time scalar by its type.
+    described = tuple(
+        None
+        if t is None
+        else tuple(map(TensorSpec.of, t))
+        if isinstance(t, (list, tuple))
+        else TensorSpec.of(t)
+        if isinstance(t, torch.Tensor)
+        else type(t)
+        for t in passed
+    )
     expected_params = op._manifest_params()
     seen, returned = [], []
 

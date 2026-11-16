@@ -66,30 +66,29 @@ def _manifest_value(value: object, type_text: object, adts: dict) -> object:
 def _call(name: str, inputs: dict, params: dict) -> Call:
     """The manifest call of op *name* on *inputs* with *params*.
 
-    The indices are solved from the shapes and dtypes of the call-time inputs and the
-    construction-time tensors among *params*, as a workload row's are. A construction-time
-    tensor's spec carries its values, which the call does not otherwise pass.
+    The indices are solved from the shapes and dtypes of the call-time inputs, as a workload
+    row's are; a call-time scalar is known as passed.
     """
     sig = _plan(name).sig
-    tensors = {**{t: params.get(t) for t in sig.ctor_tensors}, **inputs}
     known = {
         p: _manifest_value(params.get(p, decl.get("default")), decl.get("type"), sig.adts)
         for p, decl in sig.params.items()
     }
+
+    def spec(t, tensor):
+        values = tensor.tolist() if t.values is not None else None
+        return TensorSpec(tuple(tensor.shape), _dtype_name(tensor.dtype), values, t.cpu)
+
     specs = {}
-    for t in sig.call_tensors.values():
-        tensor = tensors[t.name]
-        values = t.values is not None or t.name in sig.ctor_tensors
-        specs[t.name] = (
-            None
-            if tensor is None
-            else TensorSpec(
-                tuple(tensor.shape),
-                _dtype_name(tensor.dtype),
-                tensor.tolist() if values else None,
-                t.cpu,
-            )
-        )
+    for t in sig.inputs.values():
+        value = inputs[t.name]
+        if isinstance(value, torch.Tensor):
+            specs[t.name] = spec(t, value)
+        elif isinstance(value, (list, tuple)):
+            specs[t.name] = tuple(spec(t, e) for e in value)
+        else:
+            specs[t.name] = None
+            known[t.name] = value
     return call_from_tensors(_plan(name), known, specs)
 
 

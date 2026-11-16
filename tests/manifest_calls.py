@@ -4,7 +4,7 @@ import math
 
 from tileops.manifest import load_manifest
 from tileops.manifest._plan import EntryPlan
-from tileops.manifest._workload import Call, instantiate
+from tileops.manifest._workload import Call, Elements, instantiate
 
 __all__ = ["implemented_ops", "smallest_call"]
 
@@ -22,4 +22,10 @@ def smallest_call(plan: EntryPlan, rows: list, *, metadata: bool = True) -> Call
         for row in rows
         for case in row.get("dtype_cases") or [{}]
     )
-    return min(calls, key=lambda call: sum(math.prod(s) for s, _ in call.tensors.values()))
+    return min(calls, key=lambda call: sum(map(_elements, call.tensors.values())))
+
+
+def _elements(tensor) -> int:
+    """The elements a call tensor holds, a tensor sequence's summed over its elements."""
+    pairs = tensor.items if isinstance(tensor, Elements) else (tensor,)
+    return sum(math.prod(shape) for shape, _ in pairs)

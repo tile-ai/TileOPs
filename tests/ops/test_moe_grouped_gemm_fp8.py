@@ -87,7 +87,7 @@ def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
     row = {key: value for key, value in _ROWS[label].items() if key != "label"}
     workload = MoEGroupedGEMMFP8Workload(manifest_call(_OP, **row))
     inputs = workload.gen_inputs()
-    out = MoEGroupedGEMMFP8FwdOp(**workload.call.arguments({}))(*inputs)
+    out = MoEGroupedGEMMFP8FwdOp(**workload.call.arguments())(*inputs)
     assert out.dtype is torch.bfloat16
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
@@ -280,7 +280,7 @@ def test_fp8_grouped_gemm_contiguous_rows_of_every_expert(
     layout: dict, sizes: list, config: "dict | None", dims: dict
 ) -> None:
     workload = _contiguous_workload(layout, sizes, **dims)
-    spec = workload.call.arguments({})["layout"]
+    spec = workload.call.arguments()["layout"]
     op = MoEGroupedGEMMFP8FwdOp(spec) if config is None else _forced_op(spec, config)
     _run_into_guarded_out(op, workload, *workload.gen_inputs())
 
@@ -299,7 +299,7 @@ def test_fp8_grouped_gemm_contiguous_rows_of_every_expert(
 def test_fp8_grouped_gemm_mma_aligned_configs(alignment: int, block_m: int, tune: bool) -> None:
     """Default, explicit and tuned tile heights respect the segment alignment."""
     workload = _contiguous_workload(_layout("aligned", "per_row", alignment), _SIZES, N=256, K=256)
-    op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"], target=BUILTIN)
+    op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
     if tune:
         op.request_tune()
     inputs = _scaled_inputs(workload)
@@ -324,7 +324,7 @@ def test_fp8_grouped_gemm_mma_dynamic_rows() -> None:
     for sizes in ([5, 0, 77], [257, 1, 64], [0, 0, 0], [1, 0, 33]):
         workload = _contiguous_workload(_layout("aligned", "per_row", 128), sizes, N=256, K=256)
         if op is None:
-            op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"], target=BUILTIN)
+            op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
         _run_into_guarded_out(op, workload, *_scaled_inputs(workload))
         kernel = next(op.iter_kernels())
         if identity is None:
@@ -338,7 +338,7 @@ def test_fp8_grouped_gemm_mma_dynamic_rows() -> None:
 def test_fp8_grouped_gemm_mma_rejects_unaligned_tiles() -> None:
     """An explicit tile cannot straddle two aligned expert segments."""
     workload = _contiguous_workload(_layout("aligned", "per_row", 32), _SIZES, N=256, K=256)
-    op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"], target=BUILTIN)
+    op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
     _run_into_guarded_out(op, workload, *_scaled_inputs(workload))
     with pytest.raises(ValueError, match="must divide"):
         next(op.iter_kernels()).init_config({"block_m": 64, "block_n": 64})
@@ -366,7 +366,7 @@ def test_fp8_grouped_gemm_skips_aligned_padding_past_every_run(arch: int) -> Non
         padded(ids, b.shape[0]),
     )
     out = _run_into_guarded_out(
-        MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"]), workload, *inputs
+        MoEGroupedGEMMFP8FwdOp(workload.call.arguments()["layout"]), workload, *inputs
     )
     assert bool((out[-pad:] == _SENTINEL).all())
 
@@ -378,7 +378,7 @@ def test_fp8_grouped_gemm_tiles_divide_the_alignment() -> None:
     """A tile taller than an aligned layout's alignment is refused before tracing."""
     workload = _contiguous_workload(_layout("aligned", "physical_psum", 64), [64, 3])
     config = {"block_m": 128, "block_n": 128, "num_stages": 4, "num_sms": 2, "stage_scales": 0}
-    op = _forced_op(workload.call.arguments({})["layout"], config)
+    op = _forced_op(workload.call.arguments()["layout"], config)
     with pytest.raises(ValueError, match="block_m must divide"):
         op(*workload.gen_inputs())
 
@@ -534,7 +534,7 @@ def test_fp8_grouped_gemm_calibration_yields_to_the_alignment() -> None:
     workload = _contiguous_workload(
         _layout("aligned", "physical_psum", 64), [64, 3] * 8, N=1536, K=2048
     )
-    op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"])
+    op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments()["layout"])
     _run_into_guarded_out(op, workload, *workload.gen_inputs())
     (kernel,) = op.iter_kernels()
     assert kernel.config["block_m"] == 64
@@ -573,7 +573,7 @@ def _fp8_in_workspace(name, overlap):
         workspace[start : start + source.nbytes].view(source.dtype).view(source.shape).copy_(source)
     )
     out = torch.from_dlpack(workspace[: out_like.nbytes].view(out_like.dtype).view(out_like.shape))
-    return MoEGroupedGEMMFP8FwdOp(**workload.call.arguments({})), inputs, out, workload, workspace
+    return MoEGroupedGEMMFP8FwdOp(**workload.call.arguments()), inputs, out, workload, workspace
 
 
 @pytest.mark.sm90

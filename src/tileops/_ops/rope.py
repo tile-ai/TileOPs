@@ -1,25 +1,21 @@
-"""Rotary Position Embedding (RoPE) ops — 4 frequency schemes x 2 input layouts.
+"""Rotary position embedding ops, following vLLM's ``RotaryEmbedding`` family.
 
-Each Op computes variant-specific frequency tables (cos, sin) lazily at
-forward time (on the same device as the input tensor) and delegates the
-actual rotation to the corresponding kernel.
+Each op holds a cos/sin cache computed from its construction parameters and rotates
+``query`` and ``key`` at the rows ``positions`` names, as
+``RotaryEmbedding.forward_native(positions, query, key)`` does:
 
-Variants and frequency computation:
-- **RoPEFwdOp**: standard theta = 10000^(-2k/d) frequencies, either rotation convention
-- **RoPELlama31FwdOp**: piecewise-scaled frequencies for Llama 3.1
-- **YaRNFwdOp**: YaRN linear-ramp interpolated frequencies
-- **LongRoPEFwdOp**: per-dimension rescaled frequencies
+- **RoPEFwdOp**: standard frequencies ``base ** (-2k / rotary_dim)``
+- **RoPELlama31FwdOp**: Llama 3.1 piecewise-scaled frequencies
+- **YaRNFwdOp**: YaRN interpolated frequencies and magnitude scaling
+- **LongRoPEFwdOp**: per-pair rescaled frequencies, the Phi-3 LongRoPE computation once one
+  set of factors is chosen
 
-Input layouts:
-- ``"1d"``: input shape $[seq\\_len \\times head\\_dim]$
-- ``"2d"``: input shape $[batch \\times seq\\_len \\times num\\_heads \\times head\\_dim]$
-
-torch.compile support: each op's compile-boundary operator is generated from its
-manifest entry.
+``query`` and ``key`` hold each token's heads flattened, ``head_size`` columns a head; the
+first ``rotary_dim`` columns of each head rotate and the rest are copied.
 """
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping, Sequence
 from typing import ClassVar
 
 import torch
@@ -27,9 +23,6 @@ import torch
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.rope import (
     RoPECall,
-    RoPENeoxFwdInterface,
-    RoPENeoxKernel,
-    RoPENeoxPositionIdsCall,
     RoPENeoxPositionIdsFwdInterface,
     RoPENeoxPositionIdsKernel,
     RoPENonNeoxFwdInterface,
@@ -43,688 +36,473 @@ __all__ = [
     "LongRoPEFwdOp",
     "RoPEFwdOp",
     "RoPELlama31FwdOp",
-    "RoPENeoxPositionIdsFwdOp",
     "YaRNFwdOp",
-    "base_freqs",
 ]
 
-
-# Frequency computation helpers (pure Python / PyTorch, run on host)
-
-
-def base_freqs(
-    head_dim: int,
-    seq_len: int,
-    base: float = 10000.0,
-    dtype: torch.dtype = torch.float32,
-    device: str = "cuda",
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Standard RoPE cos/sin tables.
-
-    Args:
-        head_dim: Head dimension (must be even).
-        seq_len: Sequence length.
-        base: Frequency base (default 10000).
-        dtype: Output dtype.
-        device: Torch device.
-
-    Returns:
-        (cos, sin) each of shape (seq_len, head_dim // 2).
-    """
-    half = head_dim // 2
-    freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
-    t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, freqs)
-    return torch.cos(angles).to(dtype), torch.sin(angles).to(dtype)
+# The interface of each rotation convention.
+_NEOX, _GPTJ = "neox", "gptj"
 
 
 def _yarn_find_correction_dim(
     num_rotations: float, dim: int, base: float, max_position_embeddings: int
 ) -> float:
-    """Inverse dim formula to find dim based on number of rotations.
-
-    Matches the canonical TVM/vLLM ``yarn_find_correction_dim`` formula.
-    """
-    return (
-        dim
-        * math.log(max_position_embeddings / (num_rotations * 2 * math.pi))
-        / (2 * math.log(base))
+    """The rotary dimension that turns *num_rotations* times over the context."""
+    return (dim * math.log(max_position_embeddings / (num_rotations * 2 * math.pi))) / (
+        2 * math.log(base)
     )
 
 
 def _yarn_find_correction_range(
-    beta_fast: float, beta_slow: float, dim: int, base: float, max_position_embeddings: int
-) -> tuple[int, int]:
-    """Find low/high correction dims from rotation boundary parameters."""
-    low = math.floor(_yarn_find_correction_dim(beta_fast, dim, base, max_position_embeddings))
-    high = math.ceil(_yarn_find_correction_dim(beta_slow, dim, base, max_position_embeddings))
+    low_rot: float,
+    high_rot: float,
+    dim: int,
+    base: float,
+    max_position_embeddings: int,
+    truncate: bool,
+) -> tuple[float, float]:
+    """The rotary dimensions between which YaRN blends interpolation into extrapolation."""
+    low = _yarn_find_correction_dim(low_rot, dim, base, max_position_embeddings)
+    high = _yarn_find_correction_dim(high_rot, dim, base, max_position_embeddings)
+    if truncate:
+        low, high = math.floor(low), math.ceil(high)
     return max(low, 0), min(high, dim - 1)
 
 
-def _cached_tables(
-    op: Op, key: tuple, compute: Callable[[], tuple[torch.Tensor, torch.Tensor]]
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return ``op._freq_cache[key]``, computed again by *compute* once a source changes.
+class _RotaryEmbeddingOp(Op):
+    """The rotation every RoPE op shares: cos/sin cache rows read at each token's position.
 
-    The sources are the op's params and each construction-time tensor by identity and
-    version. An inference tensor has no version, so its tables are computed on every call.
-    The entry holds the tensors so that no other tensor takes the identity of a freed one.
-    """
-    sig = type(op)._signature.sig
-    tensors = tuple(getattr(op, name, None) for name in sig.ctor_tensors)
-    versions = tuple(
-        None if t is None else (id(t), object() if t.is_inference() else t._version)
-        for t in tensors
-    )
-    sources = (param_state(op, sig), versions)
-    held = op._freq_cache.get(key)
-    if held is None or held[0] != sources:
-        held = op._freq_cache[key] = (sources, compute(), tensors)
-    return held[1]
-
-
-class _RoPEOpBase(Op):
-    """Base class for the four frequency-scheme RoPE ops.
-
-    Subclass sets ``kernel_types`` and ``interfaces`` and implements ``_compute_cos_sin``
-    to generate its variant-specific frequency tables.
-
-    Cos/sin tables are computed lazily at forward time on the same device as
-    the input tensor, avoiding device-mismatch issues in multi-GPU settings.
+    A subclass gives its inverse frequencies, its cache rows and its magnitude scale. The
+    cache is computed in float32, rounded to the ``dtype`` parameter and then to the query's
+    dtype, as vLLM's cache is.
     """
 
-    # The rotation convention keys the interface; the scheme variants serve NeoX only.
-    rope_layout: str = "neox"
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "rope_neox_positions": RoPENeoxPositionIdsKernel,
+        "rope_gptj": RoPENonNeoxKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        _NEOX: RoPENeoxPositionIdsFwdInterface,
+        _GPTJ: RoPENonNeoxFwdInterface,
+    }
 
-    def __init__(
-        self,
-        input_layout: str = "1d",
-        base: float = 10000.0,
-        *,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
+    head_size: int
+    rotary_dim: int
+    is_neox_style: bool
+    dtype: torch.dtype
 
-        Args:
-            input_layout: "1d" for ``[seq_len, head_dim]`` or "2d" for
-                ``[batch, seq_len, num_heads, head_dim]``.
-            base: Frequency base (default 10000).
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-        """
-        self.input_layout = input_layout
-        self.base = base
+    def _start(self, target: Target) -> None:
         self._freq_cache: dict[tuple, tuple] = {}
         super().__init__(target=target)
 
-    def _get_cos_sin(
-        self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return cached cos/sin tables for this extent, dtype and device."""
-        return _cached_tables(
-            self,
-            (seq_len, head_dim, dtype, device),
-            lambda: self._compute_cos_sin(seq_len, head_dim, dtype, device),
+    def _inv_freq(self) -> torch.Tensor:
+        """The ``rotary_dim // 2`` inverse frequencies, float32 on the CPU."""
+        return 1.0 / (
+            self.base
+            ** (torch.arange(0, self.rotary_dim, 2, dtype=torch.float32) / self.rotary_dim)
         )
 
-    def _compute_cos_sin(
-        self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Variant-specific (cos, sin) tables, each of shape ``(seq_len, head_dim // 2)``."""
-        raise NotImplementedError("Subclass must implement _compute_cos_sin")
+    def _cache_rows(self) -> int:
+        """The rows of the cos/sin cache, which positions index."""
+        return self.max_position_embeddings
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply RoPE rotation using internally computed cos/sin tables.
+    def _mscale(self) -> float:
+        """The magnitude every cos and sin value is scaled by."""
+        return 1.0
 
-        Args:
-            x: Input tensor. Shape depends on the input layout:
-                - 1D: ``(seq_len, head_dim)``
-                - 2D: ``(batch, seq_len, num_heads, head_dim)``
+    def _tables(self, dtype: torch.dtype, device: torch.device) -> tuple[torch.Tensor, ...]:
+        """The cos and sin tables, ``(cache rows, rotary_dim // 2)`` in *dtype* on *device*.
 
-        Returns:
-            Rotated output tensor with same shape as x.
+        They are computed again once a parameter changes.
         """
-        if self.input_layout == "1d":
-            (seq_len, head_dim), batch, num_heads = x.shape, 1, 1
-        else:
-            batch, seq_len, num_heads, head_dim = x.shape
-        cos, sin = self._get_cos_sin(seq_len, head_dim, x.dtype, x.device)
-        x = x.contiguous()
+        key = (dtype, device)
+        sources = param_state(self, type(self)._signature.sig)
+        held = self._freq_cache.get(key)
+        if held is None or held[0] != sources:
+            t = torch.arange(self._cache_rows(), dtype=torch.float32)
+            freqs = torch.outer(t, self._inv_freq())
+            mscale = self._mscale()
+            tables = tuple(
+                (table * mscale).to(self.dtype).to(device=device, dtype=dtype)
+                for table in (freqs.cos(), freqs.sin())
+            )
+            held = self._freq_cache[key] = (sources, tables)
+        return held[1]
+
+    def _forward(
+        self,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor | None,
+        offsets: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """``query`` and ``key`` with each token's heads rotated at its cache row."""
+        positions, query = positions.contiguous(), query.contiguous()
+        key = None if key is None else key.contiguous()
+        offsets = None if offsets is None else offsets.contiguous()
+        cos, sin = self._tables(query.dtype, query.device)
         kernel = self.kernel_for(
-            self.rope_layout,
+            _NEOX if self.is_neox_style else _GPTJ,
             lambda: RoPECall(
-                seq_len=seq_len,
-                head_dim=head_dim,
-                input_layout=self.input_layout,
-                batch=batch,
-                num_heads=num_heads,
-                dtype=x.dtype,
-                device=x.device,
+                query_heads=query.shape[-1] // self.head_size,
+                key_heads=0 if key is None else key.shape[-1] // self.head_size,
+                head_size=self.head_size,
+                rotary_dim=self.rotary_dim,
+                max_position=cos.shape[0],
+                dtype=query.dtype,
+                position_dtype=positions.dtype,
+                offset_dtype=None if offsets is None else offsets.dtype,
+                device=query.device,
             ),
         )
-        return kernel(x, cos, sin)
+        return kernel(positions, query, key, offsets, cos, sin)
 
-
-# Concrete Op classes (4 frequency schemes)
-
-
-class RoPEFwdOp(_RoPEOpBase):
-    """RoPE with standard theta frequencies, in either rotation convention.
-
-    ``rope_layout="neox"`` splits a head at its midpoint and rotates the halves against
-    each other; ``"interleaved"`` rotates each adjacent pair. The frequency table is the
-    same either way, so the two differ only in which elements pair up.
-
-    The cos/sin table is stored in the input dtype, as the rotation reads it.
-
-    References: GPT-NeoX / HuggingFace transformers RotaryEmbedding (NeoX); Su et al.,
-    "RoFormer: Enhanced Transformer with Rotary Position Embedding" (interleaved).
-    """
-
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "rope_neox": RoPENeoxKernel,
-        "rope_non_neox": RoPENonNeoxKernel,
-    }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "neox": RoPENeoxFwdInterface,
-        "interleaved": RoPENonNeoxFwdInterface,
-    }
-
-    def __init__(
-        self,
-        rope_layout: str = "neox",
-        input_layout: str = "1d",
-        base: float = 10000.0,
-        *,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
+    def forward(
+        self, positions: torch.Tensor, query: torch.Tensor, key: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Rotate ``query`` and ``key`` at ``positions``.
 
         Args:
-            rope_layout: "neox" to rotate the two halves of a head against each other,
-                "interleaved" to rotate each adjacent pair.
-            input_layout: "1d" for ``[seq_len, head_dim]`` or "2d" for
-                ``[batch, seq_len, num_heads, head_dim]``.
-            base: Frequency base (default 10000).
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-        """
-        if rope_layout not in ("neox", "interleaved"):
-            raise ValueError(f"rope_layout must be 'neox' or 'interleaved', got '{rope_layout}'")
-        self.rope_layout = rope_layout
-        super().__init__(input_layout, base, target=target)
-
-    def _compute_cos_sin(
-        self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return base_freqs(head_dim, seq_len, base=self.base, dtype=dtype, device=device)
-
-
-class RoPENeoxPositionIdsFwdOp(Op):
-    """GPT-NeoX style RoPE for packed THD tensors with explicit positions.
-
-    The first ``rotary_dim`` columns of each head rotate (all of them when
-    ``rotary_dim`` is None) and the rest are copied.
-    """
-
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "rope_neox_position_ids": RoPENeoxPositionIdsKernel
-    }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "rope_neox_position_ids": RoPENeoxPositionIdsFwdInterface
-    }
-
-    def __init__(
-        self,
-        max_position: int,
-        base: float = 10000.0,
-        rotary_dim: int | None = None,
-        *,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            max_position: Manifest ``params.max_position``, ``int``.
-            base: Manifest ``params.base``, ``float``, default ``10000.0``.
-            rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-        """
-        self.max_position = max_position
-        self.base = base
-        self.rotary_dim = rotary_dim
-        self._freq_cache: dict[tuple, tuple] = {}
-        super().__init__(target=target)
-
-    def _get_cos_sin(
-        self, rotary_dim: int, dtype: torch.dtype, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return _cached_tables(
-            self,
-            (rotary_dim, dtype, device),
-            lambda: base_freqs(
-                rotary_dim, self.max_position, base=self.base, dtype=dtype, device=device
-            ),
-        )
-
-    def forward(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            x: ``[tokens, heads, head_dim]``, dtype ``float16 | bfloat16 | float32``.
-            positions: ``[tokens]``, dtype ``int32 | int64``, each in
-                ``[0, max_position)``.
+            positions: Each token's position, ``[*S]``, ``int32`` or ``int64``, in
+                ``[0, cache rows)``.
+            query: ``[*S, head_size * Hq]``, each token's heads flattened.
+            key: ``[*S, head_size * Hk]``, or None.
 
         Returns:
-            ``output``, shaped as ``x``.
+            ``(query_out, key_out)``, shaped as ``query`` and ``key``; ``key_out`` is None
+            where ``key`` is.
         """
-        num_tokens, num_heads, head_dim = x.shape
-        rotary_dim = head_dim if self.rotary_dim is None else self.rotary_dim
-        cos, sin = self._get_cos_sin(rotary_dim, x.dtype, x.device)
-        x, positions = x.contiguous(), positions.to(torch.int32).contiguous()
-        kernel = self.kernel_for(
-            "rope_neox_position_ids",
-            lambda: RoPENeoxPositionIdsCall(
-                num_tokens=num_tokens,
-                num_heads=num_heads,
-                head_dim=head_dim,
-                rotary_dim=rotary_dim,
-                max_position=self.max_position,
-                dtype=x.dtype,
-                device=x.device,
-            ),
-        )
-        output = kernel(x, cos, sin, positions)
-        # The kernel counts the positions it found outside the table rather than the
-        # op proving they are inside it first: two reductions and two launches in
-        # front of every call cost more device time than the rotation they guard.
-        # It clamps its own table index, so this call read nothing out of bounds.
-        if kernel.take_out_of_range():
-            raise ValueError("positions must be in [0, max_position)")
-        return output
+        return self._forward(positions, query, key)
 
 
-class RoPELlama31FwdOp(_RoPEOpBase):
-    """Llama 3.1 RoPE op with piecewise frequency scaling.
+class RoPEFwdOp(_RotaryEmbeddingOp):
+    """RoPE with standard frequencies, either rotation convention (vLLM ``RotaryEmbedding``).
 
-    Computes cos/sin tables at construction using Llama 3.1 piecewise-scaled
-    frequencies based on wavelength thresholds.
+    ``is_neox_style`` rotates the two halves of each head's rotary columns against each
+    other; otherwise each adjacent pair rotates (GPT-J).
 
-    The cos/sin table is stored in the input dtype, as the rotation reads it.
-
-    Reference: Meta Llama 3.1 model implementation.
-
+    Positions in the cache are the caller's obligation, checked only with
+    ``validate_inputs=True``; unchecked, a position outside the cache reads its nearest row,
+    row 0 or the last.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_llama31": RoPENeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RoPENeoxFwdInterface}
-
-    @staticmethod
-    def _llama31_freqs(
-        head_dim: int,
-        seq_len: int,
-        base: float = 10000.0,
-        scaling_factor: float = 8.0,
-        low_freq_factor: float = 1.0,
-        high_freq_factor: float = 4.0,
-        original_max_position: int = 8192,
-        dtype: torch.dtype = torch.float32,
-        device: str = "cuda",
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Llama 3.1 piecewise-scaled frequency computation.
+    def __init__(
+        self,
+        head_size: int,
+        rotary_dim: int,
+        max_position_embeddings: int,
+        base: float,
+        is_neox_style: bool,
+        dtype: torch.dtype,
+        init_cache: bool = True,
+        *,
+        validate_inputs: bool = False,
+        target: Target = None,
+    ):
+        """Build the op and its cos/sin cache settings.
 
         Args:
-            head_dim: Head dimension.
-            seq_len: Sequence length.
+            head_size: Columns per head.
+            rotary_dim: Leading columns of each head that rotate; even, at most head_size.
+            max_position_embeddings: Rows of the cos/sin cache.
             base: Frequency base.
-            scaling_factor: Scaling factor for low frequencies.
-            low_freq_factor: Threshold for low-frequency wavelengths.
-            high_freq_factor: Threshold for high-frequency wavelengths.
-            original_max_position: Original maximum position length.
-            dtype: Output dtype.
-            device: Torch device.
-
-        Returns:
-            (cos, sin) each of shape (seq_len, head_dim // 2).
-        """
-        half = head_dim // 2
-        freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
-
-        low_freq_wavelen = original_max_position / low_freq_factor
-        high_freq_wavelen = original_max_position / high_freq_factor
-
-        scaled_freqs = []
-        for freq in freqs:
-            wavelen = 2 * math.pi / freq.item()
-            if wavelen < high_freq_wavelen:
-                scaled_freqs.append(freq)
-            elif wavelen > low_freq_wavelen:
-                scaled_freqs.append(freq / scaling_factor)
-            else:
-                smooth = (original_max_position / wavelen - low_freq_factor) / (
-                    high_freq_factor - low_freq_factor
-                )
-                scaled_freqs.append((1 - smooth) * freq / scaling_factor + smooth * freq)
-
-        freqs = torch.stack(scaled_freqs)
-        t = torch.arange(seq_len, device=device, dtype=torch.float32)
-        angles = torch.outer(t, freqs)
-        return torch.cos(angles).to(dtype), torch.sin(angles).to(dtype)
-
-    def __init__(
-        self,
-        input_layout: str = "1d",
-        base: float = 10000.0,
-        scaling_factor: float = 8.0,
-        low_freq_factor: float = 1.0,
-        high_freq_factor: float = 4.0,
-        original_max_position: int = 8192,
-        *,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            input_layout: "1d" or "2d".
-            base: Frequency base (default 10000).
-            scaling_factor: Scaling factor for low frequencies (default 8.0).
-            low_freq_factor: Low-frequency wavelen threshold (default 1.0).
-            high_freq_factor: High-frequency wavelen threshold (default 4.0).
-            original_max_position: Original max position (default 8192).
+            is_neox_style: Rotate halves (NeoX) rather than adjacent pairs (GPT-J).
+            dtype: The cos/sin cache's dtype, before it takes the query's.
+            init_cache: Must be True: the op computes its own cache.
+            validate_inputs: Check on the CPU that every position lies in the cache before
+                the kernels run; this synchronizes the device and cannot run inside CUDA
+                Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.head_size = head_size
+        self.rotary_dim = rotary_dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        self.is_neox_style = is_neox_style
+        self.dtype = dtype
+        self.init_cache = init_cache
+        self.validate_inputs = validate_inputs
+        self._start(target)
+
+
+class RoPELlama31FwdOp(_RotaryEmbeddingOp):
+    """Llama 3.1 RoPE with piecewise-scaled frequencies (vLLM ``Llama3RotaryEmbedding``).
+
+    A frequency whose wavelength is below ``orig_max_position / high_freq_factor`` is kept,
+    one above ``orig_max_position / low_freq_factor`` is divided by ``scaling_factor``, and
+    one between blends the two.
+
+    Positions in the cache are the caller's obligation, checked only with
+    ``validate_inputs=True``; unchecked, a position outside the cache reads its nearest row,
+    row 0 or the last.
+    """
+
+    def __init__(
+        self,
+        head_size: int,
+        rotary_dim: int,
+        max_position_embeddings: int,
+        base: float,
+        is_neox_style: bool,
+        dtype: torch.dtype,
+        scaling_factor: float,
+        low_freq_factor: float,
+        high_freq_factor: float,
+        orig_max_position: int,
+        *,
+        validate_inputs: bool = False,
+        target: Target = None,
+    ):
+        """Build the op and its cos/sin cache settings.
+
+        Args:
+            head_size: Columns per head.
+            rotary_dim: Leading columns of each head that rotate; even, at most head_size.
+            max_position_embeddings: Rows of the cos/sin cache.
+            base: Frequency base.
+            is_neox_style: Rotate halves (NeoX) rather than adjacent pairs (GPT-J).
+            dtype: The cos/sin cache's dtype, before it takes the query's.
+            scaling_factor: Divisor of the low frequencies.
+            low_freq_factor: Bounds the low-frequency band.
+            high_freq_factor: Bounds the high-frequency band.
+            orig_max_position: The context length the bands are measured against.
+            validate_inputs: Check on the CPU that every position lies in the cache before
+                the kernels run; this synchronizes the device and cannot run inside CUDA
+                Graph capture.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.head_size = head_size
+        self.rotary_dim = rotary_dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        self.is_neox_style = is_neox_style
+        self.dtype = dtype
         self.scaling_factor = scaling_factor
         self.low_freq_factor = low_freq_factor
         self.high_freq_factor = high_freq_factor
-        self.original_max_position = original_max_position
-        super().__init__(input_layout, base, target=target)
+        self.orig_max_position = orig_max_position
+        self.validate_inputs = validate_inputs
+        self._start(target)
 
-    def _compute_cos_sin(
-        self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return RoPELlama31FwdOp._llama31_freqs(
-            head_dim,
-            seq_len,
-            base=self.base,
-            scaling_factor=self.scaling_factor,
-            low_freq_factor=self.low_freq_factor,
-            high_freq_factor=self.high_freq_factor,
-            original_max_position=self.original_max_position,
-            dtype=dtype,
-            device=device,
+    def _inv_freq(self) -> torch.Tensor:
+        inv_freqs = super()._inv_freq()
+        low_freq_wavelen = self.orig_max_position / self.low_freq_factor
+        high_freq_wavelen = self.orig_max_position / self.high_freq_factor
+        wave_len = 2 * math.pi / inv_freqs
+        if self.low_freq_factor != self.high_freq_factor:
+            smooth = (self.orig_max_position / wave_len - self.low_freq_factor) / (
+                self.high_freq_factor - self.low_freq_factor
+            )
+        else:
+            smooth = 0
+        return torch.where(
+            wave_len < high_freq_wavelen,
+            inv_freqs,
+            torch.where(
+                wave_len > low_freq_wavelen,
+                inv_freqs / self.scaling_factor,
+                (1 - smooth) * inv_freqs / self.scaling_factor + smooth * inv_freqs,
+            ),
         )
 
 
-class YaRNFwdOp(_RoPEOpBase):
-    """YaRN RoPE op with linear-ramp frequency interpolation.
+class YaRNFwdOp(_RotaryEmbeddingOp):
+    """YaRN RoPE (vLLM ``YaRNScalingRotaryEmbedding``).
 
-    Computes cos/sin tables at construction using YaRN linear-ramp
-    interpolation between scaled and original frequencies.
+    Frequencies blend interpolation by ``scaling_factor`` into extrapolation between the
+    correction dimensions ``beta_fast`` and ``beta_slow`` name; cos and sin are scaled by
+    the YaRN magnitude. The cache holds ``max_position_embeddings * scaling_factor`` rows,
+    rounded up.
 
-    The cos/sin table is stored in the input dtype, as the rotation reads it.
-
-    Reference: Peng et al., "YaRN: Efficient Context Window Extension of LLMs".
-
+    Positions in the cache are the caller's obligation, checked only with
+    ``validate_inputs=True``; unchecked, a position outside the cache reads its nearest row,
+    row 0 or the last.
     """
-
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"yarn": RoPENeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RoPENeoxFwdInterface}
-
-    @staticmethod
-    def _yarn_freqs(
-        head_dim: int,
-        seq_len: int,
-        base: float = 10000.0,
-        scaling_factor: float = 16.0,
-        original_max_position: int = 4096,
-        beta_fast: float = 32.0,
-        beta_slow: float = 1.0,
-        attn_factor: float = 1.0,
-        dtype: torch.dtype = torch.float32,
-        device: str = "cuda",
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """YaRN frequency computation with NTK-aware interpolation.
-
-        Implements the canonical YaRN formula:
-        1. ``freq_extra`` = original inverse frequencies (for extrapolation dims)
-        2. ``freq_inter`` = NTK-aware scaled inverse frequencies where
-           ``scaling_factor`` is applied to the base: ``1/(scaling_factor*base)^(2k/d)``
-        3. Linear ramp mask between correction dims blends the two
-        4. ``inv_freq = freq_inter * (1 - mask) + freq_extra * mask``
-
-        Reference: TVM ``rope_freq_yarn`` in position_embedding.py;
-        Peng et al., "YaRN: Efficient Context Window Extension of LLMs".
-
-        Args:
-            head_dim: Head dimension.
-            seq_len: Sequence length.
-            base: Frequency base (theta).
-            scaling_factor: Context extension scale factor.
-            original_max_position: Original max context length.
-            beta_fast: Fast rotation boundary (passed as low_rot).
-            beta_slow: Slow rotation boundary (passed as high_rot).
-            attn_factor: Attention scaling factor (applied to cos/sin output).
-            dtype: Output dtype.
-            device: Torch device.
-
-        Returns:
-            (cos, sin) each of shape (seq_len, head_dim // 2).
-        """
-        half = head_dim // 2
-        dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
-
-        # Original inverse frequencies (extrapolation)
-        freq_extra = 1.0 / (base ** (dim_indices / half))
-
-        # NTK-aware scaled inverse frequencies (interpolation):
-        # scaling_factor is applied to the base, not as a divisor on freq
-        freq_inter = 1.0 / ((scaling_factor * base) ** (dim_indices / half))
-
-        # Find correction range
-        low, high = _yarn_find_correction_range(
-            beta_fast,
-            beta_slow,
-            half,
-            base,
-            original_max_position,
-        )
-        # Avoid division by zero when low == high
-        if low == high:
-            high = high + 1
-
-        # Linear ramp mask: 1 near low dims (extrapolation), 0 near high dims (interpolation)
-        inv_freq_mask = 1.0 - torch.clamp(
-            (dim_indices - low) / (high - low),
-            0.0,
-            1.0,
-        )
-
-        # Blend: mask=1 -> freq_extra, mask=0 -> freq_inter
-        inv_freq = freq_inter * (1.0 - inv_freq_mask) + freq_extra * inv_freq_mask
-
-        t = torch.arange(seq_len, device=device, dtype=torch.float32)
-        angles = torch.outer(t, inv_freq)
-        return (torch.cos(angles) * attn_factor).to(dtype), (torch.sin(angles) * attn_factor).to(
-            dtype
-        )
 
     def __init__(
         self,
-        input_layout: str = "1d",
-        base: float = 10000.0,
-        scaling_factor: float = 16.0,
-        original_max_position: int = 4096,
-        beta_fast: float = 32.0,
-        beta_slow: float = 1.0,
-        attn_factor: float = 1.0,
+        head_size: int,
+        rotary_dim: int,
+        max_position_embeddings: int,
+        base: float,
+        is_neox_style: bool,
+        scaling_factor: float,
+        dtype: torch.dtype,
         *,
+        extrapolation_factor: float = 1,
+        attn_factor: float = 1,
+        beta_fast: int = 32,
+        beta_slow: int = 1,
+        apply_yarn_scaling: bool = True,
+        truncate: bool = True,
+        validate_inputs: bool = False,
         target: Target = None,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op and its cos/sin cache settings.
 
         Args:
-            input_layout: "1d" or "2d".
-            base: Frequency base (default 10000).
-            scaling_factor: Context extension scale factor (default 16.0).
-            original_max_position: Original max position (default 4096).
-            beta_fast: Fast decay boundary (default 32.0).
-            beta_slow: Slow decay boundary (default 1.0).
-            attn_factor: Attention scaling factor (default 1.0).
+            head_size: Columns per head.
+            rotary_dim: Leading columns of each head that rotate; even, at most head_size.
+            max_position_embeddings: The original context length.
+            base: Frequency base.
+            is_neox_style: Rotate halves (NeoX) rather than adjacent pairs (GPT-J).
+            scaling_factor: Context extension factor.
+            dtype: The cos/sin cache's dtype, before it takes the query's.
+            extrapolation_factor: Weight of the extrapolated frequencies.
+            attn_factor: Magnitude scale of cos and sin.
+            beta_fast: Rotations bounding the extrapolated band.
+            beta_slow: Rotations bounding the interpolated band.
+            apply_yarn_scaling: Scale the magnitude by YaRN's ``0.1 * ln(scale) + 1``.
+            truncate: Round the correction dimensions outward to integers.
+            validate_inputs: Check on the CPU that every position lies in the cache before
+                the kernels run; this synchronizes the device and cannot run inside CUDA
+                Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.head_size = head_size
+        self.rotary_dim = rotary_dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        self.is_neox_style = is_neox_style
         self.scaling_factor = scaling_factor
-        self.original_max_position = original_max_position
+        self.dtype = dtype
+        self.extrapolation_factor = extrapolation_factor
+        self.attn_factor = attn_factor
         self.beta_fast = beta_fast
         self.beta_slow = beta_slow
-        self.attn_factor = attn_factor
-        super().__init__(input_layout, base, target=target)
+        self.apply_yarn_scaling = apply_yarn_scaling
+        self.truncate = truncate
+        self.validate_inputs = validate_inputs
+        self._start(target)
 
-    def _compute_cos_sin(
-        self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return YaRNFwdOp._yarn_freqs(
-            head_dim,
-            seq_len,
-            base=self.base,
-            scaling_factor=self.scaling_factor,
-            original_max_position=self.original_max_position,
-            beta_fast=self.beta_fast,
-            beta_slow=self.beta_slow,
-            attn_factor=self.attn_factor,
-            dtype=dtype,
-            device=device,
+    def _cache_rows(self) -> int:
+        return math.ceil(self.max_position_embeddings * self.scaling_factor)
+
+    def _mscale(self) -> float:
+        if not self.apply_yarn_scaling:
+            return float(self.attn_factor)
+        scale = self.scaling_factor
+        return float((1.0 if scale <= 1 else 0.1 * math.log(scale) + 1.0) * self.attn_factor)
+
+    def _inv_freq(self) -> torch.Tensor:
+        pos_freqs = self.base ** (
+            torch.arange(0, self.rotary_dim, 2, dtype=torch.float32) / self.rotary_dim
         )
+        low, high = _yarn_find_correction_range(
+            self.beta_fast,
+            self.beta_slow,
+            self.rotary_dim,
+            self.base,
+            self.max_position_embeddings,
+            self.truncate,
+        )
+        if low == high:
+            high += 0.001
+        ramp = torch.clamp(
+            (torch.arange(self.rotary_dim // 2, dtype=torch.float32) - low) / (high - low), 0, 1
+        )
+        mask = (1 - ramp) * self.extrapolation_factor
+        return (1.0 / (self.scaling_factor * pos_freqs)) * (1 - mask) + (1.0 / pos_freqs) * mask
 
 
-class LongRoPEFwdOp(_RoPEOpBase):
-    """LongRoPE op with per-dimension frequency rescaling.
+class LongRoPEFwdOp(_RotaryEmbeddingOp):
+    """LongRoPE: vLLM ``Phi3LongRoPEScaledRotaryEmbedding`` once one set of factors is chosen.
 
-    Computes cos/sin tables at construction using per-dimension rescale
-    factors (ext_factors) that multiply the divisor, plus a scale-dependent
-    amplitude factor applied to cos/sin output. Construction rejects a zero or NaN
-    rescale factor, since the frequency divides by it.
-
-    The cos/sin table is stored in the input dtype, as the rotation reads it.
-
-    Reference: TVM ``rope_freq_longrope`` in position_embedding.py;
-    Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
-
+    Phi-3 chooses at construction its long factors and long magnitude when the serving
+    context exceeds ``original_max_position_embeddings``, else its short ones; the caller
+    passes the chosen factors as ``rescale_factors`` (None for every factor 1) and the chosen
+    magnitude as ``mscale`` (None for ``sqrt(1 + ln(scale) / ln(original))`` with
+    ``scale = max_position_embeddings / original_max_position_embeddings``, 1 where
+    ``scale <= 1``). Token n reads cache row ``positions[n] + offsets[n]``, which lies in
+    ``[0, max_position_embeddings)``, and in ``[0, original_max_position_embeddings)`` with
+    the short factors. Both bounds are the caller's obligation; ``validate_inputs=True``
+    checks ``positions`` alone against the cache, not the sum. Unchecked, a row outside the
+    cache reads its nearest row, row 0 or the last. The rotation is NeoX, and the cache dtype
+    is the query's.
     """
-
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_longrope": RoPENeoxKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"neox": RoPENeoxFwdInterface}
-
-    @staticmethod
-    def _longrope_freqs(
-        head_dim: int,
-        seq_len: int,
-        base: float = 10000.0,
-        rescale_factors: torch.Tensor | None = None,
-        max_position: int = 4096,
-        original_max_position: int = 4096,
-        dtype: torch.dtype = torch.float32,
-        device: str = "cuda",
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """LongRoPE per-dimension rescaled frequency computation.
-
-        Implements the canonical LongRoPE formula:
-        1. ``divisor = ext_factors[k] * base^(2k/d)`` (ext_factors multiply the
-           divisor in the inverse-frequency computation)
-        2. ``scaling_factor = sqrt(1 + log(scale) / log(orig_max_pos))``
-           where ``scale = max_pos / orig_max_pos`` (amplitude factor applied
-           to cos/sin output when scale > 1)
-
-        Reference: TVM ``rope_freq_longrope`` in position_embedding.py;
-        Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
-
-        Args:
-            head_dim: Head dimension.
-            seq_len: Sequence length.
-            base: Frequency base.
-            rescale_factors: Per-dimension rescale factors (ext_factors) of
-                shape (head_dim // 2,). These multiply the divisor in the
-                inverse-frequency formula.
-            max_position: Extended max position length.
-            original_max_position: Original max position length.
-            dtype: Output dtype.
-            device: Torch device.
-
-        Returns:
-            (cos, sin) each of shape (seq_len, head_dim // 2).
-        """
-        half = head_dim // 2
-        dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
-        divisor = base ** (dim_indices / half)
-
-        # ext_factors multiply the divisor (matching canonical formula)
-        if rescale_factors is not None:
-            rf = rescale_factors.to(device=device, dtype=torch.float32)
-            divisor = rf * divisor
-
-        freqs = 1.0 / divisor
-
-        scale = max_position / original_max_position
-        if scale > 1.0:
-            scaling_factor = math.sqrt(1.0 + math.log(scale) / math.log(original_max_position))
-        else:
-            scaling_factor = 1.0
-
-        t = torch.arange(seq_len, device=device, dtype=torch.float32)
-        angles = torch.outer(t, freqs)
-        return (
-            (torch.cos(angles) * scaling_factor).to(dtype),
-            (torch.sin(angles) * scaling_factor).to(dtype),
-        )
 
     def __init__(
         self,
-        input_layout: str = "1d",
-        base: float = 10000.0,
-        rescale_factors: torch.Tensor | None = None,
-        max_position: int = 4096,
-        original_max_position: int = 4096,
+        head_size: int,
+        rotary_dim: int,
+        max_position_embeddings: int,
+        original_max_position_embeddings: int,
+        base: float,
+        is_neox_style: bool,
+        dtype: torch.dtype,
+        rescale_factors: Sequence[float] | None,
+        mscale: float | None = None,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op and its cos/sin cache settings.
 
         Args:
-            input_layout: "1d" or "2d".
-            base: Frequency base (default 10000).
-            rescale_factors: Per-dimension rescale factors (ext_factors) of shape
-                (head_dim // 2,). These multiply the divisor.
-            max_position: Extended max position length (default 4096).
-            original_max_position: Original max position length
-                (default 4096).
+            head_size: Columns per head.
+            rotary_dim: Leading columns of each head that rotate; even, at most head_size.
+            max_position_embeddings: Rows of the cos/sin cache.
+            original_max_position_embeddings: The original context length.
+            base: Frequency base.
+            is_neox_style: Must be True.
+            dtype: The cos/sin cache's dtype, the query's.
+            rescale_factors: ``rotary_dim // 2`` divisors of the frequencies, or None for 1.
+            mscale: Magnitude scale of cos and sin, or None for the default.
+            validate_inputs: Check on the CPU that every position lies in the cache before
+                the kernels run; this synchronizes the device and cannot run inside CUDA
+                Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
 
         Raises:
             ValueError: A rescale factor is zero or NaN; the frequency divides by it.
         """
-        # A meta tensor holds no values to check.
-        if rescale_factors is not None and not rescale_factors.is_meta:
-            defined = (rescale_factors != 0) & ~torch.isnan(rescale_factors)
-            if not bool(defined.all()):
-                raise ValueError("rescale_factors must be nonzero and not NaN")
+        if rescale_factors is not None and any(f == 0 or math.isnan(f) for f in rescale_factors):
+            raise ValueError("rescale_factors must be nonzero and not NaN")
+        self.head_size = head_size
+        self.rotary_dim = rotary_dim
+        self.max_position_embeddings = max_position_embeddings
+        self.original_max_position_embeddings = original_max_position_embeddings
+        self.base = base
+        self.is_neox_style = is_neox_style
+        self.dtype = dtype
         self.rescale_factors = rescale_factors
-        self.max_position = max_position
-        self.original_max_position = original_max_position
-        super().__init__(input_layout, base, target=target)
+        self.mscale = mscale
+        self.validate_inputs = validate_inputs
+        self._start(target)
 
-    def _compute_cos_sin(
-        self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return LongRoPEFwdOp._longrope_freqs(
-            head_dim,
-            seq_len,
-            base=self.base,
-            rescale_factors=self.rescale_factors,
-            max_position=self.max_position,
-            original_max_position=self.original_max_position,
-            dtype=dtype,
-            device=device,
-        )
+    def _inv_freq(self) -> torch.Tensor:
+        inv_freq = super()._inv_freq()
+        if self.rescale_factors is None:
+            return inv_freq
+        return inv_freq / torch.tensor(self.rescale_factors, dtype=torch.float32)
+
+    def _mscale(self) -> float:
+        if self.mscale is not None:
+            return self.mscale
+        scale = self.max_position_embeddings / self.original_max_position_embeddings
+        if scale <= 1.0:
+            return 1.0
+        return math.sqrt(1 + math.log(scale) / math.log(self.original_max_position_embeddings))
+
+    def forward(
+        self,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor | None = None,
+        offsets: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Rotate ``query`` and ``key`` at ``positions + offsets``.
+
+        Args:
+            positions: Each token's position, ``[N]``, ``int32`` or ``int64``.
+            query: ``[N, head_size * Hq]``, each token's heads flattened.
+            key: ``[N, head_size * Hk]``; required, as Phi-3 requires it.
+            offsets: ``[N]`` added to ``positions``, or None.
+
+        Returns:
+            ``(query_out, key_out)``, shaped as ``query`` and ``key``.
+        """
+        return self._forward(positions, query, key, offsets)

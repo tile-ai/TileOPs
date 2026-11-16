@@ -187,7 +187,7 @@ class FusedTopKFixture(FixtureBase):
 
 def _check(test: FusedTopKWorkload) -> None:
     inputs = [t for t in test.gen_inputs() if t is not None]
-    op = FusedTopKFwdOp(**test.call.arguments({}))
+    op = FusedTopKFwdOp(**test.call.arguments())
     TestBase.check(test, op, *inputs)
 
 

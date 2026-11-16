@@ -289,7 +289,7 @@ def test_fused_moe_gpt_oss_swigluoai_and_expert_biases() -> None:
     )
     workload = FusedMoEWorkload(call)
     inputs = workload.gen_inputs()
-    out = FusedMoEFwdOp(**call.arguments({}))(*inputs)
+    out = FusedMoEFwdOp(**call.arguments())(*inputs)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
@@ -491,7 +491,7 @@ def test_grouped_routing_scales_the_output_once() -> None:
         some=["correction_bias"],
     )
     workload = FusedMoEWorkload(call)
-    op = FusedMoEFwdOp(**call.arguments({}))
+    op = FusedMoEFwdOp(**call.arguments())
     TestBase.check(workload, op, *workload.gen_inputs())
 
 

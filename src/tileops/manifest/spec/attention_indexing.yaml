@@ -17,7 +17,7 @@ FP8LightningIndexerFwdOp:
       starts: {dtype: int32, shape: "[S]", values: "key_windows(seq_lens, first, S, 'start')", requires: ["in_range(0, S_kv + 1)"]}
       ends: {dtype: int32, shape: "[S]", values: "key_windows(seq_lens, first, S, 'end')", requires: ["in_range(0, S_kv + 1)"]}
       # Per-key scales of pre-quantized FP8 keys; a bf16 call is quantized by the op.
-      index_k_scale: {dtype: float32, shape: "[B, S_kv, G]", optional: true}
+      index_k_scale: {dtype: float32, shape: "[B, S_kv, G]", type: "Tensor | None", default: null}
     outputs:
       logits: {dtype: float32, shape: "[B, S, S_kv, G]"}
     shape_rules:

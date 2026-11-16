@@ -281,10 +281,10 @@ def _raw_gate_test(
         use_qk_l2norm_in_kernel=l2norm,
         use_gate_in_kernel=True,
         lower_bound=lower_bound,
-        some=list(some),
+        some=[*some, "A_log"],
         **shape,
     )
-    return KDARawGateTest(call), KDAFwdOp(**call.arguments({}))
+    return KDARawGateTest(call), KDAFwdOp(**call.arguments())
 
 
 @pytest.mark.parametrize(
@@ -489,11 +489,11 @@ def test_kda_gate_modes_and_operands_remain_call_local(batch, seqlen, heads):
             use_qk_l2norm_in_kernel=True,
             use_gate_in_kernel=raw,
             lower_bound=lower_bound,
-            some=["initial_state"] + (["dt_bias"] if bias else []),
+            some=["initial_state"] + (["dt_bias"] if bias else []) + (["A_log"] if raw else []),
         )
         test = KDARawGateTest(call)
         inputs = list(test.gen_inputs())
-        op = KDAFwdOp(**call.arguments({}))
+        op = KDAFwdOp(**call.arguments())
         test.check(op, *inputs)
         if raw:
             inputs[8].add_(0.5)

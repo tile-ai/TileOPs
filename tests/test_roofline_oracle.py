@@ -36,6 +36,7 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     drop, duplicate or substitute one of them.
     """
     from tileops.manifest import load_manifest
+    from tileops.manifest._signature import members
 
     signature = load_manifest()[op_name]["signature"]
     inputs = signature.get("inputs") or {}
@@ -65,8 +66,8 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
             continue
         if tensors[name] is not None:
             continue
-        assert (spec or {}).get("optional"), (
-            f"{op_name}: {name} is not optional and the case passes None"
+        assert set(members((spec or {}).get("type", "Tensor"))) - {"Tensor", "list[Tensor]"}, (
+            f"{op_name}: {name} holds only tensors and the case passes none"
         )
     return _nbytes(
         *(
@@ -99,7 +100,7 @@ _F16, _BF16, _F16_KV = {"T": "float16"}, {"T": "bfloat16"}, {"T": "float16", "KV
 _VARLEN, _MHA, _DSA = "GQAVarlenFwdOp", "MHAPagedFwdOp", "DSADenseFwdOp"
 _INDEXER, _GG = "FP8LightningIndexerFwdOp", "GroupedGEMMFwdOp"
 _ONE_HEAD = {"H": 1, "H_kv": 1, "D": 64}
-_ROPE = {"pos_encoding_mode": "rope"}
+_ROPE = {"pos_encoding_mode": "rope", "some": ["rope_cos", "rope_sin"]}
 _DENSE_WINDOW = {**_ONE_HEAD, "B": 1, "S_q": 1, "S_kv": 8, "is_causal": True, "window_size_left": 0}
 _PAGED_ROPE = {
     **_ONE_HEAD,
@@ -470,7 +471,9 @@ class TestBytesOracle:
             "is_causal": True,
         }
         plain, _ = _evaluated("GQAVarlenFwdOp", row, {"T": "float16"})
-        sink, _ = _evaluated("GQAVarlenFwdOp", {**row, "some": ["sinks"]}, {"T": "float16"})
+        sink, _ = _evaluated(
+            "GQAVarlenFwdOp", {**row, "some": [*row.get("some", []), "sinks"]}, {"T": "float16"}
+        )
         # Two nonempty rows per head each add subtract/exp/add, and one FP32 logit
         # per head is read. The last request stays zero regardless of its sink.
         assert sink == (plain[0] + 8 * 2 * 3, plain[1] + 8 * 4)
@@ -707,7 +710,7 @@ def _evaluated(op_name: str, row: dict, case: dict, **values):
     call = dataclasses.replace(call, specs=specs)
     tensors = call.materialize("meta")
     cls = signature_class(op_name, entry)
-    op = cls(**call.arguments(tensors))
+    op = cls(**call.arguments())
     checked = cls._signature.check(op, {t: tensors[t] for t in plan.sig.inputs})
     metadata = {n: torch.tensor(call.metadata_values(n)) for n in checked.metadata}
     op._last_call = dataclasses.replace(checked, metadata=metadata)
@@ -823,7 +826,7 @@ class TestSpecOnlyRecounts:
 
     def test_paged_kv_cache_write_moves_only_the_tokens_with_a_slot(self):
         name = "PagedKVCacheWriteFwdOp"
-        row = {"N": 5, "H_kv": 2, "D": 4, "NP": 4, "PS": 3, "some": ["k_scale"]}
+        row = {"N": 5, "H_kv": 2, "D": 4, "NP": 4, "PS": 3, "some": ["k_scale", "v_scale"]}
         slots = [7, -1, 2, -1, 11]
         (flops, moved), _call = _evaluated(
             name, row, {"T": "bfloat16", "KV": "float8_e4m3fn"}, slot_mapping=slots
@@ -854,7 +857,7 @@ class TestSpecOnlyRecounts:
             "P": 16,
             "seq_lens": [3, 2],
             "fuse_rope": True,
-            "some": ["kv_scale"],
+            "some": ["kv_scale", "cos_sin_cache", "positions"],
         }
         slots = [5, -1, 0, 8, -1]  # tokens 0, 2 and 3, at positions 0, 2 and 0
         case = {"T": "bfloat16", "KV": "float8_e4m3fn", "C": "float32"}
@@ -1010,9 +1013,120 @@ class TestSpecOnlyRecounts:
             cos=((rows, 2), _F32),
             sin=((rows, 2), sin),
             cu_seqlens=((3,), _I32) if packed else None,
+            seqlen_offsets=None,
             output=None if packed else x,  # in place, the output is x
         )
         assert flops == 3 * tokens * 2 * 4
+
+    def test_rope_cos_sin_reads_the_union_of_the_rows_each_offset_reaches(self):
+        name = "RoPECosSinFwdOp"
+        row = {"B": 2, "S": 3, "H": 2, "D": 8, "P": 6, "Rh": 2, "some": ["seqlen_offsets"]}
+        case = {"T": "bfloat16", "C": "float32", "Cs": "float32", "O": "int32"}
+        (flops, moved), _call = _evaluated(name, row, case, seqlen_offsets=[0, 2])
+        x = ((2, 3, 2, 8), _BF16)
+        # Rows 0..2 and 2..4: five distinct rows.
+        assert moved == _ledger(
+            name,
+            x=x,
+            cos=((5, 2), _F32),
+            sin=((5, 2), _F32),
+            cu_seqlens=None,
+            seqlen_offsets=((2,), _I32),
+            output=x,
+        )
+        assert flops == 3 * 6 * 2 * 4
+
+    @pytest.mark.parametrize(
+        "name, extra",
+        [
+            ("RoPEFwdOp", {}),
+            (
+                "RoPELlama31FwdOp",
+                {
+                    "scaling_factor": 8.0,
+                    "low_freq_factor": 1.0,
+                    "high_freq_factor": 4.0,
+                    "orig_max_position": 8,
+                },
+            ),
+            ("YaRNFwdOp", {"scaling_factor": 2.0}),
+            (
+                "LongRoPEFwdOp",
+                {"original_max_position_embeddings": 8, "rescale_factors": [1.0, 2.0]},
+            ),
+        ],
+    )
+    def test_rope_reads_only_the_cache_rows_the_positions_name(self, name, extra):
+        tokens = 5
+        row = {
+            "head_size": 8,
+            "rotary_dim": 4,
+            "max_position_embeddings": 16,
+            "base": 10000.0,
+            "is_neox_style": True,
+            "dtype": "bfloat16",
+            "Hq": 2,
+            "Hk": 1,
+            "some": ["key"],
+            **extra,
+            **({"N": tokens} if name == "LongRoPEFwdOp" else {"S": [tokens]}),
+        }
+        case = {"T": "bfloat16", "I": "int64"}
+        positions = [3, 3, 7, 0, 7]
+        (flops, moved), _call = _evaluated(name, row, case, positions=positions)
+        q, k = ((tokens, 16), _BF16), ((tokens, 8), _BF16)
+        ledger = {"offsets": None} if name == "LongRoPEFwdOp" else {}
+        # Three distinct rows of 4 cos/sin values each.
+        assert (
+            moved
+            == _ledger(
+                name,
+                positions=((tokens,), _I64),
+                query=q,
+                key=k,
+                query_out=q,
+                key_out=k,
+                **ledger,
+            )
+            + 3 * 4 * 2
+        )
+        assert flops == 3 * tokens * 3 * 4
+
+    def test_longrope_reads_the_rows_positions_plus_offsets_name(self):
+        name, tokens = "LongRoPEFwdOp", 5
+        row = {
+            "head_size": 8,
+            "rotary_dim": 4,
+            "max_position_embeddings": 16,
+            "original_max_position_embeddings": 8,
+            "base": 10000.0,
+            "is_neox_style": True,
+            "dtype": "bfloat16",
+            "rescale_factors": None,
+            "N": tokens,
+            "Hq": 2,
+            "Hk": 1,
+            "some": ["key", "offsets"],
+        }
+        case = {"T": "bfloat16", "I": "int64", "O": "int32"}
+        # Rows 3, 4, 7, 0, 9: five distinct, where the positions alone name three.
+        positions, offsets = [3, 3, 7, 0, 7], [0, 1, 0, 0, 2]
+        (flops, moved), _call = _evaluated(name, row, case, positions=positions, offsets=offsets)
+        q, k = ((tokens, 16), _BF16), ((tokens, 8), _BF16)
+        assert (
+            moved
+            == _ledger(
+                name,
+                positions=((tokens,), _I64),
+                query=q,
+                key=k,
+                offsets=((tokens,), _I32),
+                query_out=q,
+                key_out=k,
+            )
+            + 5 * 4 * 2
+        )
+        assert flops == 3 * tokens * 3 * 4
 
     def test_rope_cos_sin_reads_no_table_row_when_nothing_rotates(self):
         name = "RoPECosSinFwdOp"
@@ -1090,7 +1204,9 @@ class TestSpecOnlyRecounts:
         }
         dtypes = {"T": "float16", "KV": "float16"}
         plain, _ = _evaluated("GQAPagedFwdOp", row, dtypes)
-        sink, _ = _evaluated("GQAPagedFwdOp", {**row, "some": ["sinks"]}, dtypes)
+        sink, _ = _evaluated(
+            "GQAPagedFwdOp", {**row, "some": [*row.get("some", []), "sinks"]}, dtypes
+        )
         assert sink == (plain[0] + 8 * 3 * 3, plain[1] + 8 * 4)
 
 
@@ -1132,6 +1248,10 @@ HAND_WRITTEN = {
     "EmbeddingFwdOp": "it reads the weight rows its indices name, not the table",
     "MaskedScatterFwdOp": "each output element reads input or source, as the mask decides",
     "RoPECosSinFwdOp": "it reads the cos/sin rows the sequences reach, and in place only the rotated columns",
+    "RoPEFwdOp": "it reads only the cos/sin cache rows the positions name",
+    "RoPELlama31FwdOp": "it reads only the cos/sin cache rows the positions name",
+    "YaRNFwdOp": "it reads only the cos/sin cache rows the positions name",
+    "LongRoPEFwdOp": "it reads only the cos/sin cache rows the positions and offsets name",
     "ChainSpeculativeSamplingFwdOp": "where the chain stops is drawn at run time, so it prices the cheaper outcome",
 }
 

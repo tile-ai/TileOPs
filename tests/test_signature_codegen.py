@@ -47,10 +47,10 @@ def _calls(name):
 def test_check_accepts_every_instantiated_row(name):
     for call in _calls(name):
         tensors = call.materialize(device="cpu")
-        op = _op(name, call.arguments(tensors))
+        op = _op(name, call.arguments())
         checked = type(op)._signature.check(op, tensors)
-        for t, spec in call.specs.items():
-            assert checked.tensors.get(t) == (None if spec is None else (spec.shape, spec.dtype))
+        for t in call.specs:
+            assert checked.tensors.get(t) == call.tensors.get(t)
 
 
 def _gemm(**roofline):
@@ -80,11 +80,13 @@ def test_check_rejects(tensors, message):
         type(op)._signature.check(op, tensors)
 
 
-@pytest.mark.parametrize("name", ["ClampTensorFwdOp", "GQAPrefillVarlenFwdOp", "SumFwdOp"])
+@pytest.mark.parametrize(
+    "name", ["ClampFwdOp", "ConcatRowsFwdOp", "GQAPrefillVarlenFwdOp", "SumFwdOp"]
+)
 def test_check_traces_on_symints(name):
     call = next(_calls(name))
     tensors = call.materialize(device="cpu")
-    op = _op(name, call.arguments(tensors))
+    op = _op(name, call.arguments())
     plan = type(op)._signature
     torch._dynamo.reset()
     compiled = torch.compile(lambda ts: plan.check(op, ts).tensors, fullgraph=True, dynamic=True)
@@ -429,8 +431,14 @@ def test_one_instance_takes_its_own_branch_per_presence():
         "forall": {"M": "Dim", "T": "DType[float16]"},
         "inputs": {
             "x": {"dtype": "T", "shape": "[M]"},
-            "bias": {"dtype": "T", "shape": "[M]", "optional": True},
-            "acc": {"dtype": "T", "shape": "[M]", "optional": True, "mutated": "present(acc)"},
+            "bias": {"dtype": "T", "shape": "[M]", "type": "Tensor | None", "default": None},
+            "acc": {
+                "dtype": "T",
+                "shape": "[M]",
+                "type": "Tensor | None",
+                "default": None,
+                "mutated": "present(acc)",
+            },
         },
         "outputs": {
             "y": {"dtype": "T", "shape": "[M]"},
@@ -455,17 +463,6 @@ def test_one_instance_takes_its_own_branch_per_presence():
     assert y.tolist() == [2, 2] and aux is None and acc.tolist() == [1, 1]
 
 
-def test_a_cpu_construction_tensor_takes_its_declared_dtype():
-    signature = {
-        **_VEC,
-        "params": {"table": {"dtype": "float16", "shape": "[4]", "device": "cpu"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    op = _probe("ProbeTableFwdOp", signature, lambda self, x: x.clone())(table=torch.zeros(4))
-    op(torch.zeros(2, dtype=torch.float16))
-    assert op.table.dtype == torch.float16 and op.table.device.type == "cpu"
-
-
 def test_a_roofline_func_must_yield_two_ints(monkeypatch):
     import tileops._perf.formulas
 
@@ -487,17 +484,15 @@ def test_a_fresh_output_owns_its_storage():
     op = _probe("ProbeReturnsInputFwdOp", signature, lambda self, x: x)()
     with pytest.raises(ValueError, match="y shares storage"):
         op(torch.zeros(2, dtype=torch.float16))
-    held = {**signature, "params": {"table": {"dtype": "T", "shape": "[M]"}}}
-    table = torch.zeros(2, dtype=torch.float16)
-    op = _probe("ProbeHeldFwdOp", held, lambda self, x: self.table)(table=table)
-    with pytest.raises(ValueError, match="y shares storage"):
-        op(torch.zeros(2, dtype=torch.float16))
 
 
 def test_generated_methods_bind_inputs_by_name():
     signature = {
         **_VEC,
-        "inputs": {**_VEC["inputs"], "w": {"dtype": "T", "shape": "[M]", "optional": True}},
+        "inputs": {
+            **_VEC["inputs"],
+            "w": {"dtype": "T", "shape": "[M]", "type": "Tensor | None", "default": None},
+        },
         "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
     }
     op = _probe("ProbeNamedFwdOp", signature, lambda self, x, w=None: x + 1)()
@@ -517,7 +512,13 @@ def test_a_kw_only_input_is_taken_by_name_after_out():
         **_VEC,
         "inputs": {
             **_VEC["inputs"],
-            "w": {"dtype": "T", "shape": "[M]", "optional": True, "kw_only": True},
+            "w": {
+                "dtype": "T",
+                "shape": "[M]",
+                "type": "Tensor | None",
+                "default": None,
+                "kw_only": True,
+            },
         },
         "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}},
     }
@@ -587,25 +588,14 @@ def test_a_failed_evaluation_names_its_declaration():
         op(x, y)
 
 
-def test_a_construction_tensor_spliced_by_a_call_index_is_checked_per_call():
-    signature = {
-        "forall": {"S": "Shape", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[*S]"}},
-        "params": {"table": {"dtype": "T", "shape": "[*broadcast(S, S)]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[*S]"}},
-    }
-    probe = _probe("ProbeSplicedFwdOp", signature, lambda self, x: x.clone())
-    op = probe(table=torch.zeros(2, 3, dtype=torch.float16))
-    op(torch.zeros(2, 3, dtype=torch.float16))
-    with pytest.raises(ValueError, match="table has the wrong rank|table shape does not match"):
-        op(torch.zeros(2, 3, 1, dtype=torch.float16))
-
-
 def test_an_obligation_a_call_time_presence_activates_waits_for_the_call():
     signature = {
         **_VEC,
         "params": {"p": {"type": "int", "default": -1}},
-        "inputs": {**_VEC["inputs"], "w": {"dtype": "T", "shape": "[p]", "optional": True}},
+        "inputs": {
+            **_VEC["inputs"],
+            "w": {"dtype": "T", "shape": "[p]", "type": "Tensor | None", "default": None},
+        },
         "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
         "shape_rules": ["not present(w) or p >= 0"],
     }
@@ -613,35 +603,6 @@ def test_an_obligation_a_call_time_presence_activates_waits_for_the_call():
     op(torch.zeros(2, dtype=torch.float16))
     with pytest.raises(ValueError, match="w shape does not match p"):
         op(torch.zeros(2, dtype=torch.float16), torch.zeros(0, dtype=torch.float16))
-
-
-def test_a_construction_time_tensor_is_given_exactly_where_its_presence_holds():
-    signature = {
-        **_VEC,
-        "params": {
-            "flag": {"type": "bool"},
-            "table": {"dtype": "T", "shape": "[M]", "optional": "flag"},
-        },
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    probe = _probe("ProbeGatedFwdOp", signature, lambda self, x: x + 1)
-    with pytest.raises(ValueError, match="'table' is given where its presence condition is false"):
-        probe(flag=False, table=torch.zeros(2, dtype=torch.float16))
-    with pytest.raises(ValueError, match="construction-time tensor 'table' is required"):
-        probe(flag=True, table=None)
-
-
-def test_the_checked_call_holds_generated_construction_time_tensors():
-    signature = {
-        **_VEC,
-        "forall": {**_VEC["forall"], "L": "Seq[Int]", "N": "Dim"},
-        "params": {"table": {"dtype": "int32", "shape": "[N]", "values": "as_tensor(L)"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    table = torch.tensor([3, 1], dtype=torch.int32)
-    op = _probe("ProbeTableValuesFwdOp", signature, lambda self, x: x + 1)(table=table)
-    op(torch.zeros(2, dtype=torch.float16))
-    assert op.last_call.metadata_values("table") == [3, 1]
 
 
 def test_shape_inference_binds_dtype_indices_from_the_dtypes_passed():
@@ -959,15 +920,23 @@ def test_an_eager_call_missing_a_written_input_raises_its_check():
         "forall": {"M": "Dim", "T": "DType[float16]"},
         "inputs": {
             "x": {"dtype": "T", "shape": "[M]"},
-            "mean": {"dtype": "T", "shape": "[M]", "optional": True, "mutated": "present(mean)"},
+            "mean": {
+                "dtype": "T",
+                "shape": "[M]",
+                "type": "Tensor | None",
+                "default": None,
+                "mutated": "present(mean)",
+            },
             "var": {
                 "dtype": "T",
                 "shape": "[M]",
-                "optional": "present(mean)",
+                "type": "Tensor | None",
+                "default": None,
                 "mutated": "present(mean)",
             },
         },
         "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+        "shape_rules": ["present(var) == present(mean)"],
     }
 
     def forward(self, x, mean=None, var=None):
@@ -977,7 +946,7 @@ def test_an_eager_call_missing_a_written_input_raises_its_check():
 
     op = _probe("ProbeMissingWrittenFwdOp", signature, forward, boundary=True)()
     x, mean = torch.zeros(2, dtype=torch.float16), torch.zeros(2, dtype=torch.float16)
-    with pytest.raises(ValueError, match="'var' is required"):
+    with pytest.raises(ValueError, match="refinement fails: present\\(var\\) == present\\(mean\\)"):
         op(x, mean)
 
 
@@ -1196,9 +1165,7 @@ def test_a_param_snapshot_differs_once_a_field_is_edited_in_place():
         obj=Layout(4),
         slotted=SlottedLayout(4),
     )
-    sig = SimpleNamespace(
-        params={"shape": {}, "adt": {}, "obj": {}, "slotted": {}}, ctor_tensors={}
-    )
+    sig = SimpleNamespace(params={"shape": {}, "adt": {}, "obj": {}, "slotted": {}})
     before = param_state(op, sig)
     for edit in (
         lambda: op.shape.append(1),
@@ -1221,18 +1188,6 @@ def test_a_tensor_slot_holding_another_value_reaches_the_operator():
     op(torch.zeros(3, dtype=torch.float16))
     with pytest.raises((TypeError, RuntimeError), match="Tensor|tensor"):
         op([0.0, 0.0, 0.0])
-
-
-def test_a_param_snapshot_counts_constructor_tensor_presence():
-    from types import SimpleNamespace
-
-    from tileops._ops._signature_codegen import param_state
-
-    op = SimpleNamespace(table=None)
-    sig = SimpleNamespace(params={}, ctor_tensors={"table": None})
-    before = param_state(op, sig)
-    op.table = torch.zeros(2)
-    assert param_state(op, sig) != before
 
 
 def test_a_call_in_an_autocast_region_reaches_the_operator():
@@ -1278,36 +1233,6 @@ def test_an_invalid_execution_argument_reaches_the_operator():
     assert op(x, scale=2).tolist() == [2, 2, 2]
     with pytest.raises((TypeError, RuntimeError)):
         op(x, scale=1.5)
-
-
-def test_a_constructor_tensor_set_after_construction_takes_a_new_check():
-    signature = {
-        **_VEC,
-        "params": {
-            "table": {"dtype": "float16", "shape": "[4]", "device": "cpu", "optional": True}
-        },
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    op = _probe("ProbeOptionalTableFwdOp", signature, lambda self, x: x.clone(), boundary=True)(
-        table=None
-    )
-    x = torch.zeros(2, dtype=torch.float16)
-    op(x)
-    plan = type(op)._signature
-    looked_up = []
-    lookup = plan._lookup
-
-    def counting(*args):
-        looked_up.append(True)
-        return lookup(*args)
-
-    plan._lookup = counting
-    try:
-        op.table = torch.zeros(4, dtype=torch.float16)
-        op(x)
-    finally:
-        del plan._lookup
-    assert looked_up
 
 
 def test_a_held_tensor_requiring_grad_leaves_the_result_untracked_as_the_dispatcher_does():
@@ -1494,7 +1419,7 @@ def test_a_determined_input_is_derived_only_where_the_call_does_not_write_it(mut
     tensors = call.materialize(device="cpu")
     cls = type("GroupedGEMMFwdOp", (), {"__init__": lambda self, **p: vars(self).update(p)})
     install(cls, entry, load_adts())
-    op = cls(**call.arguments(tensors))
+    op = cls(**call.arguments())
     op._construction_indices = op._check_construction()
     checked = cls._signature.check(op, {t: tensors[t] for t in plan.sig.inputs})
     traffic = {t: (r, w) for t, r, w in checked.traffic}
@@ -1502,3 +1427,317 @@ def test_a_determined_input_is_derived_only_where_the_call_does_not_write_it(mut
     assert traffic["batch_sizes"] == (1, 0)
     assert call.derived("batch_offsets") is checked.derived("batch_offsets") is (not mutated)
     assert not call.derived("batch_sizes") and not checked.derived("batch_sizes")
+
+
+# ---------------------------------------------------------------- tensor sequences
+
+
+_HEAD = torch.zeros(4, dtype=torch.float16)
+
+
+@pytest.mark.parametrize(
+    ("parts", "message"),
+    [
+        (torch.zeros(2, 4, dtype=torch.float16), "'parts' is not a list or tuple of tensors"),
+        ([torch.zeros(2, 4, dtype=torch.float16), 1], "'parts' is not a list or tuple of tensors"),
+        (
+            [torch.zeros(2, 4, dtype=torch.float16), torch.zeros(1, 4)],
+            "parts dtype differs from T",
+        ),
+        (
+            [torch.zeros(2, 4, dtype=torch.float16), torch.zeros(1, 3, dtype=torch.float16)],
+            "parts shape does not match",
+        ),
+        ([torch.zeros(4, dtype=torch.float16)], "parts has the wrong rank"),
+    ],
+    ids=["tensor", "element", "dtype", "later-element", "rank"],
+)
+def test_check_rejects_a_sequence_element_by_element(parts, message):
+    op = _op("ConcatRowsFwdOp", {})
+    with pytest.raises(ValueError, match=message):
+        type(op)._signature.check(op, {"head": _HEAD, "parts": parts})
+
+
+def test_an_empty_sequence_cannot_solve_what_only_it_names():
+    signature = {
+        "forall": {"S": "Seq[Shape]", "T": "DType[float16]"},
+        "inputs": {"xs": {"dtype": "T", "shape": "[*S]", "type": "list[Tensor]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[len(S)]"}},
+    }
+    op = _probe("ProbeEmptyFwdOp", signature, lambda self, xs: None)()
+    op._construction_indices = op._check_construction()
+    with pytest.raises(ValueError, match="xs is empty: T cannot be solved from it"):
+        type(op)._signature.check(op, {"xs": []})
+
+
+_ROWS = _ENTRIES["ConcatRowsFwdOp"]["signature"]
+
+
+def test_a_sequence_crosses_the_compile_boundary_as_one_tensor_list():
+    probe = _probe(
+        "ProbeConcatRowsFwdOp",
+        _ROWS,
+        lambda self, head, parts: torch.cat(parts) + head,
+        boundary=True,
+        roofline={"flops": "sum(N) * prod(A)"},
+    )
+    (name,) = probe.compile_op_names
+    schema = getattr(torch.ops.tileops, name.split("::")[1]).default._schema
+    assert "Tensor head, Tensor[] parts" in str(schema)
+    op = probe()
+    parts = [torch.ones(2, 4, dtype=torch.float16), torch.full((3, 4), 2, dtype=torch.float16)]
+    assert op(_HEAD, parts).tolist() == [[1] * 4] * 2 + [[2] * 4] * 3
+    assert op.eval_roofline() == (20, (4 + 20 + 20) * 2)
+    # The plan keys on the elements: another list of the same length but other extents
+    # resolves its own.
+    assert len(op._plans) == 1
+    assert tuple(op(_HEAD, parts[:1] + [torch.ones(1, 4, dtype=torch.float16)]).shape) == (3, 4)
+    assert len(op._plans) == 2
+    with pytest.raises(ValueError, match="parts shape does not match"):
+        op(_HEAD, [parts[0], torch.ones(1, 3, dtype=torch.float16)])
+    torch._dynamo.reset()
+    compiled = torch.compile(op, fullgraph=True)
+    assert compiled(_HEAD, parts).tolist() == op(_HEAD, parts).tolist()
+
+
+def test_a_misaligned_element_is_copied_and_an_aliasing_result_rejected():
+    seen = []
+
+    def forward(self, head, parts):
+        seen.append([p.data_ptr() % 16 for p in parts])
+        return parts[0] if self.alias else torch.cat(parts)
+
+    signature = {**_ROWS, "params": {"alias": {"type": "bool"}}}
+    probe = _probe("ProbeAlignedRowsFwdOp", signature, forward, boundary=True)
+    base = torch.zeros(9, dtype=torch.float16)
+    parts = [torch.zeros(1, 4, dtype=torch.float16), base[1:].view(2, 4)]
+    probe(alias=False)(_HEAD, parts)
+    assert seen == [[0, 0]]
+    with pytest.raises((ValueError, RuntimeError), match="alias|shares storage"):
+        probe(alias=True)(_HEAD, [torch.zeros(2, 4, dtype=torch.float16)])
+
+
+def test_a_sequence_slot_holding_none_keeps_the_later_addresses_in_place():
+    """`install` takes a `list[Tensor] | None` slot the manifest does not yet accept; its None
+    is one leaf, so the overlap check reads every later tensor at its own address."""
+    signature = {
+        "forall": {"M": "Dim", "S": "Seq[Shape]", "T": "DType[float32]"},
+        "inputs": {
+            "xs": {"type": "list[Tensor] | None", "dtype": "T", "shape": "[*S]"},
+            "y": {"dtype": "T", "shape": "[M]"},
+            "x": {"dtype": "T", "shape": "[M]", "mutated": True},
+        },
+    }
+
+    def forward(self, xs, y, x):
+        x.add_(y)
+
+    op = _probe("ProbeNoneSequenceFwdOp", signature, forward, boundary=True)()
+    x, y = torch.zeros(3), torch.ones(3)
+    op(None, y, x)
+    op(None, y, x)
+    assert x.tolist() == [2.0] * 3
+
+
+# ---------------------------------------------------------------- argument types
+
+
+_OFFSET = {
+    "forall": {"M": "Dim", "T": "DType[float32]"},
+    "inputs": {
+        "x": {"dtype": "T", "shape": "[M]"},
+        "off": {"type": "int | Tensor", "dtype": "T", "shape": "[M]", "default": 0},
+    },
+    "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    "shape_rules": ["member(off) != 'int' or off >= 0"],
+}
+
+
+def test_a_scalar_member_is_checked_on_every_call_from_one_plan():
+    """A refinement reading a call-time scalar runs on every call; the plan keys on the
+    member and the scalar's type, never its value."""
+    op = _probe("ProbeOffsetFwdOp", _OFFSET, lambda self, x, off=0: x + off, boundary=True)()
+    x = torch.zeros(3)
+    checks, check = [], type(op)._signature.check
+    type(op)._signature.check = lambda o, t: checks.append(True) or check(o, t)
+    try:
+        assert op(x, 2).tolist() == [2.0] * 3
+        assert op(x, 5).tolist() == [5.0] * 3 and len(checks) == 1
+        with pytest.raises(ValueError, match=r"member\(off\) != 'int' or off >= 0"):
+            op(x, -1)
+        assert op(x, torch.ones(3)).tolist() == [1.0] * 3 and len(checks) == 2
+        assert op(x).tolist() == [0.0] * 3
+    finally:
+        del type(op)._signature.check
+    with pytest.raises(ValueError, match=r"bool is not a member of int \| Tensor"):
+        op(x, True)
+
+
+def test_a_scalar_member_crosses_the_compile_boundary_in_its_own_slot():
+    probe = _probe("ProbeOffsetSlotFwdOp", _OFFSET, lambda self, x, off=0: x + off, boundary=True)
+    (name,) = probe.compile_op_names
+    schema = getattr(torch.ops.tileops, name.split("::")[1]).default._schema
+    assert "Tensor x, SymInt? off__int, Tensor? off" in str(schema)
+    op = probe()
+    torch._dynamo.reset()
+    compiled = torch.compile(op, fullgraph=True, backend="eager")
+    x = torch.zeros(3)
+    assert compiled(x, 2).tolist() == [2.0] * 3
+    assert compiled(x, torch.ones(3)).tolist() == [1.0] * 3
+    torch._dynamo.reset()
+    dynamic = torch.compile(lambda x: op(x, x.shape[0] - 1), fullgraph=True, dynamic=True)
+    assert dynamic(torch.zeros(3)).tolist() == [2.0] * 3
+
+
+def test_the_operator_refuses_two_slots_of_one_argument():
+    probe = _probe(
+        "ProbeOffsetTwoSlotsFwdOp", _OFFSET, lambda self, x, off=0: x + off, boundary=True
+    )
+    op = probe()
+    op(torch.zeros(3), 1)
+    (name,) = probe.compile_op_names
+    operator = getattr(torch.ops.tileops, name.split("::")[1])
+    with pytest.raises(ValueError, match="pass exactly one of the slots of off"):
+        operator(torch.zeros(3), 2, torch.ones(3), op._instance_key)
+
+
+def test_a_required_nullable_input_is_passed_as_none():
+    signature = {
+        **_VEC,
+        "inputs": {
+            **_VEC["inputs"],
+            "bias": {"type": "Tensor | None", "dtype": "T", "shape": "[M]"},
+        },
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe(
+        "ProbeRequiredNullableFwdOp",
+        signature,
+        lambda self, x, bias: x.clone() if bias is None else x + bias,
+    )()
+    x = torch.ones(2, dtype=torch.float16)
+    assert op(x, None).tolist() == [1.0, 1.0]
+    assert op(x, x).tolist() == [2.0, 2.0]
+    with pytest.raises(TypeError, match="bias"):
+        op(x)
+
+
+def test_a_range_requirement_is_checked_only_under_validate_inputs():
+    signature = {
+        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float32]"},
+        "inputs": {
+            "table": {"dtype": "T", "shape": "[N]"},
+            "index": {"dtype": "int64", "shape": "[M]", "requires": ["in_range(0, N)"]},
+        },
+        "params": {"validate_inputs": {"type": "bool", "default": False}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    probe = _probe(
+        "ProbeRangeFwdOp", signature, lambda self, table, index: table[index.clamp(0, 2)]
+    )
+    table = torch.arange(3.0)
+    checked, unchecked = probe(validate_inputs=True), probe(validate_inputs=False)
+    assert checked(table, torch.tensor([0, 2])).tolist() == [0.0, 2.0]
+    with pytest.raises(ValueError, match=r"index must be in \[0, 3\)"):
+        checked(table, torch.tensor([0, 3]))
+    assert unchecked(table, torch.tensor([-1, 3])).tolist() == [0.0, 2.0]
+
+
+def test_a_misaligned_tensor_is_copied_and_a_scalar_member_kept():
+    op = _probe("ProbeOffsetAlignFwdOp", _OFFSET, lambda self, x, off=0: x + off, boundary=True)()
+    misaligned = torch.zeros(5)[1:4]
+    assert op(misaligned, 2).tolist() == [2.0] * 3
+
+
+def test_two_sequences_reading_one_element_wise_dtype_agree_on_it():
+    signature = {
+        "forall": {"S": "Seq[Shape]", "D": "Seq[DType[float16 | float32]]"},
+        "inputs": {
+            "xs": {"type": "list[Tensor]", "dtype": "D", "shape": "[*S]"},
+            "ys": {"type": "list[Tensor]", "dtype": "D", "shape": "[*S]"},
+        },
+        "outputs": {"n": {"dtype": "float32", "shape": "[len(S)]"}},
+    }
+    op = _probe("ProbeTwoSequencesFwdOp", signature, lambda self, xs, ys: None)()
+    op._construction_indices = op._check_construction()
+    half, single = torch.zeros(2, dtype=torch.float16), torch.zeros(2)
+    type(op)._signature.check(op, {"xs": [half, single], "ys": [half, single]})
+    with pytest.raises(ValueError, match="ys dtypes differ from D"):
+        type(op)._signature.check(op, {"xs": [half, single], "ys": [single, single]})
+
+
+def test_an_empty_sequence_leaves_a_shared_dtype_to_another_sequence():
+    signature = {
+        "forall": {"A": "Seq[Shape]", "B": "Seq[Shape]", "T": "DType[float16 | float32]"},
+        "inputs": {
+            "xs": {"type": "list[Tensor]", "dtype": "T", "shape": "[*A]"},
+            "ys": {"type": "list[Tensor]", "dtype": "T", "shape": "[*B]"},
+        },
+        "outputs": {"n": {"dtype": "T", "shape": "[len(A) + len(B)]"}},
+    }
+    op = _probe("ProbeSharedDtypeFwdOp", signature, lambda self, xs, ys: None)()
+    op._construction_indices = op._check_construction()
+    call = type(op)._signature.check(op, {"xs": [], "ys": [torch.zeros(2, dtype=torch.float16)]})
+    assert call.indices["T"] == "float16"
+    with pytest.raises(ValueError, match="xs and ys are empty: T cannot be solved from it"):
+        type(op)._signature.check(op, {"xs": [], "ys": []})
+
+
+def test_an_empty_sequence_leaves_a_shared_dimension_to_another_sequence():
+    signature = {
+        "forall": {"N": "Dim", "A": "Seq[Shape]", "B": "Seq[Shape]", "T": "DType[float16]"},
+        "inputs": {
+            "xs": {"type": "list[Tensor]", "dtype": "T", "shape": "[N, *A]"},
+            "ys": {"type": "list[Tensor]", "dtype": "T", "shape": "[N, *B]"},
+        },
+        "outputs": {"n": {"dtype": "T", "shape": "[N]"}},
+    }
+    op = _probe("ProbeSharedDimFwdOp", signature, lambda self, xs, ys: None)()
+    op._construction_indices = op._check_construction()
+    y = torch.zeros(3, 4, dtype=torch.float16)
+    assert type(op)._signature.check(op, {"xs": [], "ys": [y]}).indices["N"] == 3
+    with pytest.raises(ValueError, match="xs and ys are empty"):
+        type(op)._signature.check(op, {"xs": [], "ys": []})
+
+
+def test_a_fallback_sequence_is_no_index_of_the_call():
+    signature = {
+        "forall": {"N": "Dim", "A": "Seq[Shape]", "B": "Seq[Shape]", "T": "DType[float16]"},
+        "inputs": {
+            "xs": {"type": "list[Tensor]", "dtype": "T", "shape": "[N, *A]"},
+            "ys": {"type": "list[Tensor]", "dtype": "T", "shape": "[N, *B]"},
+        },
+        "outputs": {"n": {"dtype": "T", "shape": "[N]"}},
+    }
+    op = _probe("ProbeFallbackIndicesFwdOp", signature, lambda self, xs, ys: None)()
+    op._construction_indices = op._check_construction()
+    y = torch.zeros(3, 4, dtype=torch.float16)
+    call = type(op)._signature.check(op, {"xs": [], "ys": [y]})
+    assert "ys" not in call.indices
+    assert not any(isinstance(v, torch.Tensor) for v in call.indices.values())
+
+
+@pytest.mark.parametrize(
+    ("let", "rule"), [({}, "len(D) == len(S)"), ({"count": "len(D)"}, "count == len(S)")]
+)
+def test_shape_inference_without_dtypes_defers_a_rule_on_element_dtypes(let, rule):
+    signature = {
+        "forall": {"S": "Seq[Shape]", "D": "Seq[DType[float16 | float32]]"},
+        "inputs": {"xs": {"type": "list[Tensor]", "dtype": "D", "shape": "[*S]"}},
+        "outputs": {"n": {"dtype": "float32", "shape": "[len(S)]"}},
+        "let": let,
+        "shape_rules": [rule],
+    }
+    op = _probe("ProbeShapesOnlyFwdOp", signature, lambda self, xs: None)()
+    assert op._infer_output_shapes(xs=[(2, 3), (4,)])["n"] == (2,)
+
+
+def test_shape_inference_solves_through_a_dtype_coefficient_when_dtypes_are_passed():
+    signature = {
+        "forall": {"N": "Dim", "T": "DType[float16 | float32]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[a * N]"}},
+        "let": {"a": "2 if T == 'float16' else 4"},
+        "outputs": {"y": {"dtype": "T", "shape": "[N]"}},
+    }
+    op = _probe("ProbeCoefficientFwdOp", signature, lambda self, x: x[: x.shape[0] // 2])()
+    assert op._infer_output_shapes((8,), dtypes={"x": torch.float16}) == {"y": (4,)}

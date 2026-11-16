@@ -533,7 +533,7 @@ def test_instance_norm_needs_both_running_statistics_to_read_them() -> None:
     stat = torch.zeros(16, device=run_device())
     with pytest.raises(ValueError, match="use_input_stats or present"):
         InstanceNormFwdOp(use_input_stats=False)(x)
-    with pytest.raises(ValueError, match="'running_var' is required"):
+    with pytest.raises(ValueError, match=r"present\(running_var\) == present\(running_mean\)"):
         InstanceNormFwdOp()(x, stat)
 
 

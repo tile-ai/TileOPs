@@ -20,12 +20,12 @@ EmbeddingFwdOp:
       sparse: {type: bool, default: false}
       validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
-      input: {dtype: I, shape: "[*S]", values: "random_ids(prod(S[:-1]), S[-1], V)", requires: ["in_range(0, V)"]}
+      input: {dtype: I, shape: "[*S]", values: "random_ints(S, 0, V)", requires: ["in_range(0, V)"]}
       weight: {dtype: T, shape: "[V, D]", mutated: "present(max_norm)"}
     outputs:
       output: {dtype: T, shape: "[*S, D]"}
     shape_rules:
-    - "not present(padding_idx) or (padding_idx.value < V if padding_idx.value > 0 else padding_idx.value >= -V)"
+    - "not present(padding_idx) or (padding_idx < V if padding_idx > 0 else padding_idx >= -V)"
     - "not present(max_norm) or T in ('float16', 'bfloat16', 'float32')"
   workloads:
   - {S: [1, 4096], V: 248320, D: 5120, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.6-27b-prefill}
@@ -75,3 +75,29 @@ MaskedScatterFwdOp:
     # all-true one (a source element per output element).
     flops: "0"
     bytes: "bytes(mask) + bytes(output) + min((bytes(input), bytes(output)))"
+
+ConcatFwdOp:
+  # `torch.cat(tensors, dim)` over tensors of one positive rank, equal in every axis but
+  # `dim`; the output takes the dtype the elements promote to.
+  family: indexing
+  status: spec-only
+  ref_api: torch.cat
+  signature:
+    forall: {S: "Seq[Shape]", D: "Seq[DType[float16 | bfloat16 | float32]]"}
+    params:
+      dim: {type: int, default: 0}
+    inputs:
+      tensors: {type: "list[Tensor]", dtype: D, shape: "[*S]"}
+    outputs:
+      output: {dtype: "promote(D)", shape: "[*concat(S, dim)]"}
+    shape_rules:
+    - "len(S) >= 1"
+  workloads:
+  - {S: [[4096, 5120], [4096, 5120]], dim: -1, dtype_cases: [{D: [float16, float16]}, {D: [bfloat16, bfloat16]}, {D: [float32, float32]}], label: qwen36-mtp-prefill}
+  - {S: [[64, 5120], [64, 5120]], dim: -1, dtype_cases: [{D: [bfloat16, bfloat16]}], label: qwen36-mtp-draft}
+  - {S: [[4, 5120], [4, 5120]], dim: -1, dtype_cases: [{D: [bfloat16, bfloat16]}], label: qwen36-mtp-decode-4}
+  - {S: [[1, 5120], [1, 5120]], dim: -1, dtype_cases: [{D: [bfloat16, bfloat16]}], label: qwen36-mtp-decode}
+  - {S: [[2048, 1024], [2048, 4096], [2048, 3000]], dim: 1, dtype_cases: [{D: [bfloat16, bfloat16, bfloat16]}, {D: [bfloat16, float16, bfloat16]}], label: uneven-cols}
+  - {S: [[512, 4096], [1000, 4096], [512, 4096], [24, 4096]], dim: 0, dtype_cases: [{D: [bfloat16, bfloat16, bfloat16, bfloat16]}, {D: [float16, float32, float16, float16]}], label: uneven-rows}
+  roofline:
+    flops: "0"

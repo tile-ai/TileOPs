@@ -25,7 +25,7 @@ def _experts_case(dtype=torch.bfloat16, activation="silu_and_mul", some=(), **di
         **dims,
     )
     workload = MoEExpertsWorkload(call)
-    return FusedMoEExpertsFwdOp(**call.arguments({})), workload, workload.gen_inputs()
+    return FusedMoEExpertsFwdOp(**call.arguments()), workload, workload.gen_inputs()
 
 
 def _small_route_case(ids, dtype=torch.bfloat16):

@@ -69,8 +69,9 @@ def register_kernel_builder(op: str, target: str, build_kernel: BuildKernel) -> 
     Args:
         op: The op's manifest key, e.g. ``"RMSNormFwdOp"``.
         target: The name this backend gives its set of kernels.
-        build_kernel: Called with a `.protocol.TensorSpec` per input and the op's
-            params by keyword. Must be lazy: importing this module must not compile anything.
+        build_kernel: Called with a description per input — a `.protocol.TensorSpec`, a
+            tuple of them for a tensor sequence, a call-time scalar's type, or ``None`` — and
+            the op's params by keyword. Must be lazy: importing this module must not compile anything.
             An exception it raises reaches the op's caller unchanged.
 
     Raises:

@@ -10,7 +10,6 @@ dispatch, and end-to-end correctness against the PyTorch reference.
 import pytest
 import torch
 
-from tileops._ops.elementwise._base import ELEMENTWISE
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
@@ -32,7 +31,11 @@ _INPLACE_PARAMETRIC_OPS = (
     "HardtanhFwdOp",
 )
 
-_CLAMP_OPS = ("ClampTensorFwdOp", "ClampScalarFwdOp")
+# Each form of ClampFwdOp's bounds: the kernel key serving it, its interface, and the bounds.
+_CLAMP_FORMS = {
+    "tensor": ("clamp_tensor", "tensor_bounds", lambda x: (torch.zeros_like(x), None)),
+    "number": ("clamp", "number_bounds", lambda x: (-1.0, 1.0)),
+}
 
 
 def _torch_reference(op_name: str):
@@ -60,19 +63,18 @@ def _construct_inplace_op(mod, op_name: str, n_total: int, inplace: bool):
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
-@pytest.mark.parametrize("op_name", _CLAMP_OPS)
-def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> None:
+@pytest.mark.parametrize("form", sorted(_CLAMP_FORMS))
+def test_clamp_family_registered_implementation_is_dispatched(form: str) -> None:
     """A registered implementation preferred over the in-tree one must reach the kernel build.
 
-    Register, for each Clamp op, a *subclass* of its in-tree kernel under a new key and
-    assert the kernel built for a dtype is an instance of that subclass — the load-bearing
-    invariant is that the registered class is the one actually used to build it.
+    Register, for each form of ClampFwdOp's bounds, a *subclass* of its in-tree kernel under
+    a new key and assert the kernel built for a dtype is an instance of that subclass — the
+    load-bearing invariant is that the registered class is the one actually used to build it.
     """
     import tileops._ops.elementwise as mod
 
-    cls = getattr(mod, op_name)
-    kw = {"min": -1.0, "max": 1.0} if op_name == "ClampScalarFwdOp" else {}
-    ((key, default_kernel_cls),) = cls(**kw).kernel_types.items()
+    key, interface, bounds = _CLAMP_FORMS[form]
+    default_kernel_cls = mod.ClampFwdOp.kernel_types[key]
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""
@@ -82,16 +84,15 @@ def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> N
 
     state = registry.snapshot()
     try:
-        register_kernel_type(op_name, f"{key}_marker", MarkerKernel)
-        inst = cls(**kw, target=BUILTIN)
+        register_kernel_type("ClampFwdOp", f"{key}_marker", MarkerKernel)
+        inst = mod.ClampFwdOp(target=BUILTIN)
     finally:
         registry.restore(state)
     x = torch.randn(2, 4, device=run_device(), dtype=torch.float16)
-    bound = torch.zeros_like(x)
-    inst(x, bound) if op_name == "ClampTensorFwdOp" else inst(x)
-    ((built,),) = [tuple(inst._entries_built(ELEMENTWISE).values())]
+    inst(x, *bounds(x))
+    ((built,),) = [tuple(inst._entries_built(interface).values())]
     assert isinstance(built, MarkerKernel), (
-        f"{op_name}: the registered class was not used to build the "
+        f"ClampFwdOp {form}: the registered class was not used to build the "
         f"kernel (kernel type: {type(built).__name__})"
     )
 

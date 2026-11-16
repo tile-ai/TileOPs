@@ -166,7 +166,8 @@ class NSAVarlenFwdOp(Op):
             is_causal: Whether a token sees keys only up to its own position. Default
                 ``True``, as FLA's ``parallel_nsa``, which has no switch.
             validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never
-                decreases and ends at the token count.
+                decreases and ends at the token count, and that ``block_indices`` and
+                ``block_counts`` lie in their manifest ranges.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """

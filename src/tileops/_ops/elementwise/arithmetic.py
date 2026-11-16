@@ -28,10 +28,13 @@ from tileops._kernels.elementwise.call_spec import (
     LerpFwdInterface,
     LerpTensorFwdInterface,
 )
-from tileops._kernels.kernel_base import KernelInterface
+from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops.elementwise._base import ELEMENTWISE, BinaryOp
 from tileops._ops.op_base import Op
 from tileops.backend import Target
+
+# The interface of each form of lerp's weight.
+_NUMBER_WEIGHT, _TENSOR_WEIGHT = "number_weight", "tensor_weight"
 
 
 class _AlphaScaledBinaryOp(BinaryOp):
@@ -203,57 +206,6 @@ class FloorDivideFwdOp(BinaryOp):
         )
 
 
-class LerpScalarFwdOp(BinaryOp):
-    """Element-wise lerp with broadcast: y = a + weight * (b - a).
-
-    Unlike ``torch.lerp(a, b, weight)`` where weight is a runtime parameter,
-    here weight is a **construction-time constant** baked into the compiled
-    kernel. This enables compile-time folding but means a new Op instance is
-    needed for each distinct weight value.
-
-    """
-
-    kernel_types = {"lerp": LerpFwdKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: LerpFwdInterface}
-
-    def __init__(
-        self,
-        *,
-        weight: float = 0.5,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            weight: Scalar interpolation weight, fixed at construction (manifest
-                ``params.weight``, default 0.5).
-            target: Which set of kernels serves this op.
-        """
-        self.weight = weight
-        super().__init__(target=target)
-
-    def _call_spec(self, input: torch.Tensor, end: torch.Tensor) -> LerpCall:
-        return LerpCall(
-            device=input.device,
-            a_shape=tuple(input.shape),
-            b_shape=tuple(end.shape),
-            dtype=input.dtype,
-            weight=self.weight,
-        )
-
-    def forward(self, input: torch.Tensor, end: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``end``.
-
-        Args:
-            input: Start point.
-            end: End point, broadcastable with ``input``.
-
-        Returns:
-            A new tensor of the broadcast shape of ``input`` and ``end``.
-        """
-        return super().forward(input, end)
-
-
 class MaximumFwdOp(BinaryOp):
     """Element-wise maximum with broadcast: y = max(a, b).
 
@@ -274,18 +226,22 @@ class MinimumFwdOp(BinaryOp):
     kernel_types = {"minimum": MinimumFwdKernel}
 
 
-class LerpTensorFwdOp(Op):
-    """Tensor-weight lerp: out = input + weight * (end - input).
+class LerpFwdOp(Op):
+    """Linear interpolation ``out = input + weight * (end - input)`` (``torch.lerp``).
 
-    Conforms to the Tensor-weight overload of ``torch.lerp`` —
-    ``torch.lerp(input, end, weight: Tensor)`` where ``weight`` is a Tensor that
-    broadcasts together with ``input`` and ``end`` to the output shape. The scalar-weight
-    overload is handled separately by ``LerpScalarFwdOp``.
+    ``weight`` is a Number or a Tensor that broadcasts with ``input`` and ``end``, the two
+    overloads of ``torch.lerp``. Which one a call passes is read off the call, so one
+    instance serves both. A Number weight's value reaches the kernel's cache key, since the
+    kernel is built for it.
     """
 
-    kernel_types = {"lerp_tensor": LerpTensorFwdKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "lerp": LerpFwdKernel,
+        "lerp_tensor": LerpTensorFwdKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        ELEMENTWISE: LerpTensorFwdInterface
+        _NUMBER_WEIGHT: LerpFwdInterface,
+        _TENSOR_WEIGHT: LerpTensorFwdInterface,
     }
 
     def __init__(
@@ -304,24 +260,36 @@ class LerpTensorFwdOp(Op):
         self,
         input: torch.Tensor,
         end: torch.Tensor,
-        weight: torch.Tensor,
+        weight: float | torch.Tensor,
     ) -> torch.Tensor:
         """Run the op on ``input``, ``end`` and ``weight``.
 
         Args:
             input: Start point.
             end: End point, broadcastable with ``input``.
-            weight: Interpolation weight, broadcastable with ``input`` and ``end``.
+            weight: Interpolation weight: a Number, or a Tensor broadcastable with ``input``
+                and ``end``.
 
         Returns:
-            A new tensor of the broadcast shape of the three inputs.
+            A new tensor of the broadcast shape of the inputs.
         """
-        n_total = torch.broadcast_shapes(input.shape, end.shape, weight.shape).numel()
         input = input.contiguous()
         end = end.contiguous()
+        if not isinstance(weight, torch.Tensor):
+            return self.kernel_for(
+                _NUMBER_WEIGHT,
+                lambda: LerpCall(
+                    device=input.device,
+                    a_shape=tuple(input.shape),
+                    b_shape=tuple(end.shape),
+                    dtype=input.dtype,
+                    weight=weight,
+                ),
+            )(input, end)
+        n_total = torch.broadcast_shapes(input.shape, end.shape, weight.shape).numel()
         weight = weight.contiguous()
         kernel = self.kernel_for(
-            ELEMENTWISE,
+            _TENSOR_WEIGHT,
             lambda: ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype),
         )
         return kernel(input, end, weight)

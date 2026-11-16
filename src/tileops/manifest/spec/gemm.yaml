@@ -20,7 +20,7 @@ GEMMFwdOp:
     inputs:
       a: {dtype: T, shape: "Mat[trans_a, M, K]"}
       b: {dtype: T, shape: "Mat[trans_b, K, N]"}
-      bias: {dtype: T, shape: "[N]", optional: true}
+      bias: {dtype: T, shape: "[N]", type: "Tensor | None", default: null}
     outputs:
       d: {dtype: T, shape: "[M, N]"}
 
@@ -86,7 +86,7 @@ GEMMFP8FwdOp:
       b: {dtype: T, shape: "[N, K]"}
       a_scale: {dtype: float32, shape: "[*SA]"}
       b_scale: {dtype: float32, shape: "[*SB]"}
-      bias: {dtype: out_dtype, shape: "[N]", optional: true}
+      bias: {dtype: out_dtype, shape: "[N]", type: "Tensor | None", default: null}
     outputs:
       d: {dtype: out_dtype, shape: "[M, N]"}
     shape_rules:
@@ -274,7 +274,7 @@ GEMMINT8W8A8FwdOp:
       b: {dtype: int8, shape: "[N, K]"}
       a_scale: {dtype: float32, shape: "[*SA]"}
       b_scale: {dtype: float32, shape: "[*SB]"}
-      bias: {dtype: out_dtype, shape: "[N]", optional: true}
+      bias: {dtype: out_dtype, shape: "[N]", type: "Tensor | None", default: null}
     outputs:
       d: {dtype: out_dtype, shape: "[M, N]"}
     shape_rules:

@@ -34,13 +34,13 @@ The generated signature check is the only dtype gate, and every eager call is he
 
 ### Variants
 
-**A different input schema, different math or a different output schema is a separate class** (`ClampScalarFwdOp` and `ClampTensorFwdOp`; `RoPEFwdOp` and `YaRNFwdOp`; `MaxPool2dFwdOp` and `MaxPool2dIndicesFwdOp`; `GQADenseFwdOp` and `GQADenseWithLSEFwdOp`). Why: the manifest fixes an op's outputs. **A semantic mode with the same schemas is a construction parameter** (GELU's `approximate`, an activation's `inplace`).
+**A different input schema, different math or a different output schema is a separate class** (`RoPEFwdOp` and `YaRNFwdOp`; `MaxPool2dFwdOp` and `MaxPool2dIndicesFwdOp`; `GQADenseFwdOp` and `GQADenseWithLSEFwdOp`). Why: the manifest fixes an op's outputs. **A semantic mode with the same schemas is a construction parameter** (GELU's `approximate`, an activation's `inplace`). **An argument that is a scalar in one form and a tensor in another is one argument of a union type**, and the member it holds selects the kernel (`ClampFwdOp`'s `min: Number | Tensor | None`).
 
 ### Shared semantics
 
 - **Softmax scale.** A softmax-attention op that takes a scale takes `sm_scale: float | None = None`; `None` is the query-key head dimension `** -0.5`, and the manifest requires `0 < sm_scale < inf`.
 - **Rows without a key.** An attention row that sees no key has `o = 0` and `lse = -inf`, unless the op's manifest entry rules such rows out.
-- **Packed offsets.** An op with an input whose manifest `requires` holds `prefix_offsets` takes keyword-only `validate_inputs=False`; when set, the call checks those offsets, and a CPU copy passed with them, on the CPU before dispatch.
+- **Packed offsets.** An op with an input whose manifest `requires` holds `prefix_offsets` takes keyword-only `validate_inputs=False`; when set, the call checks those offsets, and a CPU copy passed with them, on the CPU before dispatch, together with every `in_range` bound of its inputs. An op without packed offsets may declare `validate_inputs` for its `in_range` bounds alone.
 - **Backward pairing.** A `Bwd` op accepts what its forward returns and every default its forward accepts; its docstring names the forward and the calls it does not feed.
 - **Reference defaults.** A default follows the entry's `ref_api`; the manifest comments a default the reference does not have.
 - **Written inputs.** An op that writes an input other than `out` says "in place" in the first line of its class docstring.
@@ -102,7 +102,7 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 - A composite declares the sub-op classes it may hold in `delegate_types`: its composition is a fact of the class, checkable before any call.
 - It holds every sub-op through `delegate_for`, once per identity, whether the sub-op is built at construction, built per call or injected. The sub-op inherits the composite's `target`.
 - One sub-op instance is held under one `(stage, identity)`; holding it under a second is an error.
-- A sub-op held under identity `None` belongs to the composite's specialization. Changed params build a new sub-op and a return to earlier params reuses it; a changed construction tensor replaces it. A composite that wants finer reuse passes an identity.
+- A sub-op held under identity `None` belongs to the composite's specialization. Changed params build a new sub-op and a return to earlier params reuses it. A composite that wants finer reuse passes an identity.
 - A completed call of a sub-op not held through `delegate_for` fails the composite's call, because its stages would lose that call.
 - `_held_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `request_tune()`.
 
@@ -125,7 +125,7 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 | Compiled programs                                | Kernel generation | A configuration is published |
 | Launch, output and trace properties of a program | Program           | The program is replaced      |
 
-The specialization is everything the checks read: each tensor slot's layout, dtype, device and presence, the params, construction-time tensors, execution arguments, and the current device of a call no input places. Assigning a configuration publishes it, and so does a tuning that succeeds; a failed tuning publishes nothing. A plan holds no tensor of any call. Plans and programs are held in bounded caches, oldest out first; an evicted specialization is resolved again on its next call. Why: a decision held past its dependencies answers wrong once one changes, and one held by a shorter-lived owner is resolved again for nothing.
+The specialization is everything the checks read: each tensor slot's layout, dtype, device and presence, the type of each call-time scalar, the params, execution arguments, and the current device of a call no input places. Assigning a configuration publishes it, and so does a tuning that succeeds; a failed tuning publishes nothing. A plan holds no tensor of any call. Plans and programs are held in bounded caches, oldest out first; an evicted specialization is resolved again on its next call. Why: a decision held past its dependencies answers wrong once one changes, and one held by a shorter-lived owner is resolved again for nothing.
 
 **A plan reuses decisions, never observations.** Every call observes the dispatcher state and its specialization, and a call the dispatcher would do more for than run the body goes through the registered operator. Storage relationships, enabled content checks, caller buffers, alignment, tensors and stream are read from the call itself, and one launch runs on one generation.
 
@@ -227,7 +227,7 @@ def __init__(
 
 **Input.** `signature.inputs`; the kernels and kernel interfaces of Step 1.
 
-**Optional inputs.** An `optional: true` input takes a `None` default in `forward`, and presence is read from the call rather than settled at construction, so one instance serves both ways of calling the op. Where the presence changes what gets built, it belongs in the kernel cache key alongside the shapes.
+**Arguments with several members.** An input's `default` is its default in `forward`, and the member it holds is read from the call rather than settled at construction, so one instance serves every way of calling the op. Where the member changes what gets built, it belongs in the kernel cache key alongside the shapes. A call-time scalar's value stays out of the plan key; a kernel that binds the value into its program builds one program per value.
 
 **Output.**
 

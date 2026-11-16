@@ -13,8 +13,7 @@ WORKLOADS = {
         "BitwiseOrFwdOp",
         "BitwiseXorFwdOp",
         "CeilFwdOp",
-        "ClampScalarFwdOp",
-        "ClampTensorFwdOp",
+        "ClampFwdOp",
         "CosFwdOp",
         "DivFwdOp",
         "DropoutFwdOp",
@@ -37,8 +36,7 @@ WORKLOADS = {
         "IsnanFwdOp",
         "LeFwdOp",
         "LeakyReLUFwdOp",
-        "LerpScalarFwdOp",
-        "LerpTensorFwdOp",
+        "LerpFwdOp",
         "Log1pFwdOp",
         "LogFwdOp",
         "LogicalAndFwdOp",
@@ -72,7 +70,6 @@ WORKLOADS = {
         "TanhFwdOp",
         "TruncFwdOp",
         "WhereFwdOp",
-        "MaskedFillTensorFwdOp",
-        "MaskedFillScalarFwdOp",
+        "MaskedFillFwdOp",
     )
 }

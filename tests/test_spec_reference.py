@@ -22,9 +22,10 @@ import torch.nn.functional as F
 from torch.utils._python_dispatch import TorchDispatchMode
 
 from tests.roofline_binder import signature_class
+from tileops._ops._signature_codegen import leaves
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
-from tileops.manifest._workload import instantiate
+from tileops.manifest._workload import TensorSpec, instantiate
 from workloads import sampling
 from workloads.attention.merge_states import MergeAttentionStatesWorkload
 from workloads.quantization import int8_dequant
@@ -312,19 +313,19 @@ def _rms_norm_gated(p, t):
 
 
 def _rope_cos_sin(p, t):
-    # flash_attn.layers.rotary.apply_rotary_emb with an integer seqlen_offsets
+    # flash_attn.layers.rotary.apply_rotary_emb: one offset, or one per sequence
     x, cos, sin, cu = t["x"], t["cos"], t["sin"], t["cu_seqlens"]
     if cos.shape != sin.shape or 2 * cos.shape[-1] > x.shape[-1]:
         raise ValueError("cos and sin must share a shape of at most half the head")
-    r, off = 2 * cos.shape[-1], p["seqlen_offsets"]
+    r, off = 2 * cos.shape[-1], t["seqlen_offsets"]
+    lengths = [x.shape[1]] * x.shape[0] if cu is None else (cu[1:] - cu[:-1]).tolist()
+    offsets = off.tolist() if isinstance(off, torch.Tensor) else [off] * len(lengths)
+    rows = [torch.arange(n) + o for n, o in zip(lengths, offsets, strict=True)]
     if cu is None:
-        rows = torch.arange(x.shape[1]) + off
-        c, s = cos[rows][None, :, None].float(), sin[rows][None, :, None].float()
+        rows = torch.stack(rows) if rows else torch.zeros(0, x.shape[1], dtype=torch.long)
+        c, s = cos[rows][:, :, None].float(), sin[rows][:, :, None].float()
     else:
-        bounds = cu.tolist()
-        rows = torch.cat(
-            [torch.arange(e - a) + off for a, e in zip(bounds, bounds[1:], strict=False)]
-        )
+        rows = torch.cat(rows)
         c, s = cos[rows][:, None].float(), sin[rows][:, None].float()
     h = x[..., :r].float()
     if p["interleaved"]:
@@ -372,6 +373,24 @@ def _empty_rows(name):
     return edit
 
 
+# ---------------------------------------------------------------- indexing
+
+
+def _concat(p, t):
+    return {"output": torch.cat(t["tensors"], p["dim"])}
+
+
+def _narrow_element(name, k, axis):
+    """A rejected call: element *k* of tensor sequence *name* one element shorter along *axis*."""
+
+    def edit(tensors):
+        items = list(tensors[name])
+        items[k] = items[k].narrow(axis, 0, items[k].shape[axis] - 1)
+        tensors[name] = items
+
+    return edit
+
+
 REFERENCES = {
     # op: (reference, the edit of the first row's tensors that the signature rejects)
     "INT8QuantPerTensorFwdOp": (_int8_per_tensor, _empty_rows("x")),
@@ -407,6 +426,7 @@ REFERENCES = {
     "MaskedScatterFwdOp": (_masked_scatter, _narrow("mask", 0)),
     "RMSNormGatedFwdOp": (_rms_norm_gated, _narrow("weight")),
     "RoPECosSinFwdOp": (_rope_cos_sin, _narrow("sin")),
+    "ConcatFwdOp": (_concat, _narrow_element("tensors", 1, 0)),
 }
 
 
@@ -441,11 +461,16 @@ def _calls(name):
             meta = call.materialize("meta")
             host = dict(meta)
             for n, spec in call.specs.items():
-                if spec is not None and spec.values is not None and n in meta:
+                if isinstance(spec, TensorSpec) and spec.values is not None and n in meta:
                     host[n] = torch.tensor(spec.values, dtype=getattr(torch, spec.dtype)).reshape(
                         spec.shape
                     )
             yield row["label"], case, plan, call, meta, host
+
+
+def _numel(values):
+    """The elements of the tensors among *values*, a tensor sequence's counted over its elements."""
+    return sum(t.numel() for t in leaves(tuple(values)) if isinstance(t, torch.Tensor))
 
 
 def _smallest_calls(name, cls):
@@ -454,12 +479,12 @@ def _smallest_calls(name, cls):
     smallest = {}
     for label, case, plan, call, meta, host in _calls(name):
         sig = plan.sig
-        arguments = call.arguments(meta)
+        arguments = call.arguments()
         op = cls(**arguments)
         inputs = {n: meta[n] for n in sig.inputs}
         params = sorted((p, repr(arguments.get(p))) for p in sig.params)
         key = (cls._signature.key(cls._signature.point(op, inputs)), sorted(case.items()), params)
-        size = sum(t.numel() for t in inputs.values() if t is not None)
+        size = _numel(inputs.values())
         if repr(key) not in smallest or size < smallest[repr(key)][0]:
             smallest[repr(key)] = (size, (label, case, plan, call, meta, host, op))
     return [c for _, c in smallest.values()]
@@ -475,14 +500,18 @@ def test_reference_agrees_with_the_signature(name):
         checked = cls._signature.check(op, {n: meta[n] for n in plan.sig.inputs})
         inputs = {n: host[n] for n in plan.sig.inputs}
         with _Writes() as writes:
-            outputs = reference(call.arguments(meta), inputs)
+            outputs = reference(call.arguments(), inputs)
         declared = {n: call.tensors[n] for n in plan.sig.outputs}
         got = {n: (tuple(v.shape), str(v.dtype).removeprefix("torch.")) for n, v in outputs.items()}
         assert got == {n: (tuple(s), d) for n, (s, d) in declared.items()}, where
         written = {
             n
             for n, v in inputs.items()
-            if v is not None and v.untyped_storage()._cdata in writes.storages
+            if any(
+                t.untyped_storage()._cdata in writes.storages
+                for t in leaves((v,))
+                if isinstance(t, torch.Tensor)
+            )
         }
         assert written == set(checked.written), where
 
@@ -493,7 +522,7 @@ def test_a_call_the_signature_rejects_the_reference_rejects(name):
     cls = signature_class(name, load_manifest()[name])
     label, case, plan, call, meta, host, op = min(
         _smallest_calls(name, cls),
-        key=lambda c: sum(t.numel() for n in c[2].sig.inputs if (t := c[4][n]) is not None),
+        key=lambda c: _numel(c[4][n] for n in c[2].sig.inputs),
     )
     bad_meta = {n: meta[n] for n in plan.sig.inputs}
     bad_host = {n: host[n] for n in plan.sig.inputs}
@@ -502,7 +531,7 @@ def test_a_call_the_signature_rejects_the_reference_rejects(name):
     with pytest.raises((ValueError, TypeError)):
         cls._signature.check(op, bad_meta)
     with pytest.raises((RuntimeError, ValueError, IndexError, TypeError)):
-        reference(call.arguments(meta), bad_host)
+        reference(call.arguments(), bad_host)
 
 
 def test_a_write_only_buffer_is_written_whole():
@@ -514,5 +543,5 @@ def test_a_write_only_buffer_is_written_whole():
     call = instantiate(plan, {**row, "some": ["seq_starts"], "label": "s"}, {"KV": "bfloat16"})
     tensors = call.materialize("cpu")
     tensors["out"].fill_(math.nan)
-    _paged_kv_cache_gather(call.arguments(tensors), {n: tensors[n] for n in plan.sig.inputs})
+    _paged_kv_cache_gather(call.arguments(), {n: tensors[n] for n in plan.sig.inputs})
     assert not tensors["out"].isnan().any()

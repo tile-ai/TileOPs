@@ -269,12 +269,3 @@ class MLAKVCacheWriteCall(CallWorkload, MLAKVCacheWriteWorkload):
         )
 
     gen_inputs = MLAKVCacheWriteWorkload.gen_inputs
-
-    def arguments(self):
-        """The op is built from its two parameters alone, so a case needs no tensor for it.
-
-        The base materializes the call to hand a construction-time tensor over; this entry
-        declares none, and materializing would allocate the cache and the cos/sin table for
-        nothing.
-        """
-        return self.call.arguments({})

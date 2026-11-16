@@ -71,7 +71,7 @@ entries:
       trans_b: false
       dtype_cases:
       - T: bfloat16
-  ClampTensorFwdOp:
+  ClampFwdOp:
     signature:
       types:
         ClampOut:
@@ -79,11 +79,11 @@ entries:
             A: Shape
             L: Shape
             U: Shape
-            pl: Bool
-            pu: Bool
+            tl: Bool
+            tu: Bool
           match:
-          - pl
-          - pu
+          - tl
+          - tu
           cases:
           - when:
             - true
@@ -97,6 +97,10 @@ entries:
             - false
             - true
             is: '[*broadcast(A, U)]'
+          - when:
+            - false
+            - false
+            is: '[*A]'
       forall:
         A: Shape
         L: Shape
@@ -108,18 +112,22 @@ entries:
           shape: '[*A]'
         min:
           dtype: T
-          optional: true
+          type: Number | Tensor | None
+          default: null
           shape: '[*L]'
         max:
           dtype: T
-          optional: true
+          type: Number | Tensor | None
+          default: null
           shape: '[*U]'
       outputs:
         output:
           dtype: T
-          shape: ClampOut[A, L, U, present(min), present(max)]
+          shape: ClampOut[A, L, U, member(min) == 'Tensor', member(max) == 'Tensor']
       shape_rules:
       - present(min) or present(max)
+      - member(min) != 'Number' or member(max) != 'Tensor'
+      - member(min) != 'Tensor' or member(max) != 'Number'
     workloads:
     - label: clamp-0
       A:
@@ -152,6 +160,27 @@ entries:
       A:
       - 8
       - 16
+      expect_fail: true
+      dtype_cases:
+      - T: float16
+    - label: clamp-3
+      A:
+      - 8
+      - 16
+      min: -0.5
+      max: 0.5
+      dtype_cases:
+      - T: float16
+    - label: clamp-4
+      A:
+      - 8
+      - 16
+      U:
+      - 8
+      - 16
+      min: -0.5
+      some:
+      - max
       expect_fail: true
       dtype_cases:
       - T: float16
@@ -193,14 +222,16 @@ entries:
           shape: '[B, S, H, D]'
         offsets:
           dtype: int32
-          optional: true
+          type: Tensor | None
+          default: null
           shape: '[NS + 1]'
           values: prefix_sum(seq_lens)
           requires:
           - prefix_offsets(S)
         indices:
           dtype: int32
-          optional: present(offsets)
+          type: Tensor | None
+          default: null
           shape: '[NC, 2]'
           values: chunk_indices(seq_lens, chunk_size)
       outputs:
@@ -208,6 +239,7 @@ entries:
           dtype: T
           shape: PoolOut[present(offsets), B, NC, S, chunk_size, H, D]
       shape_rules:
+      - present(indices) == present(offsets)
       - chunk_size > 0 and chunk_size % 32 == 0
     workloads:
     - label: meanpooling-0
@@ -231,6 +263,7 @@ entries:
       accum_dtype: float32
       some:
       - offsets
+      - indices
       dtype_cases:
       - T: float16
     - label: meanpooling-2
@@ -246,6 +279,7 @@ entries:
       accum_dtype: float32
       some:
       - offsets
+      - indices
       expect_fail: true
       dtype_cases:
       - T: float16
@@ -261,6 +295,7 @@ entries:
       accum_dtype: float32
       some:
       - offsets
+      - indices
       expect_fail: true
       dtype_cases:
       - T: float16
@@ -569,7 +604,8 @@ entries:
           shape: '[*SB]'
         bias:
           dtype: out_dtype
-          optional: true
+          type: Tensor | None
+          default: null
           shape: '[N]'
       outputs:
         d:
@@ -657,6 +693,41 @@ entries:
       N: 11008
       dtype_cases:
       - T: bfloat16
+  ConcatRowsFwdOp:
+    signature:
+      forall:
+        A: Shape
+        N: Seq[Dim]
+        T: DType[float16 | float32]
+      inputs:
+        head:
+          dtype: T
+          shape: '[*A]'
+        parts:
+          type: list[Tensor]
+          dtype: T
+          shape: '[N, *A]'
+      outputs:
+        output:
+          dtype: T
+          shape: '[sum(N), *A]'
+    workloads:
+    - label: three
+      A: [4, 2]
+      N: [2, 0, 5]
+      dtype_cases:
+      - T: float16
+    - label: none
+      A: [4]
+      N: []
+      dtype_cases:
+      - T: float32
+    - label: negative
+      expect_fail: true
+      A: [4]
+      N: [2, -1]
+      dtype_cases:
+      - T: float16
   DSADecodeFwdOp:
     signature:
       forall:
@@ -707,12 +778,14 @@ entries:
           shape: '[num_tokens, E]'
         shared_w_gate_up:
           dtype: T
-          optional: present(shared_ffn_size)
-          shape: '[2 * shared_ffn_size.value, hidden_size]'
+          type: Tensor | None
+          default: null
+          shape: '[2 * shared_ffn_size, hidden_size]'
         shared_w_down:
           dtype: T
-          optional: present(shared_ffn_size)
-          shape: '[hidden_size, shared_ffn_size.value]'
+          type: Tensor | None
+          default: null
+          shape: '[hidden_size, shared_ffn_size]'
       outputs:
         shared_output:
           dtype: T
@@ -721,12 +794,18 @@ entries:
         routed_output:
           dtype: T
           shape: '[num_tokens, hidden_size]'
+      shape_rules:
+      - present(shared_w_gate_up) == present(shared_ffn_size)
+      - present(shared_w_down) == present(shared_ffn_size)
     workloads:
     - label: fusedmoesharedexpert-0
       E: 384
       num_tokens: 1
       hidden_size: 7168
       shared_ffn_size: 18432
+      some:
+      - shared_w_gate_up
+      - shared_w_down
       dtype_cases:
       - T: bfloat16
     - label: fusedmoesharedexpert-1
@@ -963,14 +1042,12 @@ entries:
         H: Dim
         D: Dim
         T: DType[float16 | bfloat16 | float32]
-        R: DType[float32 | float16 | bfloat16]
       params:
         input_layout:
           type: '''1d'' | ''2d'''
         rescale_factors:
-          dtype: R
-          shape: '[D // 2]'
-          optional: true
+          type: list[float] | None
+          default: null
       inputs:
         x:
           dtype: T
@@ -981,6 +1058,7 @@ entries:
           shape: RoPEX[input_layout, B, S, H, D]
       shape_rules:
       - D % 2 == 0
+      - not present(rescale_factors) or len(rescale_factors) == D // 2
     workloads:
     - label: ropelongrope-0
       input_layout: 1d
@@ -991,47 +1069,40 @@ entries:
     - label: ropelongrope-1
       input_layout: 1d
       S: 8192
-      D: 128
-      some:
-      - rescale_factors
+      D: 8
+      rescale_factors: [1.0, 1.5, 2.0, 4]
       dtype_cases:
       - T: bfloat16
-        R: float32
     - label: ropelongrope-2
       input_layout: 2d
       B: 1
       S: 4096
       H: 32
-      D: 128
-      some:
-      - rescale_factors
+      D: 4
+      rescale_factors: [1.0, 2.0]
       dtype_cases:
       - T: float16
-        R: float16
     - label: ropelongrope-3
       input_layout: 1d
       S: 8192
-      D: 128
-      some:
-      - rescale_factors
+      D: 8
+      rescale_factors: [1.0, 2.0]
       dtype_cases:
       - T: bfloat16
-        R: float8_e4m3fn
       expect_fail: true
     - label: ropelongrope-4
       input_layout: 1d
       S: 8192
-      D: 128
+      D: 4
+      rescale_factors: [1.0, x]
       dtype_cases:
       - T: bfloat16
-        R: float32
       expect_fail: true
     - label: ropelongrope-5
       input_layout: 1d
       S: 8192
-      D: 128
-      some:
-      - rescale_factors
+      D: 2
+      rescale_factors: 1.0
       dtype_cases:
       - T: bfloat16
       expect_fail: true

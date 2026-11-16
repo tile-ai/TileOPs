@@ -39,7 +39,7 @@ def test_every_manifest_call_completes_on_meta(name):
     cls = op_class(name, _MANIFEST[name])
     for call in _calls(name):
         tensors = call.materialize("meta")
-        arguments = call.arguments(tensors)
+        arguments = call.arguments()
         if (
             "device" in _MANIFEST[name]["signature"].get("params", {})
             and arguments.get("device") is None
@@ -87,7 +87,7 @@ _SOFTMAX_SCALED = [
 @pytest.mark.parametrize("name", _SOFTMAX_SCALED)
 def test_a_softmax_scale_is_none_or_positive(name, sm_scale):
     call = next(_calls(name))
-    arguments = {**call.arguments(call.materialize("meta")), "sm_scale": sm_scale}
+    arguments = {**call.arguments(), "sm_scale": sm_scale}
     with pytest.raises(CheckError, match="sm_scale"):
         op_class(name, _MANIFEST[name])(**arguments)
 
@@ -152,7 +152,7 @@ def test_validate_inputs_rejects_offsets_that_do_not_span_the_tokens(name, kind)
             if spec.values is None
             else torch.tensor(spec.values, dtype=dtype).reshape(spec.shape)
         )
-    op = op_class(name, _MANIFEST[name])(**{**call.arguments(tensors), "validate_inputs": True})
+    op = op_class(name, _MANIFEST[name])(**{**call.arguments(), "validate_inputs": True})
     for corrupt in _cpu_mirrors(name) if kind == "mirror-differs" else offsets:
         changed = {**tensors, corrupt: _corrupted(kind, tensors[corrupt])}
         args, keywords = call.signature.forward_arguments(changed[t] for t in call.signature.inputs)
@@ -170,7 +170,7 @@ def test_each_adt_constructor_round_trips(adt):
         if not any(adt in split_union(p["type"]) for p in params.values() if "type" in p):
             continue
         for call in _calls(name):
-            objects = call.arguments(dict.fromkeys(call.signature.ctor_tensors))
+            objects = call.arguments()
             for p, literal in call.params.items():
                 if not (isinstance(literal, ADTValue) and literal.adt == adt):
                     continue

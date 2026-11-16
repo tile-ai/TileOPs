@@ -69,7 +69,7 @@ AvgPool2dFwdOp:
     shape_rules:
     - "kH > 0 and sH > 0 and kW > 0 and sW > 0"
     - "0 <= pH <= kH // 2 and 0 <= pW <= kW // 2"
-    - "not present(divisor_override) or divisor_override.value != 0"
+    - "not present(divisor_override) or divisor_override != 0"
     - "H_in > 0 and W_in > 0 and H_out > 0 and W_out > 0"
 
   workloads:
@@ -118,7 +118,7 @@ AvgPool3dFwdOp:
     shape_rules:
     - "kD > 0 and sD > 0 and kH > 0 and sH > 0 and kW > 0 and sW > 0"
     - "0 <= pD <= kD // 2 and 0 <= pH <= kH // 2 and 0 <= pW <= kW // 2"
-    - "not present(divisor_override) or divisor_override.value != 0"
+    - "not present(divisor_override) or divisor_override != 0"
     - "D_in > 0 and H_in > 0 and W_in > 0 and D_out > 0 and H_out > 0 and W_out > 0"
 
   workloads:
@@ -531,11 +531,12 @@ MeanPoolingFwdOp:
       validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       x: {dtype: T, shape: "[B, S, H, D]"}
-      cu_seqlens: {dtype: int32, optional: true, shape: "[NS + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      chunk_indices: {dtype: int32, optional: "present(cu_seqlens)", shape: "[NC, 2]", values: "chunk_indices(seq_lens, chunk_size)"}
+      cu_seqlens: {dtype: int32, type: "Tensor | None", default: null, shape: "[NS + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      chunk_indices: {dtype: int32, type: "Tensor | None", default: null, shape: "[NC, 2]", values: "chunk_indices(seq_lens, chunk_size)"}
     outputs:
       output: {dtype: T, shape: "PoolOut[present(cu_seqlens), B, NC, S, chunk_size, H, D]"}
     shape_rules:
+    - "present(chunk_indices) == present(cu_seqlens)"
     - "chunk_size > 0 and chunk_size % 32 == 0"
     - "D <= 128 or D % 128 == 0"
     # A mean accumulated in an integer type truncates each partial sum.
@@ -545,9 +546,9 @@ MeanPoolingFwdOp:
   # Chunk 64 over an 8k sequence is the linear-attention chunking these come from.
   - {B: 1, S: 8192, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}, {T: bfloat16}], label: uniform-8k}
   - {B: 2, S: 2048, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}], label: uniform-batched}
-  - {B: 1, S: 8192, H: 64, D: 128, seq_lens: "repeat(2048, 4)", chunk_size: 64, accum_dtype: float32, some: [cu_seqlens], dtype_cases: [{T: float16}, {T: float32}], label: ragged-even}
-  - {B: 1, S: 1000, H: 64, D: 128, seq_lens: [100, 200, 300, 400], chunk_size: 32, accum_dtype: float32, some: [cu_seqlens], dtype_cases: [{T: float16}], label: ragged-tail}
-  - {B: 2, S: 2048, H: 64, D: 128, seq_lens: "repeat(1024, 2)", chunk_size: 64, accum_dtype: float32, some: [cu_seqlens], dtype_cases: [{T: float16}], label: ragged-batched}
+  - {B: 1, S: 8192, H: 64, D: 128, seq_lens: "repeat(2048, 4)", chunk_size: 64, accum_dtype: float32, some: [cu_seqlens, chunk_indices], dtype_cases: [{T: float16}, {T: float32}], label: ragged-even}
+  - {B: 1, S: 1000, H: 64, D: 128, seq_lens: [100, 200, 300, 400], chunk_size: 32, accum_dtype: float32, some: [cu_seqlens, chunk_indices], dtype_cases: [{T: float16}], label: ragged-tail}
+  - {B: 2, S: 2048, H: 64, D: 128, seq_lens: "repeat(1024, 2)", chunk_size: 64, accum_dtype: float32, some: [cu_seqlens, chunk_indices], dtype_cases: [{T: float16}], label: ragged-batched}
 
   roofline:
     flops: "B * S * H * D + B * (NC if present(cu_seqlens) else ceil_div(S, chunk_size)) * H * D"

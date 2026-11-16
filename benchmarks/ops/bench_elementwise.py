@@ -22,8 +22,7 @@ from tileops.elementwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
     CeilFwdOp,
-    ClampScalarFwdOp,
-    ClampTensorFwdOp,
+    ClampFwdOp,
     CosFwdOp,
     DivFwdOp,
     DropoutFwdOp,
@@ -45,16 +44,14 @@ from tileops.elementwise import (
     IsnanFwdOp,
     LeakyReLUFwdOp,
     LeFwdOp,
-    LerpScalarFwdOp,
-    LerpTensorFwdOp,
+    LerpFwdOp,
     Log1pFwdOp,
     LogFwdOp,
     LogicalAndFwdOp,
     LogicalNotFwdOp,
     LogicalOrFwdOp,
     LtFwdOp,
-    MaskedFillScalarFwdOp,
-    MaskedFillTensorFwdOp,
+    MaskedFillFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MishFwdOp,
@@ -100,14 +97,9 @@ def test_prelu_bench(case) -> None:
     _bench(PReLUFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(MaskedFillTensorFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MaskedFillFwdOp), ids=lambda case: case.id)
 def test_masked_fill_bench(case) -> None:
-    _bench(MaskedFillTensorFwdOp, case)
-
-
-@pytest.mark.parametrize("case", bench.cases(MaskedFillScalarFwdOp), ids=lambda case: case.id)
-def test_masked_fill_scalar_bench(case) -> None:
-    _bench(MaskedFillScalarFwdOp, case)
+    _bench(MaskedFillFwdOp, case)
 
 
 @pytest.mark.parametrize("case", bench.cases(AddFwdOp), ids=lambda case: case.id)
@@ -145,9 +137,9 @@ def test_floor_divide_bench(case) -> None:
     _bench(FloorDivideFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(LerpScalarFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(LerpFwdOp), ids=lambda case: case.id)
 def test_lerp_bench(case) -> None:
-    _bench(LerpScalarFwdOp, case)
+    _bench(LerpFwdOp, case)
 
 
 @pytest.mark.parametrize("case", bench.cases(MaximumFwdOp), ids=lambda case: case.id)
@@ -230,11 +222,6 @@ def test_where_bench(case) -> None:
     _bench(WhereFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(LerpTensorFwdOp), ids=lambda case: case.id)
-def test_lerp_tensor_bench(case) -> None:
-    _bench(LerpTensorFwdOp, case)
-
-
 @pytest.mark.parametrize("case", bench.cases(ReLUFwdOp), ids=lambda case: case.id)
 def test_relu_bench(case) -> None:
     _bench(ReLUFwdOp, case)
@@ -290,14 +277,9 @@ def test_softplus_bench(case) -> None:
     _bench(SoftplusFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(ClampTensorFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(ClampFwdOp), ids=lambda case: case.id)
 def test_clamp_bench(case) -> None:
-    _bench(ClampTensorFwdOp, case)
-
-
-@pytest.mark.parametrize("case", bench.cases(ClampScalarFwdOp), ids=lambda case: case.id)
-def test_clamp_scalar_bench(case) -> None:
-    _bench(ClampScalarFwdOp, case)
+    _bench(ClampFwdOp, case)
 
 
 @pytest.mark.parametrize("case", bench.cases(NanToNumFwdOp), ids=lambda case: case.id)

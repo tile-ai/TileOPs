@@ -15,8 +15,7 @@ from tileops._ops.elementwise import (
     AddFwdOp,
     DivFwdOp,
     FloorDivideFwdOp,
-    LerpScalarFwdOp,
-    LerpTensorFwdOp,
+    LerpFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MulFwdOp,
@@ -191,13 +190,6 @@ _ARITH_BROADCAST_OPS = [
         torch.floor_divide,
         lambda s, d: torch.rand(*s, dtype=d, device=run_device()) + 0.1,
         lambda s, d: torch.rand(*s, dtype=d, device=run_device()) + 0.1,
-    ),
-    (
-        "lerp",
-        LerpScalarFwdOp,
-        lambda a, b: torch.lerp(a.float(), b.float(), 0.5).to(a.dtype),
-        lambda s, d: torch.randn(*s, dtype=d, device=run_device()),
-        lambda s, d: torch.randn(*s, dtype=d, device=run_device()),
     ),
     (
         "maximum",
@@ -592,7 +584,7 @@ def test_float32_floor_ops_match_torch_bit_for_bit(a_shape, b_shape) -> None:
         assert torch.equal(out[number].view(torch.int32), ref[number].view(torch.int32))
 
 
-# Lerp op (ternary in PyTorch; compile-time weight=0.5)
+# Lerp with a Number weight
 
 
 class LerpFixture(FixtureBase):
@@ -614,11 +606,35 @@ class LerpTest(LerpCase, TestBase):
 
 @LerpFixture
 def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
-    """Validate lerp across multiple construction-time weight values."""
+    """Validate lerp across Number weights, one instance serving every value."""
+    op = LerpFwdOp()
     for weight in [0.0, 0.3, 0.5, 0.7, 1.0]:
         test = LerpTest(n_total, dtype, weight=weight)
-        op = LerpScalarFwdOp(weight=weight)
         test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("a_shape", "b_shape"),
+    [
+        ((2, 64, 128), (2, 64, 128)),
+        ((2, 64, 128), (2, 64, 1)),
+        ((64, 128), (1, 1)),
+        ((3, 1), (1, 4)),
+    ],
+)
+def test_lerp_number_weight_broadcast(a_shape, b_shape) -> None:
+    a = torch.randn(a_shape, dtype=torch.float16, device=run_device())
+    b = torch.randn(b_shape, dtype=torch.float16, device=run_device())
+    workload = ElementwiseWorkload("LerpFwdOp", (a, b, 0.5))
+    TestBase.check(workload, LerpFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_lerp_rejects_integer_dtype() -> None:
+    a = torch.ones(16, device=run_device(), dtype=torch.int32)
+    with pytest.raises(ValueError, match="dtype is outside"):
+        LerpFwdOp()(a, a, 0.5)
 
 
 # Maximum/Minimum NaN propagation tests
@@ -890,7 +906,6 @@ class FloatOnlyBinaryRejectFixture(FixtureBase):
                 pytest.param(RemainderFwdOp, torch.int32, marks=pytest.mark.smoke),
                 pytest.param(PowFwdOp, torch.int32, marks=pytest.mark.smoke),
                 pytest.param(FloorDivideFwdOp, torch.int64, marks=pytest.mark.smoke),
-                pytest.param(LerpScalarFwdOp, torch.int32, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -1005,7 +1020,7 @@ def test_binary_ops_under_tuning(tune: bool) -> None:
         )
 
 
-# LerpTensorFwdOp — Tensor-weight torch.lerp overload (manifest:
+# LerpFwdOp — Tensor-weight torch.lerp overload (manifest:
 # elementwise_multi_input). Covers same-shape, 3-way broadcast, dtype
 # rejection, and dtype-mismatch rejection at forward().
 
@@ -1017,12 +1032,12 @@ _LERP_TENSOR_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("dtype", _LERP_TENSOR_DTYPES)
 def test_lerp_tensor_same_shape(dtype: torch.dtype) -> None:
-    """LerpTensorFwdOp matches torch.lerp on same-shape inputs."""
+    """LerpFwdOp matches torch.lerp on same-shape inputs."""
     shape = (4, 8)
     a = torch.randn(shape, device=run_device(), dtype=dtype)
     b = torch.randn(shape, device=run_device(), dtype=dtype)
     w = torch.rand(shape, device=run_device(), dtype=dtype)
-    op = LerpTensorFwdOp()
+    op = LerpFwdOp()
     out = op(a, b, w)
     ref = torch.lerp(a, b, w)
     compare_outputs(
@@ -1033,13 +1048,13 @@ def test_lerp_tensor_same_shape(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_lerp_tensor_broadcast() -> None:
-    """LerpTensorFwdOp supports the manifest's 3-way broadcast rule."""
+    """LerpFwdOp supports the manifest's 3-way broadcast rule."""
     a_shape, b_shape, w_shape = (3, 1), (1, 4), (3, 4)
     dtype = torch.float32
     a = torch.randn(a_shape, device=run_device(), dtype=dtype)
     b = torch.randn(b_shape, device=run_device(), dtype=dtype)
     w = torch.rand(w_shape, device=run_device(), dtype=dtype)
-    op = LerpTensorFwdOp()
+    op = LerpFwdOp()
     out = op(a, b, w)
     ref = torch.lerp(a, b, w)
     compare_outputs(
@@ -1066,7 +1081,7 @@ def test_lerp_tensor_reads_broadcast_operands_in_place(a_shape, b_shape, w_shape
     a = torch.randn(a_shape, device=run_device(), dtype=dtype)
     b = torch.randn(b_shape, device=run_device(), dtype=dtype)
     w = torch.rand(w_shape, device=run_device(), dtype=dtype) * 1.5 - 0.25
-    TestBase.check(ElementwiseWorkload("LerpTensorFwdOp", (a, b, w)), LerpTensorFwdOp(), a, b, w)
+    TestBase.check(ElementwiseWorkload("LerpFwdOp", (a, b, w)), LerpFwdOp(), a, b, w)
 
 
 @pytest.mark.smoke
@@ -1075,9 +1090,9 @@ def test_lerp_tensor_reads_broadcast_operands_in_place(a_shape, b_shape, w_shape
     [torch.float8_e4m3fn, torch.float8_e5m2],
 )
 def test_lerp_tensor_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
-    """LerpTensorFwdOp must reject fp8 dtypes (manifest declares no fp8)."""
+    """LerpFwdOp must reject fp8 dtypes (manifest declares no fp8)."""
     shape = (4, 8)
-    op = LerpTensorFwdOp()
+    op = LerpFwdOp()
     x = torch.zeros(shape, device=run_device()).to(bad_dtype)
     with pytest.raises((ValueError, TypeError)):
         op(x, x, x)
@@ -1088,7 +1103,7 @@ def test_lerp_tensor_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
 def test_lerp_tensor_dtype_mismatch_rejected() -> None:
     """forward() must reject operands that disagree with each other."""
     shape = (4, 8)
-    op = LerpTensorFwdOp()
+    op = LerpFwdOp()
     a = torch.randn(shape, device=run_device(), dtype=torch.float32)
     b = torch.randn(shape, device=run_device(), dtype=torch.float32)
     w_bad = torch.rand(shape, device=run_device(), dtype=torch.float16)
@@ -1357,4 +1372,4 @@ def test_add_bool_broadcast() -> None:
 def test_lerp_tensor_cancellation_uses_float_intermediates(dtype: torch.dtype) -> None:
     """Rounding end-start to the storage dtype can erase a nonzero midpoint."""
     workload = LerpCancellationWorkload(dtype)
-    TestBase.check(workload, LerpTensorFwdOp(), *workload.gen_inputs())
+    TestBase.check(workload, LerpFwdOp(), *workload.gen_inputs())

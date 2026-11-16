@@ -23,8 +23,7 @@ from tileops._ops.elementwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
     CeilFwdOp,
-    ClampScalarFwdOp,
-    ClampTensorFwdOp,
+    ClampFwdOp,
     CosFwdOp,
     DivFwdOp,
     EqFwdOp,
@@ -43,16 +42,14 @@ from tileops._ops.elementwise import (
     IsinfFwdOp,
     IsnanFwdOp,
     LeFwdOp,
-    LerpScalarFwdOp,
-    LerpTensorFwdOp,
+    LerpFwdOp,
     Log1pFwdOp,
     LogFwdOp,
     LogicalAndFwdOp,
     LogicalNotFwdOp,
     LogicalOrFwdOp,
     LtFwdOp,
-    MaskedFillScalarFwdOp,
-    MaskedFillTensorFwdOp,
+    MaskedFillFwdOp,
     MaximumFwdOp,
     MinimumFwdOp,
     MishFwdOp,
@@ -606,35 +603,32 @@ def test_pow_compile():
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
-# --- Lerp (special binary with weight) ---
+# --- Lerp (Number or Tensor weight) ---
 
-register_compile_contract(LerpScalarFwdOp)
+register_compile_contract(LerpFwdOp)
 
 
 @pytest.mark.smoke
 def test_lerp_compile():
-    """Compile-smoke for LerpScalarFwdOp."""
+    """Compile-smoke for LerpFwdOp with a Number weight."""
     shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    op = LerpScalarFwdOp(weight=0.3)
+    op = LerpFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
-    workload = ElementwiseWorkload(type(op).__name__, (a, b), weight=0.3)
+    workload = ElementwiseWorkload(type(op).__name__, (a, b, 0.3))
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
-
-
-register_compile_contract(LerpTensorFwdOp)
 
 
 @pytest.mark.smoke
 def test_lerp_tensor_compile():
-    """Compile-smoke for LerpTensorFwdOp (Tensor-weight overload)."""
+    """Compile-smoke for LerpFwdOp with a Tensor weight."""
     shape = (256, 256)
     a = torch.randn(shape, dtype=_DTYPE, device=run_device())
     b = torch.randn(shape, dtype=_DTYPE, device=run_device())
     w = torch.rand(shape, dtype=_DTYPE, device=run_device())
-    op = LerpTensorFwdOp()
+    op = LerpFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (a, b, w))
@@ -793,33 +787,28 @@ def test_where_compile_broadcast():
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
-# --- ClampScalarFwdOp (input -> out, scalar min/max baked) ---
+# --- ClampFwdOp (input, min?, max? -> out) ---
 
-register_compile_contract(ClampScalarFwdOp)
+register_compile_contract(ClampFwdOp)
 
 
 @pytest.mark.smoke
-def test_clamp_scalar_compile():
-    """Compile-smoke for ClampScalarFwdOp (Number min/max baked into __init__)."""
+def test_clamp_number_bounds_compile():
+    """Compile-smoke for ClampFwdOp with Number bounds."""
     shape = (1024, 1024)
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    op = ClampScalarFwdOp(min=-0.5, max=0.5)
+    op = ClampFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
-    workload = ElementwiseWorkload(type(op).__name__, (x,), min=-0.5, max=0.5)
+    workload = ElementwiseWorkload(type(op).__name__, (x, -0.5, 0.5))
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
-
-
-# --- Tensor-bound ClampTensorFwdOp (input, min?, max? -> out) ---
-
-register_compile_contract(ClampTensorFwdOp)
 
 
 @pytest.mark.smoke
 def test_clamp_tensor_compile_same_shape():
-    """Compile-smoke for ClampTensorFwdOp with both Tensor bounds at same shape.
+    """Compile-smoke for ClampFwdOp with both Tensor bounds at same shape.
 
-    Regression: ensures ClampTensorFwdOp registers a custom_op so
+    Regression: ensures ClampFwdOp registers a custom_op so
     torch.compile(fullgraph=True) does not fail with
     "torch.* op returned non-Tensor".
     """
@@ -827,7 +816,7 @@ def test_clamp_tensor_compile_same_shape():
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     lo = torch.full(shape, -0.5, dtype=_DTYPE, device=run_device())
     hi = torch.full(shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (x, lo, hi))
@@ -836,14 +825,14 @@ def test_clamp_tensor_compile_same_shape():
 
 @pytest.mark.smoke
 def test_clamp_tensor_compile_broadcast():
-    """Compile-smoke for ClampTensorFwdOp with broadcasting Tensor bounds."""
+    """Compile-smoke for ClampFwdOp with broadcasting Tensor bounds."""
     input_shape = (4, 8)
     min_shape = (1, 8)
     max_shape = (4, 1)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
     lo = torch.full(min_shape, -0.5, dtype=_DTYPE, device=run_device())
     hi = torch.full(max_shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (x, lo, hi))
@@ -855,11 +844,11 @@ def test_clamp_tensor_compile_broadcast():
 
 @pytest.mark.smoke
 def test_clamp_min_only_compile_same_shape():
-    """Compile-smoke for ClampTensorFwdOp with max withheld, at same shape."""
+    """Compile-smoke for ClampFwdOp with max withheld, at same shape."""
     shape = (16, 16)
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     lo = torch.full(shape, -0.5, dtype=_DTYPE, device=run_device())
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (x, lo))
@@ -868,12 +857,12 @@ def test_clamp_min_only_compile_same_shape():
 
 @pytest.mark.smoke
 def test_clamp_min_only_compile_broadcast():
-    """Compile-smoke for ClampTensorFwdOp with max withheld and broadcasting min."""
+    """Compile-smoke for ClampFwdOp with max withheld and broadcasting min."""
     input_shape = (4, 8)
     min_shape = (1, 8)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
     lo = torch.full(min_shape, -0.5, dtype=_DTYPE, device=run_device())
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (x, lo))
@@ -882,11 +871,11 @@ def test_clamp_min_only_compile_broadcast():
 
 @pytest.mark.smoke
 def test_clamp_max_only_compile_same_shape():
-    """Compile-smoke for ClampTensorFwdOp with min withheld, at same shape."""
+    """Compile-smoke for ClampFwdOp with min withheld, at same shape."""
     shape = (16, 16)
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     hi = torch.full(shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (x, None, hi))
@@ -895,28 +884,28 @@ def test_clamp_max_only_compile_same_shape():
 
 @pytest.mark.smoke
 def test_clamp_max_only_compile_broadcast():
-    """Compile-smoke for ClampTensorFwdOp with min withheld and broadcasting max."""
+    """Compile-smoke for ClampFwdOp with min withheld and broadcasting max."""
     input_shape = (4, 8)
     max_shape = (4, 1)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
     hi = torch.full(max_shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampTensorFwdOp()
+    op = ClampFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (x, None, hi))
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
-# --- MaskedFillTensorFwdOp (Tensor value) ---
+# --- MaskedFillFwdOp (Tensor or Number value) ---
 
-register_compile_contract(MaskedFillTensorFwdOp)
+register_compile_contract(MaskedFillFwdOp)
 
 
 @pytest.mark.smoke
 def test_masked_fill_tensor_compile_same_shape():
-    """Compile-smoke for MaskedFillTensorFwdOp (0-dim Tensor value) at same shape.
+    """Compile-smoke for MaskedFillFwdOp (0-dim Tensor value) at same shape.
 
-    Regression: ensures MaskedFillTensorFwdOp registers a custom_op so
+    Regression: ensures MaskedFillFwdOp registers a custom_op so
     torch.compile(fullgraph=True) does not fail with
     "torch.* op returned non-Tensor".
     """
@@ -924,7 +913,7 @@ def test_masked_fill_tensor_compile_same_shape():
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     mask = torch.randint(0, 2, shape, dtype=torch.bool, device=run_device())
     value = torch.tensor(-1.0, dtype=_DTYPE, device=run_device())
-    op = MaskedFillTensorFwdOp()
+    op = MaskedFillFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (x, mask, value))
@@ -933,40 +922,35 @@ def test_masked_fill_tensor_compile_same_shape():
 
 @pytest.mark.smoke
 def test_masked_fill_tensor_compile_broadcast():
-    """Compile-smoke for MaskedFillTensorFwdOp with broadcasting input/mask."""
+    """Compile-smoke for MaskedFillFwdOp with broadcasting input/mask."""
     input_shape = (4, 8)
     mask_shape = (1, 8)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
     mask = torch.randint(0, 2, mask_shape, dtype=torch.bool, device=run_device())
     value = torch.tensor(-1.0, dtype=_DTYPE, device=run_device())
-    op = MaskedFillTensorFwdOp()
+    op = MaskedFillFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (x, mask, value))
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
-# --- MaskedFillScalarFwdOp (broadcast path now uses custom_op) ---
-
-register_compile_contract(MaskedFillScalarFwdOp)
-
-
 @pytest.mark.smoke
 def test_masked_fill_scalar_compile_same_shape():
-    """Compile-smoke for MaskedFillScalarFwdOp at same shape."""
+    """Compile-smoke for MaskedFillFwdOp with a Number value at same shape."""
     shape = (16, 16)
     x = torch.randn(shape, dtype=_DTYPE, device=run_device())
     mask = torch.randint(0, 2, shape, dtype=torch.bool, device=run_device())
-    op = MaskedFillScalarFwdOp(value=-1.0)
+    op = MaskedFillFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
-    workload = ElementwiseWorkload(type(op).__name__, (x, mask), value=-1.0)
+    workload = ElementwiseWorkload(type(op).__name__, (x, mask, -1.0))
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
 @pytest.mark.smoke
 def test_masked_fill_scalar_compile_broadcast():
-    """Compile-smoke for MaskedFillScalarFwdOp with broadcasting input/mask.
+    """Compile-smoke for MaskedFillFwdOp with a Number value with broadcasting input/mask.
 
     Regression for the removed ``not self._needs_broadcast`` guard:
     register_fake is now broadcast-aware so the custom_op path works.
@@ -975,10 +959,10 @@ def test_masked_fill_scalar_compile_broadcast():
     mask_shape = (1, 8)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
     mask = torch.randint(0, 2, mask_shape, dtype=torch.bool, device=run_device())
-    op = MaskedFillScalarFwdOp(value=-1.0)
+    op = MaskedFillFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
 
-    workload = ElementwiseWorkload(type(op).__name__, (x, mask), value=-1.0)
+    workload = ElementwiseWorkload(type(op).__name__, (x, mask, -1.0))
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
@@ -1185,7 +1169,7 @@ def _graph_ownership_cases():
         return SiLUAndMulFwdOp(), (_x(8, 32),)
 
     def clamp_scalar():
-        return ClampScalarFwdOp(min=-1.0, max=1.0), (_x(8, 16),)
+        return ClampFwdOp(), (_x(8, 16), -1.0, 1.0)
 
     def prelu():
         return PReLUFwdOp(), (_x(2, 4, 8), _x(4))
@@ -1194,17 +1178,17 @@ def _graph_ownership_cases():
         return WhereFwdOp(), (_mask(8, 16), _x(8, 16), _x(8, 16))
 
     def lerp_tensor():
-        return LerpTensorFwdOp(), (_x(8, 16), _x(8, 16), _x(8, 16))
+        return LerpFwdOp(), (_x(8, 16), _x(8, 16), _x(8, 16))
 
     def clamp_tensor():
-        return ClampTensorFwdOp(), (_x(8, 16), _x(8, 16), None)
+        return ClampFwdOp(), (_x(8, 16), _x(8, 16), None)
 
     def masked_fill_scalar():
-        return MaskedFillScalarFwdOp(value=-1.0), (_x(8, 16), _mask(8, 16))
+        return MaskedFillFwdOp(), (_x(8, 16), _mask(8, 16), -1.0)
 
     def masked_fill_tensor():
         value = torch.tensor(-1.0, dtype=_DTYPE, device=run_device())
-        return MaskedFillTensorFwdOp(), (_x(8, 16), _mask(8, 16), value)
+        return MaskedFillFwdOp(), (_x(8, 16), _mask(8, 16), value)
 
     return [
         pytest.param(builder, id=name)

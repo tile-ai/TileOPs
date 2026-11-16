@@ -80,11 +80,10 @@ _SPECIALIZED = {
     "params": {
         "scale": {"type": "float"},
         "dims": {"type": "list[int]"},
-        "table": {"dtype": "float32", "shape": "[4]", "device": "cpu", "optional": True},
     },
     "inputs": {
         "x": {"dtype": "T", "shape": "[M, N]", "contiguous": True},
-        "bias": {"dtype": "T", "shape": "[N]", "optional": True},
+        "bias": {"dtype": "T", "shape": "[N]", "type": "Tensor | None", "default": None},
     },
     "outputs": {"y": {"dtype": "T", "shape": "[M, N]"}},
 }
@@ -115,8 +114,6 @@ _CHANGES = {
     # Equal to the warmed value, of a type the checks refuse.
     "param type": lambda op, a: _after(setattr(op, "scale", True), a),
     "nested param type": lambda op, a: _after(op.dims.__setitem__(0, 1.0), a),
-    # Present either way: only its dtype, which the checks place it in, changes.
-    "construction tensor": lambda op, a: _after(setattr(op, "table", _x(1)[0].double()), a),
     "execution argument": lambda op, a: (*a[:2], a[2] + 1),
 }
 
@@ -131,14 +128,14 @@ _REFUSED = {
 
 def test_a_changed_dependency_resolves_its_own_plan_and_a_return_reuses_the_first(monkeypatch):
     """The checks run once per specialization, keyed on every dependency of the call: each
-    tensor's layout and presence, each param, each construction tensor after placement, each
+    tensor's layout and presence, each param, each
     execution argument and, for a call no tensor places, the current device."""
     for dependency, change in _CHANGES.items():
         with _case(dependency):
             cls = _probe(_scaled, **_SPECIALIZED)
             checks = _counted_checks(cls)
-            table, args = torch.zeros(4), (_x(), None, 0)
-            op = cls(scale=1.0, dims=[1], table=table)
+            args = (_x(), None, 0)
+            op = cls(scale=1.0, dims=[1])
             op(*args)
             op(*args)
             changed = change(op, args)
@@ -151,16 +148,9 @@ def test_a_changed_dependency_resolves_its_own_plan_and_a_return_reuses_the_firs
                 assert (y.shape, y.dtype) == (changed[0].shape, changed[0].dtype)
                 assert op.last_call.indices["M"] == changed[0].shape[0]
             assert len(checks) == 1 + call_checked
-            vars(op).update(scale=1.0, dims=[1], table=table)
+            vars(op).update(scale=1.0, dims=[1])
             op(*args)
             assert len(checks) == 1 + call_checked, "a return resolved the first plan again"
-
-    with _case("construction tensor placed again"):
-        op = _probe(_scaled, **_SPECIALIZED)(scale=1.0, dims=[1], table=_x(1)[0].double())
-        op(_x())
-        op.table = _x(1)[0].double()
-        op(_x())
-        assert op.table.dtype == torch.float32
 
     with _case("current device"):
         import tileops._ops._signature_codegen as codegen
@@ -184,7 +174,7 @@ def test_a_specialization_evicted_by_newer_ones_is_resolved_again():
     call is checked again rather than served stale."""
     cls = _probe(_scaled, **_SPECIALIZED)
     checks = _counted_checks(cls)
-    op = cls(scale=2.0, dims=[1], table=None)
+    op = cls(scale=2.0, dims=[1])
     for rows in range(1, 300):
         op(_x(rows))
     resolved = len(checks)
@@ -211,19 +201,19 @@ def test_a_param_changed_after_construction_is_solved_again():
 
 
 def test_a_target_kernel_is_built_again_for_a_changed_param():
-    """A target builds its kernel from the op's params, so a changed param, or a construction
-    tensor replaced by one of the same layout, builds another; a return to earlier params
-    runs the kernel built from them, which an edit to the op's list in place did not reach."""
+    """A target builds its kernel from the op's params, so a changed param, or a list param
+    edited in place, builds another; a return to earlier params runs the kernel built from
+    them."""
     from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
     from tileops.backend import _registry as registry
 
     state, built = registry.snapshot(), []
 
-    def build(x, *, scale, table, factors):
+    def build(x, *, scale, factors):
         built.append(scale)
-        # Read when built, as a builder may: a later write in place must build again.
-        weight = table.clone()
-        return lambda x: x * scale * weight * factors[0]
+        # Read when built, as a builder may: a later edit in place must build again.
+        weight = factors[0]
+        return lambda x: x * scale * weight
 
     try:
         registry.DETECTORS.clear()
@@ -232,37 +222,19 @@ def test_a_target_kernel_is_built_again_for_a_changed_param():
         registry.register_detector("acme", lambda device: True)
         # A probe op has no manifest entry, which `register_kernel_builder` requires.
         registry.BUILDERS[("ProbeTargetParamFwdOp", "acme")] = build
-        table = {"dtype": "float32", "shape": "[2]", "device": "cpu"}
-        params = {"scale": {"type": "float"}, "table": table, "factors": {"type": "list[float]"}}
+        params = {"scale": {"type": "float"}, "factors": {"type": "list[float]"}}
         cls = _probe(lambda self, x: x, name="ProbeTargetParamFwdOp", params=params)
-        setattr(cls, PARAM_NAMES_ATTRIBUTE, ("scale", "table", "factors"))
-        first = torch.ones(2)
-        op, x = cls(scale=2.0, table=first, factors=[1.0]), torch.ones(2)
+        setattr(cls, PARAM_NAMES_ATTRIBUTE, ("scale", "factors"))
+        op, x = cls(scale=2.0, factors=[1.0]), torch.ones(2)
         op(x)
         op.scale = 3.0
         assert op(x).tolist() == [3.0, 3.0]
-        op.table = torch.full((2,), 2.0)
-        assert op(x).tolist() == [6.0, 6.0] and built == [2.0, 3.0, 3.0]
         op.factors[0] = 5.0
-        assert op(x).tolist() == [30.0, 30.0]
+        assert op(x).tolist() == [15.0, 15.0] and built == [2.0, 3.0, 3.0]
         op.factors = [1.0]
-        assert op(x).tolist() == [6.0, 6.0]
-        op.scale, op.table = 2.0, first
-        assert op(x).tolist() == [2.0, 2.0] and built == [2.0, 3.0, 3.0, 3.0]
-        first.fill_(4.0)
-        assert op(x).tolist() == [8.0, 8.0] and built[-1] == 2.0 and len(built) == 5
-        kept = len(op._target_kernels)
-        for value in (5.0, 6.0):
-            first.fill_(value)
-            assert op(x).tolist() == [2 * value] * 2
-        assert len(op._target_kernels) == kept, "a superseded version's kernel is kept"
-        # An inference tensor has no version: each call builds, and none is kept.
-        held = len(op._target_kernels)
-        with torch.inference_mode():
-            op.table = torch.full((2,), 1.0)
-            for _ in range(3):
-                assert op(torch.ones(2)).tolist() == [2.0, 2.0]
-        assert len(built) == 10 and len(op._target_kernels) == held
+        assert op(x).tolist() == [3.0, 3.0]
+        op.scale = 2.0
+        assert op(x).tolist() == [2.0, 2.0] and built == [2.0, 3.0, 3.0]
     finally:
         registry.restore(state)
 
@@ -366,11 +338,6 @@ def test_a_compiled_call_after_warming_traces_the_registered_operator():
     assert any(target.startswith("tileops.") for target in graphed), graphed
 
 
-def _held(shape: str) -> dict:
-    """The params of a probe holding a float32 tensor of *shape*."""
-    return {"emit": {"type": "bool"}, "held": {"dtype": "float32", "shape": shape}}
-
-
 def _replying(replies: list):
     """A ``forward(x, e, *, out=None)`` answering each call with the next of *replies*, given the
     call as ``c`` with ``c.op``, ``c.x``, ``c.e`` and ``c.out``."""
@@ -413,13 +380,6 @@ _FAULTS = {
     # Another storage object owning bytes of the input's storage.
     "an imported input": ({}, _DOUBLED, lambda c: torch.from_dlpack(c.x._base[1:4]), "storage"),
     "an empty input": ({}, _DOUBLED, lambda c: _spread(c.e), "alias"),
-    "a held tensor": ({"params": _held("[M]")}, _DOUBLED, lambda c: c.op.held, "storage"),
-    "an empty held tensor": (
-        {"params": _held("[0]")},
-        _DOUBLED,
-        lambda c: _spread(c.op.held),
-        "alias",
-    ),
     "another output": ({"outputs": _TWO}, _TWICE, lambda c: (c.x * 2,) * 2, "storage"),
 }
 
@@ -427,15 +387,13 @@ _FAULTS = {
 def test_a_warm_call_returning_a_faulty_result_fails_and_keeps_the_last_record():
     """Every call checks what its implementation returned, on the direct route and the
     dispatcher's: a fault after a correct call, a fresh output sharing a byte with a tensor
-    passed, held or returned included, is rejected before the call completes."""
-    held = {"[M]": torch.ones(3), "[0]": torch.ones(3)[:0]}
+    passed or returned included, is rejected before the call completes."""
     for fault, (overrides, correct, faulty, message) in _FAULTS.items():
         with _case(fault):
             signature = {"inputs": {"x": _T, "e": _E}, "params": {"emit": {"type": "bool"}}}
             signature.update(overrides)
-            shape = signature["params"].get("held", {}).get("shape")
             cls = _probe(_replying([correct, faulty, faulty]), **signature)
-            op = cls(emit=True, **({"held": held[shape]} if shape else {}))
+            op = cls(emit=True)
             args = (torch.zeros(6)[:3], torch.zeros(3)[:0])
             kwargs = {"out": torch.empty(3)} if overrides.get("outputs") is _OUT else {}
             op(*args, **kwargs)
@@ -562,7 +520,7 @@ def test_a_composite_record_holds_the_stage_calls_of_its_own_call():
 
 def test_a_composite_runs_the_sub_op_built_for_its_specialization():
     """A sub-op held under no identity belongs to the composite's specialization: a change
-    of its params or construction tensors builds another, a return runs the first again, and
+    of its params builds another, a return runs the first again, and
     a warm composite compiles whole."""
     scale = {"scale": {"type": "float"}}
     leaf = {"leaf": _probe(lambda self, x: x * self.scale, params=scale)}
@@ -581,13 +539,13 @@ def test_a_composite_runs_the_sub_op_built_for_its_specialization():
     parent.scale = 2.0
     assert parent(x).tolist() == [2.0, 2.0]
     assert len(parent._held_delegates()) == 2 and parent._held_delegates()[0] is first
-    # A construction tensor replaced, or written in place, builds a sub-op holding it.
-    table = {"table": {"dtype": "float32", "shape": "[2]", "device": "cpu"}}
+    # A list param replaced, or edited in place, builds a sub-op holding it.
+    table = {"table": {"type": "list[float]"}}
 
     def construct(self, **params):
         vars(self).update(params)
         Op.__init__(self)
-        self.weight = self.table.clone()  # read when built, as a sub-op may
+        self.weight = torch.tensor(self.table)  # read when built, as a sub-op may
 
     launched = []
 
@@ -601,16 +559,16 @@ def test_a_composite_runs_the_sub_op_built_for_its_specialization():
         params=table,
         boundary=False,
         attributes={"delegate_types": leaf_table},
-    )(table=torch.full((2,), 2.0))
+    )(table=[2.0, 2.0])
     for value in (2.0, 3.0):
         holder(x)
-        holder.table = torch.full((2,), value)
+        holder.table = [value, value]
         assert holder(x).tolist() == [value, value]
-    holder.table.fill_(4.0)
+    holder.table[:] = [4.0, 4.0]
     assert holder(x).tolist() == [4.0, 4.0]
-    # A return to an earlier tensor under another plan runs a sub-op the composite holds.
+    # A return to an earlier list under another plan runs a sub-op the composite holds.
     earlier, strided = holder.table, torch.ones(2, 2)[:, 0]
-    holder.table = torch.full((2,), 5.0)
+    holder.table = [5.0, 5.0]
     assert holder(strided).tolist() == [5.0, 5.0]
     holder.table = earlier
     assert holder(x).tolist() == [4.0, 4.0]
@@ -629,13 +587,13 @@ def test_a_composite_runs_the_sub_op_built_for_its_specialization():
 
     pauser = _probe(
         pausing, params=table, boundary=False, attributes={"delegate_types": leaf_table}
-    )(table=torch.full((2,), 2.0))
+    )(table=[2.0, 2.0])
     pauser(x)
     results = []
     paused = threading.Thread(target=lambda: results.append(pauser(x).tolist()), name="paused")
     paused.start()
     ran.wait()
-    pauser.table = torch.full((2,), 6.0)
+    pauser.table = [6.0, 6.0]
     assert pauser(x).tolist() == [6.0, 6.0]
     resume.set()
     paused.join()
@@ -657,12 +615,12 @@ def test_a_call_records_its_sub_op_however_many_times_another_thread_replaces_it
     """Each replaced sub-op keeps its stage while a call still runs on it."""
     import threading
 
-    table = {"table": {"dtype": "float32", "shape": "[2]", "device": "cpu"}}
+    table = {"table": {"type": "list[float]"}}
 
     def construct(self, **params):
         vars(self).update(params)
         Op.__init__(self)
-        self.weight = self.table.clone()
+        self.weight = torch.tensor(self.table)
 
     leaf = {
         "leaf": _probe(
@@ -679,7 +637,7 @@ def test_a_call_records_its_sub_op_however_many_times_another_thread_replaces_it
         return sub_op(x)
 
     pauser = _probe(pausing, params=table, boundary=False, attributes={"delegate_types": leaf})(
-        table=torch.full((2,), 2.0)
+        table=[2.0, 2.0]
     )
     x = torch.ones(2)
     pauser(x)
@@ -688,7 +646,7 @@ def test_a_call_records_its_sub_op_however_many_times_another_thread_replaces_it
     paused.start()
     ran.wait()
     for value in (6.0, 7.0):
-        pauser.table = torch.full((2,), value)
+        pauser.table = [value, value]
         assert pauser(x).tolist() == [value, value]
     resume.set()
     paused.join()
@@ -741,6 +699,27 @@ def test_calls_resolving_one_plan_together_hold_each_request_once():
             thread.join()
         assert results == [[5.0, 5.0]] * 4
         assert (len(checks), built) == (1, [2.0, 3.0]), "the plan was resolved more than once"
+
+
+def test_only_a_call_holding_a_scalar_member_builds_its_spec_on_every_request():
+    """The plan holds the spec of a call whose union argument holds a tensor; a scalar
+    member's value is in no plan key, so that call builds its spec on each request."""
+    from tileops._kernels.call_spec import CallSpec
+
+    built = []
+
+    def forward(self, x, off=0):
+        self.call_spec("shift", lambda: built.append(off) or CallSpec())
+        return x + off
+
+    inputs = {"x": _T, "off": {**_T, "type": "int | Tensor", "default": 0}}
+    op, x = _probe(forward, inputs=inputs)(), torch.zeros(2)
+    for _ in range(3):
+        op(x, x)
+    assert len(built) == 1
+    op(x, 1)
+    op(x, 2)
+    assert built[1:] == [1, 2]
 
 
 def test_calls_missing_one_entry_together_build_the_entry_tuning_reaches():
@@ -1040,7 +1019,7 @@ def test_overlap_is_judged_in_bytes_and_only_between_tensors_holding_elements():
         "forall": {"M": "Dim"},
         "inputs": {
             "x": {"dtype": "float16", "shape": "[M]"},
-            "e": {"dtype": "float16", "shape": "[0]", "optional": True},
+            "e": {"dtype": "float16", "shape": "[0]", "type": "Tensor | None", "default": None},
         },
         "outputs": {"y": {"dtype": "float32", "shape": "[M]", "buffer": "out"}},
     }

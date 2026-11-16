@@ -93,9 +93,8 @@ class _OpaqueStateError(Exception):
 class _Encoder:
     """Encodes values as text equal across processes exactly when the values are equal.
 
-    It reads the values a manifest param holds: scalars, dtypes, devices, strided tensor
-    layouts, enum members, types, lists, tuples, dicts, ADT literals and dataclasses, nested at
-    most `_MAX_DEPTH` deep. Any other value, a subclass of one of these among them, raises
+    It reads the values a manifest param holds: scalars, dtypes, devices, enum members, types,
+    lists, tuples, dicts, ADT literals and dataclasses, nested at most `_MAX_DEPTH` deep. Any other value, a subclass of one of these among them, raises
     `_OpaqueStateError`. A class another process may define otherwise sets `local`.
     """
 
@@ -127,11 +126,6 @@ class _Encoder:
             return f"{kind.__name__}:{value!r}"
         if kind in (torch.dtype, torch.device):
             return f"{kind.__name__}:{value}"
-        if kind in (torch.Tensor, torch.nn.Parameter):
-            if value.layout is not torch.strided or value.is_nested:
-                raise _OpaqueStateError
-            # The fake reads a construction-time tensor's layout, never its contents.
-            return f"Tensor:{tuple(value.shape)}:{value.stride()}:{value.dtype}:{value.device}"
         if isinstance(value, (type, enum.Enum)):
             cls = value if isinstance(value, type) else kind
             name = _qualified_name(cls)

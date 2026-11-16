@@ -1,0 +1,124 @@
+# Reviewed public API breaks against the latest release, one per line exactly as
+# scripts/ci/check_api_compat.py prints them. Emptied at the next release.
+
+tileops.elementwise.ClampScalarFwdOp: removed
+tileops.elementwise.ClampScalarFwdOp torch operator tileops::elementwise_clamp_scalar_fwd: removed
+tileops.elementwise.ClampScalarFwdOp.compile_op_names: removed
+tileops.elementwise.ClampScalarFwdOp.eval_roofline: removed
+tileops.elementwise.ClampScalarFwdOp.forward: removed
+tileops.elementwise.ClampScalarFwdOp.interfaces: removed
+tileops.elementwise.ClampScalarFwdOp.kernel_types: removed
+tileops.elementwise.ClampTensorFwdOp: removed
+tileops.elementwise.ClampTensorFwdOp torch operator tileops::elementwise_clamp_tensor_fwd: removed
+tileops.elementwise.ClampTensorFwdOp.compile_op_names: removed
+tileops.elementwise.ClampTensorFwdOp.eval_roofline: removed
+tileops.elementwise.ClampTensorFwdOp.forward: removed
+tileops.elementwise.ClampTensorFwdOp.interfaces: removed
+tileops.elementwise.ClampTensorFwdOp.kernel_types: removed
+tileops.elementwise.LerpScalarFwdOp: removed
+tileops.elementwise.LerpScalarFwdOp torch operator tileops::elementwise_lerp_scalar_fwd: removed
+tileops.elementwise.LerpScalarFwdOp.compile_op_names: removed
+tileops.elementwise.LerpScalarFwdOp.eval_roofline: removed
+tileops.elementwise.LerpScalarFwdOp.forward: removed
+tileops.elementwise.LerpScalarFwdOp.interfaces: removed
+tileops.elementwise.LerpScalarFwdOp.kernel_types: removed
+tileops.elementwise.LerpTensorFwdOp: removed
+tileops.elementwise.LerpTensorFwdOp torch operator tileops::elementwise_lerp_tensor_fwd: removed
+tileops.elementwise.LerpTensorFwdOp.compile_op_names: removed
+tileops.elementwise.LerpTensorFwdOp.eval_roofline: removed
+tileops.elementwise.LerpTensorFwdOp.forward: removed
+tileops.elementwise.LerpTensorFwdOp.interfaces: removed
+tileops.elementwise.LerpTensorFwdOp.kernel_types: removed
+tileops.elementwise.MaskedFillScalarFwdOp: removed
+tileops.elementwise.MaskedFillScalarFwdOp torch operator tileops::elementwise_masked_fill_scalar_fwd: removed
+tileops.elementwise.MaskedFillScalarFwdOp.compile_op_names: removed
+tileops.elementwise.MaskedFillScalarFwdOp.eval_roofline: removed
+tileops.elementwise.MaskedFillScalarFwdOp.forward: removed
+tileops.elementwise.MaskedFillScalarFwdOp.interfaces: removed
+tileops.elementwise.MaskedFillScalarFwdOp.kernel_types: removed
+tileops.elementwise.MaskedFillTensorFwdOp: removed
+tileops.elementwise.MaskedFillTensorFwdOp torch operator tileops::elementwise_masked_fill_tensor_fwd: removed
+tileops.elementwise.MaskedFillTensorFwdOp.compile_op_names: removed
+tileops.elementwise.MaskedFillTensorFwdOp.eval_roofline: removed
+tileops.elementwise.MaskedFillTensorFwdOp.forward: removed
+tileops.elementwise.MaskedFillTensorFwdOp.interfaces: removed
+tileops.elementwise.MaskedFillTensorFwdOp.kernel_types: removed
+tileops.mamba.CausalConv1dFwdOp.forward: parameter `bias` default changed from None to no default
+tileops.mamba.CausalConv1dFwdOp.forward: parameter `bias` (slot 4) is required, and calls may omit it
+tileops.manifest.Call.arguments: positional parameter `tensors` (slot 0) removed
+tileops.norm.BatchNormFwdOp.forward: parameter `running_mean` default changed from None to no default
+tileops.norm.BatchNormFwdOp.forward: parameter `running_var` default changed from None to no default
+tileops.norm.BatchNormFwdOp.forward: parameter `running_mean` (slot 1) is required, and calls may omit it
+tileops.norm.BatchNormFwdOp.forward: parameter `running_var` (slot 2) is required, and calls may omit it
+tileops.quantization.FP8QuantPerTokenGroupFwdOp: parameter `group_size` (slot 0) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp: slot 0 was `input_layout`, is now `head_size` (POSITIONAL_OR_KEYWORD)
+tileops.rope.LongRoPEFwdOp: slot 1 was `base`, is now `rotary_dim` (POSITIONAL_OR_KEYWORD)
+tileops.rope.LongRoPEFwdOp: slot 2 was `rescale_factors`, is now `max_position_embeddings` (POSITIONAL_OR_KEYWORD)
+tileops.rope.LongRoPEFwdOp: slot 3 was `max_position`, is now `original_max_position_embeddings` (POSITIONAL_OR_KEYWORD)
+tileops.rope.LongRoPEFwdOp: slot 4 was `original_max_position`, is now `base` (POSITIONAL_OR_KEYWORD)
+tileops.rope.LongRoPEFwdOp: parameter `head_size` (slot 0) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp: parameter `rotary_dim` (slot 1) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp: parameter `max_position_embeddings` (slot 2) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp: parameter `original_max_position_embeddings` (slot 3) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp: parameter `base` (slot 4) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp: parameter `is_neox_style` (slot 5) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp: parameter `dtype` (slot 6) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp: parameter `rescale_factors` (slot 7) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp.forward: slot 0 was `x`, is now `positions` (POSITIONAL_OR_KEYWORD)
+tileops.rope.LongRoPEFwdOp.forward: parameter `query` (slot 1) is required, and calls may omit it
+tileops.rope.LongRoPEFwdOp.rope_layout: removed
+tileops.rope.RoPEFwdOp: slot 0 was `rope_layout`, is now `head_size` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPEFwdOp: slot 1 was `input_layout`, is now `rotary_dim` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPEFwdOp: slot 2 was `base`, is now `max_position_embeddings` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPEFwdOp: parameter `head_size` (slot 0) is required, and calls may omit it
+tileops.rope.RoPEFwdOp: parameter `rotary_dim` (slot 1) is required, and calls may omit it
+tileops.rope.RoPEFwdOp: parameter `max_position_embeddings` (slot 2) is required, and calls may omit it
+tileops.rope.RoPEFwdOp: parameter `base` (slot 3) is required, and calls may omit it
+tileops.rope.RoPEFwdOp: parameter `is_neox_style` (slot 4) is required, and calls may omit it
+tileops.rope.RoPEFwdOp: parameter `dtype` (slot 5) is required, and calls may omit it
+tileops.rope.RoPEFwdOp.forward: slot 0 was `x`, is now `positions` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPEFwdOp.forward: parameter `query` (slot 1) is required, and calls may omit it
+tileops.rope.RoPEFwdOp.rope_layout: removed
+tileops.rope.RoPELlama31FwdOp: slot 0 was `input_layout`, is now `head_size` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPELlama31FwdOp: slot 1 was `base`, is now `rotary_dim` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPELlama31FwdOp: slot 2 was `scaling_factor`, is now `max_position_embeddings` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPELlama31FwdOp: slot 3 was `low_freq_factor`, is now `base` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPELlama31FwdOp: slot 4 was `high_freq_factor`, is now `is_neox_style` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPELlama31FwdOp: slot 5 was `original_max_position`, is now `dtype` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPELlama31FwdOp: parameter `head_size` (slot 0) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp: parameter `rotary_dim` (slot 1) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp: parameter `max_position_embeddings` (slot 2) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp: parameter `base` (slot 3) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp: parameter `is_neox_style` (slot 4) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp: parameter `dtype` (slot 5) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp: parameter `scaling_factor` (slot 6) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp: parameter `low_freq_factor` (slot 7) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp: parameter `high_freq_factor` (slot 8) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp: parameter `orig_max_position` (slot 9) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp.forward: slot 0 was `x`, is now `positions` (POSITIONAL_OR_KEYWORD)
+tileops.rope.RoPELlama31FwdOp.forward: parameter `query` (slot 1) is required, and calls may omit it
+tileops.rope.RoPELlama31FwdOp.rope_layout: removed
+tileops.rope.RoPENeoxPositionIdsFwdOp: removed
+tileops.rope.RoPENeoxPositionIdsFwdOp torch operator tileops::rope_neox_position_ids_fwd: removed
+tileops.rope.RoPENeoxPositionIdsFwdOp.compile_op_names: removed
+tileops.rope.RoPENeoxPositionIdsFwdOp.eval_roofline: removed
+tileops.rope.RoPENeoxPositionIdsFwdOp.forward: removed
+tileops.rope.RoPENeoxPositionIdsFwdOp.interfaces: removed
+tileops.rope.RoPENeoxPositionIdsFwdOp.kernel_types: removed
+tileops.rope.YaRNFwdOp: slot 0 was `input_layout`, is now `head_size` (POSITIONAL_OR_KEYWORD)
+tileops.rope.YaRNFwdOp: slot 1 was `base`, is now `rotary_dim` (POSITIONAL_OR_KEYWORD)
+tileops.rope.YaRNFwdOp: slot 2 was `scaling_factor`, is now `max_position_embeddings` (POSITIONAL_OR_KEYWORD)
+tileops.rope.YaRNFwdOp: slot 3 was `original_max_position`, is now `base` (POSITIONAL_OR_KEYWORD)
+tileops.rope.YaRNFwdOp: slot 4 was `beta_fast`, is now `is_neox_style` (POSITIONAL_OR_KEYWORD)
+tileops.rope.YaRNFwdOp: slot 5 was `beta_slow`, is now `scaling_factor` (POSITIONAL_OR_KEYWORD)
+tileops.rope.YaRNFwdOp: slot 6 was `attn_factor`, is now `dtype` (POSITIONAL_OR_KEYWORD)
+tileops.rope.YaRNFwdOp: parameter `head_size` (slot 0) is required, and calls may omit it
+tileops.rope.YaRNFwdOp: parameter `rotary_dim` (slot 1) is required, and calls may omit it
+tileops.rope.YaRNFwdOp: parameter `max_position_embeddings` (slot 2) is required, and calls may omit it
+tileops.rope.YaRNFwdOp: parameter `base` (slot 3) is required, and calls may omit it
+tileops.rope.YaRNFwdOp: parameter `is_neox_style` (slot 4) is required, and calls may omit it
+tileops.rope.YaRNFwdOp: parameter `scaling_factor` (slot 5) is required, and calls may omit it
+tileops.rope.YaRNFwdOp: parameter `dtype` (slot 6) is required, and calls may omit it
+tileops.rope.YaRNFwdOp.forward: slot 0 was `x`, is now `positions` (POSITIONAL_OR_KEYWORD)
+tileops.rope.YaRNFwdOp.forward: parameter `query` (slot 1) is required, and calls may omit it
+tileops.rope.YaRNFwdOp.rope_layout: removed

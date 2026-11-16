@@ -9,6 +9,5 @@ WORKLOADS = {
         "RoPELlama31FwdOp",
         "YaRNFwdOp",
         "LongRoPEFwdOp",
-        "RoPENeoxPositionIdsFwdOp",
     )
 }

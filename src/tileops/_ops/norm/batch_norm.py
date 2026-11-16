@@ -112,8 +112,8 @@ class BatchNormFwdOp(Op):
     def forward(
         self,
         input: torch.Tensor,
-        running_mean: torch.Tensor | None = None,
-        running_var: torch.Tensor | None = None,
+        running_mean: torch.Tensor | None,
+        running_var: torch.Tensor | None,
         weight: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
@@ -124,8 +124,8 @@ class BatchNormFwdOp(Op):
 
         Args:
             input: Input tensor of shape ``(N, C, *spatial)``.
-            running_mean: Running mean of shape $[C]$, ``torch.float32``; updated in place
-                in training, required in inference.
+            running_mean: Running mean of shape $[C]$, ``torch.float32``, or ``None``; updated
+                in place in training, not ``None`` in inference.
             running_var: Running variance, the same; passed exactly when ``running_mean`` is.
             weight: Affine scale (gamma) of shape $[C]$, ``torch.float32``, or ``None``.
             bias: Affine shift (beta) of shape $[C]$, ``torch.float32``, or ``None``.

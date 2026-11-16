@@ -39,6 +39,7 @@ from tileops.manifest import _try_load_entry, load_adts
 from tileops.manifest._dtype_rules import DTYPE_BITS
 from tileops.manifest._expr import (
     SignatureError,
+    Substitute,
     callee,
     fold,
     infer_kinds,
@@ -55,11 +56,18 @@ from tileops.manifest._plan import (
     signature_schema_errors,
 )
 from tileops.manifest._signature import (
+    ITEM,
+    REQUIRED,
     Signature,
+    call_scalar_lets,
     complete_point,
     discriminant_axes,
     expand,
+    items,
     kind_env,
+    localized,
+    member_at,
+    member_of,
     output_emitted,
     param_kind,
     parse_signature,
@@ -68,7 +76,7 @@ from tileops.manifest._signature import (
     unification,
 )
 from tileops.manifest._values import ADTValue, convert
-from tileops.manifest._workload import CallView, check_workloads, equal_inputs
+from tileops.manifest._workload import CallView, Elements, check_workloads, equal_inputs
 from tileops.manifest.primitives import namespace
 
 __all__ = [
@@ -78,6 +86,7 @@ __all__ = [
     "in_tree",
     "install",
     "install_compile_boundary",
+    "leaves",
     "maybe_install_signature",
     "op_entry",
 ]
@@ -141,9 +150,10 @@ def _require(value, message: str) -> None:
 
 
 def _solve(size, axis, message: str):
-    """The integer `v` with `axis(v) == size`, for an affine `axis` with a positive slope."""
+    """The integer `v` with `axis(v) == size`, for an affine `axis` whose slope must be positive."""
     lo = axis(0)
     step = axis(1) - lo
+    _require(step > 0, message)
     _require((size - lo) % step == 0, message)
     value = (size - lo) // step
     _require(value >= 0, message)
@@ -155,13 +165,22 @@ def _dname(dtype) -> str | None:
     return None if dtype is None else str(dtype).removeprefix("torch.")
 
 
+def _dnames(value):
+    """*value* with each `torch.dtype` in it, at any depth of lists and tuples, by name."""
+    if isinstance(value, torch.dtype):
+        return _dname(value)
+    if isinstance(value, (list, tuple)):
+        return type(value)(_dnames(v) for v in value)
+    return value
+
+
 def _field(value, name: str):
     """An ADT field as expressions read it: an enum field by its `.value`."""
     field = getattr(value, name)
     return getattr(field, "value", field)
 
 
-def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
+def _call_device(name: str, op, tensors: tuple, cpu: tuple):
     """The call device (docs/design/manifest.md § Call Semantics)."""
     devices = {t.device for t in tensors}
     if len(devices) > 1:
@@ -173,10 +192,10 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
             raise CheckError(f"{name}: a tensor declaring `device: cpu` is on {t.device}")
     if devices:
         return devices.pop()
-    return tensorless_device(name, op, ctor)
+    return tensorless_device(op)
 
 
-def tensorless_device(name: str, op, ctor: tuple):
+def tensorless_device(op):
     """The call device of a call with no tensor on its device, the rule's last steps.
 
     Also what ``Op._device_without_call_tensors`` answers, so a call the generated checks
@@ -189,11 +208,6 @@ def tensorless_device(name: str, op, ctor: tuple):
         # The device a tensor allocated there reports: ``torch.device("cuda")`` compares
         # unequal to the ``cuda:0`` such a tensor carries, and ``cpu:1`` reports ``cpu``.
         return torch.empty(0, device=declared).device
-    held = {t.device for t in ctor}
-    if len(held) > 1:
-        raise CheckError(f"{name}: construction-time tensors are on {sorted(map(str, held))}")
-    if held:
-        return held.pop()
     # FIXME(staged-rollout): the target's device classes are not consulted
     #
     # Broken invariant: without tensors or a `device` parameter, the call device is the
@@ -201,20 +215,6 @@ def tensorless_device(name: str, op, ctor: tuple):
     # Why: `Target` declares no device classes yet.
     # Cleanup: read them here once `tileops.backend` exposes them.
     return current_device()
-
-
-def _placed(op, name: str, device, dtype: str):
-    """A construction-time tensor in its signature dtype, on the call device unless *device* is
-    None (a `device: cpu` tensor), kept on the op."""
-    tensor = getattr(op, name)
-    target = getattr(torch, dtype)
-    if detect_fake_mode() is not None or torch.compiler.is_compiling():
-        return tensor
-    device = tensor.device if device is None else device
-    if tensor.device != device or tensor.dtype != target:
-        tensor = tensor.to(device=device, dtype=target)
-        setattr(op, name, tensor)
-    return tensor
 
 
 def _check_offsets(name: str, offsets, total: int) -> list:
@@ -244,6 +244,24 @@ def _check_equal(name: str, tensor, other: str, values: list) -> None:
         raise ValueError(f"{name} must equal {other}")
 
 
+def _type_label(value) -> str:
+    """*value*'s type for an error message: no tensor contents, and no device copy."""
+    if isinstance(value, (list, tuple)):
+        return f"{type(value).__name__} of {len(value)}"
+    return type(value).__name__
+
+
+def _check_range(name: str, tensor, lo: int, hi: int) -> None:
+    """Check on the CPU that every element of *tensor* lies in ``[lo, hi)``.
+
+    Raises:
+        ValueError: An element lies outside; the message names the input.
+    """
+    values = torch.as_tensor(tensor).detach().cpu()
+    if values.numel() and (int(values.min()) < lo or int(values.max()) >= hi):
+        raise ValueError(f"{name} must be in [{lo}, {hi})")
+
+
 def _failed(name: str, where: str, exc: Exception) -> CheckError:
     """The one contextual failure a generated method raises for an evaluation that failed."""
     return CheckError(f"{name}: {where}: {exc}")
@@ -254,6 +272,10 @@ _GLOBALS = {
     # The builtins generated code calls; expressions themselves reach only primitives.
     "__builtins__": {
         "AttributeError": AttributeError,
+        "all": all,
+        "enumerate": enumerate,
+        "list": list,
+        "zip": zip,
         "ArithmeticError": ArithmeticError,
         "IndexError": IndexError,
         "KeyError": KeyError,
@@ -277,13 +299,15 @@ _GLOBALS = {
     "_require": _require,
     "_solve": _solve,
     "_dname": _dname,
+    "_dnames": _dnames,
     "_field": _field,
     "_call_device": _call_device,
-    "_placed": _placed,
     "_failed": _failed,
     "_check_offsets": _check_offsets,
     "_check_equal": _check_equal,
+    "_check_range": _check_range,
     "CheckError": CheckError,
+    "_Elements": Elements,
     "torch": torch,
     "_Tensor": torch.Tensor,
     "_grad_enabled": torch.is_grad_enabled,
@@ -311,6 +335,8 @@ class SignatureCall(CallView):
     metadata: dict[str, torch.Tensor] | None = None
     # The checked calls the op's sub-ops completed during this call, by stage.
     stages: Mapping[str, tuple[SignatureCall, ...]] | None = None
+    # The member each call-time argument holds.
+    members: Mapping[str, str] | None = None
 
     def materialize(self) -> SignatureCall:
         """Return this call, as a call record's ``materialize`` returns the call it holds."""
@@ -386,12 +412,6 @@ class _Lower(ast.NodeTransformer):
     def visit_Attribute(self, node):
         self.generic_visit(node)
         if (
-            node.attr == "value"
-            and isinstance(node.value, ast.Name)
-            and node.value.id in self.maybes
-        ):
-            return node.value
-        if (
             isinstance(node.value, ast.Name)
             and node.value.id in {*self.sig.params, *self.sig.let}
             and node.attr != "kind"
@@ -437,7 +457,7 @@ def _traffic(sig: Signature, point: dict, present: set[str]) -> tuple:
     written = sig.written(point, present)
     out = [
         (t.name, 0 if t.write_only or t.derived else 1, int(t.name in written))
-        for t in sig.call_tensors.values()
+        for t in sig.inputs.values()
         if t.name in present
     ]
     out += [
@@ -458,37 +478,14 @@ class _Construction:
         sig = plan.sig
         self.point, self.rejected = point, rejecting_rule(sig, point)
         self.known = set(sig.params)
-        # Construction-time tensors construction unifies.
-        self.tensors = {}
-        for t in sig.ctor_tensors.values():
-            if point.get(f"present({t.name})") is not True:
-                continue
-            try:
-                self.tensors[t.name] = fold(expand(sig, t.shape, point), point)
-            except SignatureError:
-                continue
-        self.dtypes = {}
-        for t in self.tensors:
-            node = fold(parse(sig.ctor_tensors[t].dtype), point)
-            if isinstance(node, ast.Name) and node.id in sig.forall and node.id not in self.known:
-                self.dtypes[t] = node.id
-                self.known.add(node.id)
         self.lets = {}
         for n, e in sig.let.items():
             try:
                 self.lets[n] = fold(parse(e), point, f"let {n}")
             except SignatureError:
                 continue
-        self.steps = unification(self.tensors, self.known, self.lets)
-        self.known |= {s.name for s in self.steps if s.name}
-        # The construction-time tensor elements construction bound or checked.
-        self.done = {(s.tensor, s.index) for s in self.steps if s.tensor is not None}
-        # Tensors whose rank construction can check: every spliced length is known here.
-        self.ranked = {
-            t
-            for t, node in self.tensors.items()
-            if all(names(e.value) <= self.known for e in node.elts if isinstance(e, ast.Starred))
-        }
+        self.steps = unification({}, self.known, self.lets)
+        self.known |= {n for s in self.steps for n in s.solved}
         # Refinements whose activation and value construction has.
         self.rules = {}
         for i, r in enumerate(sig.rules):
@@ -518,27 +515,11 @@ class _Construction:
         e = _Emitter(sig)
         for p, decl in sig.params.items():
             dtype = param_kind(decl.get("type"), sig.adts).payload().tag == "DType"
-            e.emit(f"{p} = {f'_dname(self.{p})' if dtype else f'self.{p}'}")
-        for t in sig.ctor_tensors:
-            present = self.point.get(f"present({t})")
-            if present is True:
-                e.require(f"self.{t} is not None", f"construction-time tensor {t!r} is required")
-                e.require(
-                    f"isinstance(self.{t}, torch.Tensor)",
-                    f"construction-time tensor {t!r} is not a tensor",
-                )
-            elif present is False:
-                e.require(
-                    f"self.{t} is None", f"{t!r} is given where its presence condition is false"
-                )
+            e.emit(f"{p} = {f'_dname(self.{p})' if dtype else f'_dnames(self.{p})'}")
         if self.rejected is not None:
             e.emit(f"raise CheckError({f'{sig.name}: refinement fails: {self.rejected}'!r})")
             return e.function("construct", "self")
-        for t in self.tensors:
-            e.emit(f"_s_{t} = tuple(self.{t}.shape)")
-        for t, index in self.dtypes.items():
-            e.bind_dtype(index, f"_dname(self.{t}.dtype)", t)
-        e.unify(self.tensors, self.steps, self.lets, self.ranked, set())
+        e.unify({}, self.steps, self.lets, set(), set())
         for i, rule in self.rules.items():
             e.where(f"shape_rules[{i}]")
             e.require(_code(sig, rule), f"shape_rules[{i}]: {sig.rules[i]}")
@@ -601,18 +582,71 @@ class _Emitter:
     def bind_input_dtypes(
         self, b, inputs: list[str], known: set[str], absent: bool = False
     ) -> list:
-        """Bind or check each `DType` index an input's dtype `_d_<t>` names; the inputs whose
-        dtype is another expression are returned. With *absent* a dtype may be None, and an
-        index no passed dtype names is left unbound."""
-        sig, deferred, indices = self.sig, [], set()
-        for t in inputs:
+        """Bind or check each `DType` index an input's dtype `_d_<t>` names, a tensor sequence's
+        from its elements' `_dd_<t>`, after every single tensor; the inputs whose dtype is another
+        expression are returned. With *absent* a dtype may be None, and an index no passed dtype
+        names is left unbound."""
+        sig, deferred, indices, sequenced = self.sig, [], set(), set()
+        for t in sorted(inputs, key=lambda n: n in b.sequences):
             node = b.dtypes[t]
+            if isinstance(node, ast.Name) and node.id in b.sequences.get(t, ()):
+                # An element-wise dtype index: one dtype per element.
+                members = sorted(sig.kind(node.id).item.values or ())
+                if absent:
+                    message = f"{sig.name}: {t} dtypes differ from {node.id}"
+                    count = f"{sig.name}: {t} has {{}} elements and {{}} dtypes"
+                    domain = f"{sig.name}: {t} dtype is outside {members}"
+                    self.emit(f"if _dd_{t} is not None:")
+                    self.emit(
+                        f"    _require(len(_dd_{t}) == len(_ss_{t}), "
+                        f"{count!r}.format(len(_ss_{t}), len(_dd_{t})))"
+                    )
+                    self.emit(
+                        f"    _require(all(_d in {tuple(members)!r} for _d in _dd_{t}), {domain!r})"
+                    )
+                    self.emit(
+                        f"    _require(_dt.setdefault({node.id!r}, _dd_{t}) == _dd_{t}, {message!r})"
+                    )
+                    sequenced.add(node.id)
+                elif node.id in known:
+                    self.require(f"_dd_{t} == {node.id}", f"{t} dtypes differ from {node.id}")
+                else:
+                    message = f"{t} dtype is outside {members}"
+                    self.require(f"all(_d in {tuple(members)!r} for _d in _dd_{t})", message)
+                    self.emit(f"{node.id} = _dd_{t}")
+                    known.add(node.id)
+                continue
             if not (
                 isinstance(node, ast.Name)
                 and node.id in sig.forall
                 and sig.kind(node.id).tag == "DType"
             ):
                 deferred.append((t, node))
+            elif t in b.sequences:
+                message = f"{sig.name}: {t} dtype differs from {node.id}"
+                if absent:
+                    self.emit(f"for _d in _dd_{t} or ():")
+                    self.emit(f"    _require(_dt.setdefault({node.id!r}, _d) == _d, {message!r})")
+                    indices.add(node.id)
+                    continue
+                if node.id not in known:
+                    # Every sequence reading the index may solve it; an empty one cannot.
+                    readers = [
+                        r
+                        for r in inputs
+                        if r in b.sequences
+                        and isinstance(b.dtypes[r], ast.Name)
+                        and b.dtypes[r].id == node.id
+                    ]
+                    pooled = "(" + "".join(f"*_dd_{r}, " for r in readers) + ")"
+                    empty = (
+                        f"{readers[0]} is" if len(readers) == 1 else f"{' and '.join(readers)} are"
+                    )
+                    message = f"{empty} empty: {node.id} cannot be solved from it"
+                    self.require(pooled, message)
+                    self.bind_dtype(node.id, f"{pooled}[0]", t)
+                    known.add(node.id)
+                self.require(f"all(_d == {node.id} for _d in _dd_{t})", message.split(": ", 1)[1])
             elif absent:
                 message = f"{sig.name}: {t} dtype differs from {node.id}"
                 self.emit(f"if _d_{t} is not None:")
@@ -625,6 +659,10 @@ class _Emitter:
             else:
                 self.bind_dtype(node.id, f"_d_{t}", t)
                 known.add(node.id)
+        for index in sorted(sequenced - known):
+            self.emit(f"if {index!r} in _dt:")
+            self.emit(f"    {index} = _dt[{index!r}]")
+            known.add(index)
         for index in sorted(indices - known):
             members = sorted(sig.kind(index).values or ())
             message = f"{sig.name}: {index} is outside {members}"
@@ -643,11 +681,21 @@ class _Emitter:
         else:
             self.require(f"{_code(self.sig, axis)} >= 0", message)
 
-    def unify(self, nodes: dict, steps: list, lets: dict, ranked: set, skip: set) -> None:
+    def unify(
+        self,
+        nodes: dict,
+        steps: list,
+        lets: dict,
+        ranked: set,
+        skip: set,
+        sequences: dict | None = None,
+    ) -> None:
         """Rank checks of `ranked`, the plan's bindings, then every remaining axis equality;
-        elements in `skip` were bound or checked at construction."""
-        sig = self.sig
-        for t in ranked:
+        elements in `skip` were bound or checked at construction. A tensor sequence in
+        `sequences`, its element shapes `_ss_<t>`, is checked element by element in its `each`
+        step."""
+        sig, sequences, raw, nodes = self.sig, sequences or {}, nodes, dict(nodes)
+        for t in ranked - set(sequences):
             node = nodes[t]
             fixed = sum(not isinstance(e, ast.Starred) for e in node.elts)
             op = ">=" if fixed < len(node.elts) else "=="
@@ -668,7 +716,12 @@ class _Emitter:
                 self.where(f"let {step.name}")
                 self.emit(f"{step.name} = {_code(sig, lets[step.name])}")
                 continue
-            if (step.tensor, step.index) in skip:
+            if step.action in ("first", "each"):
+                self.sequence_step(step, nodes, raw[step.tensor], sequences[step.tensor])
+                continue
+            if (step.tensor, step.index) in skip or (
+                step.tensor in sequences and step.action == "check"
+            ):
                 continue
             t, e = step.tensor, nodes[step.tensor].elts[step.index]
             self.where(f"tensor {t!r} shape")
@@ -691,12 +744,48 @@ class _Emitter:
                 self.emit(
                     f"{step.name} = _solve(_s_{t}[{index}], lambda {step.name}: {_code(sig, e)}, {message!r})"
                 )
-        for t in ranked:
+        for t in ranked - set(sequences):
             if any(isinstance(e, ast.Starred) for e in nodes[t].elts):
                 self.require(f"len(_s_{t}) == {length(nodes[t].elts)}", f"{t} has the wrong rank")
         for cond, t, e in checks:
             self.where(f"tensor {t!r} shape")
             self.require(cond, f"{t} shape does not match {ast.unparse(e)}")
+
+    def sequence_step(self, step, nodes: dict, element: ast.List, each: tuple) -> None:
+        """Emit one `first` or `each` step on tensor sequence `step.tensor`, whose element type
+        is `element` and element-wise indices `each`; `first` makes `_s_<t>` its element 0 and
+        `nodes[t]` its localized element type for the steps after it."""
+        sig, t = self.sig, step.tensor
+        self.where(f"tensor {t!r} shape")
+        node = localized(element, each)
+        if step.action == "first":
+            self.emit(f"_s_{t} = None")
+            for u in (t, *step.items):
+                self.emit(f"if _s_{t} is None and _ss_{u}:")
+                self.emit(f"    _s_{t} = _ss_{u}[0]")
+            empty = f"{t} is" if not step.items else f"{' and '.join((t, *step.items))} are"
+            self.require(
+                f"_s_{t} is not None",
+                f"{empty} empty: its element 0 cannot solve {ast.unparse(node)}",
+            )
+            nodes[t] = node
+            return
+        collected = list(step.items)
+        checked = [x for x in items(element, frozenset(each)) if x not in collected]
+        for x in checked:
+            self.require(f"len({x}) == len(_ss_{t})", f"{x} and {t} differ in length")
+        for x in collected:
+            self.emit(f"_c_{x} = []")
+        self.emit(f"for _j, _s_{t} in enumerate(_ss_{t}):")
+        inner = _Emitter(sig)
+        for x in checked:
+            inner.emit(f"{ITEM}{x} = {x}[_j]")
+        inner.unify({t: node}, list(step.sub), {}, {t}, set())
+        for x in collected:
+            inner.emit(f"_c_{x}.append({ITEM}{x})")
+        self.lines += [f"    {line}" for line in inner.lines]
+        for x in collected:
+            self.emit(f"{x} = tuple(_c_{x})")
 
 
 class _CallCheck:
@@ -734,9 +823,21 @@ class _CallCheck:
             e.emit(f"{n} = _k[{n!r}]")
         for t in sig.inputs:
             e.emit(f"{t} = tensors.get({t!r})")
+            if t not in present and member_at(sig.inputs[t], point) != "None":
+                continue  # a scalar member, which the point's lookup matched
             if t in present:
                 e.require(f"{t} is not None", f"{t!r} is required")
-                if not shapes_only:
+                if t in b.sequences:
+                    leaves = (
+                        ""
+                        if shapes_only
+                        else f" and all(isinstance(_x, torch.Tensor) for _x in {t})"
+                    )
+                    e.require(
+                        f"isinstance({t}, (list, tuple)){leaves}",
+                        f"{t!r} is not a list or tuple of tensors",
+                    )
+                elif not shapes_only:
                     e.require(f"isinstance({t}, torch.Tensor)", f"{t!r} is not a tensor")
             else:
                 e.require(f"{t} is None", f"{t!r} is given where its presence condition is false")
@@ -749,30 +850,48 @@ class _CallCheck:
             if not shapes_only:
                 e.require("isinstance(out, torch.Tensor)", "'out' is not a tensor")
         inputs = [t for t in sig.inputs if t in present]
-        ctor = [t for t in sig.ctor_tensors if t in present]
         known = set(built.known)
-        dtype_indices = {n for n in sig.forall if sig.kind(n).tag == "DType"}
+        # Indices a dtype gives, a sequence's element dtypes among them, and the lets reading
+        # them: shape inference may be passed no dtype.
+        dtype_indices = {n for n in sig.forall if sig.forall[n].startswith(("DType", "Seq[DType"))}
+        lets = {n: names(parse(e)) for n, e in sig.let.items()}
+        while more := {n for n, r in lets.items() if n not in dtype_indices and r & dtype_indices}:
+            dtype_indices |= more
         if shapes_only:
             for t in inputs:
+                if t in b.sequences:
+                    e.emit(f"_ss_{t} = tuple(tuple(_x) for _x in {t})")
+                    e.emit(f"_dd_{t} = dtypes.get({t!r})")
+                    e.emit(
+                        f"_dd_{t} = None if _dd_{t} is None else tuple(_dname(_x) for _x in _dd_{t})"
+                    )
+                    continue
                 e.emit(f"_s_{t} = tuple({t})")
                 e.emit(f"_d_{t} = _dname(dtypes.get({t!r}))")
-            for t in ctor:
-                e.emit(f"_s_{t} = tuple(self.{t}.shape)")
             e.emit("_dt = {}")
             e.bind_input_dtypes(b, inputs, known, absent=True)
         else:
-            self._device_and_dtypes(e, b, inputs, ctor, known)
-        nodes = {t: b.shapes[t] for t in (*inputs, *ctor)}
-        ranked = {t for t in nodes if t not in built.ranked}
-        e.unify(nodes, unification(nodes, known, b.lets), b.lets, ranked, built.done)
+            self._device_and_dtypes(e, b, inputs, known)
+        nodes = {t: b.shapes[t] for t in inputs}
+        sequences = {t: b.sequences[t] for t in inputs if t in b.sequences}
+        solvable = b.lets
+        outputs = [o for o in sig.outputs if o in present]
+        if shapes_only:
+            # A let on dtypes that only a skipped refinement reads is not evaluated.
+            shaped = set().union(set(), *(names(b.shapes[t]) for t in [*inputs, *outputs]))
+            while more := {r for n in shaped & set(lets) for r in lets[n]} - shaped:
+                shaped |= more
+            solvable = {n: x for n, x in solvable.items() if n not in dtype_indices or n in shaped}
+        steps = unification(nodes, known, solvable, sequences)
+        e.unify(nodes, steps, solvable, set(nodes), set(), sequences)
+        scalars = _call_scalars(sig)
         for i, rule in enumerate(b.rules):
             if (isinstance(rule, ast.Constant) and rule.value is True) or i in built.rules:
                 continue
-            if shapes_only and names(rule) & dtype_indices:
+            if names(rule) & scalars or (shapes_only and names(rule) & dtype_indices):
                 continue
             e.where(f"shape_rules[{i}]")
             e.require(_code(sig, rule), f"shape_rules[{i}]: {sig.rules[i]}")
-        outputs = [o for o in sig.outputs if o in present]
         for o in outputs:
             e.where(f"tensor {o!r} shape")
             axes = [
@@ -798,56 +917,104 @@ class _CallCheck:
             e.emit(f"return {{{', '.join(f'{o!r}: _s_{o}' for o in outputs)}}}")
             return e.function(name, "self, tensors, dtypes")
         values = {n for n, k in sig.forall.items() if k == "Seq[Int]"}
-        solved = {s.name for s in unification(nodes, known, b.lets) if s.name}
+        solved = {n for s in steps for n in s.solved}
         indices = sorted((known | solved) - values)
         e.emit(f"_indices = {{{', '.join(f'{n!r}: {n}' for n in indices)}}}")
-        shapes = ", ".join(f"{t!r}: (_s_{t}, _d_{t})" for t in (*inputs, *ctor, *outputs))
-        metadata = ", ".join(
-            f"{t!r}: {t}" for t in (*inputs, *ctor) if sig.call_tensors[t].values is not None
+        shapes = ", ".join(
+            f"{t!r}: _Elements(tuple(zip(_ss_{t}, _dd_{t})))"
+            if t in sequences
+            else f"{t!r}: (_s_{t}, _d_{t})"
+            for t in (*inputs, *outputs)
         )
+        metadata = ", ".join(f"{t!r}: {t}" for t in inputs if sig.inputs[t].values is not None)
         e.emit(
             f"return _SignatureCall(_indices, {{{shapes}}}, {_traffic(sig, point, present)!r}, _device, "
-            f"frozenset({sorted(sig.written(point, present))!r}), {buffer!r}, {self.key!r}, {{{metadata}}})"
+            f"frozenset({sorted(sig.written(point, present))!r}), {buffer!r}, {self.key!r}, {{{metadata}}}, "
+            f"members={ {t: member_at(d, point) for t, d in sig.inputs.items()}!r})"
         )
         return e.function(name, "self, tensors")
 
+    def values_source(self) -> str | None:
+        """`values(self, tensors, _k)`: the refinements at this point that read a call-time
+        scalar, and the `let`s they read that do, over the call's indices `_k`; None when there
+        are none. A plan reused across calls runs it on every call, since its key holds no
+        scalar value."""
+        sig, b = self.plan.sig, self.branch
+        if self.rejected is not None:
+            return None
+        scalars = _call_scalars(sig)
+        rules = [
+            (i, rule)
+            for i, rule in enumerate(b.rules)
+            if names(rule) & scalars and not (isinstance(rule, ast.Constant) and rule.value is True)
+        ]
+        if not rules:
+            return None
+        lets, pending = {}, set().union(*(names(rule) for _, rule in rules)) & set(sig.let)
+        while pending:
+            n = pending.pop()
+            lets[n] = b.lets[n] if n in b.lets else fold(parse(sig.let[n]), self.point)
+            pending |= (names(lets[n]) & scalars & set(sig.let)) - set(lets)
+        lets = {n: node for n, node in lets.items() if n in scalars}
+        read = set().union(*(names(r) for _, r in rules), *map(names, lets.values())) - set(lets)
+        e = _Emitter(sig)
+        for n in sorted(read):
+            source = f"tensors.get({n!r})" if n in sig.inputs else f"_k[{n!r}]"
+            e.emit(f"{n} = {source}")
+        while lets:
+            n = next(n for n, node in lets.items() if not names(node) & set(lets) - {n})
+            e.where(f"let {n}")
+            e.emit(f"{n} = {_code(sig, lets.pop(n))}")
+        for i, rule in rules:
+            e.where(f"shape_rules[{i}]")
+            e.require(_code(sig, rule), f"shape_rules[{i}]: {sig.rules[i]}")
+        return e.function("values", "self, tensors, _k")
+
     def _device_and_dtypes(
-        self, e: _Emitter, b: PlanBranch, inputs: list[str], ctor: list[str], known: set[str]
+        self, e: _Emitter, b: PlanBranch, inputs: list[str], known: set[str]
     ) -> None:
-        """The call device, then dtypes: inputs bind them, construction-time tensors are cast."""
+        """The call device, then the dtypes the inputs bind."""
         sig = self.plan.sig
         cpu = [t for t in inputs if sig.inputs[t].cpu]
-        held_cpu = [f"self.{t}" for t in ctor if sig.ctor_tensors[t].cpu]
-        args = ["".join(f"{t}, " for t in inputs if t not in cpu)]
-        args.append("".join(f"{t}, " for t in [*cpu, *held_cpu]))
-        args.append("".join(f"self.{t}, " for t in ctor if not sig.ctor_tensors[t].cpu))
-        e.emit(f"_device = _call_device({sig.name!r}, self, ({args[0]}), ({args[1]}), ({args[2]}))")
+        placing = "".join(
+            f"*{t}, " if t in b.sequences else f"{t}, " for t in inputs if t not in cpu
+        )
+        held = "".join(f"{t}, " for t in cpu)
+        e.emit(f"_device = _call_device({sig.name!r}, self, ({placing}), ({held}))")
         for t in inputs:
+            if t in b.sequences:
+                e.emit(f"_ss_{t} = tuple(tuple(_x.shape) for _x in {t})")
+                e.emit(f"_dd_{t} = tuple(_dname(_x.dtype) for _x in {t})")
+                if sig.inputs[t].contiguous:
+                    e.require(f"all(_x.is_contiguous() for _x in {t})", f"{t} must be contiguous")
+                continue
             e.emit(f"_s_{t} = tuple({t}.shape)")
             e.emit(f"_d_{t} = _dname({t}.dtype)")
             if sig.inputs[t].contiguous:
                 e.require(f"{t}.is_contiguous()", f"{t} must be contiguous")
         for t, node in e.bind_input_dtypes(b, inputs, known):
             e.where(f"tensor {t!r} dtype")
-            e.require(f"_d_{t} == {_code(sig, node)}", f"{t} dtype is not {ast.unparse(node)}")
-        for t in ctor:
-            node = b.dtypes[t]
-            if isinstance(node, ast.Name) and node.id in sig.forall and node.id not in known:
-                e.bind_dtype(node.id, f"_dname(self.{t}.dtype)", t)
-                known.add(node.id)
-            e.where(f"tensor {t!r} dtype")
-            device = "None" if sig.ctor_tensors[t].cpu else "_device"
-            e.emit(f"{t} = _placed(self, {t!r}, {device}, {_code(sig, node)})")
-            e.emit(f"_s_{t} = tuple({t}.shape)")
-            e.emit(f"_d_{t} = {_code(sig, node)}")
-            if sig.ctor_tensors[t].contiguous:
-                e.require(f"{t}.is_contiguous()", f"{t} must be contiguous")
+            if t in b.sequences:
+                # An element-wise index is the element's item.
+                each = {x: ast.parse(f"{x}[_j]", mode="eval").body for x in b.sequences[t]}
+                element = Substitute(each).visit(copy.deepcopy(node))
+                for x in sorted(names(node) & set(each)):
+                    e.require(f"len({x}) == len(_dd_{t})", f"{x} and {t} differ in length")
+                got = f"all(_d == {_code(sig, element)} for _j, _d in enumerate(_dd_{t}))"
+            else:
+                got = f"_d_{t} == {_code(sig, node)}"
+            e.require(got, f"{t} dtype is not {ast.unparse(node)}")
         if sig.dtype_combos:
             columns = sorted(sig.dtype_combos[0])
             rows = sorted({tuple(r[c] for c in columns) for r in sig.dtype_combos})
             e.require(
                 f"({', '.join(columns)},) in {rows!r}", f"{columns} is not a dtype_combos row"
             )
+
+
+def _call_scalars(sig: Signature) -> set[str]:
+    """The call-time arguments with a scalar member, and the `let`s that read them."""
+    return {t for t, d in sig.inputs.items() if d.scalars} | call_scalar_lets(sig)
 
 
 def _passes_buffer(sig: Signature, point: dict) -> bool:
@@ -858,7 +1025,7 @@ def _passes_buffer(sig: Signature, point: dict) -> bool:
 
 def _roofline_source(sig: Signature, b: PlanBranch) -> str:
     """`roofline(_c)` at one point: its folded inline formula over the call's `indices`."""
-    tensors = {*sig.call_tensors, *sig.outputs, "out"}
+    tensors = {*sig.inputs, *sig.outputs, "out"}
     exprs = [n for n in b.roofline.values() if n is not None]
     read = sorted(set().union(set(), *(names(n) for n in exprs)) - tensors)
     flops = _code(sig, b.roofline["flops"], present="_c.present")
@@ -876,26 +1043,40 @@ def _roofline_source(sig: Signature, b: PlanBranch) -> str:
     )
 
 
-def _offsets_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
-    """`offsets(_c, inputs)` at one point, or None: each passed input whose `requires` holds
-    `prefix_offsets` checked against its bound, and each other passed input declaring the same
-    `values` checked equal to it."""
+def _contents_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
+    """`contents(_c, inputs)` at one point, or None: the `validate_inputs` check of the
+    passed inputs' `requires` that read tensor contents.
+
+    Each input whose `requires` holds `prefix_offsets` is checked against its bound, and each
+    other passed input declaring the same `values` is checked equal to it; each `in_range`
+    bound is checked on its input. None where the signature declares no `validate_inputs`.
+    """
+    if "validate_inputs" not in sig.params:
+        return None
     order = list(sig.inputs)
+    present = [t for t in order if t in b.shapes]
     bounds = {
         t: call.args[0]
-        for t, calls in b.requires.items()
-        if t in order
-        for call in calls
+        for t in present
+        for call in b.requires.get(t, ())
         if callee(call.func) == "prefix_offsets"
     }
-    if not bounds:
+    ranges = [
+        (t, call.args)
+        for t in present
+        for call in b.requires.get(t, ())
+        if callee(call.func) == "in_range"
+    ]
+    if not bounds and not ranges:
         return None
-    read = sorted(set().union(*map(names, bounds.values())))
-    lines = ["def offsets(_c, inputs):", *(f"    {n} = _c.indices[{n!r}]" for n in read)]
+    read = sorted(
+        set().union(*map(names, bounds.values()), *(names(a) for _, args in ranges for a in args))
+    )
+    lines = ["def contents(_c, inputs):", *(f"    {n} = _c.indices[{n!r}]" for n in read)]
     done = set()
     # An input on the call device anchors its group ahead of a CPU copy.
     for t in sorted(order, key=lambda name: sig.inputs[name].cpu):
-        if t not in bounds or t not in b.shapes or t in done:
+        if t not in bounds or t in done:
             continue
         values = f"_v{len(done)}"
         lines.append(
@@ -910,6 +1091,10 @@ def _offsets_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
                 f"    _check_equal({other!r}, inputs[{order.index(other)}], {t!r}, {values})"
             )
             done.add(other)
+    for t, (lo, hi) in ranges:
+        lines.append(
+            f"    _check_range({t!r}, inputs[{order.index(t)}], {_code(sig, lo)}, {_code(sig, hi)})"
+        )
     return "\n".join(lines)
 
 
@@ -919,10 +1104,10 @@ def _read_names(sig: Signature) -> set[str]:
     A type family's discriminants reach it as arguments of the shapes that apply it.
     """
     texts = [*sig.rules, *sig.let.values()]
-    for t in (*sig.call_tensors.values(), *sig.outputs.values()):
-        conditions = (t.optional, t.nullable, t.mutated)
+    for t in (*sig.inputs.values(), *sig.outputs.values()):
+        conditions = (t.nullable, t.mutated)
         texts += [t.shape, t.dtype, *(c for c in conditions if isinstance(c, str))]
-    read = {t.name for t in sig.call_tensors.values() if t.optional is True} | {"out"}
+    read = {t.name for t in sig.inputs.values() if len(t.members) > 1} | {"out"}
     return read.union(*(names(parse(text)) for text in texts))
 
 
@@ -943,7 +1128,7 @@ def _observer_source(sig: Signature) -> str:
     and the address of each tensor slot, inputs then writes, None where absent.
 
     The key holds everything the generated checks, the call specs and the plan read: each
-    tensor slot's and construction-time tensor's shape, strides, dtype and device, or its
+    tensor slot's shape, strides, dtype and device, a scalar member's type, or its
     absence; whether each tensor slot starts on a 16-byte boundary; each param as
     `param_state` snapshots it; the execution arguments; and the current device when no input
     places the call. The key is None for a call holding a tensor of another type than
@@ -967,23 +1152,52 @@ def _observer_source(sig: Signature) -> str:
     dispatching = "{t}.is_meta or {t}.is_conj() or {t}.is_neg() or (grad and {t}.requires_grad)"
     for name, decl in zip(names, sig.inputs.values(), strict=True):
         lines.append(f"    if {name} is None:")
-        if decl.optional is False:
+        if "None" not in decl.members:
             lines.append("        if direct:")
             lines.append("            return None, None")
         lines.append(f"        _k{name} = _a{name} = None")
-        lines.append(f"    elif type({name}) is _Tensor:")
-        lines.append(f"        if direct and ({dispatching.format(t=name)}):")
-        lines.append("            return None, None")
-        lines.append(f"        _a{name} = {name}.data_ptr()")
-        lines.append(
-            f"        _k{name} = ({name}.shape, {name}.stride(), {name}.dtype, {name}.device, "
-            f"not _a{name} % {VECTOR_ACCESS_BYTES})"
-        )
+        if decl.sequence:
+            # A tensor sequence keys on its length and each element; its addresses are its
+            # elements', in order.
+            lines.append(f"    elif type({name}) is list or type({name}) is tuple:")
+            lines.append(f"        _k{name}, _a{name} = [len({name})], []")
+            lines.append(f"        for t in {name}:")
+            lines.append(
+                f"            if type(t) is not _Tensor or (direct and ({dispatching.format(t='t')})):"
+            )
+            lines.append("                return None, None")
+            lines.append("            a = t.data_ptr()")
+            lines.append(f"            _a{name}.append(a)")
+            lines.append(
+                f"            _k{name}.append((t.shape, t.stride(), t.dtype, t.device, "
+                f"not a % {VECTOR_ACCESS_BYTES}))"
+            )
+            lines.append(f"        _k{name} = tuple(_k{name})")
+        if "Tensor" in decl.members:
+            lines.append(f"    elif type({name}) is _Tensor:")
+            lines.append(f"        if direct and ({dispatching.format(t=name)}):")
+            lines.append("            return None, None")
+            lines.append(f"        _a{name} = {name}.data_ptr()")
+            lines.append(
+                f"        _k{name} = ({name}.shape, {name}.stride(), {name}.dtype, {name}.device, "
+                f"not _a{name} % {VECTOR_ACCESS_BYTES})"
+            )
+        if decl.scalars:
+            # A scalar member keys on its type, never its value: the checks that read the value
+            # run on every call.
+            lines.append(f"    elif type({name}) in _NUMBERS:")
+            lines.append(f"        _k{name}, _a{name} = (type({name}),), None")
         lines.append("    else:")
         lines.append("        return None, None")
     lines.append(f"    key = [{''.join(f'_k{n}, ' for n in names)}]")
     if writing:
-        lines.append(f"    addresses = [{''.join(f'_a{n}, ' for n in names)}]")
+        # A sequence slot holding no list is one leaf, as `leaves` counts it.
+        sequence = {n for n, t in zip(names, sig.inputs.values(), strict=True) if t.sequence}
+        slots = "".join(
+            f"*(_a{n} if type(_a{n}) is list else (_a{n},)), " if n in sequence else f"_a{n}, "
+            for n in names
+        )
+        lines.append(f"    addresses = [{slots}]")
     lines.append("    for t in writes.values():")
     lines.append(
         f"        if type(t) is not _Tensor or (direct and ({dispatching.format(t='t')})):"
@@ -995,14 +1209,6 @@ def _observer_source(sig: Signature) -> str:
     )
     if writing:
         lines.append("        addresses.append(a)")
-    for ctor in sig.ctor_tensors:
-        lines.append(f"    t = getattr(op, {ctor!r}, None)")
-        lines.append("    if t is None:")
-        lines.append("        key.append(None)")
-        lines.append("    elif type(t) is _Tensor:")
-        lines.append("        key.append((t.shape, t.stride(), t.dtype, t.device))")
-        lines.append("    else:")
-        lines.append("        return None, None")
     # The params as `param_state` snapshots them: a scalar with its type, since `1`, `1.0`
     # and `True` compare equal.
     for param in sig.params:
@@ -1015,8 +1221,13 @@ def _observer_source(sig: Signature) -> str:
     lines.append("        except TypeError:")
     lines.append("            return None, None")
     lines.append("        key.append(arguments)")
-    placing = [n for n, t in zip(names, sig.inputs.values(), strict=True) if not t.cpu]
-    unplaced = " and ".join(f"{n} is None" for n in placing) or "True"
+    placing = {n: t for n, t in zip(names, sig.inputs.values(), strict=True) if not t.cpu}
+    unplaced = (
+        " and ".join(
+            f"not {n}" if t.sequence else f"type({n}) is not _Tensor" for n, t in placing.items()
+        )
+        or "True"
+    )
     lines.append(f"    if {unplaced}:")
     lines.append("        key.append(_now_device())")
     lines.append(f"    return tuple(key), {'addresses' if writing else 'None'}")
@@ -1043,28 +1254,33 @@ class _SignaturePlan:
         # An axis nothing in the signature reads cannot change its checks.
         read = _read_names(sig)
         self.axes = {a: v for a, v in discriminant_axes(sig).items() if a in read}
-        self.built_axes = {
-            a: v for a, v in self.axes.items() if a in sig.params or a in sig.ctor_tensors
-        }
+        self.built_axes = {a: v for a, v in self.axes.items() if a in sig.params}
         self.keys, self.built_keys = self._keys(self.axes), self._keys(self.built_axes)
-        # The call tensors whose presence an axis reads. The rest of a point is the op's
-        # params and constructor tensors, which construction settles once per instance.
+        # The call-time arguments whose member an axis reads. The rest of a point is the op's
+        # params, which construction settles once per instance.
         self.tensor_axes = tuple(a for a in self.axes if a not in self.built_axes)
-        # What an eager call reads of the signature to observe and run itself: the
-        # construction-time tensor names, whether `forward` takes every input by position,
-        # and the observer of a call's specialization key.
-        self.ctor_names = tuple(sig.ctor_tensors)
+        # What an eager call reads of the signature to observe and run itself: whether
+        # `forward` takes every input by position, and the observer of a call's specialization
+        # key.
         self.positional = not any(t.kw_only for t in sig.inputs.values())
         self.observe = _compiled(
             "observe",
             _observer_source(sig),
             f"{sig.name} observer",
-            {"_SCALARS": _SCALARS, "_snapshot": _snapshot, "_now_device": _now_device},
+            {
+                "_SCALARS": _SCALARS,
+                "_NUMBERS": (bool, int, float),
+                "_snapshot": _snapshot,
+                "_now_device": _now_device,
+            },
         )
         self.constructions, self.checks, self.shapes, self.effects, self.roofs = {}, {}, {}, {}, {}
-        # The `validate_inputs` check of each call point's packed offsets; a point with none
+        # The `validate_inputs` check of each call point's tensor contents; a point with none
         # has no key.
-        self.offsets = {}
+        self.contents = {}
+        # The per-call check of each call point's refinements that read a call-time scalar; a
+        # point with none has no key.
+        self.values = {}
         self.equal = equal_inputs(sig)
         # Per construction key not yet emitted: its construction and its call points. A key
         # leaves it only once its tables are filled, under the lock.
@@ -1084,7 +1300,7 @@ class _SignaturePlan:
                 point = complete_point(sig, base)
                 if pending is None:
                     raise SignatureError("its construction point is outside the signature")
-                present = {t for t in sig.call_tensors if tensor_passed(sig.call_tensors[t], point)}
+                present = {t for t in sig.inputs if tensor_passed(sig.inputs[t], point)}
                 emitted = frozenset(o for o in sig.outputs if output_emitted(sig.outputs[o], point))
                 self.effects[key] = (
                     sig.written(point, present),
@@ -1123,9 +1339,14 @@ class _SignaturePlan:
                         f"{sig.name} check",
                         {"_SignatureCall": SignatureCall},
                     )
-                offsets = None if rejected is not None else _offsets_source(sig, b, self.equal)
-                if offsets is not None:
-                    self.offsets[key] = _compiled("offsets", offsets, f"{sig.name} offsets")
+                values = _CallCheck(
+                    plan, point, key, construction, self.env, False, b, rejected
+                ).values_source()
+                if values is not None:
+                    self.values[key] = _compiled("values", values, f"{sig.name} values")
+                contents = None if rejected is not None else _contents_source(sig, b, self.equal)
+                if contents is not None:
+                    self.contents[key] = _compiled("contents", contents, f"{sig.name} contents")
                 if plan.roofline is not None and "flops" in plan.roofline and rejected is None:
                     self.roofs[key] = _compiled(
                         "roofline",
@@ -1157,15 +1378,35 @@ class _SignaturePlan:
     def built_key(self, point: dict) -> tuple:
         return tuple(point.get(k) for k in self.built_keys)
 
-    def point(self, op, tensors: dict, axes: dict | None = None) -> dict:
+    def state(self, name: str, value) -> str | bool:
+        """The coordinate argument *name* holding *value* takes: the member it holds, or for
+        `out` whether it is passed."""
+        if name == "out":
+            return value is not None
+        t = self.sig.inputs[name]
+        found = member_of(value, t.members)
+        if found is None:
+            raise CheckError(
+                f"{self.sig.name}: {name} = {_type_label(value)} is not a member of {t.type}"
+            )
+        return found
+
+    def states(self, tensors: dict) -> tuple:
+        """The coordinate of each axis in :attr:`tensor_axes` for the call *tensors*."""
+        return tuple(self.state(name, tensors.get(name)) for name in self.tensor_axes)
+
+    def point(
+        self, op, tensors: dict, axes: dict | None = None, states: tuple | None = None
+    ) -> dict:
         point = {}
+        held = dict(zip(self.tensor_axes, states, strict=True)) if states is not None else None
         for name, (key, values) in (self.axes if axes is None else axes).items():
             if name in self.sig.params:
                 value = getattr(op, name)
                 if key is None:
-                    # An ADT, or a Maybe[ADT] whose payload fields are keyed `name.value.`.
+                    # An ADT, or a Maybe[ADT] whose payload fields are keyed as the ADT's.
                     maybe = any(f"present({name})" in v for v in values)
-                    prefix = f"{name}.value." if maybe else f"{name}."
+                    prefix = f"{name}."
                     if maybe:
                         point[f"present({name})"] = value is not None
                     if value is None:
@@ -1179,10 +1420,8 @@ class _SignaturePlan:
                     point[name] = getattr(value, "value", value)
                 else:
                     point[key] = value is not None
-            elif name in self.sig.ctor_tensors:
-                point[key] = getattr(op, name) is not None
             else:
-                point[key] = tensors.get(name) is not None
+                point[key] = held[name] if held is not None else self.state(name, tensors.get(name))
         return point
 
     def check_construction(self, op) -> dict:
@@ -1198,9 +1437,9 @@ class _SignaturePlan:
     def check(self, op, tensors: dict) -> SignatureCall:
         if torch.compiler.is_compiling():
             return self._lookup(self.checks, op, tensors)(op, tensors)
-        # The point is the op's params and constructor tensors and the presence of the call
-        # tensors: one lookup per presence while the params keep their values.
-        present = tuple(tensors.get(name) is not None for name in self.tensor_axes)
+        # The point is the op's params and the member each call-time
+        # argument holds: one lookup per members while the params keep their values.
+        present = self.states(tensors)
         params = param_state(op, self.sig)
         cache = vars(op).setdefault("_check_fns", {})
         found = cache.get(present)
@@ -1212,24 +1451,37 @@ class _SignaturePlan:
         """Output shapes from input shapes; `DType` indices bind from *dtypes* where given."""
         # What construction solved, for the params as they are now.
         op._construction_indices = type(op)._check_construction(op)
-        return self._lookup(self.shapes, op, shapes)(op, shapes, dtypes)
+        states = tuple(self._shape_state(n, shapes.get(n)) for n in self.tensor_axes)
+        return self._lookup(self.shapes, op, shapes, states)(op, shapes, dtypes)
+
+    def _shape_state(self, name: str, value) -> str | bool:
+        """:meth:`state` where a tensor is given by its shape: a sequence of ints, or for a
+        tensor sequence a sequence of shapes."""
+        if name == "out" or value is None or not isinstance(value, (list, tuple)):
+            return self.state(name, value)
+        nested = any(isinstance(v, (list, tuple)) for v in value)
+        found = "list[Tensor]" if nested or self.sig.inputs[name].sequence else "Tensor"
+        t = self.sig.inputs[name]
+        if found not in t.members:
+            raise CheckError(
+                f"{self.sig.name}: {name} = {_type_label(value)} is not a member of {t.type}"
+            )
+        return found
 
     def effect_branch(self, op, present: tuple) -> tuple:
         """The inputs this call writes, whether it passes `out`, and the outputs it emits.
 
-        *present* is the presence of :attr:`tensor_axes`, in order. Every other coordinate of
-        the discriminant point is a param or a constructor tensor of *op*, so the branch is
-        looked up once per instance and presence while the params keep their values.
+        *present* is :meth:`states` of the call. Every other coordinate of the discriminant point
+        is a param of *op*, so the branch is looked up once per instance
+        and members while the params keep their values.
         """
         if torch.compiler.is_compiling():
-            tensors = {n: True for n, p in zip(self.tensor_axes, present, strict=True) if p}
-            return self._lookup(self.effects, op, tensors)
+            return self._lookup(self.effects, op, {}, present)
         cache = op._effect_branches
         params = param_state(op, self.sig)
         found = cache.get(present)
         if found is None or found[0] != params:
-            tensors = {n: True for n, p in zip(self.tensor_axes, present, strict=True) if p}
-            found = cache[present] = (params, self._lookup(self.effects, op, tensors))
+            found = cache[present] = (params, self._lookup(self.effects, op, {}, present))
         return found[1]
 
     def eval_roofline(self, call: SignatureCall) -> tuple[int, int]:
@@ -1238,14 +1490,26 @@ class _SignaturePlan:
             return _counts(self.sig.name, self.entry.roofline["func"](call))
         return _counts(self.sig.name, self.roofs[call.branch_key](call))
 
-    def _lookup(self, table: dict, op, tensors: dict):
-        point = self.point(op, tensors)
+    def _lookup(self, table: dict, op, tensors: dict, states: tuple | None = None):
+        point = self.point(op, tensors, states=states)
         if self.built_key(point) in self._pending:
             self._emit(self.built_key(point))
         fn = table.get(self.key(point))
         if fn is None:
             raise CheckError(f"{self.sig.name}: discriminants {point} are outside their types")
         return fn
+
+
+def leaves(slots) -> tuple:
+    """The values of call *slots* in order: a slot holding a tensor sequence, a list or tuple,
+    contributes each element; every other slot contributes itself."""
+    out = []
+    for value in slots:
+        if isinstance(value, (list, tuple)):
+            out.extend(value)
+        else:
+            out.append(value)
+    return tuple(out)
 
 
 class ResultCheck:
@@ -1260,13 +1524,12 @@ class ResultCheck:
     # What one output slot must hold.
     _ABSENT, _OUT, _ALIAS, _FRESH = 0, 1, 2, 3
 
-    __slots__ = ("name", "slots", "multiple", "device", "held", "single")
+    __slots__ = ("name", "slots", "multiple", "device", "single")
 
     def __init__(self, sig: Signature, call: SignatureCall):
         """Settle the slots of *sig*'s outputs at the effect branch *call* took."""
         self.name, self.device = sig.name, call.device
         self.multiple = len(sig.outputs) > 1
-        self.held = tuple(sig.ctor_tensors)
         order = list(sig.inputs)
         slots = []
         for name, decl in sig.outputs.items():
@@ -1285,12 +1548,12 @@ class ResultCheck:
         self.slots = tuple(slots)
         # The one fresh output of a call that returns nothing else, the common case:
         # `(name, shape, dtype, contiguous)`.
-        fresh = len(slots) == 1 and slots[0][1] == self._FRESH and not self.held
+        fresh = len(slots) == 1 and slots[0][1] == self._FRESH
         self.single = (slots[0][0], *slots[0][3:]) if fresh else None
 
     def __call__(self, result, inputs: tuple, writes: dict, op) -> None:
         """Check *result*, what the implementation returned for *inputs* in signature order
-        and *writes*, the caller's buffers by name; *op* holds the construction-time tensors.
+        and *writes*, the caller's buffers by name, on *op*.
 
         No fresh output may alias an input or an earlier output, empty ones included, as the
         dispatcher requires of an operator, whether or not the call goes through it.
@@ -1311,8 +1574,7 @@ class ResultCheck:
             ):
                 return
         self._check(result, inputs, writes, op)
-        held = tuple(getattr(op, name, None) for name in self.held)
-        _check_no_alias(self.name, self._fresh(result), (*inputs, *writes.values(), *held))
+        _check_no_alias(self.name, self._fresh(result), (*leaves(inputs), *writes.values()))
 
     def _apart(self, slot: str, result: torch.Tensor, inputs: tuple) -> bool:
         """Whether the storage check of *result*, the one fresh output, is settled: True once
@@ -1332,8 +1594,8 @@ class ResultCheck:
             start = storage.data_ptr()
             end = start + storage.nbytes()
         aliased = empty
-        for t in inputs:
-            if t is None:
+        for t in leaves(inputs):
+            if t is None or isinstance(t, (bool, int, float)):
                 continue
             if type(t) is not torch.Tensor:
                 return False
@@ -1348,7 +1610,7 @@ class ResultCheck:
                         f"declare as its alias"
                     )
         if aliased:
-            _check_no_alias(self.name, (result,), inputs)
+            _check_no_alias(self.name, (result,), leaves(inputs))
         return True
 
     def _fresh(self, result) -> tuple:
@@ -1401,7 +1663,7 @@ class ResultCheck:
                 raise CheckError(f"{name}: {slot} must be contiguous")
             if kind == self._FRESH:
                 if taken is None:
-                    passed = (*inputs, *writes.values(), *(getattr(op, n, None) for n in self.held))
+                    passed = (*leaves(inputs), *writes.values())
                     taken = [t for t in passed if isinstance(t, torch.Tensor)]
                     traced = _traced((*taken, *items))
                     # Each storage extent read once, the outputs' added as they pass.
@@ -1459,8 +1721,7 @@ def _owns_storage_apart(t: torch.Tensor, others: tuple) -> bool:
 
 
 def _construction_check(plan: _SignaturePlan):
-    """`_check_construction`: parameter values against their `type`, construction-time tensor
-    presence, then what the construction point decides; it returns the index values solved."""
+    """`_check_construction`: parameter values against their `type`, then what the construction point decides; it returns the index values solved."""
     sig = plan.sig
     dtypes = {
         p
@@ -1472,7 +1733,9 @@ def _construction_check(plan: _SignaturePlan):
         for p, decl in sig.params.items():
             value = getattr(self, p)
             try:
-                convert(_dname(value) if p in dtypes else value, decl.get("type"), sig.adts)
+                convert(
+                    _dname(value) if p in dtypes else _dnames(value), decl.get("type"), sig.adts
+                )
             except ValueError as exc:
                 raise CheckError(f"{sig.name}: {p} = {exc}") from None
         return plan.check_construction(self)
@@ -1519,6 +1782,9 @@ class _CompileBoundary:
         schema, typed by their annotations.
         """
         self.plan, self.branches = plan, {}
+        # Each input's operator slots, `(schema type, slot name, member)`: one per member that
+        # is not None, a tensor member under the input's own name.
+        self.slots = {name: t.slots for name, t in plan.sig.inputs.items()}
         prefix = {"self", "out", *plan.sig.inputs}
         parameters = [
             p for p in inspect.signature(cls.forward).parameters.values() if p.name not in prefix
@@ -1552,11 +1818,14 @@ class _CompileBoundary:
         """The operator's schema: every input positional in signature order, a `kw_only` one
         included, since `torch.library.custom_op` refuses a keyword-only tensor, then `out`, the
         execution parameters and the instance key."""
-        sig, aliases = self.plan.sig, iter(string.ascii_lowercase)
+        aliases = iter(string.ascii_lowercase)
         args = []
-        for name, t in sig.inputs.items():
+        for name, slots in self.slots.items():
             mark = f"({next(aliases)}!)" if name in written else ""
-            args.append(f"Tensor{mark}{'?' if t.optional is not False else ''} {name}")
+            for kind, slot, _ in slots:
+                if mark:
+                    kind = f"Tensor{mark}{kind.removeprefix('Tensor')}"
+                args.append(f"{kind} {slot}")
         if out:
             args.append(f"Tensor({next(aliases)}!) out")
         args += [f"{kind} {name}" for name, kind in self.execution]
@@ -1575,8 +1844,38 @@ class _CompileBoundary:
             if o in emitted and t.alias not in written and not (out and t.buffer)
         ]
 
+    def pack(self, inputs: tuple) -> tuple:
+        """*inputs*, one per declared input, as the operator's input slots: an argument with one
+        slot in it as passed, any other in the slot of the member it holds and None in its other
+        slots."""
+        out = []
+        for value, slots in zip(inputs, self.slots.values(), strict=True):
+            if len(slots) == 1:
+                out.append(value)
+                continue
+            held = None if value is None else member_of(value, tuple(m for _, _, m in slots))
+            out += [value if member == held else None for _, _, member in slots]
+        return tuple(out)
+
+    def unpack(self, values: tuple) -> tuple:
+        """The operator's input slots as one argument per declared input: the one slot passed,
+        or None when the input's type holds None and no slot is passed.
+
+        Raises:
+            CheckError: Several slots of one input are passed, or none of one that cannot be None.
+        """
+        out, k = [], 0
+        for name, slots in self.slots.items():
+            passed = [v for v in values[k : k + len(slots)] if v is not None]
+            k += len(slots)
+            nullable = "None" in self.plan.sig.inputs[name].members
+            if len(passed) > 1 or (not passed and not nullable and len(slots) > 1):
+                raise CheckError(f"{self.plan.sig.name}: pass exactly one of the slots of {name}")
+            out.append(passed[0] if passed else None)
+        return tuple(out)
+
     def _register(self, name: str, written: frozenset, out: bool, emitted: frozenset):
-        sig, count = self.plan.sig, len(self.plan.sig.inputs)
+        sig, count = self.plan.sig, sum(len(s) for s in self.slots.values())
         returned = self._returned(written, out, emitted)
         schema = self._schema(written, out, emitted)
 
@@ -1591,7 +1890,7 @@ class _CompileBoundary:
                 if self.execution
                 else {}
             )
-            result = op._execute(tuple(values[:count]), writes, written, execution)
+            result = op._execute(self.unpack(tuple(values[:count])), writes, written, execution)
             if not returned:
                 return None
             if len(sig.outputs) == 1:
@@ -1606,15 +1905,18 @@ class _CompileBoundary:
             tracing = TracingContext.try_get() is not None
             if tracing and key != instance_key(op._instance_identity, op._instance_key_state()):
                 raise RuntimeError(
-                    f"{sig.name}: a param or construction-time tensor changed in place since "
+                    f"{sig.name}: a param changed in place since "
                     f"it was assigned; assign the new value to the op, which keys its "
                     f"compiled graphs on it"
                 )
-            passed = dict(zip(sig.inputs, tensors[:count], strict=True))
+            passed = dict(zip(sig.inputs, self.unpack(tuple(tensors[:count])), strict=True))
             # What construction solved, for the params as they are: an eager call that reused
             # a plan solved nothing.
             op._construction_indices = type(op)._check_construction(op)
             call = self.plan.check(op, passed | ({"out": tensors[count]} if out else {}))
+            values = self.plan.values.get(call.branch_key)
+            if values is not None:
+                values(op, passed, call.indices)
             built = tuple(
                 torch.empty(
                     call.tensors[o][0], dtype=getattr(torch, call.tensors[o][1]), device=call.device
@@ -1698,7 +2000,7 @@ class _CompileBoundary:
                         torch.autograd.graph.increment_version(t)
         operator, out_passed, returns, picks, _ = self.branches[self._effect(op, inputs, writes)]
         args = (
-            *inputs,
+            *self.pack(inputs),
             *([out] if out_passed else []),
             *(execution[n] for n, _ in self.execution),
             op._instance_key,
@@ -1722,8 +2024,8 @@ class _CompileBoundary:
     def _effect(self, op, inputs: tuple, writes: dict) -> tuple:
         """The effect branch of a call that no plan has settled yet."""
         present = tuple(
-            writes.get("out") is not None if i is None else inputs[i] is not None
-            for i in self.presence
+            self.plan.state(a, writes.get("out") if i is None else inputs[i])
+            for a, i in zip(self.plan.tensor_axes, self.presence, strict=True)
         )
         return self.plan.effect_branch(op, present)
 
@@ -1754,9 +2056,7 @@ class _CompileBoundary:
 
 
 def param_state(op, sig: Signature) -> tuple:
-    """Snapshot what a call's checks read of *op*: its param values and constructor tensors.
-
-    A constructor tensor counts by its presence.
+    """Snapshot what a call's checks read of *op*: its param values.
 
     A container, an ADT value or another object's fields are copied into tuples, so editing
     a param in place after the snapshot leaves it unequal to the param.
@@ -1765,8 +2065,6 @@ def param_state(op, sig: Signature) -> tuple:
     for name in sig.params:
         value = getattr(op, name, None)
         state.append((type(value), value) if type(value) in _SCALARS else _snapshot(value))
-    for name in sig.ctor_tensors:
-        state.append(getattr(op, name, None) is not None)
     return tuple(state)
 
 
@@ -1861,21 +2159,23 @@ def _input_binder(sig: Signature, name: str, body, dtypes: bool = False):
     """A method taking the signature's inputs as `forward` does, a `kw_only` one keyword-only,
     that calls `body(self, tensors)`; with *dtypes* it also takes keyword-only `dtypes`, an input
     name to dtype mapping, and calls `body(self, tensors, dtypes)`."""
+    defaults = {t: d.default for t, d in sig.inputs.items() if d.default is not REQUIRED}
     formal = [
         "self",
-        *(
-            f"{t}=None" if d.optional is not False else t
-            for t, d in sig.inputs.items()
-            if not d.kw_only
-        ),
+        *(f"{t}=_d_{t}" if t in defaults else t for t, d in sig.inputs.items() if not d.kw_only),
     ]
-    keyword = [f"{t}=None" for t, d in sig.inputs.items() if d.kw_only]
+    # The required buffer `out` is checked by the call, which shape inference does not take.
+    keyword = [
+        f"{t}=_d_{t}" if t in defaults else f"{t}=None" if t == "out" else t
+        for t, d in sig.inputs.items()
+        if d.kw_only
+    ]
     keyword += ["dtypes=None"] if dtypes else []
     formal += ["*", *keyword] if keyword else []
     tensors = ", ".join(f"{t!r}: {t}" for t in sig.inputs)
     tail = ", dtypes or {}" if dtypes else ""
     source = f"def {name}({', '.join(formal)}):\n    return _body(self, {{{tensors}}}{tail})"
-    scope = {"_body": body}
+    scope = {"_body": body, **{f"_d_{t}": v for t, v in defaults.items()}}
     exec(compile(source, f"<{sig.name} {name}>", "exec"), scope)
     return scope[name]
 
@@ -1923,7 +2223,7 @@ def install_compile_boundary(cls: type, entry: dict) -> None:
         return
     boundary = _CompileBoundary(cls, cls._signature, entry["family"])
     sig = cls._signature.sig
-    cls._instance_key_names = (*sig.params, *sig.ctor_tensors)
+    cls._instance_key_names = tuple(sig.params)
     cls._instance_key_entry = json.dumps(entry, sort_keys=True, default=repr)
     cls._call_boundary = boundary.build_call_boundary(cls)
 

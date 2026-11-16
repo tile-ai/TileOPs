@@ -60,7 +60,6 @@ _BROADCAST_OPS = [
         _rand_pos,
         _rand_pos,
     ),
-    ("LerpScalarFwdOp", _F16, _randn, _randn),
     ("MaximumFwdOp", _F16, _randn, _randn),
     ("MinimumFwdOp", _F16, _randn, _randn),
     ("EqFwdOp", _F16, _rand_bool, _rand_bool),
