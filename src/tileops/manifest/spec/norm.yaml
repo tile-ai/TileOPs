@@ -448,7 +448,7 @@ RMSNormGatedFwdOp:
   # in fla.modules.norm.fused_norm_gate.rms_norm_gated. Computed in float32, rounded once
   # to x's dtype.
   family: norm
-  status: spec-only
+  status: implemented
   ref_api: mamba_ssm.ops.triton.layernorm_gated.rmsnorm_fn
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float16 | bfloat16 | float32]", W: "DType[float16 | bfloat16 | float32]", Wb: "DType[float16 | bfloat16 | float32]", Z: "DType[float16 | bfloat16 | float32]"}

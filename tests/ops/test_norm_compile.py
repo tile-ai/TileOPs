@@ -19,6 +19,7 @@ from tileops._ops.norm import (
     GroupNormFwdOp,
     InstanceNormFwdOp,
     LayerNormFwdOp,
+    RMSNormGatedFwdOp,
 )
 from workloads.device import run_device
 
@@ -60,6 +61,10 @@ def _cases():
     def fused_add_rms_norm_per_token_quant():
         n = 256
         return FusedAddRMSNormPerTokenQuantFwdOp(), (_x(8, n), _x(8, n), _x(n))
+
+    def rms_norm_gated():
+        n = 256
+        return RMSNormGatedFwdOp(), (_x(8, n), _x(n), None, _x(8, n))
 
     def group_norm():
         return GroupNormFwdOp(num_groups=2), (_x(2, 4, 8, 8), _x(4), _x(4))
@@ -107,6 +112,7 @@ def _cases():
             ("fused-add-layer-norm", fused_add_layer_norm),
             ("fused-add-rms-norm", fused_add_rms_norm),
             ("fused-add-rms-norm-per-token-quant", fused_add_rms_norm_per_token_quant),
+            ("rms-norm-gated", rms_norm_gated),
             ("group-norm", group_norm),
             ("group-norm-no-affine", group_norm_no_affine),
             ("instance-norm", instance_norm),
@@ -124,6 +130,7 @@ for _op_cls in (
     FusedAddLayerNormFwdOp,
     FusedAddRMSNormFwdOp,
     FusedAddRMSNormPerTokenQuantFwdOp,
+    RMSNormGatedFwdOp,
     GroupNormFwdOp,
     InstanceNormFwdOp,
     BatchNormFwdOp,
