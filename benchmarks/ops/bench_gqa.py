@@ -537,8 +537,9 @@ def _flashinfer_gqa_varlen(
     *inputs: torch.Tensor,
     rotate=None,
 ):
-    """FlashInfer ragged prefill; no right window or supported D=512 configuration."""
-    if window_size_right >= 0 or workload.dim > 256:
+    """FlashInfer ragged prefill; no right window, and its kernels dispatch head dims 64, 128
+    and 256 only (D=512 has no prefill configuration)."""
+    if window_size_right >= 0 or workload.dim not in (64, 128, 256):
         return None
     if workload.has_sinks:
         return _flashinfer_varlen_sinks(workload, inputs, rotate)

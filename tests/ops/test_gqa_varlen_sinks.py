@@ -132,6 +132,17 @@ from workloads.attention.gqa.varlen import GQAVarlenSinkWorkload
             marks=pytest.mark.full,
             id="fp16-empty-rows-general",
         ),
+        # A head of 72 channels: the sink scales the edge tile's channels too, in whole and
+        # partial query tiles.
+        pytest.param(
+            torch.bfloat16,
+            72,
+            [129, 1, 0, 17],
+            [257, 33, 0, 17],
+            {},
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="bf16-head-edge",
+        ),
         pytest.param(
             torch.bfloat16,
             128,
