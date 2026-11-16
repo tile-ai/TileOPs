@@ -251,12 +251,15 @@ def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m
         pytest.param(8, 1024, 1024, 1024, torch.float16, id="two-waves-fp16"),
         # K is not a whole number of 64-wide blocks.
         pytest.param(4, 1024, 1024, 528, torch.bfloat16, id="k-tail"),
+        # A partial last block after 15 whole ones: 16 K steps, as K = 1024 takes.
+        pytest.param(4, 1024, 1024, 1008, torch.bfloat16, id="k-tail-16-steps"),
     ],
 )
 def test_bmm_pingpong_matches_the_reference(
     batch: int, m: int, n: int, k: int, dtype: torch.dtype
 ) -> None:
-    """Calls in the ping-pong band, each group of a CTA running whole 128x128 tiles in turn."""
+    """Calls in the ping-pong band, each group of a CTA running whole 128x128 tiles in turn,
+    staging each tile's store in 32-column chunks at every K of the band."""
     op = BMMFwdOp()
     call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=dtype, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
@@ -264,6 +267,8 @@ def test_bmm_pingpong_matches_the_reference(
     assert op.key_for("bmm", call) == "bmm_pingpong"
     test = BMMTest(batch, m, n, k, dtype)
     test.check(op, *test.gen_inputs())
+    (kernel,) = op.iter_kernels()
+    assert kernel.config["epilogue_stage_n"] == 32
 
 
 class BMMFP8Fixture(FixtureBase):

@@ -815,12 +815,9 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
         m: int,
         n: int,
         device_index: int | None = None,
-        template_config: dict | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch, self.m, self.n = batch, m, n
-        # Used until a launch publishes its configuration; None takes the selector's.
-        self._class_config = template_config or self._TEMPLATE_CONFIG
         self.program(self._template)
 
     def _template(self, cfg: dict | None) -> GEMMTemplate:
@@ -836,7 +833,9 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
             static_dims="mnk",
             sm_count=sms,
             device_index=self.device_index,
-            config=pinned or self._class_config,
+            # The class's tile until a launch publishes its configuration; None takes the
+            # selector's.
+            config=pinned or self._TEMPLATE_CONFIG,
         )
 
     def _grid(self, batch: int, m: int, n: int) -> int:
@@ -899,28 +898,17 @@ class BMMPingPongKernel(BMMPersistentKernel):
     preferred_over = frozenset({"bmm_persistent"})
     _PINGPONG_BANDS = {"h200": _PingPongBand(max_waves=2, min_k=384, max_k=1024)}
     # Two staging chunks used in turn keep six ring stages; staging the whole tile leaves five.
-    _TEMPLATE_CONFIG = {"block_m": 128, "block_n": 128, "pingpong": True, "epilogue_buffers": 2}
-
-    @classmethod
-    def entry_for(cls, call: BMMCall) -> Entry:
-        """Build the ping-pong specialization for the call's K."""
-        index = call.device.index if call.device is not None else None
-        identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
-        return identity, lambda: cls(call.batch, call.m, call.n, call.k, device_index=index)
-
-    def __init__(self, batch: int, m: int, n: int, k: int, device_index: int | None = None) -> None:
-        super().__init__(
-            batch, m, n, device_index=device_index, template_config=self._template_config(k)
-        )
-
-    @classmethod
-    def _template_config(cls, k: int) -> dict:
-        """16-column staging chunks where K spans 16 or more 64-wide steps, else 32.
-
-        Narrower chunks pay barriers per chunk that a shorter mainloop no longer hides.
-        """
-        width = 16 if -(-k // 64) >= 16 else 32
-        return {**cls._TEMPLATE_CONFIG, "epilogue_stage_n": width}
+    # Each chunk pays a wait, two barriers and a fence in series, so the CTA's last tile,
+    # whose epilogue nothing hides, ends sooner the fewer chunks it takes; 32 columns are
+    # the widest chunk whose store leaves the other group's mainloop over whole 64-wide K
+    # steps as fast as 16 do.
+    _TEMPLATE_CONFIG = {
+        "block_m": 128,
+        "block_n": 128,
+        "pingpong": True,
+        "epilogue_buffers": 2,
+        "epilogue_stage_n": 32,
+    }
 
     @classmethod
     def refusal(cls, call: BMMCall) -> str | None:
