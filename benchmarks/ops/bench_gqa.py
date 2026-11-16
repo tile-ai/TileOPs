@@ -538,7 +538,7 @@ def _flashinfer_gqa_varlen(
     rotate=None,
 ):
     """FlashInfer ragged prefill; no right window, and its kernels dispatch head dims 64, 128
-    and 256 only (D=512 has no prefill configuration)."""
+    and 256 only."""
     if window_size_right >= 0 or workload.dim not in (64, 128, 256):
         return None
     if workload.has_sinks:
