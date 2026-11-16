@@ -2,8 +2,10 @@
 
 y = x * rsqrt(mean(x^2) + eps) * weight
 
-``RMSNormKernel`` also scales by ``1 + weight`` where the call is zero-centered, forming
-``1 + weight`` in f32. ``RMSNormKernel`` runs one of three bodies, chosen by ``_row_body`` from the row's width and
+A zero-centered call scales by ``1 + weight`` instead, formed in f32; ``RMSNormKernel`` alone
+serves it.
+
+``RMSNormKernel`` runs one of three bodies, chosen by ``_row_body`` from the row's width and
 dtype alone: a group of a warp's lanes a row for rows of 256 to 2048 elements, a row held in
 a block's registers past 4096, and otherwise the fragment body. Tuning sizes the chosen body
 and never switches bodies. ``RMSNormTwoPassKernel`` reads a row of two or more whole thread
@@ -70,7 +72,7 @@ def _scaled(
     scale_pair: int,
     dtype: str,
     has_weight: bool,
-    zero_centered: bool,
+    zero_centered: bool = False,
 ):
     """Element ``2 * pair + half`` of *held* times *rrms*, times the matching element of *scale*
     where *has_weight*, or one plus it where *zero_centered*, rounded once to *dtype*."""
@@ -291,10 +293,8 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tre
                             scale[k * vec + c] = weight[at + c]
                 for p in T.unroll(width // 2):
                     w = s * width // 2 + p if weight_first else p
-                    out[p * 2] = _scaled(held, p, 0, part[0], scale, w, dtype, has_weight, False)
-                    out[p * 2 + 1] = _scaled(
-                        held, p, 1, part[0], scale, w, dtype, has_weight, False
-                    )
+                    out[p * 2] = _scaled(held, p, 0, part[0], scale, w, dtype, has_weight)
+                    out[p * 2 + 1] = _scaled(held, p, 1, part[0], scale, w, dtype, has_weight)
                 for k in T.unroll(chunk):
                     for c in T.vectorized(vec):
                         y[row, ((s * chunk + k) * threads + tx) * vec + c] = out[k * vec + c]
