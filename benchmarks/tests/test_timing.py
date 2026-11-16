@@ -249,8 +249,12 @@ def test_a_slow_host_leaves_no_device_idle_between_samples():
     gaps = [a.elapsed_time(b) for a, b in itertools.pairwise(starts[-len(samples) :])]
     # Had the device waited for the host, every gap would hold the host's 2 ms.
     assert statistics.median(gaps) < 1.0
+    clocks = [s.sm_clock_hz for s in samples]
+    assert all(hz is not None and hz > 0 for hz in clocks)
+    # One sample spans a call of a few microseconds, so the step of the global timer leaves
+    # its clock a few percent off either way; the median carries no such error.
     peak_hz = torch.cuda.get_device_properties(x.device).clock_rate * 1e3
-    assert all(0 < s.sm_clock_hz <= peak_hz * 1.01 for s in samples)
+    assert statistics.median(clocks) <= peak_hz * 1.01
 
 
 @pytest.mark.smoke
@@ -530,7 +534,7 @@ class _Clocks:
         return [1.5e9] * n
 
 
-def _time_on_fakes(monkeypatch, device, instrument, spoil, fits=None, call=None, repeats=2):
+def _time_on_fakes(monkeypatch, device, spoil, fits=None, call=None, repeats=2):
     """Run ``_bench_kernel`` on stand-ins for every device-facing piece, timing *call* (by
     default one that only launches) *repeats* times; returns the steps it took in order, and
     its samples."""
@@ -544,7 +548,6 @@ def _time_on_fakes(monkeypatch, device, instrument, spoil, fits=None, call=None,
     monkeypatch.setattr(timing, "l2_flush_buffer", lambda device: _ReadOnlySweep(order))
     monkeypatch.setattr(_l2_sweep, "read_sweep", lambda buffer: order.append("read"))
     monkeypatch.setattr(timing, "reset_persisting_l2_cache", lambda: order.append("persist"))
-    monkeypatch.setattr(timing, "_instrument_for", lambda device: instrument)
     monkeypatch.setattr(timing, "_BLOCKERS", {})
     monkeypatch.setattr(cold, "StreamBlocker", lambda timeout_s: blocker)
     monkeypatch.setattr(cold, "SmClocks", _Clocks)
@@ -583,45 +586,34 @@ def _held_spans(order: list) -> list[tuple[int, int]]:
 
 
 @pytest.mark.parametrize(
-    "device, instrument, spoil, timed_calls, meta",
+    "spoil, timed_calls, meta",
     [
-        ("cuda", "cupti", {}, 2, {"timing": "cupti"}),
-        ("cuda", "cupti", {0: "lost"}, 4, {"timing": "cupti", "attribution_retries": 1}),
-        ("cuda", "cupti", {0: "counted"}, 4, {"timing": "cupti", "attribution_retries": 1}),
-        ("cuda", "cupti", {0: "empty"}, 4, {"timing": "cuda-events"}),
-        ("cuda", "events", {}, 2, {"timing": "events"}),
-        ("privateuseone", "events", {}, 2, {"timing": "events"}),
+        ({}, 2, {"timing": "cupti"}),
+        ({0: "lost"}, 4, {"timing": "cupti", "attribution_retries": 1}),
+        ({0: "counted"}, 4, {"timing": "cupti", "attribution_retries": 1}),
+        ({0: "empty"}, 4, {"timing": "cuda-events"}),
     ],
-    ids=["cupti", "retry", "retry-short-call", "events-fallback", "events", "another-device"],
+    ids=["cupti", "retry", "retry-short-call", "events-fallback"],
 )
-def test_every_call_is_prepared_by_reset_then_a_read(
-    monkeypatch, device, instrument, spoil, timed_calls, meta
-):
+def test_every_call_is_prepared_by_reset_then_a_read(monkeypatch, spoil, timed_calls, meta):
     """First call, calibration, warm-up, timed repeats, retries and fallback prepare alike.
 
-    On CUDA every timed call is queued behind the blocking kernel with no drain between
-    calls; the kernel loads before warm-up, whose calls it never holds and which are drained
-    before and after; persisting L2 is reset before each block. Off CUDA no call is drained.
+    Every timed call is queued behind the blocking kernel with no drain between calls; the
+    kernel loads before warm-up, whose calls it never holds and which are drained before and
+    after; persisting L2 is reset before each block.
     """
     from benchmarks import timing
 
-    order, _ = _time_on_fakes(monkeypatch, device, instrument, spoil)
+    order, _ = _time_on_fakes(monkeypatch, "cuda", spoil)
 
-    blocked = instrument == "cupti"
-    prepared = ["reset", "read"] if device == "cuda" else ["reset", "torch-max"]
     steps = [step for step in order if step not in ("sync", "persist", "block", "unblock")]
-    assert steps == [*prepared, "run"] * (1 + 3 + 2 + timed_calls)
+    assert steps == ["reset", "read", "run"] * (1 + 3 + 2 + timed_calls)
     calls = [i for i, step in enumerate(order) if step == "run"]
-    # The first call and the three calibration calls come before the two warm-up calls.
-    warmup, timed = calls[4:6], calls[6:]
-    if blocked:
-        # nvbench's warm-up: each call drained before and after, never behind the blocker.
-        assert all(order[c - 1] == order[c + 1] == "sync" for c in warmup)
-    else:
-        assert "sync" not in order[warmup[0] : warmup[-1]] + order[timed[0] : timed[-1]]
+    # The first call and the three calibration calls come before the two warm-up calls;
+    # nvbench's warm-up drains each call before and after, never behind the blocker.
+    assert all(order[c - 1] == order[c + 1] == "sync" for c in calls[4:6])
     spans = _held_spans(order)
-    held = [c for c in calls if any(b < c < u for b, u in spans)]
-    assert held == (calls[6:] if blocked else [])
+    assert [c for c in calls if any(b < c < u for b, u in spans)] == calls[6:]
     for block, unblock in spans:
         # Neither a drain nor a persisting-L2 reset while the stream is held: under CUPTI the
         # reset stalls the next launch until the blocker times out.
@@ -630,8 +622,24 @@ def test_every_call_is_prepared_by_reset_then_a_read(
         assert not held_calls or order[block - 1] == "persist"
     recorded = timing._capture_bench_meta()
     assert (recorded.pop("fallback_reason", None) is not None) == (meta["timing"] == "cuda-events")
-    flush = timing._L2_FLUSH_CUDA if device == "cuda" else timing._L2_FLUSH_OTHER
-    assert recorded == {**meta, "l2_flush": flush}
+    assert recorded == {**meta, "l2_flush": timing._L2_FLUSH_CUDA}
+
+
+def test_another_device_prepares_every_call_by_reset_then_a_read_with_no_drain(monkeypatch):
+    """Off CUDA, events bracket each call: no call is held, and none is drained between the
+    warm-up calls or between the timed ones."""
+    from benchmarks import timing
+
+    order, _ = _time_on_fakes(monkeypatch, "privateuseone", {})
+
+    assert [step for step in order if step != "sync"] == ["reset", "torch-max", "run"] * 8
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    warmup, timed = calls[4:6], calls[6:]
+    assert "sync" not in order[warmup[0] : warmup[-1]] + order[timed[0] : timed[-1]]
+    assert timing._capture_bench_meta() == {
+        "timing": "events",
+        "l2_flush": timing._L2_FLUSH_OTHER,
+    }
 
 
 def test_a_block_the_queue_cannot_hold_is_measured_again_in_what_it_took(monkeypatch):
@@ -640,7 +648,7 @@ def test_a_block_the_queue_cannot_hold_is_measured_again_in_what_it_took(monkeyp
     took."""
     from benchmarks import timing
 
-    order, samples = _time_on_fakes(monkeypatch, "cuda", "cupti", {}, fits=1, repeats=3)
+    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, fits=1, repeats=3)
 
     assert len(samples) == 3
     assert all(s.sm_clock_hz == 1.5e9 for s in samples)
@@ -662,7 +670,7 @@ def test_a_row_counts_the_retries_of_the_blocks_it_keeps(monkeypatch):
     from benchmarks import timing
 
     _, samples = _time_on_fakes(
-        monkeypatch, "cuda", "cupti", {0: "lost", 2: "lost", 5: "lost"}, fits=1, repeats=3
+        monkeypatch, "cuda", {0: "lost", 2: "lost", 5: "lost"}, fits=1, repeats=3
     )
 
     assert len(samples) == 3
@@ -675,7 +683,7 @@ def test_a_queue_that_takes_no_sample_discards_the_held_ones(monkeypatch):
     from benchmarks import timing
 
     # The load block, the block of 2 that took 1, a block of 1, then one that took none.
-    order, samples = _time_on_fakes(monkeypatch, "cuda", "cupti", {}, fits=[None, 1, None, 0])
+    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, fits=[None, 1, None, 0])
 
     assert len(samples) == 2
     recorded = timing._capture_bench_meta()
@@ -694,9 +702,7 @@ def test_an_events_fallback_reports_only_its_own_blocks(monkeypatch):
     replaces it was held, and says so."""
     from benchmarks import timing
 
-    order, samples = _time_on_fakes(
-        monkeypatch, "cuda", "cupti", {1: "empty"}, fits=[None, 0, None]
-    )
+    order, samples = _time_on_fakes(monkeypatch, "cuda", {1: "empty"}, fits=[None, 0, None])
 
     assert len(samples) == 2
     recorded = timing._capture_bench_meta()
@@ -720,7 +726,7 @@ def test_a_call_that_raises_while_held_releases_the_stream(monkeypatch):
     from benchmarks import timing
 
     with pytest.raises(RuntimeError, match="kernel failure"):
-        _time_on_fakes(monkeypatch, "cuda", "cupti", {}, call=raise_on_the_timed_call, repeats=1)
+        _time_on_fakes(monkeypatch, "cuda", {}, call=raise_on_the_timed_call, repeats=1)
     (blocker,) = timing._BLOCKERS.values()
     assert not blocker.held
 

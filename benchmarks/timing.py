@@ -4,12 +4,13 @@ The timing layer owns the measurement and nothing else -- it knows how to run a 
 n times and return each run's device latency. What the numbers mean, and where they are
 written, belong to the layers above.
 
-A CUDA device is timed the way NVIDIA nvbench's cold measurement times a kernel
-(``nvbench/detail/measure_cold.cuh``): every sample flushes L2 before the call, a blocking
-kernel holds the stream while the samples are queued, and each sample records the SM clock
-it ran at. The readings come from CUPTI. Another accelerator is timed with
-torch's device events, which bracket each call: its ``timing`` reads ``events``, and the
-busy time equals the latency.
+A CUDA device is timed with the pieces of NVIDIA nvbench's cold measurement
+(``nvbench/detail/measure_cold.cuh``): every sample flushes L2 before the call, runs behind
+nvbench's blocking kernel, and records the SM clock it ran at. nvbench holds each sample
+alone and drains the device after it; here one blocking kernel holds a block of samples
+queued with no host synchronization between them. The readings come from CUPTI. Another
+accelerator is timed with torch's device events, which bracket each call: its ``timing``
+reads ``events``, and the busy time equals the latency.
 
 A kernel belongs to the iteration whose external correlation id it carries, so nothing
 is inferred from timestamps and a kernel shorter than the host overhead around it is
@@ -174,19 +175,20 @@ def bench_kernel(
     ``allow_events_fallback`` is true. ``None`` takes the run's setting,
     ``--tileops-allow-events-fallback``.
 
-    On CUDA the samples follow nvbench's cold measurement. Warm-up runs without the
-    blocking kernel, after loading it, each call drained before and after as nvbench's
-    timer drains it. The timed samples are queued behind the blocking
-    kernel with no host synchronization between them, so host launch cost never becomes
-    device idle time between samples. SM 0's clock is read around every call and kept in
-    the sample, which nvbench runs with ``--throttle-threshold 0``: no sample is discarded,
-    since a compute-bound call at the power cap runs throttled in steady state, and the
-    protocol asks only that every implementation run in the same power state. A block whose
-    queue filled before the host released it is measured again in smaller blocks, and
-    without the blocking kernel, as nvbench runs a launcher that cannot be held
-    (``exec_tag::sync``), when one sample alone fills the queue; ``block_samples`` records
-    the most samples a block then held, 0 for none, and ``l2_flush`` names the samples
-    held or drained.
+    On CUDA the samples take nvbench's cold measurement with one change: nvbench holds each
+    sample behind its own blocking kernel and drains the device after it, while here one
+    blocking kernel holds a block of samples queued with no host synchronization between
+    them, so host launch cost never becomes device idle time between samples. Warm-up loads
+    the blocking kernel, then runs each call unheld and drained before and after, as
+    nvbench's warm-up does. SM 0's clock is read around every call and kept in the sample.
+    No sample is discarded for its clock (nvbench's ``--throttle-threshold 0``): a
+    compute-bound call at the power cap runs throttled in steady state, and the protocol
+    asks only that every implementation run in the same power state. A block whose queue
+    filled before the host released it is measured again in smaller blocks. Where the queue
+    holds no sample, every sample is measured again unheld and drained before and after, as
+    nvbench runs a launcher that cannot be held (``exec_tag::sync``). ``block_samples``
+    records the most samples a block then held, 0 for none, and ``l2_flush`` names whether
+    the samples were held or drained.
 
     ``count_copies`` adds device-to-device copies to what is attributed, for a row whose
     implementations compute part of the result with one. It is off by default because a
@@ -352,7 +354,8 @@ def _bench_kernel(
         retried = attempts
 
     def _read(reading: Callable[[int], list[Sample]]) -> list[Sample]:
-        """nvbench's trial loop (``measure_cold::run_trials``) over blocks of samples."""
+        """Take *n_repeat* samples in blocks held by the blocking kernel, or all of them
+        unheld where the queue holds no sample."""
         nonlocal size, blocking, retried
         blocking, per_block = True, n_repeat
         _bench_meta.block_samples = None
@@ -365,10 +368,9 @@ def _bench_kernel(
             retried = 0
             readings = reading(size)
             if blocking and blocker.timed_out():
-                # The queue took fewer samples than the block held: nvbench blocks one cold
-                # sample at a time and never meets this. Measure again in blocks of what it
-                # took, and without the blocker where it took none: then every sample, as
-                # no sample of one reading is held and another not.
+                # The queue took fewer samples than the block held. Measure again in blocks
+                # of what it took; where it took none, measure every sample again unheld, so
+                # no reading mixes held and drained samples.
                 per_block = fitted if fitted is not None else size - 1
                 if per_block == 0:
                     blocking, per_block = False, n_repeat

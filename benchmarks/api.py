@@ -363,11 +363,11 @@ class Runner:
                     f"({methods[0]} then {methods[1]}); pooling "
                     "them would report one median over two kinds of measurement."
                 )
-            # The pooled row keeps the smallest block either pass had to fall back to.
+            # The pooled row keeps the smallest block either pass fell back to, and the
+            # retries of both passes.
             held = [m["block_samples"] for m in (previous or {}, pass_meta) if "block_samples" in m]
             if held:
                 pass_meta["block_samples"] = min(held)
-            # And the retries of both passes.
             retries = sum(m.get("attribution_retries", 0) for m in (previous or {}, pass_meta))
             if retries:
                 pass_meta["attribution_retries"] = retries
