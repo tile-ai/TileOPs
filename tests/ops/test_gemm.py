@@ -6,6 +6,7 @@ from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
+from tileops._kernels.gemm.heuristics import int8_pingpong_grid
 from tileops._kernels.gemm.w4a16 import _cross_tile_wgmma, _select_config
 from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
@@ -1001,16 +1002,18 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-one-row",
                 ),
-                # Ping-pong: M / N / K tails, and 297 tiles, more than two waves of 132 SMs,
-                # so each CTA runs both consumers and hands the turn back and forth.
+                # Ping-pong on 132 SMs: M / N / K tails, per-channel scales and a bias, and
+                # 192-wide tiles whose last 8 row tiles start with 14 tiles 160 wide, 376 tiles:
+                # more than two waves, so each CTA runs both consumers and hands the turn back
+                # and forth.
                 pytest.param(
-                    1100,
-                    4104,
+                    2200,
+                    3720,
                     1040,
                     True,
                     True,
                     torch.bfloat16,
-                    False,
+                    True,
                     _INT8_PP,
                     marks=pytest.mark.smoke,
                     id="smoke-pingpong-tails",
@@ -1055,9 +1058,11 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-partial-row-tile",
                 ),
+                # Ping-pong on 132 SMs: fp16 and tensor scales, and 192-wide tiles whose last 8
+                # row tiles start with three tiles 32 wide, 282 tiles; M / N / K tails.
                 pytest.param(
-                    1100,
-                    4104,
+                    2400,
+                    2568,
                     1040,
                     False,
                     False,
@@ -1066,6 +1071,49 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     _INT8_PP,
                     marks=pytest.mark.full,
                     id="full-pingpong-tensor-scales-bias",
+                ),
+                # Ping-pong 192-wide tiles with no narrow ones on 132 SMs, the 64-column store
+                # boxes: M / N tails, a bias, and one K step, whose only stage the drain after
+                # the mainloop releases.
+                pytest.param(
+                    1900,
+                    1032,
+                    16,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    True,
+                    _INT8_PP,
+                    marks=pytest.mark.full,
+                    id="full-pingpong-192-uniform-bias",
+                ),
+                # Ping-pong on 132 SMs, one wave of 92 tiles: 192-wide tiles whose four row
+                # tiles each start with 23 tiles 96 wide; M and K tails.
+                pytest.param(
+                    400,
+                    2208,
+                    1040,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_PP,
+                    marks=pytest.mark.full,
+                    id="full-pingpong-narrow-96",
+                ),
+                # Ping-pong 128-wide tiles on 132 SMs, 392 tiles: M / N / K tails over more
+                # than two waves, fp16 with tensor scales and a bias.
+                pytest.param(
+                    1700,
+                    3464,
+                    1040,
+                    False,
+                    False,
+                    torch.float16,
+                    True,
+                    _INT8_PP,
+                    marks=pytest.mark.full,
+                    id="full-pingpong-128-tails-bias",
                 ),
                 # n off the output's 16-byte TMA row pitch: the fallback.
                 pytest.param(
@@ -1115,6 +1163,29 @@ def test_gemm_int8_w8a8(
     )
     assert op.key_for("gemm_int8_w8a8", call) == (_INT8_SIMPLE if arch == 89 else key)
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "m, n, grid",
+    [
+        # The ping-pong cases above: 160-, 96- and 32-wide narrow tiles, and 192 with none.
+        pytest.param(2200, 3720, (192, 160, 8, 14), marks=pytest.mark.smoke, id="narrow-160"),
+        pytest.param(400, 2208, (192, 96, 4, 23), marks=pytest.mark.smoke, id="narrow-96"),
+        pytest.param(2400, 2568, (192, 32, 8, 3), marks=pytest.mark.smoke, id="narrow-32"),
+        pytest.param(1900, 1032, (192, 0, 0, 0), marks=pytest.mark.smoke, id="uniform-192"),
+        # Equal busiest-CTA columns, but 192-wide tiles give one consumer of a CTA more
+        # columns of epilogue: 288 against 256 (the 128-wide case above), 352 against 256.
+        pytest.param(1700, 3464, (128, 0, 0, 0), marks=pytest.mark.smoke, id="uniform-128"),
+        pytest.param(2048, 4096, (128, 0, 0, 0), marks=pytest.mark.smoke, id="consumer-tie"),
+        # 192-wide tiles give the busiest CTA more columns: 192 against 128.
+        pytest.param(300, 512, (128, 0, 0, 0), marks=pytest.mark.smoke, id="cta-more"),
+    ],
+)
+def test_int8_pingpong_grid_on_132_sms(m: int, n: int, grid: tuple) -> None:
+    """The ping-pong grid's tile width and narrow tiles on a 132-SM H200, which the
+    ping-pong cases above rely on to reach each path."""
+    got = int8_pingpong_grid(m, n, 132, 16)
+    assert (got["block_n"], got["narrow_n"], got["narrow_rows"], got["narrow_cols"]) == grid
 
 
 @pytest.mark.in_tree_kernels
