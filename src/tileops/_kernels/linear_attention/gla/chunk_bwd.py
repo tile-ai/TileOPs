@@ -143,6 +143,7 @@ def _gla_bwd_chunk_kernel(
     scale: float,
     dtype: str,
     late_dv_state: bool,
+    compact: bool,
 ) -> Callable:
     """dq, dk, dv and dg of every chunk in parallel, one block a (batch, head, chunk).
 
@@ -161,6 +162,8 @@ def _gla_bwd_chunk_kernel(
 
     With *late_dv_state*, dv's state term follows v's last product, so the decayed keys take
     v's place in shared memory; every accumulator takes the same products in the same order.
+    With *compact*, factors are recomputed and state operands reloaded to shorten their
+    shared-memory lifetimes without changing any accumulator's product order.
     """
     accum_dtype = "float32"
     # Every product into an accumulator must run on one instruction type.
@@ -191,6 +194,33 @@ def _gla_bwd_chunk_kernel(
             T.gemm(k_decay_s, dh_s, dv_acc)
             T.copy(dv_acc, dv[i_b, start : start + chunk_size, i_h, :])
 
+        @T.macro
+        def make_factors(q, k, g_cumsum_s, factor, q_hi_s, q_lo_s, k_hi_s, k_lo_s, i_b, i_h, start):
+            for i_t, i_k in T.Parallel(chunk_size, dim_k):
+                factor[i_t, i_k] = T.cast(q[i_b, start + i_t, i_h, i_k], accum_dtype) * T.exp2(
+                    g_cumsum_s[i_t, i_k] * LOG2E
+                )
+            for i_t, i_k in T.Parallel(chunk_size, dim_k):
+                q_hi_s[i_t, i_k] = T.cast(factor[i_t, i_k], factor_dtype)
+                if paired:
+                    q_lo_s[i_t, i_k] = T.cast(
+                        factor[i_t, i_k]
+                        - T.cast(T.cast(factor[i_t, i_k], factor_dtype), accum_dtype),
+                        factor_dtype,
+                    )
+            for i_t, i_k in T.Parallel(chunk_size, dim_k):
+                factor[i_t, i_k] = T.cast(k[i_b, start + i_t, i_h, i_k], accum_dtype) * T.exp2(
+                    -g_cumsum_s[i_t, i_k] * LOG2E
+                )
+            for i_t, i_k in T.Parallel(chunk_size, dim_k):
+                k_hi_s[i_t, i_k] = T.cast(factor[i_t, i_k], factor_dtype)
+                if paired:
+                    k_lo_s[i_t, i_k] = T.cast(
+                        factor[i_t, i_k]
+                        - T.cast(T.cast(factor[i_t, i_k], factor_dtype), accum_dtype),
+                        factor_dtype,
+                    )
+
         @T.prim_func
         def _main(
             q: T.Tensor([batch, seq_len, heads, dim_k], dtype),
@@ -216,6 +246,9 @@ def _gla_bwd_chunk_kernel(
                 v_s = T.alloc_shared([chunk_size, dim_v], dtype)
                 do_s = T.alloc_shared([chunk_size, dim_v], dtype)
                 dh_s = T.alloc_shared([dim_k, dim_v], dtype)
+                # Inactive aliases rename the original buffers in TileLang and can change
+                # synchronization insertion. Keep their original bindings in the old schedule.
+                initial_dh_s = T.alloc_shared([dim_k, dim_v], dtype) if compact else None
                 da_hi_s = T.alloc_shared([chunk_size, chunk_size], factor_dtype)
                 da_lo_s = T.alloc_shared([chunk_size, chunk_size], factor_dtype)
                 k_decay_s = T.alloc_shared([chunk_size, dim_k], dtype)
@@ -223,6 +256,19 @@ def _gla_bwd_chunk_kernel(
                 q_lo_s = T.alloc_shared([chunk_size, dim_k], factor_dtype)
                 k_hi_s = T.alloc_shared([chunk_size, dim_k], factor_dtype)
                 k_lo_s = T.alloc_shared([chunk_size, dim_k], factor_dtype)
+                initial_q_hi_s = (
+                    T.alloc_shared([chunk_size, dim_k], factor_dtype) if compact else None
+                )
+                initial_q_lo_s = (
+                    T.alloc_shared([chunk_size, dim_k], factor_dtype) if compact else None
+                )
+                initial_k_hi_s = (
+                    T.alloc_shared([chunk_size, dim_k], factor_dtype) if compact else None
+                )
+                initial_k_lo_s = (
+                    T.alloc_shared([chunk_size, dim_k], factor_dtype) if compact else None
+                )
+                initial_do_s = T.alloc_shared([chunk_size, dim_v], dtype) if compact else None
                 a_s = T.alloc_shared([chunk_size, chunk_size], dtype)
                 h_s = T.alloc_shared([dim_k, dim_v], dtype)
                 tail_s = T.alloc_shared([dim_k], accum_dtype)
@@ -242,7 +288,8 @@ def _gla_bwd_chunk_kernel(
                 T.reduce_max(spans, span, dim=0)
 
                 T.copy(v[i_b, start : start + chunk_size, i_h, :], v_s, disable_tma=True)
-                T.copy(do[i_b, start : start + chunk_size, i_h, :], do_s, disable_tma=True)
+                if not compact:
+                    T.copy(do[i_b, start : start + chunk_size, i_h, :], do_s, disable_tma=True)
 
                 # exp(G_last) sum_v S D, 32 state columns at a time: a wider fragment has no
                 # register layout at some (dim_k, dim_v).
@@ -266,34 +313,38 @@ def _gla_bwd_chunk_kernel(
                 factor = T.alloc_fragment([chunk_size, dim_k], accum_dtype)
                 T.clear(a)
                 if span[0] < BF16_SPLIT_EXP2_SPAN:
-                    for i_t, i_k in T.Parallel(chunk_size, dim_k):
-                        factor[i_t, i_k] = T.cast(
-                            q[i_b, start + i_t, i_h, i_k], accum_dtype
-                        ) * T.exp2(g_cumsum_s[i_t, i_k] * LOG2E)
-                    for i_t, i_k in T.Parallel(chunk_size, dim_k):
-                        q_hi_s[i_t, i_k] = T.cast(factor[i_t, i_k], factor_dtype)
-                        if paired:
-                            q_lo_s[i_t, i_k] = T.cast(
-                                factor[i_t, i_k]
-                                - T.cast(T.cast(factor[i_t, i_k], factor_dtype), accum_dtype),
-                                factor_dtype,
-                            )
-                    for i_t, i_k in T.Parallel(chunk_size, dim_k):
-                        factor[i_t, i_k] = T.cast(
-                            k[i_b, start + i_t, i_h, i_k], accum_dtype
-                        ) * T.exp2(-g_cumsum_s[i_t, i_k] * LOG2E)
-                    for i_t, i_k in T.Parallel(chunk_size, dim_k):
-                        k_hi_s[i_t, i_k] = T.cast(factor[i_t, i_k], factor_dtype)
-                        if paired:
-                            k_lo_s[i_t, i_k] = T.cast(
-                                factor[i_t, i_k]
-                                - T.cast(T.cast(factor[i_t, i_k], factor_dtype), accum_dtype),
-                                factor_dtype,
-                            )
-                    T.gemm(q_hi_s, k_hi_s, a, transpose_B=True)
+                    make_factors(
+                        q,
+                        k,
+                        g_cumsum_s,
+                        factor,
+                        (initial_q_hi_s if compact else q_hi_s),
+                        (initial_q_lo_s if compact else q_lo_s),
+                        (initial_k_hi_s if compact else k_hi_s),
+                        (initial_k_lo_s if compact else k_lo_s),
+                        i_b,
+                        i_h,
+                        start,
+                    )
+                    T.gemm(
+                        (initial_q_hi_s if compact else q_hi_s),
+                        (initial_k_hi_s if compact else k_hi_s),
+                        a,
+                        transpose_B=True,
+                    )
                     if paired:
-                        T.gemm(q_hi_s, k_lo_s, a, transpose_B=True)
-                        T.gemm(q_lo_s, k_hi_s, a, transpose_B=True)
+                        T.gemm(
+                            (initial_q_hi_s if compact else q_hi_s),
+                            (initial_k_lo_s if compact else k_lo_s),
+                            a,
+                            transpose_B=True,
+                        )
+                        T.gemm(
+                            (initial_q_lo_s if compact else q_lo_s),
+                            (initial_k_hi_s if compact else k_hi_s),
+                            a,
+                            transpose_B=True,
+                        )
                 else:
                     for i_k in T.Serial(dim_k):
                         for i_t, i_j in T.Parallel(chunk_size, chunk_size):
@@ -309,16 +360,20 @@ def _gla_bwd_chunk_kernel(
 
                 dv_acc = T.alloc_fragment([chunk_size, dim_v], accum_dtype)
                 T.clear(dv_acc)
-                T.gemm(a_s, do_s, dv_acc, transpose_A=True)
+                if not compact:
+                    T.gemm(a_s, do_s, dv_acc, transpose_A=True)
                 for i_k, i_v in T.Parallel(dim_k, dim_v):
-                    dh_s[i_k, i_v] = T.cast(dh[i_b, i_c + 1, i_h, i_k, i_v], dtype)
-                if not late_dv_state:
+                    (initial_dh_s if compact else dh_s)[i_k, i_v] = T.cast(
+                        dh[i_b, i_c + 1, i_h, i_k, i_v], dtype
+                    )
+
+                if not compact and not late_dv_state:
                     dv_state_term(k, dv, g_cumsum_s, k_decay_s, dh_s, dv_acc, i_b, i_h, start)
 
                 # The state gradient's share in dk.
                 dk_state = T.alloc_fragment([chunk_size, dim_k], accum_dtype)
                 T.clear(dk_state)
-                T.gemm(v_s, dh_s, dk_state, transpose_B=True)
+                T.gemm(v_s, (initial_dh_s if compact else dh_s), dk_state, transpose_B=True)
                 for i_t, i_k in T.Parallel(chunk_size, dim_k):
                     dk_state[i_t, i_k] = dk_state[i_t, i_k] * T.exp2(
                         (g_cumsum_s[chunk_size - 1, i_k] - g_cumsum_s[i_t, i_k]) * LOG2E
@@ -327,10 +382,19 @@ def _gla_bwd_chunk_kernel(
                 # dA as a bfloat16 pair.
                 da = T.alloc_fragment([chunk_size, chunk_size], accum_dtype)
                 T.clear(da)
-                T.gemm(do_s, v_s, da, transpose_B=True)
+                if compact:
+                    T.copy(
+                        do[i_b, start : start + chunk_size, i_h, :], initial_do_s, disable_tma=True
+                    )
+                T.gemm((initial_do_s if compact else do_s), v_s, da, transpose_B=True)
+                if compact:
+                    T.gemm(a_s, initial_do_s, dv_acc, transpose_A=True)
                 for i_t, i_j in T.Parallel(chunk_size, chunk_size):
                     da[i_t, i_j] = T.if_then_else(i_j <= i_t, da[i_t, i_j] * scale, 0.0)
-                if late_dv_state:
+                if compact:
+                    for i_k, i_v in T.Parallel(dim_k, dim_v):
+                        dh_s[i_k, i_v] = T.cast(dh[i_b, i_c + 1, i_h, i_k, i_v], dtype)
+                if compact or late_dv_state:
                     # v's last product is behind, so the decayed keys take its place.
                     dv_state_term(k, dv, g_cumsum_s, k_decay_s, dh_s, dv_acc, i_b, i_h, start)
                 for i_t, i_j in T.Parallel(chunk_size, chunk_size):
@@ -341,8 +405,13 @@ def _gla_bwd_chunk_kernel(
                             factor_dtype,
                         )
 
-                for i_k, i_v in T.Parallel(dim_k, dim_v):
-                    h_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v] * scale, dtype)
+                if compact and span[0] < BF16_SPLIT_EXP2_SPAN:
+                    make_factors(
+                        q, k, g_cumsum_s, factor, q_hi_s, q_lo_s, k_hi_s, k_lo_s, i_b, i_h, start
+                    )
+                if not compact:
+                    for i_k, i_v in T.Parallel(dim_k, dim_v):
+                        h_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v] * scale, dtype)
                 dq_acc = T.alloc_fragment([chunk_size, dim_k], accum_dtype)
                 T.clear(dq_acc)
                 if span[0] < BF16_SPLIT_EXP2_SPAN:
@@ -350,6 +419,11 @@ def _gla_bwd_chunk_kernel(
                     if paired:
                         T.gemm(da_hi_s, k_lo_s, dq_acc)
                         T.gemm(da_lo_s, k_hi_s, dq_acc)
+                if compact:
+                    for i_k, i_v in T.Parallel(dim_k, dim_v):
+                        h_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v] * scale, dtype)
+                if compact:
+                    T.copy(do[i_b, start : start + chunk_size, i_h, :], do_s, disable_tma=True)
                 T.gemm(do_s, h_s, dq_acc, transpose_B=True)
                 for i_t, i_k in T.Parallel(chunk_size, dim_k):
                     dq_acc[i_t, i_k] = dq_acc[i_t, i_k] * T.exp2(g_cumsum_s[i_t, i_k] * LOG2E)
@@ -432,9 +506,9 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     def refusal(cls, call: GLAChunkCall) -> str | None:
         """Why no program serves this call, or ``None``.
 
-        Refuses a call whose chunk pass needs more shared memory than the device gives. It
-        reads a lower bound, so a call above it that TileLang cannot place still fails at
-        launch.
+        Refuses a call whose chunk pass needs more shared memory than the device gives. The original
+        schedules use a lower bound; the compact schedule reserves placement space as
+        well, and is enabled only at its validated 99 KiB budget.
         """
         reason = head_count_refusal(call.heads) or cls.region_refusal(
             call.dim_k, call.dim_v, call.chunk_size, call.dtype, call.arch
@@ -443,11 +517,13 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
             return reason
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
         late = cls._late_dv_state(c, k, v, elem, call.smem_budget)
-        need = cls._shared_bytes(c, k, v, elem, late)
+        compact = cls._compact(c, k, v, elem, call.smem_budget)
+        need = cls._shared_bytes(c, k, v, elem, late, compact)
         if need <= call.smem_budget:
             return None
+        requirement = "reserves" if compact else "needs at least"
         return (
-            f"needs at least {need} bytes of shared memory per block at chunk {c}, head dims "
+            f"{requirement} {need} bytes of shared memory per block at chunk {c}, head dims "
             f"{k} / {v} in {call.dtype}; the device gives {call.smem_budget}"
         )
 
@@ -539,8 +615,10 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         return None
 
     @staticmethod
-    def _shared_bytes(c: int, k: int, v: int, elem: int, late_dv_state: bool = False) -> int:
-        """Lower bound on the chunk pass's shared memory at chunk *c*, head dims *k* / *v*.
+    def _shared_bytes(
+        c: int, k: int, v: int, elem: int, late_dv_state: bool = False, compact: bool = False
+    ) -> int:
+        """Shared-memory admission estimate at chunk *c*, head dims *k* / *v*.
 
         The fp32 gate cumsum, do and the factor tiles (two pairs of bfloat16 tiles, or two
         float32 tiles) stay live from the factors to dq's product. The default order adds v
@@ -549,6 +627,29 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         state gradient, the decayed keys meet the cast state gradient, and the cast h meets
         the dA pair. Smaller buffers are left out. The update pass and the walk need less.
         """
+        if compact:
+            # Factors are rebuilt after the state-gradient products. The initial dh and
+            # do tiles end before their reloads; k factors end before the h product.
+            ck, cv, kv = c * k, c * v * elem, k * v * elem
+            peak = (
+                4 * ck
+                + 4 * k
+                + max(
+                    8 * ck + c * c * elem,
+                    cv + kv + c * c * elem,
+                    2 * cv + c * c * elem,
+                    kv + ck * elem,
+                    8 * ck + 4 * c * c,
+                    4 * ck + 4 * c * c + kv + cv,
+                    # The paired GEMMs keep these operands live through dv's state term.
+                    2 * cv + c * c * elem + kv + ck * elem if elem == 2 else 0,
+                )
+            )
+            # The peak already includes the tail. Rounding to whole gate tiles and
+            # the extra 4*k together are the placement allowance calibrated on the
+            # fifteen layouts in the 99 KiB region, not a bound for other budgets.
+            tile = 4 * ck
+            return ((peak + tile - 1) // tile) * tile + 4 * k
         if not late_dv_state:
             return c * k * 12 + 2 * c * v * elem + max(c * c * 4, c * c * elem, (c + v) * k * elem)
         cv, kv = c * v * elem, k * v * elem
@@ -563,6 +664,12 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         place. With mixed tile sizes TileLang can need more than the late bound.
         """
         return bool(budget) and c == k == v and cls._shared_bytes(c, k, v, elem) > budget
+
+    @classmethod
+    def _compact(cls, c: int, k: int, v: int, elem: int, budget: int) -> bool:
+        """Reload operands only in the validated 99 KiB region when the old order fails."""
+        late = cls._late_dv_state(c, k, v, elem, budget)
+        return budget == 99 * 1024 and cls._shared_bytes(c, k, v, elem, late) > budget
 
     @property
     def default_config(self) -> dict:
@@ -585,6 +692,9 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         late = self._late_dv_state(
             self.chunk_size, self.dim_k, self.dim_v, self.dtype.itemsize, target.smem_budget
         )
+        compact = self._compact(
+            self.chunk_size, self.dim_k, self.dim_v, self.dtype.itemsize, target.smem_budget
+        )
         rows, stages, walk_threads = state_walk_plan(
             self.batch,
             self.heads,
@@ -600,7 +710,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
                 gla_state_walk_kernel(*shape, rows, True, reverse=True)(stages, walk_threads)
             ),
             CompiledProgram(
-                _gla_bwd_chunk_kernel(*shape, self.scale, self.dtype_name, late)(threads)
+                _gla_bwd_chunk_kernel(*shape, self.scale, self.dtype_name, late, compact)(threads)
             ),
         )
 
