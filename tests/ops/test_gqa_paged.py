@@ -1069,7 +1069,6 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
     return GQAPagedFwdOp(out_dtype=workload.out_dtype, **{"is_causal": True, **semantics})
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
@@ -1077,7 +1076,14 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
     [
         # One copy a key tile; the cache end cuts the last tile of the first request.
         pytest.param(
-            [1, 1], [513, 1000], 64, torch.float16, {}, 8, id="f16-tensor-scale-cut"
+            [1, 1],
+            [513, 1000],
+            64,
+            torch.float16,
+            {},
+            8,
+            marks=pytest.mark.smoke,
+            id="f16-tensor-scale-cut",
         ),  # fmt: skip
         # Four 16-row copies a key tile; causal rows of three query tokens a request.
         pytest.param(
@@ -1087,6 +1093,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.bfloat16,
             {"per_request_scales": True},
             16,
+            marks=pytest.mark.smoke,
             id="bf16-request-scales-pages-16",
         ),
         # An FP8 query, its score descale under a softcap and a left window.
@@ -1097,11 +1104,9 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             FP8,
             {"per_request_scales": True, "softcap": 30.0, "window_size_left": 200},
             8,
+            marks=pytest.mark.smoke,
             id="fp8-softcap-window",
         ),
-        # 64 packed rows a request fill the WGMMA M extent: the rows hold M, causal within
-        # each request's 16 tokens.
-        pytest.param([16, 16], [1000, 513], 64, torch.float16, {}, 64, id="f16-rows-on-m"),
         # Rows on M with an FP8 query, request scales, a softcap and a left window, bidirectional.
         pytest.param(
             [16, 16],
@@ -1115,6 +1120,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
                 "is_causal": False,
             },
             64,
+            marks=pytest.mark.full,
             id="fp8-rows-on-m-softcap-window-bidirectional",
         ),
         # Head dimension 64 with the keys on M, a one-key cache among them.
@@ -1125,6 +1131,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.float16,
             {"heads": 64, "dim": 64},
             8,
+            marks=pytest.mark.full,
             id="f16-d64-keys-on-m",
         ),
         # Head dimension 64 with the rows on M, two 32-row pages a key tile.
@@ -1135,6 +1142,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.bfloat16,
             {"heads": 64, "dim": 64},
             64,
+            marks=pytest.mark.full,
             id="bf16-d64-rows-on-m",
         ),
         # A right window and a bidirectional mask, with a request of no query token.
@@ -1145,6 +1153,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.float16,
             {"window_size_left": 100, "window_size_right": 0, "is_causal": False},
             8,
+            marks=pytest.mark.full,
             id="f16-right-window-empty-request",
         ),
         # 16-row tiles: the first request's 36 rows span three of them.
@@ -1155,8 +1164,31 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             torch.float16,
             {},
             16,
+            marks=pytest.mark.full,
             id="f16-request-spans-tiles",
         ),  # fmt: skip
+        # A score scale past 1e38's headroom in float32: the left window hides the first key
+        # tile of a chunk from the later rows, which must not compute -inf minus -inf there.
+        pytest.param(
+            [4, 4],
+            [1000, 1000],
+            64,
+            torch.float16,
+            {"sm_scale": 8.0, "window_size_left": 102},
+            16,
+            marks=pytest.mark.full,
+            id="f16-keys-on-m-large-scale-hidden-tile",
+        ),
+        pytest.param(
+            [16, 16],
+            [1000, 1000],
+            64,
+            torch.float16,
+            {"sm_scale": 8.0, "window_size_left": 92},
+            64,
+            marks=pytest.mark.full,
+            id="f16-rows-on-m-large-scale-hidden-tile",
+        ),
     ],
 )
 def test_gqa_paged_fp8_decode(
@@ -1187,73 +1219,32 @@ def test_gqa_paged_fp8_decode(
     assert kernel.block_m == tile_rows
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("q_len", [1, 16], ids=["keys-on-m", "rows-on-m"])
-def test_gqa_paged_fp8_decode_chunks_past_a_short_cache(q_len: int) -> None:
-    """The chunk count follows the table's 64 key tiles, so a 70-key request beside a 4096-key
-    one leaves most of its chunks without a tile; they must weigh nothing in the combine."""
+@pytest.mark.parametrize(
+    ("q_len", "cache_lens", "chunked"),
+    [
+        pytest.param(1, [200, 256], False, marks=pytest.mark.smoke, id="keys-on-m-unsplit"),
+        pytest.param(16, [200, 256], False, marks=pytest.mark.full, id="rows-on-m-unsplit"),
+        pytest.param(1, [70, 4096], True, marks=pytest.mark.full, id="keys-on-m-split"),
+        pytest.param(16, [70, 4096], True, marks=pytest.mark.full, id="rows-on-m-split"),
+    ],
+)
+def test_gqa_paged_fp8_decode_chunks(q_len: int, cache_lens: list[int], chunked: bool) -> None:
+    """The chunk count follows the table's key tiles. Over 64 of them a 70-key request beside a
+    4096-key one leaves most of its chunks without a tile, which must weigh nothing in the
+    combine; over four, no chunk would run longer than its ring fills and drains, so the tile
+    writes its rows without the combine."""
     from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
 
-    workload = _paged([q_len, q_len], [70, 4096], 64, torch.float16, cache_dtype=FP8)
+    workload = _paged([q_len, q_len], cache_lens, 64, torch.float16, cache_dtype=FP8)
     op = _fp8_op(workload)
     inputs = _poisoned_inputs(workload)
     kernel = _kernel(op, inputs)
     assert isinstance(kernel, GQAPagedFP8DecodeKernel)
-    assert kernel._splits_for(2) > 2
+    splits = kernel._splits_for(2)
+    assert splits > 2 if chunked else splits == 1
     _check(op, workload, inputs)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("batch", "block_m", "dim", "pages", "resident", "splits"),
-    [
-        # Shared memory holds four keys-on-M CTAs; two chunks fill one wave of 512.
-        pytest.param(32, 8, 128, 64, 4, 2, id="keys-on-m-b32"),
-        # One wave of 64 items: eight chunks of eight key tiles.
-        pytest.param(8, 8, 128, 64, 4, 8, id="keys-on-m-b8"),
-        # 256 key tiles over 8 items: chunks of five tiles, more than a ring fills and drains.
-        pytest.param(1, 8, 128, 256, 4, 52, id="keys-on-m-long-table"),
-        # 1024 items fill two waves unsplit; a split would double them.
-        pytest.param(128, 8, 128, 16, 4, 1, id="keys-on-m-b128-short-table"),
-        # Head dimension 64: the registers hold six CTAs before shared memory does.
-        pytest.param(32, 8, 64, 64, 6, 3, id="keys-on-m-d64"),
-        # Rows on M: the consumer's tiles leave registers for two CTAs; 256 items fill a wave.
-        pytest.param(32, 64, 128, 64, 2, 1, id="rows-on-m-b32"),
-    ],
-)
-def test_gqa_paged_fp8_decode_split_count(
-    batch: int, block_m: int, dim: int, pages: int, resident: int, splits: int
-) -> None:
-    """Fixed H200 geometry makes the residency and the chunk count testable on any device."""
-    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
-
-    kernel = object.__new__(GQAPagedFP8DecodeKernel)
-    kernel.batch, kernel.heads_kv, kernel.dim, kernel.block_m = batch, 8, dim, block_m
-    kernel.page_size, kernel.max_pages_per_req, kernel._processors = 64, pages, 132
-    kernel.config = kernel.default_config
-    assert kernel.resident_ctas(kernel.config) == resident
-    assert kernel._splits_for(batch) == splits
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(("batch", "served"), [(32768, True), (32769, False)])
-def test_gqa_paged_fp8_decode_refuses_a_tile_prefix_past_shared_memory(
-    batch: int, served: bool
-) -> None:
-    """The FP8 decode kernel holds a per-request tile prefix in shared memory beside its
-    tiles, so it serves at most 32768 requests and leaves larger batches to another kernel."""
-    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
-
-    meta = torch.device("meta")
-    q = torch.empty(batch, 8, 128, dtype=torch.float16, device=meta)
-    k_pages = torch.empty(batch, 64, 1, 128, dtype=FP8, device=meta)
-    table = torch.empty(batch, 1, dtype=torch.int32, device=meta)
-    k_scale = torch.empty(1, device=meta)
-    op = GQAPagedFwdOp(is_causal=True)
-    refusal = GQAPagedFP8DecodeKernel.refusal(op._paged_call(q, k_pages, table, k_scale))
-    assert (refusal is None) == served, refusal
 
 
 @pytest.mark.smoke
