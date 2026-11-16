@@ -86,7 +86,8 @@ template <int ROWS, int THREADS, typename OutT>
 TL_DEVICE void fp8_tile_to_wide_sw128_prefetched(const void* src, void* dst,
                                                  int t, int valid_rows) {
   static_assert(sizeof(OutT) == 2, "the converted tile is 16-bit");
-  static_assert(ROWS % (THREADS / 8) == 0, "every thread converts as many rows");
+  static_assert(ROWS % (THREADS / 8) == 0,
+                "every thread converts as many rows");
   constexpr int STEP = THREADS / 8;
   constexpr int ITERS = ROWS / STEP;
   const char* in = static_cast<const char*>(src);
@@ -96,22 +97,24 @@ TL_DEVICE void fp8_tile_to_wide_sw128_prefetched(const void* src, void* dst,
 #pragma unroll
   for (int k = 0; k < ITERS; ++k) {
     int const j = (t >> 3) + k * STEP;
-    raw[k] = *reinterpret_cast<const uint4*>(in + (j >> 3) * 1024 + (j & 7) * 128 +
-                                             ((c ^ (j & 7)) << 4));
+    raw[k] = *reinterpret_cast<const uint4*>(
+        in + (j >> 3) * 1024 + (j & 7) * 128 + ((c ^ (j & 7)) << 4));
   }
 #pragma unroll
   for (int k = 0; k < ITERS; ++k) {
     int const j = (t >> 3) + k * STEP;
     uint4 const r = j < valid_rows ? raw[k] : make_uint4(0, 0, 0, 0);
-    uint4 const lo_words = make_uint4(
-        fp8x2_to_wide<OutT>(r.x), fp8x2_to_wide<OutT>(r.x >> 16),
-        fp8x2_to_wide<OutT>(r.y), fp8x2_to_wide<OutT>(r.y >> 16));
-    uint4 const hi_words = make_uint4(
-        fp8x2_to_wide<OutT>(r.z), fp8x2_to_wide<OutT>(r.z >> 16),
-        fp8x2_to_wide<OutT>(r.w), fp8x2_to_wide<OutT>(r.w >> 16));
+    uint4 const lo_words =
+        make_uint4(fp8x2_to_wide<OutT>(r.x), fp8x2_to_wide<OutT>(r.x >> 16),
+                   fp8x2_to_wide<OutT>(r.y), fp8x2_to_wide<OutT>(r.y >> 16));
+    uint4 const hi_words =
+        make_uint4(fp8x2_to_wide<OutT>(r.z), fp8x2_to_wide<OutT>(r.z >> 16),
+                   fp8x2_to_wide<OutT>(r.w), fp8x2_to_wide<OutT>(r.w >> 16));
     char* const dst_row = half_out + (j >> 3) * 1024 + (j & 7) * 128;
-    *reinterpret_cast<uint4*>(dst_row + (((2 * (c & 3)) ^ (j & 7)) << 4)) = lo_words;
-    *reinterpret_cast<uint4*>(dst_row + (((2 * (c & 3) + 1) ^ (j & 7)) << 4)) = hi_words;
+    *reinterpret_cast<uint4*>(dst_row + (((2 * (c & 3)) ^ (j & 7)) << 4)) =
+        lo_words;
+    *reinterpret_cast<uint4*>(dst_row + (((2 * (c & 3) + 1) ^ (j & 7)) << 4)) =
+        hi_words;
   }
 }
 
