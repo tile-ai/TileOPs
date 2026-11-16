@@ -571,15 +571,15 @@ The checks:
 
 **<a id="t-members"></a>Table 20** Argument members
 
-| No. | Member         | Value                         | Kind where narrowed to it        |
-| --- | -------------- | ----------------------------- | -------------------------------- |
-| 1   | `Tensor`       | a tensor                      | its declaration's `Tensor[T, s]` |
-| 2   | `list[Tensor]` | a list or tuple of tensors    | a tensor sequence                |
-| 3   | `int`          | an `int` that is not a `bool` | `Int`, a call-time scalar        |
-| 4   | `float`        | a `float`                     | a value, a call-time scalar      |
-| 5   | `Number`       | an `int` or `float`           | a value, a call-time scalar      |
-| 6   | `bool`         | a `bool`                      | `Bool`, a call-time scalar       |
-| 7   | `None`         | `None`                        | `None`                           |
+| No. | Member         | Value                                                                                  | Kind where narrowed to it        |
+| --- | -------------- | -------------------------------------------------------------------------------------- | -------------------------------- |
+| 1   | `Tensor`       | a tensor                                                                               | its declaration's `Tensor[T, s]` |
+| 2   | `list[Tensor]` | a list or tuple of tensors                                                             | a tensor sequence                |
+| 3   | `int`          | an `int` that is not a `bool`                                                          | `Int`, a call-time scalar        |
+| 4   | `float`        | a `float`, or an `int` that is not a `bool` where no `int` or `Number` member takes it | a value, a call-time scalar      |
+| 5   | `Number`       | an `int` or `float`                                                                    | a value, a call-time scalar      |
+| 6   | `bool`         | a `bool`                                                                               | `Bool`, a call-time scalar       |
+| 7   | `None`         | `None`                                                                                 | `None`                           |
 
 **<a id="t-slots"></a>Table 21** Operator slots of an input
 
