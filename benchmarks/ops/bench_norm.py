@@ -75,6 +75,19 @@ def _vllm_gemma_rms_norm(weight: torch.Tensor, eps: float):
     return compiled_reference(layer.forward_native)
 
 
+def _hf_qwen3_5_rms_norm(weight: torch.Tensor, eps: float):
+    """Hugging Face's ``Qwen3_5RMSNorm`` holding *weight*, compiled: it forms ``1 + weight`` in
+    float32 and rounds once."""
+    layer = (
+        baseline_module("transformers.models.qwen3_5.modeling_qwen3_5", "transformers")
+        .Qwen3_5RMSNorm(weight.numel(), eps=eps)
+        .to(weight.device)
+        .requires_grad_(False)
+    )
+    layer.weight.data = weight.reshape(-1).clone()
+    return compiled_reference(layer)
+
+
 def _in_place_fused_add(fn, inputs: tuple, eps: float) -> bench.Implementation:
     """A kernel writing the normalized row into ``x`` and the sum into ``residual``."""
 
@@ -104,11 +117,13 @@ def test_rms_norm_bench(case) -> None:
         flaggems = flaggems_op("rms_norm")
         quack = quack_op("rmsnorm")
         vllm = _vllm_gemma_rms_norm(weight, eps)
+        hf = _hf_qwen3_5_rms_norm(weight, eps)
         library = {
             FLAGGEMS_TAG: lambda x, w: flaggems(x, [n], scale, eps),
             FLASHINFER_TAG: lambda x, w: gemma(x.reshape(-1, n), w.reshape(n), eps).reshape_as(x),
             QUACK_TAG: lambda x, w: quack(x.reshape(-1, n), scale, eps=eps).reshape_as(x),
             VLLM_TAG: lambda x, w: vllm(x),
+            "transformers": lambda x, w: hf(x),
         }
     elif not case.params["zero_centered"]:
         if weight is not None and x.ndim == 2:
