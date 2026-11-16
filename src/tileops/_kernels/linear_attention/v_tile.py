@@ -4,10 +4,13 @@ A V tile below what the gemm accepts is a configuration error to reject
 eagerly, not to clamp.
 """
 
+from collections.abc import Sequence
+
 import tilelang.language as T
 
 __all__ = [
     "GEMM_MIN_N",
+    "fit_launches",
     "gemm_threads",
     "min_gemm_n",
     "min_gemm_n_threads",
@@ -74,6 +77,17 @@ def gemm_threads(threads: int, wgmma: bool, *outputs: tuple[int, int]) -> int:
             return threads
         threads //= 2
     return threads
+
+
+def fit_launches(
+    configs: Sequence[dict[str, int]], wgmma: bool, *outputs: tuple[int, int]
+) -> tuple[dict[str, int], ...]:
+    """*configs* with each launch narrowed by ``gemm_threads`` over *outputs*, deduplicated."""
+    fitted = [
+        {**config, "threads": gemm_threads(config["threads"], wgmma, *outputs)}
+        for config in configs
+    ]
+    return tuple(config for i, config in enumerate(fitted) if config not in fitted[:i])
 
 
 def resolve_block_v(dim_v: int, block_v: int) -> int:

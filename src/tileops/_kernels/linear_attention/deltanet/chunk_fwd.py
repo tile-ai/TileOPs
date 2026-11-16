@@ -509,12 +509,12 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         if self._walk:
             return self._walk_default_config_for(
                 budget,
-                self.chunk_size,
                 self.build_target.sm_count,
                 self.batch * self.head,
                 self.dim_k,
                 self.dim_v,
                 elem,
+                self.chunk_size,
                 self.wgmma,
             )
         return self._default_config_for(
@@ -532,7 +532,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             h_block_v = min((b for b in h_block_v_candidates(v) if b), default=h_block_v)
         width = resolve_block_v(v, h_block_v)
         h_num_stages = 2 if cls._state_shared_bytes(c, k, width, elem, 2) <= budget else 1
-        fused_configs, output_configs = chunk_gemm_configs(c, k, v, wgmma)
+        fused_configs, output_configs = chunk_gemm_configs(c, v, k, wgmma)
         return {
             "fused_num_stages": 2,
             "fused_threads": max(config["threads"] for config in fused_configs),
@@ -546,12 +546,12 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     def _walk_default_config_for(
         cls,
         budget: int,
-        chunk_size: int,
         sm_count: int,
         heads: int,
         dim_k: int,
         dim_v: int,
         elem: int,
+        chunk_size: int,
         wgmma: bool,
     ) -> dict:
         """The state walk's config at *budget* bytes of shared memory per block.
@@ -567,13 +567,13 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         block_v = next((b for b in widths if heads * (dim_v // b) <= sm_count), widths[-1])
         two = cls._walk_shared_bytes(dim_k, block_v, elem, 2) <= budget
         fused_configs, output_configs = chunk_gemm_configs(
-            chunk_size, dim_k, dim_v, wgmma, walk=True
+            chunk_size, dim_v, dim_k, wgmma, walk=True
         )
         return {
             "fused_num_stages": 2,
             "fused_threads": max(config["threads"] for config in fused_configs),
             "h_num_stages": 2 if two else 1,
-            "h_threads": walk_threads(dim_k, block_v, wgmma),
+            "h_threads": walk_threads(block_v, dim_k, wgmma),
             "h_block_v": block_v,
             "o_threads": max(config["threads"] for config in output_configs),
         }
@@ -583,7 +583,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         budget = self.build_target.smem_budget
         elem = getattr(torch, self.dtype_str).itemsize
         return [
-            {"block_v": b, "num_stages": stages, "threads": walk_threads(self.dim_k, b, self.wgmma)}
+            {"block_v": b, "num_stages": stages, "threads": walk_threads(b, self.dim_k, self.wgmma)}
             for b in walk_block_v_options(self.dim_v)
             for stages in (1, 2)
             if stages == 1 or self._walk_shared_bytes(self.dim_k, b, elem, 2) <= budget
@@ -596,7 +596,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
                 self.dim_v, self.chunk_size, self.dim_k, self.wgmma
             )
         fused_configs, output_configs = chunk_gemm_configs(
-            self.chunk_size, self.dim_k, self.dim_v, self.wgmma, walk=True
+            self.chunk_size, self.dim_v, self.dim_k, self.wgmma, walk=True
         )
         return [
             {
@@ -645,7 +645,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         )
         default = self.default_config
         fused_configs, output_configs = chunk_gemm_configs(
-            self.chunk_size, self.dim_k, self.dim_v, self.wgmma, walk=True
+            self.chunk_size, self.dim_v, self.dim_k, self.wgmma, walk=True
         )
 
         def tune(jit, configs, untuned):

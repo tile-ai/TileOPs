@@ -13,7 +13,7 @@ from typing import Any
 
 from tileops._kernels.autotune import TUNING_FATAL
 from tileops._kernels.linear_attention.v_tile import (
-    gemm_threads,
+    fit_launches,
     min_gemm_n_threads,
     resolve_block_v,
 )
@@ -42,34 +42,23 @@ OUTPUT_CONFIGS: tuple[dict[str, int], ...] = tuple(
 )
 
 
-def _fitted(
-    configs: Sequence[dict[str, int]], wgmma: bool, *outputs: tuple[int, int]
-) -> tuple[dict[str, int], ...]:
-    """*configs* with each launch narrowed by ``gemm_threads`` over *outputs*, deduplicated."""
-    fitted = [
-        {**config, "threads": gemm_threads(config["threads"], wgmma, *outputs)}
-        for config in configs
-    ]
-    return tuple(config for i, config in enumerate(fitted) if config not in fitted[:i])
-
-
 def chunk_gemm_configs(
-    chunk_size: int, dim_k: int, dim_v: int, wgmma: bool, walk: bool = False
+    chunk_size: int, dim_v: int, dim_k: int, wgmma: bool, walk: bool = False
 ) -> tuple[tuple[dict[str, int], ...], tuple[dict[str, int], ...]]:
     """Preparation and output launches, each narrowed by ``gemm_threads`` over its GEMM outputs.
 
     Args:
         chunk_size: Chunk length.
-        dim_k: Key dimension.
         dim_v: Value dimension.
+        dim_k: Key dimension.
         wgmma: Whether the target lowers the gemms to WGMMA.
         walk: Whether the preparation also writes the state walk's operands.
     """
     c, k, v = chunk_size, dim_k, dim_v
     fused = [(c, c), (c, k), (c, v)] + ([(k, k), (k, v)] if walk else [])
     return (
-        _fitted(PIPELINE_CONFIGS, wgmma, *fused),
-        _fitted(OUTPUT_CONFIGS, wgmma, (c, c), (c, v)),
+        fit_launches(PIPELINE_CONFIGS, wgmma, *fused),
+        fit_launches(OUTPUT_CONFIGS, wgmma, (c, c), (c, v)),
     )
 
 
@@ -144,7 +133,7 @@ def _recurrence_configs(
     """Recurrence launches over a V tile: its chunk-by-width and key-by-width products."""
     width = resolve_block_v(dim_v, block_v)
     declared = [{**c, "threads": min_gemm_n_threads(c["threads"], width)} for c in PIPELINE_CONFIGS]
-    return _fitted(declared, wgmma, (chunk_size, width), (dim_k, width))
+    return fit_launches(declared, wgmma, (chunk_size, width), (dim_k, width))
 
 
 def delta_rule_fwd_autotune_configs(
@@ -166,7 +155,7 @@ def delta_rule_fwd_autotune_configs(
         ValueError: if no V-tile width is admissible at *dim_v*. An empty set
             would read as "tunable, with nothing to try".
     """
-    fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_k, dim_v, wgmma)
+    fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_v, dim_k, wgmma)
     return [
         {
             "fused_num_stages": fused["num_stages"],
@@ -318,7 +307,7 @@ def tune_delta_rule_fwd(
     )
     default = kernel.default_config
     fused_configs, output_configs = chunk_gemm_configs(
-        kernel.chunk_size, kernel.dim_k, kernel.dim_v, kernel.wgmma
+        kernel.chunk_size, kernel.dim_v, kernel.dim_k, kernel.wgmma
     )
     candidates = _require_h_block_v_candidates(kernel.dim_v)  # before any sweep
 

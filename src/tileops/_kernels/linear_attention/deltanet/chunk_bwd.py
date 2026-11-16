@@ -26,6 +26,7 @@ from tileops._kernels.linear_attention.call_spec import (
     head_count_refusal,
 )
 from tileops._kernels.linear_attention.v_tile import (
+    fit_launches,
     gemm_threads,
     min_gemm_n,
     min_gemm_n_threads,
@@ -312,7 +313,7 @@ def extent_refusal(call: DeltaNetChunkCall, reduces_v: bool) -> str | None:
     return None
 
 
-def walk_threads(dim_k: int, block_v: int, wgmma: bool) -> int:
+def walk_threads(block_v: int, dim_k: int, wgmma: bool) -> int:
     """A DeltaNet walk's launch over its ``[dim_k, block_v]`` state tile: one warp group at
     most, narrowed by ``gemm_threads`` over the tile's matmul."""
     return gemm_threads(min_gemm_n_threads(128, block_v), wgmma, (dim_k, block_v))
@@ -533,47 +534,33 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         shape = (self.chunk_size, self.dim_k, self.dim_v)
         parallel_best = tune(
             _bwd_parallel_tl(*args),
-            [
-                {"threads": t}
-                for t in sorted(
-                    {
-                        gemm_threads(
-                            min_gemm_n_threads(t, self.dim_v),
-                            self.wgmma,
-                            *_parallel_outputs(*shape),
-                        )
-                        for t in (128, 256)
-                    }
-                )
-            ],
+            fit_launches(
+                [{"threads": min_gemm_n_threads(t, self.dim_v)} for t in (128, 256)],
+                self.wgmma,
+                *_parallel_outputs(*shape),
+            ),
             {"threads": default["parallel_threads"]},
         )
         walk_best = tune(
             _dh_walk_tl(*args),
             [
-                {"block_v": b, "num_stages": ns, "threads": walk_threads(self.dim_k, b, self.wgmma)}
+                {"block_v": b, "num_stages": ns, "threads": walk_threads(b, self.dim_k, self.wgmma)}
                 for b in walk_block_v_options(self.dim_v)
                 for ns in self._walk_stage_options(budget, self.dim_k, b, elem)
             ],
             {
                 "block_v": default["block_v"],
                 "num_stages": default["num_stages"],
-                "threads": walk_threads(self.dim_k, default["block_v"], self.wgmma),
+                "threads": walk_threads(default["block_v"], self.dim_k, self.wgmma),
             },
         )
         wu_best = tune(
             compute_w_u_bwd_tl(*args, reuse=self._wu_reuse),
-            [
-                {"threads": t}
-                for t in sorted(
-                    {
-                        gemm_threads(
-                            min_gemm_n_threads(t, min(shape)), self.wgmma, *_wu_outputs(*shape)
-                        )
-                        for t in (128, 256)
-                    }
-                )
-            ],
+            fit_launches(
+                [{"threads": min_gemm_n_threads(t, min(shape))} for t in (128, 256)],
+                self.wgmma,
+                *_wu_outputs(*shape),
+            ),
             {"threads": default["threads"]},
         )
         self._publish_tuned(
@@ -603,7 +590,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             CompiledProgram(_bwd_parallel_tl(*args)(cfg["parallel_threads"])),
             CompiledProgram(
                 _dh_walk_tl(*args)(
-                    block_v, cfg["num_stages"], walk_threads(self.dim_k, block_v, self.wgmma)
+                    block_v, cfg["num_stages"], walk_threads(block_v, self.dim_k, self.wgmma)
                 )
             ),
             CompiledProgram(compute_w_u_bwd_tl(*args, reuse=self._wu_reuse)(cfg["threads"])),

@@ -412,15 +412,18 @@ def test_deltanet_bwd_refused_beyond_sm90_shared_memory(
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "op_cls, name, dim_k, dim_v",
+    "op_cls, name, chunk_size, dim_k, dim_v",
     [
-        (DeltaNetChunkFwdOp, "deltanet_chunk_fwd", 24, 64),
-        (DeltaNetChunkBwdOp, "deltanet_chunk_bwd", 64, 24),
+        (DeltaNetChunkFwdOp, "deltanet_chunk_fwd", 40, 64, 64),
+        (DeltaNetChunkFwdOp, "deltanet_chunk_fwd", 64, 24, 64),
+        (DeltaNetChunkBwdOp, "deltanet_chunk_bwd", 64, 64, 24),
     ],
 )
-def test_deltanet_chunk_refuses_head_dims_no_matmul_tiles(op_cls, name, dim_k, dim_v) -> None:
-    """No launch builds a dim_k off the 16-row matmul tile, nor a backward that reduces a
-    16-bit dim_v off the 16-wide matmul step, so dispatch refuses them."""
+def test_deltanet_chunk_refuses_extents_no_matmul_tiles(
+    op_cls, name, chunk_size, dim_k, dim_v
+) -> None:
+    """No launch builds a chunk_size or dim_k off the 16-row matmul tile, nor a backward that
+    reduces a 16-bit dim_v off the 16-wide matmul step, so dispatch refuses them."""
     (in_tree,) = Kernel.devices
     call = DeltaNetChunkCall(
         arch=90,
@@ -429,7 +432,7 @@ def test_deltanet_chunk_refuses_head_dims_no_matmul_tiles(op_cls, name, dim_k, d
         batch=1,
         heads=2,
         seq_len=128,
-        chunk_size=64,
+        chunk_size=chunk_size,
         dim_k=dim_k,
         dim_v=dim_v,
         dtype=torch.bfloat16,

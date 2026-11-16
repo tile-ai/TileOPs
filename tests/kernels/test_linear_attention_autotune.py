@@ -54,13 +54,14 @@ class _StubKernel:
     def default_config(self) -> dict:
         # h_block_v deliberately ignores dim_v divisibility, so a sweep that
         # took its fallback width from here would return an unbuildable one.
+        fused, output = la.chunk_gemm_configs(self.chunk_size, self.dim_v, self.dim_k, self.wgmma)
         return {
             "fused_num_stages": 2,
-            "fused_threads": 256,
+            "fused_threads": max(config["threads"] for config in fused),
             "h_num_stages": 2,
             "h_threads": 256,
             "h_block_v": 32 if self.chunk_size >= 64 else 0,
-            "o_threads": 256,
+            "o_threads": max(config["threads"] for config in output),
         }
 
     def tune_jit_kernel(self, jit_kernel, configs, warmup, rep, seed_config, supply_prog):
@@ -297,11 +298,9 @@ def test_untunable_fallback_width_is_buildable_when_dim_v_is_indivisible() -> No
 
     assert kernel.default_config["h_block_v"] == 32, "stub must diverge for this to bite"
     assert config["h_block_v"] == 0
-    declared = la.delta_rule_fwd_autotune_configs(48, kernel.chunk_size, kernel.dim_k, kernel.wgmma)
-    # The stub's untuned preparation and output launches are wider than V48 builds at.
-    assert (config["h_block_v"], config["h_threads"]) in {
-        (c["h_block_v"], c["h_threads"]) for c in declared
-    }
+    assert config in la.delta_rule_fwd_autotune_configs(
+        48, kernel.chunk_size, kernel.dim_k, kernel.wgmma
+    )
 
 
 def test_a_shape_with_no_admissible_width_is_refused_by_both_entry_points() -> None:
