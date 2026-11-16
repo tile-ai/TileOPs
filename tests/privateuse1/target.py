@@ -172,7 +172,12 @@ class _Reference:
 
     def _device(self, inputs: tuple, writes: dict) -> torch.device:
         """The call device, by the rule the op's checks place a call by."""
-        tensors = [t for t in (*inputs, *writes.values()) if t is not None]
+        tensors = [
+            t
+            for value in (*inputs, *writes.values())
+            for t in (value if isinstance(value, (list, tuple)) else (value,))
+            if isinstance(t, torch.Tensor)
+        ]
         devices = {t.device for t in tensors if t.device.type != "cpu"} or {
             t.device for t in tensors
         }

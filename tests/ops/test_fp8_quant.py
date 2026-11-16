@@ -47,6 +47,7 @@ def test_fp8_quant_writes_out_q_and_returns_it() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "layout, reason",
     [
@@ -72,6 +73,7 @@ def test_fp8_quant_reads_tma_alignment_only_for_column_major_scales() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_fp8_quant_serves_new_token_counts_from_one_kernel() -> None:
     op = FP8QuantPerTokenGroupFwdOp(128)
     for tokens in (3, 70):
@@ -81,6 +83,7 @@ def test_fp8_quant_serves_new_token_counts_from_one_kernel() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_fp8_quant_refuses_a_group_past_the_register_budget() -> None:
     from tileops.backend import OpNotAvailableError
 
