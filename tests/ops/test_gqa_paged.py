@@ -1137,6 +1137,16 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             64,
             id="bf16-d64-rows-on-m",
         ),
+        # A right window and a bidirectional mask, with a request of no query token.
+        pytest.param(
+            [3, 0, 2],
+            [600, 64, 300],
+            64,
+            torch.float16,
+            {"window_size_left": 100, "window_size_right": 0, "is_causal": False},
+            8,
+            id="f16-right-window-empty-request",
+        ),
         # 16-row tiles: the first request's 36 rows span three of them.
         pytest.param(
             [9, 1, 1, 1],
