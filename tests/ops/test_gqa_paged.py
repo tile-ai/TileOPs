@@ -1102,6 +1102,21 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
         # 64 packed rows a request fill the WGMMA M extent: the rows hold M, causal within
         # each request's 16 tokens.
         pytest.param([16, 16], [1000, 513], 64, torch.float16, {}, 64, id="f16-rows-on-m"),
+        # Rows on M with an FP8 query, request scales, a softcap and a left window, bidirectional.
+        pytest.param(
+            [16, 16],
+            [900, 400],
+            128,
+            FP8,
+            {
+                "per_request_scales": True,
+                "softcap": 30.0,
+                "window_size_left": 200,
+                "is_causal": False,
+            },
+            64,
+            id="fp8-rows-on-m-softcap-window-bidirectional",
+        ),
         # Head dimension 64 with the keys on M, a one-key cache among them.
         pytest.param(
             [1, 1, 1],

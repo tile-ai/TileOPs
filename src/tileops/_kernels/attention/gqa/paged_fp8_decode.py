@@ -1,8 +1,10 @@
 """SM90 grouped-query attention over a paged FP8 cache, for packings of few query rows a request.
 
 One CTA owns one KV head, a tile of one request's packed rows and one chunk of its key range, so
-a key tile is read once per request, KV head and chunk whatever the request's row count; row
-``r`` of a request is query position ``r // group`` of head ``kv_head * group + r % group``. A
+a key tile is read once per request, KV head and chunk whatever the row count of a request whose
+rows fit the tile; the tile is sized from the rows a request averages, and a longer request's
+further row tiles read its keys again. Row ``r`` of a request is query position ``r // group`` of
+head ``kv_head * group + r % group``. A
 warp copies each FP8 key and value tile into shared memory with TMA, one copy a page.
 
 - A tile of 64 rows fills the M extent of a WGMMA, which holds the rows: ``S = Q K^T`` and
@@ -41,6 +43,12 @@ __all__ = ["GQAPagedFP8DecodeKernel"]
 _SM_SHARED_BYTES = 228 * 1024
 # Registers a consumer thread keeps beyond its tiles: indices, addresses and loop state.
 _ADDRESS_REGS = 32
+
+
+def _value_stages(block_m: int) -> int:
+    """Widened value stages a program of *block_m*-row tiles holds: two with the rows on M, one
+    with the keys on M."""
+    return 2 if block_m == WGMMA_ROWS else 1
 
 
 @target_cache(maxsize=32)
@@ -107,7 +115,6 @@ def _gqa_paged_fp8_decode_kernel(
         num_split: int,
         stages: int,
         cstages: int,
-        vstages: int,
         producer_regs: int,
         resident: int,
     ):
@@ -115,6 +122,10 @@ def _gqa_paged_fp8_decode_kernel(
         # tile is the N extent of products that hold the keys on M, so their cost follows the
         # rows the tile holds.
         rows_on_m = block_m == WGMMA_ROWS
+        # Value stages: with rows on M one tile's value product runs while the next one's values
+        # widen; with keys on M the consumer waits for it, and one stage lets more CTAs share a
+        # multiprocessor.
+        vstages = _value_stages(block_m)
         # With rows on M the producer warpgroup's first warp copies and the others widen keys;
         # keys on M widen in the consumer's registers, one copying warp beside it.
         converters = WARPGROUP_THREADS - 32
@@ -159,14 +170,6 @@ def _gqa_paged_fp8_decode_kernel(
             if window_size_left >= 0:
                 cut = cut | (key0 < last_q - window_size_left)
             return cut
-
-        def log_sum_exp(logsum, m, item_scale):
-            """A row's log2-sum-exp, -inf where it saw no key."""
-            return T.if_then_else(
-                logsum == 0,
-                -T.infinity(accum),
-                T.log2(T.if_then_else(logsum == 0, 1, logsum)) + m * item_scale,
-            )
 
         @T.macro
         def advance_max(m, m_prev, rescale, item_scale):
@@ -275,32 +278,6 @@ def _gqa_paged_fp8_decode_kernel(
                     acc_o[i, d] *= rescale[i]
 
         @T.macro
-        def softmax_t(
-            st, lt, m, m_prev, rescale, key0, kv_len, first_q, last_q, row0, align, qk_descale,
-            item_scale,
-        ):  # fmt: skip
-            """softmax on a keys-by-rows score tile: the same fold, reducing over the first
-            axis, with the sums kept per element until the last tile."""
-            if use_softcap:
-                for j, i in T.Parallel(block_n, block_m):
-                    st[j, i] = T.cast(softcap, accum) * T.tanh(
-                        st[j, i] * qk_descale * T.cast(sm_scale / softcap, accum)
-                    )
-            if cut_tile(key0, kv_len, first_q, last_q):
-                for j, i in T.Parallel(block_n, block_m):
-                    st[j, i] = T.if_then_else(
-                        hidden(key0 + j, (row0 + i) // group + align, kv_len),
-                        -T.infinity(accum),
-                        st[j, i],
-                    )
-            T.copy(m, m_prev)
-            T.reduce_max(st, m, dim=0, clear=False)
-            advance_max(m, m_prev, rescale, item_scale)
-            for j, i in T.Parallel(block_n, block_m):
-                st[j, i] = T.exp2(st[j, i] * item_scale - m[i] * item_scale)
-                lt[j, i] = lt[j, i] * rescale[i] + st[j, i]
-
-        @T.macro
         def gather_query(Q, dst, q_start, row0, rows, kv_head):
             """The tile's query rows into *dst*, zero past the request's rows."""
             for i, d in T.Parallel(block_m, dim):
@@ -323,7 +300,12 @@ def _gqa_paged_fp8_decode_kernel(
                     held = acc[d, i] if keys_on_m else acc[i, d]
                     partial[bx, by, bz, i, d] = held * row_sum[i]
                 for i in T.Parallel(block_m):
-                    glse[bx, by, bz, i] = log_sum_exp(logsum[i], m[i], item_scale)
+                    # The row's log2-sum-exp, -inf where it saw no key.
+                    glse[bx, by, bz, i] = T.if_then_else(
+                        logsum[i] == 0,
+                        -T.infinity(accum),
+                        T.log2(T.if_then_else(logsum[i] == 0, 1, logsum[i])) + m[i] * item_scale,
+                    )
             elif keys_on_m:
                 for d, i in T.Parallel(dim, block_m):
                     if row0 + i < rows:
@@ -493,7 +475,7 @@ def _gqa_paged_fp8_decode_kernel(
                                     key_product(q_f, k_c, acc_s, kc_ready, t)
                                     rescale_rows(acc_o, rescale)
                                     T.wgmma_gemm(
-                                        p_f, v_c[(t - 1) % 2, :, :], acc_o, policy=policy,
+                                        p_f, v_c[(t - 1) % vstages, :, :], acc_o, policy=policy,
                                         clear_accum=False,
                                     )  # fmt: skip
                                     widen_values(v_r, v_c, valid, vr_ready, vr_free, t, tx)
@@ -508,7 +490,7 @@ def _gqa_paged_fp8_decode_kernel(
                                 # The value product of the last tile.
                                 rescale_rows(acc_o, rescale)
                                 T.wgmma_gemm(
-                                    p_f, v_c[(mine - 1) % 2, :, :], acc_o, policy=policy,
+                                    p_f, v_c[(mine - 1) % vstages, :, :], acc_o, policy=policy,
                                     clear_accum=False,
                                 )  # fmt: skip
                                 T.wait_wgmma(0)
@@ -545,15 +527,34 @@ def _gqa_paged_fp8_decode_kernel(
                                 T.wgmma_gemm(
                                     k_f, q_s, st, transpose_B=True, policy=policy, clear_accum=True
                                 )  # fmt: skip
-                                if vstages == 1:
-                                    # The previous value product reads the one value stage.
-                                    T.wait_wgmma(0)
+                                # The previous value product reads the one value stage; the wait
+                                # holds the key product just issued too.
+                                T.wait_wgmma(0)
                                 widen_values(v_r, v_c, valid, vr_ready, vr_free, t, tx)
                                 T.wait_wgmma(0)
-                                softmax_t(
-                                    st, lt, m, m_prev, rescale, (first + t) * block_n, kv_len,
-                                    first_q, last_q, row0, align, qk_descale, item_scale,
-                                )  # fmt: skip
+                                # The softmax over the keys, the tile's first axis; the sums stay
+                                # per element until the last tile.
+                                key0 = (first + t) * block_n
+                                if use_softcap:
+                                    for j, i in T.Parallel(block_n, block_m):
+                                        st[j, i] = T.cast(softcap, accum) * T.tanh(
+                                            st[j, i]
+                                            * qk_descale
+                                            * T.cast(sm_scale / softcap, accum)
+                                        )
+                                if cut_tile(key0, kv_len, first_q, last_q):
+                                    for j, i in T.Parallel(block_n, block_m):
+                                        st[j, i] = T.if_then_else(
+                                            hidden(key0 + j, (row0 + i) // group + align, kv_len),
+                                            -T.infinity(accum),
+                                            st[j, i],
+                                        )
+                                T.copy(m, m_prev)
+                                T.reduce_max(st, m, dim=0, clear=False)
+                                advance_max(m, m_prev, rescale, item_scale)
+                                for j, i in T.Parallel(block_n, block_m):
+                                    st[j, i] = T.exp2(st[j, i] * item_scale - m[i] * item_scale)
+                                    lt[j, i] = lt[j, i] * rescale[i] + st[j, i]
                                 for d, i in T.Parallel(dim, block_m):
                                     acc_ot[d, i] *= rescale[i]
                                 for j, i in T.Parallel(block_n, block_m):
@@ -781,16 +782,14 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
     @property
     def default_config(self) -> dict:
         # Zero reads the chunk count from the launch geometry; a positive value pins it. With
-        # rows on M, two widened key stages and two value stages, the value product of a tile
-        # overlapping the next one's widening; with keys on M one of each, the keys widened in
-        # registers, so that more CTAs share a multiprocessor.
+        # rows on M, two widened key stages; with keys on M the keys widen in registers and the
+        # one stage is unused.
         rows_on_m = self.block_m == WGMMA_ROWS
         return {
             "block_n": self.block_n_for(self.page_size),
             "num_split": 0,
             "stages": 2,
             "cstages": 2 if rows_on_m else 1,
-            "vstages": 2 if rows_on_m else 1,
             "producer_regs": 56,
         }
 
@@ -810,7 +809,7 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
             return -(-nbytes // 1024) * 1024
 
         tile = block_n * dim
-        rings = 2 * kb(stages * tile) + kb(cfg["vstages"] * tile * 2)
+        rings = 2 * kb(stages * tile) + kb(_value_stages(rows) * tile * 2)
         if rows == WGMMA_ROWS:
             rings += kb(cfg["cstages"] * tile * 2)
             small = 2
@@ -905,7 +904,6 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
             splits,
             cfg["stages"],
             cfg["cstages"],
-            cfg["vstages"],
             cfg["producer_regs"],
             self.resident_ctas(cfg),
         )
