@@ -496,7 +496,7 @@ def test_rope_cos_sin_matches_the_reference(row, dtype_case) -> None:
 
 def _strided_view_call(interleaved, inplace, columns, width):
     """The op and its inputs on a column view of heads *width* columns wide."""
-    row = _dense(1, 33, 5, len(range(width)[columns]), 16, interleaved=interleaved, inplace=inplace)
+    row = _dense(1, 37, 4, len(range(width)[columns]), 16, interleaved=interleaved, inplace=inplace)
     call = manifest_call("RoPECosSinFwdOp", {"T": "bfloat16", **_F32_TABLES}, **row)
     test = RoPECosSinViewTest(call, width, columns)
     return test, RoPECosSinFwdOp(**test.arguments()), test.gen_inputs()
@@ -507,8 +507,8 @@ def _strided_view_call(interleaved, inplace, columns, width):
 _VIEWS = pytest.mark.parametrize(
     "interleaved, columns",
     [
-        pytest.param(False, slice(72, 136), marks=_SMOKE, id="neox-tail"),
-        pytest.param(True, slice(72, 136), marks=_FULL, id="interleaved-tail"),
+        pytest.param(False, slice(64, 136), marks=_SMOKE, id="neox-tail"),
+        pytest.param(True, slice(64, 136), marks=_FULL, id="interleaved-tail"),
         pytest.param(False, slice(8, 136, 2), marks=_FULL, id="neox-every-2nd"),
         pytest.param(True, slice(8, 136, 2), marks=_FULL, id="interleaved-every-2nd"),
     ],
@@ -518,7 +518,7 @@ _VIEWS = pytest.mark.parametrize(
 @_VIEWS
 def test_rope_cos_sin_rotates_a_strided_view_in_place(interleaved, columns) -> None:
     """A column view of wider heads rotated in place, as DeepSeek-V4-Flash rotates the
-    trailing 64 columns of each head: x is returned, and only the view's columns change."""
+    trailing columns of each head: x is returned, and only the view's columns change."""
     test, op, inputs = _strided_view_call(interleaved, True, columns, 136)
     test.check(op, *inputs)
     x, wide = inputs[0], inputs[0]._base
@@ -542,9 +542,9 @@ def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(interleaved, colu
 
 @pytest.mark.smoke
 def test_rope_cos_sin_unchecked_row_outside_the_tables_reads_its_nearest_row() -> None:
-    row = _dense(2, 4, 3, 64, 32, P=8, some=["seqlen_offsets"])
+    row = _dense(2, 19, 3, 128, 64, P=32, some=["seqlen_offsets"])
     call = manifest_call("RoPECosSinFwdOp", {"T": "float16", **_F32_TABLES, "O": "int64"}, **row)
     test = RoPECosSinTest(call)
     x, cos, sin, cu_seqlens, offsets = test.gen_inputs()
-    offsets.copy_(torch.tensor([6, -3]))
+    offsets.copy_(torch.tensor([20, -3]))
     test.check(RoPECosSinFwdOp(), x, cos, sin, cu_seqlens, offsets)
