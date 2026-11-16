@@ -89,9 +89,10 @@ class AdaptiveAvgPool2dKernel(AdaptivePool2dKernelBase, AdaptiveAvgPool2dFwdInte
 def _bin_lanes(call: AdaptivePool2dCall) -> int:
     """Threads one bin is split over, a power of two up to a warp.
 
-    Doubled while a lane would still read more than one 16-byte access of its bin and the
-    grid's threads do not yet fill the device once: past that, another lane repeats the
-    bin's index arithmetic, fold and division without adding threads that run at once.
+    Doubled while the widest bin holds more than 16 bytes a lane and the grid's threads do not
+    yet fill the device once: past that, another lane repeats the bin's index arithmetic, fold
+    and division without adding threads that run at once. The count is of bytes, not of the
+    loads the kernel issues: on a row width no wider access divides, those are one element each.
     """
     window_bytes = (
         max_adaptive_bin_extent(call.h_in, call.out_h)

@@ -2406,6 +2406,13 @@ def test_gemm_w4a16_selector_moves_128_row_tiles_onto_the_cross_tile_ring() -> N
     )
 
 
+def _leave_nan_in_free_blocks() -> None:
+    """Free blocks the caching allocator hands out next for outputs under 1 MiB, holding NaN:
+    an output element no kernel writes then reads NaN, not a fresh block's zeros."""
+    blocks = [torch.full((1 << 17,), float("nan"), device=run_device()) for _ in range(16)]
+    del blocks
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
@@ -2413,25 +2420,50 @@ def test_gemm_w4a16_selector_moves_128_row_tiles_onto_the_cross_tile_ring() -> N
     [
         # Kept: a doubled split leaves a slice under two K tiles; the paired tile does not
         # fit in shared memory.
-        pytest.param(1, 1024, 8192, (64, 128, 8), id="kept-short-slice", marks=pytest.mark.smoke),
-        pytest.param(32, 8192, 8192, (64, 128, 1), id="kept-no-fit", marks=pytest.mark.full),
-        pytest.param(1, 8192, 8192, (128, 256, 2), id="paired-split-1", marks=pytest.mark.full),
-        pytest.param(1, 4096, 14336, (128, 256, 4), id="paired-split-2", marks=pytest.mark.full),
+        pytest.param(
+            1, 1024, 8192, (64, 128, 8, False), id="kept-short-slice", marks=pytest.mark.smoke
+        ),
+        pytest.param(32, 8192, 8192, (64, 128, 1, False), id="kept-no-fit", marks=pytest.mark.full),
+        pytest.param(
+            1, 8192, 8192, (128, 256, 2, False), id="paired-split-1", marks=pytest.mark.full
+        ),
+        pytest.param(
+            1, 4096, 14336, (128, 256, 4, False), id="paired-split-2", marks=pytest.mark.full
+        ),
+        # A ragged token count on the 16-row tile.
+        pytest.param(11, 8192, 8192, (128, 256, 2, False), id="paired-m11", marks=pytest.mark.full),
         # Stream-K picks: the 132 streamed CTAs become 64 paired N tiles split two ways (128
         # CTAs); 67 N tiles do not pair up and keep the stream.
-        pytest.param(1, 8192, 81920, (128, 256, 2), id="paired-stream-k", marks=pytest.mark.full),
-        pytest.param(1, 4288, 32896, (64, 128, 1), id="kept-odd-n-tiles", marks=pytest.mark.full),
+        pytest.param(
+            1, 8192, 81920, (128, 256, 2, False), id="paired-stream-k", marks=pytest.mark.full
+        ),
+        pytest.param(
+            1, 4288, 32896, (64, 128, 1, True), id="kept-odd-n-tiles", marks=pytest.mark.full
+        ),
+        # Kept streams whose N tiles two or three CTAs share; the slots no CTA of a tile
+        # writes are zeroed: 69 tiles with a partial last K tile, 67 tiles of whole K tiles.
+        pytest.param(
+            1, 4416, 32896, (64, 128, 1, True), id="kept-stream-k-tail", marks=pytest.mark.full
+        ),
+        pytest.param(
+            1, 4288, 81920, (64, 128, 1, True), id="kept-stream-whole-k", marks=pytest.mark.full
+        ),
+        pytest.param(
+            8, 5056, 32896, (64, 128, 1, True), id="kept-stream-eight-rows", marks=pytest.mark.full
+        ),
     ],
 )
 def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tuple) -> None:
     """On 132 SMs a deferred-scale tile on one consumer warpgroup runs twice its weight rows
     on two warpgroups over as many K slices as keep its CTAs, a stream-K pick included; it
     keeps its tile where that split leaves a slice under two K tiles, the paired tile does
-    not fit, or its N tiles do not pair up."""
+    not fit, or its N tiles do not pair up, the last keeping its stream."""
     cfg = _select_config(m, n, k, 128, 132)
-    assert (cfg["block_n"], cfg["threads"], cfg["split_k"]) == tile
+    assert (cfg["block_n"], cfg["threads"], cfg["split_k"], cfg["stream_ctas"] > 0) == tile
     test = GEMMW4A16Test(m, n, k, torch.float16)
-    test.check(GEMMW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
+    inputs = test.gen_inputs()
+    _leave_nan_in_free_blocks()
+    test.check(GEMMW4A16FwdOp(target=BUILTIN), *inputs)
 
 
 @pytest.mark.in_tree_kernels
