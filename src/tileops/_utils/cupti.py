@@ -273,12 +273,14 @@ def collect_repeats(
     n_repeat: int,
     prepare_one: Callable[[int], None],
     buffer_bytes: int = _BUFFER_BYTES,
+    finish_one: Callable[[int], None] | None = None,
 ) -> Trace:
     """Run the timed repeats, each labelled with its iteration index.
 
-    ``prepare_one`` runs under an id of its own and leaves the device idle, and each
-    call is drained before the next begins, so an iteration's kernels neither overlap
-    nor borrow a neighbour's cache state.
+    ``prepare_one`` runs before each call and ``finish_one`` after it, both under an id
+    of their own, so neither is attributed to a call. Nothing here drains the device
+    between iterations: the stream orders them, and a caller that wants the device idle
+    before a call synchronizes in ``prepare_one``.
     """
     cupti = _load_cupti()
     kind = cupti.ExternalCorrelationKind.CUSTOM0
@@ -299,7 +301,9 @@ def collect_repeats(
                 prepare_one(i)
             with _labelled(i):
                 run_one(i)
-            torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
+            if finish_one is not None:
+                with _labelled(_PREPARE_ID):
+                    finish_one(i)
         kernels, iteration_of = _flush()
         # Counted after the flush, once CUPTI has handed back what it did keep. Unproven
         # counter reports None, not zero: it is the only evidence separating a lost
@@ -326,6 +330,8 @@ class Sample(NamedTuple):
     Zero for a case that counts copies, and for one that issues none. Anything else is
     a reading that omits work: see ``count_copies``.
     """
+    sm_clock_hz: float | None = None
+    """SM 0's clock across the call, or None when the timer did not read it."""
 
 
 def _kernel_span_us(kernels: list[dict]) -> float:
@@ -443,6 +449,7 @@ def collect_attributed(
     count_copies: bool = False,
     on_retry: Callable[[int], None] | None = None,
     every_record: bool = False,
+    finish_one: Callable[[int], None] | None = None,
 ) -> list[Sample]:
     """Collect one fully attributed phase, re-measuring what CUPTI loses.
 
@@ -459,7 +466,7 @@ def collect_attributed(
     attribution_attempts = 3
     buffer_bytes = _BUFFER_BYTES
     for attempt in range(attribution_attempts):
-        trace = collect_repeats(run_one, n_repeat, prepare_one, buffer_bytes)
+        trace = collect_repeats(run_one, n_repeat, prepare_one, buffer_bytes, finish_one)
         try:
             if every_record and trace.dropped is None and not _drop_counter_is_live():
                 raise AttributionError(
@@ -546,8 +553,8 @@ def l2_flush_buffer(device: torch.device) -> torch.Tensor:
 
 def flush_l2(buffer: torch.Tensor) -> None:
     """Return persisting L2 lines to normal priority, then evict L2 by reading *buffer*, an
-    :func:`l2_flush_buffer` on a CUDA device. The preparation before every call that
-    benchmarks and tuning read, so both rank candidates from the same cache state.
+    :func:`l2_flush_buffer` on a CUDA device. The preparation before every call tuning
+    reads, so every candidate is ranked from the same cache state.
 
     Read-only eviction avoids buffer-sized dirty writebacks during the timed call.
     """

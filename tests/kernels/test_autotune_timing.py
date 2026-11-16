@@ -1,6 +1,8 @@
 """CUDA autotune timing, cache invalidation, collector failures and concurrency."""
 
+import contextlib
 import inspect
+import itertools
 import shutil
 import tempfile
 import threading
@@ -114,7 +116,7 @@ def test_a_reading_is_the_median_of_each_calls_kernel_union(monkeypatch, no_devi
     n_warmup, n_repeat = 2, 5
     prepared = []
 
-    def fake_collect(run_one, n_repeat_, prepare_one, buffer_bytes=0):
+    def fake_collect(run_one, n_repeat_, prepare_one, buffer_bytes=0, finish_one=None):
         kernels, iteration_of = [], {}
         for i in range(n_repeat_):
             prepare_one(i)
@@ -144,10 +146,41 @@ def test_a_reading_is_the_median_of_each_calls_kernel_union(monkeypatch, no_devi
     assert no_device == [stubbed] * (n_warmup + n_repeat)
 
 
+@pytest.mark.smoke
+def test_each_candidate_call_starts_on_a_drained_device_after_its_flush(monkeypatch, no_device):
+    """Between two timed candidate calls the previous one finishes, then the flush runs and
+    finishes: tuning keeps the drained preparation the benchmarks' cold samples do without."""
+    n_repeat = 4
+    order = []
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: order.append("sync"))
+    monkeypatch.setattr(tileops_autotune, "flush_l2", lambda buffer: order.append("flush"))
+    ids = type(
+        "Ids",
+        (),
+        {
+            "ExternalCorrelationKind": type("Kind", (), {"CUSTOM0": 0}),
+            "activity_push_external_correlation_id": staticmethod(lambda kind, i: None),
+            "activity_pop_external_correlation_id": staticmethod(lambda kind: None),
+        },
+    )
+    monkeypatch.setattr(cupti, "_load_cupti", lambda: ids)
+    monkeypatch.setattr(cupti, "_drop_counter_is_live", lambda: True)
+    monkeypatch.setattr(cupti, "_read_dropped", lambda: 0)
+    monkeypatch.setattr(cupti, "_phase_session", lambda buffer_bytes: contextlib.nullcontext())
+    kernels = [_kernel_record(i * 10_000, i * 10_000 + 1_000, i) for i in range(n_repeat)]
+    monkeypatch.setattr(cupti, "_flush", lambda: (kernels, {i: i for i in range(n_repeat)}))
+
+    tileops_autotune.candidate_busy_ms(lambda: order.append("run"), 1, n_repeat)
+
+    runs = [i for i, step in enumerate(order) if step == "run"][-n_repeat:]
+    for previous, call in itertools.pairwise(runs):
+        assert order[previous + 1 : call] == ["sync", "flush", "sync"]
+
+
 def _short_reading_collect(lossy_attempts: int, attempts: list, dropped):
     """Simulate incomplete traces followed by a complete 100-us reading."""
 
-    def collect(run_one, n_repeat, prepare_one, buffer_bytes=0):
+    def collect(run_one, n_repeat, prepare_one, buffer_bytes=0, finish_one=None):
         attempts.append(buffer_bytes)
         lossy = len(attempts) <= lossy_attempts
         length = 1_000 if lossy else 100_000
@@ -210,8 +243,8 @@ def test_the_tuner_keeps_the_candidate_with_the_lowest_busy_reading(monkeypatch,
     event timing would never choose."""
     real_collect = cupti.collect_repeats
 
-    def inverted_collect(run_one, n_repeat, prepare_one, buffer_bytes=0):
-        trace = real_collect(run_one, n_repeat, prepare_one, buffer_bytes)
+    def inverted_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, finish_one=None):
+        trace = real_collect(run_one, n_repeat, prepare_one, buffer_bytes, finish_one)
         kernels = [
             kernel
             if trace.iteration_of.get(kernel["correlation_id"]) == cupti._PREPARE_ID
@@ -314,8 +347,8 @@ def test_a_sweep_through_calls_keeps_the_lowest_busy_reading(monkeypatch):
     """``tune_by_forward`` ranks by the tuner's reading: inverted, the longest call wins."""
     real_collect = cupti.collect_repeats
 
-    def inverted_collect(run_one, n_repeat, prepare_one, buffer_bytes=0):
-        trace = real_collect(run_one, n_repeat, prepare_one, buffer_bytes)
+    def inverted_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, finish_one=None):
+        trace = real_collect(run_one, n_repeat, prepare_one, buffer_bytes, finish_one)
         claimed = {}
         for kernel in trace.kernels:
             iteration = trace.iteration_of.get(kernel["correlation_id"])
