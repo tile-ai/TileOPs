@@ -37,6 +37,8 @@ __all__ = ["GQAPagedFP8DecodeKernel"]
 
 # Shared memory one SM90 multiprocessor holds for its resident CTAs.
 _SM_SHARED_BYTES = 228 * 1024
+# Registers a consumer thread keeps beyond its tiles: indices, addresses and loop state.
+_ADDRESS_REGS = 32
 
 
 @target_cache(maxsize=32)
@@ -784,17 +786,39 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         return {"block_n": self.block_n_for(self.page_size), "num_split": 0, "stages": 2, "cstages": cstages, "producer_regs": 56, "vstages": vstages}
 
     def resident_ctas(self, cfg: dict) -> int:
-        """CTAs a multiprocessor holds: what its shared memory fits of this program's rings,
-        at most four. The launch bound caps registers to the same count."""
-        block_n, stages = cfg["block_n"], cfg["stages"]
-        wide = cfg["vstages"] * block_n * self.dim * 2
-        stored = stages * 2 * block_n * self.dim
-        if self.block_m == WGMMA_ROWS:
-            ring = stored + cfg["cstages"] * block_n * self.dim * 2 + wide
+        """CTAs a multiprocessor holds: as many as both its shared memory and its registers
+        fit. The launch bound asks ptxas for the same count.
+
+        Every shared buffer starts on a kilobyte; beside the rings a CTA holds the tile offsets,
+        the value row counts and, with keys on M, the reduction workspace, then a kilobyte of
+        barriers and the kilobyte the multiprocessor reserves a block. A thread's registers are
+        its share of the tiles the consumer holds, 32-bit or packed 16-bit pairs, and
+        _ADDRESS_REGS more; with rows on M the producer warpgroup keeps _PRODUCER_REGS.
+        """
+        block_n, stages, rows, dim = cfg["block_n"], cfg["stages"], self.block_m, self.dim
+
+        def kb(nbytes: int) -> int:
+            return -(-nbytes // 1024) * 1024
+
+        tile = block_n * dim
+        rings = 2 * kb(stages * tile) + kb(cfg["vstages"] * tile * 2)
+        if rows == WGMMA_ROWS:
+            rings += kb(cfg["cstages"] * tile * 2)
+            small = 2
+            # Scores, row sums and output in float; query and probabilities in 16-bit pairs.
+            held = (rows * block_n + rows * 16 + rows * dim) + (rows * dim + rows * block_n) // 2
+            regs = (held // WARPGROUP_THREADS + _ADDRESS_REGS + cfg["producer_regs"]) // 2
+            threads = 2 * WARPGROUP_THREADS
         else:
-            ring = stored + wide + self.block_m * (self.dim + block_n) * 2
-        # Barriers, offsets and the per-block reservation, a kilobyte each at most.
-        return max(1, min(4, _SM_SHARED_BYTES // (ring + 3 * 1024)))
+            rings += kb(rows * dim * 2) + kb(rows * block_n * 2)
+            small = 3
+            # Scores, their sums and the output in float; the widened keys in 16-bit pairs.
+            held = 2 * block_n * rows + dim * rows + tile // 2
+            regs = held // WARPGROUP_THREADS + _ADDRESS_REGS
+            threads = WARPGROUP_THREADS + 32
+        footprint = rings + kb(4 * (self.batch + 1)) + (small - 1) * 1024 + 2 * 1024
+        by_registers = 64 * 1024 // (threads * regs)
+        return max(1, min(_SM_SHARED_BYTES // footprint, by_registers))
 
     def _splits_for(self, tiles: int) -> int:
         """Chunks to cut each row tile's key range into: the count that minimizes the launch's
