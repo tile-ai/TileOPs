@@ -21,13 +21,13 @@ A concrete op such as `tileops.elementwise.HardtanhFwdOp` is public to construct
 
 ## Compatibility
 
-Within 0.x, minor and patch releases change the public API only additively:
+Within 0.x, a patch release changes the public API only additively, and a minor release may also carry a reviewed break:
 
-- Public names, signatures, parameter defaults, return structure and documented behavior stay as they are.
+- Public names, signatures, parameter defaults, return structure and documented behavior stay as they are, except for a reviewed break.
 - A release may add a module, a name, an optional parameter, or a new accepted input.
-- Any other change waits for a major release.
+- The release notes name every reviewed break. From 1.0, a break waits for a major release.
 
-`scripts/ci/check_api_compat.py` checks every pull request against the latest release and fails on a change that breaks a call written against it. During 0.x, a reviewed break is listed in [`scripts/ci/api_compat_allow.txt`](../scripts/ci/api_compat_allow.txt), which the check skips; the list is emptied at the next release.
+`scripts/ci/check_api_compat.py` checks every pull request against the latest release and fails on a change that breaks a call written against it. A reviewed break the check reports is listed in [`scripts/ci/api_compat_allow.txt`](../scripts/ci/api_compat_allow.txt), which the check skips and the next release empties. A break the check cannot see, such as a change to the spec format, is named in the pull request.
 
 ## Support scope
 
