@@ -82,6 +82,52 @@ def test_gqa_paged_split(
     _check(op, workload, inputs)
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("heads", "heads_kv", "dim", "q_len", "semantics"),
+    [
+        pytest.param(16, 2, 64, 4, {"has_sinks": True}, marks=pytest.mark.smoke, id="dim-64-sinks"),
+        pytest.param(16, 4, 256, 2, {}, marks=pytest.mark.full, id="dim-256"),
+        pytest.param(8, 2, 144, 4, {}, marks=pytest.mark.full, id="dim-144"),
+    ],
+)
+def test_gqa_paged_split_combine_row_blocks(
+    heads: int, heads_kv: int, dim: int, q_len: int, semantics: dict
+) -> None:
+    """The combine merges a query tile in blocks of rows (16 at dimension 64, 4 at 256, and 8
+    at 144, where four rows of 16-byte vectors leave a thread a part of a row but eight rows
+    split evenly over the threads): each request's rows span two blocks or more, a block past
+    them stores nothing, and the weight table of sixteen chunks or more is stored split-major."""
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
+
+    workload = _decode(2, heads, heads_kv, [4096] * 2, dim, 64, q_len=q_len, **semantics)
+    op = GQAPagedFwdOp(is_causal=True)
+    inputs = workload.gen_inputs()
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFwdKernel)
+    config = kernel.config
+    tiles = kernel._tile_estimate(inputs[0].shape[0], config["block_M"])
+    assert kernel._splits_for(tiles, config) >= 16
+    _check(op, workload, inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gqa_paged_decode_keeps_the_narrow_query_tile() -> None:
+    """A decode over pages that hold only a key tile narrower than one WGMMA keeps the 64-row
+    query tile: its four rows a request would pad the wide one."""
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
+
+    semantics = {"window_size_left": 512}
+    workload = _decode(4, 32, 8, [700] * 4, 128, 48, torch.bfloat16, **semantics)
+    op = GQAPagedFwdOp(is_causal=True, **semantics)
+    inputs = workload.gen_inputs()
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFwdKernel)
+    assert (kernel.config["block_M"], kernel.config["block_N"]) == (64, 48)
+    _check(op, workload, inputs)
+
+
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
@@ -243,6 +289,30 @@ def test_gqa_paged_rope_reads_logical_positions(
         inputs[1][stale] = float("nan")
         inputs[2][stale] = float("inf")
     _check(GQAPagedFwdOp(**{"is_causal": True, **semantics}), workload, inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "cache_dtype",
+    [
+        pytest.param(torch.float16, marks=pytest.mark.smoke, id="rotated-channels"),
+        pytest.param(torch.float8_e4m3fn, marks=pytest.mark.full, id="whole-pages"),
+    ],
+)
+def test_gqa_paged_rope_window_prepares_from_the_first_window(cache_dtype: torch.dtype) -> None:
+    """Under a left window the RoPE preparation writes keys from the key tile holding the
+    request's first query's window start, which lies tiles before its last query's."""
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
+    semantics = {"pos_encoding_mode": "rope", "window_size_left": 100}
+    workload = _paged(
+        [300, 200], [1500, 1300], 64, torch.float16, cache_dtype=cache_dtype, **semantics
+    )
+    op = GQAPagedFwdOp(is_causal=True, **semantics)
+    inputs = workload.gen_inputs()
+    assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)
+    _check(op, workload, inputs)
 
 
 @pytest.mark.smoke
@@ -640,6 +710,60 @@ def test_gqa_paged_warp_specialized_query_tiles(
     kernel = _kernel(op, inputs)
     assert isinstance(kernel, GQAPagedFwdWSKernel), type(kernel).__name__
     assert kernel.split_small == split_small
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "batch",
+    [
+        pytest.param(64, marks=pytest.mark.smoke, id="batch-64"),
+        # A 508-byte tile prefix: the planner rounds it to the handover's 512 bytes.
+        pytest.param(42, marks=pytest.mark.full, id="batch-42"),
+    ],
+)
+def test_gqa_paged_warp_specialized_split_handover_beside_tile_prefix(batch: int) -> None:
+    """Split decodes beside a long request, the requests ranked: a CTA claims several items
+    after its consumers have written a split handover, so the producer still reads the tile
+    prefix while they write it, and each keeps its own shared bytes."""
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
+    q_lens = [32 * batch - (batch - 1)] + [1] * (batch - 1)
+    workload = _paged(q_lens, [4096] * batch, 64, torch.float16)
+    op, inputs = GQAPagedFwdOp(is_causal=True), _poisoned_inputs(workload)
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFwdWSKernel) and kernel.split_small
+    _check(op, workload, inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "batch",
+    [
+        pytest.param(300, marks=pytest.mark.smoke, id="batch-300"),
+        # A 1004-byte tile prefix, which the planner merges with free space to fit the anchor.
+        pytest.param(250, marks=pytest.mark.full, id="batch-250"),
+    ],
+)
+def test_gqa_paged_warp_specialized_value_anchor_beside_tile_prefix(batch: int) -> None:
+    """At dimension 256 the consumers store to a value-wait anchor on every key tile while the
+    producer reads the tile prefix of decodes beside one long request: each keeps its own
+    shared bytes. Sinks build the shared scan, so the anchor is the only consumer-written
+    buffer."""
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
+    q_lens = [32 * batch - (batch - 1)] + [1] * (batch - 1)
+    cache_lens = [q_lens[0] + 64] + [1024] * (batch - 1)
+    width = -(-max(cache_lens) // 64)
+    # Tables are permutations of one small pool, so every request stays a few pages.
+    workload = GQAPagedFwdWorkload(
+        8, 2, 256, q_lens, cache_lens, 64, width, width + 16, torch.float16, has_sinks=True
+    )
+    op, inputs = GQAPagedFwdOp(is_causal=True), workload.gen_inputs()
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFwdWSKernel) and not kernel.split_small
+    _check(op, workload, inputs)
 
 
 @pytest.mark.smoke

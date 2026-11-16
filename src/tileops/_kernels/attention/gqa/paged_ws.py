@@ -202,9 +202,8 @@ def _gqa_paged_ws_kernel(
         T.copy(acc_s, pcast)
 
     # With the ranking, tile_cum holds three runs: the tile prefix over the ranked order
-    # (batch + 1), the order (batch), and scratch (batch). The producer reads the order while
-    # the consumers write their split handover, so it stays in this buffer, which the
-    # shared-memory planner keeps live through both.
+    # (batch + 1), the order (batch), and scratch (batch). The producer reads the prefix and
+    # the order while the consumers write their split handover.
     order0 = batch + 1
     lens0 = 2 * batch + 1
 
@@ -687,9 +686,12 @@ def _gqa_paged_ws_kernel(
         tile_cum = T.alloc_shared([3 * batch + 1 if lpt else batch + 1], "int32")
         item_slot = T.alloc_shared([q_slots, meta_count + 1], "int32")
         # A split item's warpgroup 1 hands warpgroup 0 its row maxima and sums here.
-        mrg = T.alloc_shared([2, half], accum) if split_small else None
+        # mrg and anchor, which the consumers write while the producer still reads tile_cum,
+        # are static shared memory: the dynamic planner orders lifetimes by program text, where
+        # the producer's branch comes first, and would give them tile_cum's bytes.
+        mrg = T.alloc_shared([2, half], accum, scope="shared") if split_small else None
         # Above dimension 128 a store here keeps the exponentials ahead of the value wait.
-        anchor = T.alloc_shared([consumers], accum) if dim > 128 else None
+        anchor = T.alloc_shared([consumers], accum, scope="shared") if dim > 128 else None
         T.annotate_layout(
             {
                 Qs: make_swizzled_layout(Qs),
@@ -1176,6 +1178,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.per_request_kv_scale,
             self._rope_cols or self.dim,
             not self._rope_cols,
+            self.window_size_left,
+            self.block_n_for(self.page_size, self.dim),
         )
         return CompiledProgram(attention), CompiledProgram(prepare)
 

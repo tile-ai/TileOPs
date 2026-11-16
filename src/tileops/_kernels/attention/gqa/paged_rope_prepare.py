@@ -4,6 +4,9 @@ An FP8 query or cache is dequantized by its scales as it is read, so the pages i
 are 16-bit and carry no scale: a rotation commutes with a scalar scale.
 
 Over a 16-bit cache the pages may hold only the first ``key_cols`` (rotated) key channels.
+
+Under a left window the pages hold only the keys from the key tile where the request's first
+query's window starts: the attention reads no key tile before it.
 """
 
 import tilelang
@@ -34,9 +37,12 @@ def _gqa_paged_rope_prepare_kernel(
     per_request_kv_scale=False,
     key_cols=None,
     values=True,
+    window_left=-1,
+    key_tile=1,
 ):
     """Rotate Q into QR and live keys into KR's ``key_cols`` leading channels; with *values*,
-    copy V into VR, else VR is a one-row placeholder."""
+    copy V into VR, else VR is a one-row placeholder. With *window_left*, keys start at the
+    *key_tile*-row tile holding the first query's window start."""
     q_dtype = q_dtype or dtype
     kv_dtype = kv_dtype or dtype
     q_fp8 = q_dtype != dtype
@@ -134,12 +140,23 @@ def _gqa_paged_rope_prepare_kernel(
                     # TMA may read the last live page's padding, so initialize that
                     # page too; pages beyond it are never read and need no writes.
                     live_rows = T.ceildiv(Lengths[request], page) * page
-                    live_blocks = T.ceildiv(live_rows * heads_kv * pairs, block)
+                    # Without a window the first key is a constant zero, which the loop's index
+                    # arithmetic folds away.
+                    first = 0
+                    if window_left >= 0:
+                        q_len = CuQ[request + 1] - CuQ[request]
+                        first = T.alloc_var(
+                            "int32",
+                            init=T.max(0, Lengths[request] - q_len - window_left)
+                            // key_tile
+                            * key_tile,
+                        )
+                    live_blocks = T.ceildiv((live_rows - first) * heads_kv * pairs, block)
                     for step in T.serial(T.ceildiv(live_blocks, kv_blocks)):
                         tile = step * kv_blocks + worker
                         for lane, item in T.Parallel(threads, pairs_per_thread):
                             idx = tile * block + lane * pairs_per_thread + item
-                            key = idx // (heads_kv * pairs)
+                            key = first + idx // (heads_kv * pairs)
                             head = idx // pairs % heads_kv
                             freq = idx % pairs
                             if key < live_rows:
