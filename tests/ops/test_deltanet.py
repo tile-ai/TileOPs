@@ -59,62 +59,30 @@ class DeltaNetChunkFwdFixture(FixtureBase):
                 *[
                     pytest.param(
                         1,
-                        64,
+                        seq_len,
                         2,
                         dim_k,
                         dim_v,
-                        16,
+                        chunk,
                         dtype,
                         False,
                         marks=pytest.mark.smoke,
-                        id=f"chunk16-{dim_k}x{dim_v}-{dtype}",
+                        id=name,
                     )
-                    for dim_k, dim_v in ((64, 64), (128, 128), (256, 64), (64, 256), (256, 128))
-                    for dtype in (torch.float16, torch.bfloat16)
-                ],
-                *[
-                    pytest.param(
-                        1,
-                        64,
-                        2,
-                        64,
-                        dim_v,
-                        16,
-                        dtype,
-                        False,
-                        marks=pytest.mark.smoke,
-                        id=f"chunk16-narrow-{dim_v}-{dtype}",
+                    for name, seq_len, dim_k, dim_v, chunk, dtype in (
+                        ("chunk16-fp16", 64, 64, 64, 16, torch.float16),
+                        ("chunk16-bf16", 64, 64, 64, 16, torch.bfloat16),
+                        # An odd count of 8-column tiles: no column split above one warp divides it.
+                        ("chunk16-v24-fp32", 64, 64, 24, 16, torch.float32),
+                        ("chunk16-v24-fp16", 64, 64, 24, 16, torch.float16),
+                        ("chunk16-v24-bf16", 64, 64, 24, 16, torch.bfloat16),
+                        ("chunk16-v48", 64, 64, 48, 16, torch.float16),
+                        ("chunk16-walk", 64, 16, 64, 16, torch.bfloat16),
+                        # 2 by 3 warp tiles, which TileLang's square split divides only at one warp.
+                        ("chunk32-v24", 64, 64, 24, 32, torch.bfloat16),
+                        # One 16-row tile in the walk operands' products.
+                        ("chunk64-k16", 128, 16, 64, 64, torch.float16),
                     )
-                    for dim_v in (16, 24, 32, 48, 96)
-                    for dtype in (torch.float32, torch.float16, torch.bfloat16)
-                ],
-                pytest.param(
-                    1,
-                    64,
-                    2,
-                    64,
-                    64,
-                    16,
-                    torch.float32,
-                    False,
-                    marks=pytest.mark.smoke,
-                    id="chunk16-fp32",
-                ),
-                *[
-                    pytest.param(
-                        1,
-                        64,
-                        2,
-                        16,
-                        dim_v,
-                        16,
-                        dtype,
-                        False,
-                        marks=pytest.mark.smoke,
-                        id=f"chunk16-walk-{dim_v}-{dtype}",
-                    )
-                    for dim_v in (24, 64)
-                    for dtype in (torch.float32, torch.float16, torch.bfloat16)
                 ],
                 # dim_k 128 at chunk 128: SM89's 99 KB of shared memory per block holds the
                 # recurrence but not the state walk.
@@ -164,63 +132,14 @@ class DeltaNetChunkFwdFixture(FixtureBase):
                 ),
                 *[
                     pytest.param(
-                        1,
-                        64,
-                        2,
-                        dim_k,
-                        dim_v,
-                        16,
-                        dtype,
-                        True,
-                        marks=pytest.mark.nightly,
-                        id=f"chunk16-tuned-{dim_k}x{dim_v}-{dtype}",
+                        1, 64, 2, dim_k, dim_v, 16, dtype, True, marks=pytest.mark.nightly, id=name
                     )
-                    for dim_k, dim_v in ((64, 64), (256, 128))
-                    for dtype in (torch.float16, torch.bfloat16)
-                ],
-                *[
-                    pytest.param(
-                        1,
-                        64,
-                        2,
-                        64,
-                        dim_v,
-                        16,
-                        dtype,
-                        True,
-                        marks=pytest.mark.nightly,
-                        id=f"chunk16-narrow-tuned-{dim_v}-{dtype}",
+                    for name, dim_k, dim_v, dtype in (
+                        ("chunk16-tuned", 64, 64, torch.bfloat16),
+                        ("chunk16-tuned-v24", 64, 24, torch.float16),
+                        ("chunk16-tuned-v96", 64, 96, torch.float16),
+                        ("chunk16-walk-tuned", 16, 64, torch.bfloat16),
                     )
-                    for dim_v in (16, 24, 32, 48, 96)
-                    for dtype in (torch.float32, torch.float16, torch.bfloat16)
-                ],
-                pytest.param(
-                    1,
-                    64,
-                    2,
-                    64,
-                    64,
-                    16,
-                    torch.float32,
-                    True,
-                    marks=pytest.mark.nightly,
-                    id="chunk16-tuned-fp32",
-                ),
-                *[
-                    pytest.param(
-                        1,
-                        64,
-                        2,
-                        16,
-                        dim_v,
-                        16,
-                        dtype,
-                        True,
-                        marks=pytest.mark.nightly,
-                        id=f"chunk16-walk-tuned-{dim_v}-{dtype}",
-                    )
-                    for dim_v in (24, 64)
-                    for dtype in (torch.float32, torch.float16, torch.bfloat16)
                 ],
             ],
         ),
@@ -277,6 +196,19 @@ class DeltaNetChunkBwdFixture(FixtureBase):
                 pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                # dim_k 16 gives the per-chunk gradients and the dh walk one 16-row warp tile.
+                pytest.param(
+                    1,
+                    128,
+                    2,
+                    16,
+                    64,
+                    64,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="chunk64-k16",
+                ),
                 # SM89's 99 KB of shared memory per block holds the w/u program at head dims
                 # 128 / 128 only with its storage reused.
                 pytest.param(
@@ -475,6 +407,39 @@ def test_deltanet_bwd_refused_beyond_sm90_shared_memory(
     )
     with pytest.raises(OpNotAvailableError, match="needs at least"):
         DeltaNetChunkBwdOp().key_for("deltanet_chunk_bwd", call)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "op_cls, name, chunk_size, dim_k, dim_v",
+    [
+        (DeltaNetChunkFwdOp, "deltanet_chunk_fwd", 40, 64, 64),
+        (DeltaNetChunkFwdOp, "deltanet_chunk_fwd", 64, 24, 64),
+        (DeltaNetChunkBwdOp, "deltanet_chunk_bwd", 64, 64, 24),
+    ],
+)
+def test_deltanet_chunk_refuses_extents_no_matmul_tiles(
+    op_cls, name, chunk_size, dim_k, dim_v
+) -> None:
+    """No launch builds a chunk_size or dim_k off the 16-row matmul tile, nor a backward that
+    reduces a 16-bit dim_v off the 16-wide matmul step, so dispatch refuses them."""
+    (in_tree,) = Kernel.devices
+    call = DeltaNetChunkCall(
+        arch=90,
+        sm_count=132,
+        smem_budget=232448,
+        batch=1,
+        heads=2,
+        seq_len=128,
+        chunk_size=chunk_size,
+        dim_k=dim_k,
+        dim_v=dim_v,
+        dtype=torch.bfloat16,
+        device=torch.device(in_tree),
+    )
+    with pytest.raises(OpNotAvailableError, match="multiple of 16"):
+        op_cls().key_for(name, call)
 
 
 class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):

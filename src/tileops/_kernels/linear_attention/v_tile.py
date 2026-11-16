@@ -1,10 +1,22 @@
-"""V-tile width resolution for kernels feeding ``[*, BV]`` tiles into ``T.gemm``.
+"""V-tile width resolution and launch widths for kernels feeding tiles into ``T.gemm``.
 
 A V tile below what the gemm accepts is a configuration error to reject
 eagerly, not to clamp.
 """
 
-__all__ = ["GEMM_MIN_N", "min_gemm_n", "resolve_block_v"]
+from collections.abc import Sequence
+
+import tilelang.language as T
+
+__all__ = [
+    "GEMM_MIN_N",
+    "fit_launches",
+    "gemm_threads",
+    "min_gemm_n",
+    "min_gemm_n_threads",
+    "resolve_block_v",
+    "wgmma_capable",
+]
 
 # Narrowest N extent one warp group can take.
 GEMM_MIN_N = 16
@@ -22,6 +34,60 @@ def min_gemm_n(threads: int) -> int:
         threads: Thread count the kernel launches with.
     """
     return GEMM_MIN_N * (threads // 128)
+
+
+def min_gemm_n_threads(threads: int, n: int) -> int:
+    """Halve *threads*, not below 64, until an N extent of *n* reaches ``min_gemm_n``."""
+    while threads > 64 and n < min_gemm_n(threads):
+        threads //= 2
+    return threads
+
+
+def wgmma_capable(arch: int, elem: int) -> bool:
+    """Whether TileLang lowers a gemm over *elem*-byte float operands to WGMMA on SM *arch*."""
+    return arch == 90 and elem == 2
+
+
+def gemm_threads(threads: int, wgmma: bool, *outputs: tuple[int, int]) -> int:
+    """Return the widest launch up to *threads*, halving, whose warps split over every output.
+
+    WGMMA takes a gemm where *wgmma* holds, the launch is whole warp groups and M is at
+    least 64; four warps then split M and the rest split N, so M must be a multiple of 64
+    and N one of 16 per warp group, as an N-major B operand needs. Elsewhere MMA splits the
+    warps as TileLang's default ``Square`` policy chooses, and the split must use every warp
+    and give each whole 16-by-8 tiles. One warp splits any output with M a multiple of 16
+    and N of 8.
+
+    Args:
+        threads: Widest launch to consider, a power-of-two multiple of 32.
+        wgmma: Whether the target lowers the program's gemms to WGMMA, as ``wgmma_capable``.
+        outputs: ``(M, N)`` output extent of each ``T.gemm`` in the program.
+    """
+    while threads > 32:
+        warps = threads // 32
+        for m, n in outputs:
+            if wgmma and warps % 4 == 0 and m >= 64:
+                if m % 64 or n % (4 * warps):
+                    break
+                continue
+            rows, cols = T.GemmWarpPolicy.Square.compute_warp_partition(m, n, warps)
+            if rows * cols != warps or (m // 16) % rows or (n // 8) % cols:
+                break
+        else:
+            return threads
+        threads //= 2
+    return threads
+
+
+def fit_launches(
+    configs: Sequence[dict[str, int]], wgmma: bool, *outputs: tuple[int, int]
+) -> tuple[dict[str, int], ...]:
+    """*configs* with each launch narrowed by ``gemm_threads`` over *outputs*, deduplicated."""
+    fitted = [
+        {**config, "threads": gemm_threads(config["threads"], wgmma, *outputs)}
+        for config in configs
+    ]
+    return tuple(config for i, config in enumerate(fitted) if config not in fitted[:i])
 
 
 def resolve_block_v(dim_v: int, block_v: int) -> int:

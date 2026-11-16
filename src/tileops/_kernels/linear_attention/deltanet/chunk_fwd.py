@@ -41,26 +41,16 @@ from tileops._kernels.linear_attention.deltanet.autotune import (
     tune_delta_rule_fwd,
 )
 from tileops._kernels.linear_attention.deltanet.chunk_bwd import (
+    extent_refusal,
     walk_block_v_options,
     walk_threads,
 )
 from tileops._kernels.linear_attention.deltanet.fused_prepare_compute_w_u import (
     fused_prepare_compute_w_u_tl,
 )
-from tileops._kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
+from tileops._kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v, wgmma_capable
 
 __all__ = ["DeltaNetChunkFwdKernel"]
-
-
-def _state_threads(dim_k: int, block_v: int) -> int:
-    """Choose a walk launch that its state tile can partition among warps.
-
-    Small state tiles use MMA: each warp needs a 16-by-8 output tile. Head
-    dimensions at least 32 keep the existing walk launch unchanged.
-    """
-    # Sub-tile operands still fail GEMM lowering; a launch always owns at least one warp.
-    capacity = max(32, 32 * (dim_k // 16) * (block_v // 8))
-    return min(walk_threads(block_v), capacity)
 
 
 # Split kernel: h_recurrence  (sequential over chunks, state update only)
@@ -409,7 +399,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         that TileLang still cannot place in the device's shared memory is built and fails at
         launch.
         """
-        reason = head_count_refusal(call.heads)
+        reason = head_count_refusal(call.heads) or extent_refusal(call, reduces_v=False)
         if reason is not None or not call.smem_budget:
             return reason
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
@@ -506,6 +496,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         budget = self.build_target.smem_budget
         elem = getattr(torch, self.dtype_str).itemsize
         self._walk = self._walks(chunk_size, dim_k, dim_v, elem, budget)
+        self.wgmma = wgmma_capable(self.build_target.arch, elem)
         self._fused_late_v, self._o_late_loads = self._late_loads_for(
             budget, chunk_size, dim_k, dim_v, elem, self._walk
         )
@@ -518,18 +509,21 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         if self._walk:
             return self._walk_default_config_for(
                 budget,
-                self.chunk_size,
                 self.build_target.sm_count,
                 self.batch * self.head,
                 self.dim_k,
                 self.dim_v,
                 elem,
+                self.chunk_size,
+                self.wgmma,
             )
-        return self._default_config_for(budget, self.chunk_size, self.dim_k, self.dim_v, elem)
+        return self._default_config_for(
+            budget, self.chunk_size, self.dim_k, self.dim_v, elem, self.wgmma
+        )
 
     @classmethod
     def _default_config_for(
-        cls, budget: int, chunk_size: int, dim_k: int, dim_v: int, elem: int
+        cls, budget: int, chunk_size: int, dim_k: int, dim_v: int, elem: int, wgmma: bool
     ) -> dict:
         """The recurrence's config at *budget* bytes of shared memory per block."""
         c, k, v = chunk_size, dim_k, dim_v
@@ -538,12 +532,12 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             h_block_v = min((b for b in h_block_v_candidates(v) if b), default=h_block_v)
         width = resolve_block_v(v, h_block_v)
         h_num_stages = 2 if cls._state_shared_bytes(c, k, width, elem, 2) <= budget else 1
-        fused_configs, output_configs = chunk_gemm_configs(c, v)
+        fused_configs, output_configs = chunk_gemm_configs(c, v, k, wgmma)
         return {
             "fused_num_stages": 2,
             "fused_threads": max(config["threads"] for config in fused_configs),
             "h_num_stages": h_num_stages,
-            "h_threads": default_h_threads(v, h_block_v, c),
+            "h_threads": default_h_threads(v, h_block_v, c, k, wgmma),
             "h_block_v": h_block_v,
             "o_threads": max(config["threads"] for config in output_configs),
         }
@@ -552,12 +546,13 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     def _walk_default_config_for(
         cls,
         budget: int,
-        chunk_size: int,
         sm_count: int,
         heads: int,
         dim_k: int,
         dim_v: int,
         elem: int,
+        chunk_size: int,
+        wgmma: bool,
     ) -> dict:
         """The state walk's config at *budget* bytes of shared memory per block.
 
@@ -571,12 +566,14 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         ] or walk_block_v_options(dim_v)[:1]
         block_v = next((b for b in widths if heads * (dim_v // b) <= sm_count), widths[-1])
         two = cls._walk_shared_bytes(dim_k, block_v, elem, 2) <= budget
-        fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_v)
+        fused_configs, output_configs = chunk_gemm_configs(
+            chunk_size, dim_v, dim_k, wgmma, walk=True
+        )
         return {
             "fused_num_stages": 2,
             "fused_threads": max(config["threads"] for config in fused_configs),
             "h_num_stages": 2 if two else 1,
-            "h_threads": _state_threads(dim_k, block_v),
+            "h_threads": walk_threads(block_v, dim_k, wgmma),
             "h_block_v": block_v,
             "o_threads": max(config["threads"] for config in output_configs),
         }
@@ -586,7 +583,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         budget = self.build_target.smem_budget
         elem = getattr(torch, self.dtype_str).itemsize
         return [
-            {"block_v": b, "num_stages": stages, "threads": _state_threads(self.dim_k, b)}
+            {"block_v": b, "num_stages": stages, "threads": walk_threads(b, self.dim_k, self.wgmma)}
             for b in walk_block_v_options(self.dim_v)
             for stages in (1, 2)
             if stages == 1 or self._walk_shared_bytes(self.dim_k, b, elem, 2) <= budget
@@ -595,8 +592,12 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         if not self._walk:
-            return delta_rule_fwd_autotune_configs(self.dim_v, self.chunk_size)
-        fused_configs, output_configs = chunk_gemm_configs(self.chunk_size, self.dim_v)
+            return delta_rule_fwd_autotune_configs(
+                self.dim_v, self.chunk_size, self.dim_k, self.wgmma
+            )
+        fused_configs, output_configs = chunk_gemm_configs(
+            self.chunk_size, self.dim_v, self.dim_k, self.wgmma, walk=True
+        )
         return [
             {
                 "fused_num_stages": fused["num_stages"],
@@ -643,7 +644,9 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             self.dtype_str,
         )
         default = self.default_config
-        fused_configs, output_configs = chunk_gemm_configs(self.chunk_size, self.dim_v)
+        fused_configs, output_configs = chunk_gemm_configs(
+            self.chunk_size, self.dim_v, self.dim_k, self.wgmma, walk=True
+        )
 
         def tune(jit, configs, untuned):
             configs = self.tuning_candidates(configs, untuned)
