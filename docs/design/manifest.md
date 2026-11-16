@@ -277,7 +277,7 @@ An op without effect declarations reads its inputs and allocates its outputs. Ef
 - An op with several outputs returns a tuple with one fixed slot per declared output, in declaration order; an absent `nullable` output is `None` in its slot.
 - An op whose only effect is writing its inputs declares no outputs and returns `None`.
 - An effect is declared only on an input without a scalar member, and never on a tensor sequence.
-- A tensor a call writes, `out` or a written input, shares no byte with another tensor of the call unless it lists that input in `overlaps`; a call breaking this raises before anything runs. An entry lists an input only when every implementation finishes reading it before writing the tensor, such as a composite whose earlier stage alone reads it.
+- A tensor a call writes, `out` or a written input, shares no byte with another tensor of the call unless it lists that input in `overlaps`, and no two of its elements share an address; a call breaking this raises before anything runs, except a written tensor whose shape and strides leave its self-overlap undecided, which is the caller's obligation. An entry lists an input only when every implementation finishes reading it before writing the tensor, such as a composite whose earlier stage alone reads it.
 
 ## Workloads
 

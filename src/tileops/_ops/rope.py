@@ -1,8 +1,8 @@
-"""Rotary position embedding ops, following vLLM's ``RotaryEmbedding`` family.
+"""Rotary position embedding ops.
 
-Each op holds a cos/sin cache computed from its construction parameters and rotates
-``query`` and ``key`` at the rows ``positions`` names, as
-``RotaryEmbedding.forward_native(positions, query, key)`` does:
+The ops of vLLM's ``RotaryEmbedding`` family hold a cos/sin cache computed from their
+construction parameters and rotate ``query`` and ``key`` at the rows ``positions`` names,
+as ``RotaryEmbedding.forward_native(positions, query, key)`` does:
 
 - **RoPEFwdOp**: standard frequencies ``base ** (-2k / rotary_dim)``
 - **RoPELlama31FwdOp**: Llama 3.1 piecewise-scaled frequencies
@@ -12,6 +12,9 @@ Each op holds a cos/sin cache computed from its construction parameters and rota
 
 ``query`` and ``key`` hold each token's heads flattened, ``head_size`` columns a head; the
 first ``rotary_dim`` columns of each head rotate and the rest are copied.
+
+**RoPECosSinFwdOp** rotates by cos and sin rows the caller passes, as flash-attn's
+``apply_rotary_emb`` does.
 """
 
 import math
@@ -23,6 +26,9 @@ import torch
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.rope import (
     RoPECall,
+    RoPECosSinCall,
+    RoPECosSinFwdInterface,
+    RoPECosSinKernel,
     RoPENeoxPositionIdsFwdInterface,
     RoPENeoxPositionIdsKernel,
     RoPENonNeoxFwdInterface,
@@ -34,6 +40,7 @@ from tileops.backend import Target
 
 __all__ = [
     "LongRoPEFwdOp",
+    "RoPECosSinFwdOp",
     "RoPEFwdOp",
     "RoPELlama31FwdOp",
     "YaRNFwdOp",
@@ -506,3 +513,104 @@ class LongRoPEFwdOp(_RotaryEmbeddingOp):
             ``(query_out, key_out)``, shaped as ``query`` and ``key``.
         """
         return self._forward(positions, query, key, offsets)
+
+
+class RoPECosSinFwdOp(Op):
+    """Rotary embedding by caller-given cos and sin rows, in place when ``inplace``.
+
+    Follows ``flash_attn.layers.rotary.apply_rotary_emb``. Token ``s`` of sequence ``b``
+    reads row ``s + seqlen_offsets`` of ``cos`` and ``sin`` ``[P, Rh]`` (one offset for
+    every sequence, or one per sequence) and rotates the first ``2 * Rh`` columns of each
+    head; the rest are copied, or left as they are in place. ``interleaved`` pairs
+    ``(x[2i], x[2i + 1])``, otherwise ``(x[i], x[i + Rh])`` (NeoX). The rotation is computed
+    in float32 and rounded once to ``x``'s dtype; ``cos`` and ``sin`` may each have their own
+    dtype.
+
+    ``x`` is dense ``[B, S, H, D]``, or packed ``[Tt, H, D]`` with ``cu_seqlens``, ``s``
+    counting from each sequence's start. ``x`` may be a strided view, such as the trailing
+    columns of a wider head, which ``inplace`` rotates without a copy. Passing ``-sin``
+    applies the inverse rotation.
+
+    A row inside the tables is the caller's obligation, checked for tensor offsets only with
+    ``validate_inputs=True``. Unchecked, a row outside the tables reads its nearest row, row 0
+    or the last. ``max_seqlen`` bounds the packed sequences for the caller; the rotation does
+    not read it.
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"rope_cos_sin": RoPECosSinKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "rope_cos_sin": RoPECosSinFwdInterface
+    }
+
+    def __init__(
+        self,
+        interleaved: bool = False,
+        inplace: bool = False,
+        max_seqlen: int | None = None,
+        *,
+        validate_inputs: bool = False,
+        target: Target = None,
+    ):
+        """Build the op.
+
+        Args:
+            interleaved: Rotate adjacent pairs rather than the two halves (NeoX).
+            inplace: Write the rotation into ``x`` and return ``x``.
+            max_seqlen: The longest packed sequence; required with ``cu_seqlens``.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never
+                decreases and ends at the token count, and that each tensor of
+                ``seqlen_offsets`` lies in ``[0, P - L]``, before the kernel runs; this
+                synchronizes the device and cannot run inside CUDA Graph capture.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.interleaved = interleaved
+        self.inplace = inplace
+        self.max_seqlen = max_seqlen
+        self.validate_inputs = validate_inputs
+        super().__init__(target=target)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        cu_seqlens: torch.Tensor | None = None,
+        seqlen_offsets: int | torch.Tensor = 0,
+    ) -> torch.Tensor:
+        """Rotate the leading ``2 * Rh`` columns of each head of ``x``.
+
+        Args:
+            x: ``[B, S, H, D]``, or ``[Tt, H, D]`` with ``cu_seqlens``; any strides.
+            cos: ``[P, Rh]``.
+            sin: ``[P, Rh]``.
+            cu_seqlens: ``[B + 1]`` sequence starts of packed ``x``, ``int32`` or
+                ``int64``, or None for dense ``x``.
+            seqlen_offsets: The table row of each sequence's first token: an int, or
+                ``[B]`` ``int32`` or ``int64``.
+
+        Returns:
+            ``x`` when ``inplace``, else a new tensor of its shape and dtype.
+        """
+        cos, sin = cos.contiguous(), sin.contiguous()
+        cu_seqlens = None if cu_seqlens is None else cu_seqlens.contiguous()
+        offsets_tensor = isinstance(seqlen_offsets, torch.Tensor)
+        if offsets_tensor:
+            seqlen_offsets = seqlen_offsets.contiguous()
+        kernel = self.kernel_for(
+            "rope_cos_sin",
+            lambda: RoPECosSinCall(
+                heads=x.shape[-2],
+                head_dim=x.shape[-1],
+                rotary_half=cos.shape[-1],
+                interleaved=self.interleaved,
+                inplace=self.inplace,
+                dtype=x.dtype,
+                cos_dtype=cos.dtype,
+                sin_dtype=sin.dtype,
+                seqlens_dtype=None if cu_seqlens is None else cu_seqlens.dtype,
+                offset_dtype=seqlen_offsets.dtype if offsets_tensor else None,
+                device=x.device,
+            ),
+        )
+        return kernel(x, cos, sin, cu_seqlens, seqlen_offsets)

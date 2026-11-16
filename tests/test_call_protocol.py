@@ -1002,6 +1002,39 @@ def test_a_written_tensor_sharing_a_byte_with_another_call_tensor_is_rejected_be
             assert len(ran) == 2
 
 
+def test_a_written_tensor_overlapping_itself_is_rejected_before_the_call():
+    """A written input whose elements share an address raises before the implementation
+    runs: an expanded view, and one with more elements than the addresses it spans. A strided view with holes runs, as
+    does one whose strides interleave without sharing an address, and an empty expanded view
+    returns as passed."""
+    matrix = {"dtype": "T", "shape": "[A, M]"}
+    signature = {
+        "forall": {"A": "Dim", "M": "Dim", "T": "DType[float32]"},
+        "inputs": {"x": {**matrix, "mutated": True}, "w": matrix},
+        "outputs": {"y": {**matrix, "alias": "x"}},
+    }
+    ran = []
+    op = _probe(_recording(_add_into_x, ran), **signature)()
+    w = torch.ones(2, 2)
+    # The second view's 4 elements span 3 addresses: elements (0, 1) and (1, 0) share one.
+    for x, other in (
+        (torch.zeros(1, 1).expand(2, 2), w),
+        (torch.zeros(3).as_strided((2, 2), (1, 1)), w),
+    ):
+        with pytest.raises(ValueError, match="x must not overlap itself in memory"):
+            op(x, other)
+    assert not ran
+    storage = torch.zeros(2, 4)
+    op(storage[:, ::2], w)
+    assert storage.tolist() == [[1.0, 0.0, 1.0, 0.0]] * 2
+    # Offsets 0, 3, 2, 5, 4, 7: the stride-3 dimension steps inside the stride-2 one's reach.
+    storage = torch.zeros(8)
+    op(storage.as_strided((3, 2), (2, 3)), torch.ones(3, 2))
+    assert storage.tolist() == [1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0]
+    empty = torch.zeros(0, 1).expand(0, 2)
+    assert op(empty, torch.ones(0, 2)) is empty
+
+
 def test_a_written_tensor_ending_where_another_call_tensor_starts_is_written():
     """An `out` ending where `x` starts, or starting where it ends, runs and is written."""
     op = _probe(_into_out, outputs=_OUT)()

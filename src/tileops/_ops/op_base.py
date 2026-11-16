@@ -1039,6 +1039,32 @@ class Op(ABC):
         self._construction_indices = type(self)._check_construction(self)
         tensors = {**dict(zip(signature.sig.inputs, inputs, strict=True)), **writes}
         call = signature.check(self, tensors)
+        # Two elements of a written tensor at one address would be written twice. torch
+        # decides most layouts. One it cannot is disjoint when, its dimensions of more than
+        # one element ordered by stride, each stride passes the farthest element the smaller
+        # ones reach, and overlaps when it holds more elements than the addresses it spans;
+        # any other stays the caller's obligation, since deciding it reads every offset. The
+        # layout decides it, so the plan, keyed by layout, checks it once.
+        for name in sorted(call.written.union(writes)):
+            written = tensors[name]
+            if not isinstance(written, torch.Tensor) or not written.numel():
+                continue
+            overlap = torch._debug_has_internal_overlap(written)
+            if overlap == 2:
+                dims = zip(written.shape, written.stride(), strict=True)
+                ordered = sorted((stride, size) for size, stride in dims if size > 1)
+                reach = 0
+                for stride, size in ordered:
+                    if stride <= reach:
+                        break
+                    reach += (size - 1) * stride
+                else:
+                    overlap = 0
+            if overlap == 2:
+                span = sum((size - 1) * stride for stride, size in ordered) + 1
+                overlap = int(written.numel() > span)
+            if overlap == 1:
+                raise CheckError(f"{type(self).__name__}: {name} must not overlap itself in memory")
         present = signature.states(tensors)
         slots = (*inputs, *writes.values())
         passed = leaves(slots)

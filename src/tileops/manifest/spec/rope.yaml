@@ -228,7 +228,7 @@ RoPECosSinFwdOp:
   # x may be a strided view, such as the trailing columns of a wider head rotated in place;
   # passing -sin applies the inverse rotation.
   family: rope
-  status: spec-only
+  status: implemented
   ref_api: flash_attn.layers.rotary.apply_rotary_emb
   signature:
     forall: {B: Dim, S: Dim, Tt: Dim, H: Dim, D: Dim, P: Dim, Rh: Dim, T: "DType[float16 | bfloat16 | float32]", C: "DType[float16 | bfloat16 | float32]", Cs: "DType[float16 | bfloat16 | float32]", I: "DType[int32 | int64]", O: "DType[int32 | int64]", seq_lens: "Seq[Int]"}
