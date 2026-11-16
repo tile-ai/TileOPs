@@ -134,7 +134,14 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
     result = op(*positional, **keywords)
 
     assert len(seen) == 1, "the kernel the target built runs the call"
-    assert all(a is b for a, b in zip(seen[0], passed, strict=True)), (
+
+    # A tensor sequence is the same tensors in order, held in whatever list the call built.
+    def same(a, b):
+        if isinstance(b, (list, tuple)):
+            return type(a) is type(b) and len(a) == len(b) and all(map(same, a, b))
+        return a is b
+
+    assert all(same(a, b) for a, b in zip(seen[0], passed, strict=True)), (
         "called with what it was described"
     )
     outputs = tuple(entry["signature"]["outputs"])

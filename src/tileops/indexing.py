@@ -3,4 +3,8 @@
 Ops that gather, scatter or join tensor elements by index or mask.
 """
 
-__all__: list[str] = []
+from tileops._ops.indexing import ConcatFwdOp
+
+__all__ = [
+    "ConcatFwdOp",
+]

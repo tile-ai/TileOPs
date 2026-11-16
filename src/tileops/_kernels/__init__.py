@@ -57,6 +57,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GemvKernel,
     )
     from tileops._kernels.gemm.grouped import GroupedGEMMKernel, GroupedGEMMPersistentKernel
+    from tileops._kernels.indexing import ConcatKernel
     from tileops._kernels.kernel_base import Kernel
     from tileops._kernels.linear_attention import (
         DeltaNetChunkBwdKernel,
@@ -135,6 +136,7 @@ _LAZY = {
     "BMMFP8WSKernel": ".gemm",
     "BMMKernel": ".gemm",
     "BMMPersistentKernel": ".gemm",
+    "ConcatKernel": ".indexing",
     "Conv1dKernel": ".convolution",
     "Conv1dPointwiseKernel": ".convolution",
     "Conv2d1x1Kernel": ".convolution",
