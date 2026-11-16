@@ -1113,7 +1113,16 @@ class TestSpecOnlyRecounts:
 
     def test_causal_conv1d_touches_the_dilated_window_of_each_named_state(self):
         name = "CausalConv1dFwdOp"
-        row = {"D": 4, "W": 3, "L": 5, "P": 6, "Tt": 5, "seq_lens": [3, 2], "dilation": 2}
+        row = {
+            "D": 4,
+            "W": 3,
+            "L": 5,
+            "P": 6,
+            "Tt": 5,
+            "seq_lens": [3, 2],
+            "dilation": 2,
+            "bias": None,
+        }
         row["some"] = ["cache_indices"]
         (flops, moved), _call = _evaluated(name, row, {"T": "bfloat16", "Tw": "float32"})
         window = ((2, 4, 4), _BF16)  # 2 sequences, 4 channels, (W - 1) * dilation tokens
