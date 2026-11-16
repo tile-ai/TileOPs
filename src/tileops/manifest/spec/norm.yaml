@@ -232,8 +232,8 @@ BatchNormFwdOp:
       eps: {type: float, default: 1.0e-5}
     inputs:
       input: {dtype: T, shape: "[B, C, *L]"}
-      running_mean: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null, mutated: "training and present(running_mean)"}
-      running_var: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null, mutated: "training and present(running_mean)"}
+      running_mean: {dtype: float32, shape: "[C]", type: "Tensor | None", mutated: "training and present(running_mean)"}
+      running_var: {dtype: float32, shape: "[C]", type: "Tensor | None", mutated: "training and present(running_mean)"}
       weight: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null}
       bias: {dtype: float32, shape: "[C]", type: "Tensor | None", default: null}
     outputs:
@@ -251,7 +251,7 @@ BatchNormFwdOp:
   - {B: 4, C: 256, L: [28, 28], training: true, some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}, {T: float32}], label: resnet-stage3}
   - {B: 4, C: 128, L: [1024, 1024], training: true, some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}], label: large-spatial}
   - {B: 4, C: 256, L: [28, 28], some: [running_mean, weight, bias, running_var], dtype_cases: [{T: float16}], label: resnet-stage3-eval}
-  - {B: 8, C: 64, L: [56, 56], training: true, dtype_cases: [{T: bfloat16}], label: resnet-stem}
+  - {B: 8, C: 64, L: [56, 56], training: true, running_mean: null, running_var: null, dtype_cases: [{T: bfloat16}], label: resnet-stem}
   roofline:
     # Training: mean (1), centered variance (3), normalize the centered value (1); running
     # statistics: normalize (2). One more per present affine tensor.

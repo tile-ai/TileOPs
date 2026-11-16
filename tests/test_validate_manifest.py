@@ -185,6 +185,71 @@ def test_an_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch)
     ]
 
 
+def _min_forward(self, x, min=0):
+    pass
+
+
+def _min_float_forward(self, x, min=0.0):
+    pass
+
+
+def _min_one_forward(self, x, min=1):
+    pass
+
+
+def _min_slot_forward(self, x, min=0, min__number=None):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("forward", "expected"),
+    [
+        pytest.param(_min_forward, [], id="matching-default"),
+        pytest.param(_min_float_forward, ["forward 'min' must default to 0"], id="default-type"),
+        pytest.param(_min_one_forward, ["forward 'min' must default to 0"], id="default-value"),
+        pytest.param(
+            _min_slot_forward,
+            [
+                "forward execution parameter 'min__number' takes the name of an operator "
+                "slot of 'min'"
+            ],
+            id="slot-name",
+        ),
+    ],
+)
+def test_a_union_input_keeps_its_default_and_its_slot_names(
+    validator, monkeypatch, forward, expected
+):
+    """A non-None `default` is matched in value and type; an execution parameter never takes
+    the name of one of the input's operator slots."""
+
+    class ProbeFwdOp:
+        compile_op_names = ("tileops::probe_fwd",)
+
+        def __init__(self, *, target=None):
+            pass
+
+    ProbeFwdOp.forward = forward
+    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
+    entry = {
+        "family": "probe",
+        "signature": {
+            "inputs": {
+                "x": {"dtype": "T", "shape": "[M]"},
+                "min": {
+                    "type": "Number | Tensor | None",
+                    "dtype": "T",
+                    "shape": "[M]",
+                    "default": 0,
+                },
+            },
+        },
+    }
+    assert validator._parity_errors("ProbeFwdOp", entry) == [
+        f"[signature] ProbeFwdOp: {e}" for e in expected
+    ]
+
+
 def _kw_only_probe(forward):
     """A class whose `forward` is *forward*, and an entry with one buffered output and an
     optional `kw_only` input `bias` after the positional `x`."""

@@ -14,6 +14,7 @@ from math import prod
 from typing import TYPE_CHECKING
 
 from tileops.manifest._dtype_rules import FLOAT8_DTYPES
+from tileops.manifest.primitives import flat
 
 if TYPE_CHECKING:
     from tileops.manifest._workload import CallView
@@ -1260,15 +1261,7 @@ def embedding_roofline(call: CallView) -> tuple[int, int]:
     square, accumulate), 3 for a general p (abs, power, accumulate); a root per row except
     for p = 1 and p = inf."""
     d, p = call.indices["D"], call.indices["norm_type"]
-    ids = call.metadata_values("input")
-    pending, flat = [ids], []
-    while pending:
-        item = pending.pop()
-        if isinstance(item, list):
-            pending.extend(item)
-        else:
-            flat.append(item)
-    rows = len(set(flat))
+    rows = len(set(flat(call.metadata_values("input"))))
     flops = 0
     if call.indices["max_norm"] is not None:
         per_value = 2 if p in (1.0, 2.0, float("inf")) else 3
@@ -1276,13 +1269,6 @@ def embedding_roofline(call: CallView) -> tuple[int, int]:
         flops = rows * (per_value * d + per_row)
     moved = call.bytes("input") + rows * d * _elem_bytes(call, "weight") + call.bytes("output")
     return flops, moved
-
-
-def _flat_values(values: object) -> list:
-    """The values of a nested list, in order."""
-    if not isinstance(values, list):
-        return [values]
-    return [v for item in values for v in _flat_values(item)]
 
 
 def rope_positions_roofline(call: CallView) -> tuple[int, int]:
@@ -1293,8 +1279,8 @@ def rope_positions_roofline(call: CallView) -> tuple[int, int]:
     if call.present("offsets"):
         offsets = call.metadata_values("offsets")
         index = [p + o for p, o in zip(index, offsets, strict=True)]
-    flat = _flat_values(index)
-    rows, tokens = set(flat), len(flat)
+    flat_index = flat(index)
+    rows, tokens = set(flat_index), len(flat_index)
     rotated, moved = 0, 0
     for name in ("query", "key"):
         if call.present(name):

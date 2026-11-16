@@ -106,6 +106,7 @@ def test_causal_conv1d(seq_lens, dim, width, dtype, some, activation) -> None:
         seq_lens=seq_lens,
         activation=activation,
         some=some,
+        **({} if "bias" in some else {"bias": None}),
     )
     test = CausalConv1dFwdTest(call)
     op = CausalConv1dFwdOp(**call.arguments())

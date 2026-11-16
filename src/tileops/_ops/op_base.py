@@ -211,6 +211,7 @@ class _Plan:
         "requests",
         "delegates",
         "filling",
+        "scalar",
     )
 
     def __init__(
@@ -242,6 +243,9 @@ class _Plan:
         # Held while a call extends either list, so calls missing together extend it once.
         # Reentrant: a sub-op built under it may resolve its own plan.
         self.filling = threading.RLock()
+        # Whether a call-time argument holds a scalar member: its value may decide a call
+        # spec and the plan holds no scalar value, so each request builds its spec.
+        self.scalar = any(m in sig.inputs[t].scalars for t, m in (call.members or {}).items())
 
 
 class _Request:
@@ -810,7 +814,7 @@ class Op(ABC):
             )
         calls = _OPEN_CALLS.__dict__.get("stack")
         frame = calls[-1] if calls else None
-        if frame is None or frame.op is not self or frame.plan is None or self._unplanned_specs():
+        if frame is None or frame.op is not self or frame.plan is None or frame.plan.scalar:
             return self._entry(interface, call())
         request = self._planned_request(frame, interface, call)
         entries = self._entries_by_call
@@ -834,15 +838,9 @@ class Op(ABC):
         """
         calls = _OPEN_CALLS.__dict__.get("stack")
         frame = calls[-1] if calls else None
-        if frame is None or frame.op is not self or frame.plan is None or self._unplanned_specs():
+        if frame is None or frame.op is not self or frame.plan is None or frame.plan.scalar:
             return call()
         return self._planned_request(frame, interface, call).spec
-
-    def _unplanned_specs(self) -> bool:
-        """Whether a call spec is built on every request: a call-time scalar may decide it,
-        and the plan holds no scalar value."""
-        signature = getattr(type(self), "_signature", None)
-        return signature is not None and signature.scalar_arguments
 
     def _entry(self, interface: str, call: CallSpec) -> object:
         """The entry the op's table holds for *call* under *interface*, built on a miss."""

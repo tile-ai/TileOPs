@@ -701,6 +701,27 @@ def test_calls_resolving_one_plan_together_hold_each_request_once():
         assert (len(checks), built) == (1, [2.0, 3.0]), "the plan was resolved more than once"
 
 
+def test_only_a_call_holding_a_scalar_member_builds_its_spec_on_every_request():
+    """The plan holds the spec of a call whose union argument holds a tensor; a scalar
+    member's value is in no plan key, so that call builds its spec on each request."""
+    from tileops._kernels.call_spec import CallSpec
+
+    built = []
+
+    def forward(self, x, off=0):
+        self.call_spec("shift", lambda: built.append(off) or CallSpec())
+        return x + off
+
+    inputs = {"x": _T, "off": {**_T, "type": "int | Tensor", "default": 0}}
+    op, x = _probe(forward, inputs=inputs)(), torch.zeros(2)
+    for _ in range(3):
+        op(x, x)
+    assert len(built) == 1
+    op(x, 1)
+    op(x, 2)
+    assert built[1:] == [1, 2]
+
+
 def test_calls_missing_one_entry_together_build_the_entry_tuning_reaches():
     """Threads whose first calls miss one entry together build it once, so the entry every
     call launches is the one the op holds and tuning reaches."""

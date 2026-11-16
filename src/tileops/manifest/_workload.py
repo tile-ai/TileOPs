@@ -422,7 +422,9 @@ def _member_of(t, scope: dict, some: set[str]) -> str:
     elif t.default is not REQUIRED:
         value = t.default
     else:
-        raise RowError(f"row misses argument {t.name!r}: list it in `some` or give its value")
+        raise RowError(
+            f"argument {t.name!r} has no value: pass its tensor (a row's `some`) or its value"
+        )
     found = member_of(value, t.members)
     if found is None or found in TENSOR_MEMBERS:
         raise RowError(f"{t.name} = {value!r} is not a non-tensor member of {t.type!r}")
@@ -748,9 +750,11 @@ def call_from_tensors(plan: EntryPlan, known: dict, inputs: dict) -> Call:
 
     Its indices are solved from their shapes and dtypes as the op's checks solve them.
 
-    `known` holds every signature parameter, as expressions read it, and may hold indices the
-    tensors do not determine, such as a generator's arguments. `inputs` maps each call tensor
-    to its `TensorSpec`, or None where the call does not pass it; a DType index an input's
+    `known` holds every signature parameter, as expressions read it, and the value of each
+    argument with several members that the call passes as a scalar or None, which decides the
+    member it holds; it may hold indices the tensors do not determine, such as a generator's
+    arguments. `inputs` maps each call tensor to its `TensorSpec`, each tensor sequence to a
+    tuple of `TensorSpec`, or None where the call does not pass it; a DType index an input's
     dtype names is that dtype. The outputs' specs follow from the solved indices.
 
     Raises:

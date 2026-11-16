@@ -132,7 +132,8 @@ def member_of(value: object, members: tuple[str, ...]) -> str | None:
     elif isinstance(value, (bool, *symbolic[:1])):
         found = ["bool"]
     elif isinstance(value, (int, *symbolic[1:2])):
-        found = ["int", "Number"]
+        # A `float` member takes an int, as Python's `float` annotation and the `float` slot do.
+        found = ["int", "Number", "float"]
     elif isinstance(value, (float, *symbolic[2:])):
         found = ["float", "Number"]
     else:

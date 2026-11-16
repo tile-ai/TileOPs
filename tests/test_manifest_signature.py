@@ -121,9 +121,9 @@ _EDITS = [
         _edit(
             "ClampFwdOp",
             _set(("inputs", "min", "type"), "float | Tensor"),
-            _set(("inputs", "min", "default"), 0),
+            _set(("inputs", "min", "default"), True),
         ),
-        "default 0 is not a value of 'float | Tensor'",
+        "default True is not a value of 'float | Tensor'",
     ),
     (
         _edit(
@@ -211,6 +211,10 @@ _EDITS = [
     ),
     (_edit("GEMMFwdOp", _set(("shape_rules",), ["M == None"])), "compares with None"),
     (_edit("GEMMFwdOp", _set(("types", "Mat", "match"), "len(())")), "not Bool, an enum or an ADT"),
+    (
+        _edit("GEMMFwdOp", _set(("types", "Mat", "params", "t"), "Maybe[Bool]")),
+        "has kind Maybe",
+    ),
     (_edit("GEMMFwdOp", _set(("outputs", "d", "optional"), True)), "unknown key 'optional'"),
     # Input order is the generated signature's parameter order, so a required input after an
     # optional one emits a parameter without a default after one with a default.
@@ -649,3 +653,18 @@ def test_a_roofline_member_names_a_call_time_argument():
     errors, _ = roofline_plan(sig, {"flops": "1 if member(typo) == 'Tensor' else 0"})
     assert any("member(typo) names no call-time argument" in e for e in errors), errors
     assert roofline_plan(sig, {"flops": "1 if member(min) == 'Tensor' else 0"})[0] == []
+
+
+@pytest.mark.parametrize(
+    ("value", "members", "expected"),
+    [
+        (2, ("float", "Tensor"), "float"),
+        (2, ("int", "float"), "int"),
+        (2, ("Number", "Tensor"), "Number"),
+        (True, ("float", "Tensor"), None),
+    ],
+)
+def test_an_int_takes_a_float_member_as_the_float_slot_does(value, members, expected):
+    from tileops.manifest._signature import member_of
+
+    assert member_of(value, members) == expected

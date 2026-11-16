@@ -153,12 +153,11 @@ A call-time input declares its argument `type` and `default` as a parameter does
 - `type` defaults to `Tensor`, which names this declaration's `Tensor[dtype, shape]`. Members are `Tensor`, `list[Tensor]`, `int`, `float`, `Number`, `bool` and `None`; `Number` already holds `int` and `float`, so it is never listed with them.
 - An input without `default` is passed on every call; one with `default` may be omitted.
 - An argument with a `Tensor` or `list[Tensor]` member is a call-time input, in `inputs`; every other argument is a construction parameter, in `params`. A tensor is never a construction parameter.
-- A value takes a member by its Python type: `None` takes `None`; a list or tuple takes `list[Tensor]`; a tensor takes `Tensor`; a `bool` takes only `bool`; an `int` takes `int`, else `Number`; a `float` takes `float`, else `Number`. A value no member takes is rejected.
+- A value takes a member by its Python type: `None` takes `None`; a list or tuple takes `list[Tensor]`; a tensor takes `Tensor`; a `bool` takes only `bool`; an `int` takes `int`, else `Number`, else `float`; a `float` takes `float`, else `Number`. A value no member takes is rejected.
 - Among positional inputs, one without `default` never follows one with `default`. A `kw_only` input follows every positional one, and may be required.
 - `member(x)` is the name of the member `x` holds; each argument with several members is one finite discriminant. `present(x)` means `member(x) != 'None'`, whether the caller passed `x` or its `default` applied.
 - `member(x) == '<m>'` narrows `x` to that member, `!=` excludes it, and `present(x)` excludes `None`, composed through `not`, `and`, `or` and conditionals.
 - Tensor-only declarations — `shape`, `dtype`, `contiguous`, `device`, `values`, `requires` and effects — apply on the branches where the argument holds a tensor member. An index only they read is irrelevant elsewhere.
-- Effects are declared only on an argument without a scalar member.
 - An output that may be `None` is `nullable: "<p>"`, an expression of finite discriminants: `Bool` and enum parameters, ADT tags and finite fields, `present(...)` and `member(...)`.
 
 Inputs passed or omitted together state it as a refinement that reads only discriminants, a domain restriction:
@@ -215,10 +214,10 @@ shape_rules:
 - The sequence length is the common length of its element-wise indices; a `list[Tensor]` declaration reads at least one.
 - Element-wise indices are solved on every element and readable once every element is. A shared index is solved from the other tensors first; only when inference stalls is it solved from element 0 of the first sequence in declaration order, then checked on every element. Where that sequence is empty, element 0 of the next nonempty sequence of the same element form, its element-wise names aside, stands in. Two sequences reading one element-wise index: the first solved publishes it, the other checks it per element.
 - An empty sequence gives its element-wise indices empty lists; a shared index only it could solve is not solved, and the call raises naming the declaration.
-- A tensor sequence is passed on every call and only read. It declares no effect, `values`, `requires` or `device`, and is not a member of a union.
+- A tensor sequence is passed on every call and only read. It declares no `values`, `requires` or `device`.
 - Device selection, the 16-byte alignment copy and the alias and overlap checks visit each element. Derived bytes count each element once; `bytes(t)` is the sum over its elements.
 
-These combinations are rejected until an op needs them: a `list[Tensor]` output, `None` elements in a sequence, `list[Tensor]` as a union member, and an effect on a sequence.
+These combinations are rejected until an op needs them: a `list[Tensor]` output, `None` elements in a sequence, and `list[Tensor]` as a union member.
 
 ### Type Families
 
@@ -226,7 +225,7 @@ A type family gives a shape by the value of a finite discriminant. It lives in t
 
 - A family declares `params`, a mapping of formal names to kinds; a `match` over some of them; and `cases`, a list of `{when: <discriminant value>, is: <shape>}`. A tensor applies it in its `shape` as `Family[arg, ...]`.
 
-- `match` takes a finite discriminant — `Bool`, enum, ADT, `present`, `member`, a boolean expression of these such as `member(min) == 'Tensor'` — or a tuple of them; a tuple's `when` is a list. A `Maybe` discriminant matches by its value; only `_` matches it absent.
+- `match` takes a finite discriminant — `Bool`, enum, ADT, `present`, `member`, a boolean expression of these such as `member(min) == 'Tensor'` — or a tuple of them; a tuple's `when` is a list. A `Maybe[ADT]` discriminant matches by its value; only `_` matches it absent.
 
 - `cases` are exhaustive and disjoint over the discriminant values the entry accepts; values a domain restriction rejects need no case.
 

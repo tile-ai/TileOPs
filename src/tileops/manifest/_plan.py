@@ -590,8 +590,9 @@ def _family_errors(fam: str, spec: object, sig: Signature) -> list[str]:
         ]
         kind, found = infer_kinds(node, env, where)
         errors += found
-        # A `Maybe` discriminant matches by its payload; only `_` matches it absent.
-        kind = kind.item if kind is not None and kind.tag == "Maybe" else kind
+        # A `Maybe[ADT]` discriminant matches by its payload; only `_` matches it absent.
+        if kind is not None and kind.tag == "Maybe" and kind.item.tag == "ADT":
+            kind = kind.item
         if kind is not None and (
             kind == BOOL or kind.tag == "ADT" or (kind.tag == "Str" and kind.values)
         ):

@@ -30,6 +30,7 @@ __all__ = [
     "PRIMITIVE_KINDS",
     "RANDOM_GENERATORS",
     "WORKLOAD_SEED",
+    "flat",
     "namespace",
     "normalize_axis",
 ]
@@ -793,8 +794,9 @@ RANDOM_GENERATORS = frozenset(
 # ---------------------------------------------------------------- requires predicates
 
 
-def _flat(values):
-    return [y for x in values for y in _flat(x)] if isinstance(values, list) else [values]
+def flat(values: object) -> list:
+    """The values of a nested list, in order; a value that is not a list is one value."""
+    return [y for x in values for y in flat(x)] if isinstance(values, list) else [values]
 
 
 def prefix_offsets(x: Sequence[int], total: int) -> bool:
@@ -814,7 +816,7 @@ def max_segment(x: Sequence[int], bound: int) -> bool:
 
 def in_range(x: object, lo: int, hi: int) -> bool:
     """Every element of `x` lies in `[lo, hi)`."""
-    return all(lo <= v < hi for v in _flat(x))
+    return all(lo <= v < hi for v in flat(x))
 
 
 def sums_to(x: Sequence[int], total: int) -> bool:

@@ -244,6 +244,13 @@ def _check_equal(name: str, tensor, other: str, values: list) -> None:
         raise ValueError(f"{name} must equal {other}")
 
 
+def _type_label(value) -> str:
+    """*value*'s type for an error message: no tensor contents, and no device copy."""
+    if isinstance(value, (list, tuple)):
+        return f"{type(value).__name__} of {len(value)}"
+    return type(value).__name__
+
+
 def _check_range(name: str, tensor, lo: int, hi: int) -> None:
     """Check on the CPU that every element of *tensor* lies in ``[lo, hi)``.
 
@@ -1184,8 +1191,12 @@ def _observer_source(sig: Signature) -> str:
         lines.append("        return None, None")
     lines.append(f"    key = [{''.join(f'_k{n}, ' for n in names)}]")
     if writing:
+        # A sequence slot holding no list is one leaf, as `leaves` counts it.
         sequence = {n for n, t in zip(names, sig.inputs.values(), strict=True) if t.sequence}
-        slots = "".join(f"*(_a{n} or ()), " if n in sequence else f"_a{n}, " for n in names)
+        slots = "".join(
+            f"*(_a{n} if type(_a{n}) is list else (_a{n},)), " if n in sequence else f"_a{n}, "
+            for n in names
+        )
         lines.append(f"    addresses = [{slots}]")
     lines.append("    for t in writes.values():")
     lines.append(
@@ -1254,7 +1265,6 @@ class _SignaturePlan:
         self.positional = not any(t.kw_only for t in sig.inputs.values())
         # Whether a call passes an argument a call-time scalar may hold, whose value a plan,
         # keyed without it, does not fix.
-        self.scalar_arguments = any(t.scalars for t in sig.inputs.values())
         self.observe = _compiled(
             "observe",
             _observer_source(sig),
@@ -1378,7 +1388,9 @@ class _SignaturePlan:
         t = self.sig.inputs[name]
         found = member_of(value, t.members)
         if found is None:
-            raise CheckError(f"{self.sig.name}: {name} = {value!r} is not a {t.type}")
+            raise CheckError(
+                f"{self.sig.name}: {name} = {_type_label(value)} is not a member of {t.type}"
+            )
         return found
 
     def states(self, tensors: dict) -> tuple:
@@ -1451,8 +1463,11 @@ class _SignaturePlan:
             return self.state(name, value)
         nested = any(isinstance(v, (list, tuple)) for v in value)
         found = "list[Tensor]" if nested or self.sig.inputs[name].sequence else "Tensor"
-        if found not in self.sig.inputs[name].members:
-            raise CheckError(f"{self.sig.name}: {name} = {value!r} is not a {found}")
+        t = self.sig.inputs[name]
+        if found not in t.members:
+            raise CheckError(
+                f"{self.sig.name}: {name} = {_type_label(value)} is not a member of {t.type}"
+            )
         return found
 
     def effect_branch(self, op, present: tuple) -> tuple:

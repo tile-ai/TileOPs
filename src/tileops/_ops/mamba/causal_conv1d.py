@@ -75,7 +75,7 @@ class CausalConv1dFwdOp(Op):
         weight: torch.Tensor,
         conv_state: torch.Tensor,
         cu_seqlens: torch.Tensor,
-        bias: torch.Tensor | None = None,
+        bias: torch.Tensor | None,
         has_initial_state: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Convolve every packed sequence and leave its last ``W - 1`` tokens in its state.
@@ -86,7 +86,7 @@ class CausalConv1dFwdOp(Op):
             conv_state: ``(B, D, W - 1)``, contiguous; read where ``has_initial_state`` is
                 set and overwritten in place.
             cu_seqlens: int32 ``(B + 1,)`` packed offsets, from 0 to ``Tt``.
-            bias: Optional ``(D,)`` bias.
+            bias: ``(D,)`` bias, or ``None``.
             has_initial_state: Optional bool ``(B,)``; absent, every sequence starts from
                 zeros.
 

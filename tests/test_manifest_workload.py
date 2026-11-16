@@ -638,3 +638,44 @@ def test_element_wise_indices_of_one_sequence_have_one_length():
     row = {"A": [4], "N": [2, 3], "M": [1], "label": "x"}
     with pytest.raises(RowError, match="differ in length"):
         instantiate(plan, row, {"T": "float16"})
+
+
+def _two_sequences(dtype="T"):
+    forall = {"N": "Dim", "A": "Seq[Shape]", "B": "Seq[Shape]", "T": "DType[float16 | float32]"}
+    if dtype != "T":
+        forall["D"] = "Seq[DType[float16 | float32]]"
+    signature = {
+        "forall": forall,
+        "inputs": {
+            "xs": {"type": "list[Tensor]", "dtype": dtype, "shape": "[N, *A]"},
+            "ys": {"type": "list[Tensor]", "dtype": dtype, "shape": "[N, *B]"},
+        },
+        "outputs": {"n": {"dtype": "float32", "shape": "[N]"}},
+    }
+    return entry_plan("TwoSequencesFwdOp", {"signature": signature}, _ADTS)
+
+
+def test_two_empty_sequences_leave_their_shared_name_unsolved():
+    with pytest.raises(RowError, match="xs and ys empty: no element 0 solves"):
+        call_from_tensors(_two_sequences(), {}, {"xs": (), "ys": ()})
+
+
+def test_a_call_from_tensors_refuses_sequences_disagreeing_on_an_element_dtype():
+    xs = (TensorSpec((2, 3), "float16"), TensorSpec((2, 3), "float32"))
+    ys = (TensorSpec((2, 3), "float16"), TensorSpec((2, 3), "float16"))
+    with pytest.raises(RowError, match="the elements of ys differ in dtype from D"):
+        call_from_tensors(_two_sequences("D"), {}, {"xs": xs, "ys": ys})
+
+
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        ({}, "argument 'value' has no value"),
+        ({"value": "x"}, "value = 'x' is not a non-tensor member of 'Number | bool | Tensor'"),
+    ],
+)
+def test_a_row_passes_a_member_of_a_union_argument(row, message):
+    plan = entry_plan("MaskedFillFwdOp", load_manifest()["MaskedFillFwdOp"], load_adts())
+    row = {"A": [4], "M": [4], "label": "x", **row}
+    with pytest.raises(RowError, match=message):
+        instantiate(plan, row, {"T": "float16"})

@@ -43,7 +43,13 @@ tileops.elementwise.MaskedFillTensorFwdOp.eval_roofline: removed
 tileops.elementwise.MaskedFillTensorFwdOp.forward: removed
 tileops.elementwise.MaskedFillTensorFwdOp.interfaces: removed
 tileops.elementwise.MaskedFillTensorFwdOp.kernel_types: removed
+tileops.mamba.CausalConv1dFwdOp.forward: parameter `bias` default changed from None to no default
+tileops.mamba.CausalConv1dFwdOp.forward: parameter `bias` (slot 4) is required, and calls may omit it
 tileops.manifest.Call.arguments: positional parameter `tensors` (slot 0) removed
+tileops.norm.BatchNormFwdOp.forward: parameter `running_mean` default changed from None to no default
+tileops.norm.BatchNormFwdOp.forward: parameter `running_var` default changed from None to no default
+tileops.norm.BatchNormFwdOp.forward: parameter `running_mean` (slot 1) is required, and calls may omit it
+tileops.norm.BatchNormFwdOp.forward: parameter `running_var` (slot 2) is required, and calls may omit it
 tileops.quantization.FP8QuantPerTokenGroupFwdOp: parameter `group_size` (slot 0) is required, and calls may omit it
 tileops.rope.LongRoPEFwdOp: slot 0 was `input_layout`, is now `head_size` (POSITIONAL_OR_KEYWORD)
 tileops.rope.LongRoPEFwdOp: slot 1 was `base`, is now `rotary_dim` (POSITIONAL_OR_KEYWORD)

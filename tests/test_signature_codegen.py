@@ -1517,6 +1517,28 @@ def test_a_misaligned_element_is_copied_and_an_aliasing_result_rejected():
         probe(alias=True)(_HEAD, [torch.zeros(2, 4, dtype=torch.float16)])
 
 
+def test_a_sequence_slot_holding_none_keeps_the_later_addresses_in_place():
+    """`install` takes a `list[Tensor] | None` slot the manifest does not yet accept; its None
+    is one leaf, so the overlap check reads every later tensor at its own address."""
+    signature = {
+        "forall": {"M": "Dim", "S": "Seq[Shape]", "T": "DType[float32]"},
+        "inputs": {
+            "xs": {"type": "list[Tensor] | None", "dtype": "T", "shape": "[*S]"},
+            "y": {"dtype": "T", "shape": "[M]"},
+            "x": {"dtype": "T", "shape": "[M]", "mutated": True},
+        },
+    }
+
+    def forward(self, xs, y, x):
+        x.add_(y)
+
+    op = _probe("ProbeNoneSequenceFwdOp", signature, forward, boundary=True)()
+    x, y = torch.zeros(3), torch.ones(3)
+    op(None, y, x)
+    op(None, y, x)
+    assert x.tolist() == [2.0] * 3
+
+
 # ---------------------------------------------------------------- argument types
 
 
@@ -1547,7 +1569,7 @@ def test_a_scalar_member_is_checked_on_every_call_from_one_plan():
         assert op(x).tolist() == [0.0] * 3
     finally:
         del type(op)._signature.check
-    with pytest.raises(ValueError, match="is not a int | Tensor"):
+    with pytest.raises(ValueError, match=r"bool is not a member of int \| Tensor"):
         op(x, True)
 
 
@@ -1565,6 +1587,18 @@ def test_a_scalar_member_crosses_the_compile_boundary_in_its_own_slot():
     torch._dynamo.reset()
     dynamic = torch.compile(lambda x: op(x, x.shape[0] - 1), fullgraph=True, dynamic=True)
     assert dynamic(torch.zeros(3)).tolist() == [2.0] * 3
+
+
+def test_the_operator_refuses_two_slots_of_one_argument():
+    probe = _probe(
+        "ProbeOffsetTwoSlotsFwdOp", _OFFSET, lambda self, x, off=0: x + off, boundary=True
+    )
+    op = probe()
+    op(torch.zeros(3), 1)
+    (name,) = probe.compile_op_names
+    operator = getattr(torch.ops.tileops, name.split("::")[1])
+    with pytest.raises(ValueError, match="pass exactly one of the slots of off"):
+        operator(torch.zeros(3), 2, torch.ones(3), op._instance_key)
 
 
 def test_a_required_nullable_input_is_passed_as_none():
@@ -1586,6 +1620,27 @@ def test_a_required_nullable_input_is_passed_as_none():
     assert op(x, x).tolist() == [2.0, 2.0]
     with pytest.raises(TypeError, match="bias"):
         op(x)
+
+
+def test_a_range_requirement_is_checked_only_under_validate_inputs():
+    signature = {
+        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float32]"},
+        "inputs": {
+            "table": {"dtype": "T", "shape": "[N]"},
+            "index": {"dtype": "int64", "shape": "[M]", "requires": ["in_range(0, N)"]},
+        },
+        "params": {"validate_inputs": {"type": "bool", "default": False}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    probe = _probe(
+        "ProbeRangeFwdOp", signature, lambda self, table, index: table[index.clamp(0, 2)]
+    )
+    table = torch.arange(3.0)
+    checked, unchecked = probe(validate_inputs=True), probe(validate_inputs=False)
+    assert checked(table, torch.tensor([0, 2])).tolist() == [0.0, 2.0]
+    with pytest.raises(ValueError, match=r"index must be in \[0, 3\)"):
+        checked(table, torch.tensor([0, 3]))
+    assert unchecked(table, torch.tensor([-1, 3])).tolist() == [0.0, 2.0]
 
 
 def test_a_misaligned_tensor_is_copied_and_a_scalar_member_kept():

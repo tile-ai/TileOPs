@@ -284,7 +284,7 @@ CausalConv1dFwdOp:
       # sequence keeps its state.
       conv_state: {dtype: T, shape: "[B, D, W - 1]", mutated: true, contiguous: true}
       cu_seqlens: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)"]}
-      bias: {dtype: T, shape: "[D]", type: "Tensor | None", default: null}
+      bias: {dtype: T, shape: "[D]", type: "Tensor | None"}
       has_initial_state: {dtype: bool, shape: "[B]", type: "Tensor | None", default: null}
     outputs:
       output: {dtype: T, shape: "[Tt, D]"}
@@ -297,8 +297,8 @@ CausalConv1dFwdOp:
     - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-4k}
     - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-pf4k-nost}
     - {D: 5376, W: 4, Tt: 32768, seq_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-32k}
-    - {D: 8192, W: 4, Tt: 4096, seq_lens: [2500, 1000, 500, 96], dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-pf4k-ragged}
-    - {D: 8192, W: 4, Tt: 32768, seq_lens: "repeat(8192, 4)", dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-prefill-32k}
+    - {D: 8192, W: 4, Tt: 4096, seq_lens: [2500, 1000, 500, 96], dtype_cases: [{T: float16}], bias: null, some: [has_initial_state], label: qwen3-next-pf4k-ragged}
+    - {D: 8192, W: 4, Tt: 32768, seq_lens: "repeat(8192, 4)", dtype_cases: [{T: float16}], bias: null, some: [has_initial_state], label: qwen3-next-prefill-32k}
 
 CausalConv1dUpdateFwdOp:
   family: mamba
