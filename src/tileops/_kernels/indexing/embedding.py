@@ -105,6 +105,8 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
     def default_config(self):
         # A thread copies one vector, as wide as 16 bytes and the row width allow. A CTA
         # covers a column tile of a wide row, or as many narrow rows as fill its threads.
+        # Four warps split a 5120-wide bf16 row over five CTAs, so a decode batch still
+        # spreads over the SMs.
         threads = 128
         vec = VECTOR_ACCESS_BYTES // self.dtype.itemsize
         while self.dim % vec:

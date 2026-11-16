@@ -36,7 +36,7 @@ EmbeddingFwdOp:
   - {S: [1, 4096], V: 248320, D: 2048, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.6-35b-a3b-prefill}
   - {S: [1, 4096], V: 129280, D: 4096, dtype_cases: [{I: int64, T: bfloat16}], label: dsv4-flash-prefill}
   # DeepSeek-V4-Flash hash routing: expert ids looked up by token id.
-  - {S: [1, 4096], V: 129280, D: 6, dtype_cases: [{I: int64, T: int64}], label: dsv4-flash-tid2eid}
+  - {S: [1, 4096], V: 129280, D: 6, dtype_cases: [{I: int64, T: int64}, {I: int32, T: int32}], label: dsv4-flash-tid2eid}
   - {S: [1, 4096], V: 154880, D: 4096, dtype_cases: [{I: int64, T: bfloat16}], label: glm-5.3-flash-prefill}
   - {S: [1, 4096], V: 248320, D: 2560, dtype_cases: [{I: int64, T: bfloat16}], label: qwen3.8-flash-prefill}
   # V * D above 2^31, as in Qwen3.8-Flash-Next's hashed n-gram table [320001536, 160]: row
