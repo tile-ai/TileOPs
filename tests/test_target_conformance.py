@@ -44,11 +44,9 @@ def _from_call(cls: type, name: str, entry: dict) -> tuple:
         and plan.sig.inputs[list(plan.sig.inputs)[len(args) - 1]].default is None
     ):
         args.pop()
-    # An output aliasing an input every call writes is that input object.
+    # An output aliasing an input this call writes is that input object.
     outputs = [
-        tensors[t.alias]
-        if t.alias is not None and plan.sig.inputs[t.alias].mutated is True
-        else tensors[o]
+        tensors[t.alias] if t.alias is not None and t.alias in call.written else tensors[o]
         for o, t in plan.sig.outputs.items()
     ]
     return cls(**call.arguments()), tuple(args), outputs
