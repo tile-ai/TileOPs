@@ -425,7 +425,7 @@ def packed_positions(lengths: Sequence[int]) -> list[int]:
 
 def stacked_positions(
     lead: Sequence[int], lengths: Sequence[int], image: Sequence[int] = ()
-) -> list:
+) -> object:
     """`packed_positions(lengths)` repeated over the leading shape `lead`; `lead` empty gives it once.
 
     With `image` `(h, w)`, `lead` is `(3,)` and each sequence opens with an `h` by `w` image:
