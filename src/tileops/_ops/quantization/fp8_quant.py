@@ -27,9 +27,11 @@ class FP8QuantPerTokenGroupFwdOp(Op):
     448)`` rather than equal to it. With ``out_q`` the codes are written there and it is
     returned as ``q``.
 
-    A group holding an infinity or a NaN, or an all-zero group under ``eps=0``, has no defined
-    result: whether the group maximum and the clamp carry the non-finite value depends on the
-    kernel serving the call.
+    A group holding an infinity or a NaN has no defined result: whether the group maximum and
+    the clamp carry the non-finite value depends on the kernel serving the call. Neither has a
+    group whose floored maximum is below ``448 / 3.4e38``, about ``1.3e-36``, which only an
+    ``eps`` below that bound admits (an all-zero group under ``eps=0``, for one): the
+    reciprocal of its scale overflows float32.
 
     ``use_ue8m0=None`` gives float32 scales, as vLLM resolves None where DeepGEMM's UE8M0
     scales are not in use; ``tma_aligned_scales`` takes effect only with

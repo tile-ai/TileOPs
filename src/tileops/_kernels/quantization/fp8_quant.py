@@ -44,9 +44,10 @@ class FP8QuantFwdInterface(KernelInterface):
         A group is ``call.group_size`` adjacent columns of the last axis. Its scale is the
         absolute maximum over the group, floored at ``call.eps``, divided by 448; each element
         is multiplied by the reciprocal of that scale and clamped to the ``float8_e4m3fn``
-        range. A group holding an infinity or a NaN, or an all-zero group under ``eps`` 0,
-        has no defined result: whether the maximum and the clamp carry the non-finite value
-        is left to the implementation. Nothing but *out_q* is written in place, and no output
+        range. A group holding an infinity or a NaN, or one whose floored maximum is below
+        ``448 / 3.4e38`` so that the reciprocal overflows float32, has no defined result:
+        whether the maximum and the clamp carry the non-finite value is left to the
+        implementation. Nothing but *out_q* is written in place, and no output
         aliases the input.
 
         Args:
