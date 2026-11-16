@@ -34,6 +34,7 @@ __all__ = [
     "RMSNormGatedCall",
     "RMSNormGatedFwdInterface",
     "RMSNormQuantCall",
+    "whole_row_refusal",
     "whole_row_scale_refusal",
 ]
 
@@ -95,14 +96,20 @@ class RMSNormCall(LayerNormCall):
     group_size: int | None = None
 
 
+def whole_row_refusal(call: RMSNormCall) -> str | None:
+    """Why a kernel normalizing each whole row does not serve *call*, or ``None`` when it
+    does."""
+    if call.group_size not in (None, call.n):
+        return "the kernel normalizes each whole row; group_size is not served"
+    return None
+
+
 def whole_row_scale_refusal(call: RMSNormCall) -> str | None:
     """Why a kernel normalizing each whole row and scaling it by ``weight`` does not serve
     *call*, or ``None`` when it does."""
     if call.zero_centered:
         return "the kernel scales by the weight itself; zero_centered is not served"
-    if call.group_size not in (None, call.n):
-        return "the kernel normalizes each whole row; group_size is not served"
-    return None
+    return whole_row_refusal(call)
 
 
 @dataclasses.dataclass(frozen=True)

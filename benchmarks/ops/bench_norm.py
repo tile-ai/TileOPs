@@ -64,6 +64,30 @@ def _vllm_rms_norm(x: torch.Tensor, eps: float):
     return baseline_fn
 
 
+def _vllm_gemma_rms_norm(weight: torch.Tensor, eps: float):
+    """vLLM's ``GemmaRMSNorm`` holding *weight*, compiled as vLLM runs a model: its C kernels
+    take no float32 ``1 + weight``, so the layer runs its native form."""
+    config = baseline_module("vllm.config", VLLM_TAG)
+    layernorm = baseline_module("vllm.model_executor.layers.layernorm", VLLM_TAG)
+    with config.set_current_vllm_config(config.VllmConfig()):
+        layer = layernorm.GemmaRMSNorm(weight.numel(), eps=eps).to(weight.device)
+    layer.weight = torch.nn.Parameter(weight.reshape(-1).clone(), requires_grad=False)
+    return compiled_reference(layer.forward_native)
+
+
+def _hf_qwen3_5_rms_norm(weight: torch.Tensor, eps: float):
+    """Hugging Face's ``Qwen3_5RMSNorm`` holding *weight*, compiled: it forms ``1 + weight`` in
+    float32 and rounds once."""
+    layer = (
+        baseline_module("transformers.models.qwen3_5.modeling_qwen3_5", "transformers")
+        .Qwen3_5RMSNorm(weight.numel(), eps=eps)
+        .to(weight.device)
+        .requires_grad_(False)
+    )
+    layer.weight.data = weight.reshape(-1).clone()
+    return compiled_reference(layer)
+
+
 def _in_place_fused_add(fn, inputs: tuple, eps: float) -> bench.Implementation:
     """A kernel writing the normalized row into ``x`` and the sum into ``residual``."""
 
@@ -84,21 +108,39 @@ def test_rms_norm_bench(case) -> None:
     eps = torch.finfo(torch.float32).eps if eps is None else eps
     reference = case.torch
     library = {}
-    if weight is not None and x.ndim == 2:
+    # The libraries normalize whole rows only.
+    if case.params["zero_centered"] and case.params["group_size"] is None:
+        n = weight.numel()
+        # QuACK and flag_gems multiply a float32 1 + weight in float32 before the one rounding.
+        scale = weight.reshape(n).float() + 1
+        gemma = flashinfer_op("gemma_rmsnorm")
+        flaggems = flaggems_op("rms_norm")
+        quack = quack_op("rmsnorm")
+        vllm = _vllm_gemma_rms_norm(weight, eps)
+        hf = _hf_qwen3_5_rms_norm(weight, eps)
         library = {
-            FLAGGEMS_TAG: _flaggems_rms_norm(shape[-1], eps),
-            FLASHINFER_TAG: _flashinfer_rms_norm(eps),
-            VLLM_TAG: _vllm_rms_norm(x, eps),
+            FLAGGEMS_TAG: lambda x, w: flaggems(x, [n], scale, eps),
+            FLASHINFER_TAG: lambda x, w: gemma(x.reshape(-1, n), w.reshape(n), eps).reshape_as(x),
+            QUACK_TAG: lambda x, w: quack(x.reshape(-1, n), scale, eps=eps).reshape_as(x),
+            VLLM_TAG: lambda x, w: vllm(x),
+            "transformers": lambda x, w: hf(x),
         }
-    quack_rms = quack_op("rmsnorm")
-    width = math.prod(shape)
+    elif not case.params["zero_centered"]:
+        if weight is not None and x.ndim == 2:
+            library = {
+                FLAGGEMS_TAG: _flaggems_rms_norm(shape[-1], eps),
+                FLASHINFER_TAG: _flashinfer_rms_norm(eps),
+                VLLM_TAG: _vllm_rms_norm(x, eps),
+            }
+        quack_rms = quack_op("rmsnorm")
+        width = math.prod(shape)
 
-    def quack_fn(x, weight):
-        return quack_rms(
-            x.reshape(-1, width), None if weight is None else weight.reshape(-1), eps=eps
-        ).reshape_as(x)
+        def quack_fn(x, weight):
+            return quack_rms(
+                x.reshape(-1, width), None if weight is None else weight.reshape(-1), eps=eps
+            ).reshape_as(x)
 
-    library[QUACK_TAG] = quack_fn
+        library[QUACK_TAG] = quack_fn
     bench.Runner(op, case).compare(
         {
             **library,
@@ -113,12 +155,31 @@ def test_fused_add_rms_norm_bench(case) -> None:
     op = FusedAddRMSNormFwdOp(**case.arguments)
     op.request_tune()
     eps = case.params["eps"]
-    bench.Runner(op, case).compare(
-        {
+    if case.params["zero_centered"]:
+        weight = case.inputs[2]
+        scale = weight.float() + 1
+        quack = quack_op("rmsnorm")
+        vllm = _vllm_gemma_rms_norm(weight, eps)
+        library = {
+            FLASHINFER_TAG: _in_place_fused_add(
+                flashinfer_op("gemma_fused_add_rmsnorm"), case.inputs, eps
+            ),
+            # QuACK multiplies a float32 1 + weight in float32 before the one rounding.
+            QUACK_TAG: lambda x, residual, w: quack(
+                x, scale, residual=residual, eps=eps, prenorm=True
+            ),
+            VLLM_TAG: lambda x, residual, w: vllm(x, residual),
+        }
+    else:
+        library = {
             FLASHINFER_TAG: _in_place_fused_add(
                 flashinfer_op("fused_add_rmsnorm"), case.inputs, eps
             ),
             VLLM_TAG: _in_place_fused_add(vllm_op("fused_add_rms_norm"), case.inputs, eps),
+        }
+    bench.Runner(op, case).compare(
+        {
+            **library,
             "torch-ref": case.torch,
             TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }
