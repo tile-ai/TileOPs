@@ -794,7 +794,7 @@ RANDOM_GENERATORS = frozenset(
 # ---------------------------------------------------------------- requires predicates
 
 
-def flat(values: object) -> list:
+def flat(values: object) -> list[object]:
     """The values of a nested list, in order; a value that is not a list is one value."""
     return [y for x in values for y in flat(x)] if isinstance(values, list) else [values]
 
