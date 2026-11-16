@@ -887,8 +887,11 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             return "requires a positive scale"
         if call.page_size <= 0 or cls.block_n_for(call.page_size, call.dim) is None:
             return "requires a page size that is a multiple of 16 rows"
-        # Query positions and keys lie below max_pages_per_req * page_size, so a window reaching
-        # the last key the page table holds hides no key.
+        # Keys lie below max_pages_per_req * page_size, and so do query positions, given the
+        # caller's contract that a request's cache length is at least its query count; a window
+        # reaching the last key the page table holds therefore hides no key. Such a window still
+        # builds the windowed program (has_window): building without it was measured on the
+        # RoPE calls this kernel already serves and not shipped.
         last_key = call.max_pages_per_req * call.page_size - 1
         bounded = (0 <= w < last_key for w in (call.window_size_left, call.window_size_right))
         if not call.fuse_rope and any(bounded):
