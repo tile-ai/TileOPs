@@ -3,8 +3,4 @@
 Ops that gather, scatter or join tensor elements by index or mask.
 """
 
-from tileops._ops.indexing import EmbeddingFwdOp
-
-__all__ = [
-    "EmbeddingFwdOp",
-]
+__all__: list[str] = []
