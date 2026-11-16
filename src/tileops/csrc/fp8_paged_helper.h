@@ -115,4 +115,39 @@ TL_DEVICE void fp8_tile_to_wide_sw128_prefetched(const void* src, void* dst,
   }
 }
 
+// fp8_tile_to_wide_sw128 for a tile of ROWS x 64: the e4m3 rows are 64 bytes
+// swizzled at 64 bytes, row j, column d at byte
+//   (j / 8) * 512 + (j % 8) * 64 + ((d / 16) ^ (j / 2 % 4)) * 16 + d % 16,
+// and the 16-bit rows 128 bytes swizzled at 128 bytes, element
+//   (j / 8) * 512 + (j % 8) * 64 + ((d / 8) ^ (j % 8)) * 8 + d % 8.
+// Thread t of THREADS (a multiple of 4) converts column chunk t % 4 of rows
+// t / 4, t / 4 + THREADS / 4, ...; a row at or past `valid_rows` is written as
+// zero.
+template <int ROWS, int THREADS, typename OutT>
+TL_DEVICE void fp8_tile_to_wide_d64(const void* src, void* dst, int t,
+                                    int valid_rows) {
+  static_assert(sizeof(OutT) == 2, "the converted tile is 16-bit");
+  static_assert(THREADS % 4 == 0, "a thread keeps one 16-byte column chunk");
+  const char* in = static_cast<const char*>(src);
+  char* out = static_cast<char*>(dst);
+  int const c = t & 3;
+#pragma unroll 4
+  for (int j = t >> 2; j < ROWS; j += THREADS / 4) {
+    uint4 raw = *reinterpret_cast<const uint4*>(
+        in + (j >> 3) * 512 + (j & 7) * 64 + ((c ^ ((j >> 1) & 3)) << 4));
+    if (j >= valid_rows) {
+      raw = make_uint4(0, 0, 0, 0);
+    }
+    uint4 const lo_words = make_uint4(
+        fp8x2_to_wide<OutT>(raw.x), fp8x2_to_wide<OutT>(raw.x >> 16),
+        fp8x2_to_wide<OutT>(raw.y), fp8x2_to_wide<OutT>(raw.y >> 16));
+    uint4 const hi_words = make_uint4(
+        fp8x2_to_wide<OutT>(raw.z), fp8x2_to_wide<OutT>(raw.z >> 16),
+        fp8x2_to_wide<OutT>(raw.w), fp8x2_to_wide<OutT>(raw.w >> 16));
+    char* const row = out + (j >> 3) * 1024 + (j & 7) * 128;
+    *reinterpret_cast<uint4*>(row + (((2 * c) ^ (j & 7)) << 4)) = lo_words;
+    *reinterpret_cast<uint4*>(row + (((2 * c + 1) ^ (j & 7)) << 4)) = hi_words;
+  }
+}
+
 }  // namespace tileops
