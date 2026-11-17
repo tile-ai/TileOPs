@@ -6,6 +6,7 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._perf.formulas import visible_scores
 from tileops.attention import GQAVarlenFwdOp
+from tileops.backend import OpNotAvailableError
 from workloads.attention.gqa.varlen import GQAVarlenFwdWorkload
 
 
@@ -474,6 +475,183 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
     assert torch.equal(op(*inputs), first)
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype",
+    [
+        # One KV head a query head and no mask, as vision encoders attend: partial query and
+        # key tiles, q_len > kv_len, and an empty request.
+        pytest.param(
+            [129, 65, 6, 0, 300],
+            [33, 131, 2, 0, 400],
+            4,
+            4,
+            72,
+            False,
+            -1,
+            -1,
+            torch.bfloat16,
+            marks=pytest.mark.smoke,
+            id="d72-bidirectional",
+        ),
+        # A group of 2 divides a warpgroup's rows: the packed program, whose tiles hold whole
+        # 64-channel boxes, must leave the call to the one-head program.
+        pytest.param(
+            [129, 65, 6, 0, 300],
+            [33, 131, 2, 0, 400],
+            4,
+            2,
+            72,
+            True,
+            -1,
+            -1,
+            torch.float16,
+            marks=pytest.mark.smoke,
+            id="d72-causal",
+        ),
+        pytest.param(
+            [130, 70],
+            [200, 70],
+            6,
+            2,
+            72,
+            False,
+            64,
+            32,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="d72-window",
+        ),
+        # Under 64 channels: one 48-channel tile.
+        pytest.param(
+            [129, 65],
+            [200, 65],
+            6,
+            2,
+            40,
+            False,
+            -1,
+            -1,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="d40",
+        ),
+        # A 32-channel edge (24 channels and 8 zeros) beside the 64-channel boxes.
+        pytest.param(
+            [129, 65],
+            [200, 65],
+            6,
+            2,
+            88,
+            True,
+            -1,
+            -1,
+            torch.float16,
+            marks=pytest.mark.full,
+            id="d88",
+        ),
+        # A multiple of 16 that 64 does not divide: a 32-channel edge with no padding.
+        pytest.param(
+            [129, 65],
+            [200, 65],
+            6,
+            2,
+            96,
+            True,
+            -1,
+            -1,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="d96",
+        ),
+        # A 64-channel edge (56 channels and 8 zeros) under a 128-byte swizzle.
+        pytest.param(
+            [129, 65],
+            [200, 65],
+            6,
+            2,
+            120,
+            False,
+            -1,
+            -1,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="d120",
+        ),
+    ],
+)
+def test_varlen_ws_serves_head_dims_off_the_contraction_step_on_sm90(
+    q_lens: list[int],
+    kv_lens: list[int],
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    is_causal: bool,
+    wl: int,
+    wr: int,
+    dtype: torch.dtype,
+) -> None:
+    """A TMA row is a multiple of 16 bytes, a 16-bit WGMMA contracts 16 channels a step, and
+    TMA fills a box past a tensor's last channel with zeros: on SM90 the warp-specialized
+    kernel serves head dims of 8-channel steps on tiles padded to the WGMMA step."""
+    test = GQAVarlenFwdTest(
+        len(q_lens), q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype
+    )
+    op = GQAVarlenFwdOp(is_causal=is_causal, window_size_left=wl, window_size_right=wr)
+    inputs = test.gen_inputs()
+    assert op.key_for("gqa_varlen", op._varlen_call(_padded(inputs))) == "gqa_varlen_ws"
+    test.check(op, *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, options, reason",
+    [
+        # Fused RoPE rotates one query tile, and head dim 72 spans a box and an edge.
+        pytest.param(
+            [4, 128],
+            [4, 128],
+            {"pos_encoding_mode": "rope", "rotary_dim": 72},
+            "fuses RoPE only into a head held in one tile",
+            marks=pytest.mark.smoke,
+            id="rope",
+        ),
+        # No key in the call: TMA has no extent to load.
+        pytest.param(
+            [4, 128],
+            [0, 0],
+            {},
+            "does not serve an empty KV sequence",
+            marks=pytest.mark.full,
+            id="no-keys",
+        ),
+        # More requests than the warp-specialized kernel's shared prefix holds.
+        pytest.param(
+            [1] * 449,
+            [1] * 449,
+            {},
+            "serves at most 448 sequences",
+            marks=pytest.mark.full,
+            id="batch-449",
+        ),
+    ],
+)
+def test_varlen_refuses_head_dim_72_where_the_ws_kernel_cannot_before_building(
+    q_lens: list[int], kv_lens: list[int], options: dict, reason: str
+) -> None:
+    """The general kernel contracts the head dim 16 channels at a time, so a head dim-72 call
+    the warp-specialized kernel refuses has no kernel."""
+    test = GQAVarlenFwdTest(
+        len(q_lens), q_lens, kv_lens, 4, 4, 72, True, -1, -1, torch.bfloat16, **options
+    )
+    op = GQAVarlenFwdOp(is_causal=True, **options)
+    with pytest.raises(OpNotAvailableError, match=reason):
+        op(*test.gen_inputs())
+    assert not op._entries_built("gqa_varlen")
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "q_lens, kv_lens, dim, rotary_dim, rope_layout, window_size_left",
@@ -683,6 +861,18 @@ def test_varlen_one_op_selects_packed_programs_by_call() -> None:
             {},
             marks=pytest.mark.full,
             id="unranked-dim-64",
+        ),
+        # A head under one 64-channel box packs in one box of its own width.
+        pytest.param(
+            [1, 3, 24, 5],
+            [900, 300, 24, 5],
+            32,
+            8,
+            48,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="dim-48",
         ),
         pytest.param(
             [1, 2, 5],
