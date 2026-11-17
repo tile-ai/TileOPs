@@ -813,7 +813,7 @@ class CausalConv1dUpdateRollbackKernel(Kernel, CausalConv1dUpdateFwdInterface):
         if not call.rollback:
             return "verifies drafts; a call without num_accepted_tokens is not served"
         threads, vec = _rollback_block(call.dim)
-        need = threads * vec * call.state_len * torch.empty((), dtype=call.dtype).element_size()
+        need = threads * vec * call.state_len * call.dtype.itemsize
         if need > call.smem_budget:
             return f"a block stages {need} bytes of state, past the {call.smem_budget} a block has"
         return super().refusal(call)

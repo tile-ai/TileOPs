@@ -783,9 +783,8 @@ def test_gdn_decode_verifies_drafts_from_the_accepted_slot(
     a random one of its drafts, and leaves the state after each of its tokens in that token's
     slot, every other slot keeping its state: the Qwen3.6 form, packed with full, partial,
     one-token and empty sequences of eight drafts, more than the block stages at once; equal
-    length over a
-    key-major 64-wide state; a key-major grid large enough for one-warp blocks, which stage
-    in several passes; and the raw gate and step size formed each token."""
+    length over a key-major 64-wide state; a key-major grid large enough for one-warp blocks,
+    which stage in several passes; and the raw gate and step size formed each token."""
     torch.manual_seed(42)
     row = dict(row)
     some = ("num_accepted_tokens", *row.pop("some", ()))

@@ -315,7 +315,7 @@ def test_causal_conv1d_update_bench(case) -> None:
         )  # fmt: skip
         return out, lines[1:]
 
-    # The update kernel multiplies a float32 weight in float32, as the reference does.
+    # vLLM's causal_conv1d_update multiplies a float32 weight in float32, as the reference does.
     implementations = {
         VLLM_TAG: bench.Implementation(
             run=run, args=(), reset=reset, noncomparable_reason=_vllm_taps_differ(case)
