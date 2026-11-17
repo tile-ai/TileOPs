@@ -2032,7 +2032,9 @@ def test_gemm_bias_on_selected_kernels(
             False,
             True,
             True,
-            {**_PINGPONG, "block_n": 176, "stage_n": 16, "epi_bufs": 2},
+            # The ring best_config selects for a float32 output: five stages and two
+            # staging buffers fill all but a few KiB of the shared memory.
+            {**_PINGPONG, "block_n": 176, "num_stages": 5, "stage_n": 16, "epi_bufs": 2},
             marks=pytest.mark.smoke,
             id="pingpong-176",
         ),
@@ -2125,7 +2127,8 @@ def test_gemm_bias_on_selected_kernels(
             False,
             False,
             True,
-            {"coop2s": True, "block_n": 64, "block_k": 64, "num_stages": 4},
+            # The eight-stage ring best_config selects, beside two float32 staging tiles.
+            {"coop2s": True, "block_n": 64, "block_k": 64, "num_stages": 8},
             marks=pytest.mark.full,
             id="coop2s",
         ),
