@@ -184,6 +184,17 @@ def test_gdn_prefill_keeps_busy_packed_sequences_whole() -> None:
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.sm90
+def test_gdn_prefill_leaves_the_previous_sequence_to_an_empty_one() -> None:
+    """An empty sequence writes no output, so the sequence before it keeps its last rows.
+
+    The long first sequence's 64 value heads hold the SMs, so the empty sequence's CTAs start
+    only after the short sequence's CTAs finish, the order in which a stray store shows."""
+    torch.manual_seed(42)
+    test = GDNFwdTest(1, 0, 16, 64, torch.bfloat16, value_heads=64, sequence_lengths=(2048, 64, 0))
+    test.check(GDNFwdOp(), *test.gen_inputs())
+
+
 @PREFILL_ARCHITECTURES
 def test_gdn_prefill_reads_offsets_rewritten_in_place(_architecture: int) -> None:
     """The same tensors, with the boundary between two sequences moved, compute the new split."""

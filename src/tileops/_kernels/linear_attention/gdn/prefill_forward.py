@@ -556,7 +556,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     seq_split_idx = seq_start_idx + (num_iters - 1) * block_S
 
                     T.barrier_wait(bar_o, 0)
-                    if store_o:
+                    if store_o and num_iters > 0:
                         for j_s, j_v in T.Parallel(block_S, block_DV):
                             with T.If(seq_split_idx + j_s < seq_end_idx):  # noqa: SIM117
                                 with T.Then():
