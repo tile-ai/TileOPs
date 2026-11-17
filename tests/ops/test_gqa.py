@@ -876,6 +876,20 @@ def test_gqa_dense_split_decode_reuses_configuration_tiers() -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gqa_dense_int32_max_right_window_is_no_window() -> None:
+    """A right window of INT32_MAX keys hides none; added to a query position it overflows
+    int32, so the output must equal the unwindowed one."""
+    q = torch.randn(1, 270, 8, 128, device="cuda", dtype=torch.float16)
+    k = torch.randn(1, 270, 2, 128, device="cuda", dtype=torch.float16)
+    v = torch.randn_like(k)
+    op = GQADenseFwdOp(window_size_right=2**31 - 1, target=BUILTIN)
+    ref = dense_gqa_ref(q, k, v, heads=8, heads_kv=2, is_causal=False)
+    compare_outputs(op(q, k, v), ref, dense_gqa_verification(q.dtype))
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "_architecture",
     [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],

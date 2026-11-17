@@ -15,7 +15,11 @@ from tileops._kernels.attention.call_spec import (
     GQAPagedFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops.attention.gqa.parameters import attention_scale, score_softcap
+from tileops._ops.attention.gqa.parameters import (
+    attention_scale,
+    attention_window,
+    score_softcap,
+)
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -155,6 +159,8 @@ class GQAPagedFwdOp(Op):
         _, heads, dim = q.shape
         num_pages, page_size, heads_kv, _ = k_cache.shape
         batch, max_pages_per_req = block_table.shape
+        # A request caches its queries, and at most the pages its table row holds.
+        positions = max_pages_per_req * page_size
         return AttentionCall(
             # The type the call computes and returns in: an FP8 query names it.
             dtype=self.out_dtype or q.dtype,
@@ -169,8 +175,8 @@ class GQAPagedFwdOp(Op):
             is_causal=self.is_causal,
             sm_scale=attention_scale(dim, self.sm_scale),
             softcap=self.softcap,
-            window_size_left=self.window_size_left,
-            window_size_right=self.window_size_right,
+            window_size_left=attention_window(self.window_size_left, positions),
+            window_size_right=attention_window(self.window_size_right, positions),
             is_fp8=torch.float8_e4m3fn in (q.dtype, k_cache.dtype),
             is_uniform=batch == 1,
             cache_dtype=k_cache.dtype,

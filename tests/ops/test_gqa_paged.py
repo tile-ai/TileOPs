@@ -127,14 +127,22 @@ def test_gqa_paged_split_combine_row_blocks(
             {"is_causal": False, "window_size_left": 255, "window_size_right": 255},
             "GQAPagedFwdWSKernel",
         ),
+        # INT32_MAX hides no key; added to a query position it overflows int32.
+        ({"is_causal": True, "window_size_right": 2**31 - 1}, "GQAPagedFwdWSKernel"),
     ],
-    ids=["left-inside-table", "left-at-last-key", "right-inside-table", "both-at-last-key"],
+    ids=[
+        "left-inside-table",
+        "left-at-last-key",
+        "right-inside-table",
+        "both-at-last-key",
+        "right-int32-max",
+    ],
 )
 def test_gqa_paged_window_reaching_the_last_key_is_no_window(
     semantics: dict, kernel_name: str
 ) -> None:
     """Without RoPE, the WS kernel serves a window reaching key 255, the last of four 64-row
-    pages, and refuses one a key narrower."""
+    pages, and refuses one a key narrower. A window of INT32_MAX keys is no window."""
     workload = GQAPagedFwdWorkload(16, 4, 128, [256], [256], 64, 4, 4, torch.float16, **semantics)
     op = GQAPagedFwdOp(**semantics)
     inputs = workload.gen_inputs()

@@ -400,9 +400,6 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         """The device index is in the identity: the kernel is compiled for its architecture,
         and the split count reads its multiprocessors."""
         index = call.device.index if call.device is not None else None
-        # A query position plus the right window is 32-bit; a window reaching the table's last
-        # key hides none, so it is dropped before the sum can overflow.
-        last_key = call.max_pages_per_req * call.page_size - 1
         args = dict(
             batch=call.batch,
             heads=call.heads,
@@ -412,7 +409,7 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
             max_pages_per_req=call.max_pages_per_req,
             is_causal=call.is_causal,
             window_size_left=call.window_size_left,
-            window_size_right=call.window_size_right if call.window_size_right < last_key else -1,
+            window_size_right=call.window_size_right,
             dtype=call.dtype,
             query_dtype=call.query_dtype or call.dtype,
             per_request_kv_scale=call.per_request_kv_scale,

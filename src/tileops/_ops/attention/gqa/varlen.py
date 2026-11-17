@@ -16,7 +16,11 @@ from tileops._kernels.attention.call_spec import (
     GQAVarlenFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops.attention.gqa.parameters import rope_rotary_dim, score_softcap
+from tileops._ops.attention.gqa.parameters import (
+    attention_window,
+    rope_rotary_dim,
+    score_softcap,
+)
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -121,6 +125,8 @@ class GQAVarlenFwdOp(Op):
         assert q is not None and k is not None and cu_q is not None
         _, heads, dim = q.shape
         _, heads_kv, _ = k.shape
+        # A request's query and key counts are at most the packed totals.
+        positions = max(q.shape[0], k.shape[0])
         return AttentionCall(
             dtype=self.out_dtype or q.dtype,
             batch=cu_q.shape[0] - 1,
@@ -130,8 +136,8 @@ class GQAVarlenFwdOp(Op):
             is_causal=self.is_causal,
             sm_scale=self.sm_scale,
             softcap=self.softcap,
-            window_size_left=self.window_size_left,
-            window_size_right=self.window_size_right,
+            window_size_left=attention_window(self.window_size_left, positions),
+            window_size_right=attention_window(self.window_size_right, positions),
             is_fp8=q.dtype == torch.float8_e4m3fn,
             is_uniform=False,
             empty_kv=k.shape[0] == 0,
