@@ -50,9 +50,9 @@ def _stream_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) ->
       for the whole launch.
     - ``ctas``: the fewest that run the units in as many rounds as ``sm_count`` CTAs, so
       every CTA streams the same number of units and none runs a tail alone.
-    - ``num_stages``: the fewest stages that keep 10 MiB loading across the grid, the DRAM
-      bandwidth times its loaded latency, within what the shared memory holds and the K
-      steps a CTA streams. A deeper ring queues loads without adding bandwidth.
+    - ``num_stages``: the deepest ring the shared memory holds, at most the K steps a CTA
+      streams: a CTA's loads are all of its work, so as many as fit go out before the
+      first product.
     """
     mpad = stream_width(m)[0]
     k_tiles = -(-k // _BLOCK_K)
@@ -77,12 +77,7 @@ def _stream_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) ->
     deepest = (BLOCK_SHARED_BYTES_OPT_IN[90] - fixed) // stage
     if deepest < min(2, rounds * k_iters):
         return None
-    in_flight = -(-(10 * 2**20) // (ctas * stage))
-    return {
-        "num_stages": min(in_flight, deepest, rounds * k_iters),
-        "ctas": ctas,
-        "split_k": split_k,
-    }
+    return {"num_stages": min(deepest, rounds * k_iters), "ctas": ctas, "split_k": split_k}
 
 
 @target_cache(maxsize=32)
@@ -348,7 +343,7 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
     @classmethod
     def entry_for(cls, call: GEMMFP8Call) -> Entry:
         index = call.device.index if call.device is not None else None
-        # One row of a over one K step has a (1, 1) scale under either grid; b's tells them apart.
+        # Two (1, 1) scales are one scale per tensor under either grid.
         block_scaled = (call.scale_a_shape, call.scale_b_shape) != ((1, 1), (1, 1))
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, block_scaled, index)
         return identity, lambda: cls(
@@ -389,6 +384,25 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
     def default_config(self) -> dict:
         return _stream_config(self.m, self.n, self.k, self.sm_count, self.block_scaled)
 
+    @property
+    def autotune_configs(self) -> list[dict]:
+        """The deepest ring, and the shallowest that keeps 10 MiB loading across the grid.
+
+        10 MiB is the DRAM bandwidth times its loaded latency; past it a deeper ring queues
+        loads without adding bandwidth.
+        """
+        default = self.default_config
+        stage = (_ROWS + stream_width(self.m)[0]) * _BLOCK_K
+        in_flight = min(-(-(10 * 2**20) // (default["ctas"] * stage)), default["num_stages"])
+        return [
+            {"num_stages": stages, "ctas": default["ctas"]}
+            for stages in sorted({in_flight, default["num_stages"]})
+        ]
+
+    def _tuned_config(self, tuned: dict) -> dict:
+        # Tuning sweeps the mainloop's ring; the K split stays the default's.
+        return {**self.default_config, **tuned}
+
     def forward(
         self,
         a: torch.Tensor,
@@ -405,9 +419,14 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
         """The stream program, with its split-K reduce where ``cfg`` splits K."""
         split_k = cfg["split_k"]
         out_dtype = self.dtype_to_str(self.out_dtype)
-        mainloop = _gemm_fp8_stream_kernel(
+        kernel = _gemm_fp8_stream_kernel(
             self.m, self.n, self.k, out_dtype, self.block_scaled, split_k
-        )(cfg["num_stages"], cfg["ctas"])
+        )
+        mainloop = kernel(cfg["num_stages"], cfg["ctas"])
+        # Set after the build succeeds, so tuning never reads one that failed.
+        self.kernel = kernel
+        if self._tune_target is None:
+            self._tune_target = (kernel, cfg)
         if split_k == 1:
             return mainloop
         mainloop = CompiledProgram(mainloop)
