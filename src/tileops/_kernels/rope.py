@@ -180,9 +180,8 @@ def _rope_positions_kernel(
 
         @T.macro
         def move_unit(r, row, x, y, token, head, slot, cos_table, sin_table, regs, load, store):
-            # Thread unit r: where load, read its columns and its cos/sin at table row `row`
-            # into regs; where store, rotate and write them. regs None: the unit takes
-            # registers of its own, at index 0.
+            # Thread unit r: load reads its columns and cos/sin row into regs, store rotates and
+            # writes them; with regs None the unit takes registers of its own, at index 0.
             if regs is None:
                 r = 0
                 regs = (
@@ -307,9 +306,8 @@ def _rope_positions_kernel(
             if tail_units == 0 or units == 1:
                 each_unit(row, None, True, True, *tensors)
             else:
-                # A warp can hold rotating and copying units, whose two paths would each
-                # wait out a load-to-store round trip a unit.
-                # A copied run takes the registers of a rotating unit's low columns.
+                # A warp can hold rotating and copying units, each path waiting out a load-to-store
+                # round trip a unit; a copied run takes a rotating unit's low-column registers.
                 lo = T.alloc_local([units * run], dtype)
                 hi = T.alloc_local([units * width], dtype)
                 cs = T.alloc_local([units * table_width], dtype)
