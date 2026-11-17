@@ -1130,17 +1130,22 @@ def test_gqa_paged_fp8_decode(
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
-@pytest.mark.in_tree_kernels
-def test_gqa_paged_fp8_decode_refuses_a_tile_prefix_past_shared_memory() -> None:
-    """50000 requests take 200 KB of shared memory for the tile prefix, more than the FP8
-    decode tiles leave, so another kernel serves the call."""
+@pytest.mark.parametrize(("batch", "served"), [(32768, True), (32769, False)])
+def test_gqa_paged_fp8_decode_refuses_a_tile_prefix_past_shared_memory(
+    batch: int, served: bool
+) -> None:
+    """The FP8 decode kernel holds a per-request tile prefix in shared memory beside its
+    tiles, so it serves at most 32768 requests and leaves larger batches to another kernel."""
     from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
 
-    workload = _decode(50000, 8, 1, [64] * 50000, 128, 64, cache_dtype=FP8)
-    op, inputs = _fp8_op(workload), workload.gen_inputs()
-    _check(op, workload, inputs)
-    assert not isinstance(_kernel(op, inputs), GQAPagedFP8DecodeKernel)
+    meta = torch.device("meta")
+    q = torch.empty(batch, 8, 128, dtype=torch.float16, device=meta)
+    k_pages = torch.empty(batch, 64, 1, 128, dtype=FP8, device=meta)
+    table = torch.empty(batch, 1, dtype=torch.int32, device=meta)
+    k_scale = torch.empty(1, device=meta)
+    op = GQAPagedFwdOp(is_causal=True)
+    refusal = GQAPagedFP8DecodeKernel.refusal(op._paged_call(q, k_pages, table, k_scale))
+    assert (refusal is None) == served, refusal
 
 
 @pytest.mark.smoke
