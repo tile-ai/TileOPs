@@ -704,14 +704,21 @@ def test_gdn_decode_updates_a_strided_pool_in_place() -> None:
 
 
 @pytest.mark.in_tree_kernels
-def test_gdn_sm89_prefill_refuses_a_state_pool() -> None:
-    """Dispatch on SM89's device facts refuses a pooled prefill: the SM89 chunk prefill reads
-    and writes the states in batch order."""
+@pytest.mark.parametrize(
+    ("facts", "rollback", "reason"),
+    [
+        # The SM89 chunk prefill reads and writes the states in batch order.
+        ({"arch": 89, "sm_count": 128, "smem_budget": 101376}, False, "a state pool"),
+        # Every in-tree kernel keeps one state a sequence, not one a token.
+        ({"arch": 90, "sm_count": 132, "smem_budget": 232448}, True, "num_accepted_tokens"),
+    ],
+    ids=["sm89-pooled-prefill", "num-accepted-tokens"],
+)
+def test_gdn_refuses_a_pooled_call_no_kernel_serves(facts: dict, rollback: bool, reason: str):
+    """Dispatch on the given device facts refuses the pooled prefill before a build."""
     (in_tree,) = Kernel.devices
     call = GDNCall(
-        arch=89,
-        sm_count=128,
-        smem_budget=101376,
+        **facts,
         batch=1,
         seq_len=256,
         heads=2,
@@ -724,35 +731,8 @@ def test_gdn_sm89_prefill_refuses_a_state_pool() -> None:
         varlen=True,
         num_sequences=2,
         pooled=True,
+        rollback=rollback,
         device=torch.device(in_tree),
     )
-    with pytest.raises(OpNotAvailableError, match="a state pool is not served"):
-        GDNFwdOp().key_for("gdn", call)
-
-
-@pytest.mark.in_tree_kernels
-def test_gdn_refuses_a_state_a_token() -> None:
-    """Every in-tree kernel keeps one state a sequence, so a call with ``num_accepted_tokens``,
-    which keeps the state after each token in a slot of its own, is refused before a build."""
-    (in_tree,) = Kernel.devices
-    call = GDNCall(
-        arch=90,
-        sm_count=132,
-        smem_budget=232448,
-        batch=1,
-        seq_len=256,
-        heads=2,
-        value_heads=4,
-        dim_k=128,
-        dim_v=128,
-        dtype=torch.bfloat16,
-        scale=128**-0.5,
-        has_initial_state=True,
-        varlen=True,
-        num_sequences=64,
-        pooled=True,
-        rollback=True,
-        device=torch.device(in_tree),
-    )
-    with pytest.raises(OpNotAvailableError, match="num_accepted_tokens is not served"):
+    with pytest.raises(OpNotAvailableError, match=f"{reason} is not served"):
         GDNFwdOp().key_for("gdn", call)

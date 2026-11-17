@@ -51,10 +51,9 @@ class GDNFwdOp(Op):
     of 64-token chunks. On SM89, shared memory holds the offsets of at most
     703 packed sequences over a 128-wide state. Decode runs one token per
     sequence on SM80, SM89 and SM90, and does not take ``cu_seqlens``. A state
-    pool (``state_indices``) is served by decode and by SM90 prefill; every
-    kernel keeps one state a sequence, so a call with ``num_accepted_tokens``
-    needs an external target implementation.
-    Other calls need an external target implementation.
+    pool (``state_indices``) is served by decode and by SM90 prefill, one
+    state a sequence. Other calls, among them any with
+    ``num_accepted_tokens``, need an external target implementation.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
