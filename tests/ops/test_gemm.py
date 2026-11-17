@@ -2792,8 +2792,9 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
         pytest.param(48, 2248, 1792, id="pair-64-rows", marks=pytest.mark.full),
         # The narrow tile at a logical M under its eight rows.
         pytest.param(1, 1672, 1792, id="pair-narrow", marks=pytest.mark.full),
-        # A split whose landing area does not fit beside its ring keeps the reduction launch.
-        pytest.param(128, 4096, 5120, id="landing-unfit", marks=pytest.mark.full),
+        # A split whose landing area does not fit beside its ring keeps the reduction launch,
+        # on 96 CTAs so that the landing alone decides it.
+        pytest.param(128, 3072, 4096, id="landing-unfit", marks=pytest.mark.full),
     ],
 )
 def test_gemm_w4a16_one_warpgroup_split_matches_the_reference(m: int, n: int, k: int) -> None:
@@ -2808,8 +2809,7 @@ def test_gemm_w4a16_one_warpgroup_split_matches_the_reference(m: int, n: int, k:
 @pytest.mark.smoke
 def test_gemm_w4a16_pairs_a_one_warpgroup_split_in_one_wave() -> None:
     """On 132 SMs a one-warpgroup tile split two ways sums its slices over a cluster pair
-    where every cluster launches in the first wave and its landing area fits beside its ring;
-    otherwise it keeps the reduction launch."""
+    where every cluster launches in the first wave, and keeps the reduction launch past it."""
     narrow = _select_config(1, 2176, 1024, 128, 132)
     assert _pair_reduced(1, 2176, 1024, 128, 132, narrow)
     # 141 N tiles split two ways: 282 CTAs.
