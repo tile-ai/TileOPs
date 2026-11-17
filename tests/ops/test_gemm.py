@@ -2783,23 +2783,31 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "m, n, k",
+    "m, n, k, paired",
     [
         # One consumer warpgroup split two ways, on at most 72 CTAs: a deferred-scale 16-row
         # tile over padded rows, a partial last N tile and a partial last K tile.
-        pytest.param(9, 2248, 1792, id="pair-deferred-scale", marks=pytest.mark.smoke),
+        pytest.param(9, 2248, 1792, True, id="pair-deferred-scale", marks=pytest.mark.smoke),
         # A scale-in-decode 64-row tile over padded rows and the same tails.
-        pytest.param(48, 2248, 1792, id="pair-64-rows", marks=pytest.mark.full),
+        pytest.param(48, 2248, 1792, True, id="pair-64-rows", marks=pytest.mark.full),
         # The narrow tile at a logical M under its eight rows.
-        pytest.param(1, 1672, 1792, id="pair-narrow", marks=pytest.mark.full),
+        pytest.param(1, 1672, 1792, True, id="pair-narrow", marks=pytest.mark.full),
         # A split whose landing area does not fit beside its ring keeps the reduction launch,
         # on 96 CTAs so that the landing alone decides it.
-        pytest.param(128, 3072, 4096, id="landing-unfit", marks=pytest.mark.full),
+        pytest.param(128, 3072, 4096, False, id="landing-unfit", marks=pytest.mark.full),
     ],
 )
-def test_gemm_w4a16_one_warpgroup_split_matches_the_reference(m: int, n: int, k: int) -> None:
+def test_gemm_w4a16_one_warpgroup_split_matches_the_reference(
+    m: int, n: int, k: int, paired: bool
+) -> None:
     """A one-warpgroup tile split two ways sums its K slices over a two-CTA cluster, the
     second CTA sending its whole partial to the first, which stores every row of the tile."""
+    # On 132 SMs each case picks a one-warpgroup two-way split and runs the program `paired`
+    # names: the cluster pair, or the reduction launch.
+    cfg = _select_config(m, n, k, 128, 132)
+    assert (cfg["block_n"], cfg["threads"], cfg["split_k"]) == (64, 128, 2)
+    m_pad = m if cfg["block_m"] == 8 else -(-m // cfg["block_m"]) * cfg["block_m"]
+    assert _pair_reduced(m_pad, n, k, 128, 132, cfg) == paired
     test = GEMMW4A16Test(m, n, k, torch.float16)
     inputs = test.gen_inputs()
     _leave_nan_in_free_blocks()

@@ -227,7 +227,7 @@ def _cross_tile_smem_bytes(
     total = num_stages * (block_m * block_k * 2 + block_n * block_k // 2)
     total += block_n * _cross_tile_meta_cols(k, block_k, split_k) * 3
     if split_k == 2:
-        total += block_n // 2 * block_m * 4
+        total += _landing_bytes(block_m, block_n, 256)
     return total
 
 
