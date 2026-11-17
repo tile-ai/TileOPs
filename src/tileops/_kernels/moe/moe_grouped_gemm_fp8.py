@@ -30,6 +30,7 @@ from tileops._kernels.constants import (
 )
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import MGroupedGEMMFP8Call, MGroupedGEMMFP8FwdInterface
+from tileops._kernels.moe.grouped_tasks import CURSOR, GroupedGEMMConfigMixin, task_walk
 from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = ["MoEGroupedGEMMFP8Kernel"]
@@ -102,10 +103,7 @@ def _moe_grouped_gemm_fp8_kernel(
     must preserve the next expert's rows. N tails and all output stores are bounded.
     """
     warpgroup_m = 64
-    # Group M tiles to share weight tiles within a wave.
-    swizzle_m_tiles = 16
-    # Cursor fields: expert, preceding M tiles, expert tiles, first row, row count.
-    cur_g, cur_m, cur_tiles, cur_row0, cur_rows = 0, 1, 2, 3, 4
+    cur_g, cur_row0, cur_rows = CURSOR.g, CURSOR.row0, CURSOR.rows
     accum_dtype = "float"
     ab_dtype = "float8_e4m3fn"
     cd_dtype = "bfloat16"
@@ -113,9 +111,6 @@ def _moe_grouped_gemm_fp8_kernel(
     scale_k = k // block_k
     contiguous = packing is not None
     tight = packing == "tight"
-    # Aligned per-row ids name each row tile's expert; tight ones need each expert's end.
-    rows_walk = metadata_kind == "per_row" and not tight
-    recover = metadata_kind == "per_row" and tight
 
     @tilelang.jit(
         pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
@@ -148,7 +143,6 @@ def _moe_grouped_gemm_fp8_kernel(
         sub_blocks = _b_scale_sub_blocks(block_n)
         sub_block_n = block_n // sub_blocks
         last_scale_b_row = n // QUANT_SCALE_BLOCK - 1
-        swizzle_span = swizzle_m_tiles * n_tiles
         if contiguous:
             m = T.dynamic("m")
             m_tiles = T.ceildiv(m, block_m)
@@ -199,52 +193,18 @@ def _moe_grouped_gemm_fp8_kernel(
             """
             return (ring_index * boxes_per_task + kk // _A_SCALE_GROUP) % a_scale_buffers
 
-        def row_tiles_descriptor(dtype, tensor, row, row_bytes, box_row, swizzle, promotion):
-            """A TMA descriptor of ``block_m``-row tiles of a tensor laid out like ``a``.
-
-            Its rows are ``row`` elements over ``row_bytes`` bytes: ``[m, row]`` for contiguous
-            rows, ``[E, max_m, row]`` for masked slabs; a box is ``box_row`` elements of each of
-            ``block_m`` rows.
-            """
-            if contiguous:
-                return T.create_tma_descriptor(
-                    dtype,
-                    2,
-                    tensor.data,
-                    row,
-                    m,
-                    1,
-                    row_bytes,
-                    box_row,
-                    block_m,
-                    1,
-                    1,
-                    TMA_INTERLEAVE_NONE,
-                    swizzle,
-                    promotion,
-                    TMA_OOB_FILL_NONE,
-                )
-            return T.create_tma_descriptor(
-                dtype,
-                3,
-                tensor.data,
-                row,
-                max_m,
-                num_groups,
-                1,
-                row_bytes,
-                max_m * row_bytes,
-                box_row,
-                block_m,
-                1,
-                1,
-                1,
-                1,
-                TMA_INTERLEAVE_NONE,
-                swizzle,
-                promotion,
-                TMA_OOB_FILL_NONE,
-            )
+        tasks = task_walk(
+            num_groups=num_groups,
+            block_m=block_m,
+            n_tiles=n_tiles,
+            max_m=max_m,
+            packing=packing,
+            metadata_kind=metadata_kind,
+            alignment=alignment,
+            m=m if contiguous else None,
+        )
+        row_tiles_descriptor = tasks.row_tiles_descriptor
+        walk, tile_of, recover = tasks.walk, tasks.tile_of, tasks.recover
 
         def ring_position(kk, ring_index):
             """Ring slot and barrier phase shared by producers and consumers."""
@@ -258,72 +218,6 @@ def _moe_grouped_gemm_fp8_kernel(
             return T.call_extern(
                 "handle", promote_helper, partial.data, final.data, scales[0], scales[1], *b_scales
             )
-
-        @T.macro
-        def walk_to(layout, task_id, cursor):
-            """Resolve a masked task to an expert; ``num_groups`` marks exhaustion."""
-            while cursor[cur_g] < num_groups:
-                cursor[cur_tiles] = (
-                    T.max(T.min(layout[cursor[cur_g]], max_m), 0) + block_m - 1
-                ) // block_m
-                if task_id < (cursor[cur_m] + cursor[cur_tiles]) * n_tiles:
-                    break
-                cursor[cur_m] = cursor[cur_m] + cursor[cur_tiles]
-                cursor[cur_g] = cursor[cur_g] + 1
-
-        @T.macro
-        def walk_ends(ends, task_id, cursor):
-            """Resolve a task to an expert run, retaining its row bounds and tile count."""
-            while cursor[cur_g] < num_groups:
-                prev_end = T.if_then_else(cursor[cur_g] > 0, ends[T.max(cursor[cur_g] - 1, 0)], 0)
-                if tight:
-                    cursor[cur_row0] = prev_end
-                else:
-                    cursor[cur_row0] = T.ceildiv(prev_end, alignment) * alignment
-                cursor[cur_rows] = T.max(ends[cursor[cur_g]] - cursor[cur_row0], 0)
-                cursor[cur_tiles] = (cursor[cur_rows] + block_m - 1) // block_m
-                if task_id < (cursor[cur_m] + cursor[cur_tiles]) * n_tiles:
-                    break
-                cursor[cur_m] = cursor[cur_m] + cursor[cur_tiles]
-                cursor[cur_g] = cursor[cur_g] + 1
-
-        @T.macro
-        def walk_rows(layout, task_id, cursor):
-            """Resolve an aligned row tile from its first expert id, with N tiles fastest.
-
-            Id ``num_groups`` denotes padding; each row tile occupies one cursor run.
-            """
-            cursor[cur_g] = num_groups
-            if task_id < m_tiles * n_tiles:
-                cursor[cur_m] = task_id // n_tiles
-                cursor[cur_tiles] = 1
-                cursor[cur_row0] = cursor[cur_m] * block_m
-                cursor[cur_rows] = block_m
-                cursor[cur_g] = T.min(layout[cursor[cur_row0]], num_groups)
-
-        walk = walk_rows if rows_walk else walk_ends if contiguous else walk_to
-
-        @T.macro
-        def tile_of(task_id, cursor, tile):
-            """Map a valid expert-local task to its M/N tile.
-
-            Requires ``0 <= local < m_tiles * n_tiles`` and ``m_tiles >= 1``.
-            """
-            local = task_id - cursor[cur_m] * n_tiles
-            m_tiles = cursor[cur_tiles]
-            if not contiguous and tiles_per_slab <= swizzle_m_tiles:
-                # One group spans every M tile of the expert. A runtime divisor costs a long
-                # division, so each of the tiles_per_slab values m_tiles can take gets its own.
-                for i in T.unroll(tiles_per_slab):
-                    if m_tiles == i + 1:
-                        tile[0] = T.truncmod(local, i + 1)
-                        tile[1] = T.truncdiv(local, i + 1)
-            else:
-                first = T.truncdiv(local, swizzle_span) * swizzle_m_tiles
-                in_group = T.truncmod(local, swizzle_span)
-                group_m_tiles = T.min(swizzle_m_tiles, m_tiles - first)
-                tile[0] = first + T.truncmod(in_group, group_m_tiles)
-                tile[1] = T.truncdiv(in_group, group_m_tiles)
 
         @T.prim_func
         def _moe_grouped_gemm_fp8_main(
@@ -380,19 +274,7 @@ def _moe_grouped_gemm_fp8_kernel(
                 if recover:
                     # Each expert's end: the first row whose id is past it, ids not decreasing.
                     ends = T.alloc_shared((num_groups,), "int32", scope="shared")
-                    for group_step in T.serial(T.ceildiv(num_groups, math_threads + 128)):
-                        group = group_step * (math_threads + 128) + tx
-                        if group < num_groups:
-                            lo = T.alloc_var("int32", init=0)
-                            hi = T.alloc_var("int32", init=m)
-                            for _ in T.serial(32):
-                                if lo < hi:
-                                    mid = (lo + hi) >> 1
-                                    if layout[mid] <= group:
-                                        lo = mid + 1
-                                    else:
-                                        hi = mid
-                            ends[group] = lo
+                    tasks.recover_ends(layout, ends, tx, math_threads + 128)
                     T.sync_threads()
                 # [m, N] or [E, max_m, N], so the store of a run's or slab's last rows is
                 # clipped at its end.
@@ -743,7 +625,7 @@ def _moe_grouped_gemm_fp8_kernel(
     return _moe_grouped_gemm_fp8_func
 
 
-class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
+class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8FwdInterface):
     """Block-scaled FP8 grouped GEMM over masked expert slabs or contiguous expert rows, on SM90
     TMA and WGMMA.
 
@@ -983,36 +865,15 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         )
         self.init_config()
 
-    def _check_config(self, config: Mapping[str, object]) -> None:
-        """Validate a launch configuration against device and layout limits."""
-        reason = self.config_refusal(
-            config,
-            sm_count=self.sm_count,
-            smem_limit=self.smem_limit,
-            scale_k=self.scale_k,
-            alignment=self.alignment,
-        )
-        if reason is not None:
-            raise ValueError(f"{type(self).__name__} cannot run config {dict(config)}: {reason}")
+    _CONFIG_KEYS = _CONFIG_KEYS
 
-    def init_config(self, config: dict | None = None) -> None:
-        """Set the config as the base class does, then check it.
-
-        Raises:
-            ValueError: *config* names a key the kernel does not take, or the resulting
-                config is one ``config_refusal`` refuses.
-        """
-        if config is not None and not set(config) <= set(_CONFIG_KEYS):
-            raise ValueError(
-                f"{type(self).__name__} takes the config keys {list(_CONFIG_KEYS)}, "
-                f"got {sorted(config)}"
-            )
-        super().init_config(config)
-        self._check_config(self.config)
-
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup=warmup, rep=rep)
-        self._check_config(self.config)
+    def _refusal_inputs(self) -> dict:
+        return {
+            "sm_count": self.sm_count,
+            "smem_limit": self.smem_limit,
+            "scale_k": self.scale_k,
+            "alignment": self.alignment,
+        }
 
     def _stages_for(self, block_m: int, block_n: int, stage_scales: int) -> list[int]:
         """Ring depths that fit beside the tiles, those dividing the K steps when any do."""
@@ -1023,16 +884,6 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         ]
         dividing = [s for s in fitting if self.scale_k % s == 0]
         return dividing or fitting
-
-    def _balanced_sms(self, block_m: int, block_n: int) -> int:
-        """Minimize idle blocks for masked slabs; use all SMs for contiguous layouts."""
-        call = self.call
-        if call.kind == "contiguous":
-            return self.sm_count
-        tiles = call.num_groups * -(-call.max_m // block_m) * -(-call.n // block_n)
-        if tiles == 0:
-            return 1
-        return -(-tiles // -(-tiles // self.sm_count))
 
     @property
     def default_config(self) -> dict:

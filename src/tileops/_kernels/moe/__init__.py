@@ -10,6 +10,8 @@ from tileops._kernels.moe.call_spec import (
     MGroupedGEMMFP8Call,
     MGroupedGEMMFP8FwdInterface,
     MGroupedGEMMFwdInterface,
+    MGroupedGEMMMXFP4Call,
+    MGroupedGEMMMXFP4FwdInterface,
     PermuteAlignCall,
     PermuteAlignFwdInterface,
     PostPermuteCall,
@@ -30,6 +32,7 @@ from tileops._kernels.moe.indexed_expert_gemm import (
 from tileops._kernels.moe.moe_grouped_gemm import MoEGroupedGEMMKernel, MoEGroupedGEMMMMAKernel
 from tileops._kernels.moe.moe_grouped_gemm_fp8 import MoEGroupedGEMMFP8Kernel
 from tileops._kernels.moe.moe_grouped_gemm_fp8_mma import MoEGroupedGEMMFP8MMAKernel
+from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import MoEGroupedGEMMMXFP4Kernel
 from tileops._kernels.moe.permute_align import MoEPermuteAlignKernel
 from tileops._kernels.moe.permute_contiguous import MoEPrePermuteContiguousKernel
 from tileops._kernels.moe.shared_expert_mlp import SharedExpertMLPKernel
@@ -53,10 +56,13 @@ __all__ = [
     "MGroupedGEMMFP8Call",
     "MGroupedGEMMFP8FwdInterface",
     "MGroupedGEMMFwdInterface",
+    "MGroupedGEMMMXFP4Call",
+    "MGroupedGEMMMXFP4FwdInterface",
     "MoEGroupedGEMMFP8Kernel",
     "MoEGroupedGEMMFP8MMAKernel",
     "MoEGroupedGEMMKernel",
     "MoEGroupedGEMMMMAKernel",
+    "MoEGroupedGEMMMXFP4Kernel",
     "MoEPermuteAlignKernel",
     "MoEPrePermuteContiguousKernel",
     "MoEUnpermuteKernel",
