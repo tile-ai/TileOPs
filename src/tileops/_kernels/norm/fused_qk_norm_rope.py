@@ -171,13 +171,8 @@ def _fused_qk_norm_rope_kernel(
                         vb[v] = qkv[n, h * dim + o2 + v]
                 if rotates:
                     if mrope:
-                        # Frequency cbase + v takes the height row where it is 1 mod 3 and below
-                        # height_end, the width row where it is 2 mod 3 and below width_end, the
-                        # temporal row otherwise. The lane's first frequency fixes each v's
-                        # residue, so the choice is made once a residue (phase k = v % 3) and
-                        # each value only checks its section's end. Each value reads its own
-                        # row: three rows' vectors held at once cost the registers that bound
-                        # the resident CTAs.
+                        # The lane's first frequency fixes v's residue, so the row and section
+                        # end are picked once a residue (k = v % 3); each value reads its row.
                         first = cbase % 3
                         temporal = pos[0]
                         for k in T.unroll(3):

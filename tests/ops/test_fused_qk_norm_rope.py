@@ -257,7 +257,7 @@ def test_fused_qk_norm_rope_zero_centered_offset() -> None:
             _packed(8),
             {"zero_centered": True},
             "zero_centered",
-            marks=_SMOKE,
+            marks=_FULL,
             id="zero-centered-text",
         ),
     ],
