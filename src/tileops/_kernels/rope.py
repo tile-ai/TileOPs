@@ -467,10 +467,16 @@ class _RoPEPositionsKernel(Kernel):
         return query_out.view(query.shape), key_out.view(key.shape)
 
     def _compile(self, cfg: dict, wide: bool):
-        """The program ``forward`` launches, compiled from *cfg*; *wide* gives a block a thread
-        per unit of its token, whole warps, up to the block limit."""
+        """The program ``forward`` launches, compiled from *cfg*; *wide* gives each thread one
+        unit and spreads a token over about ``units / 256`` blocks of whole warps."""
         if wide:
-            return self.kernel(min(1024, -(-self._token_units // 32) * 32), 1)
+            # Eight warps give each of an SM's four schedulers a second warp to issue while
+            # the first waits on memory. The nearest whole count of such blocks a token splits
+            # a token only at twelve warps or more: a smaller token is bound by one unit's
+            # latency, and a larger one's loads queue on the one SM its single block runs on.
+            block = 8 * 32
+            parts = max(1, (self._token_units + block // 2) // block)
+            return self.kernel(-(-self._token_units // (parts * 32)) * 32, 1)
         return self.kernel(cfg["threads"], cfg["units"])
 
 

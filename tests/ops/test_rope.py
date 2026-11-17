@@ -183,6 +183,20 @@ def test_longrope_reads_the_row_positions_plus_offsets_name() -> None:
 
 
 @pytest.mark.smoke
+def test_longrope_splits_a_token_of_many_units_over_blocks() -> None:
+    """A few tokens of 35 float32 heads of 96 with offsets, 420 units each, take two blocks a
+    token, the last one partly idle: the vectorized launch with offsets over several blocks."""
+    dtype = torch.float32
+    op, params = _op("LongRoPEFwdOp", dtype)
+    positions, query, key = _inputs("LongRoPEFwdOp", params, 16, 28, 7, dtype, first=10)
+    offsets = torch.arange(16, device=run_device()) * 700
+    got_q, got_k = op(positions, query, key, offsets)
+    ref_q, ref_k = _reference("LongRoPEFwdOp", params, positions, query, key, offsets)
+    compare_outputs(got_q, ref_q, rope_verification())
+    compare_outputs(got_k, ref_k, rope_verification())
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
 @pytest.mark.parametrize(
     ("dtype", "bad"),
