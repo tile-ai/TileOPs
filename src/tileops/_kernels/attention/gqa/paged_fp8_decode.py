@@ -633,10 +633,10 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
     """SM90 paged attention over an FP8 cache for packings of at most 64 rows a request.
 
     It serves a float16 or bfloat16 output over an FP8 cache, the query 16-bit in that dtype
-    or FP8, at head dimension 64 or 128, over pages of a multiple or a divisor of 64 rows,
-    causal or bidirectional, with windows and a softcap, and a positive scale. RoPE and sinks
-    stay on ``GQAPagedFwdKernel``. A tile of 64 query rows holds the rows on the WGMMA M
-    extent; a narrower one holds the keys there.
+    or FP8, at head dimension 64 or 128, over pages of a multiple or a divisor of 64 rows and
+    at least 128 bytes a KV head, causal or bidirectional, with windows and a softcap, and a
+    positive scale. RoPE and sinks stay on ``GQAPagedFwdKernel``. A tile of 64 query rows
+    holds the rows on the WGMMA M extent; a narrower one holds the keys there.
     """
 
     supported_archs: list[int] = [90]
@@ -679,6 +679,10 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
             return "requires a positive scale"
         if call.page_size <= 0 or cls.block_n_for(call.page_size) is None:
             return f"requires a page size that is a multiple or a divisor of {WGMMA_ROWS} rows"
+        # Each page's TMA copy lands at a multiple of its bytes, and TMA needs 128-byte aligned
+        # shared memory.
+        if call.page_size * call.dim < 128:
+            return "requires pages of at least 128 bytes a KV head"
         if call.fuse_rope:
             return "does not serve RoPE"
         if call.has_sinks:
