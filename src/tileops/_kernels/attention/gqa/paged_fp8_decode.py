@@ -661,6 +661,10 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
     # above what ptxas keeps beyond the tiles, so the register bound never asks for more CTAs
     # than the launch bound lets fit.
     _ADDRESS_REGS: int = 32
+    # FP8 key and value stages, and widened key stages with the rows on M, of the default
+    # configuration.
+    _STAGES: int = 2
+    _KEY_STAGES: int = 2
 
     @staticmethod
     def block_n_for(page_size: int) -> int | None:
@@ -702,9 +706,13 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
             return "does not serve sinks"
         if cls.rows_for(call) > cls._MAX_ROWS:
             return f"serves packings of at most {cls._MAX_ROWS} rows a request"
-        if call.batch > cls._MAX_BATCH:
+        need = cls.shared_bytes(
+            cls.rows_for(call), call.dim, call.batch, WGMMA_ROWS, cls._STAGES, cls._KEY_STAGES
+        )
+        if need > call.smem_budget:
             return (
-                f"holds the per-request tile prefix in shared memory, so batch <= {cls._MAX_BATCH}"
+                f"holds the per-request tile prefix beside its tiles: {need} bytes of shared "
+                f"memory at batch {call.batch}, past the {call.smem_budget} a block has"
             )
         return None
 
@@ -797,47 +805,65 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         # Zero reads the chunk count from the launch geometry; a positive value pins it. With
         # rows on M, two widened key stages; keys on M widen the keys in registers.
         rows_on_m = self.block_m == WGMMA_ROWS
-        widened_keys = {"cstages": 2} if rows_on_m else {}
+        widened_keys = {"cstages": self._KEY_STAGES} if rows_on_m else {}
         return {
             **widened_keys,
             "block_n": self.block_n_for(self.page_size),
             "num_split": 0,
-            "stages": 2,
+            "stages": self._STAGES,
             # The copying warp and the widening helper's 16-byte loads and stores fit without
             # spilling; what the producer warpgroup does not keep goes to the consumer.
             "producer_regs": 56,
         }
 
-    def resident_ctas(self, cfg: dict) -> int:
-        """CTAs a multiprocessor holds: as many as both its shared memory and its registers
-        fit. The launch bound asks ptxas for the same count.
+    @classmethod
+    def shared_bytes(
+        cls, block_m: int, dim: int, batch: int, block_n: int, stages: int, cstages: int
+    ) -> int:
+        """Shared memory a scan CTA of *block_m*-row tiles takes, at most.
 
-        Every shared buffer starts on a kilobyte; beside the rings a CTA holds the tile offsets,
-        the value row counts and, with keys on M, the reduction workspace, then a kilobyte of
-        barriers and the shared memory the multiprocessor reserves a block. A thread's registers
-        are its share of the tiles the consumer holds, 32-bit or packed 16-bit pairs, and
-        _ADDRESS_REGS more; with rows on M the producer warpgroup keeps producer_regs.
+        The per-request tile prefix, the FP8 key and value rings, the widened value stages and
+        either the widened key stages (rows on M) or the query rows and probabilities (keys on
+        M) each start on a kilobyte. The ring's row counts, the barriers and, with the keys on
+        M, the reduction workspaces take a kilobyte each.
         """
-        block_n, stages, rows, dim = cfg["block_n"], cfg["stages"], self.block_m, self.dim
 
         def kb(nbytes: int) -> int:
             return -(-nbytes // 1024) * 1024
 
         tile = block_n * dim
-        rings = 2 * kb(stages * tile) + kb(_value_stages(rows) * tile * 2)
-        if rows == WGMMA_ROWS:
-            rings += kb(cfg["cstages"] * tile * 2)
+        buffers = [4 * (batch + 1), stages * tile, stages * tile, _value_stages(block_m) * tile * 2]
+        if block_m == WGMMA_ROWS:
+            buffers.append(cstages * tile * 2)
             small = 2
+        else:
+            buffers += [block_m * dim * 2, block_m * block_n * 2]
+            small = 3
+        return sum(kb(b) for b in buffers) + small * 1024
+
+    def resident_ctas(self, cfg: dict) -> int:
+        """CTAs a multiprocessor holds: as many as both its shared memory and its registers
+        fit. The launch bound asks ptxas for the same count.
+
+        A CTA takes `shared_bytes` and the shared memory the multiprocessor reserves a block. A
+        thread's registers are its share of the tiles the consumer holds, 32-bit or packed
+        16-bit pairs, and _ADDRESS_REGS more; with rows on M the producer warpgroup keeps
+        producer_regs.
+        """
+        block_n, rows, dim = cfg["block_n"], self.block_m, self.dim
+        tile = block_n * dim
+        if rows == WGMMA_ROWS:
             # Scores, row sums and output in float; query and probabilities in 16-bit pairs.
             held = (rows * block_n + rows * 16 + rows * dim) + (rows * dim + rows * block_n) // 2
             regs = (held // WARPGROUP_THREADS + self._ADDRESS_REGS + cfg["producer_regs"]) // 2
         else:
-            rings += kb(rows * dim * 2) + kb(rows * block_n * 2)
-            small = 3
             # Scores, their sums and the output in float; the widened keys in 16-bit pairs.
             held = 2 * block_n * rows + dim * rows + tile // 2
             regs = held // WARPGROUP_THREADS + self._ADDRESS_REGS
-        footprint = rings + kb(4 * (self.batch + 1)) + small * 1024 + self._cta_reserved_bytes
+        shared = self.shared_bytes(
+            rows, dim, self.batch, block_n, cfg["stages"], cfg.get("cstages", 0)
+        )
+        footprint = shared + self._cta_reserved_bytes
         by_registers = self._sm_registers // (_threads(rows) * regs)
         return max(1, min(self._sm_shared_bytes // footprint, by_registers))
 

@@ -1,5 +1,7 @@
 """GQAPagedFwdOp tests against the workload's reference."""
 
+import dataclasses
+
 import pytest
 import torch
 
@@ -1114,6 +1116,18 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             marks=pytest.mark.smoke,
             id="fp8-softcap-window",
         ),
+        # A right window of INT32_MAX keys hides none; added to a query position it overflows.
+        pytest.param(
+            [2, 2],
+            [700, 300],
+            64,
+            torch.float16,
+            {"is_causal": False, "window_size_right": 2**31 - 1},
+            8,
+            ANY,
+            marks=pytest.mark.smoke,
+            id="f16-int32-max-right-window",
+        ),
         # Rows on M with an FP8 query, request scales, a softcap and a left window, bidirectional.
         pytest.param(
             [16, 16],
@@ -1292,6 +1306,31 @@ def test_gqa_paged_fp8_decode(
     least, most = splits
     chunks = kernel.chunks(inputs[0].shape[0])
     assert least <= chunks <= (most or chunks)
+
+
+# H200's shared memory a block may take, in bytes.
+_H200_BLOCK_SHARED = 232448
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(("batch", "served"), [(44287, True), (44288, False)])
+def test_gqa_paged_fp8_decode_refuses_a_tile_prefix_past_shared_memory(
+    batch: int, served: bool
+) -> None:
+    """The FP8 decode kernel holds a per-request tile prefix in shared memory beside its tiles.
+    An 8-row tile at head dimension 128 takes 54 KB beside the prefix, so a block of 227 KB
+    serves at most 44287 requests and leaves larger batches to another kernel."""
+    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
+
+    meta = torch.device("meta")
+    q = torch.empty(batch, 8, 128, dtype=torch.float16, device=meta)
+    k_pages = torch.empty(batch, 64, 1, 128, dtype=FP8, device=meta)
+    table = torch.empty(batch, 1, dtype=torch.int32, device=meta)
+    k_scale = torch.empty(1, device=meta)
+    call = GQAPagedFwdOp(is_causal=True)._paged_call(q, k_pages, table, k_scale)
+    call = dataclasses.replace(call, smem_budget=_H200_BLOCK_SHARED)
+    refusal = GQAPagedFP8DecodeKernel.refusal(call)
+    assert (refusal is None) == served, refusal
 
 
 @pytest.mark.smoke
