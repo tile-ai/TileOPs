@@ -836,18 +836,11 @@ class GEMMW4A8Fixture(FixtureBase):
                 pytest.param(
                     65, 14320, 384, marks=pytest.mark.full, id="full-w4a8-m65-one-wave-ragged-odd-k"
                 ),
-                # Short-K model projections at small token counts: one CTA per 64-row tile,
-                # its 256-K items split over two units in the CTA.
+                # Short-K model projections at small token counts.
                 pytest.param(16, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m16"),
                 pytest.param(32, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m32"),
-                # Past 2048 K a unit: two-warpgroup units on 128-row tiles split across CTAs,
-                # with a short last item.
                 pytest.param(
-                    16,
-                    4096,
-                    4224,
-                    marks=pytest.mark.full,
-                    id="full-w4a8-decode-two-warpgroup-units",
+                    32, 7680, 3456, marks=pytest.mark.full, id="full-w4a8-decode-negative-guard"
                 ),
                 # A short-K TP8 down projection at 64 tokens.
                 pytest.param(64, 8192, 3584, marks=pytest.mark.full, id="full-w4a8-llama-tp8-m64"),
@@ -1330,39 +1323,49 @@ def test_w4a8_forty_token_dispatch(m: int, n: int, k: int, key: str) -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.parametrize(
-    "m, n, k, grid",
+    "m, n, k",
     [
-        # One CTA per 64-row tile. Nine 256-K items over two units, five on the busier one;
-        # a sixth ring stage would push the partial sums out of shared memory.
-        pytest.param(32, 7168, 2304, (1, 112, 5), marks=pytest.mark.smoke, id="k-off-512"),
-        # Eight 512-K items: 2048 K a unit at the limit, 2560 one item past it.
-        pytest.param(16, 4096, 4096, (1, 64, 3), marks=pytest.mark.full, id="unit-k-at-limit"),
-        pytest.param(16, 4096, 4608, (2, 132, 3), marks=pytest.mark.full, id="unit-k-past-limit"),
-        pytest.param(1, 4096, 4096, (1, 64, 4), marks=pytest.mark.full, id="eight-token-tile"),
-        # The 8-token tile meets the same limit: a rule exempting it fails only this case.
-        pytest.param(
-            8, 4096, 4608, (1, 132, 4), marks=pytest.mark.full, id="eight-token-unit-k-past-limit"
-        ),
-        # 132 row tiles are one wave; 133 are not, and split tiles across CTAs.
-        pytest.param(
-            32, 132 * 64, 2048, (1, 132, 2), marks=pytest.mark.full, id="one-wave-of-row-tiles"
-        ),
-        pytest.param(
-            32, 133 * 64, 2048, (1, 132, 2), marks=pytest.mark.full, id="row-tiles-past-a-wave"
-        ),
+        # Nine 256-K items over two units, five on the busier one.
+        pytest.param(32, 7168, 2304, marks=pytest.mark.smoke, id="m32-k-off-512"),
+        # Eight-token units, and a ragged last row tile.
+        pytest.param(1, 4096, 1792, marks=pytest.mark.full, id="m1"),
+        pytest.param(16, 4112, 1792, marks=pytest.mark.full, id="m16-ragged-n"),
     ],
 )
-def test_w4a8_decode_exchange_free_grid(m: int, n: int, k: int, grid: tuple[int, int, int]) -> None:
-    """One CTA per 64-row tile with the partial sums in shared memory; ``grid`` is the
-    dispatched unit warpgroups, CTAs and ring stages on 132 SMs."""
+def test_gemm_w4a8_decode_tunes_the_exchange_free_grid(m: int, n: int, k: int) -> None:
+    """Tuning times one CTA per 64-row tile against the selected grid; both serve the call."""
+    from tileops._kernels.gemm.w4a8_decode import GEMMW4A8DecodeKernel
+
+    test = GEMMW4A8Test(m, n, k, 128)
+    inputs = test.gen_inputs()
     op = GEMMW4A8FwdOp(target=BUILTIN)
-    call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
-    if call.sm_count != 132:
-        pytest.skip("the expected grids count 132 SMs")
-    assert op.key_for("gemm_w4a8", call) == "gemm_w4a8_decode"
-    cfg = op.kernel_for("gemm_w4a8", lambda: call).config
-    assert (cfg["unit_warpgroups"], cfg["num_ctas"], cfg["num_stages"]) == grid
+    test.check(op, *inputs, runs=_repacked(op))
+    (kernel,) = [k for k in op.iter_kernels() if isinstance(k, GEMMW4A8DecodeKernel)]
+    (candidate,) = kernel.autotune_configs
+    assert (candidate["unit_warpgroups"], candidate["num_ctas"]) == (1, -(-n // 64))
+    kernel.config = candidate
+    test.check(op, *inputs, runs=_repacked(op))
+    op.request_tune()
+    test.check(op, *inputs, runs=_repacked(op))
+    assert kernel._generation.config in (candidate, kernel.default_config)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_w4a8_decode_ring_keeps_partial_sums_in_shared_memory() -> None:
+    """The decode ring stops a stage short of pushing the units' partial sums out of shared
+    memory; at 32 tokens on 512-K items that is two stages."""
+    from tileops._kernels.gemm.w4a8_decode import _select_config as select_w4a8_decode
+    from tileops._kernels.gemm.w4a8_decode import _shared_bytes
+
+    op = GEMMW4A8FwdOp(target=BUILTIN)
+    call = GEMMW4A8Call(m=32, n=2112, k=7168, group_size=op.group_size, device=run_device())
+    cfg = select_w4a8_decode(32, 2112, 7168, call.smem_budget, call.sm_count)
+    family = (cfg["block_tokens"], cfg["warpgroups"], cfg["unit_warpgroups"], cfg["block_k"])
+    assert cfg["num_stages"] == 2
+    assert _shared_bytes(*family, 2)[1] <= call.smem_budget < _shared_bytes(*family, 3)[1]
 
 
 @pytest.mark.in_tree_kernels
@@ -3063,8 +3066,6 @@ def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None
     from tileops._kernels.gemm.w4a8_decode import GEMMW4A8DecodeKernel
     from tileops._utils import get_sm_count
 
-    # One CTA per 64-row tile by default; every SM then splits tiles across CTAs, and a
-    # sixth stage pushes the units' partial sums out of shared memory.
     test = GEMMW4A8Test(32, 7168, 2304, 128)
     op = GEMMW4A8FwdOp()
     inputs = test.gen_inputs()
@@ -3079,17 +3080,18 @@ def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None
         captured = op(activation, repacked, *scales)
     (kernel,) = [k for k in op.iter_kernels() if isinstance(k, GEMMW4A8DecodeKernel)]
     ((_, *workspace),) = kernel._generation.programs.values()
+    # More CTAs than tiles hand partial sums across CTAs; each reader clears its ready flag,
+    # so a repeat or a graph replay waits for fresh partial sums.
+    assert not workspace[1].any()
     captured_workspace = [weakref.ref(t) for t in workspace]
     del workspace
     ctas = get_sm_count(kernel.device_index)
     assert kernel.config["num_ctas"] < ctas
-    kernel.config = {**kernel.config, "num_ctas": ctas, "num_stages": 6}
+    # One-warpgroup units on six stages also park the units' partial sums in global memory.
+    kernel.config = {**kernel.config, "num_ctas": ctas, "unit_warpgroups": 1, "num_stages": 6}
     test.check(op, *inputs, runs=run)
     ((_, _, flags, _),) = kernel._generation.programs.values()
     assert flags.numel() == ctas * kernel.config["unit_warpgroups"]
-    # More CTAs than tiles hand partial sums across CTAs; each reader clears its ready flag,
-    # so a repeat or a graph replay waits for fresh partial sums.
-    assert not flags.any()
     gc.collect()
     assert all(ref() is not None for ref in captured_workspace)
     captured.zero_()

@@ -15,6 +15,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.autotune import candidate_busy_ms
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
@@ -89,13 +90,21 @@ def _grid(n: int, k: int, uw: int, block_k: int, sm_count: int, fill: tuple[int,
     return min(sm_count, tiles * -(-k // block_k))
 
 
-def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> dict:
+def _select_config(
+    m: int, n: int, k: int, smem_budget: int, sm_count: int, exchange_free: bool = False
+) -> dict:
     """Select a config that passes the builder's single legality check, with a ring shallow
     enough to keep the units' partial sums in shared memory.
 
+    Args:
+        exchange_free: Run one CTA per 64-row tile instead, its items split over the CTA's
+            one-warpgroup units, so no partial sum crosses CTAs. A tuning candidate: no
+            call facts tell where it beats the selected grid.
+
     Raises:
         ValueError: No stage count of the selected family keeps the units' partial sums in
-            shared memory on the device.
+            shared memory on the device, or the exchange-free grid's row tiles exceed one
+            wave.
     """
     # Every threshold below was measured on H200 over the manifest's W4A8 rows.
     # 8-token tiles: a weight past 32 MiB runs three warpgroups on three stages, a smaller
@@ -105,8 +114,6 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     wide_units, wide_stages = 2, 3
     # 512-K chunks where K allows, else 256-K chunks with twice the stages in flight.
     narrow_k, wide_k = 256, GEMMW4A8DecodeKernel._WIDE_ITEM_K
-    # A unit's K run up to which one CTA per 64-row tile beats splitting tiles across CTAs.
-    exchange_free_unit_k = 4 * wide_k
     nt = next(t for t in GEMMW4A8DecodeKernel.token_tiles if t >= m)
     if nt == GEMMW4A8DecodeKernel.token_tiles[0]:
         large_weight = n * k // 2 > small_weight_bytes
@@ -121,19 +128,39 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     bk = wide_k if k % wide_k == 0 else narrow_k
     if bk == narrow_k:
         stages *= wide_k // narrow_k
-    # One CTA per 64-row tile, its items split over the CTA's one-warpgroup units, when the
-    # tiles fit in one wave and each unit's K run is short enough. The units add their partial
-    # sums in shared memory; a tile split over CTAs adds them through global memory, whose
-    # exchange costs more than the K a unit's run that short saves.
-    row_tiles = -(-n // WGMMA_ROWS)
+    # One CTA per tile once the tiles fill three quarters of the SMs within one wave.
+    ctas = _grid(n, k, uw, bk, sm_count, (3, 4))
+    tiles = -(-n // (WGMMA_ROWS * uw))
     nchunk = -(-k // bk)
-    unit_items = -(-nchunk // nw)
-    if row_tiles <= sm_count and unit_items * bk <= exchange_free_unit_k:
+    items = tiles * nchunk
+    balanced = 2 * tiles
+    # At short K, two contributors per tile pay when they keep five sixths of the SMs busy
+    # (with the tile conditions below). The K test passes up to K = 3200, and up to K = 3584
+    # only when the extra K work stays bounded, which keeps the original grid on the
+    # K = 3456 shapes it measured faster on.
+    fill_num, fill_den = 5, 6
+    if (
+        k <= 3584
+        and nt >= GEMMW4A8DecodeKernel._STAGED_MIN_TOKENS
+        and uw == 2
+        and n % (WGMMA_ROWS * uw) == 0
+        and fill_num * sm_count <= fill_den * balanced <= fill_den * sm_count
+        and balanced <= items
+        and (
+            k <= 3200
+            or (
+                bk == wide_k
+                and -(-nchunk // 2) <= -(-items // ctas)
+                and (k // GROUP_SIZE) * (ctas - balanced) <= ctas
+            )
+        )
+    ):
+        ctas = balanced
+    if exchange_free:
         uw = 1
-        ctas = row_tiles
-    else:
-        # One CTA per tile once the tiles fill three quarters of the SMs within one wave.
-        ctas = _grid(n, k, uw, bk, sm_count, (3, 4))
+        ctas = -(-n // WGMMA_ROWS)
+        if ctas > sm_count:
+            raise ValueError(f"{ctas} row tiles of n={n} exceed one wave of {sm_count} SMs")
     for st in range(stages, 1, -1):
         cfg = dict(
             block_tokens=nt,
@@ -879,9 +906,8 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     _STAGED_MIN_TOKENS = 16
     _STAGE_STRIDE = WGMMA_ROWS + 8  # Offset successive token rows by four banks.
     _PARTIAL_SLOTS = 2  # Head and tail tiles of a unit's item range.
-    # A 16- to 40-token unit's warpgroups where N allows off the exchange-free grid, and its
-    # item's K where K allows: the config selection picks them and the 40-token dispatch rule
-    # counts in them.
+    # A 16- to 40-token unit's warpgroups where N allows, and its item's K where K allows:
+    # the config selection picks them and the 40-token dispatch rule counts in them.
     _WIDE_UNIT_WARPGROUPS = 2
     _WIDE_ITEM_K = 4 * GROUP_SIZE
     # By calibration key (``tileops._utils.calibration_key``). A board without an entry keeps
@@ -896,7 +922,8 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
 
     # WGMMA, TMA and mbarrier transaction counts.
     supported_archs: list[int] = [90]
-    # The tuner times one JIT launch, while a config here also sizes the workspaces.
+    # Tuning times whole launches (:meth:`autotune`), since a config also sizes the
+    # workspaces; ``__init__`` names the candidates.
     autotune_configs = None
 
     @classmethod
@@ -963,6 +990,16 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
         self.config = {}
         self.init_config(config)
         self._smem = self.build_target.smem_budget
+        # One CTA per 64-row tile, where its row tiles fit in one wave, is the candidate tuning
+        # times against the selected grid.
+        try:
+            exchange_free = _select_config(
+                m, n, k, self._smem, self.build_target.sm_count, exchange_free=True
+            )
+        except ValueError:
+            exchange_free = None
+        if exchange_free is not None and exchange_free != self.default_config:
+            self.autotune_configs = [exchange_free]
         self.program(self._compile)
         device = self._device()
         layout = W4A8_LAYOUT
@@ -1043,6 +1080,32 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
             self.build_target.smem_budget,
             self.build_target.sm_count,
         )
+
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        """Time each candidate config's launch and publish the fastest.
+
+        The inputs are drawn here; a launch's time does not depend on their values except for
+        the sign of the group scales, which are drawn positive as a model's are.
+        """
+        if self.autotune_configs is None:
+            return
+        device = self._device()
+        m, n, k = self.m, self.n, self.k
+        inputs = (
+            torch.randn(m, k, device=device).mul_(0.25).to(torch.float8_e4m3fn),
+            torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, device=device),
+            torch.full((n, k // GROUP_SIZE), 0.05, device=device).to(torch.float8_e4m3fn),
+            torch.ones(n, device=device),
+            torch.ones(m, device=device),
+        )
+        best_ms, best_config = float("inf"), None
+        for config in self.tuning_candidates(self.autotune_configs):
+            with self._trying(config):
+                self.forward(*inputs)
+                elapsed = candidate_busy_ms(lambda: self.forward(*inputs), warmup, rep)
+            if elapsed < best_ms:
+                best_ms, best_config = elapsed, config
+        self._publish(best_config, self._compile)
 
     def forward(
         self,
