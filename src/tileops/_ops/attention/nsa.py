@@ -6,6 +6,7 @@ import torch
 from tileops._kernels.attention import (
     NSACompressedFwdVarlenKernel,
     NSACompressedFwdVarlenTMAKernel,
+    NSAFwdVarlenGatherKernel,
     NSAFwdVarlenKernel,
     NSAFwdVarlenTMAKernel,
     NSATopKVarlenKernel,
@@ -139,12 +140,18 @@ class NSAVarlenFwdOp(Op):
     non-causal one up to the end of its sequence; a block starting past that bound
     contributes nothing, and a token no block gives a key outputs zeros. With
     ``cu_seqlens_k`` each request's queries are the last of its keys, as in FLA's
-    ``parallel_nsa_fwd``; the in-tree kernels serve only keys that are the queries' tokens.
+    ``parallel_nsa_fwd``. A token's slots may come in any order; a slot past its
+    ``block_counts``, or naming a block that starts past its last visible key (as a padding
+    id does), selects nothing. The kernels compute in float32, flush subnormals to zero, and
+    land the softmax weights in the input dtype before they multiply the values, as
+    FlashAttention does: inputs whose QK products, scaled scores or value sums pass
+    float32's range are not supported.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "nsa_fwd_varlen_kernel": NSAFwdVarlenKernel,
         "nsa_fwd_varlen_tma_kernel": NSAFwdVarlenTMAKernel,
+        "nsa_fwd_varlen_gather_kernel": NSAFwdVarlenGatherKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "nsa_fwd_varlen_kernel": NSAFwdInterface
@@ -222,7 +229,12 @@ class NSAVarlenFwdOp(Op):
         Returns:
             Attention output [c_seq_len, heads, dim].
         """
-        tensors = (q, k, v, block_indices, block_counts, cu_seqlens, token_indices, cu_seqlens_k)
+        # The kernels address packed tensors; a strided view, such as one selection
+        # expanded over the KV heads, is copied first.
+        tensors = tuple(
+            None if t is None else t.contiguous()
+            for t in (q, k, v, block_indices, block_counts, cu_seqlens, token_indices, cu_seqlens_k)
+        )
         c_seq_len, heads, dim = q.shape
         return self.kernel_for(
             "nsa_fwd_varlen_kernel",
