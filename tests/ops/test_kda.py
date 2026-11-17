@@ -11,6 +11,7 @@ from tileops._kernels.linear_attention import (
     KDACall,
 )
 from tileops._utils.utils import get_sm_count
+from tileops.backend import OpNotAvailableError
 from tileops.linear_attention import KDAFwdOp
 from workloads.linear_attention.kda import KDAFwdCall, KDAFwdWorkload
 from workloads.numerics import compare_outputs
@@ -160,7 +161,12 @@ def test_kda_fused_prefill_reads_many_offsets_from_global_memory() -> None:
 @pytest.mark.parametrize(
     ("facts", "reason"),
     [
-        pytest.param({"state_v_first": True}, "state_v_first", id="value-major-state"),
+        # Too few (sequence, value head) pairs for the one-kernel prefill, the only prefill that
+        # holds a value-major state or reads a state pool.
+        pytest.param({"state_v_first": True}, "key-major state", id="value-major-state"),
+        pytest.param({"pooled": True}, "key-major state", id="state-pool"),
+        # Every in-tree kernel keeps one state a sequence, not one a token.
+        pytest.param({"pooled": True, "rollback": True}, "num_accepted_tokens", id="rollback"),
         # The chunk-local half stages a value tile in buffers sized for a key tile.
         pytest.param({"dim_k": 64, "dim_v": 128}, "K equal to V", id="value-wider-than-key"),
     ],
@@ -252,7 +258,7 @@ def test_kda_prefill_correlated_keys(dtype, batch, heads):
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *inputs)
 
 
-class KDARawGateTest(KDAFwdCall, TestBase):
+class KDAFwdCallTest(KDAFwdCall, TestBase):
     pass
 
 
@@ -284,7 +290,7 @@ def _raw_gate_test(
         some=[*some, "A_log"],
         **shape,
     )
-    return KDARawGateTest(call), KDAFwdOp(**call.arguments())
+    return KDAFwdCallTest(call), KDAFwdOp(**call.arguments())
 
 
 @pytest.mark.parametrize(
@@ -493,7 +499,7 @@ def test_kda_gate_modes_and_operands_remain_call_local(batch, seqlen, heads):
             lower_bound=lower_bound,
             some=["initial_state"] + (["dt_bias"] if bias else []) + (["A_log"] if raw else []),
         )
-        test = KDARawGateTest(call)
+        test = KDAFwdCallTest(call)
         inputs = list(test.gen_inputs())
         op = KDAFwdOp(**call.arguments())
         test.check(op, *inputs)
@@ -759,3 +765,161 @@ def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
     strong.copy_(torch.empty(strong.shape, device=g.device).uniform_(*_strong_decays(g.dtype)))
     inputs[3] = g
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *inputs)
+
+
+def _pooled(dtype: torch.dtype, *, some: tuple[str, ...] = (), **row) -> KDAFwdCallTest:
+    """A manifest call whose states live in a pool: sequence ``n`` starts from slot
+    ``state_indices[n]`` and leaves its final state there, every other slot untouched."""
+    name = "bfloat16" if dtype == torch.bfloat16 else "float16"
+    call = manifest_call(
+        "KDAFwdOp", {"T": name}, some=["initial_state", "state_indices", *some], **row
+    )
+    return KDAFwdCallTest(call)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("dtype", "dim", "flags"),
+    [
+        (torch.float16, 128, {}),
+        (torch.bfloat16, 128, {"state_v_first": True, "use_qk_l2norm_in_kernel": True}),
+        (torch.bfloat16, 64, {"state_v_first": True}),
+    ],
+    ids=["fp16-key-major", "bf16-value-major", "bf16-value-major-64"],
+)
+def test_kda_decode_updates_its_slots_of_a_state_pool(
+    dtype: torch.dtype, dim: int, flags: dict
+) -> None:
+    """A decode step reads each sequence's state from its slot and writes it back in place,
+    in either state layout; a 64-wide value-major row takes half the lanes of a 128-wide one."""
+    torch.manual_seed(42)
+    test = _pooled(dtype, B=5, S=1, H=2, HV=4, K=dim, V=dim, P=16, **flags)
+    test.check(KDAFwdOp(**flags), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_kda_raw_gate_decode_updates_its_slots_of_a_state_pool() -> None:
+    """A pooled step forms each channel's decay from the raw gate, its rate and its bias."""
+    torch.manual_seed(42)
+    flags = {"state_v_first": True, "use_gate_in_kernel": True, "lower_bound": -5.0}
+    test = _pooled(
+        torch.bfloat16, some=("A_log", "dt_bias"), B=3, S=1, H=2, HV=4, K=128, V=128, P=8,
+        **flags,
+    )  # fmt: skip
+    test.check(KDAFwdOp(**flags), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_kda_decode_steps_a_value_major_state() -> None:
+    """A value-major step in batch order."""
+    torch.manual_seed(42)
+    call = manifest_call(
+        "KDAFwdOp", {"T": "bfloat16"}, some=["initial_state"], B=3, S=1, H=2, HV=4, K=128,
+        V=128, state_v_first=True,
+    )  # fmt: skip
+    test = KDAFwdCallTest(call)
+    test.check(KDAFwdOp(state_v_first=True), *test.gen_inputs())
+
+
+# Enough (sequence, value head) pairs for the one-kernel prefill on any SM89 or SM90 device.
+_FUSED_HEADS = 64
+# SM89 builds the one-kernel prefill's compact program, SM90 its full one.
+_FUSED_ARCHS = [
+    pytest.param("sm89", marks=pytest.mark.sm89, id="sm89"),
+    pytest.param("sm90", marks=pytest.mark.sm90, id="sm90"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("arch", _FUSED_ARCHS)
+@pytest.mark.parametrize("state_v_first", [False, True], ids=["key-major", "value-major"])
+def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool, arch) -> None:
+    """Packed sequences walked whole in one kernel start from and end in their slots, in
+    either state layout; an empty sequence leaves its slot as it was."""
+    del arch
+    torch.manual_seed(42)
+    flags = {"state_v_first": state_v_first, "use_qk_l2norm_in_kernel": True}
+    test = _pooled(
+        torch.bfloat16, some=("cu_seqlens",), B=1, S=201, seq_lens=[100, 0, 37, 64], H=4,
+        HV=_FUSED_HEADS, K=128, V=128, P=12, **flags,
+    )  # fmt: skip
+    test.check(KDAFwdOp(**flags), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("arch", _FUSED_ARCHS)
+def test_kda_fused_prefill_walks_a_value_major_state(arch) -> None:
+    """Equal-length sequences start from value-major states in batch order and return them."""
+    del arch
+    torch.manual_seed(42)
+    call = manifest_call(
+        "KDAFwdOp", {"T": "float16"}, some=["initial_state"], B=4, S=100, H=4,
+        HV=_FUSED_HEADS, K=128, V=128, state_v_first=True,
+    )  # fmt: skip
+    test = KDAFwdCallTest(call)
+    test.check(KDAFwdOp(state_v_first=True), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_kda_decode_updates_a_strided_pool_in_place() -> None:
+    """A pool that is a strided view is advanced in place, the call returning that view."""
+    torch.manual_seed(42)
+    test = _pooled(torch.bfloat16, B=4, S=1, H=2, HV=4, K=128, V=128, P=8, state_v_first=True)
+    q, k, v, g, beta, pool, *rest = test.gen_inputs()
+    strided = torch.empty((2 * pool.shape[0], *pool.shape[1:]), device=pool.device)[::2]
+    strided.copy_(pool)
+    op = KDAFwdOp(state_v_first=True)
+
+    def run(*args, **keywords):
+        # The compared state is the caller's view, so a missed copy-back fails the check.
+        o, final_state = op(*args, **keywords)
+        assert final_state is args[5]
+        return o, final_state
+
+    test.check(op, q, k, v, g, beta, strided, *rest, runs=run)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "pooled",
+    [
+        pytest.param(True, marks=pytest.mark.smoke, id="value-major-pool"),
+        pytest.param(False, marks=pytest.mark.full, id="value-major"),
+    ],
+)
+def test_kda_long_prefill_walks_a_value_major_state(pooled: bool) -> None:
+    """Enough tokens a SM for the two-launch prefill, a value-major state in batch order or in
+    a pool, and one strongly decayed chunk the checking launch flags: the rerun walks that pair
+    again from its initial state, which a pool's one-launch program must not have overwritten."""
+    torch.manual_seed(42)
+    heads = 32
+    sequences = max(4, -(-get_sm_count() // heads))
+    length = 6144  # Keeps every supported SM90 device in the long-prefill dispatch region.
+    flags = {"state_v_first": True, "use_qk_l2norm_in_kernel": True}
+    some = ["initial_state", *(["state_indices"] if pooled else [])]
+    call = manifest_call(
+        "KDAFwdOp", {"T": "bfloat16"}, some=some, B=sequences, S=length, H=heads, HV=heads,
+        K=128, V=128, **({"P": 2 * sequences} if pooled else {}), **flags,
+    )  # fmt: skip
+    test = KDAFwdCallTest(call)
+    inputs = list(test.gen_inputs())
+    g = inputs[3].clone()
+    strong = g[1, 100:228]
+    strong.copy_(torch.empty(strong.shape, device=g.device).uniform_(*_strong_decays(g.dtype)))
+    inputs[3] = g
+    test.check(KDAFwdOp(**flags), *inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_kda_refuses_a_packed_token_over_an_empty_sequence() -> None:
+    """One packed token over two sequences leaves one empty: the decode reads one token and one
+    state a row, so the op refuses the call instead of pairing a slot with the wrong token."""
+    torch.manual_seed(42)
+    test = _pooled(
+        torch.bfloat16, some=("cu_seqlens",), B=1, S=1, seq_lens=[0, 1], H=2, HV=4, K=128,
+        V=128, P=8, state_v_first=True,
+    )  # fmt: skip
+    inputs = test.gen_inputs()
+    with pytest.raises(OpNotAvailableError, match="one token a sequence"):
+        KDAFwdOp(state_v_first=True)(*inputs[:10], state_indices=inputs[10])

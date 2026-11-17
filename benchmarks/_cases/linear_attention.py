@@ -49,4 +49,5 @@ ENTRIES = {
     "DeltaNetChunkBwdOp": Entry(inputs=_deltanet_bwd_inputs),
     "GDNFwdOp": Entry(binder=_state_pool_binder),
     "GLAChunkBwdOp": Entry(inputs=_gla_bwd_inputs),
+    "KDAFwdOp": Entry(binder=_state_pool_binder),
 }
