@@ -48,8 +48,9 @@ def _threads(block_m: int) -> int:
 
 
 def _value_stages(block_m: int) -> int:
-    """Widened value stages a program of *block_m*-row tiles holds: two with the rows on M, one
-    with the keys on M."""
+    """Widened value stages a program of *block_m*-row tiles holds: two with the rows on M, so
+    one tile's value product runs while the next one's values widen; one with the keys on M,
+    whose consumer waits for its value product, so more CTAs share a multiprocessor."""
     return 2 if block_m == WGMMA_ROWS else 1
 
 
@@ -125,13 +126,7 @@ def _gqa_paged_fp8_decode_kernel(
         consumer_regs: int,
         resident: int,
     ):
-        # A tile of 64 rows fills the M extent of a WGMMA, which then holds the rows; a narrower
-        # tile is the N extent of products that hold the keys on M, so their cost follows the
-        # rows the tile holds.
         rows_on_m = block_m == WGMMA_ROWS
-        # Value stages: with rows on M one tile's value product runs while the next one's values
-        # widen; with keys on M the consumer waits for it, and one stage lets more CTAs share a
-        # multiprocessor.
         vstages = _value_stages(block_m)
         converters = WARPGROUP_THREADS - 32
         threads = _threads(block_m)
@@ -640,8 +635,8 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
     It serves a float16 or bfloat16 output over an FP8 cache, the query 16-bit in that dtype
     or FP8, at head dimension 64 or 128, over pages of a multiple or a divisor of 64 rows,
     causal or bidirectional, with windows and a softcap, and a positive scale. RoPE and sinks
-    stay on ``GQAPagedFwdKernel``. A tile of 64 rows holds them on the WGMMA M extent; a
-    narrower one holds the keys there.
+    stay on ``GQAPagedFwdKernel``. A tile of 64 query rows holds the rows on the WGMMA M
+    extent; a narrower one holds the keys there.
     """
 
     supported_archs: list[int] = [90]
