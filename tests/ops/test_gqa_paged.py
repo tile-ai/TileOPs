@@ -1097,6 +1097,15 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             {"per_request_scales": True, "softcap": 30.0, "window_size_left": 200},
             id="fp8-softcap-window",
         ),
+        # A right window of INT32_MAX keys hides none; added to a query position it overflows.
+        pytest.param(
+            [2, 2],
+            [700, 300],
+            64,
+            torch.float16,
+            {"is_causal": False, "window_size_right": 2**31 - 1},
+            id="f16-int32-max-right-window",
+        ),
     ],
 )
 def test_gqa_paged_fp8_decode(
@@ -1118,6 +1127,20 @@ def test_gqa_paged_fp8_decode(
     op, inputs = _fp8_op(workload, **op_semantics), _poisoned_inputs(workload)
     _check(op, workload, inputs)
     assert isinstance(_kernel(op, inputs), GQAPagedFP8DecodeKernel)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+def test_gqa_paged_fp8_decode_refuses_a_tile_prefix_past_shared_memory() -> None:
+    """50000 requests take 200 KB of shared memory for the tile prefix, more than the FP8
+    decode tiles leave, so another kernel serves the call."""
+    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
+
+    workload = _decode(50000, 8, 1, [64] * 50000, 128, 64, cache_dtype=FP8)
+    op, inputs = _fp8_op(workload), workload.gen_inputs()
+    _check(op, workload, inputs)
+    assert not isinstance(_kernel(op, inputs), GQAPagedFP8DecodeKernel)
 
 
 @pytest.mark.smoke
