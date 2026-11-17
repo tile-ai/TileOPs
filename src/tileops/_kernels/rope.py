@@ -307,8 +307,8 @@ def _rope_positions_kernel(
             if tail_units == 0 or units == 1:
                 each_unit(row, None, True, True, *tensors)
             else:
-                # Rotating and copying units share the lanes of one warp, whose two paths
-                # would each wait out a load-to-store round trip a unit.
+                # A warp can hold rotating and copying units, whose two paths would each
+                # wait out a load-to-store round trip a unit.
                 # A copied run takes the registers of a rotating unit's low columns.
                 lo = T.alloc_local([units * run], dtype)
                 hi = T.alloc_local([units * width], dtype)

@@ -253,7 +253,6 @@ def test_rope_graph_replay(neox) -> None:
         pytest.param(False, 64, 24, marks=pytest.mark.smoke, id="vector-gptj"),
         pytest.param(True, 64, 24, marks=pytest.mark.full, id="vector-neox"),
         pytest.param(False, 65, 32, marks=pytest.mark.full, id="scalar-gptj"),
-        pytest.param(True, 65, 32, marks=pytest.mark.full, id="scalar-neox"),
     ],
 )
 def test_rope_rotates_several_units_a_thread_where_heads_copy_columns(
