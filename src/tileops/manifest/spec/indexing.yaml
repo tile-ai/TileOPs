@@ -8,7 +8,7 @@ EmbeddingFwdOp:
   # norm exceeds `max_norm` is rescaled to `max_norm` in `weight` before the lookup; this
   # needs a floating table.
   family: indexing
-  status: spec-only
+  status: implemented
   ref_api: torch.nn.functional.embedding
   signature:
     forall: {S: Shape, V: Dim, D: Dim, I: "DType[int32 | int64]", T: "DType[float16 | bfloat16 | float32 | int32 | int64]"}
