@@ -185,6 +185,8 @@ def _gqa_paged_fp8_decode_kernel(
         def widen(src, dst, s, c, t, valid_rows, threads_, form):
             """Widen stored stage *s* of *src* into stage *c* of *dst*, zeroing rows at or past
             *valid_rows*."""
+            # A T.Parallel cast widens slower: the key tiles on three warps, and bfloat16 and
+            # 16-row float16 value tiles.
             T.call_extern(
                 "handle",
                 f"tileops::fp8_tile_to_wide_{widen_form}{form}<{block_n}, {threads_}, {wide_c}>",
