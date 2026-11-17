@@ -415,8 +415,9 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
         m, n, dtype = self.m, self.n, self.out_dtype
 
         def split(a, b, scale_a, scale_b):
-            slices = mainloop(a, b, scale_a, scale_b)
+            # Allocated before the mainloop, so no allocation sits between the two launches.
             c = torch.empty((m, n), dtype=dtype, device=a.device)
+            slices = mainloop(a, b, scale_a, scale_b)
             reduce(slices, c)
             return c
 
