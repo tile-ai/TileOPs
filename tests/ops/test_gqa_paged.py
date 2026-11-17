@@ -1179,8 +1179,8 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             marks=pytest.mark.full,
             id="f16-request-spans-tiles",
         ),  # fmt: skip
-        # A score scale past 1e38's headroom in float32: the left window hides the first key
-        # tile of a chunk from the later rows, which must not compute -inf minus -inf there.
+        # The left window hides the first key tile of a chunk from the later rows, whose maximum
+        # stays at its -1e38 floor; a score scale of 8 overflows float32 if it scales that floor.
         pytest.param(
             [4, 4],
             [1000, 1000],
