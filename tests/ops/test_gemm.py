@@ -1898,6 +1898,7 @@ def test_gemm_bias_on_each_structure(
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("out_dtype", [None, torch.float32], ids=["bf16-out", "float32-out"])
 @pytest.mark.parametrize(
     ("m", "n", "k", "trans_b", "kernel"),
     [
@@ -1909,12 +1910,283 @@ def test_gemm_bias_on_each_structure(
         ),
     ],
 )
-def test_gemm_bias_on_selected_kernels(m: int, n: int, k: int, trans_b: bool, kernel: type) -> None:
-    """The kernel selected for a shape adds the bias, a single one over a one-column output."""
-    test = GEMMTest(m, n, k, torch.bfloat16, False, trans_b, bias=True)
-    op = GEMMFwdOp(trans_b=trans_b, target=BUILTIN)
+def test_gemm_bias_on_selected_kernels(
+    m: int, n: int, k: int, trans_b: bool, kernel: type, out_dtype: torch.dtype | None
+) -> None:
+    """The kernel selected for a shape adds the bias, a single one over a one-column output,
+    to the float32 sum, and stores it in the output dtype."""
+    test = GEMMTest(m, n, k, torch.bfloat16, False, trans_b, bias=True, out_dtype=out_dtype)
+    op = GEMMFwdOp(trans_b=trans_b, out_dtype=out_dtype, target=BUILTIN)
     test.check(op, *test.gen_inputs())
     assert all(isinstance(entry, kernel) for entry in op.iter_kernels())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("m", "n", "k", "trans_a", "trans_b", "bias", "config"),
+    [
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            {**_WS, "split_k": 1},
+            marks=pytest.mark.smoke,
+            id="ws-tma-store",
+        ),
+        # Rows of 1001 float32 values are no whole number of 16-byte units.
+        pytest.param(
+            1000,
+            1001,
+            1048,
+            False,
+            True,
+            False,
+            {**_WS, "split_k": 1},
+            marks=pytest.mark.smoke,
+            id="ws-row-store",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            {
+                "block_m": 64,
+                "block_n": 112,
+                "block_k": 64,
+                "num_stages": 4,
+                "panel_size": 0,
+                "split_k": 1,
+                "cluster_m": 2,
+            },
+            marks=pytest.mark.smoke,
+            id="ws-fill-cluster",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1024,
+            False,
+            True,
+            True,
+            {**_WS, "split_k": 2},
+            marks=pytest.mark.smoke,
+            id="split-k",
+        ),
+        pytest.param(
+            1024,
+            1024,
+            1024,
+            False,
+            True,
+            True,
+            {"simple": True, "block_m": 64, "block_n": 128, "block_k": 64, "num_stages": 3},
+            marks=pytest.mark.smoke,
+            id="simple",
+        ),
+        pytest.param(
+            8,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            {"swap_ab": True, "block_nn": 64, "block_k": 128, "num_stages": 4},
+            marks=pytest.mark.smoke,
+            id="swap-ab",
+        ),
+        # A 64-column staging chunk leaves the ring its three stages beside two float32 halves.
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            False,
+            True,
+            {"coop2": True, "block_n": 256, **_COOP2, "stage_n": 64},
+            marks=pytest.mark.smoke,
+            id="coop2",
+        ),
+        # Twenty-four rows of A, a WGMMA width 256 does not divide, run the helper's own.
+        pytest.param(
+            24,
+            8456,
+            1040,
+            False,
+            True,
+            True,
+            {"stream": True, "block_k": 128, "num_stages": 8, "blocks": 2},
+            marks=pytest.mark.smoke,
+            id="stream-helper",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            # The ring best_config selects for a float32 output: five stages and two
+            # staging buffers fill all but a few KiB of the shared memory.
+            {**_PINGPONG, "block_n": 176, "num_stages": 5, "stage_n": 16, "epi_bufs": 2},
+            marks=pytest.mark.smoke,
+            id="pingpong-176",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1024,
+            False,
+            True,
+            False,
+            {"coop2_splitk": True, "block_n": 64, "block_k": 128, "num_stages": 4, "split_k": 2},
+            marks=pytest.mark.full,
+            id="coop2-split-k",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            False,
+            {"coop2": True, "block_n": 176, **_COOP2, "stage_n": 88},
+            marks=pytest.mark.full,
+            id="coop2-176",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            {
+                "coop2": True,
+                "block_n": 256,
+                **_COOP2,
+                "stage_n": 16,
+                "narrow_n": 240,
+                "narrow_rows": 2,
+                "narrow_cols": 2,
+            },
+            marks=pytest.mark.full,
+            id="coop2-narrow",
+        ),
+        pytest.param(
+            32,
+            8456,
+            1040,
+            False,
+            True,
+            False,
+            {"stream": True, "block_k": 128, "num_stages": 8, "blocks": 2},
+            marks=pytest.mark.full,
+            id="stream",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            False,
+            {**_PINGPONG, "block_n": 128},
+            marks=pytest.mark.full,
+            id="pingpong",
+        ),
+        pytest.param(
+            2200,
+            3720,
+            1048,
+            False,
+            True,
+            False,
+            {
+                **_PINGPONG,
+                "block_n": 192,
+                "stage_n": 32,
+                "epi_bufs": 1,
+                "narrow_n": 160,
+                "narrow_rows": 8,
+                "narrow_cols": 14,
+            },
+            marks=pytest.mark.full,
+            id="pingpong-192-narrow",
+        ),
+        pytest.param(
+            1024,
+            1024,
+            1024,
+            False,
+            False,
+            True,
+            # The eight-stage ring best_config selects, beside two float32 staging tiles.
+            {"coop2s": True, "block_n": 64, "block_k": 64, "num_stages": 8},
+            marks=pytest.mark.full,
+            id="coop2s",
+        ),
+    ],
+)
+def test_gemm_float32_output_on_each_structure(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, bias: bool, config: dict
+) -> None:
+    """Each structure writing a float32 output stores the unrounded float32 sum of bf16
+    products, past M, N and K tails."""
+    test = GEMMTest(m, n, k, torch.bfloat16, trans_a, trans_b, bias=bias, out_dtype=torch.float32)
+    op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, out_dtype=torch.float32, target=BUILTIN)
+    inputs = test.gen_inputs()
+    op(*inputs)
+    (kernel,) = [k for k in op.iter_kernels() if type(k).__name__ == "GEMMTMAKernel"]
+    kernel.config = config
+    test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gemm_coop2_swap_refuses_a_float32_output() -> None:
+    """The coop2_swap tile, whose transposed store writes 16-bit elements only, refuses a
+    float32 output when it is built, rather than rounding it."""
+    test = GEMMTest(1000, 1032, 1048, torch.bfloat16, True, False, out_dtype=torch.float32)
+    op = GEMMFwdOp(trans_a=True, trans_b=False, out_dtype=torch.float32, target=BUILTIN)
+    inputs = test.gen_inputs()
+    op(*inputs)
+    (kernel,) = op.iter_kernels()
+    kernel.config = {**_COOP2_SWAP, "group_size_m": 1}
+    with pytest.raises(ValueError, match="coop2_swap"):
+        op(*inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("m", "n"),
+    [
+        # DeepSeek-V4-Flash's LM head over one decode token, a GEMV.
+        pytest.param(1, 129280, marks=pytest.mark.smoke, id="lm-head-gemv"),
+        # Its router and LM head over 64 decode tokens.
+        pytest.param(64, 256, marks=pytest.mark.smoke, id="router-decode"),
+        pytest.param(64, 129280, marks=pytest.mark.smoke, id="lm-head-decode"),
+        # Its LM head over 24 decode tokens, which streams the weight 64 rows at a time.
+        pytest.param(24, 129280, marks=pytest.mark.smoke, id="lm-head-stream"),
+        # Its router and KV compressors over an 8192-token prefill.
+        pytest.param(8192, 256, marks=pytest.mark.full, id="router-prefill"),
+        pytest.param(8192, 512, marks=pytest.mark.full, id="compressor-512"),
+        pytest.param(8192, 1024, marks=pytest.mark.full, id="compressor-1024"),
+    ],
+)
+def test_gemm_float32_output_on_pilot_model_rows(m: int, n: int) -> None:
+    """The tile selected for a pilot model's float32 logits, whose staging tile takes twice
+    the shared memory of a 16-bit one, builds and stores the unrounded float32 sum."""
+    test = GEMMTest(m, n, 4096, torch.bfloat16, False, True, out_dtype=torch.float32)
+    op = GEMMFwdOp(out_dtype=torch.float32, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
@@ -2004,10 +2276,12 @@ def test_gemm_short_grid_runs_the_whole_smem_ring() -> None:
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.smoke
-def test_gemm_bias_on_two_row_gemv() -> None:
-    """Both rows of the two-row GEMV band, which only H200 is calibrated to take, add the bias."""
-    test = GEMMTest(2, 256, 4096, torch.bfloat16, False, True, bias=True)
-    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+@pytest.mark.parametrize("out_dtype", [None, torch.float32], ids=["bf16-out", "float32-out"])
+def test_gemm_bias_on_two_row_gemv(out_dtype: torch.dtype | None) -> None:
+    """Both rows of the two-row GEMV band, which only H200 is calibrated to take, add the bias,
+    in either output dtype."""
+    test = GEMMTest(2, 256, 4096, torch.bfloat16, False, True, bias=True, out_dtype=out_dtype)
+    op = GEMMFwdOp(trans_b=True, out_dtype=out_dtype, target=BUILTIN)
     test.check(op, *test.gen_inputs())
     if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) == "h200":
         (kernel,) = op.iter_kernels()
@@ -2190,8 +2464,12 @@ def test_gemv_bias_survives_cancelling_products(m: int, n: int, k: int, trans_b:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_gemm_cp_async_split_k_adds_the_bias_in_the_reduction() -> None:
-    """The pipelined kernel's split slices leave the bias to their reduction."""
+@pytest.mark.parametrize("out_dtype", [None, torch.float32], ids=["bf16-out", "float32-out"])
+def test_gemm_cp_async_split_k_adds_the_bias_in_the_reduction(
+    out_dtype: torch.dtype | None,
+) -> None:
+    """The pipelined kernel's split slices leave the bias to their reduction, which writes the
+    output dtype."""
 
     class Pinned(GEMMCpAsyncKernel):
         general = False
@@ -2200,10 +2478,10 @@ def test_gemm_cp_async_split_k_adds_the_bias_in_the_reduction() -> None:
     state = registry.snapshot()
     try:
         register_kernel_type("GEMMFwdOp", "gemm_cp_async_pinned", Pinned)
-        op = GEMMFwdOp(target=BUILTIN)
+        op = GEMMFwdOp(out_dtype=out_dtype, target=BUILTIN)
     finally:
         registry.restore(state)
-    test = GEMMTest(256, 512, 1024, torch.bfloat16, False, True, bias=True)
+    test = GEMMTest(256, 512, 1024, torch.bfloat16, False, True, bias=True, out_dtype=out_dtype)
     inputs = test.gen_inputs()
     op(*inputs)
     (kernel,) = op.iter_kernels()

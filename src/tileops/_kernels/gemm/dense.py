@@ -40,10 +40,6 @@ __all__ = [
     "GemvKernel",
 ]
 
-_ROUNDED_TO_OPERANDS = (
-    "the epilogue rounds the result to the operands' dtype; out_dtype is not served"
-)
-
 
 def _tma_misalignment(
     m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool
@@ -242,12 +238,21 @@ def _main(
 
 
 def _dense_entry(cls: type, call: GEMMCall) -> Entry:
-    """The entry for a kernel taking ``(m, n, k, dtype)`` and both flags.
+    """The entry for a kernel taking ``(m, n, k, dtype)``, both flags and the output dtype.
 
     The device is in the identity: its SM count and name pick the config.
     """
     index = call.device.index if call.device is not None else None
-    identity = (call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b, index)
+    identity = (
+        call.m,
+        call.n,
+        call.k,
+        call.dtype,
+        call.trans_a,
+        call.trans_b,
+        call.out_dtype,
+        index,
+    )
     return identity, lambda: cls(
         call.m,
         call.n,
@@ -256,6 +261,7 @@ def _dense_entry(cls: type, call: GEMMCall) -> Entry:
         trans_a=call.trans_a,
         trans_b=call.trans_b,
         device_index=index,
+        out_dtype=call.out_dtype,
     )
 
 
@@ -1582,13 +1588,15 @@ def _gemm_kernel(
     traced: bool = False,
     *,
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """SM90 GEMM with one TMA producer and one WGMMA consumer warpgroup.
 
     Supports all transpose layouts with fp32 accumulation. Operands must satisfy
     ``_tma_misalignment``. Automatic warp specialization is disabled for this schedule.
     ``traced`` is an explicit cache key; traced builds append a ``slots`` output after C.
-    *has_bias* builds the program taking ``bias[n]`` before C.
+    *has_bias* builds the program taking ``bias[n]`` before C. C is *out_dtype*, or
+    *dtype* when it is ``None``.
 
     A 64-row NT tile over 64-wide K steps whose width does not divide 256, with 16-byte
     output rows, runs one ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K, not
@@ -1599,6 +1607,7 @@ def _gemm_kernel(
         JIT factory taking ``(block_m, block_n, block_k, num_stages, panel_size,
         cluster_m)``."""
     accum_dtype = "float"
+    c_dtype = out_dtype or dtype
     wgmma_dtype = "kBFloat16" if dtype == "bfloat16" else "kFloat16"
 
     @tilelang.jit(
@@ -1625,7 +1634,8 @@ def _gemm_kernel(
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         b_evict = _b_eviction(m, block_m)
         a_rows, a_atom = _a_row_load(m, block_m, block_k, dtype)
-        tma_epilogue = (n * 2) % 16 == 0
+        # TMA stores the output where its rows are a whole number of 16-byte units.
+        tma_epilogue = (n * STR_TO_DTYPE[c_dtype].itemsize) % 16 == 0
         if cluster_m > 1 and (-(-m // block_m) % cluster_m or panel_size > 0):
             raise ValueError(
                 f"cluster_m={cluster_m} must divide the M grid and runs without a panel swizzle"
@@ -1641,20 +1651,8 @@ def _gemm_kernel(
             and 256 % block_n != 0
         )
         native_helper = f"tileops::dense_wgmma_64xN_k64<tl::DataType::{wgmma_dtype}, {block_n}>"
-        # The accumulator layout T.wgmma_gemm gives a 64 x block_n tile; the helper writes
-        # the same registers.
-        acc_emitter = WgmmaEmitter(
-            a_dtype=dtype,
-            b_dtype=dtype,
-            accum_dtype="float32",
-            a_transposed=False,
-            b_transposed=True,
-            block_row_warps=4,
-            block_col_warps=1,
-            warp_row_tiles=block_m // 4,
-            warp_col_tiles=block_n,
-            chunk=block_k,
-        )
+        # The first thread of the helper accumulator's layout; see its annotation.
+        acc_first = 128 if c_dtype == "float32" else 0
 
         def _launch():
             if cluster_m > 1:
@@ -1677,7 +1675,7 @@ def _gemm_kernel(
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
                 if tma_epilogue:
-                    c_smem = T.alloc_shared((block_m, block_n), dtype)
+                    c_smem = T.alloc_shared((block_m, block_n), c_dtype)
                     T.annotate_layout(
                         {
                             a_smem: tilelang.layout.make_swizzled_layout(a_smem),
@@ -1693,7 +1691,18 @@ def _gemm_kernel(
                         }
                     )
                 if native_wgmma:
-                    T.annotate_layout({c_local: acc_emitter.make_mma_store_layout(c_local)})
+                    # The accumulator layout T.wgmma_gemm gives a 64 x block_n tile; the
+                    # helper writes the same registers. TileLang copies a 16-bit tile out
+                    # with stmatrix, which places the warpgroup by the branch's threads, and
+                    # a float32 one with a loop over the layout's own threads, which must be
+                    # the consumer's: from threads 0-127 it stores nothing.
+                    T.annotate_layout(
+                        {
+                            c_local: native_acc_layout(
+                                c_local, block_m, block_n, block_k, dtype, "float32", acc_first
+                            )
+                        }
+                    )
                 if has_bias:
                     bias_smem = T.alloc_shared((block_n,), dtype)
                     bias_full = T.alloc_barrier([128])
@@ -1825,7 +1834,7 @@ def _gemm_kernel(
             "_gemm",
             _gemm_body,
             (((k, m) if trans_a else (m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
-            ((m, n), dtype),
+            ((m, n), c_dtype),
             ((n,), dtype) if has_bias else None,
         )
 
@@ -1982,17 +1991,20 @@ def splitk_reduce_kernel(
     dtype: str = "float16",
     activation: str = "none",
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """Reduce the split-K fp32 workspace into the final output.
 
-    Sums ``w[split_k, m, n]`` over the slice axis in fp32, adds ``bias[n]`` under
-    *has_bias*, and casts to the storage dtype at the boundary. Bandwidth-trivial
-    elementwise kernel; the workspace of the shapes worth splitting fits in L2.
+    Sums ``w[split_k, m, n]`` over the slice axis in fp32, adds ``bias[n]`` (in *dtype*)
+    under *has_bias*, and casts to *out_dtype*, or *dtype* when it is ``None``, at the
+    boundary. Bandwidth-trivial elementwise kernel; the workspace of the shapes worth
+    splitting fits in L2.
 
     ``C`` is a parameter, not a JIT-allocated output: the caller allocates it before
     the mainloop, so no allocation sits between the two launches.
     """
     accum_dtype = "float"
+    c_dtype = out_dtype or dtype
     if activation not in ("none", "silu_and_mul"):
         raise ValueError(f"unsupported split-K epilogue: {activation}")
     gated = activation == "silu_and_mul"
@@ -2026,15 +2038,15 @@ def splitk_reduce_kernel(
                         if gated:
                             gate = _slice_sum(w, bias, gi, gj)
                             up = _slice_sum(w, bias, gi, out_n + gj)
-                            c[gi, gj] = T.cast(gate * T.sigmoid(gate) * up, dtype)
+                            c[gi, gj] = T.cast(gate * T.sigmoid(gate) * up, c_dtype)
                         else:
-                            c[gi, gj] = T.cast(_slice_sum(w, bias, gi, gj), dtype)
+                            c[gi, gj] = T.cast(_slice_sum(w, bias, gi, gj), c_dtype)
 
         return _main(
             "_splitk_reduce",
             _splitk_reduce_body,
             (((split_k, m, n), accum_dtype),),
-            ((m, out_n), dtype),
+            ((m, out_n), c_dtype),
             ((n,), dtype) if has_bias else None,
         )
 
@@ -2195,6 +2207,7 @@ def _gemm_coop2_kernel(
     consumer_bar_wg0: int,
     consumer_bar_wg1: int,
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """Persistent GEMM with two consumers sharing B and splitting A's rows.
 
@@ -2208,12 +2221,15 @@ def _gemm_coop2_kernel(
 
     Every layout loads its SMEM tiles as stored and lets the WGMMA transpose flags
     reconcile them; the helper widths and narrow tiles take K-major operands, so NT only.
-    *has_bias* builds the program taking ``bias[n]`` before C.
+    *has_bias* builds the program taking ``bias[n]`` before C. C is *out_dtype*, or
+    *dtype* when it is ``None``; a float32 C is staged from the accumulator itself.
 
     Returns:
         JIT factory taking ``(block_n, block_k, num_stages, group_size_m, stage_n,
         narrow_n, narrow_rows, narrow_cols)``."""
     accum_dtype = "float"
+    c_dtype = out_dtype or dtype
+    cast = c_dtype != "float32"
     block_m = 128
     # ``dense_wgmma_helper.h``'s name for each dtype.
     wgmma_dtype_tag = {"bfloat16": "bf16", "float16": "fp16"}[dtype]
@@ -2311,9 +2327,9 @@ def _gemm_coop2_kernel(
                     clear_accum=(ki == 0),
                 )
 
-        # TMA addresses the output only where its 16-bit rows are a whole number of
-        # 16-byte units; there it also drops what an M / N tail puts past the output.
-        tma_rows = n % 8 == 0
+        # TMA addresses the output only where its rows are a whole number of 16-byte
+        # units; there it also drops what an M / N tail puts past the output.
+        tma_rows = (n * STR_TO_DTYPE[c_dtype].itemsize) % 16 == 0
 
         # A last chunk overlapping the one before waits for its global writes.
         narrow_chunks = -(-narrow_n // sn)
@@ -2414,10 +2430,10 @@ def _gemm_coop2_kernel(
                 b_smem = T.alloc_shared((num_stages,) + b_tile, dtype)
                 c_local_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
                 c_local_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
-                c_cast_0 = T.alloc_fragment((half_m, block_n), dtype)
-                c_cast_1 = T.alloc_fragment((half_m, block_n), dtype)
-                c_smem_0 = T.alloc_shared((half_m, sn), dtype)
-                c_smem_1 = T.alloc_shared((half_m, sn), dtype)
+                c_cast_0 = T.alloc_fragment((half_m, block_n), c_dtype) if cast else c_local_0
+                c_cast_1 = T.alloc_fragment((half_m, block_n), c_dtype) if cast else c_local_1
+                c_smem_0 = T.alloc_shared((half_m, sn), c_dtype)
+                c_smem_1 = T.alloc_shared((half_m, sn), c_dtype)
 
                 T.annotate_layout(
                     {
@@ -2511,7 +2527,8 @@ def _gemm_coop2_kernel(
                             T.warpgroup_fence_operand(c_local_0, num_regs=nr)
                             if has_bias:
                                 _add_bias(c_local_0, bias, n_start, n, helper_layout=wide_wgmma)
-                            T.copy(c_local_0, c_cast_0)
+                            if cast:
+                                T.copy(c_local_0, c_cast_0)
                             if mixed and nt[1] == 1:
                                 store_half_narrow(
                                     c, c_cast_0, c_smem_0, m_start, n_start, consumer_bar_wg0
@@ -2566,7 +2583,8 @@ def _gemm_coop2_kernel(
                             T.warpgroup_fence_operand(c_local_1, num_regs=nr)
                             if has_bias:
                                 _add_bias(c_local_1, bias, n_start, n, helper_layout=wide_wgmma)
-                            T.copy(c_local_1, c_cast_1)
+                            if cast:
+                                T.copy(c_local_1, c_cast_1)
                             if mixed and nt[1] == 1:
                                 store_half_narrow(
                                     c,
@@ -2592,7 +2610,7 @@ def _gemm_coop2_kernel(
             "_gemm_coop2",
             _gemm_coop2_body,
             (((k, m) if trans_a else (m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
-            ((m, n), dtype),
+            ((m, n), c_dtype),
             ((n,), dtype) if has_bias else None,
         )
 
@@ -2612,6 +2630,7 @@ def _gemm_coop2_swap_kernel(
     consumer_bar_wg0: int,
     consumer_bar_wg1: int,
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """Persistent GEMM over 256 x ``block_n`` tiles of ``C.T = op(B).T @ op(A).T``.
 
@@ -2628,10 +2647,16 @@ def _gemm_coop2_swap_kernel(
     with ``wide_b`` and ``narrow_b``; every wide tile runs before every narrow one, each
     run of blocks in raster groups of ``group_size_m``. With ``trans_a``, a ``block_n`` that is a multiple of 64 stages
     ``op(A).T`` in 64-column swizzle atoms, so ``narrow_n`` must be a multiple of 64.
-    *has_bias* builds the program taking ``bias[n]`` before C.
+    *has_bias* builds the program taking ``bias[n]`` before C. C is in *dtype*:
+    ``stmatrix.trans`` stores 16-bit elements only, so an *out_dtype* other than *dtype*
+    is refused.
 
     Returns:
         JIT factory taking ``(block_n, num_stages, group_size_m, narrow_n, row_mix)``."""
+    if out_dtype not in (None, dtype):
+        raise ValueError(
+            f"coop2_swap stores C through stmatrix.trans, {dtype} only, not {out_dtype}"
+        )
     if n % 8:
         raise ValueError(f"coop2_swap stores C through TMA and needs n % 8 == 0, got n={n}")
     accum_dtype = "float"
@@ -2970,13 +2995,15 @@ def _gemm_pingpong_kernel(
     consumer_bar_wg0: int,
     consumer_bar_wg1: int,
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """Persistent NT GEMM with two consumers alternating whole 128-row tiles.
 
     Turn barriers overlap one consumer's epilogue with the other's mainloop.
-    TMA stores require N to be a multiple of eight; K tails are zero-filled.
+    TMA stores require C's rows to be whole 16-byte units; K tails are zero-filled.
     Widths 176/192 use ``dense_wgmma_helper.h`` for full-width WGMMA.
-    *has_bias* builds the program taking ``bias[n]`` before C.
+    *has_bias* builds the program taking ``bias[n]`` before C. C is *out_dtype*, or
+    *dtype* when it is ``None``.
 
     With ``narrow_n`` set, the last ``narrow_rows`` row tiles start with
     ``narrow_cols`` tiles ``narrow_n`` wide that run after every wide tile.
@@ -2986,10 +3013,11 @@ def _gemm_pingpong_kernel(
         epi_bufs, narrow_n, narrow_rows, narrow_cols)``."""
     if trans_a or not trans_b:
         raise ValueError("_gemm_pingpong_kernel is NT-only (trans_a=False, trans_b=True)")
-    # Every tile leaves through the TMA store, which addresses 16-bit output rows only
-    # in whole 16-byte units.
-    if n % 8:
-        raise ValueError(f"_gemm_pingpong_kernel needs n to be a multiple of 8, got {n}")
+    c_dtype = out_dtype or dtype
+    # Every tile leaves through the TMA store, which addresses output rows only in whole
+    # 16-byte units.
+    if (n * STR_TO_DTYPE[c_dtype].itemsize) % 16:
+        raise ValueError(f"_gemm_pingpong_kernel needs {c_dtype} rows of 16-byte units, got n={n}")
     accum_dtype = "float"
     block_m = 128
     half_m = 64
@@ -3214,8 +3242,8 @@ def _gemm_pingpong_kernel(
                 acc_bot_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
                 acc_top_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
                 acc_bot_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
-                c_smem_0 = T.alloc_shared((epi_bufs, block_m, sn), dtype)
-                c_smem_1 = T.alloc_shared((epi_bufs, block_m, sn), dtype)
+                c_smem_0 = T.alloc_shared((epi_bufs, block_m, sn), c_dtype)
+                c_smem_1 = T.alloc_shared((epi_bufs, block_m, sn), c_dtype)
                 T.annotate_layout(
                     {
                         a_top: tilelang.layout.make_swizzled_layout(a_top),
@@ -3332,7 +3360,7 @@ def _gemm_pingpong_kernel(
             "_gemm_pingpong",
             _gemm_pingpong_body,
             (((m, k), dtype), ((n, k), dtype)),
-            ((m, n), dtype),
+            ((m, n), c_dtype),
             ((n,), dtype) if has_bias else None,
         )
 
@@ -3500,9 +3528,10 @@ def _splitk_pair(
     split_k: int,
     activation: str = "none",
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> tuple[Callable, Callable]:
     """Resolve the (mainloop, reduce) compiled pair for a split-K config; *has_bias*
-    builds the reduction that adds ``bias[n]``.
+    builds the reduction that adds ``bias[n]``, and the reduction writes *out_dtype*.
 
     Both split-K paths run two kernels back to back, so every microsecond the
     host spends between the two launches is GPU idle that the span metric
@@ -3524,7 +3553,8 @@ def _splitk_pair(
             block_m, block_n, block_k, num_stages, panel_size, split_k
         )
     elems_per_cta = 256 if activation != "none" else 1024
-    return mainloop, splitk_reduce_kernel(split_k, m, n, dtype, activation, has_bias)(elems_per_cta)
+    reduce_ = splitk_reduce_kernel(split_k, m, n, dtype, activation, has_bias, out_dtype)
+    return mainloop, reduce_(elems_per_cta)
 
 
 @target_cache(maxsize=32)
@@ -3536,6 +3566,7 @@ def _gemm_simple_kernel(
     trans_b: bool,
     dtype: str = "float16",
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """Non-warp-specialized pipelined GEMM for short-mainloop shapes (SM90).
 
@@ -3546,11 +3577,13 @@ def _gemm_simple_kernel(
 
     Selected by the dense GEMM heuristic for exactly tiled NT calls. Requires
     tiles that divide the problem exactly; the builder raises ``ValueError``
-    otherwise. *has_bias* builds the program taking ``bias[n]`` before C.
+    otherwise. *has_bias* builds the program taking ``bias[n]`` before C. C is
+    *out_dtype*, or *dtype* when it is ``None``.
     """
     if trans_a:
         raise ValueError("_gemm_simple_kernel supports trans_a=False only")
     accum_dtype = "float"
+    c_dtype = out_dtype or dtype
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gemm_simple_func(
@@ -3592,7 +3625,7 @@ def _gemm_simple_kernel(
                 a_smem = T.alloc_shared((block_m, block_k), dtype)
                 b_smem = T.alloc_shared(b_tile, dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                c_smem = T.alloc_shared((block_m, block_n), dtype)
+                c_smem = T.alloc_shared((block_m, block_n), c_dtype)
                 T.clear(c_local)
                 for ki in T.Pipelined(k // block_k, num_stages=num_stages):
                     T.copy(a[by * block_m, ki * block_k], a_smem)
@@ -3611,7 +3644,7 @@ def _gemm_simple_kernel(
             "_gemm_simple",
             _gemm_simple_body,
             (((m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
-            ((m, n), dtype),
+            ((m, n), c_dtype),
             ((n,), dtype) if has_bias else None,
         )
 
@@ -3648,12 +3681,14 @@ def _gemm_swap_ab_kernel(
     trans_b: bool,
     dtype: str = "float16",
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """Tiny-M NT GEMM computing ``C.T = B @ A.T`` to avoid padding M to 64.
 
     The epilogue transposes the shared tile into contiguous output columns.
     ``_tiny_m_score_us`` ranks its stage counts against the 64-row split-K tile.
-    *has_bias* builds the program taking ``bias[n]`` before C.
+    *has_bias* builds the program taking ``bias[n]`` before C. C is *out_dtype*, or
+    *dtype* when it is ``None``.
 
     Returns:
         JIT factory taking ``(block_nn, block_k, num_stages)``."""
@@ -3662,6 +3697,9 @@ def _gemm_swap_ab_kernel(
     if m > SWAP_AB_MPAD:
         raise ValueError(f"_gemm_swap_ab_kernel serves m <= {SWAP_AB_MPAD}, got m={m}")
     accum_dtype = "float"
+    c_dtype = out_dtype or dtype
+    # A float32 C stores the accumulator as it is.
+    cast = c_dtype != "float32"
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gemm_swap_ab_func(block_nn: int = 64, block_k: int = 128, num_stages: int = 4) -> Callable:
@@ -3673,22 +3711,23 @@ def _gemm_swap_ab_kernel(
                 b_smem = T.alloc_shared((block_nn, block_k), dtype)
                 a_smem = T.alloc_shared((mpad, block_k), dtype)
                 ct_local = T.alloc_fragment((block_nn, mpad), accum_dtype)
-                ct_cast = T.alloc_fragment((block_nn, mpad), dtype)
-                ct_smem = T.alloc_shared((block_nn, mpad), dtype)
+                ct_cast = T.alloc_fragment((block_nn, mpad), c_dtype) if cast else ct_local
+                ct_smem = T.alloc_shared((block_nn, mpad), c_dtype)
                 T.clear(ct_local)
                 swap_ab_mainloop(
                     a, b, ct_local, a_smem, b_smem, bx, k, block_nn, block_k, num_stages
                 )
                 if has_bias:
                     _add_bias(ct_local, bias, bx * block_nn, n, by_row=True)
-                T.copy(ct_local, ct_cast)
+                if cast:
+                    T.copy(ct_local, ct_cast)
                 swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad)
 
         return _main(
             "_gemm_swap_ab",
             _gemm_swap_ab_body,
             (((m, k), dtype), ((n, k), dtype)),
-            ((m, n), dtype),
+            ((m, n), c_dtype),
             ((n,), dtype) if has_bias else None,
         )
 
@@ -3704,6 +3743,7 @@ def _gemm_stream_kernel(
     trans_b: bool,
     dtype: str = "float16",
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """Small-M NT GEMM streaming ``B`` one 64-row block at a time: ``C.T = B @ A.T``.
 
@@ -3716,6 +3756,7 @@ def _gemm_stream_kernel(
     does not divide, over K steps of whole 64-element WGMMA chunks, runs one
     ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K, not TileLang's
     ``gcd(mpad, 256)``-wide ones. *has_bias* builds the program taking ``bias[n]`` before C.
+    C is *out_dtype*, or *dtype* when it is ``None``.
 
     Returns:
         JIT factory taking ``(block_k, num_stages, blocks)``."""
@@ -3726,8 +3767,9 @@ def _gemm_stream_kernel(
     if mpad > 256:
         raise ValueError(f"_gemm_stream_kernel serves m <= 256, got m={m}")
     accum_dtype = "float"
+    c_dtype = out_dtype or dtype
     # The output tile stores through TMA, which needs 16-byte output rows.
-    tma_epilogue = (n * 2) % 16 == 0
+    tma_epilogue = (n * STR_TO_DTYPE[c_dtype].itemsize) % 16 == 0
     wgmma_dtype = "kBFloat16" if dtype == "bfloat16" else "kFloat16"
 
     @tilelang.jit(
@@ -3747,20 +3789,9 @@ def _gemm_stream_kernel(
         # The helper issues one 64-wide K chunk a call.
         native_wgmma = helper_width and block_k % 64 == 0
         native_helper = f"tileops::dense_wgmma_64xN_k64<tl::DataType::{wgmma_dtype}, {mpad}>"
-        # The accumulator layout T.wgmma_gemm gives a 64 x mpad tile; the helper writes the
-        # same registers.
-        acc_emitter = WgmmaEmitter(
-            a_dtype=dtype,
-            b_dtype=dtype,
-            accum_dtype="float32",
-            a_transposed=False,
-            b_transposed=True,
-            block_row_warps=4,
-            block_col_warps=1,
-            warp_row_tiles=rows // 4,
-            warp_col_tiles=mpad,
-            chunk=64,
-        )
+        # A float32 C is staged from the accumulator itself.
+        cast = c_dtype != "float32"
+        acc_first = 0 if cast else 128
 
         @T.macro
         def _gemm_stream_body(a, b, bias, c):
@@ -3768,12 +3799,19 @@ def _gemm_stream_kernel(
                 b_smem = T.alloc_shared((num_stages, rows, block_k), dtype)
                 a_smem = T.alloc_shared((num_stages, mpad, block_k), dtype)
                 ct = T.alloc_fragment((rows, mpad), accum_dtype)
-                c_smem = T.alloc_shared((mpad, rows), dtype)
+                c_smem = T.alloc_shared((mpad, rows), c_dtype)
                 if native_wgmma:
-                    ct_smem = T.alloc_shared((rows, mpad), dtype)
-                    T.annotate_layout({ct: acc_emitter.make_mma_store_layout(ct)})
+                    ct_smem = T.alloc_shared((rows, mpad), c_dtype)
+                    # The accumulator layout T.wgmma_gemm gives a 64 x mpad tile; the helper
+                    # writes the same registers. Its first thread follows the copy below, as
+                    # in _gemm_kernel: 0 for stmatrix, the consumer's 128 for a float32 loop.
+                    T.annotate_layout(
+                        {ct: native_acc_layout(ct, rows, mpad, 64, dtype, "float32", acc_first)}
+                    )
+                elif cast:
+                    ct_cast = T.alloc_fragment((rows, mpad), c_dtype)
                 else:
-                    ct_cast = T.alloc_fragment((rows, mpad), dtype)
+                    ct_cast = ct
                 T.annotate_layout(
                     {
                         b_smem: tilelang.layout.make_swizzled_layout(b_smem),
@@ -3859,7 +3897,8 @@ def _gemm_stream_kernel(
                             for mi, j in T.Parallel(mpad, rows):
                                 c_smem[mi, j] = ct_smem[j, mi]
                         else:
-                            T.copy(ct, ct_cast)
+                            if cast:
+                                T.copy(ct, ct_cast)
                             for j, mi in T.Parallel(rows, mpad):
                                 c_smem[mi, j] = ct_cast[j, mi]
                         if tma_epilogue:
@@ -3879,7 +3918,7 @@ def _gemm_stream_kernel(
             "_gemm_stream",
             _gemm_stream_body,
             (((m, k), dtype), ((n, k), dtype)),
-            ((m, n), dtype),
+            ((m, n), c_dtype),
             ((n,), dtype) if has_bias else None,
         )
 
@@ -3898,18 +3937,22 @@ def _gemm_coop2s_kernel(
     consumer_bar_wg0: int,
     consumer_bar_wg1: int,
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """Single-tile NN GEMM with two consumers splitting A and sharing B.
 
     Tiles must divide the problem exactly. Each CTA computes one tile without
     persistent scheduling or ring carry between tiles. *has_bias* builds the program
-    taking ``bias[n]`` before C.
+    taking ``bias[n]`` before C. C is *out_dtype*, or *dtype* when it is ``None``; a
+    float32 C is staged from the accumulator itself.
 
     Returns:
         JIT factory taking ``(block_n, block_k, num_stages)``."""
     if trans_a or trans_b:
         raise ValueError("_gemm_coop2s_kernel is NN-only (trans_a=False, trans_b=False)")
     accum_dtype = "float"
+    c_dtype = out_dtype or dtype
+    cast = c_dtype != "float32"
     block_m = 128
 
     @tilelang.jit(
@@ -3936,10 +3979,10 @@ def _gemm_coop2s_kernel(
                 b_smem = T.alloc_shared((num_stages, block_k, block_n), dtype)
                 c_local_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
                 c_local_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
-                c_cast_0 = T.alloc_fragment((half_m, block_n), dtype)
-                c_cast_1 = T.alloc_fragment((half_m, block_n), dtype)
-                c_smem_0 = T.alloc_shared((half_m, block_n), dtype)
-                c_smem_1 = T.alloc_shared((half_m, block_n), dtype)
+                c_cast_0 = T.alloc_fragment((half_m, block_n), c_dtype) if cast else c_local_0
+                c_cast_1 = T.alloc_fragment((half_m, block_n), c_dtype) if cast else c_local_1
+                c_smem_0 = T.alloc_shared((half_m, block_n), c_dtype)
+                c_smem_1 = T.alloc_shared((half_m, block_n), c_dtype)
 
                 T.annotate_layout(
                     {
@@ -4008,7 +4051,8 @@ def _gemm_coop2s_kernel(
                     T.barrier_arrive(ab_empty[ps0[0]])
                     if has_bias:
                         _add_bias(c_local_0, bias, n_start, n)
-                    T.copy(c_local_0, c_cast_0)
+                    if cast:
+                        T.copy(c_local_0, c_cast_0)
                     T.sync_threads(barrier_id=consumer_bar_wg0, arrive_count=128)
                     T.copy(c_cast_0, c_smem_0)
                     T.fence_proxy_async()
@@ -4038,7 +4082,8 @@ def _gemm_coop2s_kernel(
                     T.barrier_arrive(ab_empty[ps1[0]])
                     if has_bias:
                         _add_bias(c_local_1, bias, n_start, n)
-                    T.copy(c_local_1, c_cast_1)
+                    if cast:
+                        T.copy(c_local_1, c_cast_1)
                     T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
                     T.copy(c_cast_1, c_smem_1)
                     T.fence_proxy_async()
@@ -4049,7 +4094,7 @@ def _gemm_coop2s_kernel(
             "_gemm_coop2s",
             _gemm_coop2s_body,
             (((m, k), dtype), ((k, n), dtype)),
-            ((m, n), dtype),
+            ((m, n), c_dtype),
             ((n,), dtype) if has_bias else None,
         )
 
@@ -4067,9 +4112,11 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
     ``forward``).
     ``activation="silu_and_mul"`` fuses the gated activation into a split-K
     reduction and returns ``[M, N / 2]``.
-    fp16 / bf16 inputs, fp32 accumulation. SM90 only: every structure loads
-    through TMA and runs its math on WGMMA, so it claims the shapes whose operands
-    TMA can address and ``GEMMCpAsyncKernel`` takes the rest.
+    fp16 / bf16 inputs, fp32 accumulation. The output is ``out_dtype``, or the input
+    dtype when it is ``None``; coop2_swap writes the input dtype only.
+    SM90 only: every structure loads through TMA and runs its math on WGMMA, so it
+    claims the shapes whose operands TMA can address and ``GEMMCpAsyncKernel`` takes
+    the rest.
     """
 
     supported_archs: list[int] = [90]
@@ -4124,8 +4171,6 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> str | None:
-        if call.out_dtype is not None:
-            return _ROUNDED_TO_OPERANDS
         return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
     @classmethod
@@ -4143,6 +4188,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         trans_b: bool = False,
         device_index: int | None = None,
         activation: str = "none",
+        out_dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         if activation not in ("none", "silu_and_mul"):
@@ -4153,12 +4199,15 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         self.n = n
         self.k = k
         self.dtype = dtype
+        self.out_dtype = out_dtype or dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
         self.activation = activation
         self.sm_count = self.build_target.sm_count
 
-        self.kernel = _gemm_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
+        self.kernel = _gemm_kernel(
+            m, n, k, trans_a, trans_b, self.dtype_str, out_dtype=self.out_dtype_str
+        )
 
         self.init_config(config)
         if activation != "none":
@@ -4182,8 +4231,13 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
             self.build_target.calibration,
             # The raster group of a persistent tile depends on what L2 holds.
             l2_bytes=self.build_target.l2_bytes,
+            out_bytes=self.out_dtype.itemsize,
         )
         return scored if scored is not None else dict(self._MODAL_CONFIG)
+
+    @property
+    def out_dtype_str(self) -> str:
+        return self.dtype_to_str(self.out_dtype)
 
     def forward(
         self, a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
@@ -4198,16 +4252,17 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
 
         Split-K launchers include the FP32 reduction. Tracing is available only
         for the default decomposition."""
-        m, n, k, trans_a, trans_b, dtype = (
+        m, n, k, trans_a, trans_b, dtype, out = (
             self.m,
             self.n,
             self.k,
             self.trans_a,
             self.trans_b,
             self.dtype_str,
+            self.out_dtype_str,
         )
         if cfg.get("simple"):
-            return _gemm_simple_kernel(m, n, k, trans_a, trans_b, dtype, has_bias)(
+            return _gemm_simple_kernel(m, n, k, trans_a, trans_b, dtype, has_bias, out)(
                 cfg["block_m"],
                 cfg["block_n"],
                 cfg["block_k"],
@@ -4217,11 +4272,11 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
                 cfg.get("cluster_m", 1),
             )
         if cfg.get("swap_ab"):
-            return _gemm_swap_ab_kernel(m, n, k, trans_a, trans_b, dtype, has_bias)(
+            return _gemm_swap_ab_kernel(m, n, k, trans_a, trans_b, dtype, has_bias, out)(
                 cfg["block_nn"], cfg["block_k"], cfg["num_stages"]
             )
         if cfg.get("stream"):
-            return _gemm_stream_kernel(m, n, k, trans_a, trans_b, dtype, has_bias)(
+            return _gemm_stream_kernel(m, n, k, trans_a, trans_b, dtype, has_bias, out)(
                 cfg["block_k"], cfg["num_stages"], cfg["blocks"]
             )
         if cfg.get("coop2s"):
@@ -4235,6 +4290,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
                 consumer_bar_wg0=self._CONSUMER_BAR_WG0,
                 consumer_bar_wg1=self._CONSUMER_BAR_WG1,
                 has_bias=has_bias,
+                out_dtype=out,
             )(cfg["block_n"], cfg["block_k"], cfg["num_stages"])
         narrow = {
             "narrow_n": cfg.get("narrow_n", 0),
@@ -4253,6 +4309,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
                 consumer_bar_wg0=self._CONSUMER_BAR_WG0,
                 consumer_bar_wg1=self._CONSUMER_BAR_WG1,
                 has_bias=has_bias,
+                out_dtype=out,
             )(
                 block_n=cfg["block_n"],
                 block_k=cfg["block_k"],
@@ -4273,6 +4330,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
                 consumer_bar_wg0=self._CONSUMER_BAR_WG0,
                 consumer_bar_wg1=self._CONSUMER_BAR_WG1,
                 has_bias=has_bias,
+                out_dtype=out,
             )(
                 cfg["block_n"],
                 cfg["num_stages"],
@@ -4292,6 +4350,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
                 consumer_bar_wg0=self._CONSUMER_BAR_WG0,
                 consumer_bar_wg1=self._CONSUMER_BAR_WG1,
                 has_bias=has_bias,
+                out_dtype=out,
             )(
                 block_n=cfg["block_n"],
                 block_k=cfg["block_k"],
@@ -4320,12 +4379,14 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
                 split_k,
                 self.activation,
                 has_bias,
+                out,
             )
             out_n = n // 2 if self.activation != "none" else n
             mainloop, reduce_ = CompiledProgram(mainloop), CompiledProgram(reduce_)
+            out_dtype = self.out_dtype
 
             def splitk(a: torch.Tensor, b: torch.Tensor, *bias: torch.Tensor) -> torch.Tensor:
-                c = torch.empty((m, out_n), dtype=a.dtype, device=a.device)
+                c = torch.empty((m, out_n), dtype=out_dtype, device=a.device)
                 reduce_(mainloop(a, b), *bias, c)
                 return c
 
@@ -4340,6 +4401,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
             dtype,
             traced=traced,
             has_bias=has_bias,
+            out_dtype=out,
         )(**main_cfg)
         if not passes.is_traced(compiled):
             return compiled
@@ -4350,7 +4412,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
 
 @target_cache(maxsize=32)
 def _gemm_small_batch_kernel(
-    m: int, n: int, k: int, dtype: str = "float16", bias_len: int = 0
+    m: int, n: int, k: int, dtype: str = "float16", bias_len: int = 0, out_dtype: str | None = None
 ) -> Callable:
     """Small-M NT GEMM reusing each streamed B tile across all M rows.
 
@@ -4358,11 +4420,13 @@ def _gemm_small_batch_kernel(
     N-tail stores are guarded because ``gemv_config`` can select two-column tiles
     for odd N. Buffer extents predicate K-tail loads. A nonzero *bias_len* builds the
     program taking ``bias[bias_len]`` before C, added to each fp32 sum after the K
-    reduction: ``n`` adds one per column, 1 adds ``bias[0]`` to every output.
+    reduction: ``n`` adds one per column, 1 adds ``bias[0]`` to every output. C is
+    *out_dtype*, or *dtype* when it is ``None``.
 
     Returns:
         JIT factory taking ``(block_n, reduce_threads, num_stages)`` and producing C."""
     accum_dtype = "float"
+    c_dtype = out_dtype or dtype
     flags = ["-O3", "-DENABLE_BF16", *(csrc_include("streaming_load.h") if bias_len else ())]
 
     @tilelang.jit(out_idx=[-1], compile_flags=flags)
@@ -4432,7 +4496,7 @@ def _gemm_small_batch_kernel(
             "_gemm_small_batch",
             _gemm_small_batch_body,
             (((m, k), dtype), ((n, k), dtype)),
-            ((m, n), dtype),
+            ((m, n), c_dtype),
             ((bias_len,), dtype) if bias_len else None,
         )
 
@@ -4469,9 +4533,10 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         m: Rows of the product.
         n: Columns of the product.
         k: Contraction dim.
-        dtype: Input/output torch dtype (fp16 / bf16); fp32 accumulation.
+        dtype: Input torch dtype (fp16 / bf16); fp32 accumulation.
         config: Optional explicit config; defaults to :attr:`default_config`.
         device_index: Device whose SM count and name pick the config.
+        out_dtype: Output torch dtype; ``None`` for *dtype*.
     """
 
     supported_archs: list[int] = [89, 90]
@@ -4516,8 +4581,6 @@ class GemvKernel(Kernel, GEMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> "str | None":
-        if call.out_dtype is not None:
-            return _ROUNDED_TO_OPERANDS
         if cls.band_for(call) is None:
             return "no GEMV band serves this shape"
         return super().refusal(call)
@@ -4530,7 +4593,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         """
         index = call.device.index if call.device is not None else None
         band = cls.band_for(call)
-        identity = (band, call.m, call.n, call.k, call.dtype, index)
+        identity = (band, call.m, call.n, call.k, call.dtype, call.out_dtype, index)
         return identity, lambda: cls(
             band,
             call.m,
@@ -4538,6 +4601,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
             call.k,
             call.dtype,
             device_index=index,
+            out_dtype=call.out_dtype,
         )
 
     def __init__(
@@ -4549,6 +4613,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         dtype: torch.dtype,
         config: dict | None = None,
         device_index: int | None = None,
+        out_dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         if band not in self.BANDS:
@@ -4558,12 +4623,19 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         self.n = n
         self.k = k
         self.dtype = dtype
+        self.out_dtype = out_dtype or dtype
         # What the body produces: the other operand's free dim, one row per row of ``a``.
         self.rows, self.out_len = (
             (m, n) if band == "lhs_rows" else (1, n if band == "lhs_row" else m)
         )
-        self.kernel = _gemm_small_batch_kernel(self.rows, self.out_len, k, self.dtype_str)
+        self.kernel = _gemm_small_batch_kernel(
+            self.rows, self.out_len, k, self.dtype_str, out_dtype=self.out_dtype_str
+        )
         self.init_config(config)
+
+    @property
+    def out_dtype_str(self) -> str:
+        return self.dtype_to_str(self.out_dtype)
 
     @property
     def default_config(self) -> dict:
@@ -4600,7 +4672,12 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         builder = self.kernel
         if has_bias:
             builder = _gemm_small_batch_kernel(
-                self.rows, self.out_len, self.k, self.dtype_str, bias_len=self.n
+                self.rows,
+                self.out_len,
+                self.k,
+                self.dtype_str,
+                bias_len=self.n,
+                out_dtype=self.out_dtype_str,
             )
         return builder(cfg["block_n"], cfg["reduce_threads"], cfg["num_stages"])
 
@@ -4614,6 +4691,7 @@ def _gemm_basic_kernel(
     trans_b: bool,
     dtype: str = "float16",
     has_bias: bool = False,
+    out_dtype: str | None = None,
 ) -> Callable:
     """Pipelined dense GEMM ``C = op(A) @ op(B)`` for any tensor-core target.
 
@@ -4624,9 +4702,11 @@ def _gemm_basic_kernel(
     ``T.gemm`` transpose flags reconcile them with the logical (M, K) x
     (K, N) contraction (cf. the WGMMA version, which forwards them to WGMMA).
     *has_bias* builds a ``split_k == 1`` program taking ``bias[n]`` before C; split
-    slices leave the bias to the reduction.
+    slices leave the bias to the reduction. A ``split_k == 1`` C is *out_dtype*, or
+    *dtype* when it is ``None``.
     """
     accum_dtype = "float"
+    c_dtype = out_dtype or dtype
 
     @tilelang.jit(
         out_idx=[-1],
@@ -4656,7 +4736,7 @@ def _gemm_basic_kernel(
             raise ValueError("split-K basic GEMM requires exact M/N/K tiles")
         k_slice = k_tiles // split_k
         output_shape = (m, n) if split_k == 1 else (split_k, m, n)
-        output_dtype = dtype if split_k == 1 else accum_dtype
+        output_dtype = c_dtype if split_k == 1 else accum_dtype
 
         @T.macro
         def _gemm_basic_body(a, b, bias, c):
@@ -4672,7 +4752,7 @@ def _gemm_basic_kernel(
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
                 if split_k == 1:
-                    c_smem = T.alloc_shared((block_m, block_n), dtype)
+                    c_smem = T.alloc_shared((block_m, block_n), c_dtype)
                     T.annotate_layout(
                         {
                             a_smem: tilelang.layout.make_swizzled_layout(a_smem),
@@ -4780,7 +4860,8 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
     ``T.gemm`` so it runs on pre-SM90 tensor-core targets (sm80 / sm86 /
     sm89). It loads through ``cp.async``, which addresses any extent, so it is the
     general implementation: it serves every shape no other one claims, SM90 shapes
-    TMA cannot address included. fp16 / bf16 inputs, fp32 accumulation. The backend
+    TMA cannot address included. fp16 / bf16 inputs, fp32 accumulation, an output in
+    ``out_dtype`` or, when it is ``None``, the input dtype. The backend
     zero-pads K tails to ``block_k`` (the smallest fallback is 16); M / N need not
     be multiples of the block sizes (epilogue guard). A config with ``split_k > 1`` returns the
     reduced ``[M, N]`` result and requires exact M / N / K tiles.
@@ -4810,8 +4891,6 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> str | None:
-        if call.out_dtype is not None:
-            return _ROUNDED_TO_OPERANDS
         # At k=0 the operands hold no element and the mainloop runs no K step, so no row is
         # loaded and the program writes the bias, or zeros.
         if call.k == 0:
@@ -4839,18 +4918,26 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
         trans_a: bool = False,
         trans_b: bool = False,
         device_index: int | None = None,
+        out_dtype: torch.dtype | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.m = m
         self.n = n
         self.k = k
         self.dtype = dtype
+        self.out_dtype = out_dtype or dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
 
-        self.kernel = _gemm_basic_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
+        self.kernel = _gemm_basic_kernel(
+            m, n, k, trans_a, trans_b, self.dtype_str, out_dtype=self.out_dtype_str
+        )
 
         self.init_config(config)
+
+    @property
+    def out_dtype_str(self) -> str:
+        return self.dtype_to_str(self.out_dtype)
 
     @property
     def default_config(self) -> dict:
@@ -4906,22 +4993,25 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
         jit_config = {k: v for k, v in cfg.items() if k != "pass_configs"}
         split_k = cfg.get("split_k", 1)
         builder = self.kernel
+        out = self.out_dtype_str
         if has_bias and split_k == 1:
             builder = _gemm_basic_kernel(
-                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str, has_bias
+                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str, has_bias, out
             )
         mainloop = builder(**jit_config)
         if split_k == 1:
             return mainloop
         mainloop = CompiledProgram(mainloop)
         reduce_ = CompiledProgram(
-            splitk_reduce_kernel(split_k, self.m, self.n, self.dtype_str, has_bias=has_bias)()
+            splitk_reduce_kernel(
+                split_k, self.m, self.n, self.dtype_str, has_bias=has_bias, out_dtype=out
+            )()
         )
-        m, n = self.m, self.n
+        m, n, out_dtype = self.m, self.n, self.out_dtype
 
         def split(a: torch.Tensor, b: torch.Tensor, *bias: torch.Tensor) -> torch.Tensor:
             result = mainloop(a, b)
-            output = a.new_empty((m, n))
+            output = a.new_empty((m, n), dtype=out_dtype)
             reduce_(result, *bias, output)
             return output
 
