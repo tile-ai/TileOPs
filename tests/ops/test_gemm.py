@@ -1588,6 +1588,8 @@ def test_gemm_fp8_short_call_streams_b_in_64_row_blocks(
     op = GEMMFP8FwdOp(out_dtype=out_dtype)
     if tune:
         op.request_tune()
+        # The first call tunes and returns the untuned result; the check reads the tuned one.
+        op(*test.gen_inputs())
     test.check(op, *test.gen_inputs())
 
 
