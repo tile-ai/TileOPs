@@ -888,9 +888,10 @@ def test_kda_decode_updates_a_strided_pool_in_place() -> None:
     ],
 )
 def test_kda_long_prefill_walks_a_value_major_state(pooled: bool) -> None:
-    """Enough tokens a SM for the two-launch prefill, a value-major state in batch order or in
-    a pool, and one strongly decayed chunk the checking launch flags: the rerun walks that pair
-    again from its initial state, which a pool's one-launch program must not have overwritten."""
+    """A value-major prefill with enough tokens a SM for the two-launch program and one strongly
+    decayed chunk. In batch order the checking launch flags that pair and the rerun walks it
+    again from its initial state; on a pool the one-launch program serves the call, since the
+    first launch overwrites the initial state a rerun would read."""
     torch.manual_seed(42)
     heads = 32
     sequences = max(4, -(-get_sm_count() // heads))
