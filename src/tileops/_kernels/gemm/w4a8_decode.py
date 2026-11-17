@@ -90,12 +90,12 @@ def _grid(n: int, k: int, uw: int, block_k: int, sm_count: int, fill: tuple[int,
 
 
 def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> dict:
-    """Select a config that passes the builder's single legality check; on the exchange-free
-    grid, also a ring shallow enough to keep the units' partial sums in shared memory.
+    """Select a config that passes the builder's single legality check, with a ring shallow
+    enough to keep the units' partial sums in shared memory.
 
     Raises:
-        ValueError: No stage count of the selected family fits the device, or none keeps the
-            exchange-free grid's partial sums in shared memory.
+        ValueError: No stage count of the selected family keeps the units' partial sums in
+            shared memory on the device.
     """
     # Every threshold below was measured on H200 over the manifest's W4A8 rows.
     # 8-token tiles: a weight past 32 MiB runs three warpgroups on three stages, a smaller
@@ -128,8 +128,7 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     row_tiles = -(-n // WGMMA_ROWS)
     nchunk = -(-k // bk)
     unit_items = -(-nchunk // nw)
-    exchange_free = row_tiles <= sm_count and unit_items * bk <= exchange_free_unit_k
-    if exchange_free:
+    if row_tiles <= sm_count and unit_items * bk <= exchange_free_unit_k:
         uw = 1
         ctas = row_tiles
     else:
@@ -144,11 +143,12 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
             num_stages=st,
             num_ctas=ctas,
         )
-        if _check_config(m, n, k, cfg, smem_budget, sm_count) is not None:
-            continue
-        # A ring deep enough to push the units' partial sums out of shared memory costs
-        # the exchange-free grid more than the extra stage hides.
-        if not exchange_free or _shared_bytes(nt, nw, uw, bk, st)[1] <= smem_budget:
+        # A ring deep enough to push the units' partial sums out of shared memory costs more
+        # than the extra stage hides.
+        if (
+            _check_config(m, n, k, cfg, smem_budget, sm_count) is None
+            and _shared_bytes(nt, nw, uw, bk, st)[1] <= smem_budget
+        ):
             return cfg
     raise ValueError(f"no legal W4A8 decode config for m={m}, n={n}, k={k}")
 
