@@ -84,6 +84,7 @@ from tileops._ops.quantization import (
 from tileops._ops.quantization.fp8_quant import FP8QuantPerTokenGroupFwdOp
 from tileops._ops.rope import (
     LongRoPEFwdOp,
+    RoPECosSinFwdOp,
     RoPEFwdOp,
     RoPELlama31FwdOp,
     YaRNFwdOp,
@@ -841,12 +842,28 @@ def _rope_cases():
         op = LongRoPEFwdOp(_D, _D, 8192, 4096, 1e4, True, _DTYPE, rescale)
         return op, _inputs()
 
+    def cos_sin():
+        x = torch.randn(2, _TOKENS, _HEADS, _D, dtype=_DTYPE, device=run_device())
+        cos, sin = torch.randn(2, 128, _D // 2, device=run_device()).unbind(0)
+        return RoPECosSinFwdOp(), (x, cos, sin)
+
+    def cos_sin_packed_inplace():
+        # Packed, in place, each sequence at its own offset.
+        x = torch.randn(_TOKENS, _HEADS, _D, dtype=_DTYPE, device=run_device())
+        cos, sin = torch.randn(2, 128, _D // 2, device=run_device()).unbind(0)
+        cu_seqlens = torch.tensor([0, 20, _TOKENS], dtype=torch.int32, device=run_device())
+        offsets = torch.tensor([3, 50], device=run_device())
+        op = RoPECosSinFwdOp(interleaved=True, inplace=True, max_seqlen=_TOKENS - 20)
+        return op, (x, cos, sin, cu_seqlens, offsets)
+
     return (
         ("rope-neox", rope(True)),
         ("rope-gptj", rope(False)),
         ("rope-llama31", llama31),
         ("rope-yarn", yarn),
         ("rope-longrope", longrope),
+        ("rope-cos-sin", cos_sin),
+        ("rope-cos-sin-packed-inplace", cos_sin_packed_inplace),
     )
 
 
@@ -959,6 +976,7 @@ for _op_cls in (
     RoPELlama31FwdOp,
     YaRNFwdOp,
     LongRoPEFwdOp,
+    RoPECosSinFwdOp,
     TopKMaskFwdOp,
     TopKTopPMaskFwdOp,
 ):

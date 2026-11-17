@@ -144,7 +144,7 @@ def test_validate_inputs_rejects_offsets_that_do_not_span_the_tokens(name, kind)
         if tensor_name in call.signature.outputs:
             continue
         if spec is None:
-            tensors[tensor_name] = None
+            tensors[tensor_name] = call.scalars.get(tensor_name)
             continue
         dtype = getattr(torch, spec.dtype)
         tensors[tensor_name] = (

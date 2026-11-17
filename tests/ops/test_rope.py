@@ -9,9 +9,18 @@ not start at 0.
 import pytest
 import torch
 
+from tests.workload_test_base import TestBase
+from tileops.rope import RoPECosSinFwdOp
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
-from workloads.rope import rope_reference, rope_tables, rope_verification
+from workloads.rope import (
+    RoPECosSinCall,
+    RoPECosSinViewCall,
+    rope_reference,
+    rope_tables,
+    rope_verification,
+)
+from workloads.workload_base import manifest_call
 
 # Each op's parameters for a small cache, and its class name.
 _PARAMS = {
@@ -368,3 +377,174 @@ def test_longrope_matches_phi3_at_positions_past_0(long_context, monkeypatch) ->
     want_q, want_k = reference(positions, query.clone(), key.clone())
     torch.testing.assert_close(got_q, want_q, atol=3e-2, rtol=2e-2)
     torch.testing.assert_close(got_k, want_k, atol=3e-2, rtol=2e-2)
+
+
+# ---------------------------------------------------------------- caller-given cos and sin
+
+
+class RoPECosSinTest(RoPECosSinCall, TestBase):
+    pass
+
+
+class RoPECosSinViewTest(RoPECosSinViewCall, TestBase):
+    pass
+
+
+_F32_TABLES = {"C": "float32", "Cs": "float32"}
+_SMOKE, _FULL = pytest.mark.smoke, pytest.mark.full
+
+
+def _dense(B, S, H, D, Rh, P=None, **row):
+    return {"B": B, "S": S, "H": H, "D": D, "Rh": Rh, "P": P or S, **row}
+
+
+def _packed(seq_lens, H, D, Rh, P, **row):
+    some = row.pop("some", [])
+    return {
+        "Tt": sum(seq_lens),
+        "seq_lens": seq_lens,
+        "max_seqlen": max(seq_lens),
+        "H": H,
+        "D": D,
+        "Rh": Rh,
+        "P": P,
+        "some": ["cu_seqlens", *some],
+        **row,
+    }
+
+
+_COS_SIN_CASES = (
+    # Qwen3.6 vision: a full 72-wide NeoX head, float32 tables.
+    pytest.param(
+        _dense(1, 37, 4, 72, 36), {"T": "bfloat16", **_F32_TABLES}, marks=_SMOKE, id="bf16"
+    ),
+    pytest.param(
+        _dense(2, 19, 3, 128, 64, P=32),
+        {"T": "float16", "C": "float16", "Cs": "float16"},
+        marks=_SMOKE,
+        id="fp16",
+    ),
+    pytest.param(
+        _dense(2, 19, 3, 64, 32), {"T": "float32", **_F32_TABLES}, marks=_SMOKE, id="fp32"
+    ),
+    # Each table converts from its own dtype.
+    pytest.param(
+        _dense(1, 21, 2, 64, 32),
+        {"T": "bfloat16", "C": "float16", "Cs": "float32"},
+        marks=_FULL,
+        id="mixed-tables",
+    ),
+    pytest.param(
+        _dense(2, 17, 3, 128, 32, P=40, interleaved=True, seqlen_offsets=9),
+        {"T": "bfloat16", **_F32_TABLES},
+        marks=_FULL,
+        id="interleaved-partial-offset",
+    ),
+    # Decode: one token per sequence, each at its own offset.
+    pytest.param(
+        _dense(6, 1, 4, 128, 64, P=64, some=["seqlen_offsets"]),
+        {"T": "bfloat16", **_F32_TABLES, "O": "int32"},
+        marks=_FULL,
+        id="decode-offsets",
+    ),
+    # An empty sequence among packed ones, each sequence at its own offset.
+    pytest.param(
+        _packed([5, 0, 9], 3, 64, 32, P=24, some=["seqlen_offsets"]),
+        {"T": "bfloat16", "C": "bfloat16", "Cs": "bfloat16", "I": "int32", "O": "int64"},
+        marks=_FULL,
+        id="packed-offsets",
+    ),
+    # An odd head leaves no column offset on a vector boundary: scalar accesses.
+    pytest.param(
+        _dense(1, 9, 3, 65, 16), {"T": "float16", **_F32_TABLES}, marks=_FULL, id="odd-head"
+    ),
+    pytest.param(
+        _dense(1, 9, 3, 65, 16, interleaved=True),
+        {"T": "float16", **_F32_TABLES},
+        marks=_FULL,
+        id="odd-head-interleaved",
+    ),
+    pytest.param(
+        _packed([3, 8], 2, 72, 36, P=16, seqlen_offsets=4, interleaved=True),
+        {"T": "float16", **_F32_TABLES, "I": "int64"},
+        marks=_FULL,
+        id="packed-int-offset",
+    ),
+    # Calls whose work fills more than half the device's resident threads give each thread
+    # several heads, an odd head count leaving the last thread of a token one.
+    pytest.param(
+        _dense(1, 4096, 5, 128, 32),
+        {"T": "bfloat16", **_F32_TABLES},
+        marks=_FULL,
+        id="many-units-partial",
+    ),
+    # Regression: more dense sequences than CUDA's grid has rows, each at its own offset.
+    pytest.param(
+        _dense(65537, 1, 1, 2, 1, P=4, some=["seqlen_offsets"]),
+        {"T": "bfloat16", **_F32_TABLES, "O": "int64"},
+        marks=_FULL,
+        id="more-sequences-than-grid-rows",
+    ),
+)
+
+
+@pytest.mark.parametrize("row, dtype_case", _COS_SIN_CASES)
+def test_rope_cos_sin_matches_the_reference(row, dtype_case) -> None:
+    test = RoPECosSinTest(manifest_call("RoPECosSinFwdOp", dtype_case, **row))
+    test.check(RoPECosSinFwdOp(**test.arguments()), *test.gen_inputs())
+
+
+def _strided_view_call(interleaved, inplace, columns, width):
+    """The op and its inputs on a column view of heads *width* columns wide."""
+    row = _dense(1, 37, 4, len(range(width)[columns]), 16, interleaved=interleaved, inplace=inplace)
+    call = manifest_call("RoPECosSinFwdOp", {"T": "bfloat16", **_F32_TABLES}, **row)
+    test = RoPECosSinViewTest(call, width, columns)
+    return test, RoPECosSinFwdOp(**test.arguments()), test.gen_inputs()
+
+
+# The trailing columns of NeoX heads are the smoke case; the other pairing and a
+# column stride other than 1 are full.
+_VIEWS = pytest.mark.parametrize(
+    "interleaved, columns",
+    [
+        pytest.param(False, slice(64, 136), marks=_SMOKE, id="neox-tail"),
+        pytest.param(True, slice(64, 136), marks=_FULL, id="interleaved-tail"),
+        pytest.param(False, slice(8, 136, 2), marks=_FULL, id="neox-every-2nd"),
+        pytest.param(True, slice(8, 136, 2), marks=_FULL, id="interleaved-every-2nd"),
+    ],
+)
+
+
+@_VIEWS
+def test_rope_cos_sin_rotates_a_strided_view_in_place(interleaved, columns) -> None:
+    """A column view of wider heads rotated in place, as DeepSeek-V4-Flash rotates the
+    trailing columns of each head: x is returned, and only the view's columns change."""
+    test, op, inputs = _strided_view_call(interleaved, True, columns, 136)
+    test.check(op, *inputs)
+    x, wide = inputs[0], inputs[0]._base
+    before = wide.clone()
+    assert op(*inputs) is x
+    kept = torch.ones_like(wide, dtype=torch.bool)
+    kept[..., columns] = False
+    assert torch.equal(wide[kept], before[kept])
+
+
+@_VIEWS
+def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(interleaved, columns) -> None:
+    """A column view of wider heads read out of place: the wider heads are left as they were."""
+    test, op, inputs = _strided_view_call(interleaved, False, columns, 136)
+    test.check(op, *inputs)
+    wide = inputs[0]._base
+    before = wide.clone()
+    op(*inputs)
+    assert torch.equal(wide, before)
+
+
+@pytest.mark.smoke
+def test_rope_cos_sin_unchecked_row_outside_the_tables_reads_its_nearest_row() -> None:
+    row = _dense(2, 19, 3, 128, 64, P=32, some=["seqlen_offsets"])
+    call = manifest_call("RoPECosSinFwdOp", {"T": "float16", **_F32_TABLES, "O": "int64"}, **row)
+    test = RoPECosSinTest(call)
+    x, cos, sin, cu_seqlens, offsets = test.gen_inputs()
+    offsets.copy_(torch.tensor([20, -3]))
+    test.check(RoPECosSinFwdOp(), x, cos, sin, cu_seqlens, offsets)

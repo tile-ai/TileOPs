@@ -135,6 +135,87 @@ def rope_reference(
     return query_out, None if key is None else _rotate(key, index, cos, sin, hs, rd, neox)
 
 
+def rope_cos_sin_reference(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    cu_seqlens: torch.Tensor | None = None,
+    seqlen_offsets: int | torch.Tensor = 0,
+    *,
+    interleaved: bool = False,
+    inplace: bool = False,
+) -> torch.Tensor:
+    """``RoPECosSinFwdOp`` as ``flash_attn.layers.rotary.apply_rotary_emb`` computes it.
+
+    Token ``s`` of sequence ``b`` reads row ``s + seqlen_offsets[b]`` of *cos* and *sin*
+    (one offset for every sequence when it is an int) and rotates the first
+    ``2 * cos.shape[-1]`` columns of each head in float32, rounded once; the rest are copied.
+    A row outside the tables reads its nearest row, as the op does unchecked. With *inplace*
+    the result is written into *x*, which is returned.
+    """
+    if cos.shape != sin.shape or 2 * cos.shape[-1] > x.shape[-1]:
+        raise ValueError("cos and sin must share a shape of at most half the head")
+    r = 2 * cos.shape[-1]
+    # Each token's sequence b and position s in it, as tensors: read on the host, the
+    # contents would break a torch.compile graph of this reference.
+    if cu_seqlens is None:
+        b = torch.arange(x.shape[0], device=x.device)[:, None]
+        s = torch.arange(x.shape[1], device=x.device)[None, :]
+    else:
+        tokens = torch.arange(x.shape[0], device=x.device)
+        # The last sequence starting at or before the token, past any empty one.
+        b = torch.searchsorted(cu_seqlens[1:], tokens, right=True)
+        s = tokens - cu_seqlens[b]
+    offset = seqlen_offsets[b] if isinstance(seqlen_offsets, torch.Tensor) else seqlen_offsets
+    rows = (s + offset).clamp(0, cos.shape[0] - 1)
+    c, s = cos[rows][..., None, :].float(), sin[rows][..., None, :].float()
+    h = x[..., :r].float()
+    if interleaved:
+        x1, x2 = h[..., 0::2], h[..., 1::2]
+        rotated = torch.stack((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1).flatten(-2)
+    else:
+        x1, x2 = h.chunk(2, dim=-1)
+        rotated = torch.cat((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1)
+    out = x if inplace else x.clone()
+    out[..., :r] = rotated.to(x.dtype)
+    return out
+
+
+class RoPECosSinCall(CallWorkload):
+    """A manifest call of ``RoPECosSinFwdOp`` checked against :func:`rope_cos_sin_reference`."""
+
+    def verification(self, *inputs):
+        return rope_verification()
+
+    def ref_program(self, x, cos, sin, cu_seqlens=None, seqlen_offsets=0):
+        params = self.arguments()
+        return rope_cos_sin_reference(
+            x,
+            cos,
+            sin,
+            cu_seqlens,
+            seqlen_offsets,
+            interleaved=params["interleaved"],
+            inplace=params["inplace"],
+        )
+
+
+class RoPECosSinViewCall(RoPECosSinCall):
+    """The call with ``x`` a column view of heads *width* columns wide: ``x``'s values sit in
+    *columns* of each wider head, whose other columns hold their own values."""
+
+    def __init__(self, call, width: int, columns: slice, device=None):
+        RoPECosSinCall.__init__(self, call, device)
+        self.width, self.columns = width, columns
+
+    def gen_inputs(self):
+        x, *rest = RoPECosSinCall.gen_inputs(self)
+        wide = torch.randn(*x.shape[:-1], self.width, dtype=x.dtype, device=x.device)
+        view = wide[..., self.columns]
+        view.copy_(x)
+        return (view, *rest)
+
+
 class RoPECall(CallWorkload):
     """A manifest rotation checked against independently computed cos/sin caches."""
 

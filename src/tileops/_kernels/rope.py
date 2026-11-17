@@ -1,15 +1,17 @@
 """Rotary position embedding kernels.
 
-The ops compute their cos/sin tables; a kernel receives them and rotates each token's query
-and key heads at the table row its position names:
+A kernel receives cos/sin tables and rotates each token's heads at a table row:
     y = x * cos + rotate(x) * sin
 
 - ``RoPENeoxPositionIdsKernel``: NeoX halves, ``(x[k], x[k + rotary_dim / 2])``.
 - ``RoPENonNeoxKernel``: RoFormer (GPT-J) adjacent pairs, ``(x[2k], x[2k + 1])``.
 
-Both rotate the leading ``rotary_dim`` columns of each head and copy the rest, rotate the
-query and the key in one launch, and take the token count from the call: one built kernel
-serves every count.
+Both rotate the query and the key at the row each token's position names, in one launch,
+rotate the leading ``rotary_dim`` columns of each head and copy the rest, and take the token
+count from the call: one built kernel serves every count.
+
+- ``RoPECosSinKernel``: the tables are the caller's, one row per sequence position; either
+  pairing, dense or packed tokens, at any strides, in place or not.
 """
 
 import dataclasses
@@ -29,6 +31,9 @@ _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 __all__ = [
     "RoPECall",
+    "RoPECosSinCall",
+    "RoPECosSinFwdInterface",
+    "RoPECosSinKernel",
     "RoPENeoxPositionIdsFwdInterface",
     "RoPENeoxPositionIdsKernel",
     "RoPENonNeoxFwdInterface",
@@ -482,3 +487,502 @@ class RoPENonNeoxKernel(_RoPEPositionsKernel, RoPENonNeoxFwdInterface):
     """
 
     _NEOX = False
+
+
+@dataclasses.dataclass(frozen=True)
+class RoPECosSinCall(CallSpec):
+    """One rotation of ``x`` by caller-given per-row ``cos`` and ``sin`` tables.
+
+    The token count, the batch and the strides of ``x`` are not facts of the call: a kernel
+    serves any. ``seqlens_dtype`` is None for dense ``x``; ``offset_dtype`` is None where
+    ``seqlen_offsets`` is an int.
+    """
+
+    heads: int = 0
+    head_dim: int = 0
+    rotary_half: int = 0
+    interleaved: bool = False
+    inplace: bool = False
+    dtype: torch.dtype | None = None
+    cos_dtype: torch.dtype | None = None
+    sin_dtype: torch.dtype | None = None
+    seqlens_dtype: torch.dtype | None = None
+    offset_dtype: torch.dtype | None = None
+
+
+class RoPECosSinFwdInterface(KernelInterface):
+    """The rotation of each token's heads by the table row its sequence position names.
+
+    Pair ``k`` of a head's first ``2 * call.rotary_half`` columns is ``(x[k], x[k + Rh])``
+    (NeoX) or ``(x[2k], x[2k + 1])`` (interleaved) and becomes ``(a * c - b * s,
+    b * c + a * s)`` with ``c, s = cos[row, k], sin[row, k]``.
+    """
+
+    request = RoPECosSinCall
+
+    @abstractmethod
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        cu_seqlens: torch.Tensor | None,
+        seqlen_offsets: int | torch.Tensor,
+    ) -> torch.Tensor:
+        """Rotate the leading ``2 * call.rotary_half`` columns of each head of ``x``.
+
+        Token ``s`` of sequence ``b`` reads row ``s + seqlen_offsets[b]`` of the tables, an
+        int offset serving every sequence; a row outside ``[0, P)`` is clamped to the
+        tables rather than read out of bounds.
+
+        Args:
+            x: ``[B, S, call.heads, call.head_dim]`` dense, or ``[Tt, call.heads,
+                call.head_dim]`` packed, in ``call.dtype`` on ``call.device``, at any
+                strides. Written in place where ``call.inplace``.
+            cos: ``[P, call.rotary_half]`` in ``call.cos_dtype``, contiguous.
+            sin: ``[P, call.rotary_half]`` in ``call.sin_dtype``, contiguous.
+            cu_seqlens: ``[B + 1]`` sequence starts in ``call.seqlens_dtype``, contiguous,
+                for packed ``x``; None for dense.
+            seqlen_offsets: An int, or ``[B]`` in ``call.offset_dtype``, contiguous.
+
+        Returns:
+            ``x`` itself where ``call.inplace``, its untouched columns as they were; else a
+            new contiguous tensor shaped and typed as ``x``.
+        """
+
+
+@target_cache(maxsize=32)
+def _rope_cos_sin_kernel(
+    heads: int,
+    head_dim: int,
+    rotary_half: int,
+    interleaved: bool,
+    inplace: bool,
+    dtype: str,
+    cos_dtype: str,
+    sin_dtype: str,
+    seqlens_dtype: str | None,
+    offset_dtype: str | None,
+    vec: int,
+    unit_columns: bool,
+) -> object:
+    """The rotation of ``x`` into ``y``, both flat views addressed at runtime strides.
+
+    Element ``(b, i, h, c)`` of ``x`` sits at ``(b * qb + i * qs + h * qh) * vec + c * qc``,
+    ``i`` being ``s`` dense and the token packed, and ``y``'s likewise with ``p*``: each
+    stride but the column's is passed divided by ``vec``, so TileLang proves every unit's
+    start vector-aligned. Where ``unit_columns`` the column strides are 1; otherwise ``vec``
+    is 1 and they are runtime scalars. In place, ``y`` is ``x`` and the copied columns are
+    not touched.
+
+    A unit is two ``vec``-column vectors of one head: ``vec`` columns of the rotary low half
+    and the ``vec`` facing them in the high half, whose pairs are NeoX's ``(x[k], x[k + Rh])``
+    or, interleaved, the adjacent pairs inside each vector; or one ``vec``-column vector past
+    the rotary columns, copied. A thread takes one unit position of ``per_thread`` heads of
+    one token. It loads those heads' x first, then finds the token's table row (dense: grid
+    row ``by`` is the sequence; packed: a binary search over ``cu_seqlens``) and reads the
+    row's slots once for all its heads. The arithmetic is f32 and rounds once.
+    """
+    rotary = 2 * rotary_half
+    rot_units = rotary_half // vec
+    # One column a vector holds no pair: the unit is then one adjacent pair.
+    adjacent = interleaved and vec == 1
+    head_units = rot_units + (0 if inplace else (head_dim - rotary) // vec)
+
+    # The flat index proves no access in bounds; the bound check would split every vector.
+    @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True})
+    def kernel(threads, per_thread):
+        # A flat view, a table or the sequences may number 2^31 or more.
+        rows = T.dynamic("rows", "int64")
+        span = T.dynamic("span", "int64")
+        out_span = T.dynamic("out_span", "int64")
+        table_shape = (rows, rotary_half)
+        # Thread g of a token takes heads g, g + groups, ...: one warp access covers
+        # neighbouring heads.
+        groups = -(-heads // per_thread)
+        token_items = groups * head_units
+
+        @T.macro
+        def rotate(
+            x, y, cos_table, sin_table, cu_seqlens, offsets, offset, tokens, extent, q, bx, by
+        ):
+            # Dense, tokens is S and extent B: grid row by is sequence b, so no thread divides
+            # by a runtime extent. Packed, tokens is Tt and extent the steps of the search for
+            # a token's sequence. cu_seqlens and offsets are read only where the call has them.
+            qb, qs, qh, qc, pb, ps, ph, pc = q
+            if unit_columns:
+                qc = 1
+                pc = 1
+            found = T.alloc_local([2], "int64")
+            v = T.alloc_local([2 * vec * per_thread], dtype)
+            cs = T.alloc_local([vec], cos_dtype)
+            sn = T.alloc_local([vec], sin_dtype)
+            units = tokens * token_items
+            item = T.Cast("int64", bx) * threads + T.get_thread_binding()
+            token = item // token_items
+            group = T.Cast("int32", item % token_items) // head_units
+            slot = T.Cast("int32", item % token_items) % head_units
+            if item < units:
+                # Packed x has no sequence stride, so its address needs no search.
+                if seqlens_dtype is not None:
+                    x_token = token * qs
+                    y_token = token * ps
+                else:
+                    x_token = T.Cast("int64", by) * qb + token * qs
+                    y_token = T.Cast("int64", by) * pb + token * ps
+                if slot < rot_units:
+                    low = slot * (2 if adjacent else vec)
+                    high = low + (1 if adjacent else rotary_half)
+                    # Every head's x first: its loads wait on no table row, so they are
+                    # in flight while the row is found and its slots are read.
+                    for k in T.unroll(per_thread):
+                        if k * groups + group < heads:
+                            x_at = (x_token + (k * groups + group) * qh) * vec
+                            for j in T.vectorized(vec):
+                                v[2 * k * vec + j] = x[x_at + (low + j) * qc]
+                            for j in T.vectorized(vec):
+                                v[(2 * k + 1) * vec + j] = x[x_at + (high + j) * qc]
+                    if seqlens_dtype is not None:
+                        # The last sequence starting at or before the token: an empty
+                        # sequence's start equals the next one's, which wins.
+                        found[0] = 0
+                        found[1] = cu_seqlens.shape[0] - 2
+                        for _ in T.serial(extent):
+                            if found[0] < found[1]:
+                                mid = found[0] + (found[1] - found[0] + 1) // 2
+                                if cu_seqlens[mid] <= token:
+                                    found[0] = mid
+                                else:
+                                    found[1] = mid - 1
+                        b = found[0]
+                        s = token - T.Cast("int64", cu_seqlens[b])
+                    else:
+                        b = by
+                        s = token
+                    if offset_dtype is not None:
+                        seen = s + T.Cast("int64", offsets[b])
+                    else:
+                        seen = s + offset
+                    row = T.max(0, T.min(seen, T.Cast("int64", rows) - 1))
+                    if interleaved and not adjacent:
+                        # Pairs slot * vec / 2 on, then rotary_half / 2 past them.
+                        for half in T.unroll(2):
+                            for j in T.vectorized(vec // 2):
+                                cs[half * (vec // 2) + j] = cos_table[
+                                    row, (half * rotary_half + slot * vec) // 2 + j
+                                ]
+                            for j in T.vectorized(vec // 2):
+                                sn[half * (vec // 2) + j] = sin_table[
+                                    row, (half * rotary_half + slot * vec) // 2 + j
+                                ]
+                    else:
+                        for j in T.vectorized(vec):
+                            cs[j] = cos_table[row, slot * vec + j]
+                        for j in T.vectorized(vec):
+                            sn[j] = sin_table[row, slot * vec + j]
+                    for k in T.unroll(per_thread):
+                        if k * groups + group < heads:
+                            y_at = (y_token + (k * groups + group) * ph) * vec
+                            for p in T.unroll(vec):
+                                a = 2 * k * vec + (2 * p if interleaved else p)
+                                e = a + (1 if interleaved else vec)
+                                x_a = T.Cast("float32", v[a])
+                                x_e = T.Cast("float32", v[e])
+                                c = T.Cast("float32", cs[p])
+                                sv = T.Cast("float32", sn[p])
+                                v[a] = T.Cast(dtype, x_a * c - x_e * sv)
+                                v[e] = T.Cast(dtype, x_e * c + x_a * sv)
+                            for j in T.vectorized(vec):
+                                y[y_at + (low + j) * pc] = v[2 * k * vec + j]
+                            for j in T.vectorized(vec):
+                                y[y_at + (high + j) * pc] = v[(2 * k + 1) * vec + j]
+                elif not inplace:
+                    kept = rotary + (slot - rot_units) * vec
+                    for k in T.unroll(per_thread):
+                        if k * groups + group < heads:
+                            x_at = (x_token + (k * groups + group) * qh) * vec
+                            y_at = (y_token + (k * groups + group) * ph) * vec
+                            for j in T.vectorized(vec):
+                                v[j] = x[x_at + (kept + j) * qc]
+                            for j in T.vectorized(vec):
+                                y[y_at + (kept + j) * pc] = v[j]
+
+        # One entry point per form of cu_seqlens and seqlen_offsets.
+        if seqlens_dtype is not None and offset_dtype is not None:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor((span,), dtype),
+                cos_table: T.Tensor(table_shape, cos_dtype),
+                sin_table: T.Tensor(table_shape, sin_dtype),
+                cu_seqlens: T.Tensor((T.dynamic("bounds", "int64"),), seqlens_dtype),
+                offsets: T.Tensor((T.dynamic("batch", "int64"),), offset_dtype),
+                y: T.Tensor((out_span,), dtype),
+                tokens: T.int64,
+                extent: T.int64,
+                qb: T.int64,
+                qs: T.int64,
+                qh: T.int64,
+                qc: T.int64,
+                pb: T.int64,
+                ps: T.int64,
+                ph: T.int64,
+                pc: T.int64,
+            ):
+                q = (qb, qs, qh, qc, pb, ps, ph, pc)
+                with T.Kernel(
+                    T.Cast("int32", T.ceildiv(tokens * token_items, threads)),
+                    1,
+                    threads=threads,
+                ) as (bx, by):
+                    rotate(
+                        x,
+                        y,
+                        cos_table,
+                        sin_table,
+                        cu_seqlens,
+                        offsets,
+                        0,
+                        tokens,
+                        extent,
+                        q,
+                        bx,
+                        by,
+                    )
+
+        elif seqlens_dtype is not None:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor((span,), dtype),
+                cos_table: T.Tensor(table_shape, cos_dtype),
+                sin_table: T.Tensor(table_shape, sin_dtype),
+                cu_seqlens: T.Tensor((T.dynamic("bounds", "int64"),), seqlens_dtype),
+                y: T.Tensor((out_span,), dtype),
+                offset: T.int64,
+                tokens: T.int64,
+                extent: T.int64,
+                qb: T.int64,
+                qs: T.int64,
+                qh: T.int64,
+                qc: T.int64,
+                pb: T.int64,
+                ps: T.int64,
+                ph: T.int64,
+                pc: T.int64,
+            ):
+                q = (qb, qs, qh, qc, pb, ps, ph, pc)
+                with T.Kernel(
+                    T.Cast("int32", T.ceildiv(tokens * token_items, threads)),
+                    1,
+                    threads=threads,
+                ) as (bx, by):
+                    rotate(
+                        x, y, cos_table, sin_table, cu_seqlens, x, offset, tokens, extent, q, bx, by
+                    )
+
+        elif offset_dtype is not None:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor((span,), dtype),
+                cos_table: T.Tensor(table_shape, cos_dtype),
+                sin_table: T.Tensor(table_shape, sin_dtype),
+                offsets: T.Tensor((T.dynamic("batch", "int64"),), offset_dtype),
+                y: T.Tensor((out_span,), dtype),
+                tokens: T.int64,
+                extent: T.int64,
+                qb: T.int64,
+                qs: T.int64,
+                qh: T.int64,
+                qc: T.int64,
+                pb: T.int64,
+                ps: T.int64,
+                ph: T.int64,
+                pc: T.int64,
+            ):
+                q = (qb, qs, qh, qc, pb, ps, ph, pc)
+                with T.Kernel(
+                    T.Cast("int32", T.ceildiv(tokens * token_items, threads)),
+                    T.Cast("int32", extent),
+                    threads=threads,
+                ) as (bx, by):
+                    rotate(x, y, cos_table, sin_table, x, offsets, 0, tokens, extent, q, bx, by)
+
+        else:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor((span,), dtype),
+                cos_table: T.Tensor(table_shape, cos_dtype),
+                sin_table: T.Tensor(table_shape, sin_dtype),
+                y: T.Tensor((out_span,), dtype),
+                offset: T.int64,
+                tokens: T.int64,
+                extent: T.int64,
+                qb: T.int64,
+                qs: T.int64,
+                qh: T.int64,
+                qc: T.int64,
+                pb: T.int64,
+                ps: T.int64,
+                ph: T.int64,
+                pc: T.int64,
+            ):
+                q = (qb, qs, qh, qc, pb, ps, ph, pc)
+                with T.Kernel(
+                    T.Cast("int32", T.ceildiv(tokens * token_items, threads)),
+                    T.Cast("int32", extent),
+                    threads=threads,
+                ) as (bx, by):
+                    rotate(x, y, cos_table, sin_table, x, x, offset, tokens, extent, q, bx, by)
+
+        return main
+
+    return kernel
+
+
+def _flat(t: torch.Tensor) -> torch.Tensor:
+    """A one-dimensional view of *t*'s storage from its first element to its last."""
+    span = sum((n - 1) * s for n, s in zip(t.shape, t.stride(), strict=True)) + 1
+    return t.as_strided((span,), (1,))
+
+
+class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
+    """The rotation by caller-given tables, either pairing, dense or packed, at any strides.
+
+    Each thread moves whole vectors: the widest power of two up to 16 bytes dividing ``Rh``,
+    the head size and every stride of ``x`` and the output but the column's, or one column
+    where a column stride is not 1.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @classmethod
+    def entry_for(cls, call: RoPECosSinCall) -> Entry:
+        return call, lambda: cls(
+            call.heads,
+            call.head_dim,
+            call.rotary_half,
+            call.dtype,
+            call.cos_dtype,
+            call.sin_dtype,
+            interleaved=call.interleaved,
+            inplace=call.inplace,
+            seqlens_dtype=call.seqlens_dtype,
+            offset_dtype=call.offset_dtype,
+            resident_threads=call.sm_count * call.threads_per_sm,
+        )
+
+    def __init__(
+        self,
+        heads: int,
+        head_dim: int,
+        rotary_half: int,
+        dtype: torch.dtype,
+        cos_dtype: torch.dtype,
+        sin_dtype: torch.dtype,
+        config: dict | None = None,
+        *,
+        interleaved: bool = False,
+        inplace: bool = False,
+        seqlens_dtype: torch.dtype | None = None,
+        offset_dtype: torch.dtype | None = None,
+        resident_threads: int = 0,
+    ):
+        super().__init__()
+        self.heads = heads
+        self.head_dim = head_dim
+        self.rotary_half = rotary_half
+        self.dtype = dtype
+        self.cos_dtype = cos_dtype
+        self.sin_dtype = sin_dtype
+        self.interleaved = interleaved
+        self.inplace = inplace
+        self.seqlens_dtype = seqlens_dtype
+        self.offset_dtype = offset_dtype
+        self._resident_threads = resident_threads
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        # Two heads a thread, each sharing the thread's cos and sin loads.
+        return {"threads": 128, "heads": 2}
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        cu_seqlens: torch.Tensor | None,
+        seqlen_offsets: int | torch.Tensor,
+    ) -> torch.Tensor:
+        y = x if self.inplace else torch.empty(x.shape, dtype=x.dtype, device=x.device)
+        packed = cu_seqlens is not None
+        # Dense x is (b, s, h, c); packed x is (t, h, c), addressed as b = 0, i = t.
+        x_strides = (0, *x.stride()) if packed else x.stride()
+        y_strides = (0, *y.stride()) if packed else y.stride()
+        unit_columns = x_strides[3] == 1 and y_strides[3] == 1
+        vec = 1
+        if unit_columns:
+            lanes = VECTOR_ACCESS_BYTES // self.dtype.itemsize
+            vec = math.gcd(lanes, self.rotary_half, self.head_dim, *x_strides[:3], *y_strides[:3])
+        # A call whose units, one head a thread, fill at most half the device's resident
+        # threads is bound by the latency of one unit, so each thread takes one head; a
+        # larger one keeps several heads' loads in flight a thread.
+        copied = 0 if self.inplace else self.head_dim - 2 * self.rotary_half
+        head_units = self.rotary_half // vec + copied // vec
+        tokens = x.shape[0] if packed else x.shape[0] * x.shape[1]
+        wide = 2 * tokens * self.heads * head_units <= self._resident_threads
+        program = self.program(self._compile, vec, unit_columns, wide)
+        # The offsets are a tensor argument, or an int scalar after the tensors.
+        offsets_tensor = isinstance(seqlen_offsets, torch.Tensor)
+        strides = [stride // vec for stride in x_strides[:3]] + [x_strides[3]]
+        strides += [stride // vec for stride in y_strides[:3]] + [y_strides[3]]
+        if packed:
+            # The steps of a binary search over the sequences.
+            steps = (cu_seqlens.shape[0] - 2).bit_length()
+            launches = [(x, y, seqlen_offsets, [x.shape[0], steps])]
+        else:
+            # A dense launch runs one grid row a sequence, and CUDA's grid has at most 65535
+            # rows: more sequences launch in parts.
+            rows = 65535
+            launches = [
+                (
+                    x[b : b + rows],
+                    y[b : b + rows],
+                    seqlen_offsets[b : b + rows] if offsets_tensor else seqlen_offsets,
+                    [x.shape[1], min(rows, x.shape[0] - b)],
+                )
+                for b in range(0, x.shape[0], rows)
+            ]
+        for x_part, y_part, offsets, sizes in launches:
+            tensors = [_flat(x_part), cos, sin]
+            if packed:
+                tensors.append(cu_seqlens)
+            if offsets_tensor:
+                tensors.append(offsets)
+            tensors.append(_flat(y_part))
+            scalars = [] if offsets_tensor else [offsets]
+            program(*tensors, *scalars, *sizes, *strides)
+        return y
+
+    def _compile(self, cfg: dict, vec: int, unit_columns: bool, wide: bool):
+        """The program ``forward`` launches for *vec*-wide vectors, compiled from *cfg*;
+        *wide* gives each thread one head."""
+        kernel = _rope_cos_sin_kernel(
+            self.heads,
+            self.head_dim,
+            self.rotary_half,
+            self.interleaved,
+            self.inplace,
+            self.dtype_str,
+            self.dtype_to_str(self.cos_dtype),
+            self.dtype_to_str(self.sin_dtype),
+            None if self.seqlens_dtype is None else self.dtype_to_str(self.seqlens_dtype),
+            None if self.offset_dtype is None else self.dtype_to_str(self.offset_dtype),
+            vec,
+            unit_columns,
+        )
+        return kernel(cfg["threads"], 1 if wide else cfg["heads"])

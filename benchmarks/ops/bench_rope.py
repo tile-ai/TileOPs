@@ -14,8 +14,21 @@ import pytest
 import torch
 
 from benchmarks import api as bench
-from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
-from tileops._ops.rope import LongRoPEFwdOp, RoPEFwdOp, RoPELlama31FwdOp, YaRNFwdOp
+from benchmarks.baselines import (
+    TORCH_COMPILE_TAG,
+    VLLM_TAG,
+    baseline_module,
+    compiled_reference,
+    private_inputs,
+    vllm_op,
+)
+from tileops._ops.rope import (
+    LongRoPEFwdOp,
+    RoPECosSinFwdOp,
+    RoPEFwdOp,
+    RoPELlama31FwdOp,
+    YaRNFwdOp,
+)
 from workloads.rope import rope_reference, rope_tables
 
 
@@ -79,3 +92,36 @@ def test_yarn_bench(case) -> None:
 @pytest.mark.parametrize("case", bench.cases(LongRoPEFwdOp), ids=lambda case: case.id)
 def test_rope_longrope_bench(case) -> None:
     _bench_rope(LongRoPEFwdOp, case)
+
+
+@pytest.mark.parametrize("case", bench.cases(RoPECosSinFwdOp), ids=lambda case: case.id)
+def test_rope_cos_sin_bench(case) -> None:
+    """Check and time the rotation against flash-attn's ``apply_rotary_emb``, the op's
+    reference API, torch and inductor; each rewrites a private ``x`` where the call is in
+    place."""
+    op = RoPECosSinFwdOp(**case.arguments)
+    params = case.arguments
+    apply_rotary_emb = baseline_module("flash_attn.layers.rotary", "flash-attn").apply_rotary_emb
+
+    def flash_attention_fn(x, cos, sin, cu_seqlens, seqlen_offsets):
+        return apply_rotary_emb(
+            x,
+            cos,
+            sin,
+            interleaved=params["interleaved"],
+            inplace=params["inplace"],
+            seqlen_offsets=seqlen_offsets,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=params["max_seqlen"],
+        )
+
+    implementations = {
+        "flash-attn": flash_attention_fn,
+        "torch-ref": case.torch,
+        TORCH_COMPILE_TAG: compiled_reference(case.torch),
+    }
+    if params["inplace"]:
+        implementations = {
+            name: private_inputs(fn, case.inputs, 0) for name, fn in implementations.items()
+        }
+    bench.Runner(op, case).compare(implementations)

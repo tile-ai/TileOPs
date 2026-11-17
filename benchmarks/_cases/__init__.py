@@ -51,6 +51,7 @@ _FAMILIES = (
     "norm",
     "pool",
     "quantization",
+    "rope",
 )
 
 

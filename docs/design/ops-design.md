@@ -79,7 +79,7 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 
 **The call device is decided once.** The generated check places the call. Selection reads that device's facts; the build and tuning run with it current, for an in-tree entry and a target alike. Why: a build may compile or allocate for the current device, and the kernel is keyed by the device it was built for.
 
-**The op layer guarantees a target the manifest, aligned call tensors and written tensors that overlap no tensor their entry does not list, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
+**The op layer guarantees a target the manifest, aligned call tensors and written tensors that overlap no tensor their entry does not list and none whose shape and strides show it overlapping itself, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
 
 **A traced op is one graph node whichever target serves it.** An op on the [compile boundary](#compile-dispatch-boundary) chooses between the in-tree kernels and a target inside its operator.
 
