@@ -156,14 +156,14 @@ def _gqa_paged_fp8_decode_kernel(
             return out
 
         @T.macro
-        def advance_max(m, m_prev, rescale, item_scale):
+        def advance_max(m, m_prev, rescale):
             """Keep each row's maximum until it grows by 2^8, so its probabilities stay below
             256, exact in either 16-bit type, and most tiles skip the rescale; rescale holds the
             factor that brings earlier tiles to the kept maximum."""
             for i in T.Parallel(block_m):
                 m[i] = T.max(m[i], T.cast(-1e38, accum))
-                m[i] = T.if_then_else((m[i] - m_prev[i]) * item_scale > 8.0, m[i], m_prev[i])
-                rescale[i] = T.exp2((m_prev[i] - m[i]) * item_scale)
+                m[i] = T.if_then_else(m[i] - m_prev[i] > 8.0, m[i], m_prev[i])
+                rescale[i] = T.exp2(m_prev[i] - m[i])
 
         @T.macro
         def load_tile(pool, dst, s, bars, page_table, request, key0, last_page, kv_head):
@@ -222,16 +222,25 @@ def _gqa_paged_fp8_decode_kernel(
 
         @T.macro
         def cap_and_mask(
-            scores, keys_on_m: bool, key0, kv_len, first_q, last_q, row0, align, qk_descale
+            scores, keys_on_m: bool, key0, kv_len, first_q, last_q, row0, align, qk_descale,
+            item_scale,
         ):  # fmt: skip
-            """Softcap the score tile at *key0*, held rows-by-keys or (keys on M) keys-by-rows,
-            and send the scores of keys a row does not see to -inf."""
+            """Bring the score tile at *key0*, held rows-by-keys or (keys on M) keys-by-rows, to
+            log2 units by item_scale, softcapped first when there is one, then send the scores
+            of keys a row does not see to -inf. The scale applies before the mask, so no scale,
+            zero included, multiplies an infinity."""
             if use_softcap:
                 for i, j in T.Parallel(block_m, block_n):
                     at = (j, i) if keys_on_m else (i, j)
-                    scores[at] = T.cast(softcap, accum) * T.tanh(
-                        scores[at] * qk_descale * T.cast(sm_scale / softcap, accum)
+                    scores[at] = (
+                        item_scale
+                        * T.cast(softcap, accum)
+                        * T.tanh(scores[at] * qk_descale * T.cast(sm_scale / softcap, accum))
                     )
+            else:
+                for i, j in T.Parallel(block_m, block_n):
+                    at = (j, i) if keys_on_m else (i, j)
+                    scores[at] = scores[at] * item_scale
             # A tile wholly inside every row's visible range keeps every score; its upper bound
             # is set by the tile's first row and its lower by its last.
             cut = key0 + block_n > kv_len
@@ -258,14 +267,16 @@ def _gqa_paged_fp8_decode_kernel(
             """Fold the rows-by-keys score tile at *key0* into the running maxima and sums,
             leaving its probabilities in acc_s and the factor that rescales earlier tiles in
             rescale."""
-            cap_and_mask(acc_s, False, key0, kv_len, first_q, last_q, row0, align, qk_descale)
+            cap_and_mask(
+                acc_s, False, key0, kv_len, first_q, last_q, row0, align, qk_descale, item_scale
+            )
             T.copy(m, m_prev)
             # Two levels, so each thread's maximum is a tree, not one chain of block_n.
             T.reduce_max(T.reshape(acc_s, [block_m, block_n // 8, 8]), red, dim=1, clear=True)
             T.reduce_max(red, m, dim=1, clear=False)
-            advance_max(m, m_prev, rescale, item_scale)
+            advance_max(m, m_prev, rescale)
             for i, j in T.Parallel(block_m, block_n):
-                acc_s[i, j] = T.exp2((acc_s[i, j] - m[i]) * item_scale)
+                acc_s[i, j] = T.exp2(acc_s[i, j] - m[i])
             # Each thread sums the columns it holds; the rows reduce once, after the last tile.
             for i, j in T.Parallel(block_m, 16):
                 lp[i, j] *= rescale[i]
@@ -296,8 +307,8 @@ def _gqa_paged_fp8_decode_kernel(
                 )
 
         @T.macro
-        def store(acc, keys_on_m: bool, m, logsum, row_sum, glse, partial, Output, item_scale,
-                  v_descale, q_start, row0, rows, bx, by, bz):  # fmt: skip
+        def store(acc, keys_on_m: bool, m, logsum, row_sum, glse, partial, Output, v_descale,
+                  q_start, row0, rows, bx, by, bz):  # fmt: skip
             """Normalize the tile's output, held rows-by-dims or (keys on M) dims-by-rows, and
             store it: the chunk's partial and log-sum-exp when the range is split, else the
             output rows."""
@@ -312,7 +323,7 @@ def _gqa_paged_fp8_decode_kernel(
                     glse[bx, by, bz, i] = T.if_then_else(
                         logsum[i] == 0,
                         -T.infinity(accum),
-                        T.log2(T.if_then_else(logsum[i] == 0, 1, logsum[i])) + m[i] * item_scale,
+                        T.log2(T.if_then_else(logsum[i] == 0, 1, logsum[i])) + m[i],
                     )
             else:
                 for i, d in T.Parallel(block_m, dim):
@@ -500,8 +511,8 @@ def _gqa_paged_fp8_decode_kernel(
                                 T.wait_wgmma(0)
                             T.reduce_sum(lp, logsum, dim=1)
                             store(
-                                acc_o, False, m, logsum, row_sum, glse, partial, Output, item_scale,
-                                v_descale, q_start, row0, rows, bx, by, bz,
+                                acc_o, False, m, logsum, row_sum, glse, partial, Output, v_descale,
+                                q_start, row0, rows, bx, by, bz,
                             )  # fmt: skip
                         else:
                             k_f = T.alloc_fragment([block_n, dim], wide)
@@ -536,13 +547,13 @@ def _gqa_paged_fp8_decode_kernel(
                                 key0 = (first + t) * block_n
                                 cap_and_mask(
                                     st, True, key0, kv_len, first_q, last_q, row0, align,
-                                    qk_descale,
+                                    qk_descale, item_scale,
                                 )  # fmt: skip
                                 T.copy(m, m_prev)
                                 T.reduce_max(st, m, dim=0, clear=False)
-                                advance_max(m, m_prev, rescale, item_scale)
+                                advance_max(m, m_prev, rescale)
                                 for j, i in T.Parallel(block_n, block_m):
-                                    st[j, i] = T.exp2((st[j, i] - m[i]) * item_scale)
+                                    st[j, i] = T.exp2(st[j, i] - m[i])
                                     lt[j, i] = lt[j, i] * rescale[i] + st[j, i]
                                 for d, i in T.Parallel(dim, block_m):
                                     acc_ot[d, i] *= rescale[i]
@@ -557,8 +568,8 @@ def _gqa_paged_fp8_decode_kernel(
                             T.wait_wgmma(0)
                             T.reduce_sum(lt, logsum, dim=0)
                             store(
-                                acc_ot, True, m, logsum, row_sum, glse, partial, Output, item_scale,
-                                v_descale, q_start, row0, rows, bx, by, bz,
+                                acc_ot, True, m, logsum, row_sum, glse, partial, Output, v_descale,
+                                q_start, row0, rows, bx, by, bz,
                             )  # fmt: skip
 
         @T.macro

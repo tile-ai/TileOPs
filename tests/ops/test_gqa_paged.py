@@ -1203,6 +1203,19 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             marks=pytest.mark.full,
             id="f16-rows-on-m-large-scale-hidden-tile",
         ),
+        # A KV head stored as zeros quantizes by amax / 448 to a zero scale: every score of
+        # request 0's first head is zero, so its rows average the values they see.
+        pytest.param(
+            [1, 1],
+            [1000, 1000],
+            64,
+            torch.float16,
+            {"per_request_scales": True, "zero_key_scale": True},
+            8,
+            ANY,
+            marks=pytest.mark.full,
+            id="f16-keys-on-m-zero-key-scale",
+        ),
         # A table of 64 key tiles takes several chunks: a 70-key request beside a 4096-key one
         # leaves most of its chunks without a key tile, and they must weigh nothing in the
         # combine.
@@ -1258,14 +1271,20 @@ def test_gqa_paged_fp8_decode(
     from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
+    workload_semantics = {k: v for k, v in semantics.items() if k != "zero_key_scale"}
     workload = _paged(
-        q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype, **semantics
-    )
+        q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype,
+        **workload_semantics,
+    )  # fmt: skip
     op_semantics = {
-        k: v for k, v in semantics.items() if k not in ("per_request_scales", "heads", "dim")
+        k: v
+        for k, v in workload_semantics.items()
+        if k not in ("per_request_scales", "heads", "dim")
     }
     op = _fp8_op(workload, **op_semantics)
     inputs = _causal_canary(workload, _poisoned_inputs(workload))
+    if semantics.get("zero_key_scale"):
+        inputs[7][0, 0] = 0.0
     _check(op, workload, inputs)
     kernel = _kernel(op, inputs)
     assert isinstance(kernel, GQAPagedFP8DecodeKernel)
