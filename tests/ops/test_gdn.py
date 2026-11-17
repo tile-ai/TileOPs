@@ -700,7 +700,15 @@ def test_gdn_decode_updates_a_strided_pool_in_place() -> None:
     q, k, v, g, beta, pool, *rest = test.gen_inputs()
     strided = torch.empty((2 * pool.shape[0], *pool.shape[1:]), device=pool.device)[::2]
     strided.copy_(pool)
-    test.check(GDNFwdOp(), q, k, v, g, beta, strided, *rest)
+    op = GDNFwdOp()
+
+    def run(*args, **keywords):
+        # The compared state is the caller's view, so a missed copy-back fails the check.
+        o, final_state = op(*args, **keywords)
+        assert final_state is args[5]
+        return o, final_state
+
+    test.check(op, q, k, v, g, beta, strided, *rest, runs=run)
 
 
 @pytest.mark.in_tree_kernels
