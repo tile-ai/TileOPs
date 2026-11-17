@@ -1333,6 +1333,30 @@ def test_gqa_paged_fp8_decode_refuses_a_tile_prefix_past_shared_memory(
     assert (refusal is None) == served, refusal
 
 
+@pytest.mark.parametrize(
+    ("page_size", "served"),
+    [
+        pytest.param(1, False, marks=pytest.mark.smoke, id="one-row-refused"),
+        pytest.param(2, True, marks=pytest.mark.full, id="two-row-served"),
+    ],
+)
+def test_gqa_paged_fp8_decode_refuses_pages_under_128_bytes(page_size: int, served: bool) -> None:
+    """Each page's TMA copy lands at a multiple of its bytes in shared memory, which TMA needs
+    128-byte aligned, so at head dimension 64 the FP8 decode kernel serves two-row pages and
+    leaves one-row pages to another kernel."""
+    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
+
+    meta = torch.device("meta")
+    q = torch.empty(2, 8, 64, dtype=torch.float16, device=meta)
+    k_pages = torch.empty(2, page_size, 1, 64, dtype=FP8, device=meta)
+    table = torch.empty(2, 1, dtype=torch.int32, device=meta)
+    k_scale = torch.empty(1, device=meta)
+    call = GQAPagedFwdOp(is_causal=True)._paged_call(q, k_pages, table, k_scale)
+    call = dataclasses.replace(call, smem_budget=_H200_BLOCK_SHARED)
+    refusal = GQAPagedFP8DecodeKernel.refusal(call)
+    assert (refusal is None) == served, refusal
+
+
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
