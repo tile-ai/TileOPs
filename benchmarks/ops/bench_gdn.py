@@ -1,4 +1,7 @@
-"""Benchmark Gated DeltaNet (GDN) inference, one case per manifest call, against FLA and FlashInfer."""
+"""Benchmark Gated DeltaNet (GDN) inference, one case per manifest call, against FLA, FlashInfer
+and, on a state pool, vLLM."""
+
+import dataclasses
 
 import pytest
 import torch
@@ -7,8 +10,11 @@ import torch.nn.functional as F
 from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
+    VLLM_TAG,
     baseline_module,
     flashinfer_op,
+    private_inputs,
+    vllm_op,
 )
 from tileops.linear_attention import GDNFwdOp
 
@@ -144,7 +150,86 @@ def test_gdn_fwd_bench(case) -> None:
                     "the workload's log decay and step size rounds both"
                 ),
             )
-    if inputs[10] is not None:
-        # The baselines take one state a sequence, not slots of a pool.
+    slots, accepted = inputs[10:12]
+    if accepted is not None:
+        # No baseline here keeps the state after every token of a sequence in a slot of its own.
         implementations = {}
+    elif slots is not None:
+        # Each baseline takes one state a sequence: the call gathers its sequences' states from
+        # a private pool and scatters their final states back, as vLLM's GDN prefill does
+        # around its chunked kernel; both copies are timed.
+        def gathered(implementation):
+            if not isinstance(implementation, bench.Implementation):
+                implementation = bench.Implementation(run=implementation)
+            run = implementation.run
+
+            def call(q, k, v, g, beta, pool, cu, cu_cpu, a_log, dt_bias, slots, _accepted):
+                o, final = run(q, k, v, g, beta, pool[slots], cu, cu_cpu, a_log, dt_bias)
+                pool[slots] = final
+                return o, pool
+
+            return dataclasses.replace(
+                private_inputs(call, inputs, 5),
+                noncomparable_reason=implementation.noncomparable_reason,
+            )
+
+        implementations = {tag: gathered(impl) for tag, impl in implementations.items()}
+        # vLLM keeps the state value-major, the layout of its pool; the pool rows hand the gate
+        # and the step size over transformed.
+        transformed = not (params["use_gate_in_kernel"] or params["use_beta_sigmoid_in_kernel"])
+        if params["state_v_first"] and transformed:
+            # vLLM's packed decode kernel, which its Qwen layers run for a decode step, reads and
+            # writes the slots; its chunked prefill runs between a gather and a scatter. The packed
+            # kernel reads Q, K and V as one row a token and the gate and step size as raw logits,
+            # formed outside the timed call in float32 so neither rounds: the log decay g is
+            # -softplus(a) for a = log(expm1(-g)) with A_log = 0 and dt_bias = 0, the step size
+            # sigmoid(b) for b = logit(beta). vLLM skips cache line 0, its null block, so pool
+            # slot i is line i + 1.
+            q, k, v, g, beta, pool, cu = inputs[:7]
+            lines = torch.empty(
+                (pool.shape[0] + 1, *pool.shape[1:]), dtype=pool.dtype, device=pool.device
+            )
+            line_of = slots + 1
+            scale = q.shape[-1] ** -0.5 if params["scale"] is None else params["scale"]
+            l2norm = params["use_qk_l2norm_in_kernel"]
+
+            def reset() -> None:
+                lines[1:].copy_(pool)
+
+            if q.shape[1] == 1:
+                packed = vllm_op(
+                    "fused_recurrent_gated_delta_rule_packed_decode",
+                    module="third_party.flash_linear_attention.ops.fused_recurrent",
+                )
+                batch, value_heads = v.shape[0], v.shape[2]
+                mixed = torch.cat([x.reshape(batch, -1) for x in (q, k, v)], dim=1)
+                raw_gate = torch.log(torch.expm1(-g.float())).reshape(batch, value_heads)
+                rates = biases = torch.zeros(value_heads, device=q.device, dtype=torch.float32)
+                step = torch.logit(beta.float()).reshape(batch, value_heads).contiguous()
+                out = torch.empty_like(v)
+
+                def run():
+                    packed(
+                        mixed_qkv=mixed, a=raw_gate.contiguous(), b=step, A_log=rates,
+                        dt_bias=biases, scale=scale, initial_state=lines, out=out,
+                        ssm_state_indices=line_of, use_qk_l2norm_in_kernel=l2norm,
+                    )  # fmt: skip
+                    return out, lines[1:]
+
+                vllm = bench.Implementation(run=run, args=(), reset=reset)
+            else:
+                chunk = vllm_op(
+                    "chunk_gated_delta_rule", module="third_party.flash_linear_attention.ops.chunk"
+                )
+
+                def run():
+                    o, final = chunk(
+                        q, k, v, g, beta, scale=scale, initial_state=lines[line_of],
+                        output_final_state=True, cu_seqlens=cu, use_qk_l2norm_in_kernel=l2norm,
+                    )  # fmt: skip
+                    lines[line_of] = final
+                    return o, lines[1:]
+
+                vllm = bench.Implementation(run=run, args=(), reset=reset)
+            implementations[VLLM_TAG] = vllm
     bench.Runner(op, case).compare(implementations)

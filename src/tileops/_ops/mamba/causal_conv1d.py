@@ -128,6 +128,7 @@ class CausalConv1dFwdOp(Op):
             cu_seqlens.contiguous(),
             None if bias is None else bias.contiguous(),
             None if has_initial_state is None else has_initial_state.contiguous(),
+            None if cache_indices is None else cache_indices.contiguous(),
         )
 
 
@@ -239,4 +240,5 @@ class CausalConv1dUpdateFwdOp(Op):
             weight.contiguous(),
             conv_state,
             None if bias is None else bias.contiguous(),
+            None if conv_state_indices is None else conv_state_indices.contiguous(),
         )

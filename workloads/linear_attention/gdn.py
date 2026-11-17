@@ -205,16 +205,17 @@ class GDNFwdCall(CallWorkload):
         state_indices=None,
         num_accepted_tokens=None,
     ):
-        if state_indices is not None or num_accepted_tokens is not None:
-            raise ValueError("the reference reads and writes the states in batch order")
+        if num_accepted_tokens is not None:
+            raise ValueError("the reference keeps one slot a sequence, not one a token")
         p = self.call.indices
-        return gdn_ref(
+        slots = None if state_indices is None else state_indices.long()
+        o, final_state = gdn_ref(
             q,
             k,
             v,
             g,
             beta,
-            initial_state,
+            initial_state if slots is None else initial_state[slots],
             cu_seqlens,
             cu_seqlens_cpu,
             a_log,
@@ -226,6 +227,13 @@ class GDNFwdCall(CallWorkload):
             l2norm=p["use_qk_l2norm_in_kernel"],
             state_v_first=p["state_v_first"],
         )
+        if slots is None:
+            return o, final_state
+        # The pool is updated in place: each sequence's slot takes its final state, and every
+        # other slot keeps the state it held.
+        pool = initial_state.clone()
+        pool[slots] = final_state
+        return o, pool
 
     def verification(self, *inputs):
         p = self.call.indices

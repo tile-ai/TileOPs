@@ -473,12 +473,14 @@ class GDNFwdInterface(KernelInterface):
         cu_seqlens_cpu: torch.Tensor | None = None,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
+        state_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the recurrence from *initial_state* over the call's sequence.
 
-        Every tensor is contiguous on ``call.device`` but ``cu_seqlens_cpu``, and nothing is
-        written in place. Unless ``call.gate_in_kernel``, *g* already carries the log-space
-        decay; unless ``call.beta_sigmoid``, *beta* already carries the update strength.
+        Every tensor is contiguous on ``call.device`` but ``cu_seqlens_cpu``. Nothing is
+        written in place but a state pool. Unless ``call.gate_in_kernel``, *g* already
+        carries the log-space decay; unless ``call.beta_sigmoid``, *beta* already carries the
+        update strength.
 
         Args:
             q: ``(batch, seq_len, heads, dim_k)`` in ``call.dtype``.
@@ -494,10 +496,15 @@ class GDNFwdInterface(KernelInterface):
             cu_seqlens_cpu: The same offsets on the CPU, or ``None``.
             A_log: ``float32`` ``(value_heads,)``, passed exactly when ``call.gate_in_kernel``.
             dt_bias: ``float32`` ``(value_heads,)``, passed exactly when ``call.gate_in_kernel``.
+            state_indices: ``int32`` ``(n,)``, passed exactly when ``call.pooled``: sequence
+                ``i`` starts from ``initial_state[state_indices[i]]`` and its final state is
+                written back there. *initial_state* is then a pool of states, one a slot, the
+                slots distinct across the call.
 
         Returns:
-            New ``(o, final_state)``: ``o`` shaped like *v* in ``call.dtype``, and the
-            ``float32`` state after the last step, laid out like *initial_state*.
+            ``(o, final_state)``: a new ``o`` shaped like *v* in ``call.dtype``, and the
+            ``float32`` state after the last step, laid out like *initial_state*; under
+            ``call.pooled``, *initial_state* itself, updated in place.
         """
 
 

@@ -28,11 +28,12 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
     def refusal(cls, call: GDNCall) -> str | None:
         """Why this kernel does not serve *call*, or ``None`` when it does.
 
-        One token continuing a 64- or 128-wide square state, in either layout, under
-        any combination of the recurrence flags the operator fixes.
+        One token continuing a 64- or 128-wide square state, in either layout, in batch order
+        or in the slots of a state pool, under any combination of the recurrence flags the
+        operator fixes.
         """
-        if call.pooled or call.rollback:
-            return "reads and writes the states in batch order; a state pool is not served"
+        if call.rollback:
+            return "keeps one state a sequence; num_accepted_tokens is not served"
         heads = head_count_refusal(call.heads, call.value_heads)
         if heads is not None:
             return heads
@@ -66,6 +67,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             call.gate_in_kernel,
             call.beta_sigmoid,
             call.allow_neg_eigval,
+            call.pooled,
             index,
         )
         return identity, lambda: cls(
@@ -81,6 +83,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             gate_in_kernel=call.gate_in_kernel,
             beta_sigmoid=call.beta_sigmoid,
             allow_neg_eigval=call.allow_neg_eigval,
+            pooled=call.pooled,
             device_index=index,
         )
 
@@ -98,6 +101,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         gate_in_kernel: bool,
         beta_sigmoid: bool,
         allow_neg_eigval: bool,
+        pooled: bool = False,
         *,
         device_index: int | None = None,
     ) -> None:
@@ -114,6 +118,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         self.l2norm = l2norm
         self.beta_sigmoid = beta_sigmoid
         self.allow_neg_eigval = allow_neg_eigval
+        self.pooled = pooled
         self.init_config()
         self.program(self._compile)
         device = (
@@ -140,6 +145,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             state_v_first=self.state_v_first,
             threads=cfg["threads"],
             lane_group=cfg["lane_group"],
+            pooled=self.pooled,
         )()
 
     @property
@@ -161,6 +167,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         cu_seqlens_cpu: torch.Tensor | None = None,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
+        state_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         del cu_seqlens, cu_seqlens_cpu
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
@@ -168,4 +175,8 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             raise ValueError("the build reads initial_state, but the call passed none")
         state = initial_state if self.has_initial_state else self._unread
         gate_params = (A_log, dt_bias) if self.gate_in_kernel else (self._unread, self._unread)
-        return self.program(self._compile)(q, k, v, g, beta, *gate_params, state)
+        program = self.program(self._compile)
+        if self.pooled:
+            # The pool is advanced in place and returned as the final state.
+            return program(q, k, v, g, beta, *gate_params, state, state_indices), state
+        return program(q, k, v, g, beta, *gate_params, state)

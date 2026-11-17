@@ -13,6 +13,7 @@ from tileops._kernels.linear_attention.gdn.prefill_common import (
     L2NORM_EPS,
     step_size,
 )
+from tileops._kernels.state_pool import state_row
 
 
 @target_cache(maxsize=32)
@@ -47,10 +48,12 @@ def _build_fused_chunk_gdr_fwd_kernel(
     allow_neg_eigval=False,
     block_DV=128,
     state_v_first=False,
+    pooled=False,
 ):
     batch_size = T.dynamic("batch_size")
     num_tokens = T.dynamic("num_tokens")
     raw_batch_size = T.dynamic("raw_batch_size")
+    pool_size = T.dynamic("pool_size")
     block_S = chunk_size
     # A build that does not normalize never reads this tensor, and the host hands it one
     # token so the allocation carries no cost.
@@ -83,23 +86,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
     state_axes = (DV, DK) if state_v_first else (DK, DV)
     h0_shape = (batch_size, H, *state_axes)
     ht_shape = (raw_batch_size, H, *state_axes)
+    pool_shape = (pool_size, H, *state_axes)
 
-    @T.prim_func
-    def fused_chunk_gdr_fwd_kernel(
-        q: T.Tensor(q_shape, dtype=qkva_dtype),
-        k: T.Tensor(k_shape, dtype=qkva_dtype),
-        v: T.Tensor(v_shape, dtype=qkva_dtype),
-        a: T.Tensor(a_shape, dtype=qkva_dtype),
-        g: T.Tensor(g_shape, dtype=g_dtype),
-        b: T.Tensor(b_shape, dtype=b_dtype),
-        k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
-        h0: T.Tensor(h0_shape, dtype=h0_dtype),
-        cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
-        cp_seq_map: T.Tensor([batch_size], dtype=seqlen_dtype),
-        raw_cu_seqlens: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
-        o: T.Tensor(o_shape, dtype=o_dtype),
-        ht: T.Tensor(ht_shape, dtype=ht_dtype),
-    ):
+    @T.macro
+    def walk(q, k, v, a, g, b, k_rnorm, h0, slots, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, ht):
         with T.Kernel(T.ceildiv(DV, block_DV) * batch_size * H, threads=512) as (bbhv,):
             bbh, bv = bbhv // T.ceildiv(DV, block_DV), bbhv % T.ceildiv(DV, block_DV)
             bb, bh = bbh // H, bbh % H
@@ -182,14 +172,26 @@ def _build_fused_chunk_gdr_fwd_kernel(
                 T.set_max_nreg(CONSUMER_S_NREG, 1)
 
                 if use_initial_state:
+                    # In a pool, a state's row is its sequence's slot. A partitioned walk
+                    # starts from the corrected states, one a partition, and ends in the slot.
                     if state_v_first:
                         T.copy(
-                            h0[bb, bh, bv * block_DV : (bv + 1) * block_DV, 0:DK],
+                            h0[
+                                state_row(None if is_cp else slots, bb),
+                                bh,
+                                bv * block_DV : (bv + 1) * block_DV,
+                                0:DK,
+                            ],
                             h_fragment,
                         )
                     else:
                         T.copy(
-                            h0[bb, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
+                            h0[
+                                state_row(None if is_cp else slots, bb),
+                                bh,
+                                0:DK,
+                                bv * block_DV : (bv + 1) * block_DV,
+                            ],
                             h_fragment,
                         )
                 else:
@@ -235,12 +237,22 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     if state_v_first:
                         T.copy(
                             h_fragment,
-                            ht[raw_batch_idx, bh, bv * block_DV : (bv + 1) * block_DV, 0:DK],
+                            ht[
+                                state_row(slots, raw_batch_idx),
+                                bh,
+                                bv * block_DV : (bv + 1) * block_DV,
+                                0:DK,
+                            ],
                         )
                     else:
                         T.copy(
                             h_fragment,
-                            ht[raw_batch_idx, bh, 0:DK, bv * block_DV : (bv + 1) * block_DV],
+                            ht[
+                                state_row(slots, raw_batch_idx),
+                                bh,
+                                0:DK,
+                                bv * block_DV : (bv + 1) * block_DV,
+                            ],
                         )
 
             elif tx < 256:
@@ -555,6 +567,73 @@ def _build_fused_chunk_gdr_fwd_kernel(
                                         bv * block_DV + j_v,
                                     ] = o_shared[j_s, j_v]
 
+    if not pooled:
+
+        @T.prim_func
+        def fused_chunk_gdr_fwd_kernel(
+            q: T.Tensor(q_shape, dtype=qkva_dtype),
+            k: T.Tensor(k_shape, dtype=qkva_dtype),
+            v: T.Tensor(v_shape, dtype=qkva_dtype),
+            a: T.Tensor(a_shape, dtype=qkva_dtype),
+            g: T.Tensor(g_shape, dtype=g_dtype),
+            b: T.Tensor(b_shape, dtype=b_dtype),
+            k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
+            h0: T.Tensor(h0_shape, dtype=h0_dtype),
+            cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
+            cp_seq_map: T.Tensor([batch_size], dtype=seqlen_dtype),
+            raw_cu_seqlens: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
+            o: T.Tensor(o_shape, dtype=o_dtype),
+            ht: T.Tensor(ht_shape, dtype=ht_dtype),
+        ):
+            walk(q, k, v, a, g, b, k_rnorm, h0, None, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, ht)
+
+    elif is_cp:
+
+        @T.prim_func
+        def fused_chunk_gdr_fwd_kernel(
+            q: T.Tensor(q_shape, dtype=qkva_dtype),
+            k: T.Tensor(k_shape, dtype=qkva_dtype),
+            v: T.Tensor(v_shape, dtype=qkva_dtype),
+            a: T.Tensor(a_shape, dtype=qkva_dtype),
+            g: T.Tensor(g_shape, dtype=g_dtype),
+            b: T.Tensor(b_shape, dtype=b_dtype),
+            k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
+            h0: T.Tensor(h0_shape, dtype=h0_dtype),
+            slots: T.Tensor([raw_batch_size], dtype="int32"),
+            cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
+            cp_seq_map: T.Tensor([batch_size], dtype=seqlen_dtype),
+            raw_cu_seqlens: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
+            o: T.Tensor(o_shape, dtype=o_dtype),
+            ht: T.Tensor(pool_shape, dtype=ht_dtype),
+        ):
+            walk(
+                q, k, v, a, g, b, k_rnorm, h0, slots, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, ht
+            )
+
+    else:
+        # A whole walk reads its starting state from the pool and writes its final state back
+        # to the same slot, through the one buffer.
+
+        @T.prim_func
+        def fused_chunk_gdr_fwd_kernel(
+            q: T.Tensor(q_shape, dtype=qkva_dtype),
+            k: T.Tensor(k_shape, dtype=qkva_dtype),
+            v: T.Tensor(v_shape, dtype=qkva_dtype),
+            a: T.Tensor(a_shape, dtype=qkva_dtype),
+            g: T.Tensor(g_shape, dtype=g_dtype),
+            b: T.Tensor(b_shape, dtype=b_dtype),
+            k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
+            h0: T.Tensor(pool_shape, dtype=h0_dtype),
+            slots: T.Tensor([batch_size], dtype="int32"),
+            cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
+            cp_seq_map: T.Tensor([batch_size], dtype=seqlen_dtype),
+            raw_cu_seqlens: T.Tensor([raw_batch_size + 1], dtype=seqlen_dtype),
+            o: T.Tensor(o_shape, dtype=o_dtype),
+        ):
+            walk(
+                q, k, v, a, g, b, k_rnorm, h0, slots, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, h0
+            )
+
     return fused_chunk_gdr_fwd_kernel
 
 
@@ -601,13 +680,15 @@ def fused_gdr_fwd_program(
     l2norm=False,
     beta_sigmoid=False,
     allow_neg_eigval=False,
+    pooled=False,
     sm_count,
 ):
     """The program :func:`fused_gdr_fwd` launches, over 64-token chunks.
 
     The value tile is :func:`forward_value_tile` of ``rows * heads``. *h0_dtype* is the
     initial state's dtype, ``None`` without one; *seqlen_dtype* is the offsets' dtype, int32
-    for an equal-length call that passes none.
+    for an equal-length call that passes none. Under *pooled* each sequence's final state is
+    written to its slot of a state pool, and a whole walk also starts from that slot.
     """
     assert dim in (64, 128)
     block_DV = forward_value_tile(rows * heads, dim, state_v_first, sm_count)
@@ -636,6 +717,7 @@ def fused_gdr_fwd_program(
         allow_neg_eigval=allow_neg_eigval,
         block_DV=block_DV,
         state_v_first=state_v_first,
+        pooled=pooled,
     )
 
 
@@ -655,8 +737,15 @@ def fused_gdr_fwd(
     raw_cu_seqlens: torch.LongTensor | None = None,
     state_v_first: bool = False,
     k_rnorm: torch.Tensor | None = None,
+    state_indices: torch.Tensor | None = None,
+    pool: torch.Tensor | None = None,
 ):
-    """Launch *program*, which :func:`fused_gdr_fwd_program` built for these tensors."""
+    """Launch *program*, which :func:`fused_gdr_fwd_program` built for these tensors.
+
+    With *state_indices*, each sequence's final state goes to its slot of *pool*, which is
+    returned as the final state; a whole walk (no *cp_seq_map*) also starts from that slot,
+    and a partitioned one from *initial_state*.
+    """
     batch_size, num_tokens, Hg, K = k.shape
     _, _, H, V = v.shape
     assert K == V and K in (64, 128)
@@ -669,27 +758,31 @@ def fused_gdr_fwd(
         real_batch_size = len(cu_seqlens) - 1
         seqlen_dtype = cu_seqlens.dtype
 
+    partitioned = cp_seq_map is not None
     if cp_seq_map is None:
         cp_seq_map = torch.empty((real_batch_size,), dtype=seqlen_dtype, device=k.device)
 
-    state_axes = (V, K) if state_v_first else (K, V)
-    if initial_state is None:
-        initial_state = torch.empty(
-            (real_batch_size, H, *state_axes), dtype=torch.float32, device=k.device
-        )
     if raw_cu_seqlens is None:
         raw_cu_seqlens = torch.empty((real_batch_size + 1,), dtype=seqlen_dtype, device=k.device)
-        final_state = torch.empty(
-            (real_batch_size, H, *state_axes), dtype=torch.float32, device=k.device
-        )
+    o = torch.empty_like(v)
+    if k_rnorm is None:
+        k_rnorm = torch.empty((batch_size, 1, Hg), dtype=torch.float32, device=k.device)
+    if state_indices is not None:
+        final_state = pool
+        if partitioned:
+            states, written = (initial_state, state_indices), (pool,)
+        else:
+            states, written = (pool, state_indices), ()
     else:
+        state_axes = (V, K) if state_v_first else (K, V)
+        if initial_state is None:
+            initial_state = torch.empty(
+                (real_batch_size, H, *state_axes), dtype=torch.float32, device=k.device
+            )
         final_state = torch.empty(
             (raw_cu_seqlens.shape[0] - 1, H, *state_axes), dtype=torch.float32, device=k.device
         )
-    o = torch.empty_like(v)
-
-    if k_rnorm is None:
-        k_rnorm = torch.empty((batch_size, 1, Hg), dtype=torch.float32, device=k.device)
+        states, written = (initial_state,), (final_state,)
     program(
         q,
         k,
@@ -698,12 +791,12 @@ def fused_gdr_fwd(
         g,
         b,
         k_rnorm,
-        initial_state,
+        *states,
         cu_seqlens,
         cp_seq_map,
         raw_cu_seqlens,
         o,
-        final_state,
+        *written,
     )
 
     if not output_final_state:

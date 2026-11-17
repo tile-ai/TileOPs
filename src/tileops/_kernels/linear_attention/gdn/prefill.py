@@ -57,11 +57,11 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
 
         Prefill in chunks of 64 tokens over a 64- or 128-wide square state, equal-length or
         packed, with a row that is not a whole chunk, with grouped value heads, with the
-        state key-major or value-major, and with the Q/K normalization, the gate and the
-        beta transform taken in kernel.
+        state key-major or value-major, in batch order or in the slots of a state pool, and
+        with the Q/K normalization, the gate and the beta transform taken in kernel.
         """
-        if call.pooled or call.rollback:
-            return "reads and writes the states in batch order; a state pool is not served"
+        if call.rollback:
+            return "keeps one state a sequence; num_accepted_tokens is not served"
         heads = head_count_refusal(call.heads, call.value_heads)
         if heads is not None:
             return heads
@@ -89,6 +89,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             gate_in_kernel=call.gate_in_kernel,
             beta_sigmoid=call.beta_sigmoid,
             allow_neg_eigval=call.allow_neg_eigval,
+            pooled=call.pooled,
             device_index=index,
         )
         return tuple(sorted(arguments.items(), key=lambda item: item[0])), lambda: cls(**arguments)
@@ -109,6 +110,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         gate_in_kernel: bool = False,
         beta_sigmoid: bool = False,
         allow_neg_eigval: bool = False,
+        pooled: bool = False,
         *,
         device_index: int | None = None,
     ) -> None:
@@ -133,6 +135,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         self.gate_in_kernel = gate_in_kernel
         self.beta_sigmoid = beta_sigmoid
         self.allow_neg_eigval = allow_neg_eigval
+        # A pool is read and written through each sequence's slot, which every pass that
+        # touches a state is built for.
+        self.pooled = pooled
 
     @staticmethod
     @target_cache(maxsize=32)
@@ -337,6 +342,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         k_rnorm: torch.Tensor | None,
         initial_state: torch.Tensor | None,
         split: tuple[torch.Tensor, ...],
+        state_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """The state each partition starts from, and the offsets the recurrence walks."""
         _, _, warmup_program, states_program, correct_program, _ = programs
@@ -374,6 +380,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             fallback_mask=fallback_mask,
             seq_map_r2c=seq_map_r2c_t,
             state_v_first=self.state_v_first,
+            state_indices=state_indices,
         )
         return cp_h0, cp_cu_seqlens_t, seq_map_c2r_t, raw_cu_seqlens
 
@@ -426,6 +433,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
                 state_v_first=self.state_v_first,
                 beta_sigmoid=self.beta_sigmoid,
                 allow_neg_eigval=self.allow_neg_eigval,
+                pooled=self.pooled,
             )
             return CompiledProgram(cumsum), CompiledProgram(prefill), None, None, None, None
         if solve == "warpgroup":
@@ -489,6 +497,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
                     torch.bool,
                     state_dtype is not None,
                     self.state_v_first,
+                    pooled=self.pooled,
                 )
             )
         forward = fused_gdr_fwd_program(
@@ -508,6 +517,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             l2norm=self.l2norm,
             beta_sigmoid=self.beta_sigmoid,
             allow_neg_eigval=self.allow_neg_eigval,
+            pooled=self.pooled,
             sm_count=self.build_target.sm_count,
         )
         return (
@@ -531,6 +541,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         cu_seqlens_cpu: torch.Tensor | None = None,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
+        state_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         chunk_size = 64
@@ -600,6 +611,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
                 beta,
                 cu_seqlens,
                 initial_state=initial_state,
+                state_indices=state_indices,
             )
             return o.reshape(batch, seq_len, value_heads, dim_v), final_state
         if solve == "warpgroup":
@@ -618,7 +630,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             )
         else:
             initial, offsets, cp_seq_map, raw_offsets = self._partitioned_initial_state(
-                programs, k, v, inverse, g, beta, k_rnorm, initial_state, split
+                programs, k, v, inverse, g, beta, k_rnorm, initial_state, split, state_indices
             )
         o, final_state = fused_gdr_fwd(
             programs[-1],
@@ -634,5 +646,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             raw_cu_seqlens=raw_offsets,
             state_v_first=self.state_v_first,
             k_rnorm=k_rnorm,
+            state_indices=state_indices,
+            pool=initial_state if self.pooled else None,
         )
         return o.reshape(batch, seq_len, value_heads, dim_v), final_state
