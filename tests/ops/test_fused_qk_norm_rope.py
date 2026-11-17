@@ -220,58 +220,43 @@ def test_fused_qk_norm_rope_mrope(
     test.check(op, *test.gen_inputs(), runs=lambda *args: fused_qk_norm_rope_result(op, *args))
 
 
-@pytest.mark.smoke
-def test_fused_qk_norm_rope_zero_centered_offset() -> None:
+@pytest.mark.parametrize(
+    "positions, sections",
+    [
+        pytest.param([[0] * 6] * 3, [11, 11, 10], marks=_SMOKE, id="mrope"),
+        pytest.param([0] * 6, None, marks=_FULL, id="one-position"),
+    ],
+)
+def test_fused_qk_norm_rope_zero_centered_offset(positions, sections) -> None:
     """The zero-centered scale 1 + weight is formed in float32: rounded to bfloat16 first, it
     moves outputs these inputs hold exactly."""
+    mrope = {"mrope_section": sections, "mrope_interleaved": sections is not None}
     test = FusedQKNormRoPEZeroCenteredOffsetTest(
-        [[0] * 6] * 3,
-        4,
-        2,
-        256,
-        64,
-        1,
-        torch.bfloat16,
-        torch.bfloat16,
-        zero_centered=True,
-        mrope_section=[11, 11, 10],
-        mrope_interleaved=True,
+        positions, 4, 2, 256, 64, 1, torch.bfloat16, torch.bfloat16, zero_centered=True, **mrope
     )
-    op = FusedQKNormRoPEFwdOp(
-        4, 2, zero_centered=True, mrope_section=[11, 11, 10], mrope_interleaved=True
-    )
+    op = FusedQKNormRoPEFwdOp(4, 2, zero_centered=True, **mrope)
     test.check(op, *test.gen_inputs(), runs=lambda *args: fused_qk_norm_rope_result(op, *args))
 
 
-@pytest.mark.parametrize(
-    "positions, arguments, reason",
-    [
-        pytest.param(
-            stacked_positions((3,), [8], (2, 2)),
-            {"mrope_section": [11, 11, 10]},
-            "mrope_interleaved",
-            marks=_SMOKE,
-            id="consecutive-sections",
-        ),
-        pytest.param(
-            _packed(8),
-            {"zero_centered": True},
-            "zero_centered",
-            marks=_FULL,
-            id="zero-centered-text",
-        ),
-    ],
-)
+@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-def test_fused_qk_norm_rope_refuses_unserved_modes(positions, arguments, reason) -> None:
-    """No in-tree kernel assigns frequencies to the three positions in consecutive sections, or
-    scales by 1 + weight with one position a token: the op refuses such a call, naming the
-    reason, before it builds a kernel."""
+def test_fused_qk_norm_rope_refuses_consecutive_sections() -> None:
+    """No in-tree kernel assigns frequencies to the three positions in consecutive sections:
+    the op refuses such a call, naming the reason, before it builds a kernel."""
+    arguments = {"mrope_section": [11, 11, 10]}
     test = FusedQKNormRoPETest(
-        positions, 2, 1, 64, 64, 8, torch.bfloat16, torch.bfloat16, **arguments
+        stacked_positions((3,), [8], (2, 2)),
+        2,
+        1,
+        64,
+        64,
+        8,
+        torch.bfloat16,
+        torch.bfloat16,
+        **arguments,
     )
     op = FusedQKNormRoPEFwdOp(2, 1, **arguments)
-    with pytest.raises(OpNotAvailableError, match=reason):
+    with pytest.raises(OpNotAvailableError, match="mrope_interleaved"):
         op(*test.gen_inputs())
     assert not op._entries_built("fused_qk_norm_rope")
 

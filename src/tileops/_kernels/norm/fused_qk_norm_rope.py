@@ -254,11 +254,6 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
 
     @classmethod
     def refusal(cls, call: FusedQKNormRoPECall) -> str | None:
-        if call.zero_centered and call.mrope_section is None:
-            return (
-                "zero_centered is served with interleaved multimodal sections, the calls that "
-                "need it; with one position a token it is not served"
-            )
         if call.mrope_section is not None and not call.mrope_interleaved:
             return (
                 "the kernel assigns the three positions' frequencies interleaved; "

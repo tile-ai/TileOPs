@@ -47,9 +47,8 @@ class FusedQKNormRoPEFwdOp(Op):
     the width's; with ``mrope_interleaved``, frequency ``i`` takes the height's when
     ``i % 3 == 1`` and ``i < 3 * mrope_section[1]``, the width's when ``i % 3 == 2`` and
     ``i < 3 * mrope_section[2]``, and the temporal's otherwise. The in-tree kernel serves the
-    interleaved assignment, with or without ``zero_centered``; consecutive sections, and
-    ``zero_centered`` with one position a token, raise ``OpNotAvailableError`` when a kernel is
-    selected.
+    interleaved assignment; consecutive sections raise ``OpNotAvailableError`` when a kernel
+    is selected.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
