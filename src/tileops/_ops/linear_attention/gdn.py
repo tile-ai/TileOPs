@@ -54,7 +54,7 @@ class GDNFwdOp(Op):
     ``num_accepted_tokens``, each sequence's tokens, equal-length or packed,
     one after another on the state it keeps in registers. A state pool
     (``state_indices``) is served by decode and by SM90 prefill, one state a
-    sequence. A packed sequence of more tokens than ``state_indices`` holds
+    sequence; with ``num_accepted_tokens``, decode keeps one a token. A packed sequence of more tokens than ``state_indices`` holds
     slots breaks the call's contract, which no check enforces; the in-tree
     kernel may then write states to any slot of the pool and leaves that
     sequence's outputs undefined. Other calls need an external target
