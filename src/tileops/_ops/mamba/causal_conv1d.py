@@ -18,6 +18,7 @@ from tileops._kernels.mamba import (
     CausalConv1dUpdateCall,
     CausalConv1dUpdateFwdInterface,
     CausalConv1dUpdateKernel,
+    CausalConv1dUpdateRollbackKernel,
 )
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -148,7 +149,9 @@ class CausalConv1dUpdateFwdOp(Op):
     With ``num_accepted_tokens``, as vLLM's ``causal_conv1d_update`` takes it, sequence ``b``
     with ``a = num_accepted_tokens[b]`` and ``q`` tokens reads its history from column
     ``a - 1``, and its first ``(W - 1) * d + q - 1`` columns become its last that many
-    tokens, so the next call resumes after whichever draft was accepted.
+    tokens, so the next call resumes after whichever draft was accepted. A sequence of more
+    than ``L - (W - 1) * d + 1`` tokens breaks the call's contract, which no check enforces;
+    the in-tree kernel then leaves the outputs of its tokens past that count unwritten.
 
     The products accumulate in float32 and each output rounds once to the input dtype.
     SiLU uses the hardware's approximate exponential and reciprocal, each within two float32
@@ -156,7 +159,8 @@ class CausalConv1dUpdateFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "causal_conv1d_update": CausalConv1dUpdateKernel
+        "causal_conv1d_update": CausalConv1dUpdateKernel,
+        "causal_conv1d_update_rollback": CausalConv1dUpdateRollbackKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "causal_conv1d_update": CausalConv1dUpdateFwdInterface
@@ -241,4 +245,6 @@ class CausalConv1dUpdateFwdOp(Op):
             conv_state,
             None if bias is None else bias.contiguous(),
             None if conv_state_indices is None else conv_state_indices.contiguous(),
+            None if num_accepted_tokens is None else num_accepted_tokens.contiguous(),
+            None if query_start_loc is None else query_start_loc.contiguous(),
         )

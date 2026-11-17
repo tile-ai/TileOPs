@@ -240,11 +240,18 @@ def _vllm_state_lines(
     return lines, slots + 1
 
 
+def _vllm_taps_differ(case) -> str | None:
+    """Why vLLM's taps are not *case*'s, or None."""
+    if case.arguments.get("dilation", 1) != 1:
+        return "vLLM convolves adjacent taps only"
+    return None
+
+
 def _vllm_conv_differs(case) -> str | None:
     """Why vLLM's convolution computes something else than *case*, or None."""
-    arguments = case.arguments
-    if arguments.get("dilation", 1) != 1:
-        return "vLLM convolves adjacent taps only"
+    differs = _vllm_taps_differ(case)
+    if differs is not None:
+        return differs
     if case.inputs[1].dtype != case.inputs[0].dtype:
         return "vLLM takes the weight in the activation dtype"
     return None
@@ -308,10 +315,16 @@ def test_causal_conv1d_update_bench(case) -> None:
         )  # fmt: skip
         return out, lines[1:]
 
-    vllm = bench.Implementation(
-        run=run, args=(), reset=reset, noncomparable_reason=_vllm_conv_differs(case)
-    )
-    bench.Runner(op, case).compare({VLLM_TAG: vllm})
+    # The update kernel multiplies a float32 weight in float32, as the reference does.
+    implementations = {
+        VLLM_TAG: bench.Implementation(
+            run=run, args=(), reset=reset, noncomparable_reason=_vllm_taps_differ(case)
+        )
+    }
+    if accepted is not None:
+        # The reference advances its state argument in place.
+        implementations["torch-ref"] = private_inputs(case.torch, case.inputs, 2)
+    bench.Runner(op, case).compare(implementations)
 
 
 def _vllm_selective_scan(case) -> bench.Implementation:

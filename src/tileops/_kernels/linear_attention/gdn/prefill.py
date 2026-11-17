@@ -542,7 +542,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
         state_indices: torch.Tensor | None = None,
+        num_accepted_tokens: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        del num_accepted_tokens
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         chunk_size = 64
         batch, seq_len = q.shape[:2]

@@ -119,7 +119,8 @@ class GDNCall(CallSpec):
     """One GDN inference call, with the recurrence semantics the op fixed.
 
     ``pooled`` is whether ``state_indices`` maps each sequence to its slots of a state
-    pool, and ``rollback`` whether ``num_accepted_tokens`` is passed with a slot a token.
+    pool, and ``rollback`` whether ``num_accepted_tokens`` is passed with a slot a token;
+    ``drafts`` is then the slots of each sequence, the most tokens it holds.
     """
 
     batch: int = 0
@@ -140,6 +141,7 @@ class GDNCall(CallSpec):
     num_sequences: int = 0
     pooled: bool = False
     rollback: bool = False
+    drafts: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -474,6 +476,7 @@ class GDNFwdInterface(KernelInterface):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
         state_indices: torch.Tensor | None = None,
+        num_accepted_tokens: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the recurrence from *initial_state* over the call's sequence.
 
@@ -499,7 +502,12 @@ class GDNFwdInterface(KernelInterface):
             state_indices: ``int32`` ``(n,)``, passed exactly when ``call.pooled``: sequence
                 ``i`` starts from ``initial_state[state_indices[i]]`` and its final state is
                 written back there. *initial_state* is then a pool of states, one a slot, the
-                slots distinct across the call.
+                slots distinct across the call. Under ``call.rollback`` it is ``(n, L)``, one
+                slot a token: the state after token ``t`` of sequence ``i`` is written to
+                ``initial_state[state_indices[i, t]]``, a sequence holding at most ``L`` tokens.
+            num_accepted_tokens: ``int32`` ``(n,)``, passed exactly when ``call.rollback``:
+                sequence ``i`` starts from ``initial_state[state_indices[i, a - 1]]``, ``a`` its
+                entry, at least 1 and at most ``L``.
 
         Returns:
             ``(o, final_state)``: a new ``o`` shaped like *v* in ``call.dtype``, and the

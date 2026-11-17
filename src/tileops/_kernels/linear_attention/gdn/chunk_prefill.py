@@ -35,8 +35,9 @@ class GDNChunkPrefillFwdKernel(Kernel, GDNFwdInterface):
         A_log=None,
         dt_bias=None,
         state_indices=None,
+        num_accepted_tokens=None,
     ):
-        del state_indices
+        del state_indices, num_accepted_tokens
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         inputs = (q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias)
         return run_chunk_prefill(
