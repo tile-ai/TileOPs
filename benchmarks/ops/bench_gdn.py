@@ -18,9 +18,6 @@ from benchmarks.baselines import (
 )
 from tileops.linear_attention import GDNFwdOp
 
-VLLM_FLA_CHUNK = "third_party.flash_linear_attention.ops.chunk"
-VLLM_FLA_RECURRENT = "third_party.flash_linear_attention.ops.fused_recurrent"
-
 
 @pytest.mark.parametrize("case", bench.cases(GDNFwdOp), ids=lambda case: case.id)
 def test_gdn_fwd_bench(case) -> None:
@@ -201,7 +198,8 @@ def test_gdn_fwd_bench(case) -> None:
 
             if q.shape[1] == 1:
                 packed = vllm_op(
-                    "fused_recurrent_gated_delta_rule_packed_decode", module=VLLM_FLA_RECURRENT
+                    "fused_recurrent_gated_delta_rule_packed_decode",
+                    module="third_party.flash_linear_attention.ops.fused_recurrent",
                 )
                 batch, value_heads = v.shape[0], v.shape[2]
                 mixed = torch.cat([x.reshape(batch, -1) for x in (q, k, v)], dim=1)
@@ -220,7 +218,9 @@ def test_gdn_fwd_bench(case) -> None:
 
                 vllm = bench.Implementation(run=run, args=(), reset=reset)
             else:
-                chunk = vllm_op("chunk_gated_delta_rule", module=VLLM_FLA_CHUNK)
+                chunk = vllm_op(
+                    "chunk_gated_delta_rule", module="third_party.flash_linear_attention.ops.chunk"
+                )
 
                 def run():
                     o, final = chunk(
