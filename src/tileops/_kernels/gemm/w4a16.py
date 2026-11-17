@@ -293,9 +293,8 @@ def _smem_bytes(
     total = _pipelined_smem_bytes(
         block_m, block_n, block_k, num_stages, threads, k, group_size, split_k
     )
-    # A two-warpgroup pair's landing area. A one-warpgroup split takes
-    # its landing only where it fits (`_pair_reduced`), so the landing never decides its
-    # legality.
+    # A two-warpgroup pair's landing area. A one-warpgroup split pairs only where its landing
+    # fits (`_pair_reduced`), so the landing never decides its legality.
     if _two_warpgroup_pair(threads, block_n, split_k):
         total += _landing_bytes(block_m, block_n, threads)
     return total
