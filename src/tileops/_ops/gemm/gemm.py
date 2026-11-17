@@ -64,8 +64,12 @@ class GEMMFwdOp(Op):
     A bias is added to every row of the product: the contraction accumulates in
     ``float32``, the bias is added to that sum, and the result is rounded once to the
     input dtype, as ``torch.nn.functional.linear`` rounds it. ``out_dtype=torch.float32``
-    returns that sum unrounded; the in-tree kernels do not serve it, and such a call raises
-    ``OpNotAvailableError`` when a kernel is selected.
+    returns that sum unrounded, as ``F.linear(a.float(), b.float())`` computes it.
+
+    Accuracy of a float32 output: the tensor cores add each K step's products to the
+    float32 sum with truncation, as cuBLAS's 16-bit GEMM with a float32 output does, so the
+    error grows as $K^{1.5}$; over standard normal operands it stays below about 2e-3 at
+    $K = 4096$.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
