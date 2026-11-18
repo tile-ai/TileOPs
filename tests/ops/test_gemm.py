@@ -2086,7 +2086,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             False,
             {**_WS, "split_k": 1},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="ws-row-store",
         ),
         pytest.param(
@@ -2105,7 +2105,7 @@ def test_gemm_bias_on_selected_kernels(
                 "split_k": 1,
                 "cluster_m": 2,
             },
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="ws-fill-cluster",
         ),
         pytest.param(
@@ -2116,7 +2116,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             True,
             {**_WS, "split_k": 2},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="split-k",
         ),
         pytest.param(
@@ -2127,7 +2127,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             True,
             {"simple": True, "block_m": 64, "block_n": 128, "block_k": 64, "num_stages": 3},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="simple",
         ),
         pytest.param(
@@ -2138,7 +2138,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             True,
             {"swap_ab": True, "block_nn": 64, "block_k": 128, "num_stages": 4},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="swap-ab",
         ),
         # A 64-column staging chunk leaves the ring its three stages beside two float32 halves.
@@ -2150,7 +2150,7 @@ def test_gemm_bias_on_selected_kernels(
             False,
             True,
             {"coop2": True, "block_n": 256, **_COOP2, "stage_n": 64},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="coop2",
         ),
         # Twenty-four rows of A, a WGMMA width 256 does not divide, run the helper's own.
@@ -2162,7 +2162,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             True,
             {"stream": True, "block_k": 128, "num_stages": 8, "blocks": 2},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="stream-helper",
         ),
         pytest.param(
@@ -2175,7 +2175,7 @@ def test_gemm_bias_on_selected_kernels(
             # The ring best_config selects for a float32 output: five stages and two
             # staging buffers fill all but a few KiB of the shared memory.
             {**_PINGPONG, "block_n": 176, "num_stages": 5, "stage_n": 16, "epi_bufs": 2},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="pingpong-176",
         ),
         pytest.param(
@@ -2309,12 +2309,12 @@ def test_gemm_coop2_swap_refuses_a_float32_output() -> None:
     ("m", "n"),
     [
         # DeepSeek-V4-Flash's LM head over one decode token, a GEMV.
-        pytest.param(1, 129280, marks=pytest.mark.smoke, id="lm-head-gemv"),
+        pytest.param(1, 129280, marks=pytest.mark.full, id="lm-head-gemv"),
         # Its router and LM head over 64 decode tokens.
         pytest.param(64, 256, marks=pytest.mark.smoke, id="router-decode"),
-        pytest.param(64, 129280, marks=pytest.mark.smoke, id="lm-head-decode"),
+        pytest.param(64, 129280, marks=pytest.mark.full, id="lm-head-decode"),
         # Its LM head over 24 decode tokens, which streams the weight 64 rows at a time.
-        pytest.param(24, 129280, marks=pytest.mark.smoke, id="lm-head-stream"),
+        pytest.param(24, 129280, marks=pytest.mark.full, id="lm-head-stream"),
         # Its router and KV compressors over an 8192-token prefill.
         pytest.param(8192, 256, marks=pytest.mark.full, id="router-prefill"),
         pytest.param(8192, 512, marks=pytest.mark.full, id="compressor-512"),
@@ -2841,68 +2841,38 @@ def _leave_nan_in_free_blocks() -> None:
     del blocks
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.sm90
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k, tile",
     [
         # Kept: a doubled split leaves a slice under two K tiles; the paired tile does not
         # fit in shared memory.
-        pytest.param(
-            1, 1024, 8192, (64, 128, 8, False), id="kept-short-slice", marks=pytest.mark.smoke
-        ),
-        pytest.param(32, 8192, 8192, (64, 128, 1, False), id="kept-no-fit", marks=pytest.mark.full),
-        pytest.param(
-            1, 8192, 8192, (128, 256, 2, False), id="paired-split-1", marks=pytest.mark.full
-        ),
-        pytest.param(
-            1, 4096, 14336, (128, 256, 4, False), id="paired-split-2", marks=pytest.mark.full
-        ),
+        pytest.param(1, 1024, 8192, (64, 128, 8, False), id="kept-short-slice"),
+        pytest.param(32, 8192, 8192, (64, 128, 1, False), id="kept-no-fit"),
+        pytest.param(1, 8192, 8192, (128, 256, 2, False), id="paired-split-1"),
+        pytest.param(1, 4096, 14336, (128, 256, 4, False), id="paired-split-2"),
         # A ragged token count on the 16-row tile.
-        pytest.param(11, 8192, 8192, (128, 256, 2, False), id="paired-m11", marks=pytest.mark.full),
+        pytest.param(11, 8192, 8192, (128, 256, 2, False), id="paired-m11"),
         # Paired slices the four-stage ring holds. A cluster pair is kept where the pick's
         # own slice of four K tiles fits the ring, and where its 384 CTAs take more than one
         # wave; it pairs where the pick's eight refill the ring in one wave.
-        pytest.param(
-            16, 8192, 2048, (64, 128, 1, False), id="kept-cluster-in-ring", marks=pytest.mark.full
-        ),
-        pytest.param(
-            16, 24576, 4096, (64, 128, 1, False), id="kept-cluster-waves", marks=pytest.mark.full
-        ),
-        pytest.param(
-            16, 6144, 4096, (128, 256, 2, False), id="paired-cluster", marks=pytest.mark.full
-        ),
+        pytest.param(16, 8192, 2048, (64, 128, 1, False), id="kept-cluster-in-ring"),
+        pytest.param(16, 24576, 4096, (64, 128, 1, False), id="kept-cluster-waves"),
+        pytest.param(16, 6144, 4096, (128, 256, 2, False), id="paired-cluster"),
         # A split is kept where it adds K tiles to the longest slice (56 K tiles over 8
         # slices pair into slices of three and four), and pairs where it adds none.
-        pytest.param(
-            16, 1024, 28672, (64, 128, 8, False), id="kept-uneven-in-ring", marks=pytest.mark.full
-        ),
-        pytest.param(
-            16, 4096, 4096, (128, 256, 4, False), id="paired-even-in-ring", marks=pytest.mark.full
-        ),
+        pytest.param(16, 1024, 28672, (64, 128, 8, False), id="kept-uneven-in-ring"),
+        pytest.param(16, 4096, 4096, (128, 256, 4, False), id="paired-even-in-ring"),
         # 50 K tiles: slices of 17 pair into slices of 9, which still refill the ring.
-        pytest.param(
-            8, 5120, 25600, (128, 256, 6, False), id="paired-uneven-refills", marks=pytest.mark.full
-        ),
+        pytest.param(8, 5120, 25600, (128, 256, 6, False), id="paired-uneven-refills"),
         # Stream-K picks: the 132 streamed CTAs become 64 paired N tiles split two ways (128
         # CTAs); 67 N tiles do not pair up and keep the stream.
-        pytest.param(
-            1, 8192, 81920, (128, 256, 2, False), id="paired-stream-k", marks=pytest.mark.full
-        ),
-        pytest.param(
-            1, 4288, 32896, (64, 128, 1, True), id="kept-odd-n-tiles", marks=pytest.mark.full
-        ),
-        # Kept streams whose N tiles two or three CTAs share; the slots no CTA of a tile
-        # writes are zeroed: 69 tiles with a partial last K tile, 67 tiles of whole K tiles.
-        pytest.param(
-            1, 4416, 32896, (64, 128, 1, True), id="kept-stream-k-tail", marks=pytest.mark.full
-        ),
-        pytest.param(
-            1, 4288, 81920, (64, 128, 1, True), id="kept-stream-whole-k", marks=pytest.mark.full
-        ),
-        pytest.param(
-            8, 5056, 32896, (64, 128, 1, True), id="kept-stream-eight-rows", marks=pytest.mark.full
-        ),
+        pytest.param(1, 8192, 81920, (128, 256, 2, False), id="paired-stream-k"),
+        pytest.param(1, 4288, 32896, (64, 128, 1, True), id="kept-odd-n-tiles"),
+        # Kept streams whose N tiles two or three CTAs share.
+        pytest.param(1, 4416, 32896, (64, 128, 1, True), id="kept-stream-k-tail"),
+        pytest.param(1, 4288, 81920, (64, 128, 1, True), id="kept-stream-whole-k"),
+        pytest.param(8, 5056, 32896, (64, 128, 1, True), id="kept-stream-eight-rows"),
     ],
 )
 def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tuple) -> None:
@@ -2914,6 +2884,29 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
     not refill its ring or whose grid takes more than one wave."""
     cfg = _select_config(m, n, k, 128, 132)
     assert (cfg["block_n"], cfg["threads"], cfg["split_k"], cfg["stream_ctas"] > 0) == tile
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k",
+    [
+        pytest.param(1, 1024, 8192, id="kept-short-slice", marks=pytest.mark.smoke),
+        pytest.param(1, 8192, 8192, id="paired-split-1", marks=pytest.mark.full),
+        pytest.param(11, 8192, 8192, id="paired-m11", marks=pytest.mark.full),
+        pytest.param(1, 8192, 81920, id="paired-stream-k", marks=pytest.mark.full),
+        pytest.param(1, 4288, 32896, id="kept-odd-n-tiles", marks=pytest.mark.full),
+        # The slots no CTA of a streamed tile writes are zeroed: 69 tiles with a partial
+        # last K tile, 67 tiles of whole K tiles.
+        pytest.param(1, 4416, 32896, id="kept-stream-k-tail", marks=pytest.mark.full),
+        pytest.param(1, 4288, 81920, id="kept-stream-whole-k", marks=pytest.mark.full),
+    ],
+)
+def test_gemm_w4a16_deferred_scale_tiles_match_the_reference(m: int, n: int, k: int) -> None:
+    """Each program the deferred-scale selection reaches on 132 SMs (the paired tile, the kept
+    tile, a kept or paired stream-K pick and ragged rows) matches the reference."""
+    if get_sm_count(torch.device(run_device()).index) != 132:
+        pytest.skip("the op selects on the device's SMs, and the programs checked count 132")
     test = GEMMW4A16Test(m, n, k, torch.float16)
     inputs = test.gen_inputs()
     _leave_nan_in_free_blocks()
