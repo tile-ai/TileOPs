@@ -1,10 +1,13 @@
 """Tests for the MXFP4 M-grouped GEMM op."""
 
 import math
+import re
 
 import pytest
 import torch
 
+from tileops._kernels.moe import MGroupedGEMMMXFP4Call
+from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import _smem_bytes, _uses_tables
 from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMMXFP4FwdOp
 from tileops.manifest import load_workloads
 from workloads.device import run_device
@@ -513,3 +516,52 @@ def test_mxfp4_grouped_gemm_refuses_runs_aligned_off_the_row_tile() -> None:
     with pytest.raises(ValueError, match="aligned runs"):
         op(*workload.gen_inputs())
     assert not list(op.iter_kernels())
+
+
+def _compiled_smem(program) -> int:
+    """The dynamic shared memory a built program launches with plus its static arrays."""
+    host = program.get_host_source()
+    # The launch's last integer argument is its dynamic shared memory.
+    dynamic = int(
+        re.findall(r"\(\(int64_t\)(\d+)\)", host[: host.rfind("_kernel_packed == NULL")])[-1]
+    )
+    element_bytes = {"uint64_t": 8, "float": 4, "uchar": 1}
+    arrays = re.findall(
+        r"__shared__ (?:__align__\(\d+\) )?(\w+) \w+\[(\d+)\]", program.get_kernel_source()
+    )
+    return dynamic + sum(element_bytes[dtype] * int(count) for dtype, count in arrays)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("k", "scale_dtype", "block_m", "block_n"),
+    [
+        pytest.param(2048, torch.float8_e8m0fnu, 64, 256, marks=pytest.mark.smoke, id="tma-tables"),
+        # Code-table rows of 44 bytes come by one bulk copy and take no token table.
+        pytest.param(1408, torch.float8_e8m0fnu, 64, 192, marks=pytest.mark.full, id="bulk-tables"),
+        pytest.param(512, torch.float32, 64, 192, marks=pytest.mark.full, id="scales-a-stage"),
+    ],
+)
+def test_mxfp4_grouped_gemm_smem_model_matches_the_build(
+    k: int, scale_dtype: torch.dtype, block_m: int, block_n: int
+) -> None:
+    """``_smem_bytes``, which the config refusal and the stage choice read, counts the shared
+    memory the built program takes, plus 1024 bytes of code-table alignment under the tables."""
+    call = MGroupedGEMMMXFP4Call(
+        device=torch.device(run_device()),
+        kind="masked",
+        max_m=64,
+        scale_dtype=scale_dtype,
+        num_groups=4,
+        m=256,
+        n=256,
+        k=k,
+    )
+    op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=64))
+    kernel = op.kernel_for("grouped_gemm_mxfp4", lambda: call)
+    config = {"block_m": block_m, "block_n": block_n, "num_stages": 4, "num_sms": 4}
+    scale_bytes, scale_k = kernel.scale_bytes, kernel.scale_k
+    tables = _uses_tables(block_m, block_n, 4, scale_bytes, scale_k, kernel.smem_limit)
+    assert tables == (scale_bytes == 1)
+    modelled = _smem_bytes(block_m, block_n, 4, scale_bytes, scale_k, tables)
+    assert modelled - _compiled_smem(kernel.kernel(**config)) == (1024 if tables else 0)

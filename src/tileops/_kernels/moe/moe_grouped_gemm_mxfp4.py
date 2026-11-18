@@ -56,20 +56,30 @@ def _math_warps(block_n: int) -> int:
     return block_n // _WARPGROUP_ROWS * 4
 
 
+def _table_box(scale_k: int) -> int:
+    """Bytes of each code-table row one TMA box carries: 128 or 64, whichever divides the row of
+    ``4 * scale_k`` bytes; 0 when neither does and the table comes by one bulk copy."""
+    row_bytes = 4 * scale_k
+    return 128 if row_bytes % 128 == 0 else 64 if row_bytes % 64 == 0 else 0
+
+
 def _smem_bytes(
     block_m: int, block_n: int, num_stages: int, scale_bytes: int, scale_k: int, tables: bool
 ) -> int:
     """Bytes of the fp8 row and packed-weight ring; with ``tables``, two tasks' e8m0 code tables
-    and token code tables (1024 bytes of alignment), else the weight scales a stage; two
-    steps' token scales, the bfloat16 output tile and barriers."""
+    (1024 bytes of alignment) and, when they come by TMA, token code tables, else the weight
+    scales a stage; two steps' token scales, the bfloat16 output tile, and the ring's and code
+    tables' barriers."""
     ring = num_stages * (block_m * QUANT_SCALE_BLOCK + block_n * QUANT_SCALE_BLOCK // 2)
     if tables:
-        tables_bytes = 2 * block_n * scale_k * 4 + 1024 + 2 * max(block_m * scale_k, 16)
+        token_codes = 2 * block_m * scale_k if _table_box(scale_k) else 0
+        tables_bytes = 2 * block_n * scale_k * 4 + 1024 + token_codes
     else:
         tables_bytes = num_stages * block_n * _SUB_BLOCKS * scale_bytes
     # Each math warp's token scales of two steps, as floats.
     token_slices = _math_warps(block_n) * 2 * block_m * 4
-    return ring + tables_bytes + token_slices + block_m * block_n * 2 + num_stages * 16
+    barriers = (2 * num_stages + 4) * 8
+    return ring + tables_bytes + token_slices + block_m * block_n * 2 + barriers
 
 
 def _uses_tables(
@@ -211,13 +221,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
         # contiguous bulk copy, rows back to back.
         tables = _uses_tables(block_m, block_n, num_stages, scale_bytes, scale_k, smem_limit)
         table_row_bytes = scale_k * 4
-        # A box spans 128 or 64 bytes of a row and must divide it.
-        if tables and table_row_bytes % 128 == 0:
-            table_box = 128
-        elif tables and table_row_bytes % 64 == 0:
-            table_box = 64
-        else:
-            table_box = 0
+        table_box = _table_box(scale_k) if tables else 0
 
         tasks = task_walk(
             num_groups=num_groups,
