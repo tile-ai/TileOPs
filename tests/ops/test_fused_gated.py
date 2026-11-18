@@ -112,7 +112,7 @@ class SiLUAndMulClampedFixture(FixtureBase):
                 pytest.param(64, 1024, torch.float16, 10.0, True, marks=pytest.mark.smoke),
                 pytest.param(64, 1024, torch.float32, 10.0, True, marks=pytest.mark.smoke),
                 # More rows than a grid's y dimension holds.
-                pytest.param(65537, 128, torch.bfloat16, 10.0, True, marks=pytest.mark.smoke),
+                pytest.param(65537, 128, torch.bfloat16, 10.0, True, marks=pytest.mark.full),
                 # A limit bfloat16 does not hold.
                 pytest.param(64, 1024, torch.bfloat16, 7.3, True, marks=pytest.mark.full),
                 # DeepSeek-V4-Flash's routed rows of 4096 and 32768 tokens.
