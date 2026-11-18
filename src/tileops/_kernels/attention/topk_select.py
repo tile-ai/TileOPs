@@ -167,8 +167,7 @@ def _topk_select_kernel(
         ):
             # Parallelize over seq rows by assigning one block per (batch, seq_row, kv_group).
             with T.Kernel(batch, seq_len, kv_group, threads=BLOCK_SIZE) as (bx, by, g):
-                # A full SM of threads, which holds only at 32 registers a thread; one more
-                # register leaves one 1024-thread block an SM, measured up to 1.5x slower.
+                # A full SM of threads, which holds only at 32 registers a thread.
                 T.annotate_min_blocks_per_sm(2048 // BLOCK_SIZE)
                 if VEC == 4:
                     # Rows start 16-byte aligned: the stage-1 loads go four keys at a time.
@@ -245,7 +244,7 @@ def _topk_select_kernel(
                                 slot < l_end_idx - l_start_idx, l_start_idx + slot, FILL
                             )
                 else:
-                    # stage 1: use 8bit to do quick topk
+                    # Stage 1: count each key's 8-bit bin.
 
                     for j in T.serial(T.ceildiv(2 * (RADIX + 2), BLOCK_SIZE)):
                         histogram_idx = j * BLOCK_SIZE + tx
@@ -259,12 +258,10 @@ def _topk_select_kernel(
 
                     T.sync_threads()
 
-                    # Only the chunks the window touches are read. The loop runs over the whole
-                    # row with one uniform test a chunk: a loop bound or a load test taken from
-                    # the window measured 1.4x slower on 65536-key rows. A thread takes four
-                    # adjacent keys at a time, one vector load, and keeps their bins as one word.
-                    # A key outside the window counts in bin RADIX + 1, which keeps the loop free
-                    # of branches.
+                    # Only the chunks the window touches are read, by one uniform test a chunk
+                    # over the whole row. A thread takes four adjacent keys at a time, one vector
+                    # load, and keeps their bins as one word. A key outside the window counts in
+                    # bin RADIX + 1, which keeps the loop free of branches.
                     chunk = BLOCK_SIZE * ITEMS
                     for s in T.serial(T.ceildiv(seq_len_kv, chunk)):
                         if (s + 1) * chunk > l_start_idx and s * chunk < l_end_idx:
@@ -368,10 +365,8 @@ def _topk_select_kernel(
                                             l_pos = shared_add(s_num_input[0], 1)
                                             if l_pos < SMEM_INPUT_SIZE:
                                                 s_input_idx[0, l_pos] = input_idx
-                                                # The score copies in behind the pass: read in
-                                                # it, each stalled the pass where it was found;
-                                                # read after it, the reads waited out the global
-                                                # latency together.
+                                                # Copied asynchronously, so the pass does not
+                                                # wait on each score.
                                                 T.ptx_cp_async(
                                                     T.access_ptr(s_input_key[0, l_pos], "w"),
                                                     T.access_ptr(
@@ -999,9 +994,8 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         self.out_dtype = out_dtype
         self.out_dtype_str = self.dtype_to_str(self.out_dtype)
 
-        # A call of too few rows to fill every SM twice takes one row's time: a row that
-        # fits a 1024-thread block's registers reads its keys once, and the register kernel
-        # selects it in about half the passes.
+        # A call of too few rows to fill every SM twice takes one row's time, so a row that
+        # fits a 1024-thread block's registers is selected from them after one read.
         self.few_rows = batch * seq_len * kv_group < 2 * self.build_target.sm_count
         self.regs = self.few_rows and topk < seq_len_kv <= REGS_ITEMS * 1024
         if self.regs:
@@ -1093,9 +1087,8 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
     @property
     def default_config(self) -> dict:
         # A short row keeps a small block busy, and the small blocks an SM holds hide each
-        # other's latency: 256 threads ran a 1024-key row set 2.6x faster than 1024. A long
-        # row wants a 1024-thread block's loads in flight, and so does a call with too few
-        # rows to fill every SM twice, whose time is one row's.
+        # other's latency. A long row wants a 1024-thread block's loads in flight, and so does
+        # a call with too few rows to fill every SM twice, whose time is one row's.
         if self.regs:
             return {"BLOCK_SIZE": 1024}
         if self.seq_len_kv <= 2048:
