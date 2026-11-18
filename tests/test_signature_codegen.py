@@ -1643,6 +1643,33 @@ def test_a_range_requirement_is_checked_only_under_validate_inputs():
     assert unchecked(table, torch.tensor([-1, 3])).tolist() == [0.0, 2.0]
 
 
+def test_a_segment_bound_is_checked_with_its_offsets_only_under_validate_inputs():
+    signature = {
+        "forall": {"B": "Dim", "Tt": "Dim", "T": "DType[float32]"},
+        "inputs": {
+            "x": {"dtype": "T", "shape": "[Tt]"},
+            "offsets": {
+                "dtype": "int64",
+                "shape": "[B + 1]",
+                "requires": ["prefix_offsets(Tt)", "max_segment(longest)"],
+            },
+        },
+        "params": {
+            "longest": {"type": "int", "default": 2},
+            "validate_inputs": {"type": "bool", "default": False},
+        },
+        "outputs": {"y": {"dtype": "T", "shape": "[Tt]"}},
+    }
+    probe = _probe("ProbeSegmentFwdOp", signature, lambda self, x, offsets: x.clone())
+    x = torch.arange(4.0)
+    checked = probe(longest=2, validate_inputs=True)
+    assert checked(x, torch.tensor([0, 2, 4])).tolist() == [0.0, 1.0, 2.0, 3.0]
+    with pytest.raises(ValueError, match="offsets must hold no segment longer than 2"):
+        checked(x, torch.tensor([0, 1, 4]))
+    unchecked = probe(longest=2, validate_inputs=False)
+    assert unchecked(x, torch.tensor([0, 1, 4])).tolist() == [0.0, 1.0, 2.0, 3.0]
+
+
 def test_a_misaligned_tensor_is_copied_and_a_scalar_member_kept():
     op = _probe("ProbeOffsetAlignFwdOp", _OFFSET, lambda self, x, off=0: x + off, boundary=True)()
     misaligned = torch.zeros(5)[1:4]

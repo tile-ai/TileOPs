@@ -558,7 +558,8 @@ class RoPECosSinFwdOp(Op):
             inplace: Write the rotation into ``x`` and return ``x``.
             max_seqlen: The longest packed sequence; required with ``cu_seqlens``.
             validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never
-                decreases and ends at the token count, and that each tensor of
+                decreases, ends at the token count and holds no sequence longer than
+                ``max_seqlen``, and that each tensor of
                 ``seqlen_offsets`` lies in ``[0, P - L]``, before the kernel runs; this
                 synchronizes the device and cannot run inside CUDA Graph capture.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``

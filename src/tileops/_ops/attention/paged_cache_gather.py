@@ -48,8 +48,9 @@ class PagedKVCacheGatherFwdOp(Op):
 
         Args:
             out_dtype: Destination dtype for FP8 dequantization; otherwise the cache dtype.
-            validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never decreases
-                and ends at ``out``'s row count, and that ``block_table`` and ``seq_starts``
+            validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never decreases,
+                ends at ``out``'s row count and holds no sequence longer than the tokens a
+                ``block_table`` row's pages hold, and that ``block_table`` and ``seq_starts``
                 lie in their manifest ranges.
             target: Backend target, or None to resolve from the input device.
         """
