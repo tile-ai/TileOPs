@@ -60,7 +60,21 @@ class NSAFwdWorkload(WorkloadBase):
         selected_blocks: int,
         dtype: torch.dtype,
         seq_lens: "list[int] | None" = None,
+        kv_lens: "list[int] | None" = None,
+        varied_dims: bool = False,
+        selection: str = "random",
     ) -> None:
+        """``kv_lens`` gives each request its own keys, of which its ``seq_lens`` queries
+        are the last, passed as ``cu_seqlens_k``; ``None`` makes the keys the queries'
+        tokens. ``varied_dims`` draws q, k and v at random along the head dimension too,
+        where the default ramps vary only across tokens.
+
+        ``selection`` is ``"random"``: distinct visible blocks per KV head, sorted, and a
+        random count; ``"topk"``: what ``TopKSelectFwdOp`` returns for random logits over
+        the blocks before the token's own, in no order and padded with the request's
+        block count, then the token's own block, one list for every KV head and every
+        slot counted; or ``"padding"``: every slot holds the padding id, so no token sees
+        a key."""
         self.batch = batch
         self.heads = heads
         self.c_seq_len = c_seq_len
@@ -72,6 +86,9 @@ class NSAFwdWorkload(WorkloadBase):
         self.selected_blocks = selected_blocks
         self.dtype = dtype
         self.seq_lens = seq_lens
+        self.kv_lens = kv_lens
+        self.varied_dims = varied_dims
+        self.selection = selection
 
         self.head_kv = self.heads // self.groups
 
@@ -81,37 +98,48 @@ class NSAFwdWorkload(WorkloadBase):
         # not the global stream, which a draw added anywhere upstream shifts.
         g = self.rng(device=run_device())
         cu_seqlens = _packed_offsets(self.seq_lens, self.batch, self.c_seq_len, 16)
+        if self.kv_lens is None:
+            cu_seqlens_k, n_keys = cu_seqlens, self.c_seq_len
+        else:
+            cu_seqlens_k = _packed_offsets(self.kv_lens, self.batch, sum(self.kv_lens), 16)
+            n_keys = sum(self.kv_lens)
 
-        def _shuffled(n_head: int) -> torch.Tensor:
-            perm = torch.randperm(self.c_seq_len, device=run_device(), generator=g)
+        def _shuffled(rows: int, n_head: int) -> torch.Tensor:
+            if self.varied_dims:
+                return torch.randn((rows, n_head, self.dim), device=run_device(), generator=g).to(
+                    self.dtype
+                )
+            perm = torch.randperm(rows, device=run_device(), generator=g)
             return (
-                torch.linspace(0, 1, steps=self.c_seq_len, dtype=self.dtype, device=run_device())[
-                    perm
-                ]
-                .view(self.c_seq_len, 1, 1)
-                .expand(self.c_seq_len, n_head, self.dim)
+                torch.linspace(0, 1, steps=rows, dtype=self.dtype, device=run_device())[perm]
+                .view(rows, 1, 1)
+                .expand(rows, n_head, self.dim)
                 .clone()
                 .requires_grad_(True)
             )
 
-        q, k, v = _shuffled(self.heads), _shuffled(self.head_kv), _shuffled(self.head_kv)
+        q = _shuffled(self.c_seq_len, self.heads)
+        k, v = _shuffled(n_keys, self.head_kv), _shuffled(n_keys, self.head_kv)
         self.g_slc = torch.ones(
             (self.batch, self.c_seq_len, self.heads), dtype=self.dtype, device=run_device()
         ).requires_grad_(True)
 
         token_indices = prepare_token_indices(cu_seqlens)
+        # A request's queries are the last of its keys.
+        n_key = (cu_seqlens_k[1:] - cu_seqlens_k[:-1])[token_indices[:, 0]]
+        n_query = (cu_seqlens[1:] - cu_seqlens[:-1])[token_indices[:, 0]]
+        position = token_indices[:, 1] + n_key - n_query
         # How many blocks each token may attend to: causally the one it sits in and those
         # before, otherwise every block of its sequence.
         if self.is_causal:
-            chunks = ((token_indices[:, 1] + self.block_size - 1) // self.block_size).clamp(min=1)
+            chunks = ((position + self.block_size - 1) // self.block_size).clamp(min=1)
         else:
-            seq_len = (cu_seqlens[1:] - cu_seqlens[:-1])[token_indices[:, 0]]
-            chunks = (seq_len + self.block_size - 1) // self.block_size
+            chunks = (n_key + self.block_size - 1) // self.block_size
         n_cand = max(int(chunks.max().item()), self.selected_blocks)
         # Each token picks selected_blocks distinct blocks out of its candidates. Sorting
         # one random key per candidate is a batched randperm; the ineligible tail sorts
-        # last under +inf, and a pick that reaches there becomes a c_seq_len slot, which
-        # the kernel and the reference both read as "attends to nothing".
+        # last under +inf, and a pick that reaches there becomes a slot past every key,
+        # which the kernel and the reference both read as "attends to nothing".
         keys = torch.rand(
             (self.c_seq_len, self.head_kv, n_cand), device=run_device(), generator=g
         ).masked_fill(
@@ -119,9 +147,7 @@ class NSAFwdWorkload(WorkloadBase):
         )
         picked = keys.argsort(-1)[..., : self.selected_blocks]
         block_indices = (
-            torch.where(picked < chunks[:, None, None], picked, self.c_seq_len)
-            .to(torch.int32)
-            .sort(-1)[0]
+            torch.where(picked < chunks[:, None, None], picked, n_keys).to(torch.int32).sort(-1)[0]
         )
         block_counts = torch.randint(
             1,
@@ -131,7 +157,31 @@ class NSAFwdWorkload(WorkloadBase):
             device=run_device(),
             generator=g,
         )
-        return (
+        shape = (self.c_seq_len, self.head_kv, self.selected_blocks)
+        if self.selection == "padding":
+            block_indices = torch.full(shape, n_keys, dtype=torch.int32, device=run_device())
+        elif self.selection == "topk":
+            own = position // self.block_size
+            blocks = (n_key + self.block_size - 1) // self.block_size
+            top_k = self.selected_blocks - 1
+            n_cand = int(blocks.max().item())
+            logits = torch.rand((self.c_seq_len, n_cand), device=run_device(), generator=g)
+            before = torch.arange(n_cand, device=run_device()) < own[:, None]
+            score, picked = logits.masked_fill(~before, -1.0).topk(min(top_k, n_cand), dim=-1)
+            picked = torch.where(score >= 0, picked, blocks[:, None])
+            if picked.shape[-1] < top_k:
+                fill = blocks[:, None].expand(-1, top_k - picked.shape[-1])
+                picked = torch.cat([picked, fill], -1)
+            # No order along the list: a random permutation per token.
+            order = torch.rand(picked.shape, device=run_device(), generator=g).argsort(-1)
+            listed = torch.cat([picked.gather(-1, order), own[:, None]], -1).to(torch.int32)
+            block_indices = listed[:, None, :].expand(shape).contiguous()
+        if self.selection != "random":
+            # Every slot counts: a padding id alone must select nothing.
+            block_counts = torch.full(
+                shape[:2], self.selected_blocks, dtype=torch.int32, device=run_device()
+            )
+        inputs = (
             q,
             k,
             v,
@@ -140,6 +190,9 @@ class NSAFwdWorkload(WorkloadBase):
             cu_seqlens.to(torch.int32),
             token_indices.to(torch.int32),
         )
+        if self.kv_lens is None:
+            return inputs
+        return (*inputs, cu_seqlens_k.to(torch.int32))
 
     def ref_program(
         self,
@@ -176,7 +229,10 @@ class NSAFwdWorkload(WorkloadBase):
             for lo in range(bos, eos, step):
                 hi = min(lo + step, eos)
                 # [t, h_kv, s*bs]: the key each selected block contributes, per KV head.
-                pos = block_indices[lo:hi].unsqueeze(-1) * bs + torch.arange(bs, device=device)
+                # int64: a padding id times the block size may pass the int32 range.
+                pos = block_indices[lo:hi].long().unsqueeze(-1) * bs + torch.arange(
+                    bs, device=device
+                )
                 pos = pos.flatten(2)
                 # Out-of-range positions are masked below; clamping keeps the gather legal.
                 k_slc, v_slc = (x[pos.clamp(0, n_key - 1), head] for x in (k_b, v_b))

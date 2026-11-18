@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 
 import tilelang
@@ -342,6 +343,401 @@ def _nsa_fwd_varlen_tma_kernel(
     return _nsa_fwd_varlen_tma_func
 
 
+@target_cache(maxsize=32)
+def _nsa_fwd_varlen_gather_kernel(
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    is_causal: bool,
+    separate_keys: bool,
+    block_size: int,
+    selected_blocks: int,
+    splits: int,
+    dtype: str,
+    accum_dtype: str,
+) -> Callable:
+    """One CTA per (token, KV head, key split): selected rows gathered into a K/V tile.
+
+    Each step gathers ``block_n`` keys, the ``block_n // block_size`` next slots of the
+    token's selection, row by row, so a block need not fill a tile. The token's G query
+    rows are padded with zeros to the 16 rows of an MMA. With one split the CTA writes the
+    output; with several, each split of the slot range writes its normalized output, its
+    row max and its softmax denominator, and a second kernel merges them. Rows the
+    selection does not reach load as zeros: a non-finite value would survive a zero weight.
+    """
+    groups = heads // heads_kv
+    rows = -(-groups // 16) * 16
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        },
+    )
+    def _nsa_fwd_varlen_gather_func(block_n: int, num_stages: int, threads: int):
+        c_seq_len = T.dynamic("c_seq_len")
+        n_keys = T.dynamic("n_keys")
+        batch = T.dynamic("batch")
+        # A step covers whole blocks; a block longer than the tile takes a step to itself.
+        blocks_per_step = max(1, block_n // block_size)
+        step_n = blocks_per_step * block_size
+        chunks = dim // 8  # 16-byte copies per key row
+        split_slots = -(-selected_blocks // (blocks_per_step * splits)) * blocks_per_step
+        rescale = make_rescale(rows, dim)
+
+        def scaled_gap(score, peak, root):
+            """``(score - peak) * scale`` in log2 units, for score <= peak. The halves are
+            subtracted, so two finite scores of opposite sign cannot overflow, and equal
+            scores still cancel exactly. *root* is the program's runtime argument
+            ``sqrt(2 * scale * log2(e))``, applied twice: a finite float32 for every
+            admitted scale from below float32's smallest normal to its largest value,
+            where the factor itself would flush to zero or overflow."""
+            return (score * 0.5 - peak * 0.5) * root * root
+
+        def key_of(block_indices, i_c, i_h, slot, r, limit):
+            """The in-request key that row *r* of a step starting at *slot* holds. A block id
+            is clamped to the first block past *limit* before it is scaled, so a padding id
+            stays past the limit instead of passing the int32 range."""
+            block = block_indices[i_c, i_h, T.min(slot + r // block_size, selected_blocks - 1)]
+            return T.min(block, T.ceildiv(limit, block_size)) * block_size + r % block_size
+
+        def visible(block_indices, i_c, i_h, slot, r, end, limit):
+            """Whether that key is selected and visible: its slot is below the token's count,
+            and the key lies in [0, limit)."""
+            key = key_of(block_indices, i_c, i_h, slot, r, limit)
+            return (slot + r // block_size < end) & (key >= r % block_size) & (key < limit)
+
+        @T.macro
+        def issue(
+            k,
+            v,
+            block_indices,
+            k_shared,
+            v_shared,
+            i_c,
+            i_h,
+            tx,
+            first,
+            end,
+            limit,
+            bos_k,
+            step,
+            stage,
+        ):
+            """Start copying step *step*'s key and value rows into *stage*; a row the
+            selection does not reach lands as zeros."""
+            # Each 16-byte copy moves 8 elements of one key row; a warp copies whole rows.
+            for it in T.unroll(step_n * chunks // threads):
+                c = it * threads + tx
+                r = c // chunks
+                col = c % chunks * 8
+                slot = first + step * blocks_per_step
+                live = visible(block_indices, i_c, i_h, slot, r, end, limit)
+                row = T.if_then_else(
+                    live, bos_k + key_of(block_indices, i_c, i_h, slot, r, limit), 0
+                )
+                T.ptx_cp_async(
+                    T.access_ptr(k_shared[stage, r, col], "w", 8),
+                    T.access_ptr(k[row, i_h, col], "r", 8),
+                    8,
+                    live,
+                )
+                T.ptx_cp_async(
+                    T.access_ptr(v_shared[stage, r, col], "w", 8),
+                    T.access_ptr(v[row, i_h, col], "r", 8),
+                    8,
+                    live,
+                )
+
+        @T.macro
+        def attend(
+            q,
+            k,
+            v,
+            block_indices,
+            block_counts,
+            offsets,
+            token_indices,
+            offsets_k,
+            scale_root,
+            i_c,
+            i_h,
+            i_s,
+            acc_o,
+            logsum,
+            scores_max,
+        ):
+            q_shared = T.alloc_shared([rows, dim], dtype)
+            k_shared = T.alloc_shared([num_stages, step_n, dim], dtype)
+            v_shared = T.alloc_shared([num_stages, step_n, dim], dtype)
+            p_shared = T.alloc_shared([rows, step_n], dtype)
+            T.annotate_layout(
+                {
+                    k_shared: make_swizzled_layout(k_shared),
+                    v_shared: make_swizzled_layout(v_shared),
+                }
+            )
+            q_local = T.alloc_fragment([rows, dim], dtype)
+            acc_s = T.alloc_fragment([rows, step_n], accum_dtype)
+            seen = T.alloc_fragment([rows, step_n], accum_dtype)
+            scores_max_prev = T.alloc_fragment([rows], accum_dtype)
+            scores_scale = T.alloc_fragment([rows], accum_dtype)
+            scores_sum = T.alloc_fragment([rows], accum_dtype)
+
+            i_n = token_indices[i_c, 0]
+            bos = offsets[i_n]
+            if separate_keys:
+                bos_k = offsets_k[i_n]
+                n_k = offsets_k[i_n + 1] - bos_k
+            else:
+                bos_k = bos
+                n_k = offsets[i_n + 1] - bos
+            # A request's queries are the last of its keys. Causal: keys up to the token;
+            # otherwise up to the request end.
+            pos = token_indices[i_c, 1] + n_k - (offsets[i_n + 1] - bos)
+            limit = pos + 1 if is_causal else n_k
+            first = i_s * split_slots
+            live_slots = T.min(block_counts[i_c, i_h], selected_blocks) - first
+            n_steps = T.max(
+                0, T.min(T.ceildiv(live_slots, blocks_per_step), split_slots // blocks_per_step)
+            )
+
+            for i, d in T.Parallel(rows, dim):
+                q_shared[i, d] = T.if_then_else(
+                    i < groups, q[i_c, i_h * groups + T.min(i, groups - 1), d], T.cast(0, dtype)
+                )
+            # Q stays in registers: every step's scores read it.
+            T.copy(q_shared, q_local)
+            T.fill(acc_o, 0)
+            T.fill(logsum, 0)
+            T.fill(scores_max, T.min_value(accum_dtype))
+
+            tx = T.get_thread_binding()
+            end = first + live_slots
+
+            for p in T.unroll(num_stages - 1):
+                if p < n_steps:
+                    issue(
+                        k,
+                        v,
+                        block_indices,
+                        k_shared,
+                        v_shared,
+                        i_c,
+                        i_h,
+                        tx,
+                        first,
+                        end,
+                        limit,
+                        bos_k,
+                        p,
+                        p,
+                    )
+                T.ptx_commit_group()
+            for j in T.serial(n_steps):
+                if j + num_stages - 1 < n_steps:
+                    issue(
+                        k,
+                        v,
+                        block_indices,
+                        k_shared,
+                        v_shared,
+                        i_c,
+                        i_h,
+                        tx,
+                        first,
+                        end,
+                        limit,
+                        bos_k,
+                        j + num_stages - 1,
+                        (j + num_stages - 1) % num_stages,
+                    )
+                T.ptx_commit_group()
+                T.ptx_wait_group(num_stages - 1)
+                T.sync_threads()
+                st = j % num_stages
+                slot0 = first + j * blocks_per_step
+                T.clear(acc_s)
+                T.gemm(
+                    q_local,
+                    k_shared[st, :, :],
+                    acc_s,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullCol,
+                )
+                # The online softmax over unscaled scores: the max is taken first and only
+                # a score's distance below it is scaled (scaled_gap), so equal scores cancel
+                # exactly and no finite score overflows. A key the selection does not reach scores the
+                # lowest finite value, which no reached key's max can fall below, and weighs
+                # exactly zero.
+                for i, r in T.Parallel(rows, step_n):
+                    seen[i, r] = T.if_then_else(
+                        visible(block_indices, i_c, i_h, slot0, r, end, limit), 1, 0
+                    )
+                    acc_s[i, r] = T.if_then_else(
+                        seen[i, r] > 0, acc_s[i, r], T.min_value(accum_dtype)
+                    )
+                T.copy(scores_max, scores_max_prev)
+                T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+                for i in T.Parallel(rows):
+                    scores_scale[i] = T.exp2(
+                        scaled_gap(scores_max_prev[i], scores_max[i], scale_root)
+                    )
+                for i, r in T.Parallel(rows, step_n):
+                    acc_s[i, r] = T.if_then_else(
+                        seen[i, r] > 0,
+                        T.exp2(scaled_gap(acc_s[i, r], scores_max[i], scale_root)),
+                        0,
+                    )
+                T.reduce_sum(acc_s, scores_sum, dim=1)
+                for i in T.Parallel(rows):
+                    logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+                T.copy(acc_s, p_shared)
+                rescale(acc_o, scores_scale)
+                T.gemm(p_shared, v_shared[st, :, :], acc_o, policy=T.GemmWarpPolicy.FullCol)
+                # The next issue overwrites this stage.
+                T.sync_threads()
+
+        if splits == 1:
+
+            @T.prim_func
+            def _nsa_fwd_varlen_gather_main(
+                q: T.Tensor([c_seq_len, heads, dim], dtype),
+                k: T.Tensor([n_keys, heads_kv, dim], dtype),
+                v: T.Tensor([n_keys, heads_kv, dim], dtype),
+                block_indices: T.Tensor([c_seq_len, heads_kv, selected_blocks], T.int32),
+                block_counts: T.Tensor([c_seq_len, heads_kv], T.int32),
+                offsets: T.Tensor([batch + 1], T.int32),
+                token_indices: T.Tensor([c_seq_len, 2], T.int32),
+                offsets_k: T.Tensor([batch + 1], T.int32),
+                scale_root: T.float32,
+                o: T.Tensor([c_seq_len, heads, dim], dtype),
+            ):
+                # Tokens on grid x: y and z hold at most 65535 blocks.
+                with T.Kernel(c_seq_len, heads_kv, threads=threads) as (i_c, i_h):
+                    acc_o = T.alloc_fragment([rows, dim], accum_dtype)
+                    logsum = T.alloc_fragment([rows], accum_dtype)
+                    scores_max = T.alloc_fragment([rows], accum_dtype)
+                    attend(
+                        q,
+                        k,
+                        v,
+                        block_indices,
+                        block_counts,
+                        offsets,
+                        token_indices,
+                        offsets_k,
+                        scale_root,
+                        i_c,
+                        i_h,
+                        0,
+                        acc_o,
+                        logsum,
+                        scores_max,
+                    )
+                    # A token no selected key reaches outputs zeros.
+                    for i, d in T.Parallel(rows, dim):
+                        if i < groups:
+                            o[i_c, i_h * groups + i, d] = T.if_then_else(
+                                logsum[i] > 0, acc_o[i, d] / logsum[i], 0
+                            )
+
+            return _nsa_fwd_varlen_gather_main
+
+        @T.prim_func
+        def _nsa_fwd_varlen_gather_split(
+            q: T.Tensor([c_seq_len, heads, dim], dtype),
+            k: T.Tensor([n_keys, heads_kv, dim], dtype),
+            v: T.Tensor([n_keys, heads_kv, dim], dtype),
+            block_indices: T.Tensor([c_seq_len, heads_kv, selected_blocks], T.int32),
+            block_counts: T.Tensor([c_seq_len, heads_kv], T.int32),
+            offsets: T.Tensor([batch + 1], T.int32),
+            token_indices: T.Tensor([c_seq_len, 2], T.int32),
+            offsets_k: T.Tensor([batch + 1], T.int32),
+            scale_root: T.float32,
+            max_part: T.Tensor([splits, c_seq_len, heads], accum_dtype),
+            sum_part: T.Tensor([splits, c_seq_len, heads], accum_dtype),
+            o_part: T.Tensor([splits, c_seq_len, heads, dim], accum_dtype),
+            o: T.Tensor([c_seq_len, heads, dim], dtype),
+        ):
+            with T.Kernel(c_seq_len, heads_kv, splits, threads=threads) as (i_c, i_h, i_s):
+                acc_o = T.alloc_fragment([rows, dim], accum_dtype)
+                logsum = T.alloc_fragment([rows], accum_dtype)
+                scores_max = T.alloc_fragment([rows], accum_dtype)
+                attend(
+                    q,
+                    k,
+                    v,
+                    block_indices,
+                    block_counts,
+                    offsets,
+                    token_indices,
+                    offsets_k,
+                    scale_root,
+                    i_c,
+                    i_h,
+                    i_s,
+                    acc_o,
+                    logsum,
+                    scores_max,
+                )
+                for i, d in T.Parallel(rows, dim):
+                    if i < groups:
+                        o_part[i_s, i_c, i_h * groups + i, d] = T.if_then_else(
+                            logsum[i] > 0, acc_o[i, d] / logsum[i], 0
+                        )
+                # Each split's row max and softmax denominator, kept apart: at a large max
+                # the logarithm of the denominator would round away in their sum. A split
+                # no key reached has a zero denominator and weighs nothing in the merge.
+                for i in T.Parallel(rows):
+                    if i < groups:
+                        max_part[i_s, i_c, i_h * groups + i] = scores_max[i]
+                        sum_part[i_s, i_c, i_h * groups + i] = logsum[i]
+
+            # One thread per two value dims of a 256-wide head; narrower heads mask the rest.
+            combine_threads = 128
+            # A one-dimensional fragment needs every thread to own the same number of its
+            # elements, so the accumulator spans the head dim rounded up to the thread count.
+            combine_width = -(-dim // combine_threads) * combine_threads
+
+            with T.Kernel(c_seq_len, heads, threads=combine_threads) as (i_c, i_hq):
+                row_max = T.alloc_local([1], accum_dtype)
+                total = T.alloc_local([1], accum_dtype)
+                weight = T.alloc_local([splits], accum_dtype)
+                o_acc = T.alloc_fragment([combine_width], accum_dtype)
+                row_max[0] = T.min_value(accum_dtype)
+                # Unrolled, so the split statistics load together rather than one by one.
+                for s in T.unroll(splits):
+                    weight[s] = sum_part[s, i_c, i_hq]
+                    if weight[s] > 0:
+                        row_max[0] = T.max(row_max[0], max_part[s, i_c, i_hq])
+                # A split's weight is its denominator in the frame of the largest max.
+                total[0] = 0
+                for s in T.unroll(splits):
+                    weight[s] = T.if_then_else(
+                        weight[s] > 0,
+                        weight[s]
+                        * T.exp2(scaled_gap(max_part[s, i_c, i_hq], row_max[0], scale_root)),
+                        0,
+                    )
+                    total[0] += weight[s]
+                T.clear(o_acc)
+                for s in T.serial(splits):
+                    for d in T.Parallel(combine_width):
+                        if d < dim:
+                            o_acc[d] += o_part[s, i_c, i_hq, d] * weight[s]
+                # A token no split saw a key for outputs zeros.
+                for d in T.Parallel(combine_width):
+                    if d < dim:
+                        o[i_c, i_hq, d] = T.if_then_else(total[0] > 0, o_acc[d] / total[0], 0)
+
+        return _nsa_fwd_varlen_gather_split
+
+    return _nsa_fwd_varlen_gather_func
+
+
 class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
@@ -479,3 +875,193 @@ class NSAFwdVarlenTMAKernel(NSAFwdVarlenKernel):
             self.dtype_str,
             self.accum_dtype_str,
         )(cfg["threads"])
+
+
+class NSAFwdVarlenGatherKernel(Kernel, NSAFwdInterface):
+    """NSA forward for any query group, block size and key layout the MMA tiles.
+
+    Each step gathers the next selected keys row by row, so blocks of a few keys fill a
+    tile; a group under 16 is padded to the MMA's 16 rows. With too few (token, KV head)
+    pairs to fill the device, each pair's selection splits across CTAs and a second kernel
+    merges the splits.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+    general: bool = True
+
+    @classmethod
+    def refusal(cls, call: NSACall) -> str | None:
+        """Head dims the MMA K step tiles, and tiles that fit the device's shared memory."""
+        if call.dim % 16 != 0:
+            return f"head dim {call.dim} is not a multiple of the MMA K step 16"
+        if call.heads > 65535:
+            return f"{call.heads} query heads pass the 65535 blocks of a grid's y axis"
+        # The scale reaches the program as a float32 root of 2 * scale * log2(e), which
+        # must be a normal float32: fast math flushes subnormals.
+        root = math.sqrt(2 * call.scale * LOG2E)
+        if not 2.0**-126 <= root <= (2 - 2.0**-23) * 2.0**127:
+            return f"scale {call.scale} has no normal float32 root of 2 * scale * log2(e)"
+        if cls._placement(call) is None:
+            return (
+                f"no step of whole {call.block_size}-key blocks is a multiple of the 16-key "
+                f"MMA tile and fits head dim {call.dim} in {call.smem_budget} bytes of shared "
+                "memory"
+            )
+        return super().refusal(call)
+
+    @staticmethod
+    def _placement(call: NSACall) -> tuple[dict, int] | None:
+        """The config whose steps keep the most gathered key rows in flight per SM, and how
+        many of its CTAs an SM holds; ``None`` where no step fits.
+
+        A gather is bound by the latency of row-sized loads from L2, so what counts is the
+        rows in flight across the CTAs an SM holds: two warps per CTA and two stages, the
+        step width trading rows per CTA against CTAs per SM; a tie keeps the wider step.
+        """
+        element = torch.finfo(call.dtype).bits // 8
+        rows = -(-(call.heads // call.heads_kv) // 16) * 16
+        best, best_rows = None, 0
+        for block_n in (64, 32, 16):
+            # Two warps split a step's keys for the scores and the value dims for P V; two
+            # stages overlap one step's copies with the last one's MMAs. A deeper ring or
+            # more warps cost CTAs per SM, which a gather needs more.
+            config = {"block_n": block_n, "num_stages": 2, "threads": 64}
+            step_n = max(1, block_n // call.block_size) * call.block_size
+            # The staged Q rows, the K and V tiles of every stage, and the softmax weights.
+            tiles = 2 * config["num_stages"] * step_n * call.dim
+            smem = (rows * call.dim + tiles + rows * step_n) * element
+            # The MMA tiles 16 keys, and the step's 16-byte copies divide over the threads.
+            copies = step_n * call.dim // 8
+            if step_n % 16 or copies % config["threads"] or smem > call.smem_budget:
+                continue
+            ctas = min(call.smem_per_sm // smem, call.threads_per_sm // config["threads"])
+            if ctas * step_n > best_rows:
+                best, best_rows = (config, ctas), ctas * step_n
+        return best
+
+    @classmethod
+    def entry_for(cls, call: NSACall) -> Entry:
+        config, ctas = cls._placement(call)
+        # Split each selection until the (token, KV head) pairs fill every resident slot
+        # of the device, while each split keeps a step of keys. The count rounds up to a
+        # power of two: the split count keys the program, and a decode batch of any size
+        # reuses one of a few.
+        steps = -(-call.selected_blocks // max(1, config["block_n"] // call.block_size))
+        fill = -(-call.sm_count * ctas // (call.c_seq_len * call.heads_kv))
+        splits = max(1, min(1 << (fill - 1).bit_length(), steps))
+        args = dict(
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            dim=call.dim,
+            is_causal=call.is_causal,
+            separate_keys=call.separate_keys,
+            scale=call.scale,
+            block_size=call.block_size,
+            selected_blocks=call.selected_blocks,
+            splits=splits,
+            dtype=call.dtype,
+            accum_dtype=torch.float32,
+        )
+        # The request count and the per-request lengths are dynamic in the program; the
+        # token count reaches the entry only through the split count.
+        key = (*args.values(), *config.values())
+        return key, lambda: cls(**args, config=config)
+
+    def __init__(
+        self,
+        heads: int,
+        heads_kv: int,
+        dim: int,
+        is_causal: bool,
+        separate_keys: bool,
+        scale: float,
+        block_size: int,
+        selected_blocks: int,
+        splits: int,
+        dtype: torch.dtype,
+        accum_dtype: torch.dtype,
+        config: dict,
+    ) -> None:
+        super().__init__()
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.dim = dim
+        self.is_causal = is_causal
+        self.separate_keys = separate_keys
+        self.scale = scale
+        self._scale_root = math.sqrt(2 * scale * LOG2E)
+        self.block_size = block_size
+        self.selected_blocks = selected_blocks
+        self.splits = splits
+        self.dtype = dtype
+        self.accum_dtype = accum_dtype
+        self.accum_dtype_str = self.dtype_to_str(self.accum_dtype)
+        self._config = config
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        return dict(self._config)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        block_indices: torch.Tensor,
+        block_counts: torch.Tensor,
+        offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+        offsets_k: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        offsets_k = offsets if offsets_k is None else offsets_k
+        program = self.program(self._compile)
+        if self.splits == 1:
+            return program(
+                q,
+                k,
+                v,
+                block_indices,
+                block_counts,
+                offsets,
+                token_indices,
+                offsets_k,
+                self._scale_root,
+            )
+        c_seq_len = q.shape[0]
+        max_part = torch.empty(
+            (self.splits, c_seq_len, self.heads), dtype=torch.float32, device=q.device
+        )
+        sum_part = torch.empty_like(max_part)
+        o_part = torch.empty(
+            (self.splits, c_seq_len, self.heads, self.dim), dtype=torch.float32, device=q.device
+        )
+        return program(
+            q,
+            k,
+            v,
+            block_indices,
+            block_counts,
+            offsets,
+            token_indices,
+            offsets_k,
+            self._scale_root,
+            max_part,
+            sum_part,
+            o_part,
+        )
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return _nsa_fwd_varlen_gather_kernel(
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.is_causal,
+            self.separate_keys,
+            self.block_size,
+            self.selected_blocks,
+            self.splits,
+            self.dtype_str,
+            self.accum_dtype_str,
+        )(cfg["block_n"], cfg["num_stages"], cfg["threads"])

@@ -67,7 +67,11 @@ from tileops._kernels.attention.nsa.compressed_varlen import (
     NSACompressedFwdVarlenTMAKernel,
 )
 from tileops._kernels.attention.nsa.topk_varlen import NSATopKVarlenKernel
-from tileops._kernels.attention.nsa.varlen import NSAFwdVarlenKernel, NSAFwdVarlenTMAKernel
+from tileops._kernels.attention.nsa.varlen import (
+    NSAFwdVarlenGatherKernel,
+    NSAFwdVarlenKernel,
+    NSAFwdVarlenTMAKernel,
+)
 from tileops._kernels.attention.paged_cache_gather import (
     PagedKVCacheGatherCall,
     PagedKVCacheGatherFwdInterface,
@@ -138,6 +142,7 @@ __all__ = [
     "MergeAttentionStatesKernel",
     "NSACompressedFwdVarlenKernel",
     "NSACompressedFwdVarlenTMAKernel",
+    "NSAFwdVarlenGatherKernel",
     "NSAFwdVarlenKernel",
     "NSAFwdVarlenTMAKernel",
     "NSATopKVarlenKernel",
