@@ -163,12 +163,13 @@ def _rope_positions_kernel(
     pairs; or ``tail_vec`` columns past ``rotary_dim``, copied. A token's query units come
     before its key units, so one launch serves both. A block holds ``threads * units`` units
     of one token, ``units`` a thread, and reads the token's position once; consecutive
-    blocks walk a token's parts, then the next token's. Where a head has copied columns and
-    a thread holds several units, it loads all of them before it stores any; otherwise it
-    loads and stores one unit at a time. ``rot_vec`` and ``tail_vec`` divide
-    every column offset they start at, so each unit moves as vectors. Each block clamps the
-    token's position into the table once, before its table loads, so a position outside the
-    table reads the nearest row. The arithmetic is f32 and rounds once.
+    blocks walk a token's parts, then the next token's. Where the row adds an offset, a thread
+    of one unit loads its columns before the token's position. Where a head has copied
+    columns, a thread of several units loads all of them before it stores any. Otherwise a
+    thread loads and stores one unit at a time. ``rot_vec`` and ``tail_vec`` divide every
+    column offset they start at, so each unit moves as vectors. Each block clamps the token's
+    position into the table once, before its table loads, so a position outside the table
+    reads the nearest row. The arithmetic is f32 and rounds once.
     """
     half = rotary_dim // 2
     width, rot_units, tail_units = _head_units(neox, head_size, rotary_dim, rot_vec, tail_vec)
@@ -190,8 +191,9 @@ def _rope_positions_kernel(
 
         @T.macro
         def move_unit(r, row, x, y, token, head, slot, cos_table, sin_table, regs, load, store):
-            # Thread unit r: load reads its columns and cos/sin row into regs, store rotates and
-            # writes them; with regs None the unit takes registers of its own, at index 0.
+            # Thread unit r: load reads its columns into regs, a row reads its cos/sin row, store
+            # rotates and writes them; with regs None the unit takes registers of its own, at
+            # index 0.
             if regs is None:
                 r = 0
                 regs = (
@@ -219,6 +221,7 @@ def _rope_positions_kernel(
                     if neox:
                         for j in T.vectorized(width):
                             hi[r * width + j] = x[token, low + half + j]
+                if row is not None:
                     for j in T.vectorized(table_width):
                         cs[r * table_width + j] = cos_table[row, first + j]
                     for j in T.vectorized(table_width):
@@ -267,7 +270,7 @@ def _rope_positions_kernel(
             part,
         ):
             # move_unit on each of the thread's units, in the query or the key; row is the
-            # token's table row buffer, or None where no unit loads.
+            # token's table row buffer, or None where no unit reads the tables.
             shared = (cos_table, sin_table, regs, load, store)
             for r in T.unroll(units):
                 within = (part * units + r) * threads + T.get_thread_binding()
@@ -295,30 +298,42 @@ def _rope_positions_kernel(
                     )
 
         @T.macro
-        def rotate_token(
-            positions, offsets, query, key, cos_table, sin_table, query_out, key_out, token, part
-        ):
-            # The position first: the table loads wait on it, and the input loads issued
-            # behind it overlap that wait.
-            row = T.alloc_local([1], "int64" if offset_dtype else position_dtype)
+        def table_row(positions, offsets, token, row):
             if offset_dtype:
                 seen = T.Cast("int64", positions[token]) + T.Cast("int64", offsets[token])
                 row[0] = T.max(0, T.min(seen, max_position - 1))
             else:
                 row[0] = T.max(0, T.min(positions[token], max_position - 1))
+
+        @T.macro
+        def rotate_token(
+            positions, offsets, query, key, cos_table, sin_table, query_out, key_out, token, part
+        ):
+            row = T.alloc_local([1], "int64" if offset_dtype else position_dtype)
             tensors = (query, key, cos_table, sin_table, query_out, key_out, token, part)
-            if tail_units == 0 or units == 1:
+            if (tail_units == 0 and units > 1) or (units == 1 and not offset_dtype):
+                table_row(positions, offsets, token, row)
                 each_unit(row, None, True, True, *tensors)
             else:
-                # A warp can hold rotating and copying units, each path waiting out a load-to-store
-                # round trip a unit; a copied run takes a rotating unit's low-column registers.
+                # A copied run takes a rotating unit's low-column registers.
                 lo = T.alloc_local([units * run], dtype)
                 hi = T.alloc_local([units * width], dtype)
                 cs = T.alloc_local([units * table_width], dtype)
                 sn = T.alloc_local([units * table_width], dtype)
                 regs = (lo, hi, cs, sn, lo)
-                each_unit(row, regs, True, False, *tensors)
-                each_unit(None, regs, False, True, *tensors)
+                if units == 1:
+                    # The row adds an offset: the columns load first, so their loads overlap the
+                    # position's and the offset's, which ptxas waits out at the clamp before any
+                    # load issued after it.
+                    each_unit(None, regs, True, False, *tensors)
+                    table_row(positions, offsets, token, row)
+                    each_unit(row, regs, False, True, *tensors)
+                else:
+                    # A warp can hold rotating and copying units, each path waiting out a
+                    # load-to-store round trip a unit.
+                    table_row(positions, offsets, token, row)
+                    each_unit(row, regs, True, False, *tensors)
+                    each_unit(None, regs, False, True, *tensors)
 
         if offset_dtype:
 

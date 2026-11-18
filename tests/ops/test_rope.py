@@ -172,12 +172,17 @@ def test_rope_takes_batched_positions_and_a_query_alone() -> None:
     compare_outputs(got_q, ref_q, rope_verification())
 
 
-@pytest.mark.smoke
-def test_longrope_reads_the_row_positions_plus_offsets_name() -> None:
-    dtype = torch.float16
+@pytest.mark.parametrize(
+    ("dtype", "offset_dtype"),
+    [
+        pytest.param(torch.float16, torch.int64, marks=pytest.mark.smoke, id="f16-int64"),
+        pytest.param(torch.float32, torch.int32, marks=pytest.mark.smoke, id="f32-int32"),
+    ],
+)
+def test_longrope_reads_the_row_positions_plus_offsets_name(dtype, offset_dtype) -> None:
     op, params = _op("LongRoPEFwdOp", dtype)
     positions, query, key = _inputs("LongRoPEFwdOp", params, 32, 4, 4, dtype, first=10)
-    offsets = torch.full_like(positions, 4096)
+    offsets = torch.full_like(positions, 4096, dtype=offset_dtype)
     got_q, got_k = op(positions, query, key, offsets)
     ref_q, ref_k = _reference("LongRoPEFwdOp", params, positions, query, key, offsets)
     compare_outputs(got_q, ref_q, rope_verification())
