@@ -302,7 +302,8 @@ def _enumerate(
         ring = (128 + bn) * bk * 2
         best = None
         for sn in (bn, bn // 2, bn // 4):
-            if sn < 32 or bn % sn:
+            # The coop2 epilogue stores whole chunks of 8 columns.
+            if sn < 32 or bn % sn or sn % 8:
                 continue
             staging = 2 * 64 * sn * out_bytes
             ns = min(ns_cap["coop2"], (BLOCK_SHARED_BYTES_OPT_IN[90] - staging) // ring)
@@ -385,7 +386,15 @@ def _enumerate(
                         cluster_m=cluster_m,
                     )
                 )
-    for bn in (64, 128, 176, 192, 256):
+    # The narrowest coop2 width whose grid of 128-row tiles fits one wave, among the widths
+    # the coop2 kernel issues as one WGMMA per 16 of K: those dividing 256, which
+    # ``T.wgmma_gemm`` issues whole, and those ``dense_wgmma_helper.h`` names.
+    one_wave = None
+    if nt:
+        rows = math.ceil(m / 128)
+        widths = (64, 128, 144, 160, 176, 192, 224, 240, 256)
+        one_wave = next((w for w in widths if rows * math.ceil(n / w) <= sm_count), None)
+    for bn in sorted({64, 128, 176, 192, 256, one_wave or 256}):
         for bk in (32, 64, 128):
             # 176 fills the waves of some N that 192 and 256 leave a partial last
             # wave. Only as whole tiles: with an N tail its extra tiles each pay an
@@ -400,7 +409,10 @@ def _enumerate(
                 continue
             coop2_ok = bn == 256 or (nt and bn >= 176)
             mn_tiles = math.ceil(m / 128) * math.ceil(n / bn)
-            if coop2_ok and mn_tiles >= sm_count:
+            # At 128 or narrower a coop2 tile scores as the basic tile of its width listed above,
+            # which a tie keeps. A width 256 does not divide is one WGMMA only over 64-wide K steps.
+            one_wave_ok = bn == one_wave and bn > 128 and (bk == 64 or 256 % bn == 0)
+            if (coop2_ok and mn_tiles >= sm_count) or one_wave_ok:
                 out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
             if nt:
                 k_iters = math.ceil(k / bk)
