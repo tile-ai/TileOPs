@@ -159,8 +159,6 @@ def _select_config(
     if exchange_free:
         uw = 1
         ctas = -(-n // WGMMA_ROWS)
-        if ctas > sm_count:
-            raise ValueError(f"{ctas} row tiles of n={n} exceed one wave of {sm_count} SMs")
     for st in range(stages, 1, -1):
         cfg = dict(
             block_tokens=nt,
