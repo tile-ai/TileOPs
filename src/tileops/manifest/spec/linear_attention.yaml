@@ -77,7 +77,8 @@ GDNFwdOp:
   # sequence n has L slots: it starts from slot state_indices[n, num_accepted_tokens[n] - 1]
   # and the state after its token t goes to slot state_indices[n, t], a sequence holding at
   # most L tokens. A slot of -1 (vLLM's PAD_SLOT_ID) is never written; a sequence
-  # starting from it has unspecified outputs and leaves unspecified states in its other slots.
+  # starting from it has unspecified outputs and leaves unspecified states in its other slots,
+  # where vLLM's kernel writes none of that sequence's slots.
   # The other slots a call writes are distinct; every other slot index names a state, vLLM's
   # null slot 0 is not declared.
   family: linear_attention

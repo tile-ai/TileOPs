@@ -2904,8 +2904,8 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
     ],
 )
 def test_gemm_w4a16_deferred_scale_tiles_match_the_reference(m: int, n: int, k: int) -> None:
-    """Each program the deferred-scale selection reaches on 132 SMs (the paired tile, the kept
-    tile, a kept or paired stream-K pick and ragged rows) matches the reference."""
+    """On 132 SMs the paired two-way split, the kept split, the kept and paired stream-K picks
+    and ragged rows of the deferred-scale selection match the reference."""
     if get_sm_count(torch.device(run_device()).index) != 132:
         pytest.skip("the op selects on the device's SMs, and the programs checked count 132")
     test = GEMMW4A16Test(m, n, k, torch.float16)
