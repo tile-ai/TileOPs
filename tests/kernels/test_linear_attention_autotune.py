@@ -1,4 +1,5 @@
-"""Sweep behaviour of the shared delta-rule forward autotune helper.
+"""Sweep behaviour of the shared delta-rule forward autotune helper, and the launch-width
+rule (``gemm_threads``) that narrows its candidates.
 
 The real sweep compiles fifteen kernels, so the selection logic is checked here
 against stub JIT builders: which candidates reach the autotuner, which sub-kernel
@@ -14,6 +15,7 @@ import pytest
 
 from tileops._kernels.linear_attention.deltanet import autotune as la
 from tileops._kernels.linear_attention.deltanet import chunk_fwd as deltanet_fwd
+from tileops._kernels.linear_attention.v_tile import fit_launches, gemm_threads
 
 pytestmark = pytest.mark.smoke
 
@@ -113,10 +115,52 @@ def test_every_candidate_is_swept_and_the_winner_lands_in_its_key() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("threads", "wgmma", "outputs", "expected"),
+    [
+        # MMA: a 16 x 24 output splits over one warp only, three 8-column tiles over none.
+        (256, False, [(16, 24)], 32),
+        (256, False, [(16, 48)], 64),
+        (256, False, [(32, 24)], 32),
+        (256, False, [(64, 16)], 256),
+        # WGMMA: four warps split M by 64, the rest split N by 16 a warp group.
+        (256, True, [(64, 16)], 128),
+        (256, True, [(64, 32)], 256),
+        # M below 64 takes MMA's rule even where WGMMA is available.
+        (256, True, [(16, 64)], 256),
+        # The narrowest output bounds the launch.
+        (256, True, [(64, 64), (16, 24)], 32),
+    ],
+    ids=[
+        "mma-c16-v24",
+        "mma-c16-v48",
+        "mma-c32-v24",
+        "mma-m64-n16",
+        "wgmma-m64-n16",
+        "wgmma-m64-n32",
+        "wgmma-m16-mma",
+        "narrowest-output",
+    ],
+)
+def test_gemm_threads_fits_every_warp_on_every_output(threads, wgmma, outputs, expected) -> None:
+    assert gemm_threads(threads, wgmma, *outputs) == expected
+
+
+def test_fit_launches_narrows_each_config_and_drops_repeats() -> None:
+    configs = [
+        {"num_stages": 1, "threads": 256},
+        {"num_stages": 1, "threads": 128},
+        {"num_stages": 2, "threads": 256},
+    ]
+    assert fit_launches(configs, True, (64, 16)) == (
+        {"num_stages": 1, "threads": 128},
+        {"num_stages": 2, "threads": 128},
+    )
+
+
 @pytest.mark.parametrize("dim_v", [24, 48, 64])
 def test_chunk_16_sweep_and_default_stay_in_the_declared_candidates(monkeypatch, dim_v) -> None:
-    """At chunk16 the 16-by-16 GEMMs hold two warp tiles, so preparation and output take at
-    most two warps, and every column split divides the 8-column tiles."""
+    """At chunk16 the default config and the tuned one are declared candidates."""
     kernel = _StubKernel(chunk_size=16, dim_v=dim_v)
     default = deltanet_fwd.DeltaNetChunkFwdKernel._default_config_for(
         99 * 1024, 16, 64, dim_v, 2, True
@@ -126,20 +170,12 @@ def test_chunk_16_sweep_and_default_stay_in_the_declared_candidates(monkeypatch,
         kernel.dim_v, kernel.chunk_size, kernel.dim_k, kernel.wgmma
     )
 
-    for config in declared:
-        for key in ("fused_threads", "o_threads"):
-            warps = config[key] // 32
-            assert 0 < warps <= 2
-            assert (dim_v // 8) % warps == 0
-        width = config["h_block_v"] or dim_v
-        assert (width // 8) % (config["h_threads"] // 32) == 0
     assert default in declared
     assert _run(kernel) in declared
 
 
-def test_small_walk_declares_only_state_tiles_with_enough_warp_owners() -> None:
-    """A K16 state tile holds one 16-row warp tile, so the walk takes at most one warp per 8
-    columns."""
+def test_small_walk_default_is_a_declared_candidate() -> None:
+    """A K16 walk's default config is one of its autotune candidates."""
     kernel = object.__new__(deltanet_fwd.DeltaNetChunkFwdKernel)
     kernel.batch, kernel.head, kernel.seq_len = 1, 2, 64
     kernel.chunk_size, kernel.dim_k, kernel.dim_v = 16, 16, 64
@@ -150,9 +186,6 @@ def test_small_walk_declares_only_state_tiles_with_enough_warp_owners() -> None:
     kernel.config = kernel.default_config
 
     assert kernel.config in kernel.autotune_configs
-    for config in kernel.autotune_configs:
-        capacity = 32 * (kernel.dim_k // 16) * (config["h_block_v"] // 8)
-        assert 0 < config["h_threads"] <= capacity
 
 
 def test_unmeasured_narrow_width_uses_its_own_thread_limit(monkeypatch) -> None:
