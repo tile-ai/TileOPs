@@ -74,19 +74,47 @@ def test_topk_select_op(
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("fill_value", [None, -1], ids=["fill-default", "fill-minus-one"])
 @pytest.mark.parametrize("width", [0, 5, 32], ids=["empty", "short", "exactly-topk"])
-def test_topk_select_returns_a_short_window_whole(width: int) -> None:
-    """A window with at most ``topk`` keys selects all of them and pads with ``seq_len_kv``."""
+def test_topk_select_returns_a_short_window_whole(width: int, fill_value: int | None) -> None:
+    """A window with at most ``topk`` keys selects all of them and pads with ``fill_value``."""
     batch, seq_len, seq_len_kv, topk = 2, 16, 256, 32
     scores = torch.randn(batch, seq_len, seq_len_kv, 1, device=run_device())
     starts = torch.full((batch, seq_len), 7, dtype=torch.int32, device=run_device())
     ends = starts + width
-    out = TopKSelectFwdOp(top_k=topk)(scores, starts, ends)
-    expected = list(range(7, 7 + width)) + [seq_len_kv] * (topk - width)
+    out = TopKSelectFwdOp(top_k=topk, fill_value=fill_value)(scores, starts, ends)
+    fill = seq_len_kv if fill_value is None else fill_value
+    expected = sorted(list(range(7, 7 + width)) + [fill] * (topk - width))
     assert (out.sort(dim=-1).values == torch.tensor(expected, device=run_device())).all()
-    workload = TopKSelectWorkload(batch, seq_len, seq_len_kv, 1, topk, torch.float32, torch.int32)
+    workload = TopKSelectWorkload(
+        batch, seq_len, seq_len_kv, 1, topk, torch.float32, torch.int32, fill_value
+    )
     reference = workload.ref_program(scores, starts, ends)
     compare_outputs(out, reference, workload.verification(scores, starts, ends))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("fill_value", [None, -1], ids=["fill-default", "fill-minus-one"])
+@pytest.mark.parametrize("seq_len_kv", [0, 1, 25, 511], ids=lambda n: f"keys{n}")
+def test_topk_select_top_k_above_the_keys(seq_len_kv: int, fill_value: int | None) -> None:
+    """Fewer keys than ``top_k``: each row selects its whole window and fills the rest.
+
+    DeepSeek-V4-Flash's indexer takes the top 512 of a short context's compressed keys, none
+    for a context under four tokens; each query sees a prefix of them.
+    """
+    batch, seq_len, kv_group, topk = 2, 16, 2, 512
+    scores = torch.randn(batch, seq_len, seq_len_kv, kv_group, device=run_device())
+    ends = torch.linspace(0, seq_len_kv, seq_len, device=run_device()).to(torch.int32)
+    ends = ends.expand(batch, seq_len).contiguous()
+    starts = torch.zeros_like(ends)
+    starts[1] = ends[1] // 3
+    out = TopKSelectFwdOp(top_k=topk, fill_value=fill_value)(scores, starts, ends)
+    workload = TopKSelectWorkload(
+        batch, seq_len, seq_len_kv, kv_group, topk, torch.float32, torch.int32, fill_value
+    )
+    compare_outputs(
+        out, workload.ref_program(scores, starts, ends), workload.verification(scores, starts, ends)
+    )
 
 
 @pytest.mark.smoke
