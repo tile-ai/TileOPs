@@ -708,7 +708,7 @@ def test_max_min_nan_propagation(op_cls, torch_ref, dtype: torch.dtype) -> None:
     )
 
 
-# Maximum/Minimum signed-zero regression tests
+# Maximum/Minimum signed zero
 
 
 class SignedZeroFixture(FixtureBase):
@@ -987,7 +987,7 @@ def test_max_min_optimized_large(op_cls, torch_ref, n_total: int, dtype: torch.d
     compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (a, b)).verification(*(a, b)))
 
 
-# register_copy broadcast downgrade regression test
+# register_copy broadcast downgrade
 
 
 # request_tune() reaches the autotuner

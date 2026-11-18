@@ -59,7 +59,7 @@ class SoftmaxFixture(FixtureBase):
                 pytest.param((4, 512), -1, torch.float32, False, marks=pytest.mark.smoke),
                 # A 2 KB row on a warp, tail-M: the last CTA's warps past M store nothing.
                 pytest.param((5, 512), -1, torch.float32, False, marks=pytest.mark.full),
-                # request_tune() regression: kernel must be built before autotune runs
+                # request_tune(): the kernel is built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
@@ -193,7 +193,7 @@ class LogSoftmaxFixture(FixtureBase):
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # request_tune() regression: kernel must be built before autotune runs
+                # request_tune(): the kernel is built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
@@ -329,7 +329,7 @@ class LogSumExpFixture(FixtureBase):
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # request_tune() regression: kernel must be built before autotune runs
+                # request_tune(): the kernel is built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1: dtypes x pow2/non-pow2
                 pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
@@ -716,8 +716,7 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
     compare_outputs(y3, y3_ref, softmax_verification(y3.dtype, logarithmic=True))
 
 
-# Roofline regression: LogSoftmax FLOPs must equal 5 * M * N (not 6 * M * N).
-# Direct construction — no manifest-string indirection.
+# LogSoftmax FLOPs equal 5 * M * N.
 
 
 @pytest.mark.smoke

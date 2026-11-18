@@ -353,10 +353,7 @@ def test_register_fake_fused_gated_shape(M, N, dtype):
     assert out.dtype == dtype
 
 
-# Exhaustive compile-smoke: every registered op
-# These tests instantiate and torch.compile each op to verify that the
-# custom_op registration, register_fake, and CUDA codegen all succeed.
-# They are marked "smoke" so CI catches registration regressions early.
+# Every registered op compiles: custom_op registration, register_fake and codegen succeed.
 
 _DTYPE = torch.float16
 
