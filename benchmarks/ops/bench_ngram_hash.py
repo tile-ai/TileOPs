@@ -1,9 +1,9 @@
-"""N-gram hashes and context commits against the independent torch baseline."""
+"""N-gram hashes and context commits against torch eager and torch.compile."""
 
 import pytest
 
 from benchmarks import api as bench
-from benchmarks.baselines import private_inputs
+from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference, private_inputs
 from tileops.sequence_modeling import NGramHashFwdOp
 
 
@@ -12,6 +12,7 @@ def test_ngram_hash_bench(case):
     op = NGramHashFwdOp(**case.arguments)
     bench.Runner(op, case).compare(
         {
-            "torch-ref": private_inputs(case.torch, case.inputs, 1),
+            "torch": private_inputs(case.torch, case.inputs, 1),
+            TORCH_COMPILE_TAG: private_inputs(compiled_reference(case.torch), case.inputs, 1),
         }
     )

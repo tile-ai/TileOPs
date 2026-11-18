@@ -6,7 +6,13 @@ from workloads.device import run_device
 from workloads.numerics import Exact
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["NGramHashWorkload", "NGramHashWorkloadCall", "ngram_hash", "ngram_hash_result"]
+__all__ = [
+    "NGramHashWorkload",
+    "NGramHashWorkloadCall",
+    "ngram_hash",
+    "ngram_hash_batched",
+    "ngram_hash_result",
+]
 
 
 def _shift_right_ignore_eos(tokens: torch.Tensor, shift: int, eos: int) -> torch.Tensor:
@@ -93,6 +99,94 @@ def ngram_hash(
         if results
         else input_ids.new_empty((0, *input_ids.shape[1:], primes.shape[0]))
     )
+
+
+def ngram_hash_batched(
+    input_ids: torch.Tensor,
+    context: torch.Tensor,
+    multipliers: torch.Tensor,
+    primes: torch.Tensor,
+    offsets: torch.Tensor,
+    eos_token_id: int,
+    cu_seqlens: torch.Tensor | None = None,
+    context_indices: torch.Tensor | None = None,
+    num_accepted_tokens: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """:func:`ngram_hash` over every sequence at once, without a host loop or sync.
+
+    Each sequence's ``n - 1`` history tokens are laid before its call tokens in one stream;
+    the EOS bound is a running maximum of EOS positions floored at each sequence's start, so
+    the computation is one graph that ``torch.compile`` captures whole.
+    """
+    n, heads = multipliers.shape[0], primes.shape[0]
+    hist, per_order = n - 1, heads // (n - 1)
+    device, width = input_ids.device, context.shape[1]
+    if cu_seqlens is None:
+        batch, length = input_ids.shape
+        tokens = input_ids.reshape(-1)
+        lengths = torch.full((batch,), length, dtype=torch.int64, device=device)
+        starts = torch.arange(batch, dtype=torch.int64, device=device) * length
+    else:
+        batch = cu_seqlens.shape[0] - 1
+        tokens = input_ids
+        bounds = cu_seqlens.to(torch.int64)
+        lengths, starts = bounds[1:] - bounds[:-1], bounds[:-1]
+    total = tokens.shape[0]
+    if batch == 0 or total == 0:
+        return input_ids.new_empty((*input_ids.shape, heads))
+    slots = (
+        torch.arange(batch, device=device)
+        if context_indices is None
+        else context_indices.to(torch.int64)
+    )
+    first = (
+        torch.zeros(batch, dtype=torch.int64, device=device)
+        if num_accepted_tokens is None
+        else num_accepted_tokens.to(torch.int64) - 1
+    )
+    # The stream: per sequence, its history then its tokens; j is the place in the sequence.
+    stream_len = lengths + hist
+    begin = torch.cumsum(stream_len, 0) - stream_len
+    size = total + batch * hist
+    seq = torch.repeat_interleave(torch.arange(batch, device=device), stream_len, output_size=size)
+    p = torch.arange(size, device=device)
+    j = p - begin[seq]
+    history = context[slots[seq], (first[seq] + j).clamp(0, width - 1)]
+    token = tokens[(starts[seq] + j - hist).clamp(0, total - 1)]
+    stream = torch.where(j < hist, history, token)
+    # The last EOS before each place, floored at the sequence start.
+    floor = begin[seq] - 1
+    eos_at = torch.cummax(torch.where(stream == eos_token_id, p, floor), 0).values
+    previous_eos = torch.maximum(torch.cat((eos_at.new_full((1,), -1), eos_at[:-1])), floor)
+    mixed = stream * multipliers[0]
+    blocks = []
+    for shift in range(1, n):
+        valid = (p - (previous_eos + 1) >= shift) & (j >= shift)
+        source = stream[(p - shift).clamp_min(0)]
+        shifted = torch.where(valid, source, torch.full_like(source, eos_token_id))
+        mixed = torch.bitwise_xor(mixed, shifted * multipliers[shift])
+        heads_of_order = slice((shift - 1) * per_order, shift * per_order)
+        blocks.append(
+            torch.remainder(mixed.unsqueeze(-1), primes[heads_of_order]) + offsets[heads_of_order]
+        )
+    ids = torch.cat(blocks, dim=-1)
+    token_seq = torch.repeat_interleave(
+        torch.arange(batch, device=device), lengths, output_size=total
+    )
+    ids = ids[torch.arange(total, device=device) + (token_seq + 1) * hist]
+    # Write back the kept history; places that keep nothing land on a spare last element.
+    if num_accepted_tokens is None:
+        column = j - (stream_len[seq] - hist)
+        kept = column >= 0
+    else:
+        column = j - 1
+        kept = j >= 1
+    kept &= lengths[seq] > 0
+    spare = context.shape[0] * width
+    target = torch.where(kept, slots[seq] * width + column.clamp(0, width - 1), spare)
+    flat = torch.cat((context.reshape(-1), context.new_zeros(1))).scatter(0, target, stream)
+    context.copy_(flat[:spare].view(context.shape))
+    return ids.view(*input_ids.shape, heads)
 
 
 def ngram_hash_result(subject, *inputs):
@@ -221,7 +315,7 @@ class NGramHashWorkload(WorkloadBase):
         num_accepted_tokens=None,
     ):
         """The torch computation on private context, reset by the benchmark."""
-        ids = ngram_hash(
+        ids = ngram_hash_batched(
             input_ids,
             context,
             multipliers,
