@@ -217,9 +217,9 @@ def tensorless_device(op):
     return current_device()
 
 
-def _check_offsets(name: str, offsets, total: int) -> list:
-    """Check on the CPU that *offsets* start at 0, never decrease and end at *total*, and
-    return their values.
+def _check_offsets(name: str, offsets, total: int, longest: int | None = None) -> list:
+    """Check on the CPU that *offsets* start at 0, never decrease and end at *total*, and, given
+    *longest*, that no two adjacent offsets differ by more; return their values.
 
     Raises:
         ValueError: The offsets break one of the rules; the message names the input.
@@ -231,6 +231,10 @@ def _check_offsets(name: str, offsets, total: int) -> list:
         raise ValueError(f"{name}[-1] must equal {total}")
     if any(end < start for start, end in zip(bounds[:-1], bounds[1:], strict=True)):
         raise ValueError(f"{name} must be non-decreasing")
+    if longest is not None and any(
+        end - start > longest for start, end in zip(bounds[:-1], bounds[1:], strict=True)
+    ):
+        raise ValueError(f"{name} must hold no segment longer than {longest}")
     return bounds
 
 
@@ -1047,9 +1051,10 @@ def _contents_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
     """`contents(_c, inputs)` at one point, or None: the `validate_inputs` check of the
     passed inputs' `requires` that read tensor contents.
 
-    Each input whose `requires` holds `prefix_offsets` is checked against its bound, and each
-    other passed input declaring the same `values` is checked equal to it; each `in_range`
-    bound is checked on its input. None where the signature declares no `validate_inputs`.
+    Each input whose `requires` holds `prefix_offsets` is checked against its bound and its
+    `max_segment`, and each other passed input declaring the same `values` is checked equal to
+    it; each `in_range` bound is checked on its input. None where the signature declares no
+    `validate_inputs`.
     """
     if "validate_inputs" not in sig.params:
         return None
@@ -1061,6 +1066,12 @@ def _contents_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
         for call in b.requires.get(t, ())
         if callee(call.func) == "prefix_offsets"
     }
+    longest = {
+        t: call.args[0]
+        for t in bounds
+        for call in b.requires.get(t, ())
+        if callee(call.func) == "max_segment"
+    }
     ranges = [
         (t, call.args)
         for t in present
@@ -1070,7 +1081,11 @@ def _contents_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
     if not bounds and not ranges:
         return None
     read = sorted(
-        set().union(*map(names, bounds.values()), *(names(a) for _, args in ranges for a in args))
+        set().union(
+            *map(names, bounds.values()),
+            *map(names, longest.values()),
+            *(names(a) for _, args in ranges for a in args),
+        )
     )
     lines = ["def contents(_c, inputs):", *(f"    {n} = _c.indices[{n!r}]" for n in read)]
     done = set()
@@ -1079,9 +1094,10 @@ def _contents_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
         if t not in bounds or t in done:
             continue
         values = f"_v{len(done)}"
+        segment = f", {_code(sig, longest[t])}" if t in longest else ""
         lines.append(
             f"    {values} = _check_offsets({t!r}, inputs[{order.index(t)}], "
-            f"{_code(sig, bounds[t])})"
+            f"{_code(sig, bounds[t])}{segment})"
         )
         done.add(t)
         group = next((g for g in groups if t in g), ())

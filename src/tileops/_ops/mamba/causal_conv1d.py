@@ -178,8 +178,9 @@ class CausalConv1dUpdateFwdOp(Op):
             dilation: Tokens between adjacent filter taps.
             max_query_len: The most tokens a sequence holds, with ``query_start_loc``.
             validate_inputs: Check on the CPU that ``query_start_loc`` starts at 0, never
-                decreases and ends at ``x``'s token count, and that ``conv_state_indices`` and
-                ``num_accepted_tokens`` lie in their manifest ranges.
+                decreases, ends at ``x``'s token count and holds no sequence longer than
+                ``max_query_len``, and that ``conv_state_indices`` and ``num_accepted_tokens``
+                lie in their manifest ranges.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """

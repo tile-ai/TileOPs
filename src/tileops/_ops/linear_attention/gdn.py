@@ -92,8 +92,10 @@ class GDNFwdOp(Op):
                 compute ``-exp(A_log) * softplus(g + dt_bias)``. Otherwise,
                 ``g`` must already contain the log-space decay.
             validate_inputs: Check on the CPU that ``cu_seqlens`` (and
-                ``cu_seqlens_cpu``) start at 0, never decrease and end at ``S``, and that
-                ``state_indices`` and ``num_accepted_tokens`` lie in their manifest ranges.
+                ``cu_seqlens_cpu``) start at 0, never decrease, end at ``S`` and, with
+                ``num_accepted_tokens``, hold no sequence longer than a ``state_indices`` row,
+                and that ``state_indices`` and ``num_accepted_tokens`` lie in their manifest
+                ranges.
                 It synchronizes the device; leave it off under CUDA Graph capture.
             target: Backend target, or ``None`` to resolve from the input
                 device.
