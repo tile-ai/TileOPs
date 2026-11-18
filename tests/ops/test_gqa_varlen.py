@@ -487,7 +487,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype",
+    "q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype, options",
     [
         # One KV head a query head and no mask, as vision encoders attend: partial query and
         # key tiles, q_len > kv_len, and an empty request.
@@ -501,6 +501,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.bfloat16,
+            {},
             marks=pytest.mark.smoke,
             id="d72-bidirectional",
         ),
@@ -516,6 +517,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.float16,
+            {},
             marks=pytest.mark.smoke,
             id="d72-causal",
         ),
@@ -529,6 +531,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             64,
             32,
             torch.bfloat16,
+            {},
             marks=pytest.mark.full,
             id="d72-window",
         ),
@@ -543,8 +546,24 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.bfloat16,
+            {},
             marks=pytest.mark.full,
             id="d40",
+        ),
+        # Fused RoPE on a head padded to one 48-channel tile.
+        pytest.param(
+            [129, 65],
+            [200, 65],
+            6,
+            2,
+            40,
+            True,
+            -1,
+            -1,
+            torch.float16,
+            {"pos_encoding_mode": "rope"},
+            marks=pytest.mark.full,
+            id="d40-rope",
         ),
         # A 32-channel edge (24 channels and 8 zeros) beside the 64-channel boxes.
         pytest.param(
@@ -557,6 +576,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.float16,
+            {},
             marks=pytest.mark.full,
             id="d88",
         ),
@@ -571,6 +591,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.bfloat16,
+            {},
             marks=pytest.mark.full,
             id="d96",
         ),
@@ -585,6 +606,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.bfloat16,
+            {},
             marks=pytest.mark.full,
             id="d120",
         ),
@@ -600,14 +622,15 @@ def test_varlen_ws_serves_head_dims_off_the_contraction_step_on_sm90(
     wl: int,
     wr: int,
     dtype: torch.dtype,
+    options: dict,
 ) -> None:
     """A TMA row is a multiple of 16 bytes, a 16-bit WGMMA contracts 16 channels a step, and
     TMA fills a box past a tensor's last channel with zeros: on SM90 the warp-specialized
     kernel serves head dims of 8-channel steps on tiles padded to the WGMMA step."""
     test = GQAVarlenFwdTest(
-        len(q_lens), q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype
+        len(q_lens), q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype, **options
     )
-    op = GQAVarlenFwdOp(is_causal=is_causal, window_size_left=wl, window_size_right=wr)
+    op = GQAVarlenFwdOp(is_causal=is_causal, window_size_left=wl, window_size_right=wr, **options)
     inputs = test.gen_inputs()
     assert op.key_for("gqa_varlen", op._varlen_call(_padded(inputs))) == "gqa_varlen_ws"
     test.check(op, *inputs)

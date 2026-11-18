@@ -1177,6 +1177,30 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             marks=pytest.mark.full,
             id="bf16-d64-rows-on-m",
         ),
+        # One-row pages at head dimension 128 and two-row pages at 64: each page is a TMA
+        # box of fewer rows than the 8-row swizzle atom of the tile it lands in.
+        pytest.param(
+            [1, 1],
+            [300, 517],
+            1,
+            torch.float16,
+            {},
+            8,
+            ANY,
+            marks=pytest.mark.full,
+            id="f16-pages-1",
+        ),  # fmt: skip
+        pytest.param(
+            [8, 8],
+            [301, 500],
+            2,
+            torch.bfloat16,
+            {"heads": 64, "dim": 64},
+            64,
+            ANY,
+            marks=pytest.mark.full,
+            id="bf16-d64-pages-2",
+        ),
         # A right window and a bidirectional mask, with a request of no query token.
         pytest.param(
             [3, 0, 2],
