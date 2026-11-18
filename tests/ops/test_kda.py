@@ -898,8 +898,8 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
     """Packed sequences start from and end in their slots, in either state layout; an empty
     sequence leaves its slot as it was. Enough (sequence, value head) pairs for the one-CTA
     walk of each sequence, which serves the call only when the host shows every sequence
-    spanning one chunk count; the chunk-parallel prefill serves the rest."""
-    del arch
+    spanning one chunk count; on SM90 the chunk-parallel prefill serves the rest, and SM89
+    keeps the one-CTA walk."""
     torch.manual_seed(42)
     runs = []
 
@@ -914,7 +914,7 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
         HV=_FUSED_HEADS, K=128, V=128, P=12, **flags,
     )  # fmt: skip
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
-    assert bool(runs) == chunked
+    assert bool(runs) == (chunked and arch == "sm90")
 
 
 @pytest.mark.parametrize("pooled", [False, True], ids=["batch-order", "pool"])
