@@ -129,9 +129,12 @@ def test_topk_select_top_k_above_the_keys(seq_len_kv: int, fill_value: int | Non
 
 @pytest.mark.smoke
 def test_topk_select_threshold_bucket_past_staging() -> None:
-    """More keys share the topk-th score's bucket than the kernel stages; none is dropped."""
-    seq_len_kv, topk = 8192, 100
-    # Every score in [1, 1.03), one float16 bucket, and all distinct in float32.
+    """More keys share the topk-th score's bucket than the kernel stages; none is dropped.
+
+    A row past the register kernel's 16384 keys runs the staging kernel.
+    """
+    seq_len_kv, topk = 32768, 100
+    # Every score in [1, 1.125), one float16 bucket, and all distinct in float32.
     perm = torch.randperm(seq_len_kv, device=run_device()).float()
     scores = (1.0 + perm / (1 << 18)).reshape(1, 1, seq_len_kv, 1)
     starts = torch.zeros(1, 1, dtype=torch.int32, device=run_device())
