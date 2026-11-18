@@ -19,7 +19,7 @@ import tilelang.language as T
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
-from tileops._kernels.linear_attention.delta_decode import _key_of
+from tileops._kernels.linear_attention.delta_decode import key_of
 from tileops._kernels.linear_attention.kda.gate import log_decay
 from tileops._kernels.state_pool import state_row
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
@@ -113,7 +113,7 @@ def decode_program(
                             state_row(slots, iseq),
                             ihv,
                             row,
-                            _key_of(rank, run * key_run + e, lane_group, key_run),
+                            key_of(rank, run * key_run + e, lane_group, key_run),
                         ]
                 for i in T.serial(T.ceildiv(K, threads)):
                     j = tx + i * threads
@@ -139,8 +139,8 @@ def decode_program(
                     k_gain = T.rsqrt(k_square + l2_eps)
 
                 for i in T.serial(key_chunk):
-                    state[i] = state[i] * d_s[_key_of(rank, i, lane_group, key_run)]
-                    old += state[i] * k_s[_key_of(rank, i, lane_group, key_run)]
+                    state[i] = state[i] * d_s[key_of(rank, i, lane_group, key_run)]
+                    old += state[i] * k_s[key_of(rank, i, lane_group, key_run)]
                 for stage in T.unroll(lane_group.bit_length() - 1):
                     old += T.shfl_xor(old, 1 << stage, width=lane_group)
                 written = T.cast(beta[0, iseq, ihv], accum) * (
@@ -148,16 +148,16 @@ def decode_program(
                 )
                 for i in T.serial(key_chunk):
                     state[i] = (
-                        state[i] + k_s[_key_of(rank, i, lane_group, key_run)] * k_gain * written
+                        state[i] + k_s[key_of(rank, i, lane_group, key_run)] * k_gain * written
                     )
-                    out += state[i] * q_s[_key_of(rank, i, lane_group, key_run)]
+                    out += state[i] * q_s[key_of(rank, i, lane_group, key_run)]
                 for run in T.serial(key_chunk // key_run):
                     for e in T.vectorized(key_run):
                         ht[
                             state_row(slots, iseq),
                             ihv,
                             row,
-                            _key_of(rank, run * key_run + e, lane_group, key_run),
+                            key_of(rank, run * key_run + e, lane_group, key_run),
                         ] = state[run * key_run + e]
                 for stage in T.unroll(lane_group.bit_length() - 1):
                     out += T.shfl_xor(out, 1 << stage, width=lane_group)
