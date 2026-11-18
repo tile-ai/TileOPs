@@ -2,12 +2,8 @@
 
 import pytest
 
-from tests.ops.test_moe_grouped_gemm_fp8 import (
-    _OP,
-    _run_into_guarded_out,
-    _with_counts,
-    _workload,
-)
+from tests.ops.moe_grouped_gemm_helpers import run_into_guarded_out, with_counts
+from tests.ops.test_moe_grouped_gemm_fp8 import _OP, _workload
 from tileops._kernels.moe import MoEGroupedGEMMFP8MMAKernel
 from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMFP8FwdOp
 from tileops.backend import _registry as registry
@@ -36,7 +32,7 @@ def _forced_mma_op(config):
 def test_mma_explicit_configs(block_m, block_n):
     workload = _workload(65, E=3, N=256, K=256)
     op = _forced_mma_op({"block_m": block_m, "block_n": block_n})
-    _run_into_guarded_out(op, workload, *_with_counts(workload, [0, 33, 65]))
+    run_into_guarded_out(op, workload, *with_counts(workload, [0, 33, 65]))
     entries = op._entries_built("grouped_gemm_fp8").values()
     assert entries
     for entry in entries:
@@ -59,7 +55,7 @@ def test_mma_explicit_configs(block_m, block_n):
 )
 def test_mma_rejects_invalid_config(change):
     workload = _workload(65, E=3, N=256, K=256)
-    inputs = _with_counts(workload, [0, 33, 65])
+    inputs = with_counts(workload, [0, 33, 65])
     op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=65))
     op(*inputs)
     entries = op._entries_built("grouped_gemm_fp8").values()
