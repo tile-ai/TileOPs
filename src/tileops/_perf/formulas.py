@@ -1438,7 +1438,7 @@ def _delta_rule_bytes(call: CallView) -> int:
     moved = sum(call.bytes(t) for t in call.tensors if t not in states)
     if not call.present("state_indices"):
         return moved + sum(call.bytes(t) for t in states if call.present(t))
-    slot = 4 * indices["HV"] * indices["K"] * indices["V"]
+    slot = _elem_bytes(call, "initial_state") * indices["HV"] * indices["K"] * indices["V"]
     sequences = indices["Ns"]
     kept = indices["B"] * indices["S"] if call.present("num_accepted_tokens") else sequences
     return moved + slot * (sequences + kept)
