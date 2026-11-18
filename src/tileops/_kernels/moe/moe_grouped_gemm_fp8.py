@@ -158,6 +158,8 @@ def _moe_grouped_gemm_fp8_kernel(
         math_threads = block_m // warpgroup_m * 128
         math_warps = math_threads // 32
         fragment_regs = warpgroup_m * block_n // 128
+        # Named barriers of the math threads: shared_c free to restage, and shared_c staged.
+        reuse_barrier, staged_barrier = 13, 14
         tma_scales = _tma_a_scales(block_m, num_stages, stage_scales, scale_k)
         a_scale_buffers = _a_scale_buffers(num_stages)
         boxes_per_task = scale_k // _A_SCALE_GROUP
@@ -512,7 +514,7 @@ def _moe_grouped_gemm_fp8_kernel(
                             if multi_wave:
                                 if tx < epilogue_store_count:
                                     T.tma_store_wait(0)
-                                T.sync_threads(barrier_id=13, arrive_count=math_threads)
+                                T.sync_threads(barrier_id=reuse_barrier, arrive_count=math_threads)
                             T.call_extern(
                                 "handle",
                                 stsm_helper,
@@ -521,7 +523,7 @@ def _moe_grouped_gemm_fp8_kernel(
                                 math_wg_offset,
                             )
                             T.fence_proxy_async()
-                            T.sync_threads(barrier_id=14, arrive_count=math_threads)
+                            T.sync_threads(barrier_id=staged_barrier, arrive_count=math_threads)
                             tasks.store_tile(
                                 output_desc,
                                 shared_c,

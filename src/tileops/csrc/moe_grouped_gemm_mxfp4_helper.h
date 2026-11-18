@@ -6,10 +6,11 @@
 
 #include <cuda.h>
 #include <cuda_bf16.h>
-#include <cuda_fp8.h>
 #include <tl_templates/cuda/common.h>
 #include <tl_templates/cuda/instruction/wgmma.h>
 #include <tl_templates/cuda/intrin.h>
+
+#include "moe_grouped_gemm_fp8_helper.h"
 
 namespace tileops {
 
@@ -372,7 +373,6 @@ __device__ __forceinline__ int mxfp4_all_threads(int value, int id, int count) {
 template <int N, int First, int Count, int Sets>
 __device__ __forceinline__ void mxfp4_wgmma_rs(float* accumulator,
                                                uint32_t* frags, uint32_t b_lo) {
-  constexpr uint64_t kDescHi = uint64_t(0x40000040u) << 32;
   constexpr int kRegs = N / 2;
 #pragma unroll
   for (int set = 0; set < Sets; ++set) {
@@ -387,7 +387,7 @@ __device__ __forceinline__ void mxfp4_wgmma_rs(float* accumulator,
   for (int ki = First; ki < First + Count; ++ki) {
     tl::wgmma_rs<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat8_e4m3,
                  tl::DataType::kFloat32, 64, N, 32, false, false, 1, 1>(
-        frags + 4 * ki, kDescHi | uint64_t(b_lo + ki * 2),
+        frags + 4 * ki, kMoeFp8WgmmaDescHi | uint64_t(b_lo + ki * 2),
         reinterpret_cast<uint32_t*>(accumulator + (ki % Sets) * kRegs),
         ki - First >= Sets);
   }

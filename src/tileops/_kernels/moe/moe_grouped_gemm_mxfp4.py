@@ -138,11 +138,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
             "-O3",
             "--use_fast_math",
             "-DENABLE_BF16",
-            *csrc_include(
-                "moe_grouped_gemm_fp8_helper.h",
-                "streaming_load.h",
-                "moe_grouped_gemm_mxfp4_helper.h",
-            ),
+            *csrc_include("moe_grouped_gemm_mxfp4_helper.h"),
         ],
     )
     def _moe_grouped_gemm_mxfp4_func(
@@ -178,6 +174,9 @@ def _moe_grouped_gemm_mxfp4_kernel(
         math_threads = block_n // _WARPGROUP_ROWS * 128
         math_warps = _math_warps(block_n)
         fragment_regs = _WARPGROUP_ROWS * block_m // 128
+        # Named barriers of the math threads: shared_c free to restage, the vote on a task's
+        # scale check, and shared_c staged.
+        reuse_barrier, check_barrier, staged_barrier = 12, 13, 14
         # A step contracted sub-block by sub-block (float32 scales, or e8m0 ones that do not
         # fold) holds up to four sub-blocks at once in independent accumulator sets of at
         # most 64 registers in all; a folded step takes the first set alone.
@@ -886,7 +885,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                         wg_row0,
                                         n - 1 - n_start,
                                     ),
-                                    13,
+                                    check_barrier,
                                     math_threads,
                                 )
                             else:
@@ -902,7 +901,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                         g * n + n_start + wg_row0,
                                         g * n + n - 1,
                                     ),
-                                    13,
+                                    check_barrier,
                                     math_threads,
                                 )
                             load_token_scales(token_at, token_scales, g, m_start, 0, tx)
@@ -960,7 +959,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                             # before any math thread rewrites it.
                             if tx < store_count:
                                 T.tma_store_wait(0)
-                            T.sync_threads(barrier_id=12, arrive_count=math_threads)
+                            T.sync_threads(barrier_id=reuse_barrier, arrive_count=math_threads)
                             if tables:
                                 # Every math thread has decoded the task's last step (the
                                 # barrier above): its table goes back to the producer.
@@ -977,7 +976,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                 wg_row0,
                             )
                             T.fence_proxy_async()
-                            T.sync_threads(barrier_id=14, arrive_count=math_threads)
+                            T.sync_threads(barrier_id=staged_barrier, arrive_count=math_threads)
                             tasks.store_tile(
                                 output_desc,
                                 shared_c,

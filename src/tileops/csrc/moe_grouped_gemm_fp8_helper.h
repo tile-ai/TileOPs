@@ -1,9 +1,12 @@
 #pragma once
 
-// WGMMA, promotion and epilogue helpers of the masked FP8 M-grouped GEMM. The
-// WGMMA and epilogue helpers are copied from the dense FP8 1D2D kernel's
-// fp8_1d2d_helper.h, so that header can change without moving this kernel; the
-// promotion here also serves tiles whose columns span several ``b`` scale rows.
+// WGMMA, promotion and epilogue helpers of the FP8 M-grouped GEMM. The MXFP4
+// M-grouped GEMM also calls the descriptor (moe_fp8_wgmma_desc_lo,
+// kMoeFp8WgmmaDescHi), TMA store and row store helpers, so a change to those
+// changes both kernels. The WGMMA and epilogue helpers are copied from the
+// dense FP8 1D2D kernel's fp8_1d2d_helper.h, so that header can change without
+// moving these kernels; the promotion here also serves tiles whose columns span
+// several ``b`` scale rows.
 
 #include <cuda.h>
 #include <tl_templates/cuda/common.h>
@@ -14,6 +17,11 @@
 #include <cute/arch/copy_sm90.hpp>
 
 namespace tileops {
+
+// The high 32 bits of every descriptor whose low word moe_fp8_wgmma_desc_lo
+// gives, as initialize_wgmma_descriptor<1, 1, 64> sets them: the 1024-byte
+// stride byte offset and the 128B swizzle mode.
+constexpr uint64_t kMoeFp8WgmmaDescHi = uint64_t(0x40000040u) << 32;
 
 // The low 32 bits of a 128B-swizzled K-major WGMMA descriptor. Broadcast from
 // lane 0 so NVCC keeps this and every offset added to it uniform.
@@ -28,14 +36,14 @@ __device__ __forceinline__ uint32_t moe_fp8_wgmma_desc_lo(fp8_e4_t* smem) {
 template <int BlockN>
 __device__ __forceinline__ void moe_fp8_wgmma_64x128_by_128xN_lo(
     float* accumulator, uint32_t a_lo, uint32_t b_lo) {
-  constexpr uint64_t kDescHi = uint64_t(0x40000040u) << 32;
   tl::warpgroup_fence_operand(accumulator, BlockN / 2);
   tl::warpgroup_arrive();
 #pragma unroll
   for (int ki = 0; ki < 4; ++ki) {
     tl::wgmma_ss<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat8_e4m3,
                  tl::DataType::kFloat32, 64, BlockN, 32, false, false, 1, 1>(
-        kDescHi | uint64_t(a_lo + ki * 2), kDescHi | uint64_t(b_lo + ki * 2),
+        kMoeFp8WgmmaDescHi | uint64_t(a_lo + ki * 2),
+        kMoeFp8WgmmaDescHi | uint64_t(b_lo + ki * 2),
         reinterpret_cast<uint32_t*>(accumulator), 0 < ki ? 1 : 0);
   }
   tl::warpgroup_commit_batch();

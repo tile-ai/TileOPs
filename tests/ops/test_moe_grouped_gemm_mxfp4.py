@@ -16,7 +16,6 @@ from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
 _OP = "MoEGroupedGEMMMXFP4FwdOp"
-_KEY = "grouped_gemm_mxfp4"
 # An output value no valid row produces.
 _SENTINEL = -12288.0
 _E8M0 = {"S": "float8_e8m0fnu"}
