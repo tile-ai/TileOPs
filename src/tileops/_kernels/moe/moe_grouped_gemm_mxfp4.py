@@ -1571,10 +1571,14 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                     final.data,
                                     T.address_of(column_scales[buf, 0]),
                                 )
-                            # After the last read of the task's codes and column scales: the
-                            # release lets the next tables land and the decode warps rescan.
-                            if tx % 32 == 0:
-                                T.barrier_arrive(tab_empty[buf])
+                            # After every lane's last read of the task's codes and column
+                            # scales (C++: __syncwarp, then one arrival a warp): the release lets
+                            # the next tables land and the decode warps rescan.
+                            T.call_extern(
+                                "handle",
+                                "tileops::mxfp4_warp_arrive",
+                                T.address_of(tab_empty[buf]),
+                            )
                             # The previous task's stores must be done with shared_c.
                             if tx < store_count:
                                 T.tma_store_wait(0)
