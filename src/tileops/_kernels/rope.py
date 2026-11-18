@@ -153,7 +153,9 @@ def _rope_positions_kernel(
     pairs; or ``tail_vec`` columns past ``rotary_dim``, copied. A token's query units come
     before its key units, so one launch serves both. A block holds ``threads * units`` units
     of one token, ``units`` a thread, and reads the token's position once; consecutive
-    blocks walk a token's parts, then the next token's. ``rot_vec`` and ``tail_vec`` divide
+    blocks walk a token's parts, then the next token's. Where a head has copied columns and
+    a thread holds several units, it loads all of them before it stores any; otherwise it
+    loads and stores one unit at a time. ``rot_vec`` and ``tail_vec`` divide
     every column offset they start at, so each unit moves as vectors. The clamp sits in the
     table index, so the loads carry no branch on the position. The arithmetic is f32 and
     rounds once.
@@ -161,6 +163,8 @@ def _rope_positions_kernel(
     half = rotary_dim // 2
     width, rot_units, tail_units = _head_units(neox, head_size, rotary_dim, rot_vec, tail_vec)
     table_width = width if neox else width // 2
+    # A unit's stride in a thread's registers: a rotating unit's low columns or a copied run.
+    run = max(width, tail_vec)
     vector_pairs = neox or rot_vec >= 2
     head_units = rot_units + tail_units
     query_units = query_heads * head_units
@@ -175,59 +179,116 @@ def _rope_positions_kernel(
         parts = -(-token_units // (threads * units))
 
         @T.macro
-        def rotate_unit(row, x, y, token, head, slot, cos_table, sin_table):
-            lo = T.alloc_local([width], dtype)
-            hi = T.alloc_local([width], dtype)
-            cs = T.alloc_local([table_width], dtype)
-            sn = T.alloc_local([table_width], dtype)
-            kept_run = T.alloc_local([tail_vec], dtype)
+        def move_unit(r, row, x, y, token, head, slot, cos_table, sin_table, regs, load, store):
+            # Thread unit r: load reads its columns and cos/sin row into regs, store rotates and
+            # writes them; with regs None the unit takes registers of its own, at index 0.
+            if regs is None:
+                r = 0
+                regs = (
+                    T.alloc_local([width], dtype),
+                    T.alloc_local([width], dtype),
+                    T.alloc_local([table_width], dtype),
+                    T.alloc_local([table_width], dtype),
+                    T.alloc_local([tail_vec], dtype),
+                )
+            # Bound before lo: a buffer is named after the last variable bound to it, and the
+            # copied run may alias lo.
+            kept_run = regs[4]
+            lo, hi, cs, sn = regs[:4]
             if slot < rot_units:
                 col = slot * width
                 low = head * head_size + col
                 first = col if neox else col // 2
-                if vector_pairs:
-                    for j in T.vectorized(width):
-                        lo[j] = x[token, low + j]
-                else:
-                    for j in T.serial(width):
-                        lo[j] = x[token, low + j]
-                if neox:
-                    for j in T.vectorized(width):
-                        hi[j] = x[token, low + half + j]
-                for j in T.vectorized(table_width):
-                    cs[j] = cos_table[row, first + j]
-                for j in T.vectorized(table_width):
-                    sn[j] = sin_table[row, first + j]
-                if neox:
-                    for j in T.unroll(width):
-                        c = T.Cast("float32", cs[j])
-                        s = T.Cast("float32", sn[j])
-                        x_low = T.Cast("float32", lo[j])
-                        x_high = T.Cast("float32", hi[j])
-                        lo[j] = T.Cast(dtype, x_low * c - x_high * s)
-                        hi[j] = T.Cast(dtype, x_high * c + x_low * s)
-                    for j in T.vectorized(width):
-                        y[token, low + half + j] = hi[j]
-                else:
-                    for p in T.unroll(table_width):
-                        c = T.Cast("float32", cs[p])
-                        s = T.Cast("float32", sn[p])
-                        x_even = T.Cast("float32", lo[2 * p])
-                        x_odd = T.Cast("float32", lo[2 * p + 1])
-                        lo[2 * p] = T.Cast(dtype, x_even * c - x_odd * s)
-                        lo[2 * p + 1] = T.Cast(dtype, x_odd * c + x_even * s)
-                if vector_pairs:
-                    for j in T.vectorized(width):
-                        y[token, low + j] = lo[j]
-                else:
-                    for j in T.serial(width):
-                        y[token, low + j] = lo[j]
+                if load:
+                    if vector_pairs:
+                        for j in T.vectorized(width):
+                            lo[r * run + j] = x[token, low + j]
+                    else:
+                        for j in T.serial(width):
+                            lo[r * run + j] = x[token, low + j]
+                    if neox:
+                        for j in T.vectorized(width):
+                            hi[r * width + j] = x[token, low + half + j]
+                    for j in T.vectorized(table_width):
+                        cs[r * table_width + j] = cos_table[row, first + j]
+                    for j in T.vectorized(table_width):
+                        sn[r * table_width + j] = sin_table[row, first + j]
+                if store:
+                    if neox:
+                        for j in T.unroll(width):
+                            c = T.Cast("float32", cs[r * table_width + j])
+                            s = T.Cast("float32", sn[r * table_width + j])
+                            x_low = T.Cast("float32", lo[r * run + j])
+                            x_high = T.Cast("float32", hi[r * width + j])
+                            lo[r * run + j] = T.Cast(dtype, x_low * c - x_high * s)
+                            hi[r * width + j] = T.Cast(dtype, x_high * c + x_low * s)
+                        for j in T.vectorized(width):
+                            y[token, low + half + j] = hi[r * width + j]
+                    else:
+                        for p in T.unroll(table_width):
+                            c = T.Cast("float32", cs[r * table_width + p])
+                            s = T.Cast("float32", sn[r * table_width + p])
+                            x_even = T.Cast("float32", lo[r * run + 2 * p])
+                            x_odd = T.Cast("float32", lo[r * run + 2 * p + 1])
+                            lo[r * run + 2 * p] = T.Cast(dtype, x_even * c - x_odd * s)
+                            lo[r * run + 2 * p + 1] = T.Cast(dtype, x_odd * c + x_even * s)
+                    if vector_pairs:
+                        for j in T.vectorized(width):
+                            y[token, low + j] = lo[r * run + j]
+                    else:
+                        for j in T.serial(width):
+                            y[token, low + j] = lo[r * run + j]
             elif tail_units > 0:
                 kept = head * head_size + rotary_dim + (slot - rot_units) * tail_vec
-                for j in T.vectorized(tail_vec):
-                    kept_run[j] = x[token, kept + j]
-                for j in T.vectorized(tail_vec):
-                    y[token, kept + j] = kept_run[j]
+                if load:
+                    for j in T.vectorized(tail_vec):
+                        kept_run[r * run + j] = x[token, kept + j]
+                if store:
+                    for j in T.vectorized(tail_vec):
+                        y[token, kept + j] = kept_run[r * run + j]
+
+        @T.macro
+        def each_unit(
+            row,
+            regs,
+            load,
+            store,
+            query,
+            key,
+            cos_table,
+            sin_table,
+            query_out,
+            key_out,
+            token,
+            part,
+        ):
+            # move_unit on each of the thread's units, in the query or the key; row is the
+            # token's table row buffer, or None where no unit loads.
+            shared = (cos_table, sin_table, regs, load, store)
+            for r in T.unroll(units):
+                within = (part * units + r) * threads + T.get_thread_binding()
+                if within < query_units:
+                    move_unit(
+                        r,
+                        None if row is None else row[0],
+                        query,
+                        query_out,
+                        token,
+                        within // head_units,
+                        within % head_units,
+                        *shared,
+                    )
+                elif within < token_units:
+                    move_unit(
+                        r,
+                        None if row is None else row[0],
+                        key,
+                        key_out,
+                        token,
+                        (within - query_units) // head_units,
+                        (within - query_units) % head_units,
+                        *shared,
+                    )
 
         @T.macro
         def rotate_token(
@@ -241,30 +302,19 @@ def _rope_positions_kernel(
                 row[0] = T.max(0, T.min(seen, max_position - 1))
             else:
                 row[0] = T.max(0, T.min(positions[token], max_position - 1))
-            for r in T.unroll(units):
-                within = (part * units + r) * threads + T.get_thread_binding()
-                if within < query_units:
-                    rotate_unit(
-                        row[0],
-                        query,
-                        query_out,
-                        token,
-                        within // head_units,
-                        within % head_units,
-                        cos_table,
-                        sin_table,
-                    )
-                elif within < token_units:
-                    rotate_unit(
-                        row[0],
-                        key,
-                        key_out,
-                        token,
-                        (within - query_units) // head_units,
-                        (within - query_units) % head_units,
-                        cos_table,
-                        sin_table,
-                    )
+            tensors = (query, key, cos_table, sin_table, query_out, key_out, token, part)
+            if tail_units == 0 or units == 1:
+                each_unit(row, None, True, True, *tensors)
+            else:
+                # A warp can hold rotating and copying units, each path waiting out a load-to-store
+                # round trip a unit; a copied run takes a rotating unit's low-column registers.
+                lo = T.alloc_local([units * run], dtype)
+                hi = T.alloc_local([units * width], dtype)
+                cs = T.alloc_local([units * table_width], dtype)
+                sn = T.alloc_local([units * table_width], dtype)
+                regs = (lo, hi, cs, sn, lo)
+                each_unit(row, regs, True, False, *tensors)
+                each_unit(None, regs, False, True, *tensors)
 
         if offset_dtype:
 
