@@ -1,11 +1,12 @@
 """Tests for FusedTopKFwdOp.
 
-Reference: ``FusedTopKWorkload.ref_program`` (softmax/sigmoid, top-k, optional renormalize,
-grouped routing, scaling factor).
+Reference: ``FusedTopKWorkload.ref_program`` (softmax/sigmoid/sqrt-softplus, top-k, optional
+renormalize, grouped routing, scaling factor, caller-given experts).
 
 Test cases cover:
   - softmax scoring (Qwen3/Qwen2 style)
   - sigmoid scoring (DeepSeek-V3/GLM-4 style)
+  - sqrt-softplus scoring with a correction bias (DeepSeek-V4-Flash style)
   - renormalize=True / False
   - Various (num_tokens, num_experts, top_k) shapes
   - bf16 and fp16 input dtypes
@@ -13,6 +14,7 @@ Test cases cover:
   - grouped routing: the biased top-2 group score and the unbiased max, groups spanning
     whole warp rows and groups that straddle them, E off the warp width
   - routed_scaling_factor with and without grouping
+  - caller-given experts (DeepSeek-V4-Flash hash routing) under each scoring function
 """
 
 import re
@@ -22,6 +24,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.moe import FusedTopKFwdOp
+from tileops.backend import OpNotAvailableError
 from workloads.device import run_device
 from workloads.moe import FusedTopKWorkload
 from workloads.workload_base import manifest_call
@@ -83,6 +86,17 @@ class FusedTopKFixture(FixtureBase):
                     torch.bfloat16,
                     marks=pytest.mark.smoke,
                     id="smoke-e33-pad",
+                ),
+                # sqrt-softplus without a bias, E off the warp width.
+                pytest.param(
+                    32,
+                    100,
+                    4,
+                    "sqrtsoftplus",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-sqrtsoftplus-e100-pad",
                 ),
                 # top_k = E: every expert is selected, the weights renormalize to one.
                 pytest.param(
@@ -186,7 +200,9 @@ class FusedTopKFixture(FixtureBase):
 
 
 def _check(test: FusedTopKWorkload) -> None:
-    inputs = [t for t in test.gen_inputs() if t is not None]
+    inputs = list(test.gen_inputs())
+    while inputs[-1] is None:  # the optional inputs the call leaves out
+        inputs.pop()
     op = FusedTopKFwdOp(**test.call.arguments())
     TestBase.check(test, op, *inputs)
 
@@ -301,6 +317,21 @@ class GroupedTopKFixture(FixtureBase):
                     torch.bfloat16,
                     marks=pytest.mark.smoke,
                     id="smoke-ungrouped-scaled",
+                ),
+                # DeepSeek-V4-Flash: biased sqrt-softplus scores of float32 logits.
+                pytest.param(
+                    64,
+                    256,
+                    6,
+                    1,
+                    1,
+                    "sqrtsoftplus",
+                    True,
+                    True,
+                    1.5,
+                    torch.float32,
+                    marks=pytest.mark.smoke,
+                    id="smoke-dsv4-flash",
                 ),
                 # Every group kept.
                 pytest.param(
@@ -438,6 +469,195 @@ def test_grouped_topk(
         some=["correction_bias"] if with_bias else [],
     )
     _check(FusedTopKWorkload(call))
+
+
+class GivenExpertsFixture(FixtureBase):
+    PARAMS = [
+        (
+            "num_tokens, num_experts, top_k, scoring_func, renormalize, routed_scaling_factor,"
+            " with_bias, dtype",
+            [
+                # DeepSeek-V4-Flash's hash-routed layers, one token and a partial last block.
+                pytest.param(
+                    1,
+                    256,
+                    6,
+                    "sqrtsoftplus",
+                    True,
+                    1.5,
+                    False,
+                    torch.float32,
+                    marks=pytest.mark.smoke,
+                    id="smoke-dsv4-flash-hash-t1",
+                ),
+                pytest.param(
+                    201,
+                    256,
+                    6,
+                    "sqrtsoftplus",
+                    True,
+                    1.5,
+                    False,
+                    torch.float32,
+                    marks=pytest.mark.smoke,
+                    id="smoke-dsv4-flash-hash-tail-block",
+                ),
+                # Renormalized softmax: the shift is the given logits' max.
+                pytest.param(
+                    32,
+                    128,
+                    8,
+                    "softmax",
+                    True,
+                    1.0,
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-softmax-renorm-bf16",
+                ),
+                # Unrenormalized softmax: normalized over the whole row, E off the warp width.
+                pytest.param(
+                    32,
+                    100,
+                    4,
+                    "softmax",
+                    False,
+                    2.0,
+                    False,
+                    torch.float16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-softmax-row-sum-e100-fp16",
+                ),
+                # Unrenormalized sigmoid, scaled.
+                pytest.param(
+                    32,
+                    256,
+                    8,
+                    "sigmoid",
+                    False,
+                    2.5,
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-sigmoid-scaled",
+                ),
+                # More given experts than warp lanes: a lane holds two.
+                pytest.param(
+                    32,
+                    64,
+                    40,
+                    "sqrtsoftplus",
+                    True,
+                    1.0,
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.smoke,
+                    id="smoke-top-k-over-warp",
+                ),
+                # A bias passed alongside is not read, so softmax takes one.
+                pytest.param(
+                    32,
+                    256,
+                    6,
+                    "softmax",
+                    True,
+                    1.0,
+                    True,
+                    torch.float32,
+                    marks=pytest.mark.smoke,
+                    id="smoke-softmax-bias-unread",
+                ),
+                pytest.param(
+                    4096,
+                    256,
+                    6,
+                    "sqrtsoftplus",
+                    True,
+                    1.5,
+                    False,
+                    torch.float32,
+                    marks=pytest.mark.full,
+                    id="dsv4-flash-hash-t4096",
+                ),
+            ],
+        ),
+    ]
+
+
+@GivenExpertsFixture
+def test_fused_topk_given_experts(
+    num_tokens,
+    num_experts,
+    top_k,
+    scoring_func,
+    renormalize,
+    routed_scaling_factor,
+    with_bias,
+    dtype,
+) -> None:
+    call = manifest_call(
+        "FusedTopKFwdOp",
+        {"G": str(dtype).removeprefix("torch.")},
+        T=num_tokens,
+        E=num_experts,
+        top_k=top_k,
+        scoring_func=scoring_func,
+        renormalize=renormalize,
+        routed_scaling_factor=routed_scaling_factor,
+        some=["expert_ids", "correction_bias"] if with_bias else ["expert_ids"],
+    )
+    _check(FusedTopKWorkload(call))
+
+
+@pytest.mark.smoke
+def test_given_experts_skip_the_grouping() -> None:
+    """The grouping only restricts a selection: one that cannot split E routes given experts."""
+    call = manifest_call(
+        "FusedTopKFwdOp",
+        {"G": "bfloat16"},
+        T=32,
+        E=256,
+        top_k=6,
+        scoring_func="sigmoid",
+        renormalize=True,
+        num_expert_group=3,
+        topk_group=2,
+        some=["expert_ids"],
+    )
+    _check(FusedTopKWorkload(call))
+
+
+@pytest.mark.smoke
+def test_sqrtsoftplus_keeps_float32_precision_at_extreme_logits() -> None:
+    """Every logit from -80 to 200 scores within 1e-4 of torch's float32 score, where
+    log(1 + exp(x)) rounds a softplus below 2^-24 to zero and overflows past x = 88."""
+    call = manifest_call(
+        "FusedTopKFwdOp",
+        {"G": "float32"},
+        T=64,
+        E=64,
+        top_k=64,
+        scoring_func="sqrtsoftplus",
+        renormalize=False,
+        some=["expert_ids"],
+    )
+    workload = FusedTopKWorkload(call)
+    _, _, expert_ids = workload.gen_inputs()
+    gating = torch.linspace(-80, 200, 64 * 64, device=run_device()).view(64, 64)
+    TestBase.check(workload, FusedTopKFwdOp(64, "sqrtsoftplus"), gating, None, expert_ids)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_fused_topk_refuses_a_softmax_selection_with_a_bias() -> None:
+    """No in-tree kernel adds a correction bias to softmax scores; the op refuses before
+    building."""
+    gating = torch.randn(4, 64, device=run_device())
+    bias = torch.randn(64, device=run_device())
+    op = FusedTopKFwdOp(4, "softmax", True)
+    with pytest.raises(OpNotAvailableError, match="not softmax ones"):
+        op(gating, bias)
+    assert not op._entries_built("fused_topk")
 
 
 @pytest.mark.smoke
