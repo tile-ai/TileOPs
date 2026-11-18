@@ -219,8 +219,16 @@ def _registers_case(case: str):
     return scores, starts, ends, topk
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("case", ["ranked-ties", "exact-bucket", "radix-ties", "windows", "groups"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param("ranked-ties", marks=pytest.mark.smoke),
+        *(
+            pytest.param(case, marks=pytest.mark.full)
+            for case in ("exact-bucket", "radix-ties", "windows", "groups")
+        ),
+    ],
+)
 def test_topk_select_few_rows_in_registers(case: str) -> None:
     """A call of few short rows selects each row from its keys held in registers, at every
     block size tuning may pick."""
