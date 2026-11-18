@@ -67,28 +67,36 @@ def _torch_gather_dsa(workload: DSADecodeCall):
     return fn
 
 
-def _flashmla_sparse(workload: DSADecodeCall):
+def _flashmla_sparse(workload: DSADecodeCall, inputs: tuple) -> bench.Implementation:
+    """vLLM's FlashMLA sparse prefill, one launch over the batch's kv rows laid end to end.
+
+    Its indices name rows of that flat kv, -1 for a slot the op skips, padded with -1 to the
+    multiple of 128 FlashMLA takes; they are built here, outside the timed call.
+    """
     run = vllm_op("flash_mla_sparse_fwd", "v1.attention.ops.flashmla")
-    scale = workload.sm_scale
-    if scale is None:
-        scale = (workload.dim + workload.dim_tail) ** -0.5
+    q, kv, indices, *sink = inputs
+    b, sq, h, dim_q = q.shape
+    sk, g = kv.shape[1], kv.shape[2]
+    scale = workload.sm_scale if workload.sm_scale is not None else dim_q**-0.5
+    valid = (indices >= 0) & (indices < sk)
+    if workload.is_causal:
+        query_pos = torch.arange(sq, device=q.device) + workload.q_start_index_s
+        valid &= (
+            indices * workload.stride_kv + workload.stride_kv - 1 <= query_pos[None, :, None, None]
+        )
+    rows = indices + sk * torch.arange(b, device=q.device, dtype=indices.dtype).view(b, 1, 1, 1)
+    rows = torch.nn.functional.pad(
+        rows.masked_fill(~valid, -1), (0, -rows.shape[-1] % 128), value=-1
+    )
+    out_shape = (b, sq, h, workload.dim)
 
-    def fn(q, kv, indices, attn_sink=None):
-        query_pos = torch.arange(q.shape[1], device=q.device) + workload.q_start_index_s
-        valid = (indices >= 0) & (indices < kv.shape[1])
-        if workload.is_causal:
-            valid &= (
-                indices * workload.stride_kv + workload.stride_kv - 1
-                <= query_pos[None, :, None, None]
-            )
-        selected = indices.masked_fill(~valid, -1)
-        outputs = [
-            run(q[b], kv[b], selected[b], scale, d_v=workload.dim, attn_sink=attn_sink)[0]
-            for b in range(q.shape[0])
-        ]
-        return outputs[0].unsqueeze(0) if len(outputs) == 1 else torch.stack(outputs)
+    def fn(q, kv, rows, attn_sink=None):
+        return run(q, kv, rows, scale, d_v=workload.dim, attn_sink=attn_sink)[0].view(out_shape)
 
-    return fn
+    return bench.Implementation(
+        run=fn,
+        args=(q.view(b * sq, h, dim_q), kv.view(b * sk, g, dim_q), rows.view(b * sq, g, -1), *sink),
+    )
 
 
 @pytest.mark.parametrize("case", bench.cases(DSADenseFwdOp), ids=lambda case: case.id)
@@ -96,7 +104,7 @@ def test_dsa_decode_bench(case) -> None:
     workload = case.workload
     op = DSADenseFwdOp(**case.arguments)
     if workload.dtype == torch.bfloat16:
-        implementations = {"flashmla": _flashmla_sparse(workload)}
+        implementations = {"flashmla": _flashmla_sparse(workload, case.inputs)}
     else:
         implementations = {
             "torch-ref": case.reference,

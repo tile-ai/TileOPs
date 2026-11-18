@@ -36,7 +36,9 @@ class DSADenseFwdOp(Op):
     With ``is_causal`` false only the indices select keys, and -1 pads; ``attn_sink`` adds
     ``exp(attn_sink[h])`` to head ``h``'s softmax denominator.
 
-    The in-tree kernels serve causal calls without ``attn_sink``, with a power-of-two value
+    On SM90 the in-tree kernels serve a value dimension of 512 with a tail of 0 or 64 and a
+    multiple of 64 heads per kv head, with or without the causal mask and ``attn_sink``.
+    Otherwise they serve causal calls without ``attn_sink``, with a power-of-two value
     dimension and a zero or power-of-two tail dimension, subject to shared-memory limits.
     """
 

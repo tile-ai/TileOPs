@@ -7,11 +7,16 @@ from tileops._utils import get_sm_version
 from tileops.attention import DSADenseFwdOp
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
-from workloads.attention.dsa import DSADecodeWorkload
+from workloads.attention.dsa import DSADecodeCall, DSADecodeWorkload
 from workloads.device import run_device
+from workloads.workload_base import manifest_call
 
 
 class DSADecodeTest(DSADecodeWorkload, TestBase):
+    pass
+
+
+class DSADecodeCallTest(DSADecodeCall, TestBase):
     pass
 
 
@@ -258,3 +263,68 @@ def test_dsa_decode_row_normalization(kernel, row) -> None:
     assert isinstance(next(op.iter_kernels()), Pinned)
     if row == "no-valid-index":
         assert op(q, kv, indices)[:, ::2].eq(0).all()
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("batch", "seq_len", "topk", "with_sink"),
+    [
+        pytest.param(1, 9, 160, True, marks=pytest.mark.smoke, id="odd-block-past-topk"),
+        pytest.param(1, 9, 200, True, marks=pytest.mark.full, id="both-blocks-ragged"),
+        pytest.param(4, 2, 640, False, marks=pytest.mark.full, id="mtp-rows"),
+    ],
+)
+def test_dsa_decode_index_only(batch, seq_len, topk, with_sink) -> None:
+    """With is_causal false only the indices select keys: -1 skips a slot, an index past
+    the query's position still counts, and a sink of +inf zeroes its head while -inf leaves
+    it as without a sink."""
+    seq_len_kv, heads = 1000, 64
+    test = DSADecodeTest(
+        batch, heads, seq_len, seq_len_kv, 512, 0, topk, 1, 1, 0, is_causal=False,
+        dtype=torch.bfloat16,
+    )  # fmt: skip
+    q, kv, _ = test.gen_inputs()
+    generator = torch.Generator().manual_seed(0)
+    rows = [torch.randperm(seq_len_kv, generator=generator)[:topk] for _ in range(batch * seq_len)]
+    indices = torch.stack(rows).view(batch, seq_len, 1, topk).to(torch.int32)
+    indices[torch.rand(indices.shape, generator=generator) < 0.3] = -1
+    inputs = [q, kv, indices.to(q.device)]
+    if with_sink:
+        sink = torch.randn(heads, generator=generator)
+        sink[0], sink[1] = float("inf"), float("-inf")
+        inputs.append(sink.to(q.device))
+    test.check(DSADenseFwdOp(0, 1, 0, is_causal=False), *inputs)
+
+
+_DSV4_FLASH = {"B": 1, "H": 64, "H_kv": 1, "D": 512, "dim_tail": 0, "stride_kv": 1}
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param(
+            {"B": 16, "S": 2, "S_kv": 8320, "K": 640}, marks=pytest.mark.smoke, id="csa-mtp"
+        ),
+        pytest.param({"S": 4096, "S_kv": 5120, "K": 640}, marks=pytest.mark.full, id="csa-4k"),
+        pytest.param({"S": 4096, "S_kv": 4128, "K": 160}, marks=pytest.mark.full, id="hca-4k"),
+        pytest.param(
+            {"S": 32768, "S_kv": 40960, "K": 640}, marks=pytest.mark.nightly, id="csa-32k"
+        ),
+        pytest.param(
+            {"S": 32768, "S_kv": 33024, "K": 384}, marks=pytest.mark.nightly, id="hca-32k"
+        ),
+    ],
+)
+def test_dsa_decode_deepseek_v4_flash(row) -> None:
+    """DeepSeek-V4-Flash prefill and MTP rows: index-only selection with the attention sink."""
+    call = manifest_call(
+        "DSADenseFwdOp",
+        {"T": "bfloat16"},
+        **{**_DSV4_FLASH, **row},
+        q_start_index_s=row["S_kv"],
+        is_causal=False,
+        some=["attn_sink"],
+    )
+    test = DSADecodeCallTest(call)
+    test.check(DSADenseFwdOp(**call.arguments()), *test.gen_inputs())
