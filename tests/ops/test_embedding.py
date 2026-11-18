@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops._kernels.indexing import EmbeddingCall
 from tileops.backend import OpNotAvailableError
 from tileops.indexing import EmbeddingFwdOp
 from workloads.device import run_device
@@ -61,10 +62,38 @@ _CASES = (
 )
 
 
+def _column_tiles(cfg: dict, S: list, D: int) -> bool:
+    """Two column tiles, the second one vector, and more tiles than grid x's 2**20."""
+    vectors = D // cfg["vec"]
+    col_tiles = -(-vectors // cfg["block_vectors"])
+    tiles = -(-S[0] // cfg["block_rows"]) * col_tiles
+    return col_tiles == 2 and vectors % cfg["block_vectors"] == 1 and tiles > 2**20
+
+
+# The kernel config each path-named case relies on, so a retune fails the case instead of
+# moving it off its path.
+_ON_PATH = {
+    "guarded-pass": lambda cfg, S, D: cfg["block_rows"] * cfg["block_vectors"] % cfg["threads"]
+    != 0,
+    "column-tiles": _column_tiles,
+}
+
+
 @pytest.mark.parametrize("S, V, D, index_dtype, dtype, params", _CASES)
-def test_embedding(S, V, D, index_dtype, dtype, params) -> None:
+def test_embedding(S, V, D, index_dtype, dtype, params, request) -> None:
     test = _test(S, V, D, index_dtype, dtype, **params)
-    test.check(EmbeddingFwdOp(**test.arguments()), *test.gen_inputs())
+    op = EmbeddingFwdOp(**test.arguments())
+    on_path = _ON_PATH.get(request.node.callspec.id)
+    if on_path is not None:
+        call = EmbeddingCall(
+            dim=D,
+            dtype=getattr(torch, dtype),
+            index_dtype=getattr(torch, index_dtype),
+            device=torch.device(run_device()),
+        )
+        cfg = op.kernel_for("embedding", lambda: call).config
+        assert on_path(cfg, S, D), cfg
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke

@@ -559,10 +559,18 @@ def test_rope_cos_sin_rotates_a_strided_view_in_place(interleaved, columns) -> N
     assert torch.equal(wide[kept], before[kept])
 
 
-@_VIEWS
-def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(interleaved, columns) -> None:
+# NeoX only: the pairing on strided views is the in-place test's, and interleaved out of
+# place is the interleaved-partial-offset case.
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pytest.param(slice(64, 136), marks=_SMOKE, id="neox-tail"),
+        pytest.param(slice(8, 136, 2), marks=_FULL, id="neox-every-2nd"),
+    ],
+)
+def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(columns) -> None:
     """A column view of wider heads read out of place: the wider heads are left as they were."""
-    test, op, inputs = _strided_view_call(interleaved, False, columns, 136)
+    test, op, inputs = _strided_view_call(False, False, columns, 136)
     test.check(op, *inputs)
     wide = inputs[0]._base
     before = wide.clone()
