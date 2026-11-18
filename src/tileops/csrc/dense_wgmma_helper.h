@@ -276,14 +276,8 @@ __device__ __forceinline__ void dense_add_row_bias_64xN(float* acc,
 // the step reads stage ``stage``. Each 128-byte-wide K slice of a stage is its
 // own 128-byte swizzled atom, as ``make_swizzled_layout`` lays out a wider
 // 8-bit row: A's atom is 64 x 128 bytes and B's N x 128, one after another.
-//
-// TrailingFence = false leaves the commit group in flight without the closing
-// accumulator fence; the caller waits for the group, then fences. A fence
-// between the commit and the wait reads the accumulator while the WGMMAs run,
-// and where a kernel overlaps other work with the group, ptxas then serializes
-// every WGMMA of the kernel (C7514).
-template <tl::DataType AB, tl::DataType C, int N, int Atoms,
-          bool TrailingFence = true, typename T, typename Acc>
+template <tl::DataType AB, tl::DataType C, int N, int Atoms, typename T,
+          typename Acc>
 __device__ __forceinline__ void dense_wgmma_8bit_64xN(Acc* accumulator,
                                                       T* a_ring, T* b_ring,
                                                       int stage,
@@ -306,9 +300,7 @@ __device__ __forceinline__ void dense_wgmma_8bit_64xN(Acc* accumulator,
         reinterpret_cast<uint32_t*>(accumulator), ki > 0 || accumulate != 0);
   }
   tl::warpgroup_commit_batch();
-  if constexpr (TrailingFence) {
-    tl::warpgroup_fence_operand(reinterpret_cast<Reg*>(accumulator), N / 2);
-  }
+  tl::warpgroup_fence_operand(reinterpret_cast<Reg*>(accumulator), N / 2);
 }
 
 // The instantiation the per-tensor FP8 warp-specialized kernel names: one

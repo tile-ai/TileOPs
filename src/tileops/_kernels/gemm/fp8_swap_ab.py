@@ -15,7 +15,6 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMFP8Call, GEMMFP8FwdInterface
@@ -115,19 +114,14 @@ def _gemm_fp8_stream_kernel(
     c_dtype = out_dtype if split_k == 1 else "float32"
     # The output tile stores through TMA, which needs 16-byte output rows.
     tma_epilogue = split_k == 1 and (n * 2) % 16 == 0
-    # A thread's registers of the 64 x mpad accumulator, in dense_wgmma_8bit_64xN's order.
+    # A thread's registers of the 64 x mpad WGMMA accumulator.
     regs = mpad // 2
 
     @tilelang.jit(
         out_idx=[-1],
         # The producer and consumer warpgroups are written by hand below.
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=[
-            "-O3",
-            "-DENABLE_BF16",
-            "-DENABLE_FP8",
-            *csrc_include("dense_wgmma_helper.h"),
-        ],
+        compile_flags=["-O3", "-DENABLE_BF16", "-DENABLE_FP8"],
     )
     def _gemm_fp8_stream_func(num_stages: int, ctas: int) -> Callable:
         per_cta = -(-units // ctas)
@@ -172,14 +166,15 @@ def _gemm_fp8_stream_kernel(
                 unit_step = T.alloc_local((1,), "int32")
                 tx = T.get_thread_binding()
 
-                # The consumer warpgroup holds threads 0..127: the helper's register order
-                # names the lane and warp of an absolute thread.
+                # The consumer warpgroup holds threads 0..127: the WGMMA accumulator's register
+                # order names the lane and warp of an absolute thread.
                 if tx < 128:
                     # The consumer holds the sums, partials and step scales; the producer
                     # only issues TMA, so the register file goes to the consumer.
                     T.inc_max_nreg(240)
                     lane = tx % 32
-                    # The tile row of this thread's register 0, and its column.
+                    # The tile row of this thread's register 0, and its column; register r
+                    # holds row ``row0 + r % 4 // 2 * 8`` and column ``r // 4 * 8 + col0 + r % 2``.
                     row0 = tx // 32 * 16 + lane // 4
                     col0 = lane % 4 * 2
                     if not block_scaled:
@@ -216,17 +211,30 @@ def _gemm_fp8_stream_kernel(
                             step = unit_step[0] + ki
                             slot = step % num_stages
                             T.barrier_wait(ab_full[slot], (step % (2 * num_stages)) // num_stages)
-                            # One K step into a fresh accumulator, left in flight.
-                            T.call_extern(
-                                "handle",
-                                "tileops::dense_wgmma_8bit_64xN<tl::DataType::kFloat8_e4m3, "
-                                f"tl::DataType::kFloat32, {mpad}, 1, false>",
-                                T.address_of(part[0]),
-                                T.address_of(b_smem[slot, 0, 0]),
-                                T.address_of(a_smem[slot, 0, 0]),
-                                0,
-                                0,
-                            )
+                            # The step's four k32 WGMMAs into a fresh partial, left in flight:
+                            # a fence before the wait makes ptxas serialize them (C7514).
+                            with T.sblock("wgmma"):
+                                T.reads()
+                                T.writes()
+                                # Descriptors rebuilt per step, not carried across steps.
+                                T.sblock_attr({"lexical_alloc_scope": 1})
+                                desc_b = T.alloc_wgmma_desc()
+                                desc_a = T.alloc_wgmma_desc()
+                                T.initialize_wgmma_descriptor(
+                                    desc_b, T.access_ptr(b_smem[slot, 0, 0], "r"), 1, 1, 64
+                                )
+                                T.initialize_wgmma_descriptor(
+                                    desc_a, T.access_ptr(a_smem[slot, 0, 0], "r"), 1, 1, 64
+                                )
+                                T.warpgroup_fence_operand(part, num_regs=regs)
+                                T.warpgroup_arrive()
+                                for kk in T.unroll(block_k // 32):
+                                    T.ptx_wgmma_ss(
+                                        "float32", f"m64n{mpad}k32", True, True, "e4m3", "e4m3",
+                                        "fp32", desc_b.data, kk * 2, desc_a.data, kk * 2,
+                                        part.data, 0, T.Select(kk > 0, 1, 0), 1, 1,
+                                    )  # fmt: skip
+                                T.warpgroup_commit_batch()
                             if block_scaled:
                                 # Read the step's scales while its WGMMAs run.
                                 for r in T.unroll(regs):
@@ -397,7 +405,7 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
 
         10 MiB is the DRAM bandwidth times its loaded latency; past it a deeper ring queues
         loads without adding bandwidth. A ring holding every K step a CTA streams issues all
-        of its loads before the first product.
+        of its loads before the first product, so it is the only candidate there.
         """
         default = self.default_config
         k_iters = -(-self.k // _BLOCK_K) // default["split_k"]
