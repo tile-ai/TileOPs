@@ -276,9 +276,7 @@ class SiLUAndMulFwdOp(FusedGatedOp):
 
     A positive ``swiglu_limit`` first clamps ``gate`` to at most it and ``value`` to within
     plus or minus it, and a per-row ``scale`` multiplies each row before the one rounding to
-    the input dtype, as DeepSeek-V4-Flash's experts apply their routing weights. The in-tree
-    kernel serves neither; such a call raises ``OpNotAvailableError`` when a kernel is
-    selected.
+    the input dtype, as DeepSeek-V4-Flash's experts apply their routing weights.
     """
 
     kernel_types = {"silu_and_mul": SiLUAndMulFwdKernel}

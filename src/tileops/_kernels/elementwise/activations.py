@@ -64,22 +64,26 @@ def _approx_exp2(exponent):
 
 
 def _silu(x, float16_divide):
-    """x / (1 + exp2(-x * log2 e)), in fp32.
+    """x / (1 + exp2(-x * log2 e)), in fp32: :func:`_wide_silu` of *x* widened."""
+    return _wide_silu(T.cast(x, "float32"), str(x.dtype), float16_divide)
+
+
+def _wide_silu(wide, dtype, float16_divide):
+    """wide / (1 + exp2(-wide * log2 e)) of a float32 *wide* whose result rounds to *dtype*.
 
     The exponential runs in fp32 for both speed and fp32-reference error, and
     as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
 
-    16-bit inputs skip the IEEE divide and ``exp2f``'s subnormal guard: a flushed
+    16-bit results skip the IEEE divide and ``exp2f``'s subnormal guard: a flushed
     subnormal vanishes when added to 1. bfloat16 divides with ``quartered_fdiv``,
     float16 with *float16_divide*.
     """
     one = T.cast(1.0, "float32")
-    wide = T.cast(x, "float32")
     exponent = -wide * T.cast(LOG2E, "float32")
-    if str(x.dtype) == "float32":
+    if dtype == "float32":
         return wide / (one + T.exp2(exponent))
     den = one + _approx_exp2(exponent)
-    if str(x.dtype) == "bfloat16":
+    if dtype == "bfloat16":
         return quartered_fdiv(wide, den)
     return float16_divide(wide, den)
 
@@ -421,20 +425,58 @@ class SoftplusFwdKernel(MultiInputElementwiseKernel, SoftplusFwdInterface):
 
 
 class SiLUAndMulFwdKernel(FusedGatedKernel, SiLUAndMulFwdInterface):
-    """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
+    """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value.
+
+    A positive *swiglu_limit* clamps the gate and the value in float32, keeping NaN, and a
+    *row_scaled* kernel multiplies each row's product by its float32 scale; either way the
+    result rounds once.
+    """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
 
     @classmethod
-    def refusal(cls, call: SiLUAndMulCall) -> str | None:
-        if call.swiglu_limit > 0:
-            return f"does not clamp its inputs, and swiglu_limit={call.swiglu_limit}"
-        if call.has_scale:
-            return "scales no row"
-        return super().refusal(call)
+    def entry_for(cls, call: SiLUAndMulCall) -> Entry:
+        return call, lambda: cls(
+            call.m,
+            call.n,
+            call.dtype,
+            swiglu_limit=call.swiglu_limit,
+            row_scaled=call.has_scale,
+        )
+
+    def __init__(self, M, N, dtype, config=None, *, swiglu_limit=0.0, row_scaled=False):
+        self.swiglu_limit = swiglu_limit
+        self.row_scaled = row_scaled
+        super().__init__(M, N, dtype, config=config)
+
+    def _get_effective_op_func(self):
+        limit = self.swiglu_limit
+        if limit <= 0 and not self.row_scaled:
+            return super()._get_effective_op_func()
+        dtype = self.dtype_str
+
+        def fused_op(gate, value, row_scale=None):
+            g = T.cast(gate, "float32")
+            u = T.cast(value, "float32")
+            if limit > 0:
+                hi = T.cast(limit, "float32")
+                g = T.if_then_else(T.isnan(g), g, T.min(g, hi))
+                u = T.if_then_else(T.isnan(u), u, T.min(T.max(u, -hi), hi))
+            product = _wide_silu(g, dtype, quartered_fdiv) * u
+            return product if row_scale is None else product * row_scale
+
+        cls = type(self)
+        name = (
+            f"{cls.__module__}.{cls.__qualname__}|{dtype}|{self.strategy}"
+            f"|swiglu_limit={limit!r}|row_scaled={self.row_scaled}"
+        )
+        return name, fused_op
 
     def forward(self, x, scale=None):
-        return super().forward(x)
+        if scale is None:
+            return super().forward(x)
+        self._require_devices(x=x, scale=scale)
+        return self.program(self._compile)(x, scale)
 
     @staticmethod
     def activation_func(x):

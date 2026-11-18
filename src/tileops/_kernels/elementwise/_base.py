@@ -487,6 +487,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
+    row_scaled = False
 
     @staticmethod
     def activation_func(x):
@@ -521,7 +522,9 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
     def _build_kernel(self, strategy):
         effective_op = register_op_func(*self._get_effective_op_func())
         if strategy == "explicit_parallel":
-            return make_fused_gated_explicit(self.M, self.N, self.dtype_str, effective_op)
+            return make_fused_gated_explicit(
+                self.M, self.N, self.dtype_str, effective_op, self.row_scaled
+            )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
 

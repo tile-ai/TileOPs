@@ -355,13 +355,12 @@ class MoEExpertMLPFwdOp(Op):
 class MoEPostPermuteFwdOp(Op):
     """Restore token order and apply the declared local routing epilogue.
 
-    A caller-provided ``out`` must not overlap ``expert_output``, ``topk_weights``
-    or ``inverse_indices``. Overlap raises ``ValueError`` before any write;
+    A caller-provided ``out`` must not overlap ``expert_output``, ``topk_weights``,
+    ``inverse_indices`` or ``residual``. Overlap raises ``ValueError`` before any write;
     disjoint views of one buffer are accepted.
 
     A ``residual``, such as DeepSeek-V4-Flash's shared-expert output, is added to the
-    float32 reduction before the one cast. The in-tree kernel adds none; a call passing one
-    raises ``OpNotAvailableError`` when a kernel is selected.
+    scaled float32 reduction before the one cast.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
