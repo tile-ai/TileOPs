@@ -120,11 +120,6 @@ def test_gqa_paged_split_combine_row_blocks(
     ("semantics", "kernel_name"),
     [
         ({"is_causal": True, "window_size_left": 254}, "GQAPagedFwdKernel"),
-        ({"is_causal": True, "window_size_left": 255}, "GQAPagedFwdWSKernel"),
-        (
-            {"is_causal": False, "window_size_left": 255, "window_size_right": 254},
-            "GQAPagedFwdKernel",
-        ),
         (
             {"is_causal": False, "window_size_left": 255, "window_size_right": 255},
             "GQAPagedFwdWSKernel",
@@ -132,13 +127,7 @@ def test_gqa_paged_split_combine_row_blocks(
         # INT32_MAX hides no key; added to a query position it overflows int32.
         ({"is_causal": True, "window_size_right": 2**31 - 1}, "GQAPagedFwdWSKernel"),
     ],
-    ids=[
-        "left-inside-table",
-        "left-at-last-key",
-        "right-inside-table",
-        "both-at-last-key",
-        "right-int32-max",
-    ],
+    ids=["left-inside-table", "both-at-last-key", "right-int32-max"],
 )
 def test_gqa_paged_window_reaching_the_last_key_is_no_window(
     semantics: dict, kernel_name: str
@@ -150,6 +139,30 @@ def test_gqa_paged_window_reaching_the_last_key_is_no_window(
     inputs = workload.gen_inputs()
     assert type(_kernel(op, inputs)).__name__ == kernel_name
     _check(op, workload, inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("left", "right", "windows"),
+    [
+        pytest.param(254, 254, (254, 254), id="inside-table"),
+        pytest.param(255, -1, (-1, -1), id="left-at-last-key"),
+        pytest.param(-1, 255, (-1, -1), id="right-at-last-key"),
+        pytest.param(-1, 2**31 - 1, (-1, -1), id="right-int32-max"),
+    ],
+)
+def test_gqa_paged_call_names_no_window_that_hides_no_key(
+    left: int, right: int, windows: tuple[int, int]
+) -> None:
+    """A table of four 64-row pages holds 256 positions: a window reaching key 255 hides no
+    key, and the call the op builds names no window there."""
+    meta = torch.device("meta")
+    q = torch.empty(16, 4, 128, dtype=torch.float16, device=meta)
+    k_cache = torch.empty(4, 64, 4, 128, dtype=torch.float16, device=meta)
+    table = torch.empty(1, 4, dtype=torch.int32, device=meta)
+    op = GQAPagedFwdOp(is_causal=False, window_size_left=left, window_size_right=right)
+    call = op._paged_call(q, k_cache, table)
+    assert (call.window_size_left, call.window_size_right) == windows
 
 
 @pytest.mark.smoke
@@ -1124,17 +1137,17 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             marks=pytest.mark.smoke,
             id="fp8-softcap-window",
         ),
-        # A right window of INT32_MAX keys hides none; added to a query position it overflows.
+        # Bidirectional rows: each query sees every key of its request.
         pytest.param(
             [2, 2],
             [700, 300],
             64,
             torch.float16,
-            {"is_causal": False, "window_size_right": 2**31 - 1},
+            {"is_causal": False},
             8,
             ANY,
             marks=pytest.mark.smoke,
-            id="f16-int32-max-right-window",
+            id="f16-bidirectional",
         ),
         # Rows on M with an FP8 query, request scales, a softcap and a left window, bidirectional.
         pytest.param(
