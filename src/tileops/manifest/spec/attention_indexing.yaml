@@ -65,7 +65,7 @@ GatedPoolCompressFwdOp:
   # request's last call or one position before it, so the caller may roll back at most the
   # last token it passed. Distinct state_slots are the caller's obligation.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: workloads.attention.gated_pool_compress.gated_pool_compress
   signature:
     forall: {N: Dim, T_q: Dim, NS: Dim, D: Dim, T: "DType[bfloat16 | float32]", seq_lens: "Seq[Int]", positions: "Seq[Int]"}
@@ -79,8 +79,8 @@ GatedPoolCompressFwdOp:
       kv: {dtype: T, shape: "[T_q, C * D]"}
       score: {dtype: T, shape: "[T_q, C * D]"}
       ape: {dtype: T, shape: "[ratio, C * D]"}
-      kv_state: {dtype: float32, shape: "[NS, C * ratio, C * D]", mutated: true}
-      score_state: {dtype: float32, shape: "[NS, C * ratio, C * D]", mutated: true}
+      kv_state: {dtype: float32, shape: "[NS, C * ratio, C * D]", mutated: true, contiguous: true}
+      score_state: {dtype: float32, shape: "[NS, C * ratio, C * D]", mutated: true, contiguous: true}
       cu_seqlens: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
       start_pos: {dtype: int32, shape: "[N]", values: "as_tensor(positions)"}
       state_slots: {dtype: int32, shape: "[N]", values: "sample_indices(N, NS)", requires: ["in_range(0, NS)"]}
@@ -89,6 +89,7 @@ GatedPoolCompressFwdOp:
       valid: {dtype: bool, shape: "[T_q]"}
     shape_rules:
     - "ratio > 0"
+    - "D > 0"
   workloads:
   # DeepSeek-V4-Flash: CSA attention (ratio 4, overlapping), HCA attention (ratio 128) and
   # the indexer (ratio 4, overlapping, 128 channels), float32 kv and score. Decode positions
