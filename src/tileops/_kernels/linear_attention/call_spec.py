@@ -179,17 +179,15 @@ class KDACall(CallSpec):
     def chunk_refusal(self) -> str | None:
         """Why no in-tree Kimi Delta Attention program serves this call, or ``None``.
 
-        The recurrence variants and state layouts the in-tree pair does not
-        implement, whatever the sequence length. Both implementations ask this
-        first, then state the lengths and widths they serve themselves.
+        The recurrence variants the in-tree kernels do not implement, whatever the
+        sequence length. Every implementation asks this first, then states the
+        lengths, widths and state layouts it serves itself.
         """
         unsupported = [
             name
             for name, present in (
-                ("state_v_first=True", self.state_v_first),
                 ("use_beta_sigmoid_in_kernel=True", self.beta_sigmoid),
                 ("allow_neg_eigval=True", self.allow_neg_eigval),
-                ("state_indices", self.pooled),
                 ("num_accepted_tokens", self.rollback),
             )
             if present
@@ -526,12 +524,13 @@ class KDAFwdInterface(KernelInterface):
         cu_seqlens_cpu: torch.Tensor | None = None,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
+        state_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the recurrence from *initial_state* over the call's sequence.
 
-        Every tensor is contiguous on ``call.device`` but ``cu_seqlens_cpu``, and
-        nothing is written in place. Unless ``call.gate_in_kernel``, *g* already
-        carries the log-space decay of each key channel; unless
+        Every tensor is contiguous on ``call.device`` but ``cu_seqlens_cpu``.
+        Nothing is written in place but a state pool. Unless ``call.gate_in_kernel``,
+        *g* already carries the log-space decay of each key channel; unless
         ``call.beta_sigmoid``, *beta* already carries the update strength.
 
         Args:
@@ -541,18 +540,24 @@ class KDAFwdInterface(KernelInterface):
             g: ``(batch, seq_len, value_heads, dim_k)`` log-space per-channel
                 decay in ``call.dtype``.
             beta: ``(batch, seq_len, value_heads)`` in ``call.dtype``.
-            initial_state: ``float32`` ``(n, value_heads, dim_k, dim_v)``, or
-                ``None`` for zero. ``n`` is the batch size, or the packed
-                sequence count under ``call.varlen``.
+            initial_state: ``float32`` ``(n, value_heads, dim_k, dim_v)``,
+                value-major ``(n, value_heads, dim_v, dim_k)`` when
+                ``call.state_v_first``, or ``None`` for zero. ``n`` is the batch
+                size, or the packed sequence count under ``call.varlen``.
             cu_seqlens: ``int64`` packed sequence offsets, passed exactly when
                 ``call.varlen``.
             cu_seqlens_cpu: The same offsets on the CPU, or ``None``.
             A_log: ``float32`` ``(value_heads,)``, passed exactly when
                 ``call.gate_in_kernel``.
             dt_bias: ``float32`` ``(value_heads * dim_k,)``, or ``None``.
+            state_indices: ``int32`` ``(n,)``, passed exactly when ``call.pooled``:
+                sequence ``i`` starts from ``initial_state[state_indices[i]]`` and its
+                final state is written back there. *initial_state* is then a pool of
+                states, one a slot, the slots distinct across the call.
 
         Returns:
-            New ``(o, final_state)``: ``o`` shaped like *v* in ``call.dtype``, and
-            the ``float32`` ``(n, value_heads, dim_k, dim_v)`` state after the
-            last step.
+            ``(o, final_state)``: a new ``o`` shaped like *v* in ``call.dtype``, and
+            the ``float32`` state after the last step, laid out like
+            *initial_state*; under ``call.pooled``, *initial_state* itself, updated
+            in place.
         """
