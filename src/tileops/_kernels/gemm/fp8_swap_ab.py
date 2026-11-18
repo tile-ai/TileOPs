@@ -386,12 +386,19 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """The deepest ring, and the shallowest that keeps 10 MiB loading across the grid.
+        """The deepest ring and, where it refills its slots, the shallowest that keeps 10 MiB
+        loading across the grid.
 
         10 MiB is the DRAM bandwidth times its loaded latency; past it a deeper ring queues
-        loads without adding bandwidth.
+        loads without adding bandwidth. A ring holding every K step a CTA streams issues all
+        of its loads before the first product, as main's swap-AB kernel does on such calls,
+        so a tuned call loads no later than that kernel.
         """
         default = self.default_config
+        k_iters = -(-self.k // _BLOCK_K) // default["split_k"]
+        units = -(-self.n // _ROWS) * default["split_k"]
+        if default["num_stages"] == -(-units // default["ctas"]) * k_iters:
+            return [{"num_stages": default["num_stages"], "ctas": default["ctas"]}]
         stage = (_ROWS + stream_width(self.m)[0]) * _BLOCK_K
         in_flight = min(-(-(10 * 2**20) // (default["ctas"] * stage)), default["num_stages"])
         return [

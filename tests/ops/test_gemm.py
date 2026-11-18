@@ -1549,9 +1549,17 @@ def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
             marks=pytest.mark.full,
             id="masked",
         ),
-        # Per-tensor scales on every K slice of a split call, tuned over two ring depths.
+        # Per-tensor scales on every K slice of a split call, tuned over two ring depths: the
+        # deepest ring holds fewer K steps than a CTA streams.
         pytest.param(
-            5, 1280, 8192, "per_tensor", torch.bfloat16, True, marks=pytest.mark.full, id="split-pt"
+            5,
+            1280,
+            16384,
+            "per_tensor",
+            torch.bfloat16,
+            True,
+            marks=pytest.mark.full,
+            id="split-pt",
         ),
         # Scales staged for a long K hold the ring to its shallowest depth.
         pytest.param(
