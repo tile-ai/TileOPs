@@ -29,7 +29,6 @@ __all__ = [
     "attributed_samples",
     "collect_attributed",
     "collect_repeats",
-    "flush_l2",
     "l2_flush_buffer",
     "median_busy_ms",
     "reset_persisting_l2_cache",
@@ -549,20 +548,6 @@ def l2_flush_buffer(device: torch.device) -> torch.Tensor:
             )
         _L2_FLUSH_BUFFERS[device] = buffer
     return buffer
-
-
-def flush_l2(buffer: torch.Tensor) -> None:
-    """Return persisting L2 lines to normal priority, then evict L2 by reading *buffer*, an
-    :func:`l2_flush_buffer` on a CUDA device. The preparation before every call tuning
-    reads, so every candidate is ranked from the same cache state.
-
-    Read-only eviction avoids buffer-sized dirty writebacks during the timed call.
-    """
-    # Imported on first use: Triton is needed only where a CUDA device is timed.
-    from tileops._utils._l2_sweep import read_sweep
-
-    reset_persisting_l2_cache()
-    read_sweep(buffer)
 
 
 def median_busy_ms(samples: "list[Sample]") -> float:

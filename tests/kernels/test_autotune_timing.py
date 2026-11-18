@@ -99,7 +99,7 @@ def no_device(monkeypatch) -> list:
     device; returns the buffers the preparation flushed, in order."""
     flushed = []
     monkeypatch.setattr(tileops_autotune, "l2_flush_buffer", lambda device: device)
-    monkeypatch.setattr(tileops_autotune, "flush_l2", flushed.append)
+    monkeypatch.setattr(tileops_autotune, "_flush_l2", flushed.append)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: None)
     return flushed
@@ -153,7 +153,7 @@ def test_each_candidate_call_starts_on_a_drained_device_after_its_flush(monkeypa
     n_repeat = 4
     order = []
     monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: order.append("sync"))
-    monkeypatch.setattr(tileops_autotune, "flush_l2", lambda buffer: order.append("flush"))
+    monkeypatch.setattr(tileops_autotune, "_flush_l2", lambda buffer: order.append("flush"))
     ids = type(
         "Ids",
         (),
@@ -175,6 +175,22 @@ def test_each_candidate_call_starts_on_a_drained_device_after_its_flush(monkeypa
     runs = [i for i, step in enumerate(order) if step == "run"][-n_repeat:]
     for previous, call in itertools.pairwise(runs):
         assert order[previous + 1 : call] == ["sync", "flush", "sync"]
+
+
+@pytest.mark.smoke
+def test_a_flush_resets_persistence_then_reads_the_buffer(monkeypatch):
+    """Persisting lines return to normal priority before the read evicts them."""
+    from tileops._utils import _l2_sweep
+
+    order = []
+    monkeypatch.setattr(
+        tileops_autotune, "reset_persisting_l2_cache", lambda: order.append("persist")
+    )
+    monkeypatch.setattr(_l2_sweep, "read_sweep", lambda buffer: order.append(buffer))
+
+    tileops_autotune._flush_l2("buffer")
+
+    assert order == ["persist", "buffer"]
 
 
 def _short_reading_collect(lossy_attempts: int, attempts: list, dropped):

@@ -355,19 +355,6 @@ def test_args_on_another_device_than_the_timed_one_are_refused():
         bench_kernel(lambda y: y, args=(x,), device=torch.device("cpu"))
 
 
-def test_a_flush_resets_persistence_then_reads_the_buffer(monkeypatch):
-    """Persisting lines return to normal priority before the read evicts them."""
-    from tileops._utils import _l2_sweep, cupti
-
-    order = []
-    monkeypatch.setattr(cupti, "reset_persisting_l2_cache", lambda: order.append("persist"))
-    monkeypatch.setattr(_l2_sweep, "read_sweep", lambda buffer: order.append(buffer))
-
-    cupti.flush_l2("buffer")
-
-    assert order == ["persist", "buffer"]
-
-
 def test_the_flush_buffer_of_one_device_is_not_anothers(monkeypatch):
     """Two device types both number their first device 0."""
     from tileops._utils import cupti
