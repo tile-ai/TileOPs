@@ -370,7 +370,6 @@ def tune_delta_rule_fwd(
         # Compiled but unmeasured: the untuned width answers if it is one. Its
         # stage count comes from the default. Threads must be resolved for the
         # chosen width, which can have fewer warp tiles than the untuned width.
-        # That combination remains unmeasured.
         preferred = default_h_block_v(kernel.dim_v, kernel.chunk_size)
         h_block_v = preferred if preferred in compiled else compiled[0]
 

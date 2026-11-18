@@ -61,9 +61,8 @@ def key_of(k_rank, ii, lane_group: int, key_run: int):
     return run_start(k_rank, ii // key_run, lane_group, key_run) + ii % key_run
 
 
-# Seven recurrence flags, the pool and a block shape over two state widths and two dtypes:
-# a process that exercises several variants at several shapes outgrows the 32 entries one
-# variant needs.
+# The key holds the call's shape, every recurrence flag, the pool and rollback facts and the
+# block shape, so one process that runs several variants at several shapes fills many entries.
 @target_cache(maxsize=64)
 def delta_decode_tl(
     batch: int,

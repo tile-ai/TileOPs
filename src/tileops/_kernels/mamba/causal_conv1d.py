@@ -414,7 +414,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # The fastest measured over the manifest rows on H200.
+        # Re-fit by sweeping these five over the manifest prefill rows.
         return {
             "vec": _vector(self.dim, self.dtype),
             "warps": 4,

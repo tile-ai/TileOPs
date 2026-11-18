@@ -65,7 +65,7 @@ _PREFILL = (
         id="no-bias-no-act",
     ),
     pytest.param([129, 70], 768, 4, "bfloat16", ["bias"], "silu", marks=_SMOKE, id="no-state"),
-    # Regression: an empty sequence without a state got zeros written over its state.
+    # An empty sequence without has_initial_state keeps its state.
     pytest.param(
         [0, 4, 0, 70], 256, 4, "bfloat16", ["bias"], "silu", marks=_SMOKE, id="empty-keeps-state"
     ),
