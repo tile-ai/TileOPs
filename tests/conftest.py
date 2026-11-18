@@ -9,7 +9,7 @@ import torch
 
 from tests.workload_test_base import _check_result
 from tileops._utils.device import current_accelerator_type, on_current_index
-from tileops.backend import BUILTIN, OpNotAvailableError, default_target
+from tileops.backend import BUILTIN, OpNotAvailableError, _registry, default_target
 from workloads.device import (
     run_device,
     run_device_available,
@@ -547,3 +547,16 @@ def pytest_runtest_call(item):
         _check_result.op_name = None
         _check_result.op_module = None
         _check_result.max_abs_err = None
+
+
+@pytest.fixture
+def isolated_registry():
+    """An empty kernel registry for the test, restored afterwards."""
+    state = _registry.snapshot()
+    _registry.DETECTORS.clear()
+    _registry.BUILDERS.clear()
+    _registry.LOAD_FAILURES.clear()
+    _registry.default_target = None
+    _registry._loaded = True
+    yield
+    _registry.restore(state)

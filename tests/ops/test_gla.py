@@ -409,18 +409,6 @@ class GLAFwdTest(GLAFwdWorkload, TestBase):
     pass
 
 
-@pytest.fixture
-def isolated_registry():
-    state = registry.snapshot()
-    registry.DETECTORS.clear()
-    registry.BUILDERS.clear()
-    registry.LOAD_FAILURES.clear()
-    registry.default_target = None
-    registry._loaded = True
-    yield
-    registry.restore(state)
-
-
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
 def test_gla_fwd_reaches_external_target_with_optional_inputs() -> None:

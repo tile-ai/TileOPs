@@ -42,18 +42,6 @@ def test_gdn_split_prefill_preserves_tail_state() -> None:
     assert [type(kernel).__name__ for kernel in op.iter_kernels()] == [expected]
 
 
-@pytest.fixture
-def isolated_registry():
-    state = registry.snapshot()
-    registry.DETECTORS.clear()
-    registry.BUILDERS.clear()
-    registry.LOAD_FAILURES.clear()
-    registry.default_target = None
-    registry._loaded = True
-    yield
-    registry.restore(state)
-
-
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @PREFILL_ARCHITECTURES
 def test_gdn_dense_prefill_matches_reference(_architecture: int, dtype: torch.dtype) -> None:
