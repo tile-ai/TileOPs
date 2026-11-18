@@ -139,7 +139,6 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Keep the admitted one-stage plan until other configurations are measured.
         return [self.default_config]
 
     @property

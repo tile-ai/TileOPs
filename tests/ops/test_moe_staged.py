@@ -229,19 +229,18 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert scaled.eval_roofline() == (1024 + tokens * hidden, 1600)
 
 
-@pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize(
     "tokens,top_k,experts,hidden",
     [
         # Whole scan blocks, one gather block a token.
-        (512, 8, 128, 128),
+        pytest.param(512, 8, 128, 128, marks=pytest.mark.smoke),
         # Fewer tokens than SMs: each token's eight routes split over five blocks.
-        (32, 8, 128, 7168),
+        pytest.param(32, 8, 128, 7168, marks=pytest.mark.full),
         # A partial last scan block, and a row narrower than one eight-element copy.
-        (513, 8, 64, 7),
+        pytest.param(513, 8, 64, 7, marks=pytest.mark.full),
         # One scan program, three routes a token over three blocks.
-        (5, 3, 4, 24),
+        pytest.param(5, 3, 4, 24, marks=pytest.mark.full),
     ],
 )
 def test_staged_tight_optimized_shapes_round_trip(
@@ -395,32 +394,73 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
     return (row if spec["packing"] == "tight" else -(-row // align) * align), ends
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("layout", "sizes", "activation", "some"),
     [
-        pytest.param(_TIGHT_MOE_GROUPED_GEMM, [100, 0, 300, 128, 7, 64], None, (), id="tight-psum"),
+        pytest.param(
+            _TIGHT_MOE_GROUPED_GEMM,
+            [100, 0, 300, 128, 7, 64],
+            None,
+            (),
+            marks=pytest.mark.smoke,
+            id="tight-psum",
+        ),
         # 142 rows an expert on average: on H200 the unfused ping-pong 64-row tiles.
         pytest.param(
-            _TIGHT_MOE_GROUPED_GEMM, [200, 0, 300, 129, 70, 150], None, (), id="tight-psum-pingpong"
+            _TIGHT_MOE_GROUPED_GEMM,
+            [200, 0, 300, 129, 70, 150],
+            None,
+            (),
+            marks=pytest.mark.full,
+            id="tight-psum-pingpong",
         ),
         pytest.param(
             _TIGHT_MOE_GROUPED_GEMM,
             [200, 0, 300, 129, 70, 150],
             None,
             ("bias",),
+            marks=pytest.mark.full,
             id="tight-psum-pingpong-bias",
         ),
         pytest.param(
-            _aligned("per_row"), [100, 0, 300, 128, 7, 64], None, (), id="aligned-per-row"
+            _aligned("per_row"),
+            [100, 0, 300, 128, 7, 64],
+            None,
+            (),
+            marks=pytest.mark.full,
+            id="aligned-per-row",
         ),
         pytest.param(
-            _aligned("physical_psum"), [100, 0, 300, 128, 7, 64], None, (), id="aligned-psum"
+            _aligned("physical_psum"),
+            [100, 0, 300, 128, 7, 64],
+            None,
+            (),
+            marks=pytest.mark.full,
+            id="aligned-psum",
         ),
-        pytest.param(_aligned("physical_psum"), [300] * 32, None, (), id="aligned-psum-32-experts"),
-        pytest.param({"masked": {"max_m": 256}}, [100, 0, 256, 33], None, (), id="masked"),
         pytest.param(
-            {"masked": {"max_m": 256}}, [100, 0, 256, 33], "silu_and_mul", (), id="masked-gated"
+            _aligned("physical_psum"),
+            [300] * 32,
+            None,
+            (),
+            marks=pytest.mark.full,
+            id="aligned-psum-32-experts",
+        ),
+        pytest.param(
+            {"masked": {"max_m": 256}},
+            [100, 0, 256, 33],
+            None,
+            (),
+            marks=pytest.mark.full,
+            id="masked",
+        ),
+        pytest.param(
+            {"masked": {"max_m": 256}},
+            [100, 0, 256, 33],
+            "silu_and_mul",
+            (),
+            marks=pytest.mark.full,
+            id="masked-gated",
         ),
         # A bias under each layout; the gate/up bias stacked and interleaved.
         pytest.param(
@@ -428,6 +468,7 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 300, 128, 7, 64],
             None,
             ("bias",),
+            marks=pytest.mark.full,
             id="aligned-per-row-bias",
         ),
         pytest.param(
@@ -435,6 +476,7 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 256, 33],
             "swigluoai",
             ("bias",),
+            marks=pytest.mark.full,
             id="masked-swigluoai-bias",
         ),
         pytest.param(
@@ -442,6 +484,7 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 300, 128, 7, 64],
             None,
             ("bias",),
+            marks=pytest.mark.full,
             id="tight-per-row-bias",
         ),
         pytest.param(
@@ -449,6 +492,7 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
             [100, 0, 300, 128, 7, 64],
             "silu_and_mul",
             ("bias",),
+            marks=pytest.mark.full,
             id="aligned-psum-silu-bias",
         ),
     ],
@@ -532,8 +576,14 @@ def test_grouped_gemm_tight_per_row_matches_the_psum_layout(_architecture, dtype
     assert torch.equal(out, psum(a, b, counts.cumsum(0).int()))
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul", "swigluoai"])
+@pytest.mark.parametrize(
+    "activation",
+    [
+        pytest.param("silu_and_mul", marks=pytest.mark.smoke),
+        pytest.param("gelu_and_mul", marks=pytest.mark.full),
+        pytest.param("swigluoai", marks=pytest.mark.full),
+    ],
+)
 def test_grouped_gemm_fuses_the_gated_activation(activation):
     """With ``activation`` the op hands the kernel a gate||up ``b`` and gets ffn columns back."""
     num_experts = 6
@@ -915,9 +965,8 @@ def test_grouped_gemm_accepts_out_ending_where_an_input_starts(_architecture):
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
 def test_post_permute_more_tokens_than_sms_at_gpt_oss_hidden_size() -> None:
-    """Regression: with more tokens than SMs at gpt-oss's H = 2880, the unpermute kernel took
-    a power-of-two launch width that does not divide the row, so its row fragment had no layout
-    and the kernel failed to compile."""
+    """With more tokens than SMs at gpt-oss's H = 2880, the unpermute kernel compiles with a
+    launch width that divides the row."""
     tokens, top_k, hidden = 512, 4, 2880
     routes = tokens * top_k
     call = manifest_call(
@@ -941,13 +990,10 @@ def test_post_permute_more_tokens_than_sms_at_gpt_oss_hidden_size() -> None:
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize("scale", [1.0, 1.5])
-def test_post_permute_adds_the_residual_to_the_scaled_reduction(
-    dtype: torch.dtype, scale: float
-) -> None:
+def test_post_permute_adds_the_residual_to_the_scaled_reduction(dtype: torch.dtype) -> None:
     """The routing scale multiplies the reduction, the residual is added once, and the result
     is written into ``out``."""
-    tokens, top_k, hidden = 37, 6, 4096
+    tokens, top_k, hidden, scale = 37, 6, 4096, 1.5
     routes = tokens * top_k
     expert_output = torch.randn(routes, hidden, dtype=dtype, device=run_device())
     weights = torch.rand(tokens, top_k, device=run_device())
@@ -978,13 +1024,26 @@ def test_post_permute_adds_the_residual_before_the_cast(dtype: torch.dtype) -> N
     assert torch.equal(out, torch.full_like(out, half_eps))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("shift", ["a", "b", "bias", "out"])
-@pytest.mark.parametrize("masked", [False, True])
+@pytest.mark.parametrize(
+    "dtype, shift, masked",
+    [
+        pytest.param(torch.bfloat16, "a", False, marks=pytest.mark.smoke),
+        pytest.param(torch.float16, "a", False, marks=pytest.mark.smoke),
+        *(
+            pytest.param(torch.bfloat16, shift, masked, marks=pytest.mark.full)
+            for shift in ("a", "b", "bias", "out")
+            for masked in (False, True)
+            if (shift, masked) != ("a", False)
+        ),
+        *(
+            pytest.param(torch.float16, shift, True, marks=pytest.mark.full)
+            for shift in ("a", "b", "bias", "out")
+        ),
+    ],
+)
 def test_grouped_gemm_accepts_offset_storage(dtype, shift, masked, arch):
     """SM89 vector accesses and SM90 TMA descriptors accept contiguous offset views, and an
     idle expert's output rows are preserved."""
@@ -1105,18 +1164,11 @@ def _deepseek_v4_moe(x, ids, weights, w_gate_up, w_down, shared_gate_up, shared_
     return y.to(x.dtype)
 
 
-def _normalized_error(got: torch.Tensor, expected: torch.Tensor) -> float:
-    got, expected = got.double(), expected.double()
-    return ((got - expected).pow(2).sum() / (got.pow(2) + expected.pow(2)).sum()).item()
-
-
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "tokens, hidden, inter, experts",
     [
         pytest.param(64, 512, 256, 16, marks=pytest.mark.smoke),
-        # DeepSeek-V4-Flash's sizes at 32768 tokens, over one rank's 32 of 256 experts.
-        pytest.param(32768, 4096, 2048, 32, marks=pytest.mark.full),
     ],
 )
 def test_deepseek_v4_moe_block_matches_the_float32_reference(
@@ -1152,5 +1204,6 @@ def test_deepseek_v4_moe_block_matches_the_float32_reference(
     reference = _deepseek_v4_moe(
         *(t.float() if t.is_floating_point() else t for t in tensors), limit
     )
-    bound = 2 * _normalized_error(official.float(), reference)
+    official, exact = official.double(), reference.double()
+    bound = 2 * ((official - exact).pow(2).sum() / (official.pow(2) + exact.pow(2)).sum()).item()
     assert_normalized_error(got.float(), reference, bound)

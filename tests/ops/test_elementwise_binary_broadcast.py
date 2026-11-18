@@ -217,17 +217,38 @@ def test_two_vector_row_blocks_match_torch(op_name, kwargs, a_shape, b_shape) ->
 
 
 _STAGED_SHAPES = [
-    pytest.param((4, 1), (4, 1000), torch.float16, id="inner-stride-0-and-1"),
-    pytest.param((4, 1000), (1, 1000), torch.float16, id="inner-stride-1-and-1"),
-    pytest.param((3, 5000), (3, 1), torch.float16, id="inner-spans-several-blocks"),
-    pytest.param((64, 4096), (1, 4096), torch.float32, id="hinted-whole-blocks"),
-    pytest.param((64, 4096), (64, 1), torch.float32, id="hinted-whole-blocks-channel-b"),
-    pytest.param((64, 1), (64, 4096), torch.float32, id="hinted-whole-blocks-channel-a"),
-    pytest.param((64, 4104), (1, 4104), torch.float32, id="hinted-blocks-and-tail"),
+    pytest.param(
+        (4, 1), (4, 1000), torch.float16, id="inner-stride-0-and-1", marks=pytest.mark.smoke
+    ),
+    pytest.param(
+        (64, 4096), (1, 4096), torch.float32, id="hinted-whole-blocks", marks=pytest.mark.smoke
+    ),
+    pytest.param(
+        (4, 1000), (1, 1000), torch.float16, id="inner-stride-1-and-1", marks=pytest.mark.full
+    ),
+    pytest.param(
+        (3, 5000), (3, 1), torch.float16, id="inner-spans-several-blocks", marks=pytest.mark.full
+    ),
+    pytest.param(
+        (64, 4096),
+        (64, 1),
+        torch.float32,
+        id="hinted-whole-blocks-channel-b",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        (64, 1),
+        (64, 4096),
+        torch.float32,
+        id="hinted-whole-blocks-channel-a",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        (64, 4104), (1, 4104), torch.float32, id="hinted-blocks-and-tail", marks=pytest.mark.full
+    ),
 ]
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("a_shape, b_shape, dtype", _STAGED_SHAPES)
 def test_staged_row_broadcast_matches_torch(a_shape, b_shape, dtype):
     """A staged predicate broadcast agrees with torch on every stride pair."""
@@ -241,13 +262,12 @@ def test_staged_row_broadcast_matches_torch(a_shape, b_shape, dtype):
 
 
 _TAIL_SHAPES = [
-    pytest.param((4, 1088), (4, 1), id="packed-tail-inner-stride-0"),
-    pytest.param((5, 1088), (1, 1088), id="packed-tail-inner-stride-1"),
-    pytest.param((3, 5000), (3, 1), id="guarded-tail"),
+    pytest.param((4, 1088), (4, 1), id="packed-tail-inner-stride-0", marks=pytest.mark.smoke),
+    pytest.param((5, 1088), (1, 1088), id="packed-tail-inner-stride-1", marks=pytest.mark.full),
+    pytest.param((3, 5000), (3, 1), id="guarded-tail", marks=pytest.mark.full),
 ]
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("a_shape, b_shape", _TAIL_SHAPES)
 def test_row_broadcast_tail_matches_torch(a_shape, b_shape):
     """Both endings of a ragged row write every element torch writes."""

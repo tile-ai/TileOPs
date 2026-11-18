@@ -23,9 +23,9 @@ from tileops._utils.cupti import (
     AttributionError,
     CUPTIError,
     collect_attributed,
-    flush_l2,
     l2_flush_buffer,
     median_busy_ms,
+    reset_persisting_l2_cache,
 )
 
 __all__ = ["TUNING_FATAL", "autotune", "candidate_busy_ms", "supply_fingerprint"]
@@ -341,9 +341,21 @@ _TILELANG_EVENTS = "tilelang-cuda-events"
 _READING = threading.RLock()
 
 
+def _flush_l2(buffer: torch.Tensor) -> None:
+    """Return persisting L2 lines to normal priority, then evict L2 by reading *buffer*, an
+    :func:`~tileops._utils.cupti.l2_flush_buffer` on a CUDA device, so every candidate is
+    ranked from the same cache state. A read leaves no dirty lines to write back during the
+    timed call."""
+    # Imported on first use: Triton is needed only where a CUDA device is timed.
+    from tileops._utils._l2_sweep import read_sweep
+
+    reset_persisting_l2_cache()
+    read_sweep(buffer)
+
+
 def candidate_busy_ms(fn: Callable[[], Any], n_warmup: int, n_repeat: int) -> float:
     """The median device-busy time of *fn*, in ms, on the current CUDA device, each call
-    prepared by :func:`~tileops._utils.cupti.flush_l2`.
+    prepared by :func:`_flush_l2`.
 
     Raises:
         CUPTIError, AttributionError: The collector failed to take the reading.
@@ -356,7 +368,7 @@ def candidate_busy_ms(fn: Callable[[], Any], n_warmup: int, n_repeat: int) -> fl
             # Drained on both sides of the flush, so each candidate call starts on an idle
             # device after the previous one has finished.
             torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
-            flush_l2(flush)
+            _flush_l2(flush)
             torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
 
         for _ in range(n_warmup):
@@ -386,7 +398,6 @@ class _BusyTimedKernel:
             input_tensors: list,
             backend: str,
             device: Any = None,
-            early_stop_baseline: float | None = None,
         ) -> float:
             fn = functools.partial(func or profiler.func, *input_tensors)
             with torch.cuda.device(device):  # lint: device-api allow: CUPTI runs on CUDA only

@@ -128,20 +128,18 @@ def test_variance_constant_offset(kind) -> None:
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("kind", ["amax", "amin"])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize(
     "shape,axes",
     [
-        ((3, 257), (1,)),
-        ((3, 256), (1,)),
-        ((3, 32769), (1,)),
-        ((257, 3), (0,)),
-        ((4, 24, 2048), (0, 2)),
-        ((17, 24, 2048), (0, 2)),
+        pytest.param((3, 257), (1,), marks=pytest.mark.smoke, id="row-tail"),
+        pytest.param((3, 256), (1,), marks=pytest.mark.full, id="row-vector"),
+        pytest.param((3, 32769), (1,), marks=pytest.mark.full, id="row-tiled"),
+        pytest.param((257, 3), (0,), marks=pytest.mark.full, id="leading"),
+        pytest.param((4, 24, 2048), (0, 2), marks=pytest.mark.full, id="edge-fold"),
+        pytest.param((17, 24, 2048), (0, 2), marks=pytest.mark.full, id="edge-passes"),
     ],
-    ids=["row-tail", "row-vector", "row-tiled", "leading", "edge-fold", "edge-passes"],
 )
 def test_extrema_preserves_nan(shape, axes, dtype, kind) -> None:
     """NaNs survive row, leading and edge reductions, including across partials."""
@@ -152,28 +150,25 @@ def test_extrema_preserves_nan(shape, axes, dtype, kind) -> None:
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "shape,dtype,kind",
     [
-        ((1024, 256), torch.float16, "amax"),
-        ((1024, 256), torch.float32, "amin"),
-        ((1024, 512), torch.float16, "amax"),
-        ((1024, 512), torch.float32, "amin"),
-        ((1025, 512), torch.float16, "amax"),
-        ((1025, 512), torch.float32, "amin"),
-        ((2, 524288), torch.float16, "amax"),
-        ((2, 524288), torch.float32, "amin"),
-    ],
-    ids=[
-        "split-tail-f16",
-        "split-tail-f32",
-        "split-f16",
-        "split-f32",
-        "split-ragged-f16",
-        "split-ragged-f32",
-        "vector-f16",
-        "vector-f32",
+        pytest.param(
+            (1024, 256), torch.float16, "amax", marks=pytest.mark.smoke, id="split-tail-f16"
+        ),
+        pytest.param(
+            (1024, 256), torch.float32, "amin", marks=pytest.mark.smoke, id="split-tail-f32"
+        ),
+        pytest.param((1024, 512), torch.float16, "amax", marks=pytest.mark.full, id="split-f16"),
+        pytest.param((1024, 512), torch.float32, "amin", marks=pytest.mark.full, id="split-f32"),
+        pytest.param(
+            (1025, 512), torch.float16, "amax", marks=pytest.mark.full, id="split-ragged-f16"
+        ),
+        pytest.param(
+            (1025, 512), torch.float32, "amin", marks=pytest.mark.full, id="split-ragged-f32"
+        ),
+        pytest.param((2, 524288), torch.float16, "amax", marks=pytest.mark.full, id="vector-f16"),
+        pytest.param((2, 524288), torch.float32, "amin", marks=pytest.mark.full, id="vector-f32"),
     ],
 )
 def test_extrema_leading_preserves_nan(shape, dtype, kind) -> None:

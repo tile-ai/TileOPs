@@ -36,7 +36,7 @@ def _head_parts(dim: int) -> tuple[int, int]:
 
 
 @target_cache(maxsize=32)
-# No out_idx: resolving a symbolic output shape costs about 170 us of host time per call.
+# No out_idx: resolving a symbolic output shape costs host time on every call.
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
@@ -174,9 +174,7 @@ def _gqa_prefill_varlen_ws_kernel(
     table_vec = rope_vec if neox else rope_vec // 2
     rope_units = half * rope_runs // 128  # runs each consumer thread moves
     rotate_query_tile = (
-        make_varlen_query_rope(
-            half, rotary_dim, rope_layout, max_position, dtype, rope_dtype, tile_axes=2
-        )
+        make_varlen_query_rope(half, rotary_dim, rope_layout, max_position, dtype, tile_axes=2)
         if fuse_rope and not vector_rope
         else None
     )
@@ -187,7 +185,6 @@ def _gqa_prefill_varlen_ws_kernel(
             rope_layout,
             max_position,
             dtype,
-            rope_dtype,
             tile_axes=2,
             rows_per_position=groups,
         )  # fmt: skip

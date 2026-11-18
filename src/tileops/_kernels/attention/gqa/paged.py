@@ -1120,18 +1120,14 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         over the widest key tile up to 128 rows that one page holds, or, where a tile row is
         128 bytes or less, a width the page does not hold so the tile is gathered.
 
-        Fitted over the entry's workload rows at head dimension 64 and 128. A request shorter
-        than the query tile pads it, and a packing holding even a few of them is faster on the
-        narrow tile although its long requests are not. A key tile the page holds is copied
-        contiguously and a wider one amortises the copy, so the widest such tile wins; a page
-        too short to hold 32 rows gives no contiguous tile at all and the gather runs at 64
-        rows, where a wider gather costs more per tile than it saves. Re-fit by sweeping
-        ``autotune_configs`` on those rows.
+        A request shorter than the query tile pads it, so a packing holding a few of them
+        takes the narrow tile. A key tile the page holds is copied contiguously and a wider
+        one amortises the copy; a page under 32 rows holds no contiguous tile and gathers 64, since
+        a wider gather costs more per tile than it saves.
         """
         page = self.page_size
         # A tile row of 128 bytes or less leaves the contiguous copy too little to move per
-        # row: at head dimension 64, over page sizes 16 to 256, every width the page does not
-        # hold measures faster than every width it does. The tile is then the narrowest such
+        # row, so a gathered width beats every contiguous one. The tile is then the narrowest such
         # width where a window bounds the key range, and 80 rows where none does.
         if self.dim * self.dtype.itemsize <= 128:
             bounded = self.window_size_left >= 0 or self.window_size_right >= 0

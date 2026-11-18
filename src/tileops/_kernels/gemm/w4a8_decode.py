@@ -97,7 +97,7 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
         ValueError: No stage count of the selected family keeps the units' partial sums in
             shared memory on the device.
     """
-    # Every threshold below was measured on H200 over the manifest's W4A8 rows.
+    # The thresholds below are fitted to the H200.
     # 8-token tiles: a weight past 32 MiB runs three warpgroups on three stages, a smaller
     # one two on four.
     small_weight_bytes, small_units, small_stages = 32 * 1024 * 1024, (2, 3), (4, 3)

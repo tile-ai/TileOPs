@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.norm import rms_norm_staged
@@ -398,20 +399,25 @@ def test_rms_norm_rows_of_two_vectors_a_thread_in_long_launches() -> None:
     _check_served_by(rows, 8192, torch.bfloat16, "RMSNormTwoPassKernel")
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "rows,n,dtype,has_weight",
     [
         # On SM90 these four reach the on-chip kernel: one CTA staging by cp.async, a
         # cluster of two, and one CTA read synchronously with and without weight.
-        pytest.param(3, 131072, torch.float16, True, id="on-chip-async-fp16"),
-        pytest.param(3, 262144, torch.bfloat16, True, id="on-chip-cluster-bf16"),
-        pytest.param(3, 65536, torch.float16, True, id="on-chip-fp16"),
-        pytest.param(3, 65536, torch.bfloat16, False, id="on-chip-no-weight"),
+        pytest.param(
+            3, 131072, torch.float16, True, id="on-chip-async-fp16", marks=pytest.mark.smoke
+        ),
+        pytest.param(
+            3, 262144, torch.bfloat16, True, id="on-chip-cluster-bf16", marks=pytest.mark.smoke
+        ),
+        pytest.param(3, 65536, torch.float16, True, id="on-chip-fp16", marks=pytest.mark.full),
+        pytest.param(
+            3, 65536, torch.bfloat16, False, id="on-chip-no-weight", marks=pytest.mark.full
+        ),
         # Widths the on-chip kernel cannot split reach the streaming kernel: an odd width,
         # and more rows than resident CTAs, so each CTA walks several rows.
-        pytest.param(3, 131073, torch.bfloat16, False, id="tail-no-weight"),
-        pytest.param(600, 131080, torch.bfloat16, True, id="rows-per-cta"),
+        pytest.param(3, 131073, torch.bfloat16, False, id="tail-no-weight", marks=pytest.mark.full),
+        pytest.param(600, 131080, torch.bfloat16, True, id="rows-per-cta", marks=pytest.mark.full),
     ],
 )
 def test_rms_norm_rows_exceeding_shared_memory(rows, n, dtype, has_weight) -> None:
@@ -439,28 +445,20 @@ def test_rms_norm_widest_row_past_the_sm_count() -> None:
     compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", x.dtype))
 
 
-def _misaligned(t: torch.Tensor) -> torch.Tensor:
-    """*t* copied into a contiguous view that starts one element into its storage."""
-    view = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
-    view.copy_(t)
-    return view
-
-
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "n",
     [
-        pytest.param(4096, id="register-row"),
-        pytest.param(131080, id="streaming"),
+        pytest.param(4096, id="register-row", marks=pytest.mark.smoke),
+        pytest.param(131080, id="streaming", marks=pytest.mark.full),
         # The on-chip kernel on SM90, the streaming kernel before it.
-        pytest.param(131072, id="on-chip"),
+        pytest.param(131072, id="on-chip", marks=pytest.mark.full),
     ],
 )
 def test_rms_norm_reads_an_input_and_weight_off_the_vector_boundary(n: int) -> None:
     """A contiguous input and weight may start anywhere in their storage."""
     dtype = torch.bfloat16
-    x = _misaligned(torch.randn(2, n, device=run_device(), dtype=dtype))
-    weight = _misaligned(torch.randn(n, device=x.device, dtype=dtype))
+    x = misaligned(torch.randn(2, n, device=run_device(), dtype=dtype))
+    weight = misaligned(torch.randn(n, device=x.device, dtype=dtype))
     expected = F.rms_norm(x.float(), (n,), weight.float(), eps=1e-6).to(dtype)
     actual = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)(x, weight)
     compare_outputs(actual, expected, normalization_verification("RMSNormFwdOp", dtype))
@@ -593,4 +591,4 @@ def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.d
 def test_fused_add_rms_norm_reads_inputs_off_the_vector_boundary() -> None:
     """A contiguous input, residual and weight may start anywhere in their storage."""
     test = FusedAddRMSNormTest(4, 1024, torch.float16)
-    test.check(FusedAddRMSNormFwdOp(), *(_misaligned(t) for t in test.gen_inputs()))
+    test.check(FusedAddRMSNormFwdOp(), *(misaligned(t) for t in test.gen_inputs()))

@@ -523,8 +523,7 @@ def _gemm_fp8_block128_wave_kernel(
     divisor_group = next(g for g in scale_groups if k_blocks % g == 0)
     # A group spanning all of K stages the tile's ``scale_a`` rows, one contiguous run of
     # fp32, as rows of ``scale_a_span`` fp32: a box of ``block_m`` rows of ``scale_group``
-    # fp32 costs TMA one request per 16-byte row, which on a K-512 tile measured longer
-    # than the tile's A and B loads.
+    # fp32 costs TMA one request per 16-byte row, longer than the tile's A and B loads.
     scale_a_span = 128
 
     @tilelang.jit(
@@ -602,8 +601,7 @@ def _gemm_fp8_block128_wave_kernel(
         split_sb = block_n < scale_block_n and scale_block_n % block_n != 0 and not scale_b_per_row
         three_sb = block_n == 176
         sb_rows = 3 if three_sb else 2 if two_sb or split_sb else 1
-        # Eight copies of a fully unrolled scale group overflow the instruction cache; a
-        # 176-wide tile's K loop measured fastest unrolled four K steps deep.
+        # Eight copies of a fully unrolled scale group overflow the instruction cache.
         dispatch_unroll = 4
         # The scale ring has no barriers of its own (see the producer), which holds only
         # while a stage is released before the scale buffer it shares is refilled.
@@ -634,7 +632,7 @@ def _gemm_fp8_block128_wave_kernel(
                 forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
             )
 
-        def consumer_row_layout(buf):
+        def consumer_row_layout():
             """One value per accumulator row, held by the four lanes of that row's quad.
 
             Row i lives in consumer warp i // 16; its quad is lane (i % 8) * 4..+3 and
@@ -1070,9 +1068,9 @@ def _gemm_fp8_block128_wave_kernel(
                         final0: consumer_acc_layout(final0),
                         final1: consumer_acc_layout(final1),
                         c_cast: consumer_acc_layout(c_cast),
-                        row_scale: consumer_row_layout(row_scale),
-                        row_scale1: consumer_row_layout(row_scale1),
-                        row_scale2: consumer_row_layout(row_scale2),
+                        row_scale: consumer_row_layout(),
+                        row_scale1: consumer_row_layout(),
+                        row_scale2: consumer_row_layout(),
                     }
                 )
 
@@ -1302,10 +1300,9 @@ def _gemm_fp8_block128_wave_kernel(
                             # The thread that issued them waits; the others meet it at the
                             # 256-thread barrier TileLang places before the first staging
                             # write (checked in test_gemm.py), which orders the writes to
-                            # both staging tiles after the wait. A
-                            # one-wave tile also meets at the epilogue barrier first: at
-                            # the locked clock that measured faster with one wave and
-                            # slower with two, where TileLang adds a barrier per wave.
+                            # both staging tiles after the wait. A one-wave tile also meets
+                            # at the epilogue barrier first; with two waves TileLang adds a
+                            # barrier per wave.
                             if k_split == 2:
                                 pair_epilogue(final0, landing, received, consumer_wg, rank, tx)
                             T.tma_store_wait(0)
@@ -1395,7 +1392,7 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
     # Buffers of the A-scale ring, so one group is written while the other is read.
     _SCALE_A_BUFFERS = 2
 
-    # Schedules measured per (m, n, k), by calibrated board (``tileops._utils.calibration_key``);
+    # Schedules per (m, n, k), by calibrated board (``tileops._utils.calibration_key``);
     # any other board or shape takes the analytic ``block_n`` band of ``default_config``.
     _FP8_1D2D_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
         "h200": {
@@ -1658,7 +1655,7 @@ class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
     supported_archs = [90]
     preferred_over = frozenset({"gemm_fp8_1d2d", "gemm_fp8_block_scale"})
 
-    # Wave schedules measured per (m, n, k), by calibrated board; this kernel
+    # Wave schedules per (m, n, k), by calibrated board; this kernel
     # serves exactly these shapes under 128x128 ``scale_b`` blocks.
     _FP8_1D2D_WAVE_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
         "h200": {

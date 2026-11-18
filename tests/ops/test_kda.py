@@ -5,6 +5,7 @@ import math
 import pytest
 import torch
 
+from tests.state_pool_guard import check_padded_slots_skipped
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import (
@@ -35,17 +36,9 @@ def test_kda_prefill_matches_reference(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_kda_prefill_packs_ragged_sequences() -> None:
-    torch.manual_seed(42)
-    _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(100, 70, 130))
-
-
-@pytest.mark.smoke
 def test_kda_prefill_packs_a_batch_holding_an_empty_sequence() -> None:
-    """A sequence with no token owns no chunk, and the ones around it keep their own.
-
-    Such a sequence applies no update, so it ends on the state it started from.
-    """
+    """A sequence with no token owns no chunk, applies no update and ends on its initial
+    state; the ones around it keep their own chunks."""
     torch.manual_seed(42)
     _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(100, 0, 70, 130))
 
@@ -354,11 +347,17 @@ def test_kda_raw_gate_matches_reference(
     test.check(op, *inputs)
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="KDAFwdOp")
-@pytest.mark.parametrize("seqlen", [1, 65], ids=["decode", "prefill"])
-@pytest.mark.parametrize("lower_bound", [None, -5.0], ids=["unbounded", "bounded"])
+@pytest.mark.parametrize(
+    "seqlen,lower_bound",
+    [
+        pytest.param(1, None, marks=pytest.mark.smoke, id="unbounded-decode"),
+        pytest.param(65, -5.0, marks=pytest.mark.smoke, id="bounded-prefill"),
+        pytest.param(65, None, marks=pytest.mark.full, id="unbounded-prefill"),
+        pytest.param(1, -5.0, marks=pytest.mark.full, id="bounded-decode"),
+    ],
+)
 def test_kda_raw_gate_graph_replay(seqlen, lower_bound):
     """Replay reads changed gates and initial state and overwrites both returned tensors."""
     test, op = _raw_gate_test(1, seqlen, 64, lower_bound, ["initial_state", "dt_bias"])
@@ -518,7 +517,6 @@ def test_kda_raw_gate_decode_continues_from_prefill() -> None:
     """Raw-gate decode consumes the FP32 state returned by raw-gate prefill."""
     test, op = _raw_gate_test(1, 65, 64, None, ["initial_state", "dt_bias"])
     inputs = test.gen_inputs()
-    op = op
     first = list(inputs[:-2])
     first[:5] = [tensor[:, :-1] for tensor in inputs[:5]]
     first_o, carried = op(*first)
@@ -844,6 +842,54 @@ def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
         HV=_FUSED_HEADS, K=128, V=128, P=12, **flags,
     )  # fmt: skip
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    ("flags", "row", "padded"),
+    [
+        pytest.param({}, {"B": 5, "S": 1}, [1, 3], marks=pytest.mark.smoke),
+        pytest.param({"state_v_first": True}, {"B": 5, "S": 1}, [1, 3], marks=pytest.mark.full),
+        pytest.param(
+            {},
+            {
+                "B": 1,
+                "S": 201,
+                "seq_lens": [100, 0, 37, 64],
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens",),
+            },
+            [0, 2],
+            marks=[pytest.mark.sm90, pytest.mark.full],
+        ),
+        pytest.param(
+            {"state_v_first": True},
+            {
+                "B": 1,
+                "S": 201,
+                "seq_lens": [100, 0, 37, 64],
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens",),
+            },
+            [0, 2],
+            marks=[pytest.mark.sm90, pytest.mark.full],
+        ),
+    ],
+    ids=[
+        "decode-key-major",
+        "decode-value-major",
+        "fused-prefill-key-major",
+        "fused-prefill-value-major",
+    ],
+)
+def test_kda_skips_the_states_of_negative_slots(flags: dict, row: dict, padded: list) -> None:
+    """The decode and the one-kernel prefill write no state for a slot of -1, in either
+    layout: the pool's neighbours and the slots of the padded sequences keep their states, every
+    other slot ends as in the unpadded call."""
+    torch.manual_seed(42)
+    row = {"H": 4, "HV": 4, "K": 128, "V": 128, "P": 12, **row}
+    some = row.pop("some", ())
+    inputs = _pooled(torch.bfloat16, some=some, **row, **flags).gen_inputs()
+    check_padded_slots_skipped(KDAFwdOp(**flags, validate_inputs=True), inputs, 5, 10, padded)
 
 
 @pytest.mark.smoke

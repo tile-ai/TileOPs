@@ -7,13 +7,8 @@ Chains the five sub-ops in order:
   4. SSDStatePassingFwdOp — inter-chunk recurrent state scan
   5. SSDChunkScanFwdOp    — final output scan
 
-* SSDChunkStateFwdOp output is float32 with shape (B, C, H, P, N). It is
-  reshaped to (B, C, H, P*N) so SSDStatePassingFwdOp scans the flattened state.
-
-* cb holds only the C@B term; SSDChunkScanFwdKernel applies the decay
-  exp(dA[l] - dA[s]) * dt[s] itself.
-
-* All intermediate tensors remain on-device; no host syncs between sub-ops.
+SSDStatePassingFwdOp scans the chunk states flattened to (B, C, H, P*N). cb holds only the
+C@B term; SSDChunkScanFwdKernel applies the decay exp(dA[l] - dA[s]) * dt[s] itself.
 """
 
 from collections.abc import Mapping
@@ -39,7 +34,6 @@ class Mamba2FwdOp(Op):
     Combines SSDChunkCumsum → SSDChunkCoupling → SSDChunkState → SSDStatePassing → SSDChunkScan
     into a single callable whose interface matches mamba_chunk_scan_combined from
     the official mamba_ssm library, except that ``final_states`` is always returned.
-
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {
@@ -127,14 +121,12 @@ class Mamba2FwdOp(Op):
         # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T for s <= l, else 0.
         cb = self._ssd_chunk_coupling_op()(C, B)
 
-        # No seq_idx: this composite does not segment a chunk, so the kernel is
-        # built without that branch.
+        # No seq_idx: this composite does not segment a chunk.
         chunk_states = self._chunk_state_op(x, B, dt_out, dA_cumsum)  # (B, C, H, P, N) float32
 
         # The state scan runs over the flattened P * N state.
         chunk_states_flat = chunk_states.reshape(batch, num_chunks, n_heads, d_head * d_state)
-        # Last dA value per chunk. The slice of a 4D tensor is non-contiguous, so
-        # contiguous() always copies.
+        # Last dA value per chunk.
         dA_chunk_cumsum = dA_cumsum[..., chunk_size - 1].contiguous()  # (B, H, C)
         init_flat = (
             None

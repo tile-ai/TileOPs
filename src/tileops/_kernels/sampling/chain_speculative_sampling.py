@@ -417,14 +417,10 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
     # Threads of a block, and the narrower block a crowded batch takes. A thread stages
     # ``_PACE`` vectors of each row in registers, and a 512-thread block of them leaves an SM
     # room for one resident block; a batch that already gives the device more blocks than it
-    # has SMs wants a second block resident instead, and gets it from the narrower one:
-    # llama2-7b-b256-n1 runs 19.1 us at 256 threads against 22.0 at 512 and 25.6 at 128,
-    # where every other row is slower at 256. Re-fit by timing the manifest rows at 128, 256,
-    # 512 and 1024.
+    # has SMs wants a second block resident instead, and gets it from the narrower one.
     _THREADS: ClassVar[int] = 512
     _CROWDED_THREADS: ClassVar[int] = 256
-    # Vectors of each row a thread stages before folding any of them. Re-fit by timing the
-    # manifest rows at 1, 2, 4, 8 and 16.
+    # Vectors of each row a thread stages before folding any of them.
     _PACE: ClassVar[int] = 4
 
     @classmethod

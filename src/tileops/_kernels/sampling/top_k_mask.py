@@ -395,7 +395,7 @@ class TopKMaskFwdKernel(Kernel, TopKMaskFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general = True
 
-    # Calibrated block width for the supported cluster sizes.
+    # Block width for the supported cluster sizes.
     _THREADS: ClassVar[int] = 1024
     # Most 16-byte vectors a thread holds before its registers cost the SM a resident block.
     _MAX_SLOTS: ClassVar[int] = 16

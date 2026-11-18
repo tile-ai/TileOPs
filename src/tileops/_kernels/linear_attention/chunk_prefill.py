@@ -212,13 +212,9 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
     """The scan as the state walk over the chunks, forming the outputs in the walk or after it.
 
     The state walk takes the narrowest value tile whose CTAs fit one wave: a narrower tile
-    shortens each CTA's chain of matmuls, a second wave doubles it.
-
-    Forming each chunk's output in the walk saves the output launch and the round trip of
-    the chunk states and new values through global memory, but adds the output's products
-    to the walk's serial chain, which the chunk-parallel output launch would run beside
-    otherwise idle SMs. The longer the sequences, the longer that chain, so the walk takes
-    the outputs only when its CTAs already cover a larger share of the SMs.
+    shortens each CTA's chain of matmuls, a second wave doubles it. Forming the outputs in
+    the walk saves a launch and a round trip through global memory but lengthens the walk's
+    serial chain, so the walk takes them only when its CTAs cover enough of the SMs.
     """
     from tileops._kernels.linear_attention.kda.chunk_programs import (
         chunk_output_program,

@@ -117,13 +117,12 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
     # ``q`` is data: random codes run the same instructions as real ones.
     autotune_accepts_random_int_inputs: bool = True
 
-    # H200 launch configs by output element width; two steps overlap two loads per thread.
+    # Launch configs by output element width; two steps overlap two loads per thread.
     _CONFIGS: ClassVar[dict[int, dict]] = {
         2: {"threads": 128, "steps": 2},
         4: {"threads": 512, "steps": 2},
     }
-    # Below _SMALL_N codes, blocks of 1024 codes measured fastest: the matrix spreads
-    # over more SMs.
+    # Below _SMALL_N codes, blocks of 1024 codes spread the matrix over more SMs.
     _SMALL_CONFIGS: ClassVar[dict[int, dict]] = {
         2: {"threads": 128, "steps": 1},
         4: {"threads": 128, "steps": 2},

@@ -478,7 +478,6 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         kv_group: int = 1,
         sm_scale: float | None = None,
         is_causal: bool = True,
-        cp0: bool = True,
         device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)

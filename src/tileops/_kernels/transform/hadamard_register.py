@@ -398,8 +398,7 @@ class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
 
     @property
     def default_config(self) -> dict[str, Any]:
-        # Eight slots a thread where a row fits them, and a grid of every block up to 64 an
-        # SM: the fastest measured launch at 32 to 512 elements a row.
+        # Eight slots a thread where a row fits them, and a grid of every block up to 64 an SM.
         return {"slots": max(8, self.n // 32), "ctas_per_sm": 64}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

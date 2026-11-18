@@ -1,9 +1,4 @@
-"""Kimi Delta Attention (KDA) operator (L2 Op layer).
-
-Provides:
-  - KDAFwdOp: the gated delta rule whose decay is one log-space
-    value per key channel, returning the output and the FP32 final state.
-"""
+"""Kimi Delta Attention (KDA) operator (L2 Op layer)."""
 
 from collections.abc import Mapping
 from typing import ClassVar
@@ -27,8 +22,6 @@ __all__ = ["KDAFwdOp"]
 
 class KDAFwdOp(Op):
     """Kimi Delta Attention (KDA) forward; updates a state pool in place given slot indices.
-
-    The gated delta rule with a per-key-channel decay.
 
     ``q`` and ``k`` use ``[B, T, H, K]``. ``v``, ``beta`` and the output use
     ``HV`` recurrent heads, where ``HV`` is a multiple of ``H``; ``g`` carries
@@ -163,7 +156,9 @@ class KDAFwdOp(Op):
                 ``initial_state`` is the pool, $[P \\times \\mathit{HV} \\times \\ldots]$, updated in
                 place: $[N]$, the slot each sequence starts from and ends in; with
                 ``num_accepted_tokens``, $[N \\times L]$, slot ``t`` taking the state after
-                token ``t``.
+                token ``t``. A slot of -1 is never written; a sequence starting
+                from it has unspecified outputs and leaves unspecified states in its other
+                slots.
             num_accepted_tokens: ``int32`` $[N]$, or ``None``: sequence ``n`` starts from its
                 slot ``num_accepted_tokens[n] - 1``.
 

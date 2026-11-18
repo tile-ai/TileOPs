@@ -21,7 +21,16 @@ _MAMBA = ["D", "z", "delta_bias"]
 # kernel serves up to 48 steps. One case per path through them.
 _CASES = (
     pytest.param(
-        2, 1024, 64, 16, 1, "bfloat16", _MAMBA, True, marks=_SMOKE, id="chunk-full-runs-bf16"
+        4,
+        1,
+        64,
+        16,
+        1,
+        "bfloat16",
+        [*_MAMBA, "initial_states"],
+        True,
+        marks=_SMOKE,
+        id="step-decode",
     ),
     # 256 steps: one run of 8-step lane segments.
     pytest.param(
@@ -39,12 +48,15 @@ _CASES = (
         marks=_SMOKE,
         id="chunk-tail-run-fp32",
     ),
+    pytest.param(
+        2, 1024, 64, 16, 1, "bfloat16", _MAMBA, True, marks=_FULL, id="chunk-full-runs-bf16"
+    ),
     # 100 steps: rows off the 16-byte vector boundary, one partial run.
     pytest.param(
-        2, 100, 16, 16, 1, "bfloat16", _MAMBA, True, marks=_SMOKE, id="chunk-unaligned-rows"
+        2, 100, 16, 16, 1, "bfloat16", _MAMBA, True, marks=_FULL, id="chunk-unaligned-rows"
     ),
     pytest.param(
-        2, 1024, 32, 16, 1, "bfloat16", [*_MAMBA, "seq_idx"], True, marks=_SMOKE, id="chunk-packed"
+        2, 1024, 32, 16, 1, "bfloat16", [*_MAMBA, "seq_idx"], True, marks=_FULL, id="chunk-packed"
     ),
     pytest.param(
         2,
@@ -55,23 +67,11 @@ _CASES = (
         "bfloat16",
         [*_MAMBA, "initial_states"],
         True,
-        marks=_SMOKE,
+        marks=_FULL,
         id="chunk-carried-state",
     ),
     pytest.param(
-        1, 512, 32, 16, 1, "bfloat16", ["z"], False, marks=_SMOKE, id="chunk-bare-no-softplus"
-    ),
-    pytest.param(
-        4,
-        1,
-        64,
-        16,
-        1,
-        "bfloat16",
-        [*_MAMBA, "initial_states"],
-        True,
-        marks=_SMOKE,
-        id="step-decode",
+        1, 512, 32, 16, 1, "bfloat16", ["z"], False, marks=_FULL, id="chunk-bare-no-softplus"
     ),
     pytest.param(
         2,
@@ -82,7 +82,7 @@ _CASES = (
         "float32",
         ["D", "delta_bias", "initial_states"],
         True,
-        marks=_SMOKE,
+        marks=_FULL,
         id="step-decode-fp32",
     ),
     # 48 states: a second, partial slot of lane-held states; two groups of B and C.

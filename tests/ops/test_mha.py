@@ -147,9 +147,9 @@ def test_mha_decode_paged_op(
     [
         pytest.param(1, False, [1], marks=pytest.mark.smoke),
         # Several queries; a cache shorter than the query block leaves the first ones no key.
-        pytest.param(2, True, [65], marks=pytest.mark.smoke),
-        pytest.param(4, True, [700, 3], marks=pytest.mark.smoke),
-        pytest.param(4, False, [700, 3], marks=pytest.mark.smoke),
+        pytest.param(2, True, [65], marks=pytest.mark.full),
+        pytest.param(4, True, [700, 3], marks=pytest.mark.full),
+        pytest.param(4, False, [700, 3], marks=pytest.mark.full),
         pytest.param(1, False, [37], marks=pytest.mark.full),
         pytest.param(1, False, [700, 1024, 1], marks=pytest.mark.full),
     ],

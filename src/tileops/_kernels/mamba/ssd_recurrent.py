@@ -61,39 +61,19 @@ def _ssd_decode_kernel(
             state: T.Tensor((B, H, P, N), accum_dtype),  # type: ignore  in-place
             y_out: T.Tensor((B, H, P), accum_dtype),  # type: ignore
         ):
-            # Grid: axis-0 fuses (batch, head); axis-1 tiles d_head.
-            # threads = block_p * block_n.
-            #
-            # Thread layout: 2D T.Parallel(block_p, block_n).
-            # Thread (pp, nn) owns p=p0+pp and n=n0+nn for each n-chunk.
-            #
-            # Coalescing: for a fixed pp row (one warp when block_n=32), all
-            # block_n threads access consecutive n-positions in A, state, B, C
-            # → stride-1 loads, perfectly coalesced within each warp.
-            #
-            # x and dt only depend on pp (not nn or n_blk) — loaded once into
-            # x_frag/dt_frag before the n_blk loop to avoid redundant HBM reads.
-            #
-            # y reduction: each thread accumulates a partial sum in a register
-            # (y_frag), then a log-depth tree reduction in shared memory
-            # collapses the block_n partial sums for each pp into y_out[p].
+            # Grid: axis-0 fuses (batch, head); axis-1 tiles d_head. Thread (pp, nn) owns
+            # p = p0 + pp and n = n0 + nn of each n-chunk, so a pp row reads consecutive n.
+            # Each thread keeps a partial y; a tree reduction in shared memory sums them per pp.
             with T.Kernel(B * H, T.ceildiv(P, block_p), threads=threads) as (bh, bp):
                 b = bh // H
                 h = bh % H
                 g = h // HEADS_PER_GROUP
                 p0 = bp * block_p
 
-                # Per-thread y accumulator.  Thread (pp, nn) owns y_frag[pp, nn].
                 y_frag = T.alloc_fragment((block_p, block_n), accum_dtype)
                 T.clear(y_frag)
 
-                # Hoist x and dt loads out of the n_blk loop.
-                #   x[b,h,p] and dt[b,h,p] depend only on pp, not on n_blk,
-                #   so reading them once before the loop eliminates
-                #   ceil(N/block_n) redundant global loads per thread.
-                #   Allocated as (block_p,) — one scalar per pp — so each
-                #   thread stores exactly one value, not block_n redundant
-                #   copies.  Loaded by T.Parallel(block_p) only.
+                # x and dt depend only on pp, so they load once before the n_blk loop.
                 x_frag = T.alloc_fragment((block_p,), accum_dtype)
                 dt_frag = T.alloc_fragment((block_p,), accum_dtype)
                 for pp in T.Parallel(block_p):
@@ -110,10 +90,6 @@ def _ssd_decode_kernel(
                         T.float32(0.0),
                     )
 
-                # Main loop: 2D parallel state update.
-                #   T.Parallel(block_p, block_n) maps (pp, nn) → thread index.
-                #   Adjacent threads in the same pp-row access consecutive n
-                #   positions → coalesced loads for A, state, B_in, C_in.
                 for n_blk in T.serial(T.ceildiv(N, block_n)):
                     n0 = n_blk * block_n
                     for pp, nn in T.Parallel(block_p, block_n):
@@ -149,11 +125,8 @@ def _ssd_decode_kernel(
 
                         y_frag[pp, nn] = y_frag[pp, nn] + new_s * C_val
 
-                # y reduction: store fragments to shared memory, then
-                # perform a log-depth tree reduction over the nn dimension.
-                # Round r: threads with nn < block_n>>(r+1) add the value
-                # at nn + block_n>>(r+1) into their cell.  Unrolled at
-                # Python trace-time; each _stride is a compile-time int.
+                # Round r: threads with nn < block_n>>(r+1) add the value at
+                # nn + block_n>>(r+1) into their cell.
                 y_smem = T.alloc_shared((block_p, block_n), accum_dtype)
                 for pp, nn in T.Parallel(block_p, block_n):
                     y_smem[pp, nn] = y_frag[pp, nn]
@@ -167,7 +140,6 @@ def _ssd_decode_kernel(
                             y_smem[pp, nn] = y_smem[pp, nn] + y_smem[pp, nn + _stride]
                     T.sync_threads()
 
-                # Write y_out from the reduced y_smem[:, 0].
                 for pp, nn in T.Parallel(block_p, block_n):
                     if nn == 0:
                         p_idx = p0 + pp
@@ -182,8 +154,7 @@ def _ssd_decode_kernel(
 class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
     """Mamba-2 SSD recurrent decode (step) kernel.
 
-    Performs a single decode step: updates the SSM state in-place and
-    returns the output for the current token:
+    Updates the SSM state in place and returns the current token's output:
 
       g                = h // (n_heads // n_groups)
       dA[b, h, p, n]   = exp(dt[b, h, p] * A[h, p, n])
@@ -191,12 +162,7 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
                          + dt[b,h,p] * B_in[b,g,n] * x[b,h,p]
       y_out[b, h, p]   = sum_n  state[b, h, p, n] * C_in[b, g, n]
 
-    Inputs:  A (n_heads,d_head,d_state), dt (batch,n_heads,d_head),
-             x, B_in, C_in, state (mutated in-place)
-    Output:  y_out  (batch, n_heads, d_head), float32
-
-    Matches the interface of the official Mamba-2 selective_state_update
-    triton kernel (selective_state_update.py in mamba_ssm).
+    Matches the interface of ``selective_state_update`` in mamba_ssm.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -234,14 +200,13 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
         )
         self.init_config(config)
         cfg = self.config
-        bp, bn, threads = cfg.get("block_p"), cfg.get("block_n"), cfg.get("threads")
-        _bn_is_pow2 = bn is not None and bn > 0 and (bn & (bn - 1)) == 0
-        if not _bn_is_pow2:
+        bp, bn, threads = cfg["block_p"], cfg["block_n"], cfg["threads"]
+        if bn <= 0 or bn & (bn - 1):
             raise ValueError(
                 f"SSDDecodeKernel requires block_n to be a power of 2 for the "
                 f"log-depth tree reduction, but got block_n={bn}."
             )
-        if bp is not None and bn is not None and threads != bp * bn:
+        if threads != bp * bn:
             raise ValueError(
                 f"SSDDecodeKernel requires threads == block_p * block_n "
                 f"({bp} * {bn} = {bp * bn}) for the 2D T.Parallel layout, "
@@ -250,8 +215,7 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # threads = block_p * block_n (2D layout).
-        # block_n=32 gives one warp per pp-row → perfect coalescing.
+        # threads = block_p * block_n; block_n=32 gives one warp per pp-row.
         return {
             "block_p": 4,
             "block_n": 32,
@@ -260,10 +224,7 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # threads = block_p * block_n.  block_n must be a power of 2.
-        # Keep blocks at or below 256 threads: half-warp N tiles and wider P
-        # tiles improve several production decode shapes, while the larger
-        # cross-products tend to hurt occupancy.
+        # threads = block_p * block_n, at most 256; block_n is a power of 2.
         return [
             {"block_p": bp, "block_n": bn, "threads": bp * bn}
             for bn in [16, 32, 64, 128]

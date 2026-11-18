@@ -505,9 +505,7 @@ class IndexedExpertGateUpKernel(IndexedExpertGEMMTemplate, IndexedExpertGateUpFw
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
         """One build per route extents, projection widths, dtype and device.
 
-        ``grouped_dispatch`` decides whether the program reads route metadata; it is a
-        parameter of this one program, so it belongs in the build identity and not in a
-        second implementation.
+        ``grouped_dispatch`` decides whether the program reads route metadata.
         """
         index = call.device.index if call.device is not None else None
         identity = (

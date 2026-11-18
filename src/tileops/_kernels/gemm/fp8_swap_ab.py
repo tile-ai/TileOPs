@@ -113,7 +113,7 @@ def _gemm_fp8_stream_kernel(
     c_dtype = out_dtype if split_k == 1 else "float32"
     # The output tile stores through TMA, which needs 16-byte output rows.
     tma_epilogue = split_k == 1 and (n * 2) % 16 == 0
-    # A thread's registers of the 64 x mpad accumulator, in fp8_stream_helper.h's order.
+    # A thread's registers of the 64 x mpad accumulator, in dense_wgmma_8bit_64xN's order.
     regs = mpad // 2
 
     @tilelang.jit(
@@ -124,7 +124,7 @@ def _gemm_fp8_stream_kernel(
             "-O3",
             "-DENABLE_BF16",
             "-DENABLE_FP8",
-            *csrc_include("fp8_stream_helper.h"),
+            *csrc_include("dense_wgmma_helper.h"),
         ],
     )
     def _gemm_fp8_stream_func(num_stages: int, ctas: int) -> Callable:
@@ -214,12 +214,16 @@ def _gemm_fp8_stream_kernel(
                             step = unit_step[0] + ki
                             slot = step % num_stages
                             T.barrier_wait(ab_full[slot], (step % (2 * num_stages)) // num_stages)
+                            # One K step into a fresh accumulator, left in flight.
                             T.call_extern(
                                 "handle",
-                                f"tileops::fp8_stream_wgmma_64xN_k128<{mpad}>",
+                                "tileops::dense_wgmma_8bit_64xN<tl::DataType::kFloat8_e4m3, "
+                                f"tl::DataType::kFloat32, {mpad}, 1, false>",
                                 T.address_of(part[0]),
                                 T.address_of(b_smem[slot, 0, 0]),
                                 T.address_of(a_smem[slot, 0, 0]),
+                                0,
+                                0,
                             )
                             if block_scaled:
                                 # Read the step's scales while its WGMMAs run.
@@ -391,8 +395,7 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
 
         10 MiB is the DRAM bandwidth times its loaded latency; past it a deeper ring queues
         loads without adding bandwidth. A ring holding every K step a CTA streams issues all
-        of its loads before the first product, as main's swap-AB kernel does on such calls,
-        so a tuned call loads no later than that kernel.
+        of its loads before the first product.
         """
         default = self.default_config
         k_iters = -(-self.k // _BLOCK_K) // default["split_k"]

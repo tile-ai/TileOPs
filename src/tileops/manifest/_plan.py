@@ -827,7 +827,7 @@ def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str
     env, let_errors = kind_env(sig, lets)
     errors += let_errors + _argument_errors(sig)
     each = elementwise(sig)
-    scalar_inputs = {t for t, d in sig.inputs.items() if d.scalars}
+    scalar_inputs = sig.scalar_inputs
     scalar_lets = call_scalar_lets(sig)
     value_lists = {n for n, k in sig.forall.items() if k == "Seq[Int]"}
     # A parameter outside the type system appears only in refinements.
@@ -977,7 +977,7 @@ def _read_errors(sig: Signature, point: dict, b: PlanBranch, env: KindEnv) -> li
 def _point_errors(plan: EntryPlan, env: KindEnv) -> tuple[list[str], list[str]]:
     """Check each group of dependent discriminants on its own, the other groups held accepted."""
     sig = plan.sig
-    scalar_inputs = {t for t, d in sig.inputs.items() if d.scalars}
+    scalar_inputs = sig.scalar_inputs
 
     def accepted(point: dict) -> bool:
         try:

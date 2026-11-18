@@ -232,8 +232,7 @@ def _gemm_int8_ws_kernel(
     in the epilogue, read before the tile's mainloop.
 
     Where ``a`` has fewer rows than a tile, its box loads only the rows ``a`` has. TMA
-    fills the rest of a full box with zeros at a cost a real row does not have (measured:
-    34.0 us at ``m = 1`` against 22.8 us at ``m = 64``, 4096 x 14336, one tile shape); the
+    fills the rest of a full box with zeros at a cost a real row does not have; the
     shared rows a box leaves unwritten feed only accumulator rows past ``m``, which are
     never stored, and int8 has no value that could poison the rows that are.
 
@@ -1120,8 +1119,8 @@ class GEMMINT8W8A8PingPongKernel(_GEMMINT8TMAKernel):
     consumer warpgroups in turn; see :func:`_gemm_int8_pingpong_kernel`.
 
     It serves ``m`` over one 128-row tile. At or below that the 128-row grid holds half
-    the tiles of the 64-row kernel's, leaves SMs idle on every decode shape measured, and
-    the 64-row kernel serves the call instead.
+    the tiles of the 64-row kernel's and leaves SMs idle, so the 64-row kernel serves
+    the call instead.
     """
 
     preferred_over = frozenset({"gemm_int8_w8a8"})

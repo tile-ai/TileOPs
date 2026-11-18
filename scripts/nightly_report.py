@@ -70,15 +70,8 @@ BASELINE_RATIO_ALERT = 0.99
 BASELINE_ALERT_WORST_N = 10  # alerts shown open; the rest collapse
 HISTORY_RETENTION_DAYS = 14
 
-# Algorithmic speed-of-light (SOL) verdict lines. Efficiency is
-# sol_time / measured_time against the *calibrated* (effective) ceilings;
-# see docs/design/roofline.md §1.2 and §4.3.
-#
-# The HBM ceiling is the envelope over access mixes, and a kernel's own mix
-# caps lower (a perfect 2R:1W kernel reaches ~90% of it, a perfect 1R:1W ~87%);
-# the green line must sit below every mix's personal ceiling.
-SOL_GREEN_MEMORY = 0.80
-SOL_GREEN_COMPUTE = 0.80  # tensor-core sustained calibration is noisier
+# Algorithmic speed-of-light (SOL) efficiency is sol_time / measured_time against the
+# calibrated (effective) ceilings; see docs/design/roofline.md §1.2 and §4.3.
 SOL_ANOMALY = 1.05  # above the effective ceiling: formula or profile is wrong
 # Below both floors the roofline has no traction: launch overhead and wave
 # quantization dominate, so the row is labeled instead of judged. Regression
@@ -111,9 +104,7 @@ _DTYPE_TOKEN = re.compile(r"bfloat16|bool|u?int\d+|float\d+(?:_[a-z0-9]+)?|compl
 _CONCLUSION_KEY = "device_busy_ms"
 #: Absorbs the rounding a count recovered from ``tflops`` carries.
 _DERIVED_COUNT_RTOL = 1e-3
-# A kernel file below this share of executed lines was never constructed by any
-# test. The lowest genuinely-built kernel file measures 36.9%, so the threshold
-# has room before it starts catching built kernels.
+# A kernel file below this share of executed lines was never constructed by any test.
 _KERNEL_BUILT_PCT = 25
 # Unattributed failures listed before the table says how many it left out. The
 # attributed table above caps its per-op test names at three for the same reason.

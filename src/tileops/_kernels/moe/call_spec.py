@@ -111,11 +111,21 @@ class PrePermuteCall(CallSpec):
     num_tokens: int = 0
     hidden_size: int = 0
     top_k: int = 0
-    routing_input_kind: str = "topk_ids"
 
 
 @dataclasses.dataclass(frozen=True)
-class MGroupedGEMMCall(CallSpec):
+class _MGroupedLayoutCall(CallSpec):
+    """The expert layout of an M-grouped GEMM call, the first fields of each call record."""
+
+    kind: str = ""  # "contiguous" | "masked"
+    packing: str | None = None  # "tight" | "aligned"; None for masked
+    metadata_kind: str | None = None  # "physical_psum" | "per_row"; None for masked
+    alignment: int = 1  # 1 unless packing == "aligned"
+    max_m: int | None = None  # masked only
+
+
+@dataclasses.dataclass(frozen=True)
+class MGroupedGEMMCall(_MGroupedLayoutCall):
     """Complete selection facts for one M-grouped GEMM invocation.
 
     The layout arrives structured — ``kind`` first, then the contiguous
@@ -126,11 +136,6 @@ class MGroupedGEMMCall(CallSpec):
     record's equality: a candidate selected on it is still cached without it.
     """
 
-    kind: str = ""  # "contiguous" | "masked"
-    packing: str | None = None  # "tight" | "aligned"; None for masked
-    metadata_kind: str | None = None  # "physical_psum" | "per_row"; None for masked
-    alignment: int = 1  # 1 unless packing == "aligned"
-    max_m: int | None = None  # masked only
     # Gated activation fused into the epilogue ("silu_and_mul", ...); None for a
     # plain GEMM. With one, ``n`` is B's gate and up width together and C has n / 2.
     activation: str | None = None
@@ -145,7 +150,7 @@ class MGroupedGEMMCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class MGroupedGEMMFP8Call(CallSpec):
+class MGroupedGEMMFP8Call(_MGroupedLayoutCall):
     """Complete selection facts for one block-scaled FP8 M-grouped GEMM invocation.
 
     The layout arrives as ``MGroupedGEMMCall``'s does. The scale shapes are carried whole so
@@ -155,11 +160,6 @@ class MGroupedGEMMFP8Call(CallSpec):
     this record's equality.
     """
 
-    kind: str = ""  # "contiguous" | "masked"
-    packing: str | None = None  # "tight" | "aligned"; None for masked
-    metadata_kind: str | None = None  # "physical_psum" | "per_row"; None for masked
-    alignment: int = 1  # 1 unless packing == "aligned"
-    max_m: int | None = None  # masked only
     ab_dtype: torch.dtype | None = None
     num_groups: int = 0
     m: int = dataclasses.field(default=0, compare=False)
@@ -170,7 +170,7 @@ class MGroupedGEMMFP8Call(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class MGroupedGEMMMXFP4Call(CallSpec):
+class MGroupedGEMMMXFP4Call(_MGroupedLayoutCall):
     """Complete selection facts for one MXFP4 M-grouped GEMM invocation.
 
     The layout arrives as ``MGroupedGEMMCall``'s does. ``scale_dtype`` is the dtype of both
@@ -179,11 +179,6 @@ class MGroupedGEMMMXFP4Call(CallSpec):
     equality.
     """
 
-    kind: str = ""  # "contiguous" | "masked"
-    packing: str | None = None  # "tight" | "aligned"; None for masked
-    metadata_kind: str | None = None  # "physical_psum" | "per_row"; None for masked
-    alignment: int = 1  # 1 unless packing == "aligned"
-    max_m: int | None = None  # masked only
     scale_dtype: torch.dtype | None = None
     num_groups: int = 0
     m: int = dataclasses.field(default=0, compare=False)
@@ -199,7 +194,6 @@ class PostPermuteCall(CallSpec):
     max_m: int | None = None
     epilogue: "RoutingEpilogueSpec | None" = None
     input_dtype: torch.dtype | None = None
-    routing_weight_dtype: torch.dtype | None = None
     output_dtype: torch.dtype | None = None
     num_experts: int = 0
     materialized_rows: int = 0

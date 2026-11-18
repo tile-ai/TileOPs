@@ -340,8 +340,6 @@ def _conv1d_direct_kernel(
     def _conv1d_direct_func(
         block_m: int,
         block_n: int,
-        block_k: int,
-        num_stages: int,
         threads: int,
         enable_rasterization: bool,
     ):
@@ -1127,8 +1125,6 @@ class DepthwiseConv1dKernel(GroupConv1dKernel):
         return {
             "block_m": 1,
             "block_n": 128,
-            "block_k": 1,
-            "num_stages": 1,
             "threads": 128,
             "enable_rasterization": True,
         }

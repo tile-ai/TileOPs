@@ -1,6 +1,7 @@
 """Row gather of an embedding table: ``out[i, :] = weight[input[i], :]``."""
 
 import dataclasses
+import math
 from abc import abstractmethod
 
 import tilelang
@@ -12,6 +13,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops._utils import WARP_LANES
 
 __all__ = ["EmbeddingCall", "EmbeddingFwdInterface", "EmbeddingKernel"]
 
@@ -154,9 +156,7 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
     @property
     def default_config(self):
         # A thread copies vectors of up to 16 bytes, as wide as the row width allows.
-        vec = VECTOR_ACCESS_BYTES // self.dtype.itemsize
-        while self.dim % vec:
-            vec //= 2
+        vec = math.gcd(self.dim, VECTOR_ACCESS_BYTES // self.dtype.itemsize)
         # 256 threads divide every architecture's per-SM thread limit, so whole CTAs fill an SM.
         max_threads = 256
         # A thread holds at most four vectors, so its per-vector row, column and id arrays stay
@@ -173,10 +173,12 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         # and the last pass is guarded.
         slots = block_rows * block_vectors
         divisors = [
-            t for t in range(32, max_threads + 1) if slots % t == 0 and slots <= max_passes * t
+            t
+            for t in range(WARP_LANES, max_threads + 1)
+            if slots % t == 0 and slots <= max_passes * t
         ]
-        warps = -(-slots // (max_passes * 32))
-        threads = max(divisors) if divisors else min(32 * warps, max_threads)
+        warps = -(-slots // (max_passes * WARP_LANES))
+        threads = max(divisors) if divisors else min(WARP_LANES * warps, max_threads)
         return {
             "block_rows": block_rows,
             "block_vectors": block_vectors,

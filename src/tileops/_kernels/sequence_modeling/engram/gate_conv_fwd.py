@@ -11,7 +11,7 @@ This kernel fuses the remaining memory-bound operations:
     conv_out = CausalDWConv1D(v_hat_norm, conv_w, kernel=4)     # (M, T, d)
     Y = SiLU(conv_out) + v_hat                                  # (M, T, d)
 
-Saved for backward (strategy B):
+Saved for backward:
     alpha, rrms_h, rrms_k, rrms_v  — all (M, T) scalars per position
 
 Grid: (T, M) — one thread block per (batch, position).
@@ -183,14 +183,7 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
 
 
 class EngramGateConvFwdKernel(Kernel, EngramGateConvFwdInterface):
-    """Engram GateConv forward kernel.
-
-    Fuses RMSNorm-based scalar gating and depthwise causal Conv1D
-    with SiLU activation. Projection (GEMM) is done externally.
-
-    Inputs:  H (M,T,d), k (M,T,d), v (M,T,d), rms_w_h, rms_w_v, conv_w
-    Outputs: Y (M,T,d), vhat (M,T,d), alpha (M,T), rrms_h/k/v (M,T)
-    """
+    """Engram GateConv forward kernel; the module docstring states the fusion."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
@@ -244,21 +237,8 @@ class EngramGateConvFwdKernel(Kernel, EngramGateConvFwdInterface):
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]:
-        """Run the fused gate + conv forward pass.
-
-        Args:
-            H: Hidden states of shape $[M \\times seq\\_len \\times d]$.
-            k: Key projection of shape $[M \\times seq\\_len \\times d]$.
-            v: Value projection of shape $[M \\times seq\\_len \\times d]$.
-            rms_w_h: RMSNorm weight of shape $[d]$ for ``H`` and ``k``.
-            rms_w_v: RMSNorm weight of shape $[d]$ for the gated value.
-            conv_w: Depthwise conv weights of shape $[4 \\times d]$.
-
-        Returns:
-            ``(Y, vhat, alpha, rrms_h, rrms_k, rrms_v)``. ``Y`` and ``vhat``
-            are ``(M, seq_len, d)``; the alignment padding the prim_func
-            requires is applied and trimmed here.
-        """
+        """Run the fused gate + conv forward pass, applying and trimming the alignment padding
+        the prim_func requires."""
         pad = self.d_padded - self.d
         if pad:
             H = F.pad(H, (0, pad))

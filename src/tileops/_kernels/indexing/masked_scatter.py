@@ -10,8 +10,9 @@ import torch
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
-from tileops._kernels.constants import VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
+from tileops._utils import WARP_LANES
 
 __all__ = ["MaskedScatterCall", "MaskedScatterFwdInterface", "MaskedScatterKernel", "mask_runs"]
 
@@ -68,12 +69,12 @@ def _masked_scatter_kernel(run_len, dtype):
         blocks = T.dynamic("blocks", "int64")
         # Rows of run_len source elements; a true run k reads row k.
         src_rows = T.dynamic("src_rows", "int64")
-        warps = threads // 32
+        warps = threads // WARP_LANES
         per = (block_runs + threads - 1) // threads  # runs one thread scans
         tile_vecs = block_runs * (col_tile // vec)
         col_tiles = (run_len + col_tile - 1) // col_tile
-        # A grid's y axis holds 65535 blocks; a wider run's tiles take several passes.
-        grid_cols = min(col_tiles, 65535)
+        # A run of more column tiles than the grid's y axis holds takes several passes.
+        grid_cols = min(col_tiles, MAX_GRID_YZ_BLOCKS)
 
         @T.prim_func
         def masked_scatter(
@@ -85,8 +86,8 @@ def _masked_scatter_kernel(run_len, dtype):
         ):
             with T.Kernel(T.ceildiv(runs, block_runs), grid_cols, threads=threads) as (bx, by):
                 tx = T.get_thread_binding()
-                lane = tx % 32
-                warp = tx // 32
+                lane = tx % WARP_LANES
+                warp = tx // WARP_LANES
                 warp_sum = T.alloc_shared((warps,), "int64")
                 rank_s = T.alloc_shared((block_runs,), "int32")
                 mask_s = T.alloc_shared((block_runs,), "uint8")
@@ -206,7 +207,7 @@ def _block_count_kernel(block_runs, threads):
                 if tx == 0:
                     total[0] = 0
                 T.sync_threads()
-                if tx % 32 == 0:
+                if tx % WARP_LANES == 0:
                     T.atomic_add(total[0], own)
                 T.sync_threads()
                 if tx == 0:
@@ -239,13 +240,12 @@ class MaskedScatterKernel(Kernel, MaskedScatterFwdInterface):
 
     @property
     def default_config(self):
-        # Eight 256-thread CTAs fill an SM's 2048 threads; 8 vectors of 16 bytes a thread
-        # keep 32 KB of loads in flight a CTA before its stores.
+        # 256 threads divide every architecture's per-SM thread limit, so whole CTAs fill an
+        # SM; 8 vectors of 16 bytes a thread keep 32 KB of loads in flight a CTA before its
+        # stores.
         threads, unroll = 256, 8
         block_bytes = threads * unroll * VECTOR_ACCESS_BYTES
-        vec = VECTOR_ACCESS_BYTES // self.dtype.itemsize
-        while self.run_len % vec:
-            vec //= 2
+        vec = math.gcd(self.run_len, VECTOR_ACCESS_BYTES // self.dtype.itemsize)
         # Whole runs while they fit a block, as many as a power of two allows, and no more
         # than a thread scans in one round of `unroll`; a wider run is split into column
         # tiles of one block.

@@ -569,9 +569,15 @@ def test_argreduce_first_index_and_nan_semantics(op_kind: str) -> None:
     compare_outputs(y, ref, reduction_verification((ref).dtype))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("op_kind", ["argmax", "argmin"])
-@pytest.mark.parametrize("n", [8, 4096, 40960])
+@pytest.mark.parametrize(
+    "n",
+    [
+        pytest.param(8, marks=pytest.mark.smoke),
+        pytest.param(4096, marks=pytest.mark.full),
+        pytest.param(40960, marks=pytest.mark.full),
+    ],
+)
 def test_argreduce_ties_between_two_nans(op_kind: str, n: int) -> None:
     """Two NaNs tie, so the lower index wins — on every reduction layout.
 

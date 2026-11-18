@@ -59,7 +59,7 @@ class SoftmaxFixture(FixtureBase):
                 pytest.param((4, 512), -1, torch.float32, False, marks=pytest.mark.smoke),
                 # A 2 KB row on a warp, tail-M: the last CTA's warps past M store nothing.
                 pytest.param((5, 512), -1, torch.float32, False, marks=pytest.mark.full),
-                # request_tune() regression: kernel must be built before autotune runs
+                # request_tune(): the kernel is built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
@@ -193,7 +193,7 @@ class LogSoftmaxFixture(FixtureBase):
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # request_tune() regression: kernel must be built before autotune runs
+                # request_tune(): the kernel is built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1 (default path): dtypes x pow2/non-pow2
                 pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
@@ -329,7 +329,7 @@ class LogSumExpFixture(FixtureBase):
                 ),
                 pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # request_tune() regression: kernel must be built before autotune runs
+                # request_tune(): the kernel is built before autotune runs
                 pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
                 # dim=-1: dtypes x pow2/non-pow2
                 pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
@@ -419,15 +419,14 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "shape, dim, dtype",
     [
-        pytest.param((256, 16384), -1, torch.bfloat16, id="streaming"),
-        pytest.param((64, 4096), -1, torch.float16, id="single-tile"),
-        pytest.param((300, 100000), -1, torch.float32, id="tiled"),
-        pytest.param((8, 102400), -1, torch.float32, id="split"),
-        pytest.param((4, 128, 4096), [0, 2], torch.float16, id="edge-axes"),
+        pytest.param((256, 16384), -1, torch.bfloat16, id="streaming", marks=pytest.mark.smoke),
+        pytest.param((64, 4096), -1, torch.float16, id="single-tile", marks=pytest.mark.smoke),
+        pytest.param((300, 100000), -1, torch.float32, id="tiled", marks=pytest.mark.smoke),
+        pytest.param((8, 102400), -1, torch.float32, id="split", marks=pytest.mark.full),
+        pytest.param((4, 128, 4096), [0, 2], torch.float16, id="edge-axes", marks=pytest.mark.full),
     ],
 )
 def test_logsumexp_special_values(shape: tuple, dim, dtype: torch.dtype) -> None:
@@ -717,8 +716,7 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
     compare_outputs(y3, y3_ref, softmax_verification(y3.dtype, logarithmic=True))
 
 
-# Roofline regression: LogSoftmax FLOPs must equal 5 * M * N (not 6 * M * N).
-# Direct construction — no manifest-string indirection.
+# LogSoftmax FLOPs equal 5 * M * N.
 
 
 @pytest.mark.smoke
@@ -859,7 +857,6 @@ def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
     )
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "op, reference",
     [
@@ -872,9 +869,9 @@ def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
     [
         # 16384-element tiles on the streaming kernel: the first tile and most of the
         # second are the -inf prefix.
-        pytest.param(40000, 28672, id="streaming"),
+        pytest.param(40000, 28672, id="streaming", marks=pytest.mark.smoke),
         # Eight CTAs a row on the on-chip kernel: the first CTA's share is the prefix.
-        pytest.param(40960, 5120, id="on-chip"),
+        pytest.param(40960, 5120, id="on-chip", marks=pytest.mark.full),
     ],
 )
 def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(

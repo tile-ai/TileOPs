@@ -4,6 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.norm import InstanceNormFwdTrainKernel, InstanceNormFwdTrainSingleKernel
 from tileops._ops._signature_codegen import CheckError
@@ -496,20 +497,19 @@ def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, a
     compare_outputs(mine, ref, normalization_verification("InstanceNormFwdOp", x.dtype))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, spatial, dtype",
     [
-        (20, (33,), torch.float16),
-        (20, (28, 28), torch.float16),
-        (20, (32, 32), torch.float32),
-        (3, (5000,), torch.float16),
-        (1, (192, 192), torch.float16),
-        (3, (192, 192), torch.float16),
-        (1, (192, 192), torch.bfloat16),
-        (3, (192, 192), torch.bfloat16),
-        (1, (192, 192), torch.float32),
-        (3, (192, 192), torch.float32),
+        pytest.param(20, (33,), torch.float16, marks=pytest.mark.smoke),
+        pytest.param(20, (32, 32), torch.float32, marks=pytest.mark.smoke),
+        pytest.param(1, (192, 192), torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(1, (192, 192), torch.float16, marks=pytest.mark.smoke),
+        pytest.param(1, (192, 192), torch.float32, marks=pytest.mark.smoke),
+        pytest.param(20, (28, 28), torch.float16, marks=pytest.mark.full),
+        pytest.param(3, (5000,), torch.float16, marks=pytest.mark.full),
+        pytest.param(3, (192, 192), torch.float16, marks=pytest.mark.full),
+        pytest.param(3, (192, 192), torch.bfloat16, marks=pytest.mark.full),
+        pytest.param(3, (192, 192), torch.float32, marks=pytest.mark.full),
     ],
 )
 def test_instance_norm_updates_running_statistics_across_blocks(n, spatial, dtype) -> None:
@@ -537,19 +537,12 @@ def test_instance_norm_needs_both_running_statistics_to_read_them() -> None:
         InstanceNormFwdOp()(x, stat)
 
 
-def _misaligned(t: torch.Tensor) -> torch.Tensor:
-    """*t* copied into a contiguous view that starts one element into its storage."""
-    view = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
-    view.copy_(t)
-    return view
-
-
 @pytest.mark.smoke
 @pytest.mark.parametrize("stats", [False, True], ids=["affine", "running-stats"])
 def test_instance_norm_reads_input_off_the_vector_boundary(stats: bool) -> None:
     """A contiguous input starting one element into its storage matches torch, whether the
     call normalizes with an affine or updates running statistics."""
-    x = _misaligned(torch.randn(2, 16, 16, 16, dtype=torch.float16, device=run_device()))
+    x = misaligned(torch.randn(2, 16, 16, 16, dtype=torch.float16, device=run_device()))
     weight = None if stats else torch.randn(16, dtype=x.dtype, device=x.device)
     bias = None if stats else torch.randn(16, dtype=x.dtype, device=x.device)
     rm = torch.zeros(16, device=x.device) if stats else None

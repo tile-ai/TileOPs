@@ -122,8 +122,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
             raise ValueError(
                 f"max_local_chunks must be at least 4, got {self.config['max_local_chunks']}"
             )
-        # A zero gate is the ungated delta rule. Keep it across calls so the
-        # measured path does not include an extra GPU memset per invocation.
+        # A zero gate is the ungated delta rule; held across calls so no call pays a memset.
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )

@@ -20,16 +20,17 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     QUANT_SCALE_BLOCK,
     SETMAXNREG_GRANULARITY,
+    SHARED_BUFFER_ALIGN_BYTES,
     SM90_REGISTERS,
     TMA_DTYPE_BFLOAT16,
     TMA_DTYPE_UINT8,
-    TMA_INTERLEAVE_NONE,
     TMA_L2_PROMOTION_128B,
     TMA_L2_PROMOTION_256B,
-    TMA_OOB_FILL_NONE,
     TMA_SWIZZLE_64B,
     TMA_SWIZZLE_128B,
     TMA_SWIZZLE_NONE,
+    WARPGROUP_THREADS,
+    WGMMA_ROWS,
 )
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import (
@@ -41,45 +42,54 @@ from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = ["MoEGroupedGEMMMXFP4Kernel"]
 
-_CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms")
-
 # K values one ``b`` scale covers.
 _B_SCALE_BLOCK = 32
 # Sub-blocks of one 128-wide K step, each under its own ``b`` scale.
 _SUB_BLOCKS = QUANT_SCALE_BLOCK // _B_SCALE_BLOCK
-# Weight rows of one math warp-group: the WGMMA M extent.
-_WARPGROUP_ROWS = 64
 
 
 def _math_warps(block_n: int) -> int:
     """Math warps of a tile: a 64-row warp-group of four warps per 64 weight rows."""
-    return block_n // _WARPGROUP_ROWS * 4
+    return block_n // WGMMA_ROWS * 4
+
+
+def _table_box(scale_k: int) -> int:
+    """Bytes of each code-table row one TMA box carries: 128 or 64, whichever divides the row of
+    ``4 * scale_k`` bytes; 0 when neither does and the table comes by one bulk copy."""
+    row_bytes = 4 * scale_k
+    return 128 if row_bytes % 128 == 0 else 64 if row_bytes % 64 == 0 else 0
 
 
 def _smem_bytes(
     block_m: int, block_n: int, num_stages: int, scale_bytes: int, scale_k: int, tables: bool
 ) -> int:
     """Bytes of the fp8 row and packed-weight ring; with ``tables``, two tasks' e8m0 code tables
-    and token code tables (1024 bytes of alignment), else the weight scales a stage; two
-    steps' token scales, the bfloat16 output tile and barriers."""
+    (1024 bytes of alignment) and, when they come by TMA, token code tables, else the weight
+    scales a stage; two steps' token scales, the bfloat16 output tile, and the ring's and code
+    tables' barriers."""
     ring = num_stages * (block_m * QUANT_SCALE_BLOCK + block_n * QUANT_SCALE_BLOCK // 2)
     if tables:
-        tables_bytes = 2 * block_n * scale_k * 4 + 1024 + 2 * max(block_m * scale_k, 16)
+        token_codes = 2 * block_m * scale_k if _table_box(scale_k) else 0
+        tables_bytes = 2 * block_n * scale_k * 4 + SHARED_BUFFER_ALIGN_BYTES + token_codes
     else:
         tables_bytes = num_stages * block_n * _SUB_BLOCKS * scale_bytes
     # Each math warp's token scales of two steps, as floats.
     token_slices = _math_warps(block_n) * 2 * block_m * 4
-    return ring + tables_bytes + token_slices + block_m * block_n * 2 + num_stages * 16
+    barriers = (2 * num_stages + 4) * 8
+    return ring + tables_bytes + token_slices + block_m * block_n * 2 + barriers
 
 
 def _uses_tables(
     block_m: int, block_n: int, num_stages: int, scale_bytes: int, scale_k: int, smem_limit: int
 ) -> bool:
     """Whether a config reads its e8m0 scales from per-task tables: they grow with K, so past
-    the shared memory a block may take beside the ring, the scales come a stage at a time."""
+    the shared memory a block may take beside the ring, the scales come a stage at a time. A
+    table that comes by one bulk copy, without token code tables, is taken under the bound of a
+    table that comes by TMA: only where the two token code tables would fit beside it too."""
+    bulk_room = 0 if _table_box(scale_k) else 2 * block_m * scale_k
     return (
         scale_bytes == 1
-        and _smem_bytes(block_m, block_n, num_stages, 1, scale_k, True) <= smem_limit
+        and _smem_bytes(block_m, block_n, num_stages, 1, scale_k, True) + bulk_room <= smem_limit
     )
 
 
@@ -110,7 +120,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
     alignment; id ``num_groups`` denotes trailing padding. Tight tail stores must preserve the
     next expert's rows. N tails and all output stores are bounded.
     """
-    cur_g, cur_row0, cur_rows = CURSOR.g, CURSOR.row0, CURSOR.rows
+    cur_g = CURSOR.g
     accum_dtype = "float"
     a_dtype = "float8_e4m3fn"
     cd_dtype = "bfloat16"
@@ -130,17 +140,19 @@ def _moe_grouped_gemm_mxfp4_kernel(
             "-O3",
             "--use_fast_math",
             "-DENABLE_BF16",
-            *csrc_include(
-                "moe_grouped_gemm_fp8_helper.h",
-                "streaming_load.h",
-                "moe_grouped_gemm_mxfp4_helper.h",
-            ),
+            *csrc_include("moe_grouped_gemm_mxfp4_helper.h"),
         ],
     )
     def _moe_grouped_gemm_mxfp4_func(
         block_m: int, block_n: int, num_stages: int, num_sms: int
     ) -> Callable:
-        config = dict(zip(_CONFIG_KEYS, (block_m, block_n, num_stages, num_sms), strict=True))
+        config = dict(
+            zip(
+                MoEGroupedGEMMMXFP4Kernel._CONFIG_KEYS,
+                (block_m, block_n, num_stages, num_sms),
+                strict=True,
+            )
+        )
         reason = MoEGroupedGEMMMXFP4Kernel.config_refusal(
             config,
             sm_count=sm_count,
@@ -151,29 +163,28 @@ def _moe_grouped_gemm_mxfp4_kernel(
         )
         if reason is not None:
             raise ValueError(f"cannot build the MXFP4 grouped GEMM for {config}: {reason}")
-        n_tiles = tilelang.cdiv(n, block_n)
-        # The last N tile runs past N: its loads read zeros and its stores are clipped.
-        ragged_n = n % block_n != 0
-        if contiguous:
-            m = T.dynamic("m")
-            m_tiles = T.ceildiv(m, block_m)
-            # A tight expert's last tile may hold fewer than block_m rows; aligned runs tile
-            # their padded extent exactly.
-            max_tasks = (m_tiles + (num_groups if tight else 0)) * n_tiles
-            max_waves = T.ceildiv(max_tasks, num_sms)
-            rows_shape = (m,)
-        else:
-            tiles_per_slab = tilelang.cdiv(max_m, block_m)
-            # The sequence is never longer than every tile of every slab.
-            max_tasks = num_groups * tiles_per_slab * n_tiles
-            max_waves = tilelang.cdiv(max_tasks, num_sms)
-            # The last tile of a slab whose rows end inside it reads no scale past max_m.
-            ragged_slab = max_m % block_m != 0
-            rows_shape = (num_groups, max_m)
+        tasks = task_walk(
+            num_groups=num_groups,
+            block_m=block_m,
+            block_n=block_n,
+            n=n,
+            num_sms=num_sms,
+            max_m=max_m,
+            packing=packing,
+            metadata_kind=metadata_kind,
+            alignment=alignment,
+        )
+        m, rows_shape, max_waves = tasks.m, tasks.rows_shape, tasks.max_waves
+        ragged_slab = tasks.ragged_slab
+        row_tiles_descriptor = tasks.row_tiles_descriptor
+        walk, tile_of, recover = tasks.walk, tasks.tile_of, tasks.recover
         # One math warp-group per 64 weight rows, each over every row (token) of the tile.
-        math_threads = block_n // _WARPGROUP_ROWS * 128
+        math_threads = block_n // WGMMA_ROWS * WARPGROUP_THREADS
         math_warps = _math_warps(block_n)
-        fragment_regs = _WARPGROUP_ROWS * block_m // 128
+        fragment_regs = WGMMA_ROWS * block_m // WARPGROUP_THREADS
+        # Named barriers of the math threads: shared_c free to restage, the vote on a task's
+        # scale check, and shared_c staged.
+        reuse_barrier, check_barrier, staged_barrier = 12, 13, 14
         # A step contracted sub-block by sub-block (float32 scales, or e8m0 ones that do not
         # fold) holds up to four sub-blocks at once in independent accumulator sets of at
         # most 64 registers in all; a folded step takes the first set alone.
@@ -185,12 +196,12 @@ def _moe_grouped_gemm_mxfp4_kernel(
         # setmaxnreg.inc waits for registers another warp-group released, so the math count
         # is the launch count (the register file over the block's threads) plus that share.
         launch_regs = (
-            SM90_REGISTERS // (math_threads + 128) // SETMAXNREG_GRANULARITY
+            SM90_REGISTERS // (math_threads + WARPGROUP_THREADS) // SETMAXNREG_GRANULARITY
         ) * SETMAXNREG_GRANULARITY
         producer_regs = 40
         math_regs = (
             launch_regs
-            + (128 * (launch_regs - producer_regs) // math_threads)
+            + (WARPGROUP_THREADS * (launch_regs - producer_regs) // math_threads)
             // SETMAXNREG_GRANULARITY
             * SETMAXNREG_GRANULARITY
         )
@@ -211,26 +222,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
         # contiguous bulk copy, rows back to back.
         tables = _uses_tables(block_m, block_n, num_stages, scale_bytes, scale_k, smem_limit)
         table_row_bytes = scale_k * 4
-        # A box spans 128 or 64 bytes of a row and must divide it.
-        if tables and table_row_bytes % 128 == 0:
-            table_box = 128
-        elif tables and table_row_bytes % 64 == 0:
-            table_box = 64
-        else:
-            table_box = 0
-
-        tasks = task_walk(
-            num_groups=num_groups,
-            block_m=block_m,
-            n_tiles=n_tiles,
-            max_m=max_m,
-            packing=packing,
-            metadata_kind=metadata_kind,
-            alignment=alignment,
-            m=m if contiguous else None,
-        )
-        row_tiles_descriptor = tasks.row_tiles_descriptor
-        walk, tile_of, recover = tasks.walk, tasks.tile_of, tasks.recover
+        table_box = _table_box(scale_k) if tables else 0
 
         def ring_position(kk, ring_index):
             """Ring slot and barrier phase of K step ``kk`` of a task, shared by producers and
@@ -342,8 +334,8 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 walk(walk_source, next_task, ahead)
             if ahead[cur_g] < num_groups:
                 tile_of(next_task, ahead, ahead_tile)
-                ahead_g = T.max(T.min(ahead[cur_g], num_groups - 1), 0)
-                ahead_n = T.max(T.min(ahead_tile[1], n_tiles - 1), 0) * block_n
+                ahead_g = tasks.expert(ahead)
+                ahead_n = tasks.first_col(ahead_tile)
                 buf = check_index % 2
                 T.barrier_wait(check_empty[buf], (check_index // 2 & 1) ^ 1)
                 if T.shuffle_elect(32):
@@ -358,7 +350,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                 check_full[buf],
                                 T.address_of(token_codes[buf, 0]),
                                 0,
-                                ahead[cur_row0] + ahead_tile[0] * block_m,
+                                tasks.first_row(ahead, ahead_tile),
                                 0,
                             )
                         else:
@@ -367,7 +359,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                 check_full[buf],
                                 T.address_of(token_codes[buf, 0]),
                                 0,
-                                T.max(T.min(ahead_tile[0], tiles_per_slab - 1), 0) * block_m,
+                                tasks.first_row(ahead, ahead_tile),
                                 ahead_g,
                                 0,
                             )
@@ -629,7 +621,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
             layout: T.Tensor((m,) if metadata_kind == "per_row" else (num_groups,), "int32"),  # type: ignore
             C: T.Tensor((*rows_shape, n), cd_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(num_sms, threads=math_threads + 128) as (pid,):
+            with T.Kernel(num_sms, threads=math_threads + WARPGROUP_THREADS) as (pid,):
                 a_shared = T.alloc_shared((num_stages, block_m, block_k), a_dtype)
                 b_packed = T.alloc_shared((num_stages, block_n, packed_k), "uint8")
                 # B scales a stage, unless the code tables hold them (then one unused row).
@@ -669,7 +661,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 check_full = T.alloc_barrier([1, 1])
                 check_empty = T.alloc_barrier([1, 1])
                 # The producer's walk a wave ahead, to the task whose codes it copies next.
-                ahead = T.alloc_local((5 if contiguous else 3,), "int32")
+                ahead = T.alloc_local((tasks.cursor_len,), "int32")
                 ahead_tile = T.alloc_local((2,), "int32")
                 # Each role's count of the tasks it has run, the check table's phase.
                 check_index = T.alloc_var("int32", init=0)
@@ -677,15 +669,15 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 # Not the wave index: a skipped task advances no barrier.
                 ring_index = T.alloc_var("int32", init=0)
 
-                cursor = T.alloc_local((5 if contiguous else 3,), "int32")
+                cursor = T.alloc_local((tasks.cursor_len,), "int32")
                 tile = T.alloc_local((2,), "int32")
-                for i in T.unroll(5 if contiguous else 3):
+                for i in T.unroll(tasks.cursor_len):
                     cursor[i] = 0
                     ahead[i] = 0
                 tx = T.get_thread_binding()
                 if recover:
                     ends = T.alloc_shared((num_groups,), "int32", scope="shared")
-                    tasks.recover_ends(layout, ends, tx, math_threads + 128)
+                    tasks.recover_ends(layout, ends, tx, math_threads + WARPGROUP_THREADS)
                 T.sync_threads()
                 # [m, N] or [E, max_m, N], so the store of a run's or slab's last rows is
                 # clipped at its end.
@@ -703,26 +695,14 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 )
                 # Rows of 64 packed bytes, 64B-swizzled so a warp's reads of eight rows
                 # spread over the banks.
-                b_load_desc = T.create_tma_descriptor(
+                b_load_desc = tasks.expert_rows_descriptor(
                     TMA_DTYPE_UINT8,
-                    3,
-                    B.data,
+                    B,
                     k // 2,
-                    n,
-                    num_groups,
-                    1,
                     k // 2,
-                    n * (k // 2),
                     packed_k,
-                    block_n,
-                    1,
-                    1,
-                    1,
-                    1,
-                    TMA_INTERLEAVE_NONE,
                     TMA_SWIZZLE_64B,
                     TMA_L2_PROMOTION_256B,
-                    TMA_OOB_FILL_NONE,
                 )
 
                 if table_box:
@@ -735,26 +715,14 @@ def _moe_grouped_gemm_mxfp4_kernel(
                         TMA_SWIZZLE_NONE,
                         TMA_L2_PROMOTION_128B,
                     )
-                    table_desc = T.create_tma_descriptor(
+                    table_desc = tasks.expert_rows_descriptor(
                         TMA_DTYPE_UINT8,
-                        3,
-                        B_scale.data,
+                        B_scale,
                         table_row_bytes,
-                        n,
-                        num_groups,
-                        1,
                         table_row_bytes,
-                        n * table_row_bytes,
                         table_box,
-                        block_n,
-                        1,
-                        1,
-                        1,
-                        1,
-                        TMA_INTERLEAVE_NONE,
                         TMA_SWIZZLE_128B if table_box == 128 else TMA_SWIZZLE_64B,
                         TMA_L2_PROMOTION_128B,
-                        TMA_OOB_FILL_NONE,
                     )
 
                 if tx >= math_threads:
@@ -785,15 +753,9 @@ def _moe_grouped_gemm_mxfp4_kernel(
                         walk(ends if recover else layout, task_id, cursor)
                         if T.And(cursor[cur_g] < num_groups, producer_warp == 0):
                             tile_of(task_id, cursor, tile)
-                            # Inline bounds prevent redundant TileLang scale-load guards.
-                            g = T.meta_var(T.max(T.min(cursor[cur_g], num_groups - 1), 0))
-                            if contiguous:
-                                m_start = T.meta_var(cursor[cur_row0] + tile[0] * block_m)
-                            else:
-                                m_start = T.meta_var(
-                                    T.max(T.min(tile[0], tiles_per_slab - 1), 0) * block_m
-                                )
-                            n_start = T.meta_var(T.max(T.min(tile[1], n_tiles - 1), 0) * block_n)
+                            g = T.meta_var(tasks.expert(cursor))
+                            m_start = T.meta_var(tasks.first_row(cursor, tile))
+                            n_start = T.meta_var(tasks.first_col(tile))
                             if tables:
                                 # The next task's codes, a task ahead of its check.
                                 copy_check(
@@ -871,9 +833,11 @@ def _moe_grouped_gemm_mxfp4_kernel(
                             ring_index = ring_index + (1 if static_ring else scale_k)
                 else:
                     T.inc_max_nreg(math_regs)
-                    math_wg_idx = T.tvm_warp_shuffle(T.uint32(0xFFFFFFFF), tx // 128, 0, 32, 32)
+                    math_wg_idx = T.tvm_warp_shuffle(
+                        T.uint32(0xFFFFFFFF), tx // WARPGROUP_THREADS, 0, 32, 32
+                    )
                     # The warp-group's 64 weight rows of the tile.
-                    wg_row0 = math_wg_idx * _WARPGROUP_ROWS
+                    wg_row0 = math_wg_idx * WGMMA_ROWS
                     # The rows' ring as a 128B-swizzled K-major WGMMA operand; a slot or K32
                     # slice is an offset in 16-byte units of the descriptor's low word, kept
                     # warp-uniform (the low word the C++ WGMMA issue above takes).
@@ -886,16 +850,9 @@ def _moe_grouped_gemm_mxfp4_kernel(
                         walk(ends if recover else layout, task_id, cursor)
                         if cursor[cur_g] < num_groups:
                             tile_of(task_id, cursor, tile)
-                            g = T.meta_var(T.max(T.min(cursor[cur_g], num_groups - 1), 0))
-                            if contiguous:
-                                m_start = T.meta_var(cursor[cur_row0] + tile[0] * block_m)
-                                tile_rows = T.meta_var(cursor[cur_rows] - tile[0] * block_m)
-                            else:
-                                m_start = T.meta_var(
-                                    T.max(T.min(tile[0], tiles_per_slab - 1), 0) * block_m
-                                )
-                            n_start = T.meta_var(T.max(T.min(tile[1], n_tiles - 1), 0) * block_n)
-                            short_tile = T.meta_var(tile_rows < block_m) if tight else False
+                            g = T.meta_var(tasks.expert(cursor))
+                            m_start = T.meta_var(tasks.first_row(cursor, tile))
+                            n_start = T.meta_var(tasks.first_col(tile))
                             T.clear(final)
                             # Whether every weight scale the task reads lies in [2 ** -63,
                             # 2 ** 63] and, under e8m0 scales, every step of every weight row
@@ -938,7 +895,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                         wg_row0,
                                         n - 1 - n_start,
                                     ),
-                                    13,
+                                    check_barrier,
                                     math_threads,
                                 )
                             else:
@@ -954,7 +911,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                         g * n + n_start + wg_row0,
                                         g * n + n - 1,
                                     ),
-                                    13,
+                                    check_barrier,
                                     math_threads,
                                 )
                             load_token_scales(token_at, token_scales, g, m_start, 0, tx)
@@ -1012,7 +969,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                             # before any math thread rewrites it.
                             if tx < store_count:
                                 T.tma_store_wait(0)
-                            T.sync_threads(barrier_id=12, arrive_count=math_threads)
+                            T.sync_threads(barrier_id=reuse_barrier, arrive_count=math_threads)
                             if tables:
                                 # Every math thread has decoded the task's last step (the
                                 # barrier above): its table goes back to the producer.
@@ -1029,52 +986,18 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                 wg_row0,
                             )
                             T.fence_proxy_async()
-                            T.sync_threads(barrier_id=14, arrive_count=math_threads)
-                            if ragged_n:
-                                store_box = T.And(
-                                    tx < store_count, n_start + tx * store_box_cols < n
-                                )
-                            else:
-                                store_box = tx < store_count
-                            if not contiguous:
-                                if store_box:
-                                    # The FP8 GEMM's TMA store issue of one staging box.
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::moe_fp8_tma_store_3d_issue",
-                                        output_desc,
-                                        T.address_of(shared_c[tx * block_m * store_box_cols]),
-                                        n_start + tx * store_box_cols,
-                                        m_start,
-                                        g,
-                                    )
-                                    T.tma_store_arrive()
-                            elif short_tile:
-                                # Tight tails must not overwrite the next expert's rows.
-                                # The FP8 GEMM's row-bounded store of a staged tile.
-                                T.call_extern(
-                                    "handle",
-                                    f"tileops::moe_fp8_store_rows_bf16_swizzled<{block_m}, {block_n}>",
-                                    T.address_of(shared_c[0]),
-                                    T.address_of(C[m_start, n_start]),
-                                    n,
-                                    T.min(tile_rows, m - m_start),
-                                    n - n_start,
-                                    tx,
-                                    math_threads,
-                                )
-                            else:
-                                if store_box:
-                                    # The FP8 GEMM's TMA store issue of one staging box.
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::moe_fp8_tma_store_2d_issue",
-                                        output_desc,
-                                        T.address_of(shared_c[tx * block_m * store_box_cols]),
-                                        n_start + tx * store_box_cols,
-                                        m_start,
-                                    )
-                                    T.tma_store_arrive()
+                            T.sync_threads(barrier_id=staged_barrier, arrive_count=math_threads)
+                            tasks.store_tile(
+                                output_desc,
+                                shared_c,
+                                C,
+                                cursor,
+                                tile,
+                                store_box_cols,
+                                store_count,
+                                tx,
+                                math_threads,
+                            )
                     if tx < store_count:
                         T.tma_store_wait(0)
 
@@ -1087,17 +1010,13 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
     """MXFP4 grouped GEMM over masked expert slabs or contiguous expert rows, on SM90 TMA and
     WGMMA.
 
-    The weights are the WGMMA's M operand: each 64-row math warp-group decodes its packed e2m1
-    rows to e4m3 A fragments in registers, the next step's decode overlapping this step's
-    WGMMA, whose B operand is the step's ``block_m`` fp8 rows of ``a`` as TMA loads them.
-    Under e8m0 scales each 32-wide sub-block's values take its scale relative to the largest of
-    its row's four in the step, exactly, so the step accumulates in the tensor core and is
-    promoted once under that scale and the token's. Each task first checks its weight scales:
-    a tile whose steps span more than five binades, or holding a weight scale outside
-    ``[2 ** -63, 2 ** 63]``, contracts each sub-block alone and applies each product's two
-    scales by mantissa and exponent apart; float32 scales always take the sub-block path.
+    Each task first checks that its weight scales lie in ``[2 ** -63, 2 ** 63]`` and, under
+    e8m0, that each step's spans at most five binades. A passing task folds each e8m0 step's
+    four sub-blocks into one contraction (float32 steps go sub-block by sub-block); a failing
+    one contracts sub-block by sub-block, its scale products split into mantissa and exponent.
     Rows of a slab past its valid count, inside a tile that holds a valid one, are stored like
-    the others with unspecified values; rows past ``max_m`` are not written. A count is clamped to ``[0, max_m]``.
+    the others with unspecified values; rows past ``max_m`` are not written. A count is
+    clamped to ``[0, max_m]``.
     Contiguous rows past an aligned expert's end are its padding and are stored like the
     others; a tight expert's are the next expert's and are not stored. Under aligned packing
     ``block_m`` divides the alignment.
@@ -1109,6 +1028,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
     supported_archs: list[int] = [90]
 
+    _CONFIG_KEYS: ClassVar[tuple[str, ...]] = ("block_m", "block_n", "num_stages", "num_sms")
     # Row (token) tiles: the WGMMA N extent, a multiple of 8 rows of TMA box.
     _BLOCK_M: ClassVar[tuple[int, ...]] = (8, 16, 32, 64, 128)
     # Weight tiles: one 64-row math warp-group each 64 rows, whole 64-column store boxes; two
@@ -1148,24 +1068,10 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         Returns:
             The first violated constraint, or ``None``.
         """
-        if set(config) != set(_CONFIG_KEYS):
-            return f"needs exactly the keys {list(_CONFIG_KEYS)}, got {sorted(config)}"
-        if not all(isinstance(v, int) and not isinstance(v, bool) for v in config.values()):
-            return "takes integer values"
-        block_m, block_n, stages, num_sms = (config[key] for key in _CONFIG_KEYS)
-        if block_m not in cls._BLOCK_M:
-            return f"block_m must be one of {cls._BLOCK_M}, got {block_m}"
-        if block_n not in cls._BLOCK_N:
-            return f"block_n must be one of {cls._BLOCK_N}, got {block_n}"
-        if stages not in cls._NUM_STAGES:
-            return (
-                f"num_stages must lie in [{cls._NUM_STAGES.start}, {cls._NUM_STAGES.stop - 1}], "
-                f"got {stages}"
-            )
-        if not 1 <= num_sms <= sm_count:
-            return f"num_sms must lie in [1, {sm_count}], the device's SMs, got {num_sms}"
-        if alignment % block_m:
-            return f"block_m must divide the layout's alignment {alignment}, got {block_m}"
+        reason = cls._common_refusal(config, sm_count=sm_count, alignment=alignment)
+        if reason is not None:
+            return reason
+        block_m, block_n, stages, _ = (config[key] for key in cls._CONFIG_KEYS)
         smem = _config_smem(block_m, block_n, stages, scale_bytes, scale_k, smem_limit)
         if smem > smem_limit:
             return f"takes {smem} bytes of shared memory, past the {smem_limit} a block may"
@@ -1228,8 +1134,6 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         )
         self.init_config()
 
-    _CONFIG_KEYS = _CONFIG_KEYS
-
     def _refusal_inputs(self) -> dict:
         return {
             "sm_count": self.sm_count,
@@ -1252,17 +1156,10 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
     @property
     def default_config(self) -> dict:
-        # The rows are the WGMMA N extent and every row tile converts its weights once.
-        # Aligned contiguous runs take the tallest tile their alignment allows, which
-        # converts each weight tile the fewest times, under two 64-row weight warp-groups of
-        # 232 registers (a 128-row tile's accumulators need them). A masked slab is a decode
-        # layout whose capacity is the batch: its experts hold max_m / E rows on average, and
-        # the narrowest tile of at least twice that holds most experts' rows in one tile with
-        # the least MMA wasted. Its weight tile is three or, under e8m0 scales, four 64-row
-        # warp-groups (float32 scales' sub-block path spills in four warp-groups' registers).
-        # A decode tile's time grows with its width, so the width whose tasks take the fewest
-        # waves times width wins, its tasks counted over the experts max_m rows spread at
-        # random occupy. Four warp-groups take a 4-deep ring.
+        # Every row tile converts its weights once, so aligned runs take the tallest tile
+        # their alignment allows. A masked slab's tile is the narrowest holding twice an
+        # expert's mean rows; float32 scales' sub-block path spills in four warp-groups.
+        # Four warp-groups take a 4-deep ring.
         call = self.call
         if call.kind == "contiguous":
             unaligned_m, block_n = self._CONTIGUOUS_TILE

@@ -19,7 +19,7 @@ from tileops._kernels.constants import LOG2E, MAX_BLOCK_THREADS
 from tileops._kernels.state_pool import state_row
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
-__all__ = ["decode_launch", "delta_decode_tl"]
+__all__ = ["decode_launch", "delta_decode_tl", "key_of", "run_start"]
 
 
 def decode_launch(
@@ -37,10 +37,6 @@ def decode_launch(
     lanes cover one row, and a block is two warps: the smallest block that still fills an
     SM's threads under its resident-block limit (2048 threads in 32 blocks on SM80 and SM90,
     1536 in 24 on SM89), so each block is a short burst of loads and many are in flight.
-
-    Re-fit ``blocks_per_sm`` and either block shape by sweeping ``threads`` and
-    ``lane_group`` against the decode workload rows of `benchmarks/ops/bench_deltanet.py`
-    and `benchmarks/ops/bench_gdn.py`.
     """
     if state_v_first:
         return {"threads": 2 * WARP_LANES, "lane_group": dim // 16}
@@ -50,20 +46,19 @@ def decode_launch(
     return {"threads": 2 * WARP_LANES, "lane_group": 2}
 
 
-def _run_start(k_rank, run, lane_group: int, key_run: int):
+def run_start(k_rank, run, lane_group: int, key_run: int):
     """The first key position of a lane's *run*-th run over a value-major state row: runs of
     *key_run* contiguous positions, *lane_group* runs apart."""
     return (k_rank + run * lane_group) * key_run
 
 
-def _key_of(k_rank, ii, lane_group: int, key_run: int):
+def key_of(k_rank, ii, lane_group: int, key_run: int):
     """The key position of a lane's *ii*-th element of a value-major state row."""
-    return _run_start(k_rank, ii // key_run, lane_group, key_run) + ii % key_run
+    return run_start(k_rank, ii // key_run, lane_group, key_run) + ii % key_run
 
 
-# Seven recurrence flags, the pool and a block shape over two state widths and two dtypes:
-# a process that exercises several variants at several shapes outgrows the 32 entries one
-# variant needs.
+# The key holds the call's shape, every recurrence flag, the pool and rollback facts and the
+# block shape, so one process that runs several variants at several shapes fills many entries.
 @target_cache(maxsize=64)
 def delta_decode_tl(
     batch: int,
@@ -280,13 +275,13 @@ def delta_decode_tl(
                                 state_row(slots, batch_idx),
                                 head_idx,
                                 value_idx,
-                                _run_start(k_rank, run, lane_group, key_run) + e,
+                                run_start(k_rank, run, lane_group, key_run) + e,
                             ]
                 for ii in T.serial(k_chunk):
                     decayed_state = state_local[ii] * decay if gated else state_local[ii]
                     state_local[ii] = decayed_state
                     old_partial += decayed_state * at(
-                        k_shared, tt, _key_of(k_rank, ii, lane_group, key_run)
+                        k_shared, tt, key_of(k_rank, ii, lane_group, key_run)
                     )
             elif has_initial_state:
                 for ii in T.serial(k_chunk):
@@ -315,7 +310,7 @@ def delta_decode_tl(
 
             if state_v_first:
                 for ii in T.serial(k_chunk):
-                    kk = _key_of(k_rank, ii, lane_group, key_run)
+                    kk = key_of(k_rank, ii, lane_group, key_run)
                     if has_initial_state:
                         updated = state_local[ii] + at(k_shared, tt, kk) * value_new
                     else:
@@ -328,7 +323,7 @@ def delta_decode_tl(
                             token_row(slots, batch_idx, t),
                             head_idx,
                             value_idx,
-                            _run_start(k_rank, run, lane_group, key_run) + e,
+                            run_start(k_rank, run, lane_group, key_run) + e,
                         ] = state_local[run * key_run + e]
             else:
                 for ii in T.serial(k_chunk):
@@ -460,7 +455,7 @@ def delta_decode_tl(
                                     start,
                                     head_idx,
                                     value_idx,
-                                    _run_start(k_rank, run, lane_group, key_run) + e,
+                                    run_start(k_rank, run, lane_group, key_run) + e,
                                 ]
                     else:
                         for ii in T.serial(k_chunk):

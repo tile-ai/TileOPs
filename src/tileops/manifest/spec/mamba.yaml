@@ -265,8 +265,10 @@ CausalConv1dFwdOp:
   # conv, F.conv1d(..., dilation=3, groups=D)). A float32 weight and bias convolve the
   # activations upcast to float32 (transformers modeling_glm5_next causal_conv1d_fn, conv1d
   # kept in float32). With cache_indices, conv_state is a pool of P states and sequence b
-  # reads and writes conv_state[cache_indices[b]], distinct slots across the call; every
-  # slot index names a state, vLLM's null slot 0 is not declared. A state is the first
+  # reads and writes conv_state[cache_indices[b]], the slots other than -1 distinct across the
+  # call. A slot of -1 (sglang causal_conv1d_fn's PAD_SLOT_ID; vLLM's kernel skips only its
+  # null slot 0) is never written and its sequence's outputs are unspecified; every other slot
+  # index names a state, vLLM's null slot 0 is not declared. A state is the first
   # (W - 1) * dilation tokens of its L columns, the rest not touched.
   family: mamba
   status: implemented
@@ -305,7 +307,7 @@ CausalConv1dFwdOp:
       cu_seqlens: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)"]}
       bias: {dtype: Tw, shape: "[D]", type: "Tensor | None"}
       has_initial_state: {dtype: bool, shape: "[B]", type: "Tensor | None", default: null}
-      cache_indices: {dtype: int32, shape: "[B]", type: "Tensor | None", default: null, kw_only: true, values: "sample_indices(B, P)", requires: ["in_range(0, P)"]}
+      cache_indices: {dtype: int32, shape: "[B]", type: "Tensor | None", default: null, kw_only: true, values: "sample_indices(B, P)", requires: ["in_range(-1, P)"]}
     outputs:
       output: {dtype: T, shape: "[Tt, D]"}
     dtype_combos:
@@ -354,7 +356,9 @@ CausalConv1dUpdateFwdOp:
   # L columns and is advanced by the sequence's tokens; with num_accepted_tokens, sequence b
   # with a = num_accepted_tokens[b] and q tokens reads the (W - 1) * dilation tokens from
   # column a - 1, and its first (W - 1) * dilation + q - 1 columns become its last such
-  # tokens, so a later call resumes from any accepted draft. Every slot index names a state;
+  # tokens, so a later call resumes from any accepted draft. A slot of -1 (sglang
+  # causal_conv1d_update's PAD_SLOT_ID; vLLM's kernel skips only its null slot 0) is never
+  # written and its sequence's outputs are unspecified; every other slot index names a state,
   # vLLM's null slot 0 is not declared.
   family: mamba
   status: implemented
@@ -395,7 +399,7 @@ CausalConv1dUpdateFwdOp:
       # CausalConv1dFwdOp leaves, advanced in place.
       conv_state: {dtype: T, shape: "States[present(conv_state_indices), B, P, D, L]", mutated: true, contiguous: true}
       bias: {dtype: Tw, shape: "[D]", type: "Tensor | None", default: null}
-      conv_state_indices: {dtype: int32, shape: "[B]", type: "Tensor | None", default: null, kw_only: true, values: "sample_indices(B, P)", requires: ["in_range(0, P)"]}
+      conv_state_indices: {dtype: int32, shape: "[B]", type: "Tensor | None", default: null, kw_only: true, values: "sample_indices(B, P)", requires: ["in_range(-1, P)"]}
       num_accepted_tokens: {dtype: int32, shape: "[B]", type: "Tensor | None", default: null, kw_only: true, values: "full((B,), 1)", requires: ["in_range(1, L - (W - 1) * dilation + 2)"]}
       query_start_loc: {dtype: int32, shape: "[B + 1]", type: "Tensor | None", default: null, kw_only: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)", "max_segment(max_query_len)"]}
     outputs:

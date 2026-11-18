@@ -35,9 +35,7 @@ def ngram_hash(
     and call tokens; with *num_accepted_tokens*, the history from column ``o + 1`` followed by
     every call token. A sequence with no tokens leaves its row untouched.
 
-    Every sequence is computed at once: each sequence's history is laid before its tokens in
-    one stream, and a shift stops at the last EOS before it, a running maximum of EOS places
-    floored at the sequence start. There is no host loop or sync, so ``torch.compile``
+    Every sequence is computed at once, with no host loop or sync, so ``torch.compile``
     captures the whole function.
     """
     n, heads = multipliers.shape[0], primes.shape[0]

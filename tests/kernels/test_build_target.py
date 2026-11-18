@@ -133,9 +133,6 @@ def _add_one(n: int, threads: int = 128):
         ("sm_count", 1),
         ("smem_budget", 1024),
         ("calibration", "other"),
-        ("threads_per_sm", 1024),
-        ("regs_per_sm", 1024),
-        ("smem_per_sm", 1024),
         ("l2_bytes", 1024),
     ],
 )

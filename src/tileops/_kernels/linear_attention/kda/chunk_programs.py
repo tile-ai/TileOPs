@@ -787,10 +787,8 @@ def chunk_state_program(
     new-value tiles, with the same products, so it writes the same ``o`` without the
     round trip of ``h`` and ``vn`` through global memory; the program then takes ``qg``
     and ``aqk`` and returns ``(o, ht)``. A CTA takes a *value_tile* wide slice of the
-    state's value columns. On SM90 a tile narrower than the state prefetches the next
-    chunk's operands; the chunk's decay row is staged in shared memory once rather than
-    read from global memory for every state element. Without *initial_state* the walk
-    starts from zero and never reads ``h0``, so the caller need not fill it.
+    state's value columns. Without *initial_state* the walk starts from zero and never reads
+    ``h0``, so the caller need not fill it.
     """
     BT = chunk_size
     num_chunks = GroupTiling(num_seqs, chunk_size).tile_upper_bound(total_tokens)

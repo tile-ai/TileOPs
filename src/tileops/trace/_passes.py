@@ -231,16 +231,10 @@ def lower(primfunc, max_events: int = MAX_EVENTS_DEFAULT):
     ``out_idx`` already accounts for the trailing ``slots`` param (e.g.
     ``out_idx=[-2, -1]`` when the kernel has one own output ``C`` and ``slots``).
 
-    Reads the per-build trace registry (``tileops.trace._state.build_state``),
-    derives ``num_groups`` from the distinct interned groups, runs
-    ``_transform`` to rewrite each marker into writer-gated clamped emit code
-    (deriving ``num_cta`` from the launch grid), then stashes the host decode maps
-    in ``_META_REGISTRY`` under a fresh integer meta id and stamps that id
-    onto the returned func as the ``tl.trace_meta_id`` attr. The attr rides
-    through ``tilelang.jit`` onto ``kernel.prim_func`` so ``lookup_meta``
-    resolves the compiled kernel back to its maps. It then retires the build epoch
-    (``tileops.trace._state.begin_build_epoch``) so the next build starts
-    fresh.
+    The host decode maps go into ``_META_REGISTRY`` under a fresh meta id, stamped on the
+    returned func as the ``tl.trace_meta_id`` attr, which ``tilelang.jit`` carries onto
+    ``kernel.prim_func`` for ``lookup_meta``. The build epoch is retired, so the next build
+    starts fresh.
 
     Args:
         primfunc: The built kernel; its body carries ``tl_trace_marker`` markers.

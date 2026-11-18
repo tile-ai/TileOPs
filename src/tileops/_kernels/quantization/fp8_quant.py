@@ -162,9 +162,8 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
     # A block reducing a group inside one thread runs this many threads, one group each.
     _ROW_THREADS: ClassVar[int] = 64
     # An input of at least this many bytes is bound by DRAM throughput, which two vectors a
-    # thread bring closer to peak (dsv3-act-prefill: 24.96 us against 27.09 with one); a
-    # smaller one is bound by one load-reduce-store chain, which one vector a thread over
-    # 256-thread blocks shortens (kv-index-flat-8k float16: 1.79 us against 1.86 with two).
+    # thread bring closer to peak; a smaller one is bound by one load-reduce-store chain,
+    # which one vector a thread over 256-thread blocks shortens.
     _WIDE_BYTES: ClassVar[int] = 8 << 20
 
     @staticmethod
@@ -185,9 +184,7 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
         A group width that is a power of two times an odd number above one cannot both give
         each thread a whole number of vector accesses and leave a power-of-two group of
         threads on each group, which is what the cross-lane reduction takes. Such a group
-        goes to one thread whole, so the reduction stays in registers:
-        ``group_size=96`` float16 measures 2.783 us that way against 7.264 with the group
-        split across threads.
+        goes to one thread whole, so the reduction stays in registers.
         """
         odd = group_size
         while odd % 2 == 0:

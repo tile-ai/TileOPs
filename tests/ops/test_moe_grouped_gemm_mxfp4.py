@@ -1,10 +1,19 @@
 """Tests for the MXFP4 M-grouped GEMM op."""
 
-import math
+import re
 
 import pytest
 import torch
 
+from tests.ops.moe_grouped_gemm_helpers import (
+    SENTINEL,
+    SIZES,
+    contiguous_layout,
+    run_into_guarded_out,
+    with_counts,
+)
+from tileops._kernels.moe import MGroupedGEMMMXFP4Call
+from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import _smem_bytes, _uses_tables
 from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMMXFP4FwdOp
 from tileops.manifest import load_workloads
 from workloads.device import run_device
@@ -13,9 +22,6 @@ from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
 _OP = "MoEGroupedGEMMMXFP4FwdOp"
-_KEY = "grouped_gemm_mxfp4"
-# An output value no valid row produces.
-_SENTINEL = -12288.0
 _E8M0 = {"S": "float8_e8m0fnu"}
 _F32 = {"S": "float32"}
 
@@ -26,29 +32,6 @@ def _workload(max_m: int, dtype_case: dict = _E8M0, **dims) -> MoEGroupedGEMMMXF
     return MoEGroupedGEMMMXFP4Workload(
         manifest_call(_OP, dtype_case, layout={"masked": {"max_m": max_m}}, **dims)
     )
-
-
-def _with_counts(workload: MoEGroupedGEMMMXFP4Workload, counts: list) -> tuple:
-    """The workload's inputs with *counts* valid rows per expert in place of the generated ones."""
-    *operands, metadata = workload.gen_inputs()
-    return (*operands, torch.tensor(counts, dtype=torch.int32, device=metadata.device))
-
-
-def _run_into_guarded_out(op, workload: MoEGroupedGEMMMXFP4Workload, *inputs) -> torch.Tensor:
-    """Check output reuse, guard integrity and correctness on valid rows."""
-    a, b, metadata = inputs[0], inputs[2], inputs[-1]
-    shape = (*a.shape[:-1], b.shape[1])
-    guard = 4096
-    flat = torch.full((math.prod(shape) + guard,), _SENTINEL, dtype=torch.bfloat16, device=a.device)
-    out = flat[:-guard].view(shape)
-    got = op(*inputs, out=out)
-    assert got is out
-    assert bool((flat[-guard:] == _SENTINEL).all()), "a store ran past the output"
-    reference_inputs = (*inputs[:-1], metadata.clamp(0, a.shape[1])) if a.ndim == 3 else inputs
-    compare_outputs(
-        got, workload.ref_program(*reference_inputs), workload.verification(*reference_inputs)
-    )
-    return got
 
 
 _ROWS = {row["label"]: row for row in load_workloads(_OP)}
@@ -126,7 +109,7 @@ def test_mxfp4_grouped_gemm_valid_rows_at_tile_and_slab_boundaries(
     dims = {"N": 256, "K": 512, **dims}
     workload = _workload(max_m, dtype_case, E=len(counts), **dims)
     op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=max_m))
-    _run_into_guarded_out(op, workload, *_with_counts(workload, counts))
+    run_into_guarded_out(op, workload, *with_counts(workload, counts))
 
 
 @pytest.mark.sm90
@@ -144,8 +127,8 @@ def test_mxfp4_grouped_gemm_tiles_past_n_over_persistent_waves(dtype_case: dict)
     counts = [64, 0, 50, 64, 17, -1, 99, 33]
     workload = _workload(64, dtype_case, E=len(counts), N=1184, K=1408)
     op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=64))
-    out = _run_into_guarded_out(op, workload, *_with_counts(workload, counts))
-    assert bool((out[1] == _SENTINEL).all()) and bool((out[5] == _SENTINEL).all())
+    out = run_into_guarded_out(op, workload, *with_counts(workload, counts))
+    assert bool((out[1] == SENTINEL).all()) and bool((out[5] == SENTINEL).all())
 
 
 @pytest.mark.sm90
@@ -162,7 +145,7 @@ def test_mxfp4_grouped_gemm_far_sub_block_alone(k: int) -> None:
     """The rows' only nonzero products lie in a sub-block thirteen binades under its weight
     row's largest scale: they keep their full value (32 * 2 ** 10 * 2 ** -13 = 4)."""
     workload = _workload(16, E=1, N=128, K=k)
-    a, a_scale, b, b_scale, metadata = _with_counts(workload, [16])
+    a, a_scale, b, b_scale, metadata = with_counts(workload, [16])
     a = torch.zeros_like(a.float())
     a[..., 32:64] = 1.0
     a = a.to(torch.float8_e4m3fn)
@@ -172,7 +155,7 @@ def test_mxfp4_grouped_gemm_far_sub_block_alone(k: int) -> None:
     codes = torch.tensor([127, 114, 127, 127], dtype=torch.uint8, device=b.device).repeat(k // 128)
     b_scale = codes.expand_as(b_scale.view(torch.uint8)).contiguous().view(b_scale.dtype)
     op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=16))
-    out = _run_into_guarded_out(op, workload, a, a_scale, b, b_scale, metadata)
+    out = run_into_guarded_out(op, workload, a, a_scale, b, b_scale, metadata)
     assert bool((out == 4).all())
 
 
@@ -182,13 +165,13 @@ def test_mxfp4_grouped_gemm_scale_code_zero() -> None:
     """An e8m0 weight scale of code 0 is 2 ** -127, a float32 subnormal: under row scales of
     code 254 each product is 1, not flushed to zero."""
     workload = _workload(16, E=1, N=128, K=256)
-    a, a_scale, b, b_scale, metadata = _with_counts(workload, [16])
+    a, a_scale, b, b_scale, metadata = with_counts(workload, [16])
     a = torch.ones_like(a.float()).to(a.dtype)
     a_scale = torch.full_like(a_scale.view(torch.uint8), 254).view(a_scale.dtype)
     b = torch.full_like(b, 0x22)
     b_scale = torch.zeros_like(b_scale.view(torch.uint8)).view(b_scale.dtype)
     op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=16))
-    out = _run_into_guarded_out(op, workload, a, a_scale, b, b_scale, metadata)
+    out = run_into_guarded_out(op, workload, a, a_scale, b, b_scale, metadata)
     assert bool((out == 256).all())
 
 
@@ -198,7 +181,7 @@ def test_mxfp4_grouped_gemm_row_scale_code_zero() -> None:
     """An a_scale of code 0 (2 ** -127) on fast tiles may flush to zero: each output, here
     K * 2 ** 63 * 2 ** -127, is within the documented ``K * 2 ** -52`` of its value."""
     workload = _workload(16, E=1, N=128, K=128)
-    a, a_scale, b, b_scale, metadata = _with_counts(workload, [16])
+    a, a_scale, b, b_scale, metadata = with_counts(workload, [16])
     a = torch.ones_like(a.float()).to(a.dtype)
     a_scale = torch.zeros_like(a_scale.view(torch.uint8)).view(a_scale.dtype)
     b = torch.full_like(b, 0x22)
@@ -215,7 +198,7 @@ def test_mxfp4_grouped_gemm_weight_dequantized_past_float32() -> None:
     reference is infinite; under a_scale 2 ** -27 the output is the products' finite sum,
     128 * 2 * 2 ** 127 * 2 ** -27 = 2 ** 108."""
     workload = _workload(16, E=1, N=128, K=128)
-    a, a_scale, b, b_scale, metadata = _with_counts(workload, [16])
+    a, a_scale, b, b_scale, metadata = with_counts(workload, [16])
     a = torch.ones_like(a.float()).to(a.dtype)
     a_scale = torch.full_like(a_scale.view(torch.uint8), 100).view(a_scale.dtype)
     b = torch.full_like(b, 0x44)
@@ -231,7 +214,7 @@ def test_mxfp4_grouped_gemm_scale_code_nan() -> None:
     """An e8m0 scale of code 255 is NaN: a weight row's makes its column NaN, a token's makes
     its row NaN, and no other output."""
     workload = _workload(16, E=1, N=128, K=128)
-    a, a_scale, b, b_scale, metadata = _with_counts(workload, [16])
+    a, a_scale, b, b_scale, metadata = with_counts(workload, [16])
     a_codes = torch.full_like(a_scale.view(torch.uint8), 127)
     b_codes = torch.full_like(b_scale.view(torch.uint8), 127)
     a_codes[0, 3, 0] = 255
@@ -256,7 +239,7 @@ def test_mxfp4_grouped_gemm_scales_whose_product_overflows(dtype_case: dict) -> 
     """Both scales 2 ** 64, whose product overflows float32, on operands of 0.5: each output,
     2 ** 126, is finite and comes out exact."""
     workload = _workload(16, dtype_case, E=1, N=128, K=128)
-    a, a_scale, b, b_scale, metadata = _with_counts(workload, [16])
+    a, a_scale, b, b_scale, metadata = with_counts(workload, [16])
     a = torch.zeros_like(a.float())
     a[..., 0] = 0.5
     a = a.to(torch.float8_e4m3fn)
@@ -269,7 +252,7 @@ def test_mxfp4_grouped_gemm_scales_whose_product_overflows(dtype_case: dict) -> 
         a_scale = torch.full_like(a_scale, 2.0**64)
         b_scale = torch.full_like(b_scale, 2.0**64)
     op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=16))
-    out = _run_into_guarded_out(op, workload, a, a_scale, b, b_scale, metadata)
+    out = run_into_guarded_out(op, workload, a, a_scale, b, b_scale, metadata)
     assert bool((out == 2.0**126).all())
 
 
@@ -285,17 +268,7 @@ def test_mxfp4_grouped_gemm_folded_and_split_tasks_on_one_cta() -> None:
     codes[3, 1000, 1] = codes[3, 1000, 0] - 7
     inputs = (a, a_scale, b, codes.view(torch.float8_e8m0fnu), metadata)
     op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=64))
-    _run_into_guarded_out(op, workload, *inputs)
-
-
-def _layout(packing: str, metadata_kind: str, alignment: int = 1) -> dict:
-    return {
-        "contiguous": {"packing": packing, "metadata_kind": metadata_kind, "alignment": alignment}
-    }
-
-
-# Partial last tiles, an empty expert, a one-row expert, and runs over several tiles.
-_SIZES = [5, 0, 77, 1, 300, 64, 129]
+    run_into_guarded_out(op, workload, *inputs)
 
 
 @pytest.mark.sm90
@@ -303,7 +276,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
     ("layout", "dtype_case", "n", "k"),
     [
         pytest.param(
-            _layout("tight", "physical_psum"),
+            contiguous_layout("tight", "physical_psum"),
             _E8M0,
             256,
             512,
@@ -311,10 +284,15 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             id="tight-psum",
         ),
         pytest.param(
-            _layout("tight", "per_row"), _E8M0, 256, 512, marks=pytest.mark.full, id="tight-per-row"
+            contiguous_layout("tight", "per_row"),
+            _E8M0,
+            256,
+            512,
+            marks=pytest.mark.full,
+            id="tight-per-row",
         ),
         pytest.param(
-            _layout("aligned", "per_row", 128),
+            contiguous_layout("aligned", "per_row", 128),
             _E8M0,
             256,
             512,
@@ -322,7 +300,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             id="aligned-per-row-128",
         ),
         pytest.param(
-            _layout("aligned", "physical_psum", 128),
+            contiguous_layout("aligned", "physical_psum", 128),
             _E8M0,
             256,
             512,
@@ -330,7 +308,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             id="aligned-psum-128",
         ),
         pytest.param(
-            _layout("aligned", "per_row", 32),
+            contiguous_layout("aligned", "per_row", 32),
             _F32,
             256,
             512,
@@ -339,7 +317,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
         ),
         # 128-row tiles, where each float32 sub-block takes the one accumulator in turn.
         pytest.param(
-            _layout("aligned", "per_row", 128),
+            contiguous_layout("aligned", "per_row", 128),
             _F32,
             256,
             512,
@@ -348,7 +326,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
         ),
         # K a multiple of 2048 (the e8m0 tables by TMA): token rows past m zero-filled.
         pytest.param(
-            _layout("tight", "per_row"),
+            contiguous_layout("tight", "per_row"),
             _E8M0,
             256,
             2048,
@@ -358,7 +336,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
         # K = 16384: the e8m0 code tables do not fit beside a ring of 128 x 128 tiles, so the
         # scales come a stage at a time and the check reads them from global memory.
         pytest.param(
-            _layout("aligned", "per_row", 128),
+            contiguous_layout("aligned", "per_row", 128),
             _E8M0,
             256,
             16384,
@@ -367,7 +345,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
         ),
         # Tight tails stored by rows, clipped at an N tail.
         pytest.param(
-            _layout("tight", "per_row"),
+            contiguous_layout("tight", "per_row"),
             _F32,
             136,
             512,
@@ -381,17 +359,13 @@ def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
 ) -> None:
     spec = layout["contiguous"]
     align = spec["alignment"]
-    rows = (
-        sum(_SIZES) if spec["packing"] == "tight" else sum(-(-n // align) * align for n in _SIZES)
-    )
+    rows = sum(SIZES) if spec["packing"] == "tight" else sum(-(-n // align) * align for n in SIZES)
     stated = {"P": rows} if spec["metadata_kind"] == "physical_psum" else {}
     workload = MoEGroupedGEMMMXFP4Workload(
-        manifest_call(
-            _OP, dtype_case, layout=layout, E=len(_SIZES), sizes=_SIZES, N=n, K=k, **stated
-        )
+        manifest_call(_OP, dtype_case, layout=layout, E=len(SIZES), sizes=SIZES, N=n, K=k, **stated)
     )
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
-    _run_into_guarded_out(op, workload, *workload.gen_inputs())
+    run_into_guarded_out(op, workload, *workload.gen_inputs())
 
 
 @pytest.mark.sm90
@@ -405,7 +379,7 @@ def test_mxfp4_grouped_gemm_skips_trailing_padding_tiles() -> None:
         manifest_call(
             _OP,
             _E8M0,
-            layout=_layout("aligned", "per_row", align),
+            layout=contiguous_layout("aligned", "per_row", align),
             E=len(sizes),
             sizes=sizes,
             N=8192,
@@ -417,7 +391,7 @@ def test_mxfp4_grouped_gemm_skips_trailing_padding_tiles() -> None:
     a_scale = torch.cat([a_scale, a_scale[:pad]])
     ids = torch.cat([ids, torch.full((pad,), len(sizes), dtype=ids.dtype, device=ids.device)])
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
-    _run_into_guarded_out(op, workload, a, a_scale, b, b_scale, ids)
+    run_into_guarded_out(op, workload, a, a_scale, b, b_scale, ids)
 
 
 @pytest.mark.sm90
@@ -425,7 +399,7 @@ def test_mxfp4_grouped_gemm_skips_trailing_padding_tiles() -> None:
 def test_mxfp4_grouped_gemm_tune_picks_a_correct_config() -> None:
     """The config a tuning picks computes the GEMM correctly."""
     workload = _workload(64, E=4, N=256, K=256)
-    inputs = _with_counts(workload, [64, 0, 33, 10])
+    inputs = with_counts(workload, [64, 0, 33, 10])
     op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=64))
     op.request_tune()
     out = op(*inputs)
@@ -485,7 +459,7 @@ def test_mxfp4_grouped_gemm_refuses_experts_whose_row_ends_overflow_shared_memor
         manifest_call(
             _OP,
             _E8M0,
-            layout=_layout("tight", "per_row"),
+            layout=contiguous_layout("tight", "per_row"),
             E=experts,
             sizes=[0] * (experts - 1) + [16],
             N=8,
@@ -506,10 +480,78 @@ def test_mxfp4_grouped_gemm_refuses_runs_aligned_off_the_row_tile() -> None:
     built."""
     workload = MoEGroupedGEMMMXFP4Workload(
         manifest_call(
-            _OP, _E8M0, layout=_layout("aligned", "per_row", 4), E=2, sizes=[5, 3], N=128, K=128
+            _OP,
+            _E8M0,
+            layout=contiguous_layout("aligned", "per_row", 4),
+            E=2,
+            sizes=[5, 3],
+            N=128,
+            K=128,
         )
     )
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
     with pytest.raises(ValueError, match="aligned runs"):
         op(*workload.gen_inputs())
     assert not list(op.iter_kernels())
+
+
+def _compiled_smem(program) -> int:
+    """The dynamic shared memory a built program launches with plus its static arrays."""
+    host = program.get_host_source()
+    # The launch's last integer argument is its dynamic shared memory.
+    dynamic = int(
+        re.findall(r"\(\(int64_t\)(\d+)\)", host[: host.rfind("_kernel_packed == NULL")])[-1]
+    )
+    element_bytes = {"uint64_t": 8, "float": 4, "uchar": 1}
+    arrays = re.findall(
+        r"__shared__ (?:__align__\(\d+\) )?(\w+) \w+\[(\d+)\]", program.get_kernel_source()
+    )
+    return dynamic + sum(element_bytes[dtype] * int(count) for dtype, count in arrays)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("k", "scale_dtype", "block_m", "block_n"),
+    [
+        pytest.param(2048, torch.float8_e8m0fnu, 64, 256, marks=pytest.mark.smoke, id="tma-tables"),
+        # Code-table rows of 176 bytes come by one bulk copy and take no token table.
+        pytest.param(1408, torch.float8_e8m0fnu, 64, 192, marks=pytest.mark.full, id="bulk-tables"),
+        pytest.param(512, torch.float32, 64, 192, marks=pytest.mark.full, id="scales-a-stage"),
+    ],
+)
+def test_mxfp4_grouped_gemm_smem_model_matches_the_build(
+    k: int, scale_dtype: torch.dtype, block_m: int, block_n: int
+) -> None:
+    """``_smem_bytes``, which the config refusal and the stage choice read, counts the shared
+    memory the built program takes, plus 1024 bytes of code-table alignment under the tables."""
+    call = MGroupedGEMMMXFP4Call(
+        device=torch.device(run_device()),
+        kind="masked",
+        max_m=64,
+        scale_dtype=scale_dtype,
+        num_groups=4,
+        m=256,
+        n=256,
+        k=k,
+    )
+    op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=64))
+    kernel = op.kernel_for("grouped_gemm_mxfp4", lambda: call)
+    config = {"block_m": block_m, "block_n": block_n, "num_stages": 4, "num_sms": 4}
+    scale_bytes, scale_k = kernel.scale_bytes, kernel.scale_k
+    tables = _uses_tables(block_m, block_n, 4, scale_bytes, scale_k, kernel.smem_limit)
+    assert tables == (scale_bytes == 1)
+    modelled = _smem_bytes(block_m, block_n, 4, scale_bytes, scale_k, tables)
+    assert modelled - _compiled_smem(kernel.kernel(**config)) == (1024 if tables else 0)
+
+
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_takes_bulk_tables_under_the_tma_bound() -> None:
+    """A code table whose rows no TMA box divides comes by one bulk copy without token code
+    tables; it is taken only where those token tables would fit beside it too. On a 128 x 128
+    tile and a 7-deep ring, K = 1792's tables fit by their own size but not with token tables,
+    so the scales come a stage at a time; a smaller tile takes them."""
+    smem_limit = 232448 - 2048
+    scale_k = 1792 // 128
+    assert _smem_bytes(128, 128, 7, 1, scale_k, True) <= smem_limit
+    assert not _uses_tables(128, 128, 7, 1, scale_k, smem_limit)
+    assert _uses_tables(64, 128, 4, 1, scale_k, smem_limit)

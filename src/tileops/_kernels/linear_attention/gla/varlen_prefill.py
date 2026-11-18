@@ -490,14 +490,14 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
     # Threads per block. The state walk and the causal product run two warps: their GEMMs
     # tile a 16-wide operand, which a wider block cannot partition into whole warps. The
     # gate accumulation and the output contractions run eight, which is what their
-    # full-width tiles fill. Re-fit by timing the manifest rows at 64, 128 and 256.
+    # full-width tiles fill.
     _state_threads = 64
     _wide_threads = 256
 
     # Chunks the state walk prefetches ahead. The walk is serial, so without them every
     # chunk's product waits on its own loads; the depth only pays once the loop body holds
-    # no branch, which is why the sequence's last chunk is taken outside it. Re-fit with the
-    # manifest rows over 2 to 6; more stages cost shared memory the state tile also needs.
+    # no branch, which is why the sequence's last chunk is taken outside it. More stages cost
+    # shared memory the state tile also needs.
     _state_stages = 4
 
     @classmethod
@@ -530,9 +530,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
         # then reads only its own key channels and its own slice of the float32 gate, and
         # nothing is read twice. The value axis is split once more, which halves the tile a
         # prefetch stage stages and so raises how many blocks stay resident at the walk's
-        # prefetch depth; splitting it further reads the keys and the gate again per slice
-        # and measures worse. Re-fit by timing the manifest rows over the pairs that keep
-        # both slices at or above the GEMM's minimum operand extent.
+        # prefetch depth; splitting it further reads the keys and the gate again per slice.
         return dim_k // GEMM_MIN_N, 2 if dim_v // 2 >= GEMM_MIN_N else 1
 
     @classmethod

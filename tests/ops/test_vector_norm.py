@@ -253,7 +253,7 @@ def test_inf_1d(n: int, dtype: torch.dtype) -> None:
     compare_outputs(y.view_as(ref), ref, vector_norm_verification(dtype))
 
 
-# NaN propagation regression tests (inf norm)
+# NaN propagation (inf norm)
 
 
 class VectorNormNaNFixture(FixtureBase):

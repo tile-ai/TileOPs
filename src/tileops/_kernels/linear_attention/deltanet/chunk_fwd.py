@@ -53,9 +53,6 @@ from tileops._kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
 __all__ = ["DeltaNetChunkFwdKernel"]
 
 
-# Split kernel: h_recurrence  (sequential over chunks, state update only)
-
-
 @target_cache(maxsize=32)
 def _h_recurrence_tl(
     batch: int,
@@ -112,13 +109,11 @@ def _h_recurrence_tl(
                 v_new_c = T.alloc_shared([block_C, BV], dtype)
 
                 ws_frag = T.alloc_fragment([block_C, BV], accum_dtype)
-                # Precise fp32 accumulator for running state (avoids
-                # compounding quantization error over many chunks).
+                # fp32 running state, so quantization error does not compound over chunks.
                 h_fp32 = T.alloc_fragment([dim_k, BV], accum_dtype)
 
                 v_offset = vid * BV
 
-                # Initialise h tile from S_0 and promote to fp32
                 T.copy(S_0[bid, hid, :, v_offset : v_offset + BV], h_c, disable_tma=True)
                 for i, j in T.Parallel(dim_k, BV):
                     h_fp32[i, j] = T.cast(h_c[i, j], accum_dtype)
@@ -134,7 +129,6 @@ def _h_recurrence_tl(
                         disable_tma=True,
                     )
 
-                    # Cast precise state to dtype for gemm input
                     T.copy(h_fp32, h_c)
 
                     # v_new_tile = u_tile - w @ h_tile (no exp scaling)
@@ -157,9 +151,6 @@ def _h_recurrence_tl(
         return h_recurrence_kernel
 
     return _func
-
-
-# Split kernel: state_walk  (sequential over chunks, one matmul a chunk)
 
 
 @target_cache(maxsize=32)
@@ -231,9 +222,6 @@ def _state_walk_tl(
         return state_walk_kernel
 
     return _func
-
-
-# Split kernel: output_o  (fully parallel over chunks)
 
 
 @target_cache(maxsize=32)
@@ -355,13 +343,7 @@ def _output_o_tl(
 
 
 class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
-    """DeltaNet chunked forward: the w/u preparation, a serial state walk, the output pass.
-
-    Where dim_k is below twice the chunk length and the walk's programs fit the device's
-    shared memory, the state pass is the walk h <- h + k^T u - (k^T w) h, one matmul a chunk,
-    over operands the preparation writes; otherwise it is the recurrence, and the preparation
-    does not write those operands.
-    """
+    """DeltaNet chunked forward: the w/u preparation, a state pass, the output pass."""
 
     @staticmethod
     def _may_walk(chunk_size: int, dim_k: int) -> bool:
@@ -534,7 +516,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         h_num_stages = 2 if cls._state_shared_bytes(c, k, width, elem, 2) <= budget else 1
         fused_configs, output_configs = chunk_gemm_configs(c, v, k, wgmma)
         return {
-            "fused_num_stages": 2,
             "fused_threads": max(config["threads"] for config in fused_configs),
             "h_num_stages": h_num_stages,
             "h_threads": default_h_threads(v, h_block_v, c, k, wgmma),
@@ -570,7 +551,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             chunk_size, dim_v, dim_k, wgmma, walk=True
         )
         return {
-            "fused_num_stages": 2,
             "fused_threads": max(config["threads"] for config in fused_configs),
             "h_num_stages": 2 if two else 1,
             "h_threads": walk_threads(block_v, dim_k, wgmma),
@@ -600,7 +580,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         )
         return [
             {
-                "fused_num_stages": fused["num_stages"],
                 "fused_threads": fused["threads"],
                 "h_num_stages": walk["num_stages"],
                 "h_threads": walk["threads"],
@@ -659,7 +638,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         fused = tune(
             fused_builder(*shape),
             [dict(c) for c in fused_configs],
-            {"num_stages": default["fused_num_stages"], "threads": default["fused_threads"]},
+            {"threads": default["fused_threads"]},
         )
         walk = tune(
             _state_walk_tl(*shape),
@@ -675,7 +654,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         )
         self._publish_tuned(
             {
-                "fused_num_stages": fused["num_stages"],
                 "fused_threads": fused["threads"],
                 "h_num_stages": walk["num_stages"],
                 "h_threads": walk["threads"],
@@ -698,9 +676,9 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         walk = self._walk
         fused_fn = fused_prepare_compute_w_u_tl(
             *args, late_v=self._fused_late_v, walk_operands=walk
-        )(cfg["fused_num_stages"], cfg["fused_threads"])
+        )(cfg["fused_threads"])
         o_fn = _output_o_tl(*args, late_loads=self._o_late_loads, from_walk=walk)(cfg["o_threads"])
-        h_block_v = cfg.get("h_block_v", 0)
+        h_block_v = cfg["h_block_v"]
         if walk:
             state_fn = _state_walk_tl(*args)(h_block_v, cfg["h_num_stages"], cfg["h_threads"])
         else:

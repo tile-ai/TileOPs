@@ -6,18 +6,9 @@ populating both:
   - tilelang kernel compilation cache  (compiled .so binaries)
   - tilelang autotuner result cache    (best config per kernel)
 
-On subsequent runs, both caches are hit and warmup completes quickly.
-The benchmark job then loads cached autotuner results directly instead
-of re-profiling all configurations (~2ms vs minutes per kernel).
-
-Profiling runs with real GPU measurements (not dummy values) so that
-the cached best-config choices are meaningful.  Parallel pytest-xdist
-workers introduce some measurement noise, but the relative config
-ranking is preserved well enough for cache seeding.
-
-Uses pytest-xdist to run benchmark test cases in parallel across multiple
-workers, while the autotuner's ThreadPoolExecutor parallelizes config
-compilation within each op.  Two levels of parallelism:
+The benchmark job then loads cached autotuner results instead of re-profiling
+every configuration. Profiling times on the GPU, so the cached choices are real
+ones. Two levels of parallelism:
 
   Level 1: pytest-xdist workers  (-n flag)  — across ops/benchmarks
   Level 2: ThreadPoolExecutor    (--max-workers) — across autotune configs

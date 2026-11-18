@@ -24,7 +24,7 @@ import torch
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
-from tileops._kernels.constants import VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
@@ -132,6 +132,16 @@ def _head_units(
     return width, rotating, (head_size - rotary_dim) // tail_vec
 
 
+@T.macro
+def _rotate_pair(lo, i, hi, j, c, s):
+    """Rotate the pair ``(lo[i], hi[j])`` by the angle of float32 cosine *c* and sine *s*, in
+    float32, each value rounding once to its buffer's dtype."""
+    x_lo = T.Cast("float32", lo[i])
+    x_hi = T.Cast("float32", hi[j])
+    lo[i] = T.Cast(lo.dtype, x_lo * c - x_hi * s)
+    hi[j] = T.Cast(hi.dtype, x_hi * c + x_lo * s)
+
+
 @target_cache(maxsize=32)
 def _rope_positions_kernel(
     query_heads: int,
@@ -218,20 +228,14 @@ def _rope_positions_kernel(
                         for j in T.unroll(width):
                             c = T.Cast("float32", cs[r * table_width + j])
                             s = T.Cast("float32", sn[r * table_width + j])
-                            x_low = T.Cast("float32", lo[r * run + j])
-                            x_high = T.Cast("float32", hi[r * width + j])
-                            lo[r * run + j] = T.Cast(dtype, x_low * c - x_high * s)
-                            hi[r * width + j] = T.Cast(dtype, x_high * c + x_low * s)
+                            _rotate_pair(lo, r * run + j, hi, r * width + j, c, s)
                         for j in T.vectorized(width):
                             y[token, low + half + j] = hi[r * width + j]
                     else:
                         for p in T.unroll(table_width):
                             c = T.Cast("float32", cs[r * table_width + p])
                             s = T.Cast("float32", sn[r * table_width + p])
-                            x_even = T.Cast("float32", lo[r * run + 2 * p])
-                            x_odd = T.Cast("float32", lo[r * run + 2 * p + 1])
-                            lo[r * run + 2 * p] = T.Cast(dtype, x_even * c - x_odd * s)
-                            lo[r * run + 2 * p + 1] = T.Cast(dtype, x_odd * c + x_even * s)
+                            _rotate_pair(lo, r * run + 2 * p, lo, r * run + 2 * p + 1, c, s)
                     if vector_pairs:
                         for j in T.vectorized(width):
                             y[token, low + j] = lo[r * run + j]
@@ -484,9 +488,8 @@ class _RoPEPositionsKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Measured, H200, 32 query and 8 key heads of 128: bfloat16 at 8192 tokens 40.96 us
-        # with four units a thread against 45.41 with one; float32 at 4096 tokens 39.49
-        # with one against 40.29 with four.
+        # Four units a thread keep more 16-bit loads in flight; a float32 unit already moves
+        # twice the bytes, and one a thread is faster.
         return {"threads": 128, "units": 1 if self.dtype == torch.float32 else 4}
 
     def forward(
@@ -502,8 +505,7 @@ class _RoPEPositionsKernel(Kernel):
             return torch.empty_like(query), None if key is None else torch.empty_like(key)
         # A call whose units fill at most half the device's resident threads is bound by the
         # latency of one unit, so each thread takes one; a larger one keeps several in
-        # flight a thread. H200, 32 query and 8 key bfloat16 heads of 128: 2.24 us against
-        # 2.90 at 64 tokens, 21.02 against 22.18 at 4096.
+        # flight a thread.
         rows = positions.view(-1)
         wide = 2 * rows.numel() * self._token_units <= self._resident_threads
         program = self.program(self._compile, wide)
@@ -736,12 +738,9 @@ def _rope_cos_sin_kernel(
                             for p in T.unroll(vec):
                                 a = 2 * k * vec + (2 * p if interleaved else p)
                                 e = a + (1 if interleaved else vec)
-                                x_a = T.Cast("float32", v[a])
-                                x_e = T.Cast("float32", v[e])
                                 c = T.Cast("float32", cs[p])
                                 sv = T.Cast("float32", sn[p])
-                                v[a] = T.Cast(dtype, x_a * c - x_e * sv)
-                                v[e] = T.Cast(dtype, x_e * c + x_a * sv)
+                                _rotate_pair(v, a, v, e, c, sv)
                             for j in T.vectorized(vec):
                                 y[y_at + (low + j) * pc] = v[2 * k * vec + j]
                             for j in T.vectorized(vec):
@@ -978,9 +977,8 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
         if unit_columns:
             lanes = VECTOR_ACCESS_BYTES // self.dtype.itemsize
             vec = math.gcd(lanes, self.rotary_half, self.head_dim, *x_strides[:3], *y_strides[:3])
-        # A call whose units, one head a thread, fill at most half the device's resident
-        # threads is bound by the latency of one unit, so each thread takes one head; a
-        # larger one keeps several heads' loads in flight a thread.
+        # One head a thread where the units fill at most half the resident threads, as in
+        # `_RoPEPositionsKernel.forward`.
         copied = 0 if self.inplace else self.head_dim - 2 * self.rotary_half
         head_units = self.rotary_half // vec + copied // vec
         tokens = x.shape[0] if packed else x.shape[0] * x.shape[1]
@@ -995,9 +993,8 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
             steps = (cu_seqlens.shape[0] - 2).bit_length()
             launches = [(x, y, seqlen_offsets, [x.shape[0], steps])]
         else:
-            # A dense launch runs one grid row a sequence, and CUDA's grid has at most 65535
-            # rows: more sequences launch in parts.
-            rows = 65535
+            # A dense launch runs one grid row a sequence; more sequences launch in parts.
+            rows = MAX_GRID_YZ_BLOCKS
             launches = [
                 (
                     x[b : b + rows],

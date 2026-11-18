@@ -42,12 +42,8 @@ __all__ = ["GDNDensePrefillFwdKernel"]
 
 
 class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
-    """SM90 equal-length BTHD inference prefill.
-
-    This is the inference owner of the retained partitioned prefill pipeline.
-    The Op layer admits only the currently supported region; the kernel keeps
-    the unified public call signature so no layout or ABI adapter is needed.
-    """
+    """SM90 BTHD inference prefill: the one-kernel prefill, or the block solve and the
+    partitioned walk."""
 
     supported_archs = [90]
 
@@ -240,18 +236,16 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     ) -> bool:
         """Whether splitting the sequences shortens the recurrence enough to repay its passes.
 
-        One CTA walks one (sequence, value head) and holds an SM for the walk, so an
-        unsplit call lasts about as long as its long walks: those over half the longest.
-        Splitting helps only by spreading the long walks over SMs they leave idle, and
-        it adds warmup and correction passes. When the long walks already hold more than
-        half the SMs, or more than a quarter over walks of at most 32 chunks, those passes
-        cost more than the spread saves and the sequences stay whole.
+        An unsplit call lasts about as long as its long walks, those over half the longest,
+        one CTA a (sequence, value head). Splitting spreads them over idle SMs but adds warmup
+        and correction passes, so the sequences stay whole when the long walks already hold
+        more than half the SMs, or more than a quarter over walks of at most 32 chunks.
         """
         chunks = [tilelang.cdiv(length, chunk_size) for length in sequence_lengths]
         longest = max(chunks)
         long_walks = num_heads * sum(1 for count in chunks if 2 * count > longest)
         # Walks this short gain too little from spreading to repay the passes at a quarter
-        # of the SMs busy; measured on H200 rows of 16 to 1024 chunks.
+        # of the SMs busy.
         short_walk_chunks = 32
         if 2 * long_walks > sm_count:
             return False
@@ -268,8 +262,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         The one-kernel prefill forms each chunk's inverse on the SM that walks the chunk, so
         it needs walks for most SMs. It serves the call when the walks of more than half the
         longest length hold more than half the SMs and the sequences stay whole, or when all
-        walks together hold more than three quarters of the SMs, where it also beats
-        splitting the long walks (measured on H200 rows of 64 to 128 walks).
+        walks together hold more than three quarters of the SMs.
         """
         if not sequence_lengths or any(length <= 0 for length in sequence_lengths):
             return False
@@ -317,14 +310,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     ) -> tuple[torch.Tensor, ...] | None:
         """Where the sequences split, or ``None`` when they are walked whole.
 
-        Partitioning splits a long sequence at a chunk boundary and replays each piece from
-        a corrected state, which asks for every length on the host. A packed call that
-        passes no host copy of the offsets keeps its sequences whole instead.
-
-        A sequence that is not a whole number of chunks still partitions: every split lands
-        on a chunk boundary by construction, so only a sequence's last partition is short,
-        and the warmup pass that floors a partition's chunk count is the one pass that
-        skips a last partition.
+        Splitting needs every length on the host, so a packed call without a host copy of the
+        offsets keeps its sequences whole. Splits land on chunk boundaries, so only a
+        sequence's last partition is short, and the warmup pass skips it.
         """
         width = self._width(num_tokens, num_heads, sequence_lengths)
         if width is None:
@@ -582,10 +570,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             pairs = (
                 len(lengths) * tilelang.cdiv(uniform, chunk_size) * value_heads if uniform else 0
             )
-            # The warp-group solve beats the one-warp solve on bfloat16 rows of one length,
-            # whose chunks it addresses by arithmetic; in float16 the one-warp solve is the
-            # faster (measured on H200), and a normalized key takes it for the norms the
-            # later passes read.
+            # The warp-group solve serves bfloat16 rows of one length, whose chunks it
+            # addresses by arithmetic; a normalized key takes the one-warp solve for the norms
+            # the later passes read.
             warp_group = (
                 pairs >= warp_group_pairs and not self.l2norm and self.dtype == torch.bfloat16
             )

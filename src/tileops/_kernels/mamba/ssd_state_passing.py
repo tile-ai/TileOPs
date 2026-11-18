@@ -79,10 +79,7 @@ def _ssd_state_passing_fwd_kernel(
             ) as (bd, bb, bh):
                 d0 = bd * block_d
 
-                # Precompute exp(dA) for a bounded group of chunks so
-                # the serial scan reads pre-computed scales from L1/shared
-                # instead of calling T.exp() once per CTA per serial step.
-                # T.sync_threads() ensures visibility before the scan begins.
+                # exp(dA) of a group of chunks, staged so the serial scan reads it from shared.
                 scale_shared = T.alloc_shared((scale_tile,), accum_dtype)
                 for c in T.Parallel(scale_tile):
                     scale_shared[c] = T.exp(dA_chunk_cumsum[bb, bh, c])
@@ -124,7 +121,6 @@ def _ssd_state_passing_fwd_kernel(
                         final_states[bb, bh, base + v] = s_run[v]
 
                 elif vectorize:
-                    # Vectorized path: 2 d-state elements per thread.
                     # threads = block_d // 2;
                     #   lo covers [d0 .. d0+threads-1]
                     #   hi covers [d0+threads .. d0+block_d-1]
@@ -147,11 +143,8 @@ def _ssd_state_passing_fwd_kernel(
                             s_lo[i] = T.float32(0.0)
                             s_hi[i] = T.float32(0.0)
 
-                    # Write out[bb, c, bh, di] = s_{c-1} at the TOP of each
-                    # iteration so the write is unconditional (no if c<C-1
-                    # branch).  The out-write and u-load are merged into one
-                    # T.Parallel so they can overlap in the instruction
-                    # pipeline (2 passes instead of 3 per serial step).
+                    # Each step writes out[bb, c, bh, di] = s_{c-1} first, so the write is
+                    # unconditional.
                     for tile in T.serial(T.ceildiv(C, scale_tile)):
                         if tile > 0:
                             T.sync_threads()
@@ -196,9 +189,7 @@ def _ssd_state_passing_fwd_kernel(
                             final_states[bb, bh, di_hi] = s_hi[i]
 
                 else:
-                    # Non-vectorized path: 1 d-state element per thread.
-                    # threads >= block_d; extra warps improve latency hiding
-                    # on small grids where warp count per CTA matters most.
+                    # One d-state element per thread; threads >= block_d.
                     s_frag = T.alloc_fragment((block_d,), accum_dtype)
                     u_frag = T.alloc_fragment((block_d,), accum_dtype)
 
@@ -211,11 +202,8 @@ def _ssd_state_passing_fwd_kernel(
                         else:
                             s_frag[i] = T.float32(0.0)
 
-                    # Write out[bb, c, bh, di] = s_{c-1} unconditionally at
-                    # the top of each iteration; removes the if c<C-1 branch
-                    # and the pre-loop initial-state write.  The out-write and
-                    # u-load are merged into one T.Parallel so they can overlap
-                    # in the instruction pipeline (2 passes instead of 3).
+                    # Each step writes out[bb, c, bh, di] = s_{c-1} first, so the write is
+                    # unconditional.
                     for tile in T.serial(T.ceildiv(C, scale_tile)):
                         if tile > 0:
                             T.sync_threads()
@@ -261,19 +249,12 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
 
     with s_{-1} = initial_states (or 0 if has_initial_states=False).
 
-    Inputs:  states, dA_chunk_cumsum, initial_states
-    Outputs: out  (batch, num_chunks, n_heads, d_state), float32
-                  out[:, c] = s_{c-1} (state before chunk c; out[:,0] = initial_states)
-             final_states  (batch, n_heads, d_state), float32
-
     Config keys
     -----------
     block_d : int
         Number of d-state elements per CTA tile.
     threads : int
-        Threads per CTA.  When ``vectorize=False``, set threads > block_d
-        (e.g. 128 or 256) to pad warp count for latency hiding.
-        When ``vectorize=True``, must equal ``block_d // 2``.
+        Threads per CTA; ``block_d // 2`` when ``vectorize=True``.
     vectorize : bool
         False (default) — one element per thread, threads free.
         True            — two elements per thread, threads = block_d // 2.
@@ -327,8 +308,6 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # Short scans over the flattened Mamba state have enough D-axis
-        # parallelism for vectorization; long scans benefit from extra warps.
         if self.d_state == 8192 and self.num_chunks <= 8:
             return {
                 "block_d": 256,
@@ -337,8 +316,6 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
                 "items": 0,
                 "prefetch": 1,
             }
-        # A wide state over chunks in groups of 8: each thread moves 4 contiguous elements as
-        # one vector and loads 8 chunks before scanning them, which overlaps a thread's loads.
         if self.d_state >= 4096 and self.d_state % 512 == 0 and self.num_chunks % 8 == 0:
             return {
                 "block_d": 512,
@@ -357,8 +334,6 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Non-vectorized: threads independent of block_d; extra warps improve
-        # latency hiding on small grids.
         non_vec = [
             {"block_d": 32, "threads": 128, "vectorize": False, "items": 0, "prefetch": 1},
             {"block_d": 32, "threads": 256, "vectorize": False, "items": 0, "prefetch": 1},
@@ -367,8 +342,7 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
             {"block_d": 128, "threads": 128, "vectorize": False, "items": 0, "prefetch": 1},
             {"block_d": 128, "threads": 256, "vectorize": False, "items": 0, "prefetch": 1},
         ]
-        # Vectorized: threads = block_d // 2; halves load count, best on large
-        # grids where bandwidth is the bottleneck.
+        # Vectorized: threads = block_d // 2.
         vec = [
             {"block_d": 64, "threads": 32, "vectorize": True, "items": 0, "prefetch": 1},
             {"block_d": 128, "threads": 64, "vectorize": True, "items": 0, "prefetch": 1},

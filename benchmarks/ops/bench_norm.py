@@ -188,12 +188,9 @@ def test_fused_add_rms_norm_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(RMSNormGatedFwdOp), ids=lambda case: case.id)
 def test_rms_norm_gated_bench(case) -> None:
-    """vLLM's ``RMSNormGated`` runs ``layernorm_guard.rmsnorm_fn``, which takes every call.
-    mamba_ssm's ``rmsnorm_fn``, the entry's ``ref_api``, has only a silu gate. fla's
-    ``rms_norm_gated`` and Hugging Face's ``Qwen3_5RMSNormGated`` take a gate after one norm
-    over the row; Hugging Face's has no bias and only a silu gate. The installed transformers
-    has no ``Qwen4ExpTextRMSNormGated`` or ``Glm5NextTextRMSNormGated``, so the sigmoid calls
-    have no Hugging Face implementation. A library drops out of a call it cannot express."""
+    """vLLM's ``layernorm_guard.rmsnorm_fn`` takes every call; mamba_ssm's ``rmsnorm_fn``
+    only a silu gate; fla's ``rms_norm_gated`` only a gate after one norm over the row; Hugging
+    Face's ``Qwen3_5RMSNormGated`` only a silu gate after one norm over the row, without bias."""
     p = case.arguments
     x, _, bias, z = case.inputs
     one_group = p["group_size"] in (None, x.shape[-1])

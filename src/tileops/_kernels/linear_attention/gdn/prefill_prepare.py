@@ -35,15 +35,11 @@ def prefill_chunk_local_cumsum_bthd_tl(
     Adjacent cumulative gates are subtracted before exponentiation; rounding them to
     the input dtype loses precision in those differences and the recurrent state.
 
-    A contiguous ``[batch, seq_len, head]`` gate is the same bytes as a packed
-    ``[1, batch * seq_len, head]`` one whose offsets step by ``seq_len``, so an equal-length
-    call is a packed call and runs this kernel too. The grid covers the most chunks the
-    offsets can describe and a block past the count they give retires at once, which is what
-    keeps the launch extent out of the offsets' values.
+    An equal-length call runs as a packed call whose offsets step by ``seq_len``. The grid
+    covers the most chunks the offsets can describe; a block past their count retires at once.
 
     With *gate_in_kernel*, ``g`` carries the raw gate and the log-space decay
-    ``-exp(A_log) * softplus(g + dt_bias)`` is formed here, inside the pass that already
-    reads every gate value and writes it back, so the transform moves no extra bytes.
+    ``-exp(A_log) * softplus(g + dt_bias)`` is formed here.
     """
     tiling = GroupTiling(num_sequences, chunk_size)
     num_chunks = tiling.tile_upper_bound(total_tokens)
@@ -929,16 +925,13 @@ def _build_correct_h0_kernel(
 
     @T.macro
     def kernel_body(
-        bb,
         bh,
         bv,
         seq_start_idx,
-        seq_end_idx,
         num_iters,
         ht_buffer,
         mt_buffer,
         fallback_mask,
-        seq_map_r2c,
         cp_h0,
         h_fragment,
     ):
@@ -1022,16 +1015,13 @@ def _build_correct_h0_kernel(
                     ]
 
             kernel_body(
-                bb,
                 bh,
                 bv,
                 seq_start_idx,
-                seq_end_idx,
                 num_iters,
                 ht_buffer,
                 mt_buffer,
                 fallback_mask,
-                seq_map_r2c,
                 cp_h0,
                 h_fragment,
             )
@@ -1095,16 +1085,13 @@ def _build_correct_h0_kernel(
                         cp_h0[seq_start_idx, bh, ik, bv * block_DV + iv] = 0.0
 
                 kernel_body(
-                    bb,
                     bh,
                     bv,
                     seq_start_idx,
-                    seq_end_idx,
                     num_iters,
                     ht_buffer,
                     mt_buffer,
                     fallback_mask,
-                    seq_map_r2c,
                     cp_h0,
                     h_fragment,
                 )

@@ -211,8 +211,8 @@ def _worker_count(
     m: int, n: int, k: int, sms: int, block_m: int, cluster: int, stream_k: int
 ) -> int:
     """Choose the resident worker count shared by the launch and workspace plan."""
-    # The balanced grid was measured faster only for 48- and 64-token tiles from K = 3072,
-    # and only while the idle SMs would leave at most 22 K groups each.
+    # The balanced grid pays only for 48- and 64-token tiles from K = 3072, and only while
+    # the idle SMs would leave at most 22 K groups each.
     if not (
         GEMMW4A8DecodeKernel.base_token_limit < m <= block_m
         and block_m in (48, 64)
@@ -241,7 +241,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
     slice_bytes = 2 * W4A8_LAYOUT.unit_bytes
     rows_per_slice = slice_bytes // LAYOUT.tma_row_bytes
     # Scale bytes are prefetched four K steps ahead into an eight-register ring per lane,
-    # measured deep enough to hide their load behind the decode.
+    # deep enough to hide their load behind the decode.
     depth = 4
     odd_k = kg % 2 == 1
     clamp = "true" if ragged else "false"
@@ -717,37 +717,23 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                             T.wait_wgmma(0)
                             if tx % WARP_LANES == 0:
                                 release_stage(empty, c_idx)
-                            # Stream-K, in a program with stream-K tiles: contributor 0 holds the
-                            # tile's first K steps, which end its range, so it tends to reach the
-                            # tile last. Finding every other partial stored, it adds them without
-                            # storing its own; otherwise it stores its own like the others, and the
-                            # contributor whose count completes the tile adds the rest and runs the
-                            # epilogue. No CTA waits. A program without stream-K tiles never enters
-                            # this branch and keeps the exchange in which every contributor stores
-                            # and the last to arrive finishes: ptxas removes it, but numbers the
-                            # producer loop's registers from the code it removes.
+                            # Stream-K: contributor 0 holds the tile's first K steps, which end
+                            # its range, so it tends to reach the tile last. Finding every other
+                            # partial stored, it adds them without storing its own; otherwise it
+                            # stores its own like the others, and the contributor whose count
+                            # completes the tile adds the rest and runs the epilogue. No CTA
+                            # waits.
                             do_epi = 1
-                            if seg[3] >= 0 and (seg[1] > 0 or seg[2] < kg):
+                            if sk_tiles > 0 and seg[3] >= 0 and (seg[1] > 0 or seg[2] < kg):
                                 t = seg[3]
                                 nc = contributor_counts[t]
                                 wsi = t * cluster + rank
                                 base = wsi * max_contributors * acc_regs * consumers
-                                if sk_tiles > 0:
-                                    do_epi = 0
-                                    if seg[4] == 0:
-                                        count_partials(True, flag_s, cnt, wsi, nc - 1, tx)
-                                        do_epi = flag_s[0]
-                                    if do_epi == 0:
-                                        T.call_extern(
-                                            "handle",
-                                            f"tileops::w4a8_store_partial<{active_regs}, {consumers}, false>",
-                                            acc.data,
-                                            ws.data,
-                                            base + seg[4] * acc_regs * consumers + lt * 4,
-                                        )
-                                        count_partials(False, flag_s, cnt, wsi, nc, tx)
-                                        do_epi = flag_s[0]
-                                else:
+                                do_epi = 0
+                                if seg[4] == 0:
+                                    count_partials(True, flag_s, cnt, wsi, nc - 1, tx)
+                                    do_epi = flag_s[0]
+                                if do_epi == 0:
                                     T.call_extern(
                                         "handle",
                                         f"tileops::w4a8_store_partial<{active_regs}, {consumers}>",
@@ -755,12 +741,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                         ws.data,
                                         base + seg[4] * acc_regs * consumers + lt * 4,
                                     )
-                                    T.sync_threads(barrier_id=5, arrive_count=consumers)
-                                    if tx == WARPGROUP_THREADS:
-                                        flag_s[0] = T.call_extern(
-                                            "int32", "tileops::w4a8_signal", cnt.data, wsi, nc
-                                        )
-                                    T.sync_threads(barrier_id=6, arrive_count=consumers)
+                                    count_partials(False, flag_s, cnt, wsi, nc, tx)
                                     do_epi = flag_s[0]
                                 # The contributor that completes the tile keeps its accumulator,
                                 # so FP32 addition order can vary between launches (see the op API).
@@ -905,8 +886,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
         )
         if m > 128 and -(-m // 192) == -(-m // 256):
             block_m = 192
-        # Thresholds below were measured on H200 over the manifest's W4A8 rows. Up to K = 3584
-        # (the TP8 down projections) a tile has few K steps, so an extra segment or a
+        # Up to K = 3584 a tile has few K steps, so an extra segment or a
         # stream-K split costs more than it saves; from K = 7168 it can pay.
         short_k, long_k = 3584, 7168
         base_workers = _worker_count(m, n, k, hardware_sms, block_m, 1, 2)
@@ -929,8 +909,8 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
         # 192- and 256-token tiles store their output in two 64-token buffers.
         epilogue_tokens = block_m if block_m <= 128 else 64
         epilogue_buffers = 2 if block_m in (192, 256) else 1
-        # A two-CTA cluster multicasts the activation; measured faster only on outputs at
-        # most 2304 wide.
+        # A two-CTA cluster multicasts the activation, which pays only on outputs at most
+        # 2304 wide.
         cluster = 2 if block_m == 256 and n % (2 * LAYOUT.block_n) == 0 and n <= 2304 else 1
         group_m = 16 if cluster == 2 else 8
         if short_dp:

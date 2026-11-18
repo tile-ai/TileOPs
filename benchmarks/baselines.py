@@ -184,7 +184,7 @@ def _claim_registry_before_flaggems() -> None:
     In the other order the process aborts: flag_gems claims schemas that vllm's
     ``_moe_C`` then re-defines, and the failed ``aoti_torch_library_def`` throws
     through a C++ static initializer, past any ``except``. Costs the vllm import
-    (5.9s, measured in the runner image) in every process that reaches flag_gems.
+    in every process that reaches flag_gems.
     """
     with contextlib.suppress(ImportError):
         importlib.import_module("vllm._custom_ops")

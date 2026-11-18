@@ -23,7 +23,7 @@ from tilelang import language as T
 
 from tileops._kernels.autotune import TUNING_FATAL, candidate_busy_ms
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
+from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, BLOCK_SHARED_BYTES_OPT_IN, LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     GLAChunkBwdInterface,
@@ -246,8 +246,8 @@ def _gla_bwd_chunk_kernel(
                 v_s = T.alloc_shared([chunk_size, dim_v], dtype)
                 do_s = T.alloc_shared([chunk_size, dim_v], dtype)
                 dh_s = T.alloc_shared([dim_k, dim_v], dtype)
-                # Inactive aliases rename the original buffers in TileLang and can change
-                # synchronization insertion. Keep their original bindings in the old schedule.
+                # The reload order's buffers exist only under compact: an unused buffer still
+                # renames the others in TileLang and can move the default order's barriers.
                 initial_dh_s = T.alloc_shared([dim_k, dim_v], dtype) if compact else None
                 da_hi_s = T.alloc_shared([chunk_size, chunk_size], factor_dtype)
                 da_lo_s = T.alloc_shared([chunk_size, chunk_size], factor_dtype)
@@ -495,10 +495,7 @@ def _gla_bwd_chunk_kernel(
 
 class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     """GLA backward kernel: a chunk-parallel state-gradient update, a walk of the state
-    gradient with no matmul on its chain, and a chunk-parallel pass for dq, dk, dv and dg.
-
-    h is read from forward's h_out (no recomputation needed).
-    """
+    gradient with no matmul on its chain, and a chunk-parallel pass for dq, dk, dv and dg."""
 
     supported_archs: list[int] = [80, 89, 90]
 
@@ -506,9 +503,9 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     def refusal(cls, call: GLAChunkCall) -> str | None:
         """Why no program serves this call, or ``None``.
 
-        Refuses a call whose chunk pass needs more shared memory than the device gives. The original
-        schedules use a lower bound; the compact schedule reserves placement space as
-        well, and is enabled only at its validated 99 KiB budget.
+        Refuses a call whose chunk pass needs more shared memory than the device gives. The
+        default and late orders are sized by a lower bound; the reload order also reserves
+        placement space, and serves only the SM89 budget its allowance is tuned for.
         """
         reason = head_count_refusal(call.heads) or cls.region_refusal(
             call.dim_k, call.dim_v, call.chunk_size, call.dtype, call.arch
@@ -645,9 +642,8 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
                     2 * cv + c * c * elem + kv + ck * elem if elem == 2 else 0,
                 )
             )
-            # The peak already includes the tail. Rounding to whole gate tiles and
-            # the extra 4*k together are the placement allowance calibrated on the
-            # fifteen layouts in the 99 KiB region, not a bound for other budgets.
+            # The peak includes the tail. Rounding to whole gate tiles plus 4*k is a placement
+            # allowance for SM89's 99 KiB budget, not a bound for other budgets.
             tile = 4 * ck
             return ((peak + tile - 1) // tile) * tile + 4 * k
         if not late_dv_state:
@@ -667,9 +663,12 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
 
     @classmethod
     def _compact(cls, c: int, k: int, v: int, elem: int, budget: int) -> bool:
-        """Reload operands only in the validated 99 KiB region when the old order fails."""
+        """Reload operands at SM89's 99 KiB budget, where the default order does not fit."""
         late = cls._late_dv_state(c, k, v, elem, budget)
-        return budget == 99 * 1024 and cls._shared_bytes(c, k, v, elem, late) > budget
+        return (
+            budget == BLOCK_SHARED_BYTES_OPT_IN[89]
+            and cls._shared_bytes(c, k, v, elem, late) > budget
+        )
 
     @property
     def default_config(self) -> dict:

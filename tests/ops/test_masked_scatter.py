@@ -1,7 +1,11 @@
+import math
+
 import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS
+from tileops._kernels.indexing import MaskedScatterCall, mask_runs
 from tileops.indexing import MaskedScatterFwdOp
 from workloads.device import run_device
 from workloads.indexing import MaskedScatterWorkload
@@ -41,11 +45,32 @@ _CASES = (
 )
 
 
+# The kernel config each path-named case relies on, so a retune fails the case instead of
+# moving it off its path: (cfg, runs, run_len, itemsize) -> on the path.
+_ON_PATH = {
+    "counted-elements": lambda cfg, runs, run_len, size: runs
+    > 4 * cfg["block_runs"] * run_len * size,
+    "col-tiles": lambda cfg, runs, run_len, size: cfg["block_runs"] == 1
+    and run_len % cfg["col_tile"] != 0,
+    "widest-run": lambda cfg, runs, run_len, size: -(-run_len // cfg["col_tile"])
+    > MAX_GRID_YZ_BLOCKS,
+}
+
+
 @pytest.mark.parametrize("A, M, R, dtype", _CASES)
-def test_masked_scatter(A, M, R, dtype) -> None:
+def test_masked_scatter(A, M, R, dtype, request) -> None:
     call = manifest_call("MaskedScatterFwdOp", {"T": dtype}, A=A, M=M, R=R)
+    op = MaskedScatterFwdOp(**call.arguments())
+    on_path = _ON_PATH.get(request.node.callspec.id)
+    if on_path is not None:
+        lead, run_len = mask_runs(tuple(A), tuple(M))
+        spec = MaskedScatterCall(
+            run_len=run_len, dtype=getattr(torch, dtype), device=torch.device(run_device())
+        )
+        cfg = op.kernel_for("masked_scatter", lambda: spec).config
+        assert on_path(cfg, math.prod(A[:lead]), run_len, spec.dtype.itemsize), cfg
     test = MaskedScatterTest(call)
-    test.check(MaskedScatterFwdOp(**call.arguments()), *test.gen_inputs())
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke

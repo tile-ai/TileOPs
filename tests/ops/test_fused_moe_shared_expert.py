@@ -1,14 +1,4 @@
-"""Tests for FusedMoESharedExpertFwdOp — FusedMoE with shared expert support.
-
-Verifies:
-  - FusedMoESharedExpertFwdOp returns (shared_output, routed_output) tuple
-  - shared_output matches SharedExpertMLPKernel reference
-  - routed_output matches FusedMoE output
-  - Without the shared weights, shared_output is None
-  - The gpt-oss swigluoai activation is refused
-  - TP sharding: partial outputs sum to float32 math reference
-  - DeepSeek-V3 grouped routing on the routed half, scaled once
-"""
+"""Tests for FusedMoESharedExpertFwdOp, FusedMoE with a shared expert."""
 
 import pytest
 import torch
@@ -44,24 +34,25 @@ def test_the_shared_expert_matches_its_reference(dtype):
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "tokens, hidden, ffn, dtype",
     [
         # Fused gate/up on 192-wide tiles; the down GEMM on 224-wide tiles staged in halves.
-        pytest.param(1024, 256, 512, "bfloat16", id="fused-gate-up"),
-        # Separate gate/up on 256-wide tiles.
-        pytest.param(4096, 256, 512, "bfloat16", id="separate"),
+        pytest.param(1024, 256, 512, "bfloat16", marks=pytest.mark.smoke, id="fused-gate-up"),
         # Fused gate/up on 192-wide tiles over three waves, the last row and column tiles
         # ragged.
-        pytest.param(600, 256, 7384, "float16", id="fused-waves-ragged"),
+        pytest.param(600, 256, 7384, "float16", marks=pytest.mark.smoke, id="fused-waves-ragged"),
+        # Separate gate/up on 256-wide tiles.
+        pytest.param(4096, 256, 512, "bfloat16", marks=pytest.mark.full, id="separate"),
         # Separate gate/up over more than one wave.
-        pytest.param(4096, 256, 2048, "bfloat16", id="separate-two-waves"),
+        pytest.param(4096, 256, 2048, "bfloat16", marks=pytest.mark.full, id="separate-two-waves"),
         # An expert narrower than the model: only the gate/up GEMM, fused on 224-wide tiles,
         # on the template.
-        pytest.param(512, 512, 256, "float16", id="narrow-expert"),
+        pytest.param(512, 512, 256, "float16", marks=pytest.mark.full, id="narrow-expert"),
         # An expert width the fused epilogue cannot store keeps the separate activation.
-        pytest.param(512, 1024, 1020, "bfloat16", id="narrow-expert-unfusable"),
+        pytest.param(
+            512, 1024, 1020, "bfloat16", marks=pytest.mark.full, id="narrow-expert-unfusable"
+        ),
     ],
 )
 def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, hidden, ffn, dtype):
@@ -136,12 +127,11 @@ def test_a_published_tile_runs_as_the_basic_gemm_it_states(tokens, hidden, ffn):
         assert {key: gemm.config[key] for key in tile} == tile
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "hidden, ffn",
     [
-        pytest.param(2048, 1408, id="fused-gate-up"),
-        pytest.param(1024, 6144, id="down"),
+        pytest.param(2048, 1408, marks=pytest.mark.smoke, id="fused-gate-up"),
+        pytest.param(1024, 6144, marks=pytest.mark.full, id="down"),
     ],
 )
 def test_the_shared_expert_splits_k_at_32_tokens(hidden, ffn):
@@ -154,8 +144,10 @@ def test_the_shared_expert_splits_k_at_32_tokens(hidden, ffn):
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-@pytest.mark.parametrize("num_tokens", [32, 512])
+@pytest.mark.parametrize(
+    "num_tokens",
+    [pytest.param(32, marks=pytest.mark.smoke), pytest.param(512, marks=pytest.mark.full)],
+)
 def test_fused_moe_shared_expert_basic(num_tokens):
     """FusedMoESharedExpertFwdOp with shared expert kernel."""
     torch.manual_seed(42)
@@ -236,11 +228,8 @@ def test_fused_moe_shared_expert_refuses_swigluoai():
 
 @pytest.mark.smoke
 def test_fused_moe_shared_expert_tp():
-    """TP sharding: sum of partial outputs matches float32 math reference.
-
-    Uses float32 dtype to eliminate bf16 rounding differences between
-    TP-sharded and single-GPU computation paths.
-    """
+    """TP sharding: the float32 sum of the ranks' partial outputs matches the per-shard
+    reference."""
     torch.manual_seed(42)
     T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
     tp_size = 2
@@ -254,8 +243,7 @@ def test_fused_moe_shared_expert_tp():
     shared_w_gate_up = torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02
     shared_w_down = torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02
 
-    # Float32 math reference: compute each TP shard's contribution manually
-    # This matches exactly what each rank's kernel computes (column-parallel on gate_up, row-parallel on down)
+    # Each rank's contribution: column-parallel on gate_up, row-parallel on down.
     shard_size = F_s // tp_size
     partial_sum_ref = torch.zeros(T, H, dtype=torch.float32, device=dev)
     for tp_rank in range(tp_size):

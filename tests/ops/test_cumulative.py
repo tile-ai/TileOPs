@@ -247,24 +247,43 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
     compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumprod").verification(x))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "M, N, dtype, offset",
     [
         # Widths the row scan stages exactly, at a chunk of whole vector accesses.
-        pytest.param(64, 16384, torch.float32, 0, id="row-scan-fp32"),
-        pytest.param(64, 32768, torch.bfloat16, 0, id="row-scan-bf16"),
-        # A width the alignment would pad, which the parallel scan takes.
-        pytest.param(64, 8200, torch.float32, 0, id="parallel-scan-padded-fp32"),
-        pytest.param(64, 8200, torch.bfloat16, 0, id="parallel-scan-padded-bf16"),
-        # 65 elements a thread is not a whole number of vector accesses.
-        pytest.param(64, 16640, torch.bfloat16, 0, id="parallel-scan-misaligned-chunk"),
-        # A contiguous input starting one element past a 16-byte boundary.
-        pytest.param(64, 16384, torch.bfloat16, 1, id="row-scan-off-a-vector-boundary"),
-        # Few rows of 64 KiB, which the segmented scan takes from the whole-row scan.
-        pytest.param(16, 32768, torch.bfloat16, 0, id="few-long-rows-segmented"),
+        pytest.param(64, 16384, torch.float32, 0, id="row-scan-fp32", marks=pytest.mark.smoke),
+        pytest.param(64, 32768, torch.bfloat16, 0, id="row-scan-bf16", marks=pytest.mark.smoke),
         # Few rows with a partial last segment.
-        pytest.param(3, 8193, torch.float16, 0, id="odd-rows-ragged"),
+        pytest.param(3, 8193, torch.float16, 0, id="odd-rows-ragged", marks=pytest.mark.smoke),
+        # A width the alignment would pad, which the parallel scan takes.
+        pytest.param(
+            64, 8200, torch.float32, 0, id="parallel-scan-padded-fp32", marks=pytest.mark.full
+        ),
+        pytest.param(
+            64, 8200, torch.bfloat16, 0, id="parallel-scan-padded-bf16", marks=pytest.mark.full
+        ),
+        # 65 elements a thread is not a whole number of vector accesses.
+        pytest.param(
+            64,
+            16640,
+            torch.bfloat16,
+            0,
+            id="parallel-scan-misaligned-chunk",
+            marks=pytest.mark.full,
+        ),
+        # A contiguous input starting one element past a 16-byte boundary.
+        pytest.param(
+            64,
+            16384,
+            torch.bfloat16,
+            1,
+            id="row-scan-off-a-vector-boundary",
+            marks=pytest.mark.full,
+        ),
+        # Few rows of 64 KiB, which the segmented scan takes from the whole-row scan.
+        pytest.param(
+            16, 32768, torch.bfloat16, 0, id="few-long-rows-segmented", marks=pytest.mark.full
+        ),
     ],
 )
 def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype, offset: int) -> None:
@@ -278,7 +297,6 @@ def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype, o
     compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "name, marks",
     [
@@ -290,9 +308,9 @@ def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype, o
 @pytest.mark.parametrize(
     "n",
     [
-        pytest.param(4096, id="whole-row"),
+        pytest.param(4096, id="whole-row", marks=pytest.mark.smoke),
         # The marks fall in different segments of a row with a partial last segment.
-        pytest.param(16385, id="segments"),
+        pytest.param(16385, id="segments", marks=pytest.mark.full),
     ],
 )
 def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list, n: int) -> None:
@@ -417,20 +435,39 @@ def test_cumsum_compile_fullgraph_warm_cache(
     compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("op_kind", ["cumsum", "cumprod"])
 @pytest.mark.parametrize(
     "shape, in_dtype, out_dtype",
     [
-        pytest.param((64, 1024), torch.bfloat16, torch.float32, id="row-scan"),
+        pytest.param(
+            (64, 1024), torch.bfloat16, torch.float32, id="row-scan", marks=pytest.mark.smoke
+        ),
+        pytest.param(
+            (64, 1024), torch.float16, torch.float32, id="row-scan-fp16", marks=pytest.mark.smoke
+        ),
         # A 4-byte output halves the whole-row chunk to 32 elements.
-        pytest.param((64, 4096), torch.bfloat16, torch.float32, id="row-scan-wide-output"),
-        pytest.param((64, 1024), torch.float16, torch.float32, id="row-scan-fp16"),
+        pytest.param(
+            (64, 4096),
+            torch.bfloat16,
+            torch.float32,
+            id="row-scan-wide-output",
+            marks=pytest.mark.full,
+        ),
         # Unaligned columns and a partial row block.
-        pytest.param((129, 300), torch.bfloat16, torch.float32, id="tiled-scan"),
-        pytest.param((64, 8200), torch.bfloat16, torch.float32, id="parallel-scan"),
+        pytest.param(
+            (129, 300), torch.bfloat16, torch.float32, id="tiled-scan", marks=pytest.mark.full
+        ),
+        pytest.param(
+            (64, 8200), torch.bfloat16, torch.float32, id="parallel-scan", marks=pytest.mark.full
+        ),
         # The float32 output makes these rows 64 KiB, which the segmented scan takes.
-        pytest.param((16, 16384), torch.bfloat16, torch.float32, id="few-long-rows-widening"),
+        pytest.param(
+            (16, 16384),
+            torch.bfloat16,
+            torch.float32,
+            id="few-long-rows-widening",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_dtype_casts_the_input_before_the_scan(

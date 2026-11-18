@@ -29,7 +29,8 @@ __all__ = [
     "tune_delta_rule_fwd",
 ]
 
-# ``num_stages`` / ``threads`` candidates for the two matmul-heavy sub-kernels.
+# ``num_stages`` / ``threads`` candidates for the recurrence; the preparation takes their
+# ``threads`` alone.
 PIPELINE_CONFIGS: tuple[dict[str, int], ...] = tuple(
     {"num_stages": num_stages, "threads": threads}
     for num_stages in (1, 2)
@@ -57,7 +58,7 @@ def chunk_gemm_configs(
     c, k, v = chunk_size, dim_k, dim_v
     fused = [(c, c), (c, k), (c, v)] + ([(k, k), (k, v)] if walk else [])
     return (
-        fit_launches(PIPELINE_CONFIGS, wgmma, *fused),
+        fit_launches([{"threads": c["threads"]} for c in PIPELINE_CONFIGS], wgmma, *fused),
         fit_launches(OUTPUT_CONFIGS, wgmma, (c, c), (c, v)),
     )
 
@@ -65,13 +66,8 @@ def chunk_gemm_configs(
 def h_block_v_candidates(dim_v: int) -> tuple[int, ...]:
     """Return the recurrence V-tile widths worth offering at this dimension.
 
-    Admissibility is ``resolve_block_v``'s question — gemm N extent and
-    divisibility — so ask it rather than restate it. It is not the whole of
-    buildability: whether a width compiles also depends on the thread count and
-    the layout the recurrence lands on, known only once it is built, which is
-    why the sweep drops a width that fails rather than trusting this. Widths
-    resolving to the same tile are one candidate: at ``dim_v == 32`` both 0 and
-    32 give a 32-column tile and the same kernel.
+    The widths ``resolve_block_v`` admits, one per resolved tile. Whether a width compiles is
+    known only once it is built, so the sweep drops a width that fails.
 
     Args:
         dim_v: Value dimension.
@@ -142,8 +138,7 @@ def delta_rule_fwd_autotune_configs(
     """Return every merged config the sweep can select at this value dimension.
 
     The three sub-kernels are tuned independently, so the reachable set is their
-    product. Declaring it is what makes ``request_tune()`` reach
-    ``autotune`` at all.
+    product; ``request_tune()`` reaches ``autotune`` only when it is declared.
 
     Args:
         dim_v: Value dimension.
@@ -152,13 +147,11 @@ def delta_rule_fwd_autotune_configs(
         wgmma: Whether the target lowers the gemms to WGMMA.
 
     Raises:
-        ValueError: if no V-tile width is admissible at *dim_v*. An empty set
-            would read as "tunable, with nothing to try".
+        ValueError: if no V-tile width is admissible at *dim_v*.
     """
     fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_v, dim_k, wgmma)
     return [
         {
-            "fused_num_stages": fused["num_stages"],
             "fused_threads": fused["threads"],
             "h_num_stages": recurrence["num_stages"],
             "h_threads": recurrence["threads"],
@@ -198,16 +191,10 @@ def tune_delta_rule_fwd(
 ) -> dict[str, int]:
     """Return the merged best config for a three-sub-kernel delta-rule forward.
 
-    The recurrence's V-tile width changes the generated kernel, so TileLang's
-    autotuner cannot sweep it as a config key: each width is built and tuned
-    separately, and the widths are then compared on the autotuner's own measured
-    latency. A launch parameter the autotuner cannot tune keeps its
-    ``default_config`` value. A width is kept only if its sweep returned, since
-    the autotuner raises when none of a width's candidates compile; when every
-    width failed, the failures are raised rather than answered. A failure that
-    is not the width's own — a device fault mid-sweep — is indistinguishable
-    from here and is attributed to that width, so it only surfaces if no width
-    survives.
+    The recurrence's V-tile width changes the generated kernel, so each width is tuned
+    separately and the widths are compared on the autotuner's latency. A launch parameter
+    the autotuner cannot tune keeps its ``default_config`` value. A width whose sweep raised
+    is dropped; any failure, a device fault included, is attributed to the width it hit.
 
     Args:
         kernel: The forward kernel being tuned. Supplies the shape, ``wgmma``, the
@@ -245,17 +232,12 @@ def tune_delta_rule_fwd(
         the sweep times among *configs*; ``None`` where the untuned kernel does not
         build this sub-kernel.
 
-        Either element is ``None`` when the seeded parameters read as already
-        tuned: the autotuner then skips the search and JIT-compiles the kernel
-        directly, so it is built but never timed. That is not how every candidate
-        failing to compile is reported — that raises — so a caller sweeping
-        variants must catch, not test.
+        Either element is ``None`` when the seeded parameters read as already tuned and
+        the autotuner compiles without timing. A sweep in which no candidate compiles raises.
         """
-        # supply_prog=None, not the kernel's: a whole-kernel supplier is written
-        # against the forward's inputs, which are not this sub-kernel's. The
-        # candidates are copied because the module-level tuples are shared by every
-        # sweep in the process, and an autotuner that annotates one in place would
-        # otherwise corrupt them for good.
+        # supply_prog=None: a whole-kernel supplier is written against the forward's inputs.
+        # The candidates are copied because the autotuner may annotate the shared
+        # module-level tuples in place.
         candidates = [dict(config) for config in configs]
         tuned = kernel.tune_jit_kernel(
             jit_kernel,
@@ -268,9 +250,7 @@ def tune_delta_rule_fwd(
         config = getattr(tuned, "config", None)
         latency = getattr(tuned, "latency", None)
         if config is not None and latency is None:
-            # A tuned config with no latency is not the skip path; it means the
-            # attribute this comparison rests on has gone, and every width would
-            # silently tie.
+            # Without a latency every width would silently tie.
             warnings.warn(
                 f"{label} tuned to {config} but reported no latency, "
                 "so this sweep's result cannot be compared against any other",
@@ -281,12 +261,8 @@ def tune_delta_rule_fwd(
     def _summarize(exc: Exception) -> str:
         """Return a bounded one-line form of *exc*.
 
-        Which width failed is carried by the label beside this, not by the text:
-        tilelang reports every failed sweep with the same sentence. The text is
-        kept for everything else raised here, bounded because it may be a whole
-        compiler log. Collapsed whole and bounded last: every attempt to bound it
-        earlier — to a line, to a prefix — cost the diagnostic on some input, and
-        the text is already in memory by the time this is called.
+        The label beside it names the width; the text is bounded because it may be a whole
+        compiler log.
         """
         return f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
 
@@ -318,14 +294,12 @@ def tune_delta_rule_fwd(
         fused_configs,
         warmup,
         rep,
-        {"num_stages": default["fused_num_stages"], "threads": default["fused_threads"]},
+        {"threads": default["fused_threads"]},
     )
 
     h_config: dict[str, int] | None = None
     h_block_v: int | None = None
-    # Widths whose sweep returned, having compiled: the autotuner raises when
-    # no candidate of a width compiles, and JIT-compiles directly when it skips
-    # the search. Only a measurement, not membership here, says one is fast.
+    # Widths whose sweep returned, having compiled.
     compiled: list[int] = []
     failures: list[tuple[str, Exception]] = []
     best_latency = float("inf")
@@ -367,10 +341,8 @@ def tune_delta_rule_fwd(
                 f"no recurrence V-tile width tuned for dim_v={kernel.dim_v}: "
                 + "; ".join(f"{label}: {_summarize(exc)}" for label, exc in failures)
             ) from failures[-1][1]
-        # Compiled but unmeasured: the untuned width answers if it is one. Its
-        # stage count comes from the default. Threads must be resolved for the
-        # chosen width, which can have fewer warp tiles than the untuned width.
-        # That combination remains unmeasured.
+        # No width has a latency: take the untuned width if it compiled, at the default stage
+        # count, with threads resolved for the chosen width.
         preferred = default_h_block_v(kernel.dim_v, kernel.chunk_size)
         h_block_v = preferred if preferred in compiled else compiled[0]
 
@@ -385,7 +357,6 @@ def tune_delta_rule_fwd(
     )
 
     config = {
-        "fused_num_stages": _tuned_value(fused_config, "num_stages", default["fused_num_stages"]),
         "fused_threads": _tuned_value(fused_config, "threads", default["fused_threads"]),
         "h_num_stages": _tuned_value(h_config, "num_stages", default["h_num_stages"]),
         "h_threads": _tuned_value(

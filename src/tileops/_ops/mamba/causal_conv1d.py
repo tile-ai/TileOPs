@@ -101,7 +101,8 @@ class CausalConv1dFwdOp(Op):
             has_initial_state: Optional bool ``(B,)``; absent, every sequence starts from
                 zeros.
             cache_indices: Optional int32 ``(B,)``, each sequence's distinct row of
-                ``conv_state``.
+                ``conv_state``, or -1 for a padded sequence, whose state is never written
+                and whose outputs are unspecified.
 
         Returns:
             A new ``(Tt, D)`` tensor in ``x``'s dtype.
@@ -215,7 +216,8 @@ class CausalConv1dUpdateFwdOp(Op):
                 contiguous, advanced in place.
             bias: Optional ``(D,)`` bias, in ``weight``'s dtype.
             conv_state_indices: Optional int32 ``(B,)``, each sequence's distinct row of
-                ``conv_state``.
+                ``conv_state``, or -1 for a padded sequence, whose state is never written
+                and whose outputs are unspecified.
             num_accepted_tokens: Optional int32 ``(B,)``, the drafts of the previous call
                 each sequence accepted, at least one.
             query_start_loc: Optional int32 ``(B + 1,)`` packed offsets, from 0 to ``Tt``.

@@ -191,10 +191,8 @@ class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
     def default_config(self) -> dict:
         """The lanes that split the key dimension for one state column.
 
-        The state slice is a dependent global read, and a second lane group is what
-        overlaps it; a build that reads no state has nothing to overlap and pays for the
-        extra warp. Re-fit by sweeping ``lane_group`` against the decode workload rows of
-        `benchmarks/ops/bench_gla.py`.
+        The state slice is a dependent global read, and a second lane group overlaps it; a
+        build that reads no state has nothing to overlap and pays for the extra warp.
         """
         return {"lane_group": 2 if self.has_initial_state else 1}
 

@@ -114,12 +114,14 @@ def test_rope_matches_the_reference_at_positions_past_0(name, dtype) -> None:
     compare_outputs(got_k, ref_k, rope_verification())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
 @pytest.mark.parametrize(
     ("head_size", "rotary_dim"),
-    [(64, 64), (64, 32), (65, 32)],
-    ids=["full", "partial", "odd-head"],
+    [
+        pytest.param(64, 64, marks=pytest.mark.smoke, id="full"),
+        pytest.param(64, 32, marks=pytest.mark.full, id="partial"),
+        pytest.param(65, 32, marks=pytest.mark.full, id="odd-head"),
+    ],
 )
 def test_rope_rotates_the_leading_columns_in_either_convention(neox, head_size, rotary_dim) -> None:
     """An odd head size leaves no column offset on a vector boundary: scalar accesses."""
@@ -559,10 +561,18 @@ def test_rope_cos_sin_rotates_a_strided_view_in_place(interleaved, columns) -> N
     assert torch.equal(wide[kept], before[kept])
 
 
-@_VIEWS
-def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(interleaved, columns) -> None:
+# NeoX only: the pairing on strided views is the in-place test's, and interleaved out of
+# place is the interleaved-partial-offset case.
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pytest.param(slice(64, 136), marks=_SMOKE, id="neox-tail"),
+        pytest.param(slice(8, 136, 2), marks=_FULL, id="neox-every-2nd"),
+    ],
+)
+def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(columns) -> None:
     """A column view of wider heads read out of place: the wider heads are left as they were."""
-    test, op, inputs = _strided_view_call(interleaved, False, columns, 136)
+    test, op, inputs = _strided_view_call(False, False, columns, 136)
     test.check(op, *inputs)
     wide = inputs[0]._base
     before = wide.clone()

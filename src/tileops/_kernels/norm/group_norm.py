@@ -131,9 +131,7 @@ class _RowNormKernel(Kernel):
     @property
     def default_config(self) -> dict:
         if self._warp_row_vector() is not None:
-            # Eight rows a block, one a warp. On H200 at (1024, 784) it took 3.136 us in
-            # float32 against 3.167 at four rows and 3.200 at one; in float16 four and eight
-            # tied at 2.464 against 2.496 at one. `_warp_rows` takes fewer for fewer rows.
+            # Eight rows a block, one a warp. `_warp_rows` takes fewer for fewer rows.
             warp_row_threads = 256
             return {"block_m": 1, "threads": warp_row_threads}
         return select_row_config_by_width(self.D_padded, self._row_widths)
@@ -141,8 +139,7 @@ class _RowNormKernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         if self._warp_row_vector() is not None:
-            # Pinned: these rows run in 2.5 to 3.1 us, where the configs differ by about
-            # one 32 ns timer tick, which the autotuner cannot rank.
+            # Pinned: the configs differ by less than the autotuner's timer resolution.
             return [self.default_config]
         if self._held_row_vector() is not None:
             return select_row_configs(
@@ -448,9 +445,7 @@ def _warp_rows(M, D, eps, dtype, vec, threads, num_groups, affine):
     Args:
         affine: Whether row ``m`` is scaled and shifted by channel ``m % num_groups``.
     """
-    # Fewer rows a block until the grid holds 128 blocks: on H200 at 1024 columns, 256
-    # rows took 2.240 us in float32 at eight rows a block against 2.016 at two, while
-    # 1024 rows led at eight.
+    # Fewer rows a block until the grid holds 128 blocks.
     min_blocks = 128
     warps = threads // WARP_LANES
     while warps > 1 and -(-M // warps) < min_blocks:

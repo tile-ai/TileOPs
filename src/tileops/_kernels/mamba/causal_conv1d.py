@@ -330,34 +330,27 @@ def _causal_conv1d_kernel(
                                         ]
                             seq = seq + 1
 
-        if pooled:
-
-            @T.prim_func
-            def main(
-                x: T.Tensor((total, dim), dtype),
-                weight: T.Tensor((dim * width,), dtype),
-                bias: T.Tensor((dim,), dtype),
-                conv_state: T.Tensor((pool, dim, hist), dtype),
-                cu_seqlens: T.Tensor((batch + 1,), "int32"),
-                has_initial_state: T.Tensor((batch,), "uint8"),
-                slots: T.Tensor((batch,), "int32"),
-                y: T.Tensor((total, dim), dtype),
-            ):
-                walk(x, weight, bias, conv_state, cu_seqlens, has_initial_state, slots, y)
-
-        else:
-
-            @T.prim_func
-            def main(
-                x: T.Tensor((total, dim), dtype),
-                weight: T.Tensor((dim * width,), dtype),
-                bias: T.Tensor((dim,), dtype),
-                conv_state: T.Tensor((batch, dim, hist), dtype),
-                cu_seqlens: T.Tensor((batch + 1,), "int32"),
-                has_initial_state: T.Tensor((batch,), "uint8"),
-                y: T.Tensor((total, dim), dtype),
-            ):
-                walk(x, weight, bias, conv_state, cu_seqlens, has_initial_state, None, y)
+        @T.prim_func
+        def main(
+            x: T.Tensor((total, dim), dtype),
+            weight: T.Tensor((dim * width,), dtype),
+            bias: T.Tensor((dim,), dtype),
+            conv_state: T.Tensor((pool if pooled else batch, dim, hist), dtype),
+            cu_seqlens: T.Tensor((batch + 1,), "int32"),
+            has_initial_state: T.Tensor((batch,), "uint8"),
+            slots: T.Tensor((batch,) if pooled else (1,), "int32"),
+            y: T.Tensor((total, dim), dtype),
+        ):
+            walk(
+                x,
+                weight,
+                bias,
+                conv_state,
+                cu_seqlens,
+                has_initial_state,
+                slots if pooled else None,
+                y,
+            )
 
         return main
 
@@ -421,7 +414,6 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # The fastest measured over the manifest rows on H200.
         return {
             "vec": _vector(self.dim, self.dtype),
             "warps": 4,
@@ -446,12 +438,12 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     ) -> torch.Tensor:
         y = torch.empty_like(x)
         batch = cu_seqlens.shape[0] - 1
-        # An absent bias or has_initial_state is never read; a view of its shape fills the slot.
+        # An absent bias, has_initial_state or cache_indices is never read; a view of its
+        # shape fills the slot.
         if has_initial_state is None:
             flags = cu_seqlens.view(torch.uint8)[:batch]
         else:
             flags = has_initial_state.view(torch.uint8)
-        slots = (cache_indices,) if self.pooled else ()
         self.program(self._compile)(
             x,
             weight.view(-1),
@@ -459,7 +451,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
             conv_state,
             cu_seqlens,
             flags,
-            *slots,
+            cache_indices if self.pooled else cu_seqlens[:1],
             y,
         )
         return y
@@ -483,9 +475,8 @@ def _causal_conv1d_update_kernel(
             # vec x W weights and vec x (W-1) state elements are each contiguous.
             with T.Kernel(T.ceildiv(dim, block_d), batch, threads=threads) as (bd, b):
                 c0 = bd * block_d + T.get_thread_binding() * vec
-                # A pool is indexed by its rows, so a state's slot stays out of the flat offset
-                # and the accesses stay 16-byte vectors.
-                base = (b * dim + c0) * hist
+                # A state is indexed by its row, so a pool slot stays out of the flat offset and
+                # the accesses stay 16-byte vectors.
                 row = c0 * hist
                 st = T.alloc_local((vec * hist,), dtype)
                 wraw = T.alloc_local((vec * width,), dtype)
@@ -496,10 +487,7 @@ def _causal_conv1d_update_kernel(
                 if c0 < dim:
                     for q in T.unroll(hist):
                         for v in T.vectorized(vec):
-                            if slots is None:
-                                st[q * vec + v] = conv_state[base + q * vec + v]
-                            else:
-                                st[q * vec + v] = conv_state[state_row(slots, b), row + q * vec + v]
+                            st[q * vec + v] = conv_state[state_row(slots, b), row + q * vec + v]
                     for q in T.unroll(width):
                         for v in T.vectorized(vec):
                             wraw[q * vec + v] = weight[c0 * width + q * vec + v]
@@ -527,35 +515,18 @@ def _causal_conv1d_update_kernel(
                         st[v * hist + hist - 1] = xv[v]
                     for q in T.unroll(hist):
                         for v in T.vectorized(vec):
-                            if slots is None:
-                                conv_state[base + q * vec + v] = st[q * vec + v]
-                            else:
-                                conv_state[state_row(slots, b), row + q * vec + v] = st[q * vec + v]
+                            conv_state[state_row(slots, b), row + q * vec + v] = st[q * vec + v]
 
-        if pooled:
-
-            @T.prim_func
-            def main(
-                x: T.Tensor((batch, dim), dtype),
-                weight: T.Tensor((dim * width,), dtype),
-                bias: T.Tensor((dim,), dtype),
-                conv_state: T.Tensor((pool, dim * hist), dtype),
-                slots: T.Tensor((batch,), "int32"),
-                y: T.Tensor((batch, dim), dtype),
-            ):
-                step(x, weight, bias, conv_state, slots, y)
-
-        else:
-
-            @T.prim_func
-            def main(
-                x: T.Tensor((batch, dim), dtype),
-                weight: T.Tensor((dim * width,), dtype),
-                bias: T.Tensor((dim,), dtype),
-                conv_state: T.Tensor((batch * dim * hist,), dtype),
-                y: T.Tensor((batch, dim), dtype),
-            ):
-                step(x, weight, bias, conv_state, None, y)
+        @T.prim_func
+        def main(
+            x: T.Tensor((batch, dim), dtype),
+            weight: T.Tensor((dim * width,), dtype),
+            bias: T.Tensor((dim,), dtype),
+            conv_state: T.Tensor((pool if pooled else batch, dim * hist), dtype),
+            slots: T.Tensor((batch,) if pooled else (1,), "int32"),
+            y: T.Tensor((batch, dim), dtype),
+        ):
+            step(x, weight, bias, conv_state, slots if pooled else None, y)
 
         return main
 
@@ -614,6 +585,11 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
             dim, width, self.dtype_str, has_bias, silu, self.vec, pooled
         )
         self.init_config(config)
+        device = (
+            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
+        )
+        # The slots an unpooled build leaves unread are declared one element wide.
+        self._unread = torch.zeros(1, dtype=torch.int32, device=device)
 
     @property
     def default_config(self) -> dict:
@@ -635,15 +611,13 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
     ) -> torch.Tensor:
         del num_accepted_tokens, query_start_loc
         y = torch.empty_like(x)
-        if self.pooled:
-            states = (conv_state.view(conv_state.shape[0], -1), conv_state_indices)
-        else:
-            states = (conv_state.view(-1),)
+        # An absent bias is never read; a view of its shape fills the slot.
         self.program(self._compile)(
             x,
             weight.view(-1),
             bias if bias is not None else x[0],
-            *states,
+            conv_state.view(conv_state.shape[0], -1),
+            conv_state_indices if self.pooled else self._unread,
             y,
         )
         return y

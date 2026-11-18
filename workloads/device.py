@@ -1,6 +1,6 @@
 """The device a test or benchmark run places its tensors on.
 
-The run names it (``--tileops-device`` in ``tests/conftest.py``); every workload and every test
+The run names it (``--tileops-device`` in the root ``conftest.py``); every workload and every test
 that is not ``cuda_only`` reads it here. Read it when a tensor is built: a module constant or a
 default argument would keep the value from before the run set it.
 """

@@ -9,7 +9,7 @@ from tilelang.layout import make_swizzled_layout
 from tileops._kernels.attention.call_spec import NSACall, NSAFwdInterface
 from tileops._kernels.attention.online_softmax import make_online_softmax, make_rescale
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import LOG2E
+from tileops._kernels.constants import LOG2E, MAX_GRID_YZ_BLOCKS
 from tileops._kernels.kernel_base import Entry, Kernel
 
 
@@ -615,7 +615,7 @@ def _nsa_fwd_varlen_gather_kernel(
                 scale_root: T.float32,
                 o: T.Tensor([c_seq_len, heads, dim], dtype),
             ):
-                # Tokens on grid x: y and z hold at most 65535 blocks.
+                # Tokens on grid x: y and z hold at most MAX_GRID_YZ_BLOCKS blocks.
                 with T.Kernel(c_seq_len, heads_kv, threads=threads) as (i_c, i_h):
                     acc_o = T.alloc_fragment([rows, dim], accum_dtype)
                     logsum = T.alloc_fragment([rows], accum_dtype)
@@ -894,8 +894,10 @@ class NSAFwdVarlenGatherKernel(Kernel, NSAFwdInterface):
         """Head dims the MMA K step tiles, and tiles that fit the device's shared memory."""
         if call.dim % 16 != 0:
             return f"head dim {call.dim} is not a multiple of the MMA K step 16"
-        if call.heads > 65535:
-            return f"{call.heads} query heads pass the 65535 blocks of a grid's y axis"
+        if call.heads > MAX_GRID_YZ_BLOCKS:
+            return (
+                f"{call.heads} query heads pass the {MAX_GRID_YZ_BLOCKS} blocks of a grid's y axis"
+            )
         # The scale reaches the program as a float32 root of 2 * scale * log2(e), which
         # must be a normal float32: fast math flushes subnormals.
         root = math.sqrt(2 * call.scale * LOG2E)
@@ -1016,27 +1018,7 @@ class NSAFwdVarlenGatherKernel(Kernel, NSAFwdInterface):
     ) -> torch.Tensor:
         offsets_k = offsets if offsets_k is None else offsets_k
         program = self.program(self._compile)
-        if self.splits == 1:
-            return program(
-                q,
-                k,
-                v,
-                block_indices,
-                block_counts,
-                offsets,
-                token_indices,
-                offsets_k,
-                self._scale_root,
-            )
-        c_seq_len = q.shape[0]
-        max_part = torch.empty(
-            (self.splits, c_seq_len, self.heads), dtype=torch.float32, device=q.device
-        )
-        sum_part = torch.empty_like(max_part)
-        o_part = torch.empty(
-            (self.splits, c_seq_len, self.heads, self.dim), dtype=torch.float32, device=q.device
-        )
-        return program(
+        args = (
             q,
             k,
             v,
@@ -1046,10 +1028,18 @@ class NSAFwdVarlenGatherKernel(Kernel, NSAFwdInterface):
             token_indices,
             offsets_k,
             self._scale_root,
-            max_part,
-            sum_part,
-            o_part,
         )
+        if self.splits == 1:
+            return program(*args)
+        c_seq_len = q.shape[0]
+        max_part = torch.empty(
+            (self.splits, c_seq_len, self.heads), dtype=torch.float32, device=q.device
+        )
+        sum_part = torch.empty_like(max_part)
+        o_part = torch.empty(
+            (self.splits, c_seq_len, self.heads, self.dim), dtype=torch.float32, device=q.device
+        )
+        return program(*args, max_part, sum_part, o_part)
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""

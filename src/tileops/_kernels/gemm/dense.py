@@ -3533,16 +3533,8 @@ def _splitk_pair(
     """Resolve the (mainloop, reduce) compiled pair for a split-K config; *has_bias*
     builds the reduction that adds ``bias[n]``, and the reduction writes *out_dtype*.
 
-    Both split-K paths run two kernels back to back, so every microsecond the
-    host spends between the two launches is GPU idle that the span metric
-    counts: on short-mainloop shapes the mainloop drains before the reduce is
-    enqueued. Folding the builder lookup and the ``@tilelang.jit``
-    factory call of *both* kernels into one cached resolution keeps that
-    window to the two launches themselves.
-
-    Allocating ``C`` would also fall in that window, so
-    ``splitk_reduce_kernel`` takes it as an explicit parameter and both
-    callers allocate it *before* launching the mainloop.
+    Host time between the two launches is GPU idle, so both kernels resolve in one cached
+    lookup, and callers allocate ``C`` before launching the mainloop.
     """
     if coop2:
         mainloop = _gemm_coop2_splitk_kernel(m, n, k, trans_a, trans_b, dtype)(
@@ -4789,12 +4781,8 @@ def _gemm_basic_kernel(
                             b_smem,
                         )
                     else:
-                        # NN with an N tail: the b tile's innermost (N) dim can
-                        # be narrower than one vectorised cp_async transfer
-                        # (cp_async only accepts 4/8/16-byte accesses — e.g.
-                        # an n=1 fp16 GEMV-replacement shape has 2-byte rows),
-                        # so mask the copy instead
-                        # (cf. _bmm_fp8_kernel's tail path).
+                        # NN with an N tail: the b tile's N rows can be narrower than
+                        # the 4/8/16-byte cp_async accesses, so mask the copy instead.
                         for i, j in T.Parallel(block_k, block_n):
                             b_smem[i, j] = T.if_then_else(
                                 n_start + j < n,
@@ -4927,11 +4915,8 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # Modal winner shape of the pipelined BMM kernel across the manifest
-        # workloads, fitted on the calibration device.
-        # Prefer block_k dividing k; k with no 32/64 factor (or not
-        # 16-aligned at all) falls back to 16 — the mma.sync floor — and
-        # the backend zero-pads the K tail.
+        # Prefer block_k dividing k; otherwise 16, the mma.sync floor, and the backend
+        # zero-pads the K tail.
         block_k = 64 if self.k % 64 == 0 else (32 if self.k % 32 == 0 else 16)
         return {
             "block_m": 64,

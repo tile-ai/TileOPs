@@ -42,11 +42,11 @@ def _workload(
         pytest.param(64, 1, [700, 65], 64, BF16, FP8, None, marks=pytest.mark.smoke, id="fp8-bf16"),
         # FP8 tiles gathered across 16-row pages; 48 query rows fill part of a block.
         pytest.param(
-            16, 3, [130, 3], 16, FP16, FP8, None, marks=pytest.mark.smoke, id="fp8-fp16-small-pages"
+            16, 3, [130, 3], 16, FP16, FP8, None, marks=pytest.mark.full, id="fp8-fp16-small-pages"
         ),
         # Pages of 7 rows take the gathering schedule.
         pytest.param(
-            64, 1, [50, 13], 7, BF16, BF16, None, marks=pytest.mark.smoke, id="bf16-page-7"
+            64, 1, [50, 13], 7, BF16, BF16, None, marks=pytest.mark.full, id="bf16-page-7"
         ),
         # Few blocks: the tiles are cut into runs. With a wide table one run of the short
         # request is empty, and one holds only the last key, which its first query
@@ -59,7 +59,7 @@ def _workload(
             BF16,
             BF16,
             16,
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="bf16-split-runs",
         ),
         pytest.param(

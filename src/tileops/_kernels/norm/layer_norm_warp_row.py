@@ -168,7 +168,7 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
         if call.n % vec:
             return f"reads the row in 16-byte vectors of {vec} elements"
         # Vectors one lane holds at most: past twelve fp32 or fifteen 16-bit vectors the
-        # padded block is faster at 1024 and 4096 rows.
+        # padded block is faster.
         widest = WARP_LANES * (12 if call.dtype.itemsize == 4 else 15) * vec
         if call.n > widest:
             return f"holds a row of at most {widest} elements in one warp's registers"

@@ -9,7 +9,7 @@ import torch
 
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.tiling import ALIGNMENT
-from tileops._utils import WARP_SHUFFLE_STAGES
+from tileops._utils import WARP_LANES
 
 __all__ = [
     "FP32_RANGE_BOUND",
@@ -182,9 +182,10 @@ def fold_chains(partial, first: int = 0, chains: int = 4):
 
 
 @T.macro
-def warp_sum(acc, count: int, first: int = 0):
-    """Add each of ``acc[first:first + count]`` across the warp's lanes, by XOR shuffles."""
-    for st in T.unroll(WARP_SHUFFLE_STAGES):
+def warp_sum(acc, count: int, first: int = 0, lanes: int = WARP_LANES):
+    """Add each of ``acc[first:first + count]`` across each aligned group of *lanes* lanes, a
+    power of two, by XOR shuffles."""
+    for st in T.unroll(lanes.bit_length() - 1):
         for j in T.unroll(first, first + count):
             acc[j] += T.shfl_xor(acc[j], T.shift_left(1, st))
 
@@ -282,8 +283,7 @@ def make_corrected_row_reduce(block_m, n, n_padded, eps):
 def warp_row_vector(n: int, elem_bytes: int) -> int | None:
     """Return a 16-byte vector width for aligned rows of at most 1024 elements."""
     vec = VECTOR_ACCESS_BYTES // elem_bytes
-    # At 2048 16-bit columns the fragment body led it on H200: by 3% at 128 rows with one
-    # row a block, and at parity at 512 rows.
+    # Wider rows go to the fragment body.
     widest = 1024
     if n % vec or n > widest:
         return None

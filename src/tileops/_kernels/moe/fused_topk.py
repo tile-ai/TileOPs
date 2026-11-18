@@ -71,10 +71,10 @@ def _fused_topk_kernel(
                 f"TOKENS_PER_BLOCK ({TOKENS_PER_BLOCK}) must lie in "
                 f"[1, {max_block_threads // WARP_SIZE}]: a block holds one warp per token"
             )
-        ELEMS_PER_THREAD = -(-num_experts // WARP_SIZE)  # ceildiv(E, 32)
-        LOG_WARP = int(math.log2(WARP_SIZE))  # = 5 for WARP_SIZE=32
-        HALF_WARP = WARP_SIZE // 2  # = 16
-        num_blocks = -(-num_tokens // TOKENS_PER_BLOCK)  # ceildiv(T, TPB)
+        ELEMS_PER_THREAD = -(-num_experts // WARP_SIZE)
+        LOG_WARP = int(math.log2(WARP_SIZE))
+        HALF_WARP = WARP_SIZE // 2
+        num_blocks = -(-num_tokens // TOKENS_PER_BLOCK)
         grouped = num_expert_group > 1
         scaled = routed_scaling_factor != 1.0
         GROUP_SIZE = num_experts // num_expert_group
@@ -458,22 +458,14 @@ def _fused_topk_kernel(
 
 
 class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
-    """MoE top-k routing kernel — fused scoring + top-k, zero __syncthreads().
-
-    Uses a per-warp algorithm: each warp of 32 lanes independently handles one
-    token, keeping expert scores in local registers.  All reductions (softmax
-    max/sum, argmax) use warp shfl_xor — no shared memory, no __syncthreads__.
-
-    Barrier count: 0 (vs 22 syncs for the old 1-block-per-token design).
+    """MoE top-k routing kernel: fused scoring and top-k, one warp per token.
 
     Args:
         num_tokens: Number of input tokens T.
         num_experts: Number of experts E.
         top_k: Number of experts to select per token K.
         scoring_func: "softmax" or "sigmoid".
-        renormalize: If True, normalize selected weights to sum to 1. Fused into
-            the kernel: the K winners are divided by their own sum before the
-            weight writeback, so no extra pass over topk_weights is launched.
+        renormalize: If True, normalize selected weights to sum to 1.
         with_correction_bias: If True, accept a per-expert correction_bias tensor in
             forward(). Adds bias to sigmoid scores for expert selection while writing
             unbiased sigmoid scores to topk_weights. Requires scoring_func="sigmoid".

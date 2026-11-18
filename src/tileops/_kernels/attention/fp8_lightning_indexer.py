@@ -779,7 +779,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
     def splits_for(cls, call: FP8LightningIndexerCall) -> int:
         """CTAs a query block's keys split over: one while the blocks fill the multiprocessors,
         else enough to fill them, with at least two tiles a CTA. A split costs a CTA its own
-        q load and prologue, which measured slower than idle multiprocessors past one block
+        q load and prologue, which costs more than idle multiprocessors past one block
         each."""
         q_blocks = -(-call.seq_len // (cls._ROWS // call.heads))
         if q_blocks >= call.sm_count:

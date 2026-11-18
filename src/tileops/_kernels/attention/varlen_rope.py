@@ -42,7 +42,6 @@ def make_varlen_query_rope(
     rope_layout: str,
     max_position: int,
     dtype: str,
-    rope_dtype: str = "",
     tile_axes: int = 0,
     positions: int = 0,
     threads: int = WARPGROUP_THREADS,
@@ -60,8 +59,6 @@ def make_varlen_query_rope(
         rope_layout: ``"neox"`` or ``"interleaved"``.
         max_position: Rows of the table, which bounds the position an index may take.
         dtype: Element type of the tile.
-        rope_dtype: Element type of the table, which an FP8 call carries at 16 bits while
-            the tile it rotates is 8. Empty means the tile's.
         positions: Query positions the tile spans, which is fewer than its rows when a
             KV group's query heads are packed into it: row ``i`` then carries position
             ``i % positions``. Zero means one position per row.

@@ -36,9 +36,7 @@ __all__ = [
 def head_count_refusal(*counts: int) -> str | None:
     """Why no in-tree linear-attention kernel serves these head counts, or ``None``.
 
-    Every model that runs a gated delta rule, a delta rule or GLA splits its state into an
-    even number of heads, or into a single one, so an odd count above one is declined
-    rather than tuned for.
+    An odd count above one is declined: no model splits its state that way.
     """
     for count in counts:
         if count != 1 and count % 2:
@@ -181,9 +179,8 @@ class KDACall(CallSpec):
     def chunk_refusal(self) -> str | None:
         """Why no in-tree Kimi Delta Attention program serves this call, or ``None``.
 
-        The recurrence variants the in-tree kernels do not implement, whatever the
-        sequence length. Every implementation asks this first, then states the
-        lengths, widths and state layouts it serves itself.
+        Every implementation asks this first, then refuses the lengths, widths and state
+        layouts it does not serve.
         """
         unsupported = [
             name
@@ -500,9 +497,11 @@ class GDNFwdInterface(KernelInterface):
             state_indices: ``int32`` ``(n,)``, passed exactly when ``call.pooled``: sequence
                 ``i`` starts from ``initial_state[state_indices[i]]`` and its final state is
                 written back there. *initial_state* is then a pool of states, one a slot, the
-                slots distinct across the call. Under ``call.rollback`` it is ``(n, L)``, one
-                slot a token: the state after token ``t`` of sequence ``i`` is written to
-                ``initial_state[state_indices[i, t]]``, a sequence holding at most ``L`` tokens.
+                slots other than -1 distinct across the call. Under ``call.rollback`` it is
+                ``(n, L)``, one slot a token: the state after token ``t`` of sequence ``i`` is
+                written to ``initial_state[state_indices[i, t]]``, a sequence holding at most
+                ``L`` tokens. A slot of -1 is never written; a sequence starting from
+                it has unspecified outputs and leaves unspecified states in its other slots.
             num_accepted_tokens: ``int32`` ``(n,)``, passed exactly when ``call.rollback``:
                 sequence ``i`` starts from ``initial_state[state_indices[i, a - 1]]``, ``a`` its
                 entry, at least 1 and at most ``L``.
@@ -561,7 +560,8 @@ class KDAFwdInterface(KernelInterface):
             state_indices: ``int32`` ``(n,)``, passed exactly when ``call.pooled``:
                 sequence ``i`` starts from ``initial_state[state_indices[i]]`` and its
                 final state is written back there. *initial_state* is then a pool of
-                states, one a slot, the slots distinct across the call.
+                states, one a slot, the slots other than -1 distinct across the call. A slot
+                of -1 is never written, and its sequence's outputs are unspecified.
 
         Returns:
             ``(o, final_state)``: a new ``o`` shaped like *v* in ``call.dtype``, and

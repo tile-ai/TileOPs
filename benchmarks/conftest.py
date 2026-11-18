@@ -199,7 +199,7 @@ def pytest_runtest_call(item):
             _emit(item, "tileops", tileops_entry)
 
         # Every baseline is written under its own tag. The first also uses the
-        # unprefixed legacy names that scripts/nightly_report.py reads.
+        # unprefixed names that scripts/nightly_report.py reads.
         for idx, be in enumerate(baseline_entries):
             tag = be["tag"]
             _emit(item, tag, be)

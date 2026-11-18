@@ -215,7 +215,6 @@ class NGramHashKernel(Kernel, NGramHashFwdInterface):
     ):
         super().__init__(device_index=device_index)
         self.heads = heads
-        self.dtype = torch.int64
         shared = (width, row_stride, col_stride, order, packed, slotted, rollback)
         self.kernel = _ngram_hash_kernel(*shared, heads, eos)
         self.context_kernel = _ngram_context_kernel(*shared)

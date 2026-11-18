@@ -169,18 +169,6 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
               * exp(dA_cumsum[b,h,c,Q-1] - dA_cumsum[b,h,c,l])
               * dt[b, h, c, l]
               * (1 if not has_seq_idx else (seq_idx[b,c*Q+Q-1] >= 0 and seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
-
-    Inputs:
-        x:         (batch, seqlen, n_heads, d_head)           dtype
-        Bmat:      (batch, seqlen, n_groups, d_state)         dtype
-        dt:        (batch, n_heads, num_chunks, chunk_len)    dtype — accepts target dtype,
-                   will be cast to fp32 internally for accumulation
-        dA_cumsum: (batch, n_heads, num_chunks, chunk_len)    float32
-        seq_idx:   (batch, seqlen)                            int32 (optional)
-
-    Output:
-        out:       (batch, num_chunks, n_heads, d_head, d_state) float32
-
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -245,8 +233,6 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # threads=128 (4 warps) reduces register pressure and improves occupancy over 256.
-        # The primary Mamba geometry benefits from fewer reduction-loop syncs.
         # Small grids split N for more CTAs; saturated grids avoid reloading X.
         grid_size = self.batch * self.num_chunks * self.n_heads
         primary_mamba_geometry = self.chunk_len == 256 and self.d_head == 64 and self.d_state == 128
@@ -290,14 +276,7 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Grid rationale:
-        #   block_n in {64, 128}: 128 covers the full d_state=128 in one tile
-        #     and is the default; 64 is retained for d_state<128 shapes.
-        #   block_p in {16, 32, 64}: 16 is the minimum MMA M-atom.
-        #   block_l in {32, 64, 128}: larger K improves GEMM arithmetic
-        #     intensity; 32 keeps shared-memory pressure low for small d_head.
-        #   threads in {128, 256}: 128 warps = 4, 256 warps = 8; higher thread
-        #     count hides latency but increases register/shared pressure.
+        # block_p 16 is the minimum MMA M-atom.
         block_n = [64, 128]
         block_p = [16, 32, 64]
         block_l = [32, 64, 128]
@@ -322,21 +301,6 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
         dA_cumsum: torch.Tensor,
         seq_idx: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute chunk-end SSM states.
-
-        Args:
-            x: (batch, seqlen, n_heads, d_head) dtype
-            Bmat: (batch, seqlen, n_groups, d_state) dtype
-            dt: (batch, n_heads, num_chunks, chunk_len) float32 or dtype
-            dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32
-            seq_idx: (batch, seqlen) int32
-
-        Returns:
-            out: (batch, num_chunks, n_heads, d_head, d_state) float32
-
-        The compiled kernel reads dt in its input dtype and converts values to
-        float32 during accumulation.
-        """
         return self.program(self._compile)(x, Bmat, dt, dA_cumsum, seq_idx)
 
     def _compile(self, cfg: dict):
@@ -346,5 +310,5 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
             cfg["block_p"],
             cfg["block_l"],
             cfg["threads"],
-            cfg.get("num_stages", 2),
+            cfg["num_stages"],
         )

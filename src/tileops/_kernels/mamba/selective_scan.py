@@ -606,7 +606,7 @@ class SelectiveScanStepKernel(_SelectiveScanKernel):
     preferred_over = frozenset({"selective_scan_chunk"})
     _builder = staticmethod(_selective_scan_step_kernel)
 
-    # Longest sequence it serves; from 64 steps the chunk kernel is faster.
+    # Longest sequence it serves; longer ones take the chunk kernel.
     max_seqlen = 48
 
     @classmethod

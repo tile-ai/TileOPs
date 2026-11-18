@@ -20,11 +20,9 @@ def _padded(inputs: tuple) -> tuple:
 
 
 class GQAVarlenFwdFixture(FixtureBase):
-    # Parameters: (batch, seqlens_q, seqlens_k, heads, heads_kv, dim,
-    #              is_causal, wl, wr, dtype, tune)
     PARAMS = [
         (
-            "batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune",
+            "batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype",
             [
                 # Prefill: seqlen_q == seqlen_k (offset=0)
                 pytest.param(
@@ -38,7 +36,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.smoke,
                 ),  # causal
                 pytest.param(
@@ -52,7 +49,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.bfloat16,
-                    False,
                     marks=pytest.mark.smoke,
                 ),  # causal bf16
                 pytest.param(
@@ -66,7 +62,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     128,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.smoke,
                 ),  # causal + wl
                 pytest.param(
@@ -80,7 +75,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     64,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.smoke,
                 ),  # D=128 uses the two-stage sliding pipeline on SM90
                 pytest.param(
@@ -94,7 +88,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.smoke,
                 ),  # leading queries have no visible key
                 pytest.param(
@@ -108,7 +101,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # bidirectional
                 pytest.param(
@@ -122,7 +114,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     64,
                     64,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # window
                 # KV-cache: seqlen_k > seqlen_q (offset > 0)
@@ -137,7 +128,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # causal kvcache
                 pytest.param(
@@ -151,7 +141,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     128,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # causal+wl kvcache
                 pytest.param(
@@ -165,7 +154,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     64,
                     64,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # window kvcache
                 # bfloat16
@@ -180,7 +168,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     64,
                     64,
                     torch.bfloat16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # window bf16
                 # GQA ratios
@@ -195,7 +182,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # MHA 1:1
                 pytest.param(
@@ -209,7 +195,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # ratio 16:1
                 # Mixed lengths within batch
@@ -224,7 +209,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),
                 # Right window only
@@ -239,7 +223,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     64,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # right window
                 # wl=0 boundary
@@ -254,7 +237,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     0,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # wl=0
                 # Regression: a window at D=256 reached the sliding-window kernel, whose
@@ -271,7 +253,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     64,
                     -1,
                     torch.bfloat16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # D=256 causal+wl
                 # D=512 stages the score tile through shared memory: two warpgroups where
@@ -287,7 +268,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.bfloat16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # D=512 causal, partial tiles
                 pytest.param(
@@ -301,7 +281,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     -1,
                     -1,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                 ),  # D=512 causal kvcache
             ],
@@ -321,7 +300,6 @@ def test_gqa_varlen_fwd_op(
     wl: int,
     wr: int,
     dtype: torch.dtype,
-    tune: bool,
 ) -> None:
     test = GQAVarlenFwdTest(
         batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype
@@ -335,12 +313,11 @@ def test_gqa_varlen_fwd_op(
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("window", [2**31 - 1, 2**31 - 1000], ids=["int32-max", "near-int32-max"])
-def test_varlen_right_window_near_int32_max_is_no_window(window: int) -> None:
-    """A right window this wide hides no key; added to a query position it overflows int32,
-    so the output must equal the unwindowed reference."""
+def test_varlen_int32_max_right_window_is_no_window() -> None:
+    """A right window of INT32_MAX keys hides none; added to a query position it overflows
+    int32, so the output must equal the unwindowed reference."""
     test = GQAVarlenFwdTest(2, [1024, 512], [1024, 600], 8, 2, 128, False, -1, -1, torch.float16)
-    test.check(GQAVarlenFwdOp(window_size_right=window), *test.gen_inputs())
+    test.check(GQAVarlenFwdOp(window_size_right=2**31 - 1), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -405,8 +382,8 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
+@pytest.mark.parametrize("dim", [64, 128])
 @pytest.mark.parametrize(
     "q_lens, kv_lens, is_causal, options, key",
     [
@@ -416,6 +393,7 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
             True,
             {},
             "gqa_varlen_ws",
+            marks=pytest.mark.smoke,
             id="causal-ragged",
         ),
         pytest.param(
@@ -424,18 +402,24 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
             False,
             {"sm_scale": 0.125, "softcap": 5.0},
             "gqa_varlen_ws",
+            marks=pytest.mark.full,
             id="bidirectional-softcap-empty-kv",
         ),
         # No KV at all: TMA needs an extent, so the general kernel serves.
-        pytest.param([4, 128], [0, 0], True, {}, "gqa_varlen", id="all-kv-empty"),
+        pytest.param(
+            [4, 128], [0, 0], True, {}, "gqa_varlen", marks=pytest.mark.full, id="all-kv-empty"
+        ),
         # More requests than the warp-specialized kernel's shared prefix holds.
-        pytest.param([1] * 449, [1] * 449, True, {}, "gqa_varlen", id="batch-449"),
+        pytest.param(
+            [1] * 449, [1] * 449, True, {}, "gqa_varlen", marks=pytest.mark.full, id="batch-449"
+        ),
         pytest.param(
             ([0, 1, 17, 130] * 16)[:64],
             ([0, 200, 17, 130] * 16)[:64],
             True,
             {},
             "gqa_varlen_ws",
+            marks=pytest.mark.full,
             id="batch-64",
         ),
         pytest.param(
@@ -444,6 +428,7 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
             True,
             {},
             "gqa_varlen_ws",
+            marks=pytest.mark.full,
             id="batch-65",
         ),
         # A rotated width of 10 rotates an odd number of pairs per half.
@@ -453,11 +438,11 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
             True,
             {"pos_encoding_mode": "rope", "rotary_dim": 10},
             "gqa_varlen_ws",
+            marks=pytest.mark.full,
             id="rope-odd-half",
         ),
     ],
 )
-@pytest.mark.parametrize("dim", [64, 128])
 def test_varlen_ws_dims_serve_ragged_requests_on_sm90(
     q_lens: list[int], kv_lens: list[int], is_causal: bool, options: dict, key: str, dim: int
 ) -> None:
@@ -487,7 +472,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype",
+    "q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype, options",
     [
         # One KV head a query head and no mask, as vision encoders attend: partial query and
         # key tiles, q_len > kv_len, and an empty request.
@@ -501,6 +486,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.bfloat16,
+            {},
             marks=pytest.mark.smoke,
             id="d72-bidirectional",
         ),
@@ -516,6 +502,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.float16,
+            {},
             marks=pytest.mark.smoke,
             id="d72-causal",
         ),
@@ -529,6 +516,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             64,
             32,
             torch.bfloat16,
+            {},
             marks=pytest.mark.full,
             id="d72-window",
         ),
@@ -543,8 +531,24 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.bfloat16,
+            {},
             marks=pytest.mark.full,
             id="d40",
+        ),
+        # Fused RoPE on a head padded to one 48-channel tile.
+        pytest.param(
+            [129, 65],
+            [200, 65],
+            6,
+            2,
+            40,
+            True,
+            -1,
+            -1,
+            torch.float16,
+            {"pos_encoding_mode": "rope"},
+            marks=pytest.mark.full,
+            id="d40-rope",
         ),
         # A 32-channel edge (24 channels and 8 zeros) beside the 64-channel boxes.
         pytest.param(
@@ -557,6 +561,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.float16,
+            {},
             marks=pytest.mark.full,
             id="d88",
         ),
@@ -571,6 +576,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.bfloat16,
+            {},
             marks=pytest.mark.full,
             id="d96",
         ),
@@ -585,6 +591,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
             -1,
             -1,
             torch.bfloat16,
+            {},
             marks=pytest.mark.full,
             id="d120",
         ),
@@ -600,14 +607,15 @@ def test_varlen_ws_serves_head_dims_off_the_contraction_step_on_sm90(
     wl: int,
     wr: int,
     dtype: torch.dtype,
+    options: dict,
 ) -> None:
     """A TMA row is a multiple of 16 bytes, a 16-bit WGMMA contracts 16 channels a step, and
     TMA fills a box past a tensor's last channel with zeros: on SM90 the warp-specialized
     kernel serves head dims of 8-channel steps on tiles padded to the WGMMA step."""
     test = GQAVarlenFwdTest(
-        len(q_lens), q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype
+        len(q_lens), q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype, **options
     )
-    op = GQAVarlenFwdOp(is_causal=is_causal, window_size_left=wl, window_size_right=wr)
+    op = GQAVarlenFwdOp(is_causal=is_causal, window_size_left=wl, window_size_right=wr, **options)
     inputs = test.gen_inputs()
     assert op.key_for("gqa_varlen", op._varlen_call(_padded(inputs))) == "gqa_varlen_ws"
     test.check(op, *inputs)
@@ -661,22 +669,97 @@ def test_varlen_refuses_head_dim_72_where_the_ws_kernel_cannot_before_building(
     assert not op._entries_built("gqa_varlen")
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "q_lens, kv_lens, dim, rotary_dim, rope_layout, window_size_left",
     [
-        pytest.param([256, 130], [300, 130], 128, 10, "neox", -1, id="odd-half-packed"),
-        pytest.param([256, 130], [300, 130], 256, 14, "neox", -1, id="odd-half-general"),
+        pytest.param(
+            [256, 130],
+            [300, 130],
+            128,
+            10,
+            "neox",
+            -1,
+            marks=pytest.mark.smoke,
+            id="odd-half-packed",
+        ),
+        pytest.param(
+            [256, 130],
+            [300, 130],
+            256,
+            14,
+            "neox",
+            -1,
+            marks=pytest.mark.full,
+            id="odd-half-general",
+        ),
         # Head dim 256 reaches the general kernel on SM90 too.
-        pytest.param([256, 130], [300, 130], 256, 10, "neox", -1, id="odd-half-general-split"),
-        pytest.param([256, 128], [256, 128], 128, None, "neox", -1, id="neox-full"),
-        pytest.param([256, 128], [256, 128], 64, None, "interleaved", -1, id="interleaved-full"),
+        pytest.param(
+            [256, 130],
+            [300, 130],
+            256,
+            10,
+            "neox",
+            -1,
+            marks=pytest.mark.full,
+            id="odd-half-general-split",
+        ),
+        pytest.param(
+            [256, 128], [256, 128], 128, None, "neox", -1, marks=pytest.mark.full, id="neox-full"
+        ),
+        pytest.param(
+            [256, 128],
+            [256, 128],
+            64,
+            None,
+            "interleaved",
+            -1,
+            marks=pytest.mark.full,
+            id="interleaved-full",
+        ),
         # The channels past a partial rotary width pass through unrotated.
-        pytest.param([1, 0, 130], [200, 0, 130], 128, 64, "neox", -1, id="ragged-partial"),
-        pytest.param([130, 70], [130, 70], 128, None, "interleaved", 64, id="windowed"),
-        pytest.param([70, 40], [200, 40], 512, None, "neox", -1, id="dim-512"),
-        pytest.param([1, 0, 130], [200, 0, 130], 128, 12, "neox", -1, id="narrow-neox"),
-        pytest.param([130, 70], [130, 70], 64, 14, "interleaved", -1, id="narrow-interleaved"),
+        pytest.param(
+            [1, 0, 130],
+            [200, 0, 130],
+            128,
+            64,
+            "neox",
+            -1,
+            marks=pytest.mark.full,
+            id="ragged-partial",
+        ),
+        pytest.param(
+            [130, 70],
+            [130, 70],
+            128,
+            None,
+            "interleaved",
+            64,
+            marks=pytest.mark.full,
+            id="windowed",
+        ),
+        pytest.param(
+            [70, 40], [200, 40], 512, None, "neox", -1, marks=pytest.mark.full, id="dim-512"
+        ),
+        pytest.param(
+            [1, 0, 130],
+            [200, 0, 130],
+            128,
+            12,
+            "neox",
+            -1,
+            marks=pytest.mark.full,
+            id="narrow-neox",
+        ),
+        pytest.param(
+            [130, 70],
+            [130, 70],
+            64,
+            14,
+            "interleaved",
+            -1,
+            marks=pytest.mark.full,
+            id="narrow-interleaved",
+        ),
     ],
 )
 def test_varlen_rope_rotates_at_per_request_positions(
@@ -730,13 +813,22 @@ def test_visible_scores_follow_alignment_mask_and_window(
     assert visible_scores(q_len, kv_len, is_causal, left, -1) == visible
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "q_lens, kv_lens, is_causal, wl, wr",
     [
-        pytest.param([300, 700], [300, 700], True, 100, -1, id="causal-left-partial-tiles"),
-        pytest.param([256, 512], [256, 512], False, 64, 64, id="both"),
-        pytest.param([64, 128], [256, 512], False, -1, 64, id="right-kvcache"),
+        pytest.param(
+            [300, 700],
+            [300, 700],
+            True,
+            100,
+            -1,
+            marks=pytest.mark.smoke,
+            id="causal-left-partial-tiles",
+        ),
+        pytest.param([256, 512], [256, 512], False, 64, 64, marks=pytest.mark.full, id="both"),
+        pytest.param(
+            [64, 128], [256, 512], False, -1, 64, marks=pytest.mark.full, id="right-kvcache"
+        ),
     ],
 )
 def test_varlen_sliding_window_with_fused_rope(

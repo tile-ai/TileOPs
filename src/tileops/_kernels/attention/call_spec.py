@@ -250,7 +250,6 @@ class DSADecodeCall(CallSpec):
     kv_group: int = 1
     sm_scale: float | None = None
     is_causal: bool = True
-    cp0: bool = True
     has_attn_sink: bool = False
 
 

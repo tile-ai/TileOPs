@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.state_pool_guard import check_padded_slots_skipped
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.mamba import CausalConv1dUpdateCall
@@ -38,10 +39,10 @@ _PREFILL = (
         [100, 900], 8192, 4, "float16", _BOTH, "silu", marks=_SMOKE, id="start-mid-chunk-fp16"
     ),
     pytest.param(
-        [64, 64, 128], 512, 4, "bfloat16", _BOTH, "silu", marks=_SMOKE, id="start-on-chunk"
+        [64, 64, 128], 512, 4, "bfloat16", _BOTH, "silu", marks=_FULL, id="start-on-chunk"
     ),
     pytest.param(
-        [62, 70], 256, 4, "bfloat16", _BOTH, "silu", marks=_SMOKE, id="head-past-chunk-end"
+        [62, 70], 256, 4, "bfloat16", _BOTH, "silu", marks=_FULL, id="head-past-chunk-end"
     ),
     pytest.param(
         [1, 2, 0, 3, 5, 17, 0, 64, 33, 1, 0],
@@ -50,7 +51,7 @@ _PREFILL = (
         "bfloat16",
         _BOTH,
         "silu",
-        marks=_SMOKE,
+        marks=_FULL,
         id="short-and-empty",
     ),
     pytest.param(
@@ -60,13 +61,13 @@ _PREFILL = (
         "float16",
         ["has_initial_state"],
         None,
-        marks=_SMOKE,
+        marks=_FULL,
         id="no-bias-no-act",
     ),
-    pytest.param([129, 70], 768, 4, "bfloat16", ["bias"], "silu", marks=_SMOKE, id="no-state"),
-    # Regression: an empty sequence without a state got zeros written over its state.
+    pytest.param([129, 70], 768, 4, "bfloat16", ["bias"], "silu", marks=_FULL, id="no-state"),
+    # An empty sequence without has_initial_state keeps its state.
     pytest.param(
-        [0, 4, 0, 70], 256, 4, "bfloat16", ["bias"], "silu", marks=_SMOKE, id="empty-keeps-state"
+        [0, 4, 0, 70], 256, 4, "bfloat16", ["bias"], "silu", marks=_FULL, id="empty-keeps-state"
     ),
     pytest.param(
         [0, 0, 7, 70, 0],
@@ -325,6 +326,55 @@ def test_causal_conv1d_update_resumes_one_token_from_the_accepted_column() -> No
     inputs = list(test.gen_inputs())
     inputs[5] = torch.randint(1, 4, inputs[5].shape, dtype=torch.int32).to(inputs[5].device)
     test.check(op, *inputs, runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+
+
+_PADDED_PREFILL = {"D": 264, "L": 3, "Tt": 92, "seq_lens": [1, 2, 0, 3, 5, 17, 0, 64]}
+_PADDED_ROLLBACK = {"D": 264, "L": 6, "Tt": 15, "seq_lens": [4, 1, 0, 3, 2, 4, 1]}
+
+
+@pytest.mark.parametrize(
+    ("op_type", "test_type", "row", "some", "slots_at"),
+    [
+        pytest.param(
+            CausalConv1dFwdOp,
+            CausalConv1dFwdTest,
+            _PADDED_PREFILL,
+            ["bias", "has_initial_state", "cache_indices"],
+            6,
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            CausalConv1dUpdateFwdOp,
+            CausalConv1dUpdateFwdTest,
+            {"B": 8, "D": 264, "L": 3},
+            ["conv_state_indices"],
+            4,
+            marks=_FULL,
+        ),
+        pytest.param(
+            CausalConv1dUpdateFwdOp,
+            CausalConv1dUpdateFwdTest,
+            {**_PADDED_ROLLBACK, "max_query_len": 4},
+            ["conv_state_indices", "num_accepted_tokens", "query_start_loc"],
+            4,
+            marks=_FULL,
+        ),
+    ],
+    ids=["prefill", "update", "rollback"],
+)
+def test_causal_conv1d_skips_the_states_of_negative_slots(
+    op_type, test_type, row, some, slots_at
+) -> None:
+    """Each convolution kernel writes no state for a slot of -1: the pool's neighbours
+    and the slots of the padded sequences keep their states, every other slot ends as in the
+    unpadded call."""
+    torch.manual_seed(42)
+    call = manifest_call(
+        op_type.__name__, {"T": "bfloat16", "Tw": "bfloat16"}, W=4, P=16, some=some, **row
+    )
+    inputs = test_type(call).gen_inputs()
+    op = op_type(**{**call.arguments(), "validate_inputs": True})
+    check_padded_slots_skipped(op, inputs, 2, slots_at, [0, 4])
 
 
 @pytest.mark.smoke

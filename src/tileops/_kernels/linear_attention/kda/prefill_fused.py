@@ -18,9 +18,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
 
     The chunk-local work and the recurrence share a block, so the WY vectors,
     the gated query and key and the intra-chunk attention never reach global
-    memory. The launch is one block per (sequence, value head), so this is the
-    right shape only when there are enough of those to cover the device; below
-    that the chunk-parallel split serves the same call.
+    memory. The launch is one block per (sequence, value head).
     """
 
     supported_archs = [89, 90]

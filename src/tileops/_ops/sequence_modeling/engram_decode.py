@@ -18,12 +18,8 @@ __all__ = ["EngramDecodeFwdOp"]
 class EngramDecodeFwdOp(Op):
     """Engram fused decode operator — single-token inference.
 
-    Fuses GEMV projection + gating + dilated conv + SiLU into one kernel call.
-
-    Like MHA decode compiles with max_seqlen_kv and accepts real_seqlen_kv
-    at runtime, this op compiles with max_conv_len and accepts the actual
-    conv_state length at runtime without recompilation.
-
+    Fuses GEMV projection + gating + dilated conv + SiLU. It compiles for max_conv_len and
+    accepts any conv_state length up to it without recompiling.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"engram_decode": EngramDecodeKernel}

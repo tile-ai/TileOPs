@@ -501,13 +501,7 @@ def test_round_decimals(dtype: torch.dtype, decimals: int) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_round_decimals_no_overflow_low_precision(dtype: torch.dtype) -> None:
-    """Decimals path must not overflow fp16/bf16 when ``|x| * 10**decimals`` exceeds dtype max.
-
-    Regression: previously the op cast ``x.float() * 10**decimals`` back to
-    ``self.dtype`` before rounding, so e.g. ``100 * 10**4 = 1e6`` overflowed
-    fp16's ~65504 max and produced ``inf``. The reference is
-    ``torch.round(x.float(), decimals=k).to(dtype)`` which is just ``100.0``.
-    """
+    """Decimals path must not overflow fp16/bf16 when ``|x| * 10**decimals`` exceeds dtype max."""
     x = torch.tensor([100.0], device=run_device(), dtype=dtype)
     op = RoundFwdOp(decimals=4)
     out = op(x)

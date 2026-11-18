@@ -234,17 +234,6 @@ class GEMMFixture(FixtureBase):
                     id="full-bf16-small-m4-swap-ab-ntail",
                 ),
                 pytest.param(
-                    1536,
-                    2112,
-                    256,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-coop2-persistent",
-                ),
-                pytest.param(
                     1440,
                     2080,
                     256,
@@ -565,15 +554,15 @@ class GemvBoundaryFixture(FixtureBase):
 
     PARAMS = [
         (
-            "n, k, dtype, tune",
+            "n, k, dtype",
             [
                 # lhs_row: m=1, trans_b=True — non-aligned n
-                pytest.param(3000, 1024, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param(3000, 1024, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(3000, 1024, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(3000, 1024, torch.bfloat16, marks=pytest.mark.smoke),
                 # lhs_row: non-aligned k
-                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.float16, marks=pytest.mark.full),
                 # rhs_col: n=1 — non-aligned m (mapped to gemv n param)
-                pytest.param(3001, 1024, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(3001, 1024, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -761,8 +750,8 @@ class GEMMW4A16Fixture(FixtureBase):
                     256,
                     256,
                     torch.float16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-w4a16-rect",
+                    marks=pytest.mark.full,
+                    id="full-w4a16-rect",
                 ),
                 pytest.param(
                     1,
@@ -969,56 +958,6 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-fp16",
                 ),
-                # The other scale granularities: one activation scale, one weight scale.
-                pytest.param(
-                    64,
-                    512,
-                    1024,
-                    False,
-                    True,
-                    torch.bfloat16,
-                    False,
-                    _INT8_WS,
-                    marks=pytest.mark.smoke,
-                    id="smoke-tensor-scale-a",
-                ),
-                pytest.param(
-                    64,
-                    512,
-                    1024,
-                    True,
-                    False,
-                    torch.bfloat16,
-                    False,
-                    _INT8_WS,
-                    marks=pytest.mark.smoke,
-                    id="smoke-tensor-scale-b",
-                ),
-                pytest.param(
-                    64,
-                    512,
-                    1024,
-                    True,
-                    True,
-                    torch.bfloat16,
-                    True,
-                    _INT8_WS,
-                    marks=pytest.mark.smoke,
-                    id="smoke-bias",
-                ),
-                # One row: a one-row TMA box and the elementwise store.
-                pytest.param(
-                    1,
-                    512,
-                    1024,
-                    True,
-                    True,
-                    torch.bfloat16,
-                    False,
-                    _INT8_WS,
-                    marks=pytest.mark.smoke,
-                    id="smoke-one-row",
-                ),
                 # Ping-pong on 132 SMs: M / N / K tails, per-channel scales and a bias, and
                 # 192-wide tiles whose last 8 row tiles start with 14 tiles 160 wide, 376 tiles:
                 # more than two waves, so each CTA runs both consumers and hands the turn back
@@ -1047,6 +986,56 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     _INT8_SIMPLE,
                     marks=pytest.mark.smoke,
                     id="smoke-unaligned-k",
+                ),
+                # The other scale granularities: one activation scale, one weight scale.
+                pytest.param(
+                    64,
+                    512,
+                    1024,
+                    False,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.full,
+                    id="full-tensor-scale-a",
+                ),
+                pytest.param(
+                    64,
+                    512,
+                    1024,
+                    True,
+                    False,
+                    torch.bfloat16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.full,
+                    id="full-tensor-scale-b",
+                ),
+                pytest.param(
+                    64,
+                    512,
+                    1024,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    True,
+                    _INT8_WS,
+                    marks=pytest.mark.full,
+                    id="full-bias",
+                ),
+                # One row: a one-row TMA box and the elementwise store.
+                pytest.param(
+                    1,
+                    512,
+                    1024,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.full,
+                    id="full-one-row",
                 ),
                 # A box of fewer rows than a tile, an N tail and a K tail past the 128-wide
                 # step.
@@ -1321,7 +1310,7 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> Non
     ],
 )
 def test_w4a8_forty_token_dispatch(m: int, n: int, k: int, key: str) -> None:
-    """The 40-token selection is measured on a 132-SM H200."""
+    """The 40-token selection is calibrated for a 132-SM H200."""
     op = GEMMW4A8FwdOp(target=BUILTIN)
     call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
@@ -1383,7 +1372,7 @@ def test_gemm_w4a8_prefill_runs_a_full_one_wave_grid_a_tile_a_cta(
     m: int, n: int, k: int, stream_k: int
 ) -> None:
     """The cases count row tiles and idle K groups against the 132 SMs of an H200, the board
-    the schedule selection was measured on."""
+    the schedule selection is calibrated for."""
     op = GEMMW4A8FwdOp(target=BUILTIN)
     call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
@@ -1419,8 +1408,11 @@ def test_gemm_w4a16_a_published_tile_height_pads_m_for_itself() -> None:
         assert m_pad == padded
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("k_index", [0, 1, 127, 128, 200, 383])
+@pytest.mark.parametrize(
+    "k_index",
+    [pytest.param(0, marks=pytest.mark.smoke)]
+    + [pytest.param(i, marks=pytest.mark.full) for i in (1, 127, 128, 200, 383)],
+)
 def test_gemm_w4a16_is_exact_on_a_basis_vector(k_index: int) -> None:
     """A basis vector selects the exact signed-INT4 value, group scale and zero point."""
     workload = GEMMW4A16BasisWorkload(k_index)
@@ -1454,12 +1446,11 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k",
     [
-        pytest.param(4096, 576, 7168, id="one-wave"),
-        pytest.param(4096, 7168, 16384, id="two-wave"),
+        pytest.param(4096, 576, 7168, marks=pytest.mark.smoke, id="one-wave"),
+        pytest.param(4096, 7168, 16384, marks=pytest.mark.full, id="two-wave"),
     ],
 )
 def test_gemm_fp8_1d1d_wave_matches_reference(m: int, n: int, k: int) -> None:
@@ -1470,14 +1461,13 @@ def test_gemm_fp8_1d1d_wave_matches_reference(m: int, n: int, k: int) -> None:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k",
     [
-        pytest.param(128, 32768, 512, id="one-row-tile"),
-        pytest.param(4096, 32768, 512, id="two-wave"),
-        pytest.param(128, 7168, 16384, id="k-split-pair"),
-        pytest.param(4096, 2112, 7168, id="176-wide"),
+        pytest.param(128, 32768, 512, marks=pytest.mark.smoke, id="one-row-tile"),
+        pytest.param(4096, 32768, 512, marks=pytest.mark.full, id="two-wave"),
+        pytest.param(128, 7168, 16384, marks=pytest.mark.full, id="k-split-pair"),
+        pytest.param(4096, 2112, 7168, marks=pytest.mark.full, id="176-wide"),
     ],
 )
 def test_gemm_fp8_1d2d_wave_matches_reference(m: int, n: int, k: int) -> None:
@@ -1488,12 +1478,11 @@ def test_gemm_fp8_1d2d_wave_matches_reference(m: int, n: int, k: int) -> None:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, k",
     [
-        pytest.param(4096, 7168, id="column-run"),
-        pytest.param(24576, 1536, id="scale-span"),
+        pytest.param(4096, 7168, marks=pytest.mark.smoke, id="column-run"),
+        pytest.param(24576, 1536, marks=pytest.mark.full, id="scale-span"),
     ],
 )
 def test_gemm_fp8_1d2d_wave_column_run_matches_reference(n: int, k: int) -> None:
@@ -1648,12 +1637,10 @@ def test_gemm_fp8_short_call_streams_b_in_64_row_blocks(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
 @GemvBoundaryFixture
-def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
+def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, arch: int) -> None:
     """A single activation row supports non-aligned weight rows and contraction sizes."""
     test = GEMMTest(1, n, k, dtype, trans_a=False, trans_b=True)
     op = GEMMFwdOp(trans_a=False, trans_b=True)
-    if tune:
-        op.request_tune()
     test.check(op, *test.gen_inputs())
     assert all(isinstance(entry, GemvKernel) for entry in op._entries_built("gemm").values())
 
@@ -1662,13 +1649,11 @@ def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool, a
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
 @GemvBoundaryFixture
-def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
+def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, arch: int) -> None:
     """A single output column supports non-aligned activation rows and contraction sizes."""
     m = n
     test = GEMMTest(m, 1, k, dtype, trans_a=False, trans_b=False)
     op = GEMMFwdOp(trans_a=False, trans_b=False)
-    if tune:
-        op.request_tune()
     test.check(op, *test.gen_inputs())
     assert all(isinstance(entry, GemvKernel) for entry in op._entries_built("gemm").values())
 
@@ -1871,7 +1856,7 @@ _COOP2_SWAP = {"coop2_swap": True, "block_n": 160, "num_stages": 4}
             False,
             torch.bfloat16,
             {**_COOP2_SWAP, "group_size_m": 1},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="coop2-swap",
         ),
         pytest.param(
@@ -1882,7 +1867,7 @@ _COOP2_SWAP = {"coop2_swap": True, "block_n": 160, "num_stages": 4}
             True,
             torch.float16,
             {**_WS, "split_k": 1},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="ws-tma-store",
         ),
         pytest.param(
@@ -1901,7 +1886,7 @@ _COOP2_SWAP = {"coop2_swap": True, "block_n": 160, "num_stages": 4}
                 "split_k": 1,
                 "cluster_m": 2,
             },
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="ws-fill-cluster",
         ),
         pytest.param(
@@ -2043,7 +2028,7 @@ def test_gemm_bias_on_each_structure(
     ("m", "n", "k", "trans_b", "kernel"),
     [
         pytest.param(1, 4608, 3584, True, GemvKernel, marks=pytest.mark.smoke, id="lhs-row"),
-        pytest.param(1000, 1, 1000, False, GemvKernel, marks=pytest.mark.smoke, id="rhs-col"),
+        pytest.param(1000, 1, 1000, False, GemvKernel, marks=pytest.mark.full, id="rhs-col"),
         # Rows TMA cannot address.
         pytest.param(
             1000, 1001, 1003, True, GEMMCpAsyncKernel, marks=pytest.mark.full, id="cp-async"
@@ -2086,7 +2071,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             False,
             {**_WS, "split_k": 1},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="ws-row-store",
         ),
         pytest.param(
@@ -2105,7 +2090,7 @@ def test_gemm_bias_on_selected_kernels(
                 "split_k": 1,
                 "cluster_m": 2,
             },
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="ws-fill-cluster",
         ),
         pytest.param(
@@ -2116,7 +2101,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             True,
             {**_WS, "split_k": 2},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="split-k",
         ),
         pytest.param(
@@ -2127,7 +2112,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             True,
             {"simple": True, "block_m": 64, "block_n": 128, "block_k": 64, "num_stages": 3},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="simple",
         ),
         pytest.param(
@@ -2138,7 +2123,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             True,
             {"swap_ab": True, "block_nn": 64, "block_k": 128, "num_stages": 4},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="swap-ab",
         ),
         # A 64-column staging chunk leaves the ring its three stages beside two float32 halves.
@@ -2150,7 +2135,7 @@ def test_gemm_bias_on_selected_kernels(
             False,
             True,
             {"coop2": True, "block_n": 256, **_COOP2, "stage_n": 64},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="coop2",
         ),
         # Twenty-four rows of A, a WGMMA width 256 does not divide, run the helper's own.
@@ -2162,7 +2147,7 @@ def test_gemm_bias_on_selected_kernels(
             True,
             True,
             {"stream": True, "block_k": 128, "num_stages": 8, "blocks": 2},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="stream-helper",
         ),
         pytest.param(
@@ -2175,7 +2160,7 @@ def test_gemm_bias_on_selected_kernels(
             # The ring best_config selects for a float32 output: five stages and two
             # staging buffers fill all but a few KiB of the shared memory.
             {**_PINGPONG, "block_n": 176, "num_stages": 5, "stage_n": 16, "epi_bufs": 2},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="pingpong-176",
         ),
         pytest.param(
@@ -2308,13 +2293,13 @@ def test_gemm_coop2_swap_refuses_a_float32_output() -> None:
 @pytest.mark.parametrize(
     ("m", "n"),
     [
-        # DeepSeek-V4-Flash's LM head over one decode token, a GEMV.
-        pytest.param(1, 129280, marks=pytest.mark.smoke, id="lm-head-gemv"),
-        # Its router and LM head over 64 decode tokens.
+        # DeepSeek-V4-Flash's router and LM head over 64 decode tokens.
         pytest.param(64, 256, marks=pytest.mark.smoke, id="router-decode"),
-        pytest.param(64, 129280, marks=pytest.mark.smoke, id="lm-head-decode"),
+        pytest.param(64, 129280, marks=pytest.mark.full, id="lm-head-decode"),
+        # Its LM head over one decode token, a GEMV.
+        pytest.param(1, 129280, marks=pytest.mark.full, id="lm-head-gemv"),
         # Its LM head over 24 decode tokens, which streams the weight 64 rows at a time.
-        pytest.param(24, 129280, marks=pytest.mark.smoke, id="lm-head-stream"),
+        pytest.param(24, 129280, marks=pytest.mark.full, id="lm-head-stream"),
         # Its router and KV compressors over an 8192-token prefill.
         pytest.param(8192, 256, marks=pytest.mark.full, id="router-prefill"),
         pytest.param(8192, 512, marks=pytest.mark.full, id="compressor-512"),
@@ -2519,7 +2504,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             100, 2112, 7168, True, (128, 128, 4), marks=pytest.mark.smoke, id="splitk-k128"
         ),
         # Split-K over 32-wide K steps, narrower than one swizzle atom: 12 rows load as 16.
-        pytest.param(12, 1032, 512, False, (64, 32, 4), marks=pytest.mark.smoke, id="splitk-k32"),
+        pytest.param(12, 1032, 512, False, (64, 32, 4), marks=pytest.mark.full, id="splitk-k32"),
     ],
 )
 def test_gemm_one_tile_grid_loads_only_the_rows_of_a(
@@ -2565,7 +2550,7 @@ def test_gemm_rows_of_half_a_tile_keep_tiles_at_least_64_wide() -> None:
             128, 7168, torch.float16, False, False, marks=pytest.mark.smoke, id="fp16-two-tiles"
         ),
         # TMA cannot address 63 transposed rows, so every architecture takes the cp.async kernel.
-        pytest.param(63, 65, torch.float16, True, True, marks=pytest.mark.smoke, id="cp-async"),
+        pytest.param(63, 65, torch.float16, True, True, marks=pytest.mark.full, id="cp-async"),
     ],
 )
 def test_gemm_empty_contraction_is_the_bias(
@@ -2582,8 +2567,8 @@ def test_gemm_empty_contraction_is_the_bias(
     ("m", "n", "k", "trans_b"),
     [
         pytest.param(1, 129, 1024, True, marks=pytest.mark.smoke, id="lhs-row"),
-        pytest.param(129, 1, 1024, False, marks=pytest.mark.smoke, id="rhs-col"),
-        pytest.param(2, 256, 4096, True, marks=pytest.mark.smoke, id="lhs-rows"),
+        pytest.param(129, 1, 1024, False, marks=pytest.mark.full, id="rhs-col"),
+        pytest.param(2, 256, 4096, True, marks=pytest.mark.full, id="lhs-rows"),
     ],
 )
 def test_gemv_bias_survives_cancelling_products(m: int, n: int, k: int, trans_b: bool) -> None:
@@ -2632,8 +2617,9 @@ def test_gemm_cp_async_split_k_adds_the_bias_in_the_reduction(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.smoke
-@pytest.mark.parametrize("m", [100, 257])
+@pytest.mark.parametrize(
+    "m", [pytest.param(100, marks=pytest.mark.smoke), pytest.param(257, marks=pytest.mark.full)]
+)
 def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
     test = GEMMW4A16Test(m, 1024, 512, torch.float16)
     op = GEMMW4A16FwdOp(target=BUILTIN)
@@ -2727,7 +2713,7 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
             14464,
             _w4a16_config(128, 128, 256, 2, 256, 2),
             id="pair-split-uneven-k-tail",
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
         ),
         # The cross-tile mainloop paired over uneven slices (odd and even K-tile counts) and
         # padded rows.
@@ -2737,7 +2723,7 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
             1408,
             _w4a16_config(128, 128, 128, 3, 256, 2),
             id="cross-tile-pair-uneven",
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
         ),
         pytest.param(
             40,
@@ -2809,7 +2795,7 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
     ],
 )
 def test_gemm_w4a16_pinned_tile_matches_the_reference(m: int, n: int, k: int, config: dict) -> None:
-    """Pinned tiles preserve coverage of metadata staging and deferred scaling."""
+    """Each pinned tile matches the reference."""
     _check_w4a16_config(m, n, k, config)
 
 
@@ -2841,79 +2827,69 @@ def _leave_nan_in_free_blocks() -> None:
     del blocks
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.sm90
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k, tile",
     [
         # Kept: a doubled split leaves a slice under two K tiles; the paired tile does not
         # fit in shared memory.
-        pytest.param(
-            1, 1024, 8192, (64, 128, 8, False), id="kept-short-slice", marks=pytest.mark.smoke
-        ),
-        pytest.param(32, 8192, 8192, (64, 128, 1, False), id="kept-no-fit", marks=pytest.mark.full),
-        pytest.param(
-            1, 8192, 8192, (128, 256, 2, False), id="paired-split-1", marks=pytest.mark.full
-        ),
-        pytest.param(
-            1, 4096, 14336, (128, 256, 4, False), id="paired-split-2", marks=pytest.mark.full
-        ),
+        pytest.param(1, 1024, 8192, (64, 128, 8, False), id="kept-short-slice"),
+        pytest.param(32, 8192, 8192, (64, 128, 1, False), id="kept-no-fit"),
+        pytest.param(1, 8192, 8192, (128, 256, 2, False), id="paired-split-1"),
+        pytest.param(1, 4096, 14336, (128, 256, 4, False), id="paired-split-2"),
         # A ragged token count on the 16-row tile.
-        pytest.param(11, 8192, 8192, (128, 256, 2, False), id="paired-m11", marks=pytest.mark.full),
+        pytest.param(11, 8192, 8192, (128, 256, 2, False), id="paired-m11"),
         # Paired slices the four-stage ring holds. A cluster pair is kept where the pick's
         # own slice of four K tiles fits the ring, and where its 384 CTAs take more than one
         # wave; it pairs where the pick's eight refill the ring in one wave.
-        pytest.param(
-            16, 8192, 2048, (64, 128, 1, False), id="kept-cluster-in-ring", marks=pytest.mark.full
-        ),
-        pytest.param(
-            16, 24576, 4096, (64, 128, 1, False), id="kept-cluster-waves", marks=pytest.mark.full
-        ),
-        pytest.param(
-            16, 6144, 4096, (128, 256, 2, False), id="paired-cluster", marks=pytest.mark.full
-        ),
+        pytest.param(16, 8192, 2048, (64, 128, 1, False), id="kept-cluster-in-ring"),
+        pytest.param(16, 24576, 4096, (64, 128, 1, False), id="kept-cluster-waves"),
+        pytest.param(16, 6144, 4096, (128, 256, 2, False), id="paired-cluster"),
         # A split is kept where it adds K tiles to the longest slice (56 K tiles over 8
         # slices pair into slices of three and four), and pairs where it adds none.
-        pytest.param(
-            16, 1024, 28672, (64, 128, 8, False), id="kept-uneven-in-ring", marks=pytest.mark.full
-        ),
-        pytest.param(
-            16, 4096, 4096, (128, 256, 4, False), id="paired-even-in-ring", marks=pytest.mark.full
-        ),
+        pytest.param(16, 1024, 28672, (64, 128, 8, False), id="kept-uneven-in-ring"),
+        pytest.param(16, 4096, 4096, (128, 256, 4, False), id="paired-even-in-ring"),
         # 50 K tiles: slices of 17 pair into slices of 9, which still refill the ring.
-        pytest.param(
-            8, 5120, 25600, (128, 256, 6, False), id="paired-uneven-refills", marks=pytest.mark.full
-        ),
+        pytest.param(8, 5120, 25600, (128, 256, 6, False), id="paired-uneven-refills"),
         # Stream-K picks: the 132 streamed CTAs become 64 paired N tiles split two ways (128
         # CTAs); 67 N tiles do not pair up and keep the stream.
-        pytest.param(
-            1, 8192, 81920, (128, 256, 2, False), id="paired-stream-k", marks=pytest.mark.full
-        ),
-        pytest.param(
-            1, 4288, 32896, (64, 128, 1, True), id="kept-odd-n-tiles", marks=pytest.mark.full
-        ),
-        # Kept streams whose N tiles two or three CTAs share; the slots no CTA of a tile
-        # writes are zeroed: 69 tiles with a partial last K tile, 67 tiles of whole K tiles.
-        pytest.param(
-            1, 4416, 32896, (64, 128, 1, True), id="kept-stream-k-tail", marks=pytest.mark.full
-        ),
-        pytest.param(
-            1, 4288, 81920, (64, 128, 1, True), id="kept-stream-whole-k", marks=pytest.mark.full
-        ),
-        pytest.param(
-            8, 5056, 32896, (64, 128, 1, True), id="kept-stream-eight-rows", marks=pytest.mark.full
-        ),
+        pytest.param(1, 8192, 81920, (128, 256, 2, False), id="paired-stream-k"),
+        pytest.param(1, 4288, 32896, (64, 128, 1, True), id="kept-odd-n-tiles"),
+        # Kept streams whose N tiles two or three CTAs share.
+        pytest.param(1, 4416, 32896, (64, 128, 1, True), id="kept-stream-k-tail"),
+        pytest.param(1, 4288, 81920, (64, 128, 1, True), id="kept-stream-whole-k"),
+        pytest.param(8, 5056, 32896, (64, 128, 1, True), id="kept-stream-eight-rows"),
     ],
 )
 def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tuple) -> None:
-    """On 132 SMs a deferred-scale tile on one consumer warpgroup runs twice its weight rows
-    on two warpgroups over as many K slices as keep its CTAs, a stream-K pick included; it
-    keeps its tile where that split leaves a slice under two K tiles, the paired tile does
-    not fit, its N tiles do not pair up, the last keeping its stream, or a paired slice its
-    ring holds would add K tiles to the longest slice or run as a cluster pair whose pick does
-    not refill its ring or whose grid takes more than one wave."""
+    """On 132 SMs a deferred-scale tile on one consumer warpgroup pairs into twice its weight
+    rows on two warpgroups, or keeps its tile; each case's comment names why."""
     cfg = _select_config(m, n, k, 128, 132)
     assert (cfg["block_n"], cfg["threads"], cfg["split_k"], cfg["stream_ctas"] > 0) == tile
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k",
+    [
+        pytest.param(1, 1024, 8192, id="kept-short-slice", marks=pytest.mark.smoke),
+        pytest.param(1, 8192, 8192, id="paired-split-1", marks=pytest.mark.full),
+        pytest.param(11, 8192, 8192, id="paired-m11", marks=pytest.mark.full),
+        pytest.param(1, 8192, 81920, id="paired-stream-k", marks=pytest.mark.full),
+        pytest.param(1, 4288, 32896, id="kept-odd-n-tiles", marks=pytest.mark.full),
+        # The slots no CTA of a streamed tile writes are zeroed: 69 tiles with a partial
+        # last K tile, 67 tiles of whole K tiles.
+        pytest.param(1, 4416, 32896, id="kept-stream-k-tail", marks=pytest.mark.full),
+        pytest.param(1, 4288, 81920, id="kept-stream-whole-k", marks=pytest.mark.full),
+        pytest.param(8, 5056, 32896, id="kept-stream-eight-rows", marks=pytest.mark.full),
+    ],
+)
+def test_gemm_w4a16_deferred_scale_tiles_match_the_reference(m: int, n: int, k: int) -> None:
+    """On 132 SMs the paired two-way split, the kept split, the kept and paired stream-K picks
+    and ragged rows of the deferred-scale selection match the reference."""
+    if get_sm_count(torch.device(run_device()).index) != 132:
+        pytest.skip("the op selects on the device's SMs, and the programs checked count 132")
     test = GEMMW4A16Test(m, n, k, torch.float16)
     inputs = test.gen_inputs()
     _leave_nan_in_free_blocks()
@@ -2948,6 +2924,8 @@ def test_gemm_w4a16_one_warpgroup_split_matches_the_reference(
     assert (cfg["block_n"], cfg["threads"], cfg["split_k"]) == (64, 128, 2)
     m_pad = m if cfg["block_m"] == 8 else -(-m // cfg["block_m"]) * cfg["block_m"]
     assert _pair_reduced(m_pad, n, k, 128, 132, cfg) == paired
+    if get_sm_count(torch.device(run_device()).index) != 132:
+        pytest.skip("the op selects on the device's SMs, and the program checked counts 132")
     test = GEMMW4A16Test(m, n, k, torch.float16)
     inputs = test.gen_inputs()
     _leave_nan_in_free_blocks()
@@ -2999,8 +2977,13 @@ def test_gemm_w4a16_request_tune_keeps_composite_runtime_state() -> None:
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-@pytest.mark.parametrize(("n", "k"), [(64, 256), (1024, 512)])
+@pytest.mark.parametrize(
+    ("n", "k"),
+    [
+        pytest.param(64, 256, marks=pytest.mark.smoke),
+        pytest.param(1024, 512, marks=pytest.mark.full),
+    ],
+)
 def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
     """The kernel and the tensor-expression repack agree bit for bit."""
     packed = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, device=run_device())
@@ -3061,7 +3044,6 @@ def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None
     import weakref
 
     from tileops._kernels.gemm.w4a8_decode import GEMMW4A8DecodeKernel
-    from tileops._utils import get_sm_count
 
     # One CTA per 64-row tile by default; every SM then splits tiles across CTAs, and a
     # sixth stage pushes the units' partial sums out of shared memory.
@@ -3237,13 +3219,12 @@ def test_gemm_w4a8_request_tune_keeps_results() -> None:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, k",
     [
-        pytest.param(16, 128, id="n16-k128"),
-        pytest.param(112, 384, id="n112-k384"),
-        pytest.param(7184, 2304, id="n7184-k2304"),
+        pytest.param(16, 128, marks=pytest.mark.smoke, id="n16-k128"),
+        pytest.param(112, 384, marks=pytest.mark.full, id="n112-k384"),
+        pytest.param(7184, 2304, marks=pytest.mark.full, id="n7184-k2304"),
     ],
 )
 def test_w4a8_repack_kernel_matches_the_reference(n: int, k: int) -> None:

@@ -6,21 +6,6 @@ from workloads.device import run_device
 from workloads.workload_base import WORKLOAD_SEED
 
 
-def make_interleaved_block_table(batch: int, max_pages_per_req: int) -> torch.Tensor:
-    """Block table whose logical pages sit out of order in physical memory.
-
-    Each request owns a contiguous run of physical pages and reads them
-    even-indices-first, so a kernel that ignores the table and walks physical
-    pages in order produces a different answer than one that honours it.
-    """
-    rows = []
-    for b in range(batch):
-        start = b * max_pages_per_req
-        pages = list(range(start, start + max_pages_per_req))
-        rows.append(pages[::2] + pages[1::2])
-    return torch.tensor(rows, device=run_device(), dtype=torch.int32).contiguous()
-
-
 def make_fragmented_block_table(
     batch: int, pages_per_req: int, pool_pages: int, seed: int = WORKLOAD_SEED
 ) -> torch.Tensor:
@@ -51,30 +36,3 @@ def paged_cache_row(
     page_offset = logical_pos % page_size
     physical_page = int(block_table[batch_idx, logical_page].item())
     return physical_page * page_size + page_offset
-
-
-def make_unit_cache_scales() -> tuple[torch.Tensor, torch.Tensor]:
-    """The K and V dequantisation scales of an unquantised cache."""
-    scale = torch.ones((1,), device=run_device(), dtype=torch.float32)
-    return scale, scale.clone()
-
-
-def fill_paged_cache_from_logical(
-    k_cache: torch.Tensor,
-    v_cache: torch.Tensor,
-    k_old: list[torch.Tensor],
-    v_old: list[torch.Tensor],
-    block_table: torch.Tensor,
-    page_size: int,
-) -> None:
-    """Scatter each request's logical cache rows into the pages *block_table* names.
-
-    ``k_old`` and ``v_old`` carry one ``[cache_len, heads_kv, dim]`` tensor per
-    request, in batch order, holding that request's cache in logical position
-    order. ``k_cache`` and ``v_cache`` are written in place.
-    """
-    for b, (k_b, v_b) in enumerate(zip(k_old, v_old, strict=True)):
-        for pos in range(k_b.shape[0]):
-            row = paged_cache_row(block_table, b, pos, page_size)
-            k_cache[row].copy_(k_b[pos])
-            v_cache[row].copy_(v_b[pos])

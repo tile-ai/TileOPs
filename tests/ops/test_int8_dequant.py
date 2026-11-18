@@ -56,16 +56,16 @@ class INT8DequantFixture(FixtureBase):
                 # block takes the vector path.
                 + [
                     pytest.param(
-                        INT8DequantPerChannelFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
+                        INT8DequantPerChannelFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.full
                     ),
                     # Per-block rows shorter than a vector: every block converts code by code.
                     pytest.param(
-                        INT8DequantPerBlockFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.smoke
+                        INT8DequantPerBlockFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.full
                     ),
                     # Per-block, K % 128 = 3: a vector crosses a row's short last group and the
                     # row end, so its codes take three scales.
                     pytest.param(
-                        INT8DequantPerBlockFwdOp, 16, 131, torch.bfloat16, marks=pytest.mark.smoke
+                        INT8DequantPerBlockFwdOp, 16, 131, torch.bfloat16, marks=pytest.mark.full
                     ),
                     # Per-tensor: scalar-only output.
                     pytest.param(

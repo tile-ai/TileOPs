@@ -6,17 +6,6 @@
 
 namespace tileops {
 
-// Convert one e4m3 key or value tile of ROWS x 128 into float16 or bfloat16,
-// shared memory to shared memory, in the layouts TileLang's
-// make_swizzled_layout gives the two buffers. Row j, column d of the e4m3 tile
-// is byte
-//   (j / 8) * 1024 + (j % 8) * 128 + ((d / 16) ^ (j % 8)) * 16 + d % 16,
-// and of the 16-bit tile element
-//   (d / 64) * ROWS * 64 + (j / 8) * 512 + (j % 8) * 64
-//     + (((d % 64) / 8) ^ (j % 8)) * 8 + d % 8.
-// Thread t of THREADS (a multiple of 8) converts column chunk t % 8 of rows
-// t / 8, t / 8 + THREADS / 8, ...; a row at or past `valid_rows` is written as
-// zero, so a stale page row cannot reach the value product.
 // The 16-bit pair that e4m3 bytes b0 (low) and b1 convert to, packed as one
 // word.
 template <typename OutT>
@@ -30,6 +19,23 @@ TL_DEVICE uint32_t fp8x2_to_wide(uint32_t bytes) {
         __half22float2(*reinterpret_cast<const __half2*>(&f16)));
     return *reinterpret_cast<const uint32_t*>(&bf);
   }
+}
+
+// Convert the 16 e4m3 bytes of `raw` and store them as 16-byte chunks
+// `lo_chunk` and `lo_chunk + 1` of the 128-byte row at `dst_row`, chunks
+// swizzled by row j % 8.
+template <typename OutT>
+TL_DEVICE void fp8x16_to_wide_store(uint4 raw, char* dst_row, int lo_chunk,
+                                    int j) {
+  uint4 const lo_words =
+      make_uint4(fp8x2_to_wide<OutT>(raw.x), fp8x2_to_wide<OutT>(raw.x >> 16),
+                 fp8x2_to_wide<OutT>(raw.y), fp8x2_to_wide<OutT>(raw.y >> 16));
+  uint4 const hi_words =
+      make_uint4(fp8x2_to_wide<OutT>(raw.z), fp8x2_to_wide<OutT>(raw.z >> 16),
+                 fp8x2_to_wide<OutT>(raw.w), fp8x2_to_wide<OutT>(raw.w >> 16));
+  *reinterpret_cast<uint4*>(dst_row + ((lo_chunk ^ (j & 7)) << 4)) = lo_words;
+  *reinterpret_cast<uint4*>(dst_row + (((lo_chunk + 1) ^ (j & 7)) << 4)) =
+      hi_words;
 }
 
 template <int ROWS, int THREADS, typename OutT, bool CUT>
@@ -49,22 +55,23 @@ TL_DEVICE void fp8_tile_to_wide_rows(const char* in, char* out, int t,
         raw = make_uint4(0, 0, 0, 0);
       }
     }
-    uint4 const lo_words = make_uint4(
-        fp8x2_to_wide<OutT>(raw.x), fp8x2_to_wide<OutT>(raw.x >> 16),
-        fp8x2_to_wide<OutT>(raw.y), fp8x2_to_wide<OutT>(raw.y >> 16));
-    uint4 const hi_words = make_uint4(
-        fp8x2_to_wide<OutT>(raw.z), fp8x2_to_wide<OutT>(raw.z >> 16),
-        fp8x2_to_wide<OutT>(raw.w), fp8x2_to_wide<OutT>(raw.w >> 16));
     // Columns 16c .. 16c + 15: 16-bit chunks 2c % 8 and 2c % 8 + 1 of half
     // c / 4.
-    char* const dst = half_out + row;
-    *reinterpret_cast<uint4*>(dst + (((2 * (c & 3)) ^ (j & 7)) << 4)) =
-        lo_words;
-    *reinterpret_cast<uint4*>(dst + (((2 * (c & 3) + 1) ^ (j & 7)) << 4)) =
-        hi_words;
+    fp8x16_to_wide_store<OutT>(raw, half_out + row, 2 * (c & 3), j);
   }
 }
 
+// Convert one e4m3 key or value tile of ROWS x 128 into float16 or bfloat16,
+// shared memory to shared memory, in the layouts TileLang's
+// make_swizzled_layout gives the two buffers. Row j, column d of the e4m3 tile
+// is byte
+//   (j / 8) * 1024 + (j % 8) * 128 + ((d / 16) ^ (j % 8)) * 16 + d % 16,
+// and of the 16-bit tile element
+//   (d / 64) * ROWS * 64 + (j / 8) * 512 + (j % 8) * 64
+//     + (((d % 64) / 8) ^ (j % 8)) * 8 + d % 8.
+// Thread t of THREADS (a multiple of 8) converts column chunk t % 8 of rows
+// t / 8, t / 8 + THREADS / 8, ...; a row at or past `valid_rows` is written as
+// zero, so a stale page row cannot reach the value product.
 template <int ROWS, int THREADS, typename OutT>
 TL_DEVICE void fp8_tile_to_wide_sw128(const void* src, void* dst, int t,
                                       int valid_rows) {
@@ -104,17 +111,8 @@ TL_DEVICE void fp8_tile_to_wide_sw128_prefetched(const void* src, void* dst,
   for (int k = 0; k < ITERS; ++k) {
     int const j = (t >> 3) + k * STEP;
     uint4 const r = j < valid_rows ? raw[k] : make_uint4(0, 0, 0, 0);
-    uint4 const lo_words =
-        make_uint4(fp8x2_to_wide<OutT>(r.x), fp8x2_to_wide<OutT>(r.x >> 16),
-                   fp8x2_to_wide<OutT>(r.y), fp8x2_to_wide<OutT>(r.y >> 16));
-    uint4 const hi_words =
-        make_uint4(fp8x2_to_wide<OutT>(r.z), fp8x2_to_wide<OutT>(r.z >> 16),
-                   fp8x2_to_wide<OutT>(r.w), fp8x2_to_wide<OutT>(r.w >> 16));
-    char* const dst_row = half_out + (j >> 3) * 1024 + (j & 7) * 128;
-    *reinterpret_cast<uint4*>(dst_row + (((2 * (c & 3)) ^ (j & 7)) << 4)) =
-        lo_words;
-    *reinterpret_cast<uint4*>(dst_row + (((2 * (c & 3) + 1) ^ (j & 7)) << 4)) =
-        hi_words;
+    fp8x16_to_wide_store<OutT>(r, half_out + (j >> 3) * 1024 + (j & 7) * 128,
+                               2 * (c & 3), j);
   }
 }
 
@@ -141,15 +139,8 @@ TL_DEVICE void fp8_tile_to_wide_d64(const void* src, void* dst, int t,
     if (j >= valid_rows) {
       raw = make_uint4(0, 0, 0, 0);
     }
-    uint4 const lo_words = make_uint4(
-        fp8x2_to_wide<OutT>(raw.x), fp8x2_to_wide<OutT>(raw.x >> 16),
-        fp8x2_to_wide<OutT>(raw.y), fp8x2_to_wide<OutT>(raw.y >> 16));
-    uint4 const hi_words = make_uint4(
-        fp8x2_to_wide<OutT>(raw.z), fp8x2_to_wide<OutT>(raw.z >> 16),
-        fp8x2_to_wide<OutT>(raw.w), fp8x2_to_wide<OutT>(raw.w >> 16));
-    char* const row = out + (j >> 3) * 1024 + (j & 7) * 128;
-    *reinterpret_cast<uint4*>(row + (((2 * c) ^ (j & 7)) << 4)) = lo_words;
-    *reinterpret_cast<uint4*>(row + (((2 * c + 1) ^ (j & 7)) << 4)) = hi_words;
+    fp8x16_to_wide_store<OutT>(raw, out + (j >> 3) * 1024 + (j & 7) * 128,
+                               2 * c, j);
   }
 }
 

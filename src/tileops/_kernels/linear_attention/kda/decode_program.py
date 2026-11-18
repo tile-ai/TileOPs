@@ -1,11 +1,8 @@
 """The TileLang program for a single Kimi Delta Attention (KDA) decode step.
 
-A decode step reads the recurrent state once and writes it once, so what
-decides its latency is how much of the machine is reading. One block takes one
-(sequence, value head) and a slice of the value axis, holds that slice of the
-state in registers for the whole step, and never reads it twice: the decayed
-state, the delta correction, the new state and the output all come off one
-pass. Slicing the value axis is what gives a batch of one enough blocks.
+One block takes one (sequence, value head) and a slice of the value axis, and holds that
+slice of the state in registers for the whole step: the decayed state, the delta correction,
+the new state and the output all come off one read of it.
 
 A value-major state keeps a value row's key positions contiguous, so its block
 takes whole rows instead: a lane group splits one row's keys in 16-byte vectors,
@@ -19,7 +16,7 @@ import tilelang.language as T
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
-from tileops._kernels.linear_attention.delta_decode import _key_of
+from tileops._kernels.linear_attention.delta_decode import key_of
 from tileops._kernels.linear_attention.kda.gate import log_decay
 from tileops._kernels.state_pool import state_row
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
@@ -113,7 +110,7 @@ def decode_program(
                             state_row(slots, iseq),
                             ihv,
                             row,
-                            _key_of(rank, run * key_run + e, lane_group, key_run),
+                            key_of(rank, run * key_run + e, lane_group, key_run),
                         ]
                 for i in T.serial(T.ceildiv(K, threads)):
                     j = tx + i * threads
@@ -139,8 +136,8 @@ def decode_program(
                     k_gain = T.rsqrt(k_square + l2_eps)
 
                 for i in T.serial(key_chunk):
-                    state[i] = state[i] * d_s[_key_of(rank, i, lane_group, key_run)]
-                    old += state[i] * k_s[_key_of(rank, i, lane_group, key_run)]
+                    state[i] = state[i] * d_s[key_of(rank, i, lane_group, key_run)]
+                    old += state[i] * k_s[key_of(rank, i, lane_group, key_run)]
                 for stage in T.unroll(lane_group.bit_length() - 1):
                     old += T.shfl_xor(old, 1 << stage, width=lane_group)
                 written = T.cast(beta[0, iseq, ihv], accum) * (
@@ -148,16 +145,16 @@ def decode_program(
                 )
                 for i in T.serial(key_chunk):
                     state[i] = (
-                        state[i] + k_s[_key_of(rank, i, lane_group, key_run)] * k_gain * written
+                        state[i] + k_s[key_of(rank, i, lane_group, key_run)] * k_gain * written
                     )
-                    out += state[i] * q_s[_key_of(rank, i, lane_group, key_run)]
+                    out += state[i] * q_s[key_of(rank, i, lane_group, key_run)]
                 for run in T.serial(key_chunk // key_run):
                     for e in T.vectorized(key_run):
                         ht[
                             state_row(slots, iseq),
                             ihv,
                             row,
-                            _key_of(rank, run * key_run + e, lane_group, key_run),
+                            key_of(rank, run * key_run + e, lane_group, key_run),
                         ] = state[run * key_run + e]
                 for stage in T.unroll(lane_group.bit_length() - 1):
                     out += T.shfl_xor(out, 1 << stage, width=lane_group)
@@ -223,7 +220,11 @@ def decode_program(
         body = compute_value_major if state_v_first else compute
         state_shape = [num_seqs, HV, V, K] if state_v_first else [num_seqs, HV, K, V]
         pool_shape = [T.dynamic("pool"), *state_shape[1:]]
-        if pooled and gate_in_kernel:
+        # A gate parameter a build without the raw gate leaves unread is declared one element
+        # wide.
+        a_log_shape = [HV] if gate_in_kernel else [1]
+        dt_bias_shape = [HV * K if has_dt_bias else HV] if gate_in_kernel else [1]
+        if pooled:
 
             @T.prim_func
             def main(
@@ -234,41 +235,11 @@ def decode_program(
                 beta: T.Tensor([1, num_seqs, HV], dtype),
                 h0: T.Tensor(pool_shape, accum),
                 slots: T.Tensor([num_seqs], "int32"),
-                a_log: T.Tensor([HV], "float32"),
-                dt_bias: T.Tensor([HV * K if has_dt_bias else HV], "float32"),
+                a_log: T.Tensor(a_log_shape, "float32"),
+                dt_bias: T.Tensor(dt_bias_shape, "float32"),
                 o: T.Tensor([1, num_seqs, HV, V], dtype),
             ):
                 body(q, k, v, g, beta, h0, o, h0, a_log, dt_bias, slots)
-        elif pooled:
-
-            @T.prim_func
-            def main(
-                q: T.Tensor([1, num_seqs, H, K], dtype),
-                k: T.Tensor([1, num_seqs, H, K], dtype),
-                v: T.Tensor([1, num_seqs, HV, V], dtype),
-                g: T.Tensor([1, num_seqs, HV, K], dtype),
-                beta: T.Tensor([1, num_seqs, HV], dtype),
-                h0: T.Tensor(pool_shape, accum),
-                slots: T.Tensor([num_seqs], "int32"),
-                o: T.Tensor([1, num_seqs, HV, V], dtype),
-            ):
-                body(q, k, v, g, beta, h0, o, h0, None, None, slots)
-        elif gate_in_kernel:
-
-            @T.prim_func
-            def main(
-                q: T.Tensor([1, num_seqs, H, K], dtype),
-                k: T.Tensor([1, num_seqs, H, K], dtype),
-                v: T.Tensor([1, num_seqs, HV, V], dtype),
-                g: T.Tensor([1, num_seqs, HV, K], dtype),
-                beta: T.Tensor([1, num_seqs, HV], dtype),
-                h0: T.Tensor(state_shape, accum),
-                a_log: T.Tensor([HV], "float32"),
-                dt_bias: T.Tensor([HV * K if has_dt_bias else HV], "float32"),
-                o: T.Tensor([1, num_seqs, HV, V], dtype),
-                ht: T.Tensor(state_shape, accum),
-            ):
-                body(q, k, v, g, beta, h0, o, ht, a_log, dt_bias, None)
         else:
 
             @T.prim_func
@@ -279,10 +250,12 @@ def decode_program(
                 g: T.Tensor([1, num_seqs, HV, K], dtype),
                 beta: T.Tensor([1, num_seqs, HV], dtype),
                 h0: T.Tensor(state_shape, accum),
+                a_log: T.Tensor(a_log_shape, "float32"),
+                dt_bias: T.Tensor(dt_bias_shape, "float32"),
                 o: T.Tensor([1, num_seqs, HV, V], dtype),
                 ht: T.Tensor(state_shape, accum),
             ):
-                body(q, k, v, g, beta, h0, o, ht, None, None, None)
+                body(q, k, v, g, beta, h0, o, ht, a_log, dt_bias, None)
 
         return main
 

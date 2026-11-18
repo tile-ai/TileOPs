@@ -1018,7 +1018,7 @@ class _CallCheck:
 
 def _call_scalars(sig: Signature) -> set[str]:
     """The call-time arguments with a scalar member, and the `let`s that read them."""
-    return {t for t, d in sig.inputs.items() if d.scalars} | call_scalar_lets(sig)
+    return sig.scalar_inputs | call_scalar_lets(sig)
 
 
 def _passes_buffer(sig: Signature, point: dict) -> bool:
@@ -1724,16 +1724,6 @@ def _overlaps(extent: tuple | None, others: list) -> bool:
         return False
     device, start, end = extent
     return any(o is not None and o[0] == device and start < o[2] and o[1] < end for o in others)
-
-
-def _owns_storage_apart(t: torch.Tensor, others: tuple) -> bool:
-    """Whether real tensor *t* shares no storage byte with any of *others*.
-
-    Two tensors share storage where their storages' byte ranges overlap: imported storages
-    can have different bases while owning overlapping bytes, and disjoint views of one
-    storage still share its ownership.
-    """
-    return not _overlaps(_extent(t), [_extent(o) for o in others])
 
 
 def _construction_check(plan: _SignaturePlan):

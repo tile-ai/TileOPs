@@ -138,8 +138,8 @@ class FixtureMeta(type):
         @MyFixture
         def test_something(a, b): ...
 
-    PARAMS may also be set as a plain class variable (list) for backwards
-    compatibility when pytest is already importable at module scope.
+    PARAMS may also be set as a plain class variable (list) when pytest is
+    importable at module scope.
     """
 
     def __call__(cls, fn: _F) -> _F:

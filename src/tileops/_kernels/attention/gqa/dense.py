@@ -868,7 +868,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             softcap,
             self.dtype_str,
         )
-        self._extra_args = self._program_args(dim, device_index)
+        self._extra_args = self._program_args(dim)
         self.rope = make_dense_qk_rope_preprocessor(
             fuse_rope=fuse_rope,
             batch=batch,
@@ -895,7 +895,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         rope = self.rope.build() if self.rope is not None else None
         return CompiledProgram(kernel), rope
 
-    def _program_args(self, dim: int, device_index: int | None) -> dict:
+    def _program_args(self, dim: int) -> dict:
         """Build arguments beyond the call's shape; the two-consumer program takes none."""
         return {}
 
@@ -2286,7 +2286,7 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
         self.diag_aligned = diag_aligned
         super().__init__(*args, **kwargs)
 
-    def _program_args(self, dim: int, device_index: int | None) -> dict:
+    def _program_args(self, dim: int) -> dict:
         return {"block_M": self._block_m(dim), "num_ctas": self.build_target.sm_count}
 
     def _compile(self, cfg: dict) -> tuple:

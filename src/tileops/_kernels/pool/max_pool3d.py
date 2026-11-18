@@ -223,9 +223,8 @@ def _max_pool3d_with_indices_kernel(
         ):
             with T.Kernel(T.ceildiv(total, block_m), threads=threads) as tile:
                 # A float32 thread takes two adjacent outputs, reads every tap evict-last
-                # in L1 and L2 and stores both outputs and both indices as vectors:
-                # c3d-pool1 float32 took 166.2 us against 170.1 (H200). float16 measured
-                # slower this way (120.8 against 119.0), and four outputs a thread far slower.
+                # in L1 and L2 and stores both outputs and both indices as vectors.
+                # float16 and four outputs a thread are slower this way.
                 if (
                     tile_full
                     and window_inside
@@ -398,9 +397,7 @@ class MaxPool3dWithIndicesKernel(_MaxPool3dKernelBase, MaxPool3dIndicesFwdInterf
 
     @property
     def default_config(self) -> dict:
-        # A float32 block of two outputs a thread takes the vector path: c3d-pool1 took
-        # 166.3 us against 173.6 at 512 (H200). Other dtypes keep 512, whose tuning they
-        # were measured under.
+        # A float32 block of two outputs a thread takes the vector path; other dtypes keep 512.
         block_m = 256 if self.dtype == torch.float32 else 512
         return {"block_m": block_m, "threads": 128}
 

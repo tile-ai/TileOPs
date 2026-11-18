@@ -91,6 +91,16 @@ def rope_tables(name: str, params: dict, query: torch.Tensor) -> tuple[torch.Ten
     )
 
 
+def _rotate_pairs(part: torch.Tensor, c: torch.Tensor, s: torch.Tensor, neox: bool) -> torch.Tensor:
+    """*part* rotated by cosines *c* and sines *s*: its halves against each other with *neox*,
+    else each adjacent pair."""
+    if neox:
+        x1, x2 = part.chunk(2, dim=-1)
+        return torch.cat((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1)
+    x1, x2 = part[..., 0::2], part[..., 1::2]
+    return torch.stack((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1).flatten(-2)
+
+
 def _rotate(
     x: torch.Tensor,
     index: torch.Tensor,
@@ -107,13 +117,7 @@ def _rotate(
     tokens = index.numel()
     heads = x.reshape(tokens, -1, head_size)
     c, s = cos[index.reshape(-1)].unsqueeze(1).float(), sin[index.reshape(-1)].unsqueeze(1).float()
-    part = heads[..., :rotary_dim].float()
-    if neox:
-        x1, x2 = part.chunk(2, dim=-1)
-        rotated = torch.cat((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1)
-    else:
-        x1, x2 = part[..., 0::2], part[..., 1::2]
-        rotated = torch.stack((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1).flatten(-2)
+    rotated = _rotate_pairs(heads[..., :rotary_dim].float(), c, s, neox)
     out = torch.cat((rotated.to(x.dtype), heads[..., rotary_dim:]), dim=-1)
     return out.reshape(x.shape)
 
@@ -169,13 +173,7 @@ def rope_cos_sin_reference(
     offset = seqlen_offsets[b] if isinstance(seqlen_offsets, torch.Tensor) else seqlen_offsets
     rows = (s + offset).clamp(0, cos.shape[0] - 1)
     c, s = cos[rows][..., None, :].float(), sin[rows][..., None, :].float()
-    h = x[..., :r].float()
-    if interleaved:
-        x1, x2 = h[..., 0::2], h[..., 1::2]
-        rotated = torch.stack((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1).flatten(-2)
-    else:
-        x1, x2 = h.chunk(2, dim=-1)
-        rotated = torch.cat((x1 * c - x2 * s, x2 * c + x1 * s), dim=-1)
+    rotated = _rotate_pairs(x[..., :r].float(), c, s, not interleaved)
     out = x if inplace else x.clone()
     out[..., :r] = rotated.to(x.dtype)
     return out

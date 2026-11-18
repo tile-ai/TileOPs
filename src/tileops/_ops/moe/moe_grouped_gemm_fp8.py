@@ -18,6 +18,7 @@ from tileops._kernels.moe import (
     MoEGroupedGEMMFP8MMAKernel,
 )
 from tileops._ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec
+from tileops._ops.moe.staged import MoELayoutRowsRoofline
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -25,7 +26,7 @@ from tileops.backend import Target
 __all__ = ["MoEGroupedGEMMFP8FwdOp"]
 
 
-class MoEGroupedGEMMFP8FwdOp(Op):
+class MoEGroupedGEMMFP8FwdOp(MoELayoutRowsRoofline, Op):
     """Block-scaled FP8 GEMM per expert over its rows: ``out[rows of g] = a[rows of g] @ b[g]^T``.
 
     ``b`` is ``[E, N, K]`` and ``a`` holds the expert rows, both ``float8_e4m3fn``. ``a_scale``
@@ -51,8 +52,7 @@ class MoEGroupedGEMMFP8FwdOp(Op):
     Accuracy: on the valid rows the output matches an fp32 reference that dequantizes both
     operands under their scales to ``atol = 2e-2 * sqrt(max(1, K / 1024))`` and
     ``rtol = 2e-2``, a bound that grows with ``K`` as the fp8 accumulation noise does. The
-    scales are applied in DeepGEMM's order; on SM90, the TMA implementation's manifest E = 8
-    outputs are bit-identical to ``deep_gemm.m_grouped_fp8_gemm_nt_masked``.
+    scales are applied in DeepGEMM's order.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -62,19 +62,6 @@ class MoEGroupedGEMMFP8FwdOp(Op):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "grouped_gemm_fp8": MGroupedGEMMFP8FwdInterface
     }
-
-    def roofline_data_terms(self) -> "dict[str, int]":
-        """The valid rows this call's layout metadata marks, which its flops follow."""
-        from tileops._perf.formulas import moe_layout_rows
-
-        return {"valid_rows": moe_layout_rows(self.last_call)}
-
-    def eval_roofline_read_bytes(self) -> int:
-        """``bytes`` less the write of ``output``, which a masked slab makes on its valid rows
-        only, where the base class would take the whole output off."""
-        from tileops._perf.formulas import moe_slab_bytes
-
-        return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
 
     def __init__(
         self,

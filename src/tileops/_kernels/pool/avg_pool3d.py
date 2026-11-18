@@ -21,11 +21,8 @@ def _by_divisor(total, divisor: int):
     """``total / divisor`` as the float32 IEEE divide rounds it, without its slow-path branch.
 
     A power of two is an exact multiply, which the compiler makes of the divide. Up to 97 in
-    magnitude, the float64 product with ``1 / divisor`` rounds to the IEEE quotient: checked
-    bit for bit for every float32 numerator on H200 at divisors 1 to 97. 98 is the first
-    divisor that differs: 39,896 positive numerators round differently, about half of them
-    normal and half subnormal. The divide's slow-path branch cost the ``divisor`` row
-    (2x24x10x20x22 bfloat16, divisor 7) one 32 ns tick on H200: 1.664 us against 1.632.
+    magnitude, the float64 product with ``1 / divisor`` rounds to the IEEE quotient for every
+    float32 numerator; 98 is the first divisor where some numerators round differently.
     """
     if abs(divisor) & (abs(divisor) - 1) == 0 or abs(divisor) > 97:
         return total / T.cast(divisor, ACCUM_DTYPE)
@@ -89,8 +86,7 @@ def _avg_pool3d_kernel(window: AvgPoolWindow, dtype: str):
     def _avg_pool3d_func(threads: int):
         # A compile-time truth when the launch divides, and the tail test drops out.
         block_full = total % threads == 0
-        # The clamped taps unroll, so a window past 32 of them keeps the serial loop; the
-        # window measured below has 12.
+        # The clamped taps unroll, so a window past 32 of them keeps the serial loop.
         clamped_taps = not window_inside and one_divisor and kernel_d * kernel_h * kernel_w <= 32
 
         @T.macro
@@ -134,10 +130,7 @@ def _avg_pool3d_kernel(window: AvgPoolWindow, dtype: str):
                         if clamped_taps:
                             # Every tap reads a clamped address, evict-last as Inductor's
                             # loads are, and a select drops the outside ones: no load waits
-                            # on a predicate. With the branch-free divide, divisor
-                            # (2x24x10x20x22 bfloat16) took 1.632 us against 1.792 with
-                            # predicated loads (H200). ceil-video, whose divisor each output
-                            # computes, took 3.104 against 2.912 this way.
+                            # on a predicate.
                             for kd in T.unroll(kernel_d):
                                 for kh in T.unroll(kernel_h):
                                     for kw in T.unroll(kernel_w):
@@ -217,8 +210,7 @@ def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
         block_full = items % threads == 0
         whole_vector = vector_elems * dtype_itemsize(dtype) == VECTOR_ACCESS_BYTES
         # Every (kd, kh) row of the run is read before the first add, so the reads are in
-        # flight together: video-2x2x2 float32 (1x32x16x56x56) took 3.775 us against 3.968
-        # reading a row at a time (H200). The rows a thread holds bound the registers, so a
+        # flight together. The rows a thread holds bound the registers, so a
         # window past 64 elements of them keeps reading a row at a time.
         hoisted = kernel_d * kernel_h * span <= 64
 
@@ -307,9 +299,7 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     # One output per thread, so the block size is the whole launch space: a parallel loop
     # wider than the block serializes it, and one narrower idles lanes.
-    # Why a policy and not a tuned knob: these launches are too short for the autotuner
-    # to rank, so a candidate list would pick from noise. Move this value on a
-    # measurement, and keep `autotune_configs` naming whatever it holds.
+    # Fixed rather than tuned: these launches are too short for the autotuner to rank.
     _BLOCK_THREADS: ClassVar[int] = 256
 
     @classmethod

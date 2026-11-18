@@ -169,8 +169,6 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     if numel < 1:
         raise ValueError(f"the scatter needs at least one route, got numel={numel}")
     max_padded = numel + (num_experts + 1) * (block_size - 1)
-    # Timed against 256 and 1024 on the H200 manifest rows: fastest at T = 4096, and within
-    # 0.2 us of the fastest on the others.
     threads = 512
     scatter_blocks = math.ceil(numel / threads)
     expert_rounds = math.ceil(num_experts / threads)

@@ -23,7 +23,7 @@ class PassingTest(SSDStatePassingUnitWorkload, TestBase):
             32768, 32, torch.bfloat16, True, 0, False, id="long-bf16", marks=pytest.mark.smoke
         ),
         pytest.param(
-            257, 128, torch.float32, False, 251, False, id="reset-tail", marks=pytest.mark.smoke
+            257, 128, torch.float32, False, 251, False, id="reset-tail", marks=pytest.mark.full
         ),
         pytest.param(
             264,
@@ -33,7 +33,7 @@ class PassingTest(SSDStatePassingUnitWorkload, TestBase):
             251,
             False,
             id="wide-reset-tail",
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
         ),
         pytest.param(
             257, 128, torch.float16, True, 251, True, id="tuned-reset-tail", marks=pytest.mark.full

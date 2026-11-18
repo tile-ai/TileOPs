@@ -476,25 +476,23 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
 
     # Threads per block. The causal product's GEMM tiles a 16-wide operand, which more than
     # two warps cannot split into whole tiles; the walk's key extent bounds its block the same
-    # way. Re-fit by timing the packed manifest rows at 64, 128 and 256.
+    # way.
     _causal_threads = 64
     _state_threads = 128
     _wide_threads = 256
 
-    # Chunks the walk inside a partition prefetches ahead. Re-fit with the packed manifest
-    # rows over 2 to 6; a stage costs shared memory the state tile also needs.
+    # Chunks the walk inside a partition prefetches ahead; a stage costs shared memory the
+    # state tile also needs.
     _state_stages = 2
 
     # Key and value channels of the state tile one block of the walk holds. A key slice reads
     # only its own key channels and its own slice of the float32 gate; a value slice reads the
-    # keys and the gate again, which is why the value extent stays as wide as the head. Re-fit
-    # by timing the packed manifest rows at 16, 32 and 64 against 64 and 128.
+    # keys and the gate again, which is why the value extent stays as wide as the head.
     _state_tile_k = 32
     _state_tile_v = 128
 
     # State tile one block of the scan holds, and the partitions it prefetches. The tile is
-    # what gives a call with few sequences and heads enough blocks. Re-fit by timing the
-    # packed manifest rows.
+    # what gives a call with few sequences and heads enough blocks.
     _scan_tile_k = 32
     _scan_tile_v = 32
     _scan_stages = 2
@@ -503,8 +501,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
     # summaries and so less traffic; a shorter one gives the device more independent blocks.
     _partition_lengths = (16, 8, 4, 2)
 
-    # Blocks per multiprocessor a walk is sized to launch. Re-fit by timing the packed
-    # manifest rows over the lengths above.
+    # Blocks per multiprocessor a walk is sized to launch.
     _blocks_per_sm = 1
 
     @classmethod
@@ -672,9 +669,8 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
         # The offsets are read on the device, so the host copy is never needed.
         del cu_seqlens_cpu
         if cu_seqlens is None:
-            # Built per call rather than held: a tensor allocated on one stream and reused
-            # on another is read before its own write unless the second stream is made to
-            # wait, and an equal-length call's offsets cost one launch of ``batch + 1``.
+            # Built per call rather than held: a tensor reused on another stream is read
+            # before its own write unless that stream waits.
             cu_seqlens = torch.arange(
                 0,
                 (self.batch + 1) * self.seq_len,

@@ -15,17 +15,7 @@ __all__ = [
 
 
 @target_cache(maxsize=32)
-def _make_sinusoidal_kernel(
-    seq_len,
-    d_model,
-    dtype,
-    # Positions and dimension pairs one block covers. The divisor depends on the pair
-    # and not the position, so a block spanning several positions calls ``pow`` once
-    # per pair instead of once per element. Both are capped to the tensor at build
-    # time.
-    rows=64,
-    cols=32,
-):
+def _make_sinusoidal_kernel(seq_len, d_model, dtype):
     """Build sinusoidal positional encoding kernel.
 
     PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
@@ -33,7 +23,10 @@ def _make_sinusoidal_kernel(
     Output shape: (seq_len, d_model).
     """
     half = d_model // 2
-    rows, cols = min(rows, seq_len), min(cols, half)
+    # Positions and dimension pairs one block covers. The divisor depends on the pair
+    # and not the position, so a block spanning several positions calls ``pow`` once
+    # per pair instead of once per element.
+    rows, cols = min(64, seq_len), min(32, half)
     width = cols * 2
 
     @tilelang.jit(out_idx=[0])

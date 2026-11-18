@@ -159,7 +159,9 @@ class GDNFwdOp(Op):
                 ``initial_state`` is the pool, $[P \\times \\mathit{HV} \\times \\ldots]$, updated in
                 place: $[N]$, the slot each sequence starts from and ends in; with
                 ``num_accepted_tokens``, $[N \\times L]$, slot ``t`` taking the state after
-                token ``t``.
+                token ``t``. A slot of -1 is never written; a sequence starting
+                from it has unspecified outputs and leaves unspecified states in its other
+                slots.
             num_accepted_tokens: ``int32`` $[N]$, or ``None``: sequence ``n`` starts from its
                 slot ``num_accepted_tokens[n] - 1``.
 

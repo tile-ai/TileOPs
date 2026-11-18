@@ -314,8 +314,9 @@ A metadata tensor's type is in the signature; its values come from the generator
 - `requires` is a list of predicate calls on a metadata tensor's contents ([table 18](#t-predicates)). The constrained tensor's contents are the implicit first argument. Each predicate reads its tensor at a fixed rank, or at any rank for an elementwise bound.
 - A written argument may name another metadata tensor, so one predicate relates two tensors; that tensor is present wherever the constrained one is.
 - A row is checked against its predicates at instantiation. At run time they are the caller's obligation, so the validator also holds them well-formed wherever their tensor is present.
-- An op may check the caller's obligations on tensor contents at run time through a `validate_inputs: bool` parameter in `signature.params`, default `false`. When true, the op reads those contents on the CPU before the implementation runs, which synchronizes the device and cannot run inside CUDA Graph capture. The generated check covers each passed input's `prefix_offsets` and `in_range` predicates, and the `max_segment` predicate of an input it checks with `prefix_offsets`; any other predicate stays the caller's obligation unless the op checks it in its own code. The op's class docstring states what a violated obligation causes when the check is off.
+- An op may check the caller's obligations on tensor contents at run time through a `validate_inputs: bool` parameter in `signature.params`, default `false`. When true, the op reads those contents on the CPU before the implementation runs, which synchronizes the device and cannot run inside CUDA Graph capture. The generated check covers each passed input's `prefix_offsets`, `max_segment` and `in_range` predicates; any other predicate stays the caller's obligation unless the op checks it in its own code. The op's class docstring states what a violated obligation causes when the check is off.
 - A tensor with `requires` has `values`.
+- A `max_segment` predicate sits beside a `prefix_offsets` predicate on the same tensor.
 
 ## Composition
 

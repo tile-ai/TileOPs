@@ -196,7 +196,7 @@ def _engram_step_kernel(batch, d, d_padded, max_conv_len, conv_kernel_size, dila
                 rrms_v = T.rsqrt(sumsq_v[0] / float(d) + eps)
                 for j in T.Parallel(d_padded):
                     vhat_local[j] = vhat_local[j] * rrms_v * T.cast(rms_w_v[j], accum_dtype)
-                # vhat_local is now v_hat_norm
+                # vhat_local holds v_hat_norm.
 
                 for j in T.Parallel(d_padded):
                     new_conv_state[bid, max_conv_len - 1, j] = T.cast(vhat_local[j], dtype)
@@ -383,25 +383,8 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]:
-        """Run one fused decode step.
-
-        Args:
-            e_t: Gathered N-gram embedding, shape $[B \\times d\\_mem]$.
-            h_t: Hidden state for the current token, shape $[B \\times d]$.
-            conv_state: Conv history of shape $[B \\times L \\times d]$ with
-                ``L <= max_conv_len``; left-padded to the compiled capacity
-                here.
-            W_K: Key projection weight of shape $[d\\_mem \\times d]$.
-            W_V: Value projection weight of shape $[d\\_mem \\times d]$.
-            rms_w_h: RMSNorm weight of shape $[d]$ for ``h`` and ``k``.
-            rms_w_v: RMSNorm weight of shape $[d]$ for the gated value.
-            conv_w: Depthwise conv weights of shape $[w \\times d]$.
-
-        Returns:
-            ``(y_t, new_conv_state)`` of shapes $[B \\times d]$ and
-            ``(B, max_conv_len, d)``. The alignment padding the prim_func
-            requires is applied and trimmed here.
-        """
+        """Run one fused decode step, applying and trimming the alignment padding the
+        prim_func requires."""
         state_pad = self.max_conv_len - conv_state.shape[1]
         if state_pad > 0:
             conv_state = F.pad(conv_state, (0, 0, state_pad, 0))

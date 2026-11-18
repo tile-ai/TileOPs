@@ -19,6 +19,7 @@ from tileops._kernels.moe import (
     MoEGroupedGEMMMXFP4Kernel,
 )
 from tileops._ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec
+from tileops._ops.moe.staged import MoELayoutRowsRoofline
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -26,7 +27,7 @@ from tileops.backend import Target
 __all__ = ["MoEGroupedGEMMMXFP4FwdOp"]
 
 
-class MoEGroupedGEMMMXFP4FwdOp(Op):
+class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
     """MXFP4 GEMM per expert over its rows: ``out[rows of g] = a[rows of g] @ b[g]^T``.
 
     ``a`` holds the expert rows in ``float8_e4m3fn`` with one scale per row and 128 columns
@@ -80,19 +81,6 @@ class MoEGroupedGEMMMXFP4FwdOp(Op):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "grouped_gemm_mxfp4": MGroupedGEMMMXFP4FwdInterface
     }
-
-    def roofline_data_terms(self) -> "dict[str, int]":
-        """The valid rows this call's layout metadata marks, which its flops follow."""
-        from tileops._perf.formulas import moe_layout_rows
-
-        return {"valid_rows": moe_layout_rows(self.last_call)}
-
-    def eval_roofline_read_bytes(self) -> int:
-        """``bytes`` less the write of ``output``, which a masked slab makes on its valid rows
-        only, where the base class would take the whole output off."""
-        from tileops._perf.formulas import moe_slab_bytes
-
-        return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
 
     def __init__(
         self,
