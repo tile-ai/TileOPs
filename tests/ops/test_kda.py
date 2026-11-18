@@ -13,6 +13,8 @@ from tileops._kernels.linear_attention import (
 )
 from tileops._kernels.linear_attention.chunk_prefill import run_chunk_prefill
 from tileops._kernels.linear_attention.kda import prefill as kda_prefill
+from tileops._kernels.linear_attention.kda import prepare_split
+from tileops._kernels.linear_attention.kda.prepare_split import split_prepare_program
 from tileops._utils.utils import get_sm_count
 from tileops.backend import OpNotAvailableError
 from tileops.linear_attention import KDAFwdOp
@@ -183,6 +185,38 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
     )
     with pytest.raises(ValueError, match=reason):
         KDAFwdOp().key_for("kda", call)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("raw", "split"),
+    [
+        pytest.param(False, False, marks=pytest.mark.smoke, id="given-gate"),
+        pytest.param(True, True, marks=pytest.mark.full, id="raw-gate"),
+    ],
+)
+def test_kda_sm90_chunk_prefill_splits_the_preparation_of_raw_gates_only(
+    raw: bool, split: bool, monkeypatch
+) -> None:
+    """On SM90 a given gate's chunks are prepared in the one centred launch, a raw gate's in
+    the split FP32 launches; both match the recurrence."""
+    torch.manual_seed(42)
+    built = []
+
+    def counted(*args, **kwargs):
+        built.append(1)
+        return split_prepare_program(*args, **kwargs)
+
+    monkeypatch.setattr(prepare_split, "split_prepare_program", counted)
+    flags = {"use_qk_l2norm_in_kernel": True, "use_gate_in_kernel": raw}
+    some = ["A_log", "dt_bias"] if raw else []
+    call = manifest_call(
+        "KDAFwdOp", {"T": "bfloat16"}, some=some, B=1, S=256, H=4, HV=4, K=128, V=128, **flags
+    )
+    test = KDAFwdCallTest(call)
+    test.check(KDAFwdOp(**flags), *test.gen_inputs())
+    assert bool(built) == split
 
 
 @pytest.mark.smoke
