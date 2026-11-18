@@ -189,20 +189,24 @@ class CausalConv1dFwdInterface(KernelInterface):
         has_initial_state: torch.Tensor | None = None,
         cache_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Convolve each sequence along the token axis and leave its last W-1 tokens in its state.
+        """Convolve each sequence along the token axis and advance its dilated history.
 
-        A sequence's first output reads the W-1 tokens before it from its state where
-        ``has_initial_state`` is set, and zeros otherwise. Every tensor is on ``call.device``
-        and contiguous; *conv_state* is written in place, no other input is.
+        ``s = (call.width - 1) * call.dilation`` is the history span. A sequence's first
+        outputs read preceding tokens from its first ``s`` state columns where
+        ``has_initial_state`` is set, and zeros otherwise; filter taps are spaced by
+        ``call.dilation`` tokens. Every tensor is on ``call.device`` and contiguous;
+        *conv_state* is written in place, no other input is.
 
         Args:
             x: ``(total, call.dim)`` in ``call.dtype``, the sequences packed token-major.
-            weight: ``(call.dim, call.width)`` in ``call.dtype``.
-            conv_state: ``(batch, call.dim, call.width - 1)`` in ``call.dtype``, or
-                ``(pool, call.dim, call.width - 1)`` under ``call.pooled``; each sequence's
-                state is overwritten with its last ``call.width - 1`` tokens.
+            weight: ``(call.dim, call.width)`` in ``call.weight_dtype``.
+            conv_state: ``(batch, call.dim, call.state_len)`` in ``call.dtype``, or
+                ``(pool, call.dim, call.state_len)`` under ``call.pooled``, with
+                ``call.state_len >= s``. The first ``s`` columns become the trailing
+                history, including prior tokens or zeros for a short sequence. Columns
+                beyond ``s`` and the entire state of an empty sequence remain unchanged.
             cu_seqlens: ``int32`` ``(batch + 1,)`` packed offsets, from 0 to ``total``.
-            bias: ``(call.dim,)`` in ``call.dtype``, passed exactly when ``call.has_bias``.
+            bias: ``(call.dim,)`` in ``call.weight_dtype``, passed exactly when ``call.has_bias``.
             has_initial_state: ``bool`` ``(batch,)``, passed exactly when ``call.has_init``.
             cache_indices: ``int32`` ``(batch,)``, passed exactly when ``call.pooled``:
                 sequence ``s``'s state is ``conv_state[cache_indices[s]]``, the slots other
