@@ -29,7 +29,6 @@ ABBREVIATIONS = {
     "LogSumExp": r"Logsumexp",
     "LSE": r"Lse",
     "MHA": r"Mha",
-    "MHC": r"Mhc",
     "MinP": r"Minp",
     "MLA": r"Mla",
     "MLP": r"Mlp",

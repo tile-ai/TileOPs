@@ -121,65 +121,6 @@ EngramDecodeFwdOp:
   roofline:
     flops: "4 * batch * d_mem * d + batch * (16 * d + conv_kernel_size * 2 * d) + 20 * batch"
 
-MHCPreFwdOp:
-  # The expansion width n is read off phi's second axis, n * n + 2 * n; the stream
-  # is C = n * c_x wide.
-  family: sequence_modeling
-  status: implemented
-  ref_api: workloads.sequence_modeling.mhc.MHCPreWorkload.ref_program
-
-  signature:
-    forall: {B: Dim, C: Dim, Q: Dim}
-    params:
-      alpha_pre: {type: float}
-      alpha_post: {type: float}
-      alpha_res: {type: float}
-      sinkhorn_repeat: {type: int}
-      sinkhorn_eps: {type: float, default: 0.02}
-    inputs:
-      phi: {dtype: float32, shape: "[C, Q]"}
-      x: {dtype: bfloat16, shape: "[B, C]"}
-      b: {dtype: float32, shape: "[Q]"}
-    outputs:
-      x_res: {dtype: bfloat16, shape: "[B, C]"}
-      x_layer: {dtype: bfloat16, shape: "[B, c_x]"}
-      h_post: {dtype: float32, shape: "[B, n]"}
-    let:
-      n: "mhc.expansion(Q)"
-      c_x: "C // n"
-    shape_rules:
-    - "C > 0 and C % n == 0"
-
-  workloads:
-  - {B: 1, C: 5120, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: hidden-1280}
-  - {B: 2, C: 7680, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: hidden-1920}
-  - {B: 4, C: 10240, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: hidden-2560}
-
-  roofline:
-    flops: "2 * B * C * Q + 2 * B * c_x * n + 2 * B * n * C"
-
-MHCPostFwdOp:
-  family: sequence_modeling
-  status: implemented
-  ref_api: workloads.sequence_modeling.mhc.MHCPostWorkload.ref_program
-
-  signature:
-    forall: {B: Dim, n: Dim, c_x: Dim}
-    inputs:
-      x_layer_out: {dtype: bfloat16, shape: "[B, c_x]"}
-      h_post: {dtype: float32, shape: "[B, n]"}
-      x_res: {dtype: bfloat16, shape: "[B, n * c_x]"}
-    outputs:
-      x_out: {dtype: bfloat16, shape: "[B, n * c_x]"}
-
-  workloads:
-  - {B: 1, n: 4, c_x: 1280, label: hidden-1280}
-  - {B: 2, n: 4, c_x: 1920, label: hidden-1920}
-  - {B: 4, n: 4, c_x: 2560, label: hidden-2560}
-
-  roofline:
-    flops: "2 * B * n * c_x"
-
 HyperConnectionPreFwdOp:
   # Manifold hyper-connection pre step, DeepSeek-V4 form. Per token, x is the n streams
   # flattened to n * C values in float32, and mixes = (x @ fn^T) * rsqrt(mean(x^2) + rms_eps)

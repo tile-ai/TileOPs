@@ -8,14 +8,6 @@ from tileops._kernels.sequence_modeling.engram import (
     EngramGateConvFwdInterface,
     EngramGateConvFwdKernel,
 )
-from tileops._kernels.sequence_modeling.mhc import (
-    MHCPostCall,
-    MHCPostFwdInterface,
-    MHCPostKernel,
-    MHCPreCall,
-    MHCPreFwdInterface,
-    MHCPreKernel,
-)
 
 __all__ = [
     "EngramDecodeCall",
@@ -26,10 +18,4 @@ __all__ = [
     "EngramGateConvCall",
     "EngramGateConvFwdInterface",
     "EngramGateConvFwdKernel",
-    "MHCPostCall",
-    "MHCPostFwdInterface",
-    "MHCPostKernel",
-    "MHCPreCall",
-    "MHCPreFwdInterface",
-    "MHCPreKernel",
 ]

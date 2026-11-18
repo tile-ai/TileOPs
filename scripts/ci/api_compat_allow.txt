@@ -123,3 +123,18 @@ tileops.rope.YaRNFwdOp: parameter `dtype` (slot 6) is required, and calls may om
 tileops.rope.YaRNFwdOp.forward: slot 0 was `x`, is now `positions` (POSITIONAL_OR_KEYWORD)
 tileops.rope.YaRNFwdOp.forward: parameter `query` (slot 1) is required, and calls may omit it
 tileops.rope.YaRNFwdOp.rope_layout: removed
+tileops.sequence_modeling.MHCPostFwdOp: removed
+tileops.sequence_modeling.MHCPostFwdOp torch operator tileops::sequence_modeling_mhc_post_fwd: removed
+tileops.sequence_modeling.MHCPostFwdOp.compile_op_names: removed
+tileops.sequence_modeling.MHCPostFwdOp.eval_roofline: removed
+tileops.sequence_modeling.MHCPostFwdOp.forward: removed
+tileops.sequence_modeling.MHCPostFwdOp.interfaces: removed
+tileops.sequence_modeling.MHCPostFwdOp.kernel_types: removed
+tileops.sequence_modeling.MHCPreFwdOp: removed
+tileops.sequence_modeling.MHCPreFwdOp torch operator tileops::sequence_modeling_mhc_pre_fwd: removed
+tileops.sequence_modeling.MHCPreFwdOp.compile_op_names: removed
+tileops.sequence_modeling.MHCPreFwdOp.eval_roofline: removed
+tileops.sequence_modeling.MHCPreFwdOp.forward: removed
+tileops.sequence_modeling.MHCPreFwdOp.interfaces: removed
+tileops.sequence_modeling.MHCPreFwdOp.kernel_types: removed
+tileops.sequence_modeling.MHCPreFwdOp.roof_key: removed
