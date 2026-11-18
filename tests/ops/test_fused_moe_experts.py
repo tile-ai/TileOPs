@@ -107,15 +107,20 @@ class TestMoEPrepareAndFinalizeNoDPEP:
 
 
 class TestFusedMoEExpertsFwdOp:
-    @pytest.mark.smoke
-    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-    @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
+    @pytest.mark.parametrize(
+        "dtype, activation",
+        [
+            pytest.param(torch.bfloat16, "silu_and_mul", marks=pytest.mark.smoke),
+            pytest.param(torch.float16, "silu_and_mul", marks=pytest.mark.smoke),
+            pytest.param(torch.bfloat16, "gelu_and_mul", marks=pytest.mark.full),
+            pytest.param(torch.float16, "gelu_and_mul", marks=pytest.mark.full),
+        ],
+    )
     def test_the_staged_pipeline_matches_the_reference(self, dtype, activation):
         experts, workload, inputs = _experts_case(dtype, activation, T=128, E=4, K=2, H=256, F=128)
         out = experts(*inputs)
         compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
-    @pytest.mark.smoke
     @pytest.mark.parametrize(
         ("activation", "dtype", "some", "dims"),
         [
@@ -125,6 +130,7 @@ class TestFusedMoEExpertsFwdOp:
                 torch.bfloat16,
                 ("b_gate_up", "b_down"),
                 dict(T=64, E=4, K=2, H=128, F=96),
+                marks=pytest.mark.smoke,
                 id="swigluoai-off-grid",
             ),
             # Few routes per expert (T * K <= 2 * E), no bias.
@@ -133,6 +139,7 @@ class TestFusedMoEExpertsFwdOp:
                 torch.bfloat16,
                 (),
                 dict(T=4, E=8, K=2, H=128, F=256),
+                marks=pytest.mark.full,
                 id="swigluoai-few-routes",
             ),
             # Few routes per expert on silu_and_mul, with each bias alone.
@@ -141,6 +148,7 @@ class TestFusedMoEExpertsFwdOp:
                 torch.bfloat16,
                 ("b_gate_up",),
                 dict(T=4, E=8, K=2, H=128, F=256),
+                marks=pytest.mark.full,
                 id="silu-few-routes-gate-up-bias",
             ),
             pytest.param(
@@ -148,6 +156,7 @@ class TestFusedMoEExpertsFwdOp:
                 torch.bfloat16,
                 ("b_down",),
                 dict(T=4, E=8, K=2, H=128, F=256),
+                marks=pytest.mark.full,
                 id="silu-few-routes-down-bias",
             ),
         ],
@@ -188,18 +197,41 @@ class TestFusedMoEExpertsFwdOp:
         assert experts.roofline_data_terms() == {"active_experts": active}
 
     @pytest.mark.in_tree_kernels
-    @pytest.mark.smoke
     @pytest.mark.parametrize(
-        "ids",
+        "ids, dtype",
         [
-            [[0, 1], [2, 3], [4, 5], [6, 7]],
-            [[0, 1], [0, 1], [0, 2], [0, 2]],
-            [[0, 0], [0, 0], [0, 0], [0, 0]],
-            [[0, expert] for expert in range(1, 18)],
+            pytest.param(
+                [[0, 1], [2, 3], [4, 5], [6, 7]],
+                torch.bfloat16,
+                marks=pytest.mark.smoke,
+                id="dispersed-bf16",
+            ),
+            pytest.param(
+                [[0, 1], [2, 3], [4, 5], [6, 7]],
+                torch.float16,
+                marks=pytest.mark.smoke,
+                id="dispersed-fp16",
+            ),
+            pytest.param(
+                [[0, 1], [0, 1], [0, 2], [0, 2]],
+                torch.bfloat16,
+                marks=pytest.mark.full,
+                id="reused",
+            ),
+            pytest.param(
+                [[0, 0], [0, 0], [0, 0], [0, 0]],
+                torch.bfloat16,
+                marks=pytest.mark.full,
+                id="duplicate-fallback",
+            ),
+            pytest.param(
+                [[0, expert] for expert in range(1, 18)],
+                torch.bfloat16,
+                marks=pytest.mark.full,
+                id="second-route-group",
+            ),
         ],
-        ids=["dispersed", "reused", "duplicate-fallback", "second-route-group"],
     )
-    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     def test_small_route_branch_matches_reference(self, ids, dtype):
         experts, args = _small_route_case(ids, dtype)
         out = experts(*args)
@@ -225,11 +257,14 @@ class TestFusedMoEExpertsFwdOp:
         torch.cuda.synchronize()
         compare_outputs(out, ref_routed_experts(*args), moe_verification(2))
 
-    @pytest.mark.smoke
     @pytest.mark.parametrize(
         "ids",
-        [[[0, 1], [2, 3], [4, 5], [6, 7]], [[e % 8, (e + 1) % 8] for e in range(64)]],
-        ids=["indexed", "tight"],
+        [
+            pytest.param([[0, 1], [2, 3], [4, 5], [6, 7]], marks=pytest.mark.smoke, id="indexed"),
+            pytest.param(
+                [[e % 8, (e + 1) % 8] for e in range(64)], marks=pytest.mark.full, id="tight"
+            ),
+        ],
     )
     def test_out_may_be_the_hidden_states_but_not_the_routing_weights(self, ids):
         """The experts read the hidden states before the reduction writes ``out``, which reads
