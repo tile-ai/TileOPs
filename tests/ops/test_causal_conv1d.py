@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.state_pool_guard import check_padded_slots_skipped
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.mamba import CausalConv1dUpdateCall
@@ -325,6 +326,53 @@ def test_causal_conv1d_update_resumes_one_token_from_the_accepted_column() -> No
     inputs = list(test.gen_inputs())
     inputs[5] = torch.randint(1, 4, inputs[5].shape, dtype=torch.int32).to(inputs[5].device)
     test.check(op, *inputs, runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+
+
+_PADDED_PREFILL = {"D": 264, "L": 3, "Tt": 92, "seq_lens": [1, 2, 0, 3, 5, 17, 0, 64]}
+_PADDED_ROLLBACK = {"D": 264, "L": 6, "Tt": 15, "seq_lens": [4, 1, 0, 3, 2, 4, 1]}
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("op_type", "test_type", "row", "some", "slots_at"),
+    [
+        (
+            CausalConv1dFwdOp,
+            CausalConv1dFwdTest,
+            _PADDED_PREFILL,
+            ["bias", "has_initial_state", "cache_indices"],
+            6,
+        ),
+        (
+            CausalConv1dUpdateFwdOp,
+            CausalConv1dUpdateFwdTest,
+            {"B": 8, "D": 264, "L": 3},
+            ["conv_state_indices"],
+            4,
+        ),
+        (
+            CausalConv1dUpdateFwdOp,
+            CausalConv1dUpdateFwdTest,
+            {**_PADDED_ROLLBACK, "max_query_len": 4},
+            ["conv_state_indices", "num_accepted_tokens", "query_start_loc"],
+            4,
+        ),
+    ],
+    ids=["prefill", "update", "rollback"],
+)
+def test_causal_conv1d_skips_the_states_of_negative_slots(
+    op_type, test_type, row, some, slots_at
+) -> None:
+    """Each convolution kernel reads and writes no state for a slot of -1: the pool's neighbours
+    and the slots of the padded sequences keep their states, every other slot ends as in the
+    unpadded call."""
+    torch.manual_seed(42)
+    call = manifest_call(
+        op_type.__name__, {"T": "bfloat16", "Tw": "bfloat16"}, W=4, P=16, some=some, **row
+    )
+    inputs = test_type(call).gen_inputs()
+    op = op_type(**{**call.arguments(), "validate_inputs": True})
+    check_padded_slots_skipped(op, inputs, 2, slots_at, [0, 4])
 
 
 @pytest.mark.smoke

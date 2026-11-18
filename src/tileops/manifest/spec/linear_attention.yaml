@@ -76,8 +76,10 @@ GDNFwdOp:
   # fused_recurrent_gated_delta_rule's (its ssm_state_indices). With num_accepted_tokens,
   # sequence n has L slots: it starts from slot state_indices[n, num_accepted_tokens[n] - 1]
   # and the state after its token t goes to slot state_indices[n, t], a sequence holding at
-  # most L tokens. The slots a call writes are distinct; every slot index names a state,
-  # vLLM's null slot 0 is not declared.
+  # most L tokens. A slot of -1 (vLLM's PAD_SLOT_ID) is neither read nor written; a sequence
+  # starting from it has unspecified outputs and leaves unspecified states in its other slots.
+  # The other slots a call writes are distinct; every other slot index names a state, vLLM's
+  # null slot 0 is not declared.
   family: linear_attention
   status: implemented
   ref_api: flashinfer.gdn_prefill.chunk_gated_delta_rule
@@ -117,7 +119,7 @@ GDNFwdOp:
       cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)", "max_segment(L if present(num_accepted_tokens) else S)"]}
       A_log: {dtype: float32, shape: "[HV]", type: "Tensor | None", default: null}
       dt_bias: {dtype: float32, shape: "[HV]", type: "Tensor | None", default: null}
-      state_indices: {dtype: int32, shape: "Slots[present(num_accepted_tokens), Ns, L]", type: "Tensor | None", default: null, kw_only: true, values: "distinct_ids(slots, P)", requires: ["in_range(0, P)"]}
+      state_indices: {dtype: int32, shape: "Slots[present(num_accepted_tokens), Ns, L]", type: "Tensor | None", default: null, kw_only: true, values: "distinct_ids(slots, P)", requires: ["in_range(-1, P)"]}
       num_accepted_tokens: {dtype: int32, shape: "[Ns]", type: "Tensor | None", default: null, kw_only: true, values: "full((Ns,), 1)", requires: ["in_range(1, L + 1)"]}
     outputs:
       o: {dtype: T, shape: "[B, S, HV, V]"}
@@ -228,8 +230,8 @@ KDAFwdOp:
   # -exp(A_log) * softplus(g + dt_bias), or lower_bound * sigmoid(exp(A_log) * (g + dt_bias))
   # when lower_bound is passed (FLA fused_recurrent_kda).
   # Not fla's fused_recurrent_kda, which takes no slot indices: state_indices and
-  # num_accepted_tokens have GDNFwdOp's names and semantics, the state pool GLM-5.3-Flash
-  # serving keeps (vLLM fused_recurrent_kda, its ssm_state_indices).
+  # num_accepted_tokens have GDNFwdOp's names and semantics, slot -1 included, the state pool
+  # GLM-5.3-Flash serving keeps (vLLM fused_recurrent_kda, its ssm_state_indices).
   family: linear_attention
   status: implemented
   ref_api: fla.ops.kda.fused_recurrent_kda
@@ -270,7 +272,7 @@ KDAFwdOp:
       cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", type: "Tensor | None", default: null, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)", "max_segment(L if present(num_accepted_tokens) else S)"]}
       A_log: {dtype: float32, shape: "[HV]", type: "Tensor | None", default: null}
       dt_bias: {dtype: float32, shape: "[HV * K]", type: "Tensor | None", default: null}
-      state_indices: {dtype: int32, shape: "Slots[present(num_accepted_tokens), Ns, L]", type: "Tensor | None", default: null, kw_only: true, values: "distinct_ids(slots, P)", requires: ["in_range(0, P)"]}
+      state_indices: {dtype: int32, shape: "Slots[present(num_accepted_tokens), Ns, L]", type: "Tensor | None", default: null, kw_only: true, values: "distinct_ids(slots, P)", requires: ["in_range(-1, P)"]}
       num_accepted_tokens: {dtype: int32, shape: "[Ns]", type: "Tensor | None", default: null, kw_only: true, values: "full((Ns,), 1)", requires: ["in_range(1, L + 1)"]}
     outputs:
       o: {dtype: T, shape: "[B, S, HV, V]"}

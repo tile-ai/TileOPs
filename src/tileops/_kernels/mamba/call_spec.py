@@ -205,8 +205,9 @@ class CausalConv1dFwdInterface(KernelInterface):
             bias: ``(call.dim,)`` in ``call.dtype``, passed exactly when ``call.has_bias``.
             has_initial_state: ``bool`` ``(batch,)``, passed exactly when ``call.has_init``.
             cache_indices: ``int32`` ``(batch,)``, passed exactly when ``call.pooled``:
-                sequence ``s``'s state is ``conv_state[cache_indices[s]]``, the slots
-                distinct across the call.
+                sequence ``s``'s state is ``conv_state[cache_indices[s]]``, the slots other
+                than -1 distinct across the call. A slot of -1 is neither read nor written,
+                and its sequence's outputs are unspecified.
 
         Returns:
             A new ``(total, call.dim)`` output in ``call.dtype``, SiLU applied when ``call.silu``.
@@ -245,7 +246,8 @@ class CausalConv1dUpdateFwdInterface(KernelInterface):
                 ``call.has_bias``.
             conv_state_indices: ``int32`` ``(batch,)``, passed exactly when ``call.pooled``:
                 sequence ``b``'s state is ``conv_state[conv_state_indices[b]]``, the slots
-                distinct across the call.
+                other than -1 distinct across the call. A slot of -1 is neither read nor
+                written, and its sequence's outputs are unspecified.
             num_accepted_tokens: ``int32`` ``(batch,)``, passed exactly when ``call.rollback``:
                 sequence ``b`` with ``a = num_accepted_tokens[b]`` and ``q`` tokens reads its
                 history from column ``a - 1``, and its first ``s + q - 1`` columns become the

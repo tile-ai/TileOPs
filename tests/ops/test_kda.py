@@ -5,6 +5,7 @@ import math
 import pytest
 import torch
 
+from tests.state_pool_guard import check_padded_slots_skipped
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import (
@@ -844,6 +845,55 @@ def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
         HV=_FUSED_HEADS, K=128, V=128, P=12, **flags,
     )  # fmt: skip
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("flags", "row", "padded"),
+    [
+        ({}, {"B": 5, "S": 1}, [1, 3]),
+        ({"state_v_first": True}, {"B": 5, "S": 1}, [1, 3]),
+        pytest.param(
+            {},
+            {
+                "B": 1,
+                "S": 201,
+                "seq_lens": [100, 0, 37, 64],
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens",),
+            },
+            [0, 2],
+            marks=pytest.mark.sm90,
+        ),
+        pytest.param(
+            {"state_v_first": True},
+            {
+                "B": 1,
+                "S": 201,
+                "seq_lens": [100, 0, 37, 64],
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens",),
+            },
+            [0, 2],
+            marks=pytest.mark.sm90,
+        ),
+    ],
+    ids=[
+        "decode-key-major",
+        "decode-value-major",
+        "fused-prefill-key-major",
+        "fused-prefill-value-major",
+    ],
+)
+def test_kda_skips_the_states_of_negative_slots(flags: dict, row: dict, padded: list) -> None:
+    """The decode and the one-kernel prefill read and write no state for a slot of -1, in either
+    layout: the pool's neighbours and the slots of the padded sequences keep their states, every
+    other slot ends as in the unpadded call."""
+    torch.manual_seed(42)
+    row = {"H": 4, "HV": 4, "K": 128, "V": 128, "P": 12, **row}
+    some = row.pop("some", ())
+    inputs = _pooled(torch.bfloat16, some=some, **row, **flags).gen_inputs()
+    check_padded_slots_skipped(KDAFwdOp(**flags, validate_inputs=True), inputs, 5, 10, padded)
 
 
 @pytest.mark.smoke

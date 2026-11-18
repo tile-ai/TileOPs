@@ -3,6 +3,7 @@ import math
 import pytest
 import torch
 
+from tests.state_pool_guard import check_padded_slots_skipped
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import GDNCall
@@ -798,3 +799,61 @@ def test_gdn_decode_verifies_drafts_from_the_accepted_slot(
         1, drafts + 1, accepted.shape, dtype=accepted.dtype, device=accepted.device
     )
     test.check(GDNFwdOp(**flags), *inputs)
+
+
+_VALUE_MAJOR = {"state_v_first": True}
+_ROLLBACK = {"B": 3, "S": 3, "P": 12, "L": 4, "some": ("num_accepted_tokens",)}
+
+
+@pytest.mark.parametrize(
+    ("dtype", "flags", "row", "padded"),
+    [
+        (torch.float16, {}, {"B": 5, "S": 1, "P": 16}, [1, 3]),
+        (torch.bfloat16, _VALUE_MAJOR, {"B": 5, "S": 1, "P": 16}, [1, 3]),
+        (torch.float16, {}, _ROLLBACK, [0, (1, 2)]),
+        (torch.bfloat16, _VALUE_MAJOR, _ROLLBACK, [0, (1, 2)]),
+        pytest.param(
+            torch.bfloat16,
+            _VALUE_MAJOR,
+            {"B": 1, "S": 201, "seq_lens": [100, 0, 37, 64], "P": 12, "some": ("cu_seqlens",)},
+            [0, 2],
+            marks=pytest.mark.sm90,
+        ),
+        pytest.param(
+            torch.float16,
+            {},
+            {"B": FUSED_ROWS, "S": 100, "HV": FUSED_HEADS, "P": 8},
+            [1],
+            marks=pytest.mark.sm90,
+        ),
+        pytest.param(
+            torch.bfloat16,
+            {"target": BUILTIN},
+            {"B": 1, "S": 512, "HV": 2, "P": 4},
+            [0],
+            marks=[pytest.mark.sm90, pytest.mark.in_tree_kernels],
+        ),
+    ],
+    ids=[
+        "decode-key-major",
+        "decode-value-major",
+        "rollback-key-major",
+        "rollback-value-major",
+        "prefill",
+        "fused-prefill",
+        "partitioned-prefill",
+    ],
+)
+def test_gdn_skips_the_states_of_negative_slots(
+    dtype: torch.dtype, flags: dict, row: dict, padded: list
+) -> None:
+    """Each program that reads a pool reads and writes no state for a slot of -1: the pool's
+    neighbours and the slots of the padded sequences keep their states, every other slot ends as
+    in the unpadded call. Under rollback a padded start slot skips the sequence and a padded
+    token slot skips that token's store."""
+    torch.manual_seed(42)
+    row = {"H": 2, "HV": 4, "K": 128, "V": 128, **row}
+    some = row.pop("some", ())
+    layout = {key: value for key, value in flags.items() if key != "target"}
+    inputs = _pooled(dtype, some=some, **row, **layout).gen_inputs()
+    check_padded_slots_skipped(GDNFwdOp(**flags, validate_inputs=True), inputs, 5, 10, padded)
