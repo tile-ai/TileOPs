@@ -622,6 +622,10 @@ def _other_cases():
         x = torch.randn(64, 256, dtype=torch.float16, device=run_device())
         return FP8QuantPerTokenGroupFwdOp(128), (x,)
 
+    def fp8_quant_ue8m0_inplace():
+        x = torch.randn(64, 448, dtype=torch.bfloat16, device=run_device())
+        return FP8QuantPerTokenGroupFwdOp(64, 1e-4, use_ue8m0=True, inplace=True), (x,)
+
     def fp8_quant_per_block():
         return FP8QuantPerBlockFwdOp(), FP8QuantPerBlockWorkload(
             200, 392, torch.bfloat16
@@ -678,6 +682,7 @@ def _other_cases():
         ("embedding", embedding),
         ("masked-scatter", masked_scatter),
         ("fp8-quant", fp8_quant),
+        ("fp8-quant-ue8m0-inplace", fp8_quant_ue8m0_inplace),
         ("fp8-quant-per-block", fp8_quant_per_block),
         ("int4-quant-per-group", int4_quant_per_group),
         ("int8-dequant-per-block", int8_dequant_per_block),

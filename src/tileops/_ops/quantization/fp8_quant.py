@@ -21,11 +21,11 @@ class FP8QuantPerTokenGroupFwdOp(Op):
     vLLM's ``per_token_group_quant_fp8``. A group is ``group_size`` adjacent columns of the
     last axis.
 
-    ``scale`` is the group's absolute maximum, floored at ``eps``, over 448, to within one
-    float32 ulp. ``q`` is the group scaled by the reciprocal of that scale, so for a finite
-    group every element is within one ``float8_e4m3fn`` code of ``clamp(x / scale, -448,
-    448)`` rather than equal to it. With ``out_q`` the codes are written there and it is
-    returned as ``q``.
+    Without ``use_ue8m0``, ``scale`` is the group's absolute maximum, floored at ``eps``, over
+    448, to within one float32 ulp, and ``q`` is the group scaled by the reciprocal of that
+    scale, so for a finite group every element is within one ``float8_e4m3fn`` code of
+    ``clamp(x / scale, -448, 448)`` rather than equal to it. With ``out_q`` the codes are
+    written there and it is returned as ``q``.
 
     A group holding an infinity or a NaN has no defined result: whether the group maximum and
     the clamp carry the non-finite value depends on the kernel serving the call. Neither has a
@@ -37,9 +37,16 @@ class FP8QuantPerTokenGroupFwdOp(Op):
     scales are not in use; ``tma_aligned_scales`` takes effect only with
     ``column_major_scales``, as in vLLM.
 
-    ``scale_dtype`` ``float8_e8m0fnu`` stores the power-of-two scales ``use_ue8m0`` makes. With
-    ``inplace``, ``x`` is overwritten with ``q * scale`` in its own dtype and returned in the
-    third slot, ``q`` and ``scale`` being ``None``; otherwise the third slot is ``None``.
+    With ``use_ue8m0`` the scale is
+    $2^{\\lceil \\log_2(\\max(amax, eps) \\cdot r) \\rceil}$, ``r`` the float32 nearest
+    ``1 / 448``, and ``q`` is ``clamp(x / scale, -448, 448)`` rounded to nearest even
+    exactly: dividing by a power of two loses nothing. With ``eps=1e-4`` this is
+    DeepSeek-V4-Flash ``inference/kernel.py`` ``act_quant`` with ``scale_fmt="ue8m0"``, bit
+    for bit. ``scale_dtype`` ``float8_e8m0fnu`` stores these power-of-two scales.
+
+    With ``inplace``, ``x`` is overwritten with ``q * scale`` in its own dtype, where it lies
+    (a column slice of wider rows is written without a copy), and returned in the third slot,
+    ``q`` and ``scale`` being ``None``; otherwise the third slot is ``None``.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp8_quant_kernel": FP8QuantKernel}
@@ -90,7 +97,8 @@ class FP8QuantPerTokenGroupFwdOp(Op):
         """Quantize ``x`` group by group.
 
         Args:
-            x: $[*S \\times K]$, ``float16``, ``bfloat16`` or ``float32``.
+            x: $[*S \\times K]$, ``float16``, ``bfloat16`` or ``float32``; written in place
+                under ``inplace``, a strided view included.
             out_q: $[*S \\times K]$ contiguous ``float8_e4m3fn`` buffer the codes are written
                 to, or None.
 
@@ -99,7 +107,9 @@ class FP8QuantPerTokenGroupFwdOp(Op):
             given) and ``scale`` $[*S \\times K / group\\_size]$ in ``scale_dtype``; with
             ``inplace``, ``(None, None, x)``.
         """
-        x = x.contiguous()
+        if not self.inplace:
+            # In place, x is written where it lies, a strided view included.
+            x = x.contiguous()
         kernel = self.kernel_for(
             "fp8_quant",
             lambda: FP8QuantCall(
@@ -116,4 +126,6 @@ class FP8QuantPerTokenGroupFwdOp(Op):
             ),
         )
         q, scale = kernel(x, out_q)
+        if self.inplace:
+            return None, None, x
         return q, scale, None

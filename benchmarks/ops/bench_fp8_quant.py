@@ -54,4 +54,9 @@ def test_fp8_quant_bench(case) -> None:
         )
     implementations["torch-ref"] = case.reference
     implementations[TORCH_COMPILE_TAG] = compiled_reference(case.reference)
+    if arguments["inplace"]:
+        # Each fake-quantizes x in place, so each rewrites a private copy, restored per round.
+        implementations = {
+            name: private_inputs(fn, case.inputs, 0) for name, fn in implementations.items()
+        }
     bench.Runner(op, case).compare(implementations)
