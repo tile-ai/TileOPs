@@ -11,6 +11,8 @@ from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import (
     KDACall,
 )
+from tileops._kernels.linear_attention.chunk_prefill import run_chunk_prefill
+from tileops._kernels.linear_attention.kda import prefill as kda_prefill
 from tileops._utils.utils import get_sm_count
 from tileops.backend import OpNotAvailableError
 from tileops.linear_attention import KDAFwdOp
@@ -154,10 +156,6 @@ def test_kda_fused_prefill_reads_many_offsets_from_global_memory() -> None:
 @pytest.mark.parametrize(
     ("facts", "reason"),
     [
-        # Too few (sequence, value head) pairs for the one-kernel prefill, the only prefill that
-        # holds a value-major state or reads a state pool.
-        pytest.param({"state_v_first": True}, "key-major state", id="value-major-state"),
-        pytest.param({"pooled": True}, "key-major state", id="state-pool"),
         # Every in-tree kernel keeps one state a sequence, not one a token.
         pytest.param({"pooled": True, "rollback": True}, "num_accepted_tokens", id="rollback"),
         # The chunk-local half stages a value tile in buffers sized for a key tile.
@@ -750,7 +748,9 @@ def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
     length = 6144  # Keeps every supported SM90 device in the long-prefill dispatch region.
     torch.manual_seed(42)
     if packed:
-        lengths = tuple(length + (-200, 100, 200, -100)[i % 4] for i in range(sequences))
+        # Unequal lengths of one chunk count each, most ending in a partial chunk, keep the
+        # one-CTA walk of each sequence.
+        lengths = tuple(length + (-60, -10, 0, -30)[i % 4] for i in range(sequences))
         workload = KDAFwdTest(1, 0, heads, 128, torch.bfloat16, sequence_lengths=lengths)
         start = lengths[0]
     else:
@@ -828,19 +828,82 @@ _FUSED_ARCHS = [
 ]
 
 
-@pytest.mark.smoke
+# Sequence lengths whose chunk counts differ (one is empty) and lengths of two chunks each.
+_UNEVEN = [100, 0, 37, 64]
+_EVEN = [100, 70, 120, 66]
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("arch", _FUSED_ARCHS)
 @pytest.mark.parametrize("state_v_first", [False, True], ids=["key-major", "value-major"])
-def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool, arch) -> None:
-    """Packed sequences walked whole in one kernel start from and end in their slots, in
-    either state layout; an empty sequence leaves its slot as it was."""
+@pytest.mark.parametrize(
+    ("offsets", "seq_lens", "chunked"),
+    [
+        pytest.param(
+            ("cu_seqlens", "cu_seqlens_cpu"),
+            _UNEVEN,
+            True,
+            marks=pytest.mark.smoke,
+            id="uneven-chunks",
+        ),
+        pytest.param(("cu_seqlens",), _EVEN, True, marks=pytest.mark.full, id="device-offsets"),
+        pytest.param(
+            ("cu_seqlens", "cu_seqlens_cpu"),
+            _EVEN,
+            False,
+            marks=pytest.mark.full,
+            id="even-chunks",
+        ),
+    ],
+)
+def test_kda_prefill_updates_its_slots_of_a_state_pool(
+    state_v_first: bool, offsets: tuple, seq_lens: list, chunked: bool, arch, monkeypatch
+) -> None:
+    """Packed sequences start from and end in their slots, in either state layout; an empty
+    sequence leaves its slot as it was. Enough (sequence, value head) pairs for the one-CTA
+    walk of each sequence, which serves the call only when the host shows every sequence
+    spanning one chunk count; the chunk-parallel prefill serves the rest."""
     del arch
     torch.manual_seed(42)
+    runs = []
+
+    def counted(*args, **kwargs):
+        runs.append(1)
+        return run_chunk_prefill(*args, **kwargs)
+
+    monkeypatch.setattr(kda_prefill, "run_chunk_prefill", counted)
     flags = {"state_v_first": state_v_first, "use_qk_l2norm_in_kernel": True}
     test = _pooled(
-        torch.bfloat16, some=("cu_seqlens",), B=1, S=201, seq_lens=[100, 0, 37, 64], H=4,
+        torch.bfloat16, some=offsets, B=1, S=sum(seq_lens), seq_lens=seq_lens, H=4,
         HV=_FUSED_HEADS, K=128, V=128, P=12, **flags,
     )  # fmt: skip
+    test.check(KDAFwdOp(**flags), *test.gen_inputs())
+    assert bool(runs) == chunked
+
+
+@pytest.mark.parametrize("pooled", [False, True], ids=["batch-order", "pool"])
+@pytest.mark.parametrize(
+    ("length", "heads"),
+    [
+        pytest.param(65, 4, marks=pytest.mark.smoke, id="outputs-in-walk"),
+        pytest.param(1200, 2, marks=pytest.mark.full, id="output-launch"),
+    ],
+)
+def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, heads: int) -> None:
+    """A few value heads are too few for the one-CTA walk, so the chunk-parallel prefill
+    starts from and returns value-major states. Two chunks form their outputs in the walk;
+    nineteen over two heads, whose walk covers too few SMs to carry the outputs too, form
+    them in a launch of their own after it."""
+    torch.manual_seed(42)
+    flags = {"state_v_first": True, "use_qk_l2norm_in_kernel": True}
+    shape = {"B": 1, "S": length, "H": heads, "HV": heads, "K": 128, "V": 128}
+    if pooled:
+        test = _pooled(torch.bfloat16, P=6, **shape, **flags)
+    else:
+        call = manifest_call(
+            "KDAFwdOp", {"T": "bfloat16"}, some=["initial_state"], **shape, **flags
+        )
+        test = KDAFwdCallTest(call)
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
 
 
@@ -853,8 +916,8 @@ def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
             {},
             {
                 "B": 1,
-                "S": 201,
-                "seq_lens": [100, 0, 37, 64],
+                "S": sum(_UNEVEN),
+                "seq_lens": _UNEVEN,
                 "HV": _FUSED_HEADS,
                 "some": ("cu_seqlens",),
             },
@@ -865,10 +928,58 @@ def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
             {"state_v_first": True},
             {
                 "B": 1,
-                "S": 201,
-                "seq_lens": [100, 0, 37, 64],
+                "S": sum(_UNEVEN),
+                "seq_lens": _UNEVEN,
                 "HV": _FUSED_HEADS,
                 "some": ("cu_seqlens",),
+            },
+            [0, 2],
+            marks=[pytest.mark.sm90, pytest.mark.full],
+        ),
+        pytest.param(
+            {},
+            {
+                "B": 1,
+                "S": sum(_EVEN),
+                "seq_lens": _EVEN,
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens", "cu_seqlens_cpu"),
+            },
+            [0, 2],
+            marks=[pytest.mark.sm89, pytest.mark.full],
+        ),
+        pytest.param(
+            {},
+            {
+                "B": 1,
+                "S": sum(_EVEN),
+                "seq_lens": _EVEN,
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens", "cu_seqlens_cpu"),
+            },
+            [0, 2],
+            marks=[pytest.mark.sm90, pytest.mark.full],
+        ),
+        pytest.param(
+            {"state_v_first": True},
+            {
+                "B": 1,
+                "S": sum(_EVEN),
+                "seq_lens": _EVEN,
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens", "cu_seqlens_cpu"),
+            },
+            [0, 2],
+            marks=[pytest.mark.sm89, pytest.mark.full],
+        ),
+        pytest.param(
+            {"state_v_first": True},
+            {
+                "B": 1,
+                "S": sum(_EVEN),
+                "seq_lens": _EVEN,
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens", "cu_seqlens_cpu"),
             },
             [0, 2],
             marks=[pytest.mark.sm90, pytest.mark.full],
@@ -877,12 +988,16 @@ def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
     ids=[
         "decode-key-major",
         "decode-value-major",
-        "fused-prefill-key-major",
-        "fused-prefill-value-major",
+        "chunk-prefill-key-major",
+        "chunk-prefill-value-major",
+        "fused-prefill-key-major-sm89",
+        "fused-prefill-key-major-sm90",
+        "fused-prefill-value-major-sm89",
+        "fused-prefill-value-major-sm90",
     ],
 )
 def test_kda_skips_the_states_of_negative_slots(flags: dict, row: dict, padded: list) -> None:
-    """The decode and the one-kernel prefill write no state for a slot of -1, in either
+    """The decode and both packed prefills write no state for a slot of -1, in either
     layout: the pool's neighbours and the slots of the padded sequences keep their states, every
     other slot ends as in the unpadded call."""
     torch.manual_seed(42)

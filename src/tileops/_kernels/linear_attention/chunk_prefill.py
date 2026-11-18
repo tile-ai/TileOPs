@@ -211,6 +211,10 @@ def build_programs(
 def _split_scan(call, num_sequences, total, dtype, initial_state=True):
     """The scan as the state walk over the chunks, forming the outputs in the walk or after it.
 
+    The returned scan takes the prepared tensors, the initial states (a state pool under
+    ``call.pooled``), the offsets and the pool's slots, and returns ``(o, final_state)``; a
+    pool is updated in place and returned.
+
     The state walk takes the narrowest value tile whose CTAs fit one wave: a narrower tile
     shortens each CTA's chain of matmuls, a second wave doubles it. Forming the outputs in
     the walk saves a launch and a round trip through global memory but lengthens the walk's
@@ -262,18 +266,32 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
         arch=call.arch,
         with_output=with_output,
         initial_state=initial_state,
+        state_v_first=call.state_v_first,
+        pooled=call.pooled,
     )
     state_scan = CompiledProgram(state_scan)
+    # A pooled walk takes the slots after the offsets and returns no state.
+    slotted = call.pooled
     if with_output:
-        return state_scan
+
+        def walk(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
+            if slotted:
+                return state_scan(w, u, qg, kg, aqk, dec, h0, offsets, slots), h0
+            return state_scan(w, u, qg, kg, aqk, dec, h0, offsets)
+
+        return walk
     output = CompiledProgram(
         chunk_output_program(
             call.value_heads, call.dim_k, call.dim_v, CHUNK_SIZE, dtype, total, num_sequences
         )
     )
 
-    def scan(w, u, qg, kg, aqk, dec, h0, offsets):
-        starts, values, final_state = state_scan(w, u, kg, dec, h0, offsets)
+    def scan(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
+        if slotted:
+            starts, values = state_scan(w, u, kg, dec, h0, offsets, slots)
+            final_state = h0
+        else:
+            starts, values, final_state = state_scan(w, u, kg, dec, h0, offsets)
         return output(qg, aqk, starts, values, offsets), final_state
 
     return scan
@@ -292,8 +310,12 @@ def prepare_inputs(call, tensors, *, programs, gate_mode, gate_params=()):
     return prepare(q, k, v, gate, beta, offsets, inverse)
 
 
-def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False):
-    """Run one chunked prefill launch on the programs *kernel* holds for its facts."""
+def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False, slots=None):
+    """Run one chunked prefill launch on the programs *kernel* holds for its facts.
+
+    Under ``call.pooled`` the state in *inputs* is a pool and *slots* names each sequence's
+    slot; the pool is advanced in place and returned as the final state.
+    """
     q, k, v, _, beta, state, offsets, _, _ = inputs
     total = call.batch * call.seq_len
     offsets = packed_offsets(call.batch, call.seq_len, offsets, q.device)
@@ -327,5 +349,8 @@ def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False):
         gate_mode=gate_mode,
         gate_params=gate_params,
     )
-    output, final_state = programs[3](*prepared, state, offsets)
+    scan = programs[3]
+    output, final_state = (
+        scan(*prepared, state, offsets, slots) if call.pooled else scan(*prepared, state, offsets)
+    )
     return output.reshape(call.batch, call.seq_len, call.value_heads, call.dim_v), final_state

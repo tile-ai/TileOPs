@@ -50,8 +50,7 @@ class KDAFwdOp(Op):
     Raw gates use ``-exp(A_log) * softplus(g + dt_bias)`` without a lower bound,
     or ``lower_bound * sigmoid(exp(A_log) * (g + dt_bias))`` with one; an omitted
     ``dt_bias`` is zero. A value-major state and a state pool (``state_indices``)
-    are served by decode, and by the one-kernel prefill, which takes precomputed
-    gates and enough (sequence, value head) pairs to cover most SMs. Raw beta,
+    are served by decode and prefill. Raw beta,
     ``num_accepted_tokens``, other state widths and the other calls still require
     an external target implementation.
     """
