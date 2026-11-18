@@ -116,7 +116,9 @@ def _group_scales(block_m: int, eps: float, ue8m0: bool, amax_dtype: str):
         for i in T.Parallel(block_m):
             amax = T.max(T.cast(amax_local[i], "float32"), eps)
             if ue8m0:
-                biased = pow2_ceil_exponent(amax * inv_fp8_max)
+                # A product below 2 ** -126 takes 2 ** -126, as act_quant gives a subnormal
+                # one; the floor also covers a zero product, which eps=0 admits.
+                biased = T.max(pow2_ceil_exponent(amax * inv_fp8_max), T.uint32(1))
                 scale_local[i] = exponent_scale(biased)
                 recip_local[i] = exponent_scale(T.uint32(254) - biased)
             else:
@@ -133,7 +135,8 @@ def _ue8m0_codes(block_m: int, group_size: int, in_dtype: str):
     exponent range is float32's, it takes two elements an instruction. No clamp precedes the
     conversion: the scale is at least the group maximum times the float32 nearest 1 / 448,
     which exceeds 1 / 448, rounded to float32 and then up to a power of two, so a product is
-    at most 448 * (1 + 6e-8), which rounds to 448 as a clamped one does.
+    at most 448 * (1 + 6e-8), which rounds to 448 as a clamped one does. A scale raised to
+    the 2 ** -126 floor only makes the products smaller.
     """
     # float16 cannot hold the reciprocal of a scale below 2 ** -15.
     product_dtype = in_dtype if in_dtype == "bfloat16" else "float32"

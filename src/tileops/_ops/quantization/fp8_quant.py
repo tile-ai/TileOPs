@@ -28,21 +28,24 @@ class FP8QuantPerTokenGroupFwdOp(Op):
     written there and it is returned as ``q``.
 
     A group holding an infinity or a NaN has no defined result: whether the group maximum and
-    the clamp carry the non-finite value depends on the kernel serving the call. Neither has a
-    group whose floored maximum is below ``448 / 3.4e38``, about ``1.3e-36``, which only an
-    ``eps`` below that bound admits (an all-zero group under ``eps=0``, for one): the
-    reciprocal of its scale overflows float32.
+    the clamp carry the non-finite value depends on the kernel serving the call. Without
+    ``use_ue8m0``, neither has a group whose floored maximum is below ``448 / 3.4e38``, about
+    ``1.3e-36``, which only an ``eps`` below that bound admits (an all-zero group under
+    ``eps=0``, for one): the reciprocal of its scale overflows float32.
 
     ``use_ue8m0=None`` gives float32 scales, as vLLM resolves None where DeepGEMM's UE8M0
     scales are not in use; ``tma_aligned_scales`` takes effect only with
     ``column_major_scales``, as in vLLM.
 
     With ``use_ue8m0`` the scale is
-    $2^{\\lceil \\log_2(\\max(amax, eps) \\cdot r) \\rceil}$, ``r`` the float32 nearest
-    ``1 / 448``, and ``q`` is ``clamp(x / scale, -448, 448)`` rounded to nearest even
-    exactly: dividing by a power of two loses nothing. With ``eps=1e-4`` this is
-    DeepSeek-V4-Flash ``inference/kernel.py`` ``act_quant`` with ``scale_fmt="ue8m0"``, bit
-    for bit. ``scale_dtype`` ``float8_e8m0fnu`` stores these power-of-two scales.
+    $\\max(2^{\\lceil \\log_2(\\max(amax, eps) \\cdot r) \\rceil}, 2^{-126})$, ``r`` the
+    float32 nearest ``1 / 448``, and ``q`` is ``clamp(x / scale, -448, 448)`` rounded to
+    nearest even exactly: dividing by a power of two loses nothing. The floor, float32's
+    smallest normal power of two, is the scale ``act_quant`` gives a subnormal
+    ``max(amax, eps) * r``; it keeps every finite group defined, an all-zero group under
+    ``eps=0`` included. With ``eps=1e-4`` this is DeepSeek-V4-Flash ``inference/kernel.py``
+    ``act_quant`` with ``scale_fmt="ue8m0"``, bit for bit. ``scale_dtype`` ``float8_e8m0fnu``
+    stores these power-of-two scales.
 
     With ``inplace``, ``x`` is overwritten with ``q * scale`` in its own dtype, where it lies
     (a column slice of wider rows is written without a copy), and returned in the third slot,

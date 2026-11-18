@@ -57,14 +57,15 @@ class FP8QuantWorkload(WorkloadBase):
         return x, torch.empty(self.shape, dtype=torch.float8_e4m3fn, device=run_device())
 
     def ref_program(self, x: torch.Tensor, out_q: torch.Tensor | None = None) -> tuple:
-        """Per group: ``scale = max(amax, eps) / 448``, rounded up to a power of two under
-        ``use_ue8m0``, and ``q = clamp(x / scale, -448, 448)``; with ``inplace``, ``x`` becomes
-        ``q * scale``. The result fills ``(q, scale, None)`` or ``(None, None, x)``."""
+        """Per group: ``scale = max(amax, eps) / 448``, under ``use_ue8m0`` rounded up to a
+        power of two no smaller than ``2 ** -126``, and ``q = clamp(x / scale, -448, 448)``;
+        with ``inplace``, ``x`` becomes ``q * scale``. The result fills ``(q, scale, None)``
+        or ``(None, None, x)``."""
         groups = x.float().unflatten(-1, (-1, self.group_size))
         amax_value = torch.abs(groups).amax(dim=-1, keepdim=True).clamp(min=self.eps)
         scale = amax_value / 448.0
         if self.use_ue8m0:
-            scale = round_up_to_power_of_two(scale)
+            scale = round_up_to_power_of_two(scale.clamp(min=2.0**-126))
         q = torch.clamp(groups / scale, min=-448.0, max=448.0).to(torch.float8_e4m3fn)
         if self.inplace:
             x.copy_((q.float() * scale).flatten(-2))
@@ -129,4 +130,18 @@ class FP8QuantTiesWorkload(FP8QuantWorkload):
         x, *rest = super().gen_inputs()
         # Within float16's range: 448 * 2 ** 7 and 2 ** -12 * 2 ** -8 are both normal or zero.
         fill_with_ties(x, self.group_size, _E4M3_TIES, 16)
+        return (x, *rest)
+
+
+class FP8QuantScaleFloorWorkload(FP8QuantWorkload):
+    """The workload on rows scaled by ``2 ** -(100 + r % 40)``, row ``r``, so that group
+    maxima times 1 / 448 run from normal float32 through its subnormals, and on all-zero
+    rows: the UE8M0 scales reach the ``2 ** -126`` floor under a small ``eps``."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        x, *rest = super().gen_inputs()
+        rows = x.view(-1, x.shape[-1])
+        shift = -(100 + torch.arange(rows.shape[0], device=x.device) % 40)
+        rows.copy_((rows.float() * torch.exp2(shift.float())[:, None]).to(x.dtype))
+        rows[1::5] = 0
         return (x, *rest)

@@ -5,6 +5,7 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops.quantization import FP8QuantPerTokenGroupFwdOp
 from workloads.device import run_device
 from workloads.quantization.fp8_quant import (
+    FP8QuantScaleFloorWorkload,
     FP8QuantTiesWorkload,
     FP8QuantViewWorkload,
     FP8QuantWorkload,
@@ -20,6 +21,10 @@ class FP8QuantTiesTest(FP8QuantTiesWorkload, TestBase):
 
 
 class FP8QuantViewTest(FP8QuantViewWorkload, TestBase):
+    pass
+
+
+class FP8QuantScaleFloorTest(FP8QuantScaleFloorWorkload, TestBase):
     pass
 
 
@@ -110,6 +115,30 @@ def test_fp8_quant_ue8m0_rounds_ties_to_even_and_keeps_signed_zeros(dtype, inpla
     rounding to zero keeps its sign, and an all-zero group takes the ``eps`` floor."""
     test = FP8QuantTiesTest((64, 512), 128, dtype, inplace=inplace, **_UE8M0)
     test.check(FP8QuantPerTokenGroupFwdOp(128, inplace=inplace, **_UE8M0), *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "dtype, eps, scale_dtype, inplace",
+    [
+        pytest.param(torch.bfloat16, 0.0, torch.float32, False, marks=pytest.mark.smoke),
+        pytest.param(torch.float32, 1e-36, torch.float8_e8m0fnu, False, marks=pytest.mark.smoke),
+        pytest.param(torch.float16, 0.0, torch.float8_e8m0fnu, False, marks=pytest.mark.smoke),
+        pytest.param(torch.bfloat16, 1e-36, torch.float32, True, marks=pytest.mark.full),
+        pytest.param(torch.float32, 0.0, torch.float32, True, marks=pytest.mark.full),
+    ],
+)
+def test_fp8_quant_ue8m0_floors_scales_at_two_to_the_minus_126(
+    dtype, eps, scale_dtype, inplace
+) -> None:
+    """A group whose ``max(amax, eps) / 448`` is subnormal or zero takes the scale
+    ``2 ** -126``, as ``act_quant`` gives a subnormal one."""
+    params = {"eps": eps, "use_ue8m0": True, "scale_dtype": scale_dtype, "inplace": inplace}
+    test = FP8QuantScaleFloorTest((80, 512), 128, dtype, **params)
+    op = FP8QuantPerTokenGroupFwdOp(128, **params)
+    test.check(op, *test.gen_inputs())
+    if not inplace:
+        _, scale, _ = op(*test.gen_inputs())
+        assert scale.float().min().item() == 2.0**-126
 
 
 @pytest.mark.parametrize(
