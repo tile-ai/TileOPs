@@ -78,10 +78,6 @@ class NGramHashFwdOp(Op):
             "ngram_hash",
             lambda: NGramHashCall(
                 device=input_ids.device,
-                batch=cu_seqlens.numel() - 1 if cu_seqlens is not None else input_ids.shape[0],
-                length=0 if cu_seqlens is not None else input_ids.shape[1],
-                total=input_ids.numel(),
-                slots=context.shape[0],
                 width=context.shape[1],
                 row_stride=context.stride(0),
                 col_stride=context.stride(1),

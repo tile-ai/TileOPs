@@ -16,12 +16,8 @@ __all__ = ["NGramHashCall", "NGramHashFwdInterface", "NGramHashKernel"]
 
 @dataclass(frozen=True)
 class NGramHashCall(CallSpec):
-    """Shapes, context strides and optional metadata; metadata values stay on device."""
+    """Static hash and context layout facts; metadata values stay on device."""
 
-    batch: int = 0
-    length: int = 0
-    total: int = 0
-    slots: int = 0
     width: int = 0
     row_stride: int = 0
     col_stride: int = 0
