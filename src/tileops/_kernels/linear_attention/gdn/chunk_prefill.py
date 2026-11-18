@@ -10,6 +10,8 @@ class GDNChunkPrefillFwdKernel(Kernel, GDNFwdInterface):
 
     @classmethod
     def refusal(cls, call):
+        if call.pooled:
+            return "reads and writes the states in batch order; a state pool is not served"
         return GDNDensePrefillFwdKernel.refusal(call) or chunk_refusal(call)
 
     @classmethod
@@ -32,7 +34,10 @@ class GDNChunkPrefillFwdKernel(Kernel, GDNFwdInterface):
         cu_seqlens_cpu=None,
         A_log=None,
         dt_bias=None,
+        state_indices=None,
+        num_accepted_tokens=None,
     ):
+        del state_indices, num_accepted_tokens
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         inputs = (q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias)
         return run_chunk_prefill(

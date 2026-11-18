@@ -335,6 +335,15 @@ def test_gqa_varlen_fwd_op(
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("window", [2**31 - 1, 2**31 - 1000], ids=["int32-max", "near-int32-max"])
+def test_varlen_right_window_near_int32_max_is_no_window(window: int) -> None:
+    """A right window this wide hides no key; added to a query position it overflows int32,
+    so the output must equal the unwindowed reference."""
+    test = GQAVarlenFwdTest(2, [1024, 512], [1024, 600], 8, 2, 128, False, -1, -1, torch.float16)
+    test.check(GQAVarlenFwdOp(window_size_right=window), *test.gen_inputs())
+
+
+@pytest.mark.smoke
 def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
     op = GQAVarlenFwdOp(is_causal=True)
     for q_lens, kv_lens in (([31, 65], [63, 129]), ([127, 3], [255, 7])):

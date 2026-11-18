@@ -247,6 +247,36 @@ def test_rope_graph_replay(neox) -> None:
         compare_outputs(got_k, ref_k, rope_verification())
 
 
+@pytest.mark.parametrize(
+    ("neox", "head_size", "rotary_dim"),
+    [
+        pytest.param(False, 64, 24, marks=pytest.mark.smoke, id="vector-gptj"),
+        pytest.param(True, 64, 24, marks=pytest.mark.full, id="vector-neox"),
+        pytest.param(False, 65, 32, marks=pytest.mark.full, id="scalar-gptj"),
+    ],
+)
+def test_rope_rotates_several_units_a_thread_where_heads_copy_columns(
+    neox, head_size, rotary_dim
+) -> None:
+    """Heads with copied columns, each thread loading all its units before it stores any.
+
+    2048 tokens of 32 query and 8 key heads fill more than half of any device's resident
+    threads, so each thread rotates several units: query units, then key units, then units
+    past the token's last. A NeoX head of 64 columns rotating 24 copies 8-column runs past
+    4-column rotating units, so a copied run is wider than a rotating unit.
+    """
+    dtype = torch.float16
+    op, params = _op(
+        "RoPEFwdOp", dtype, head_size=head_size, rotary_dim=rotary_dim, is_neox_style=neox
+    )
+    positions, query, key = _inputs("RoPEFwdOp", params, 2048, 32, 8, dtype)
+    positions = positions.flip(0)
+    got_q, got_k = op(positions, query, key)
+    ref_q, ref_k = _reference("RoPEFwdOp", params, positions, query, key)
+    compare_outputs(got_q, ref_q, rope_verification())
+    compare_outputs(got_k, ref_k, rope_verification())
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
 def test_rope_query_off_a_vector_boundary(neox) -> None:

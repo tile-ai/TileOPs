@@ -15,7 +15,7 @@ from tileops._kernels.attention.call_spec import (
     GQAPreprocessBwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops.attention.gqa.parameters import score_softcap
+from tileops._ops.attention.gqa.parameters import attention_window, score_softcap
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -31,9 +31,9 @@ class GQADenseBwdOp(Op):
     forward's do. ``lse`` is the float32 natural-log log-sum-exp of each query row's scaled
     scores, ``[B, H, S]``; a row with ``lse`` ``-inf`` saw no key and gets zero gradients.
 
-    The in-tree kernels serve ``window_size_left = window_size_right = -1`` and no
-    ``softcap``; a call with either is refused when a kernel is selected, naming the
-    limit. Pass them anyway, equal to the forward's, so a refused call says why.
+    The in-tree kernels serve no window and no ``softcap``; a call with a window that hides
+    a key, or with a cap, is refused when a kernel is selected, naming the limit. Pass them
+    anyway, equal to the forward's, so a refused call says why.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -62,9 +62,9 @@ class GQADenseBwdOp(Op):
         Args:
             is_causal: Apply the causal mask. Default ``False``, as in ``flash_attn_func``.
             window_size_left: Keys admitted left of a query row; ``-1`` means unlimited.
-                The in-tree kernels serve only ``-1``.
+                The in-tree kernels serve only ``-1`` or a window reaching every key.
             window_size_right: Keys admitted right of a query row; ``-1`` means unlimited.
-                The in-tree kernels serve only ``-1``.
+                The in-tree kernels serve only ``-1`` or a window reaching every key.
             sm_scale: Score scale, or ``None`` for ``D ** -0.5``, ``D`` the head dimension
                 of ``q`` and ``k``.
             softcap: Score cap of the forward; ``None`` or ``0`` disables it. The in-tree
@@ -96,8 +96,8 @@ class GQADenseBwdOp(Op):
             is_causal=self.is_causal,
             sm_scale=self.sm_scale,
             softcap=self.softcap,
-            window_size_left=self.window_size_left,
-            window_size_right=self.window_size_right,
+            window_size_left=attention_window(self.window_size_left, seq_len),
+            window_size_right=attention_window(self.window_size_right, seq_len),
             device=q.device,
         )
 

@@ -7,7 +7,7 @@ from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
 from tileops._kernels.gemm.heuristics import int8_pingpong_grid
-from tileops._kernels.gemm.w4a16 import _cross_tile_wgmma, _select_config
+from tileops._kernels.gemm.w4a16 import _cross_tile_wgmma, _pair_reduced, _select_config
 from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -836,11 +836,18 @@ class GEMMW4A8Fixture(FixtureBase):
                 pytest.param(
                     65, 14320, 384, marks=pytest.mark.full, id="full-w4a8-m65-one-wave-ragged-odd-k"
                 ),
-                # Short-K model projections at small token counts.
+                # Short-K model projections at small token counts: one CTA per 64-row tile,
+                # its 256-K items split over two units in the CTA.
                 pytest.param(16, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m16"),
                 pytest.param(32, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m32"),
+                # Past 2048 K a unit: two-warpgroup units on 128-row tiles split across CTAs,
+                # with a short last item.
                 pytest.param(
-                    32, 7680, 3456, marks=pytest.mark.full, id="full-w4a8-decode-negative-guard"
+                    16,
+                    4096,
+                    4224,
+                    marks=pytest.mark.full,
+                    id="full-w4a8-decode-two-warpgroup-units",
                 ),
                 # A short-K TP8 down projection at 64 tokens.
                 pytest.param(64, 8192, 3584, marks=pytest.mark.full, id="full-w4a8-llama-tp8-m64"),
@@ -1323,6 +1330,42 @@ def test_w4a8_forty_token_dispatch(m: int, n: int, k: int, key: str) -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "m, n, k, grid",
+    [
+        # One CTA per 64-row tile. Nine 256-K items over two units, five on the busier one;
+        # a sixth ring stage would push the partial sums out of shared memory.
+        pytest.param(32, 7168, 2304, (1, 112, 5), marks=pytest.mark.smoke, id="k-off-512"),
+        # Eight 512-K items: 2048 K a unit at the limit, 2560 one item past it.
+        pytest.param(16, 4096, 4096, (1, 64, 3), marks=pytest.mark.full, id="unit-k-at-limit"),
+        pytest.param(16, 4096, 4608, (2, 132, 3), marks=pytest.mark.full, id="unit-k-past-limit"),
+        pytest.param(1, 4096, 4096, (1, 64, 4), marks=pytest.mark.full, id="eight-token-tile"),
+        # The 8-token tile meets the same limit: a rule exempting it fails only this case.
+        pytest.param(
+            8, 4096, 4608, (1, 132, 4), marks=pytest.mark.full, id="eight-token-unit-k-past-limit"
+        ),
+        # 132 row tiles are one wave; 133 are not, and split tiles across CTAs.
+        pytest.param(
+            32, 132 * 64, 2048, (1, 132, 2), marks=pytest.mark.full, id="one-wave-of-row-tiles"
+        ),
+        pytest.param(
+            32, 133 * 64, 2048, (1, 132, 2), marks=pytest.mark.full, id="row-tiles-past-a-wave"
+        ),
+    ],
+)
+def test_w4a8_decode_exchange_free_grid(m: int, n: int, k: int, grid: tuple[int, int, int]) -> None:
+    """One CTA per 64-row tile with the partial sums in shared memory; ``grid`` is the
+    dispatched unit warpgroups, CTAs and ring stages on 132 SMs."""
+    op = GEMMW4A8FwdOp(target=BUILTIN)
+    call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
+    if call.sm_count != 132:
+        pytest.skip("the expected grids count 132 SMs")
+    assert op.key_for("gemm_w4a8", call) == "gemm_w4a8_decode"
+    cfg = op.kernel_for("gemm_w4a8", lambda: call).config
+    assert (cfg["unit_warpgroups"], cfg["num_ctas"], cfg["num_stages"]) == grid
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k, stream_k",
@@ -1502,6 +1545,103 @@ def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
     sm_count = get_sm_count(torch.device(run_device()).index)
     test = GEMMFP8Test(256, 192 * (sm_count // 2) - 128, 256, torch.float8_e4m3fn, "per_tensor")
     test.check(GEMMFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("m", "n", "k", "scale_mode", "out_dtype", "tune"),
+    [
+        # Blocks short of the SMs and a long K: K split into slices and reduced into an output
+        # whose rows TMA cannot store; 12 rows of a padded to 16.
+        pytest.param(
+            12,
+            1003,
+            3072,
+            "block128x128",
+            torch.float16,
+            False,
+            marks=pytest.mark.smoke,
+            id="split",
+        ),
+        # More 64-row blocks than SMs: CTAs stream several blocks each and the last CTA's
+        # last one is past N; a partial last block and 128-row scale block; 16 rows of a.
+        pytest.param(
+            16, None, 512, "block128x128", torch.bfloat16, False, marks=pytest.mark.full, id="units"
+        ),
+        # One row of a over one K step: a's block scale is (1, 1), b's tell the grids apart;
+        # a ring of one stage.
+        pytest.param(
+            1,
+            256,
+            128,
+            "block128x128",
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.full,
+            id="one-step",
+        ),
+        # The same blocks over a K too short to split: the unsplit tile stored row by row.
+        pytest.param(
+            12,
+            1003,
+            1024,
+            "block128x128",
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.full,
+            id="masked",
+        ),
+        # Per-tensor scales on every K slice of a split call, tuned over two ring depths: the
+        # deepest ring holds fewer K steps than a CTA streams.
+        pytest.param(
+            5,
+            1280,
+            16384,
+            "per_tensor",
+            torch.bfloat16,
+            True,
+            marks=pytest.mark.full,
+            id="split-pt",
+        ),
+        # Scales staged for a long K hold the ring to its shallowest depth.
+        pytest.param(
+            16,
+            64,
+            393216,
+            "block128x128",
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.full,
+            id="scales-fill-smem",
+        ),
+        # Scales staged for a longer K leave no room for the ring: another kernel serves it.
+        pytest.param(
+            16,
+            64,
+            524288,
+            "block128x128",
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.full,
+            id="scales-past-smem",
+        ),
+    ],
+)
+def test_gemm_fp8_short_call_streams_b_in_64_row_blocks(
+    m: int, n: int | None, k: int, scale_mode: str, out_dtype: torch.dtype, tune: bool
+) -> None:
+    """A call of few rows runs as c^T = b @ a^T: WGMMA's 64-row M axis takes b's rows and its
+    N axis, a multiple of 8, takes a's."""
+    sm_count = get_sm_count(torch.device(run_device()).index)
+    n = 64 * (sm_count + 9) - 24 if n is None else n
+    test = GEMMFP8Test(m, n, k, torch.float8_e4m3fn, scale_mode, out_dtype=out_dtype)
+    op = GEMMFP8FwdOp(out_dtype=out_dtype)
+    if tune:
+        op.request_tune()
+        # The first call tunes and returns the untuned result; the check reads the tuned one.
+        op(*test.gen_inputs())
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.parametrize(
@@ -1898,6 +2038,7 @@ def test_gemm_bias_on_each_structure(
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("out_dtype", [None, torch.float32], ids=["bf16-out", "float32-out"])
 @pytest.mark.parametrize(
     ("m", "n", "k", "trans_b", "kernel"),
     [
@@ -1909,12 +2050,283 @@ def test_gemm_bias_on_each_structure(
         ),
     ],
 )
-def test_gemm_bias_on_selected_kernels(m: int, n: int, k: int, trans_b: bool, kernel: type) -> None:
-    """The kernel selected for a shape adds the bias, a single one over a one-column output."""
-    test = GEMMTest(m, n, k, torch.bfloat16, False, trans_b, bias=True)
-    op = GEMMFwdOp(trans_b=trans_b, target=BUILTIN)
+def test_gemm_bias_on_selected_kernels(
+    m: int, n: int, k: int, trans_b: bool, kernel: type, out_dtype: torch.dtype | None
+) -> None:
+    """The kernel selected for a shape adds the bias, a single one over a one-column output,
+    to the float32 sum, and stores it in the output dtype."""
+    test = GEMMTest(m, n, k, torch.bfloat16, False, trans_b, bias=True, out_dtype=out_dtype)
+    op = GEMMFwdOp(trans_b=trans_b, out_dtype=out_dtype, target=BUILTIN)
     test.check(op, *test.gen_inputs())
     assert all(isinstance(entry, kernel) for entry in op.iter_kernels())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("m", "n", "k", "trans_a", "trans_b", "bias", "config"),
+    [
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            {**_WS, "split_k": 1},
+            marks=pytest.mark.smoke,
+            id="ws-tma-store",
+        ),
+        # Rows of 1001 float32 values are no whole number of 16-byte units.
+        pytest.param(
+            1000,
+            1001,
+            1048,
+            False,
+            True,
+            False,
+            {**_WS, "split_k": 1},
+            marks=pytest.mark.smoke,
+            id="ws-row-store",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            {
+                "block_m": 64,
+                "block_n": 112,
+                "block_k": 64,
+                "num_stages": 4,
+                "panel_size": 0,
+                "split_k": 1,
+                "cluster_m": 2,
+            },
+            marks=pytest.mark.smoke,
+            id="ws-fill-cluster",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1024,
+            False,
+            True,
+            True,
+            {**_WS, "split_k": 2},
+            marks=pytest.mark.smoke,
+            id="split-k",
+        ),
+        pytest.param(
+            1024,
+            1024,
+            1024,
+            False,
+            True,
+            True,
+            {"simple": True, "block_m": 64, "block_n": 128, "block_k": 64, "num_stages": 3},
+            marks=pytest.mark.smoke,
+            id="simple",
+        ),
+        pytest.param(
+            8,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            {"swap_ab": True, "block_nn": 64, "block_k": 128, "num_stages": 4},
+            marks=pytest.mark.smoke,
+            id="swap-ab",
+        ),
+        # A 64-column staging chunk leaves the ring its three stages beside two float32 halves.
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            False,
+            True,
+            {"coop2": True, "block_n": 256, **_COOP2, "stage_n": 64},
+            marks=pytest.mark.smoke,
+            id="coop2",
+        ),
+        # Twenty-four rows of A, a WGMMA width 256 does not divide, run the helper's own.
+        pytest.param(
+            24,
+            8456,
+            1040,
+            False,
+            True,
+            True,
+            {"stream": True, "block_k": 128, "num_stages": 8, "blocks": 2},
+            marks=pytest.mark.smoke,
+            id="stream-helper",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            # The ring best_config selects for a float32 output: five stages and two
+            # staging buffers fill all but a few KiB of the shared memory.
+            {**_PINGPONG, "block_n": 176, "num_stages": 5, "stage_n": 16, "epi_bufs": 2},
+            marks=pytest.mark.smoke,
+            id="pingpong-176",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1024,
+            False,
+            True,
+            False,
+            {"coop2_splitk": True, "block_n": 64, "block_k": 128, "num_stages": 4, "split_k": 2},
+            marks=pytest.mark.full,
+            id="coop2-split-k",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            False,
+            {"coop2": True, "block_n": 176, **_COOP2, "stage_n": 88},
+            marks=pytest.mark.full,
+            id="coop2-176",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            True,
+            {
+                "coop2": True,
+                "block_n": 256,
+                **_COOP2,
+                "stage_n": 16,
+                "narrow_n": 240,
+                "narrow_rows": 2,
+                "narrow_cols": 2,
+            },
+            marks=pytest.mark.full,
+            id="coop2-narrow",
+        ),
+        pytest.param(
+            32,
+            8456,
+            1040,
+            False,
+            True,
+            False,
+            {"stream": True, "block_k": 128, "num_stages": 8, "blocks": 2},
+            marks=pytest.mark.full,
+            id="stream",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            False,
+            {**_PINGPONG, "block_n": 128},
+            marks=pytest.mark.full,
+            id="pingpong",
+        ),
+        pytest.param(
+            2200,
+            3720,
+            1048,
+            False,
+            True,
+            False,
+            {
+                **_PINGPONG,
+                "block_n": 192,
+                "stage_n": 32,
+                "epi_bufs": 1,
+                "narrow_n": 160,
+                "narrow_rows": 8,
+                "narrow_cols": 14,
+            },
+            marks=pytest.mark.full,
+            id="pingpong-192-narrow",
+        ),
+        pytest.param(
+            1024,
+            1024,
+            1024,
+            False,
+            False,
+            True,
+            # The eight-stage ring best_config selects, beside two float32 staging tiles.
+            {"coop2s": True, "block_n": 64, "block_k": 64, "num_stages": 8},
+            marks=pytest.mark.full,
+            id="coop2s",
+        ),
+    ],
+)
+def test_gemm_float32_output_on_each_structure(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, bias: bool, config: dict
+) -> None:
+    """Each structure writing a float32 output stores the unrounded float32 sum of bf16
+    products, past M, N and K tails."""
+    test = GEMMTest(m, n, k, torch.bfloat16, trans_a, trans_b, bias=bias, out_dtype=torch.float32)
+    op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, out_dtype=torch.float32, target=BUILTIN)
+    inputs = test.gen_inputs()
+    op(*inputs)
+    (kernel,) = [k for k in op.iter_kernels() if type(k).__name__ == "GEMMTMAKernel"]
+    kernel.config = config
+    test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gemm_coop2_swap_refuses_a_float32_output() -> None:
+    """The coop2_swap tile, whose transposed store writes 16-bit elements only, refuses a
+    float32 output when it is built, rather than rounding it."""
+    test = GEMMTest(1000, 1032, 1048, torch.bfloat16, True, False, out_dtype=torch.float32)
+    op = GEMMFwdOp(trans_a=True, trans_b=False, out_dtype=torch.float32, target=BUILTIN)
+    inputs = test.gen_inputs()
+    op(*inputs)
+    (kernel,) = op.iter_kernels()
+    kernel.config = {**_COOP2_SWAP, "group_size_m": 1}
+    with pytest.raises(ValueError, match="coop2_swap"):
+        op(*inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("m", "n"),
+    [
+        # DeepSeek-V4-Flash's LM head over one decode token, a GEMV.
+        pytest.param(1, 129280, marks=pytest.mark.smoke, id="lm-head-gemv"),
+        # Its router and LM head over 64 decode tokens.
+        pytest.param(64, 256, marks=pytest.mark.smoke, id="router-decode"),
+        pytest.param(64, 129280, marks=pytest.mark.smoke, id="lm-head-decode"),
+        # Its LM head over 24 decode tokens, which streams the weight 64 rows at a time.
+        pytest.param(24, 129280, marks=pytest.mark.smoke, id="lm-head-stream"),
+        # Its router and KV compressors over an 8192-token prefill.
+        pytest.param(8192, 256, marks=pytest.mark.full, id="router-prefill"),
+        pytest.param(8192, 512, marks=pytest.mark.full, id="compressor-512"),
+        pytest.param(8192, 1024, marks=pytest.mark.full, id="compressor-1024"),
+    ],
+)
+def test_gemm_float32_output_on_pilot_model_rows(m: int, n: int) -> None:
+    """The tile selected for a pilot model's float32 logits, whose staging tile takes twice
+    the shared memory of a 16-bit one, builds and stores the unrounded float32 sum."""
+    test = GEMMTest(m, n, 4096, torch.bfloat16, False, True, out_dtype=torch.float32)
+    op = GEMMFwdOp(out_dtype=torch.float32, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
@@ -2004,10 +2416,12 @@ def test_gemm_short_grid_runs_the_whole_smem_ring() -> None:
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.smoke
-def test_gemm_bias_on_two_row_gemv() -> None:
-    """Both rows of the two-row GEMV band, which only H200 is calibrated to take, add the bias."""
-    test = GEMMTest(2, 256, 4096, torch.bfloat16, False, True, bias=True)
-    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+@pytest.mark.parametrize("out_dtype", [None, torch.float32], ids=["bf16-out", "float32-out"])
+def test_gemm_bias_on_two_row_gemv(out_dtype: torch.dtype | None) -> None:
+    """Both rows of the two-row GEMV band, which only H200 is calibrated to take, add the bias,
+    in either output dtype."""
+    test = GEMMTest(2, 256, 4096, torch.bfloat16, False, True, bias=True, out_dtype=out_dtype)
+    op = GEMMFwdOp(trans_b=True, out_dtype=out_dtype, target=BUILTIN)
     test.check(op, *test.gen_inputs())
     if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) == "h200":
         (kernel,) = op.iter_kernels()
@@ -2190,8 +2604,12 @@ def test_gemv_bias_survives_cancelling_products(m: int, n: int, k: int, trans_b:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_gemm_cp_async_split_k_adds_the_bias_in_the_reduction() -> None:
-    """The pipelined kernel's split slices leave the bias to their reduction."""
+@pytest.mark.parametrize("out_dtype", [None, torch.float32], ids=["bf16-out", "float32-out"])
+def test_gemm_cp_async_split_k_adds_the_bias_in_the_reduction(
+    out_dtype: torch.dtype | None,
+) -> None:
+    """The pipelined kernel's split slices leave the bias to their reduction, which writes the
+    output dtype."""
 
     class Pinned(GEMMCpAsyncKernel):
         general = False
@@ -2200,10 +2618,10 @@ def test_gemm_cp_async_split_k_adds_the_bias_in_the_reduction() -> None:
     state = registry.snapshot()
     try:
         register_kernel_type("GEMMFwdOp", "gemm_cp_async_pinned", Pinned)
-        op = GEMMFwdOp(target=BUILTIN)
+        op = GEMMFwdOp(out_dtype=out_dtype, target=BUILTIN)
     finally:
         registry.restore(state)
-    test = GEMMTest(256, 512, 1024, torch.bfloat16, False, True, bias=True)
+    test = GEMMTest(256, 512, 1024, torch.bfloat16, False, True, bias=True, out_dtype=out_dtype)
     inputs = test.gen_inputs()
     op(*inputs)
     (kernel,) = op.iter_kernels()
@@ -2504,6 +2922,50 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k, paired",
+    [
+        # One consumer warpgroup split two ways, on at most 72 CTAs: a deferred-scale 16-row
+        # tile over padded rows, a partial last N tile and a partial last K tile.
+        pytest.param(9, 2248, 1792, True, id="pair-deferred-scale", marks=pytest.mark.smoke),
+        # A scale-in-decode 64-row tile over padded rows and the same tails.
+        pytest.param(48, 2248, 1792, True, id="pair-64-rows", marks=pytest.mark.full),
+        # The narrow tile at a logical M under its eight rows.
+        pytest.param(1, 1672, 1792, True, id="pair-narrow", marks=pytest.mark.full),
+        # A split whose landing area does not fit beside its ring keeps the reduction launch,
+        # on 96 CTAs so that the landing alone decides it.
+        pytest.param(128, 3072, 4096, False, id="landing-unfit", marks=pytest.mark.full),
+    ],
+)
+def test_gemm_w4a16_one_warpgroup_split_matches_the_reference(
+    m: int, n: int, k: int, paired: bool
+) -> None:
+    """A one-warpgroup tile split two ways sums its K slices over a two-CTA cluster, the
+    second CTA sending its whole partial to the first, which stores every row of the tile."""
+    # On 132 SMs each case picks a one-warpgroup two-way split and runs the program `paired`
+    # names: the cluster pair, or the reduction launch.
+    cfg = _select_config(m, n, k, 128, 132)
+    assert (cfg["block_n"], cfg["threads"], cfg["split_k"]) == (64, 128, 2)
+    m_pad = m if cfg["block_m"] == 8 else -(-m // cfg["block_m"]) * cfg["block_m"]
+    assert _pair_reduced(m_pad, n, k, 128, 132, cfg) == paired
+    test = GEMMW4A16Test(m, n, k, torch.float16)
+    inputs = test.gen_inputs()
+    _leave_nan_in_free_blocks()
+    test.check(GEMMW4A16FwdOp(target=BUILTIN), *inputs)
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_pairs_a_one_warpgroup_split_in_one_wave() -> None:
+    """On 132 SMs a one-warpgroup tile split two ways sums its slices over a cluster pair
+    where every cluster launches in the first wave, and keeps the reduction launch past it."""
+    narrow = _select_config(1, 2176, 1024, 128, 132)
+    assert _pair_reduced(1, 2176, 1024, 128, 132, narrow)
+    # 141 N tiles split two ways: 282 CTAs.
+    assert not _pair_reduced(1, 9000, 1024, 128, 132, narrow)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 def test_gemm_w4a16_split_wide_tile_matches_the_reference() -> None:
     """Uneven contraction partitions preserve affine group scales and zero points."""
@@ -2601,6 +3063,8 @@ def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None
     from tileops._kernels.gemm.w4a8_decode import GEMMW4A8DecodeKernel
     from tileops._utils import get_sm_count
 
+    # One CTA per 64-row tile by default; every SM then splits tiles across CTAs, and a
+    # sixth stage pushes the units' partial sums out of shared memory.
     test = GEMMW4A8Test(32, 7168, 2304, 128)
     op = GEMMW4A8FwdOp()
     inputs = test.gen_inputs()
@@ -2615,17 +3079,17 @@ def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None
         captured = op(activation, repacked, *scales)
     (kernel,) = [k for k in op.iter_kernels() if isinstance(k, GEMMW4A8DecodeKernel)]
     ((_, *workspace),) = kernel._generation.programs.values()
-    # More CTAs than tiles hand partial sums across CTAs; each reader clears its ready flag,
-    # so a repeat or a graph replay waits for fresh partial sums.
-    assert not workspace[1].any()
     captured_workspace = [weakref.ref(t) for t in workspace]
     del workspace
     ctas = get_sm_count(kernel.device_index)
     assert kernel.config["num_ctas"] < ctas
-    kernel.config = {**kernel.config, "num_ctas": ctas}
+    kernel.config = {**kernel.config, "num_ctas": ctas, "num_stages": 6}
     test.check(op, *inputs, runs=run)
     ((_, _, flags, _),) = kernel._generation.programs.values()
     assert flags.numel() == ctas * kernel.config["unit_warpgroups"]
+    # More CTAs than tiles hand partial sums across CTAs; each reader clears its ready flag,
+    # so a repeat or a graph replay waits for fresh partial sums.
+    assert not flags.any()
     gc.collect()
     assert all(ref() is not None for ref in captured_workspace)
     captured.zero_()

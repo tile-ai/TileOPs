@@ -48,10 +48,13 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     def entry_for(cls, call: KDACall) -> Entry:
         index = call.device.index if call.device is not None else None
         compact = call.arch == 89 and call.dim_k == 128
-        # A second SM90 launch amortizes its switch cost above this per-SM workload.
+        # A second SM90 launch amortizes its switch cost above this per-SM workload. A state
+        # pool takes the one-launch program: the second launch restarts a pair from its
+        # initial state, which the first has overwritten in the pool.
         two_launch_tokens_per_sm = 3072
         two_launch = (
             call.arch == 90
+            and not call.pooled
             and call.batch * call.seq_len * call.value_heads
             >= two_launch_tokens_per_sm * call.sm_count
         )
@@ -69,6 +72,8 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             index,
             compact,
             two_launch,
+            call.state_v_first,
+            call.pooled,
         )
         return identity, lambda: cls(
             heads=call.heads,
@@ -81,6 +86,8 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             device_index=index,
             compact=compact,
             two_launch=two_launch,
+            state_v_first=call.state_v_first,
+            pooled=call.pooled,
         )
 
     def __init__(
@@ -96,6 +103,8 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         device_index: int | None = None,
         compact: bool = False,
         two_launch: bool = False,
+        state_v_first: bool = False,
+        pooled: bool = False,
     ) -> None:
         """Hold the call facts the fused program is built from."""
         super().__init__(device_index=device_index)
@@ -108,6 +117,8 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.l2norm = l2norm
         self.dtype = dtype
         self.two_launch = two_launch
+        self.state_v_first = state_v_first
+        self.pooled = pooled
 
     def forward(
         self,
@@ -121,6 +132,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         cu_seqlens_cpu: torch.Tensor | None = None,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
+        state_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run every chunk inside its own CTA; see the interface for the tensors."""
         del cu_seqlens_cpu, A_log, dt_bias
@@ -137,12 +149,17 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         vf = v.reshape(1, total, HV, V)
         gf = g.reshape(1, total, HV, K)
         bf = beta.reshape(1, total, HV)
+        # A square state: the zero state is the same in either layout.
         state = (
             torch.zeros(num_seqs, HV, K, V, dtype=torch.float32, device=q.device)
             if initial_state is None
             else initial_state
         )
         program = self.program(self._launcher, H, HV, K, V, total, num_seqs)
+        if self.pooled:
+            # The pool is advanced in place and returned as the final state.
+            o = program(qf, kf, vf, gf, bf, state, offsets, state_indices)
+            return o.reshape(batch, seq_len, HV, V), state
         o, final_state = program(qf, kf, vf, gf, bf, state, offsets)
         return o.reshape(batch, seq_len, HV, V), final_state
 
@@ -161,10 +178,11 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             total,
             num_seqs,
         )
+        layout = {"state_v_first": self.state_v_first}
         if not self.two_launch:
-            return fused_chunk_program(*shape, compact=self.compact)
-        check = CompiledProgram(fused_chunk_program(*shape, stage="check"))
-        rerun = CompiledProgram(fused_chunk_program(*shape, stage="rerun"))
+            return fused_chunk_program(*shape, compact=self.compact, pooled=self.pooled, **layout)
+        check = CompiledProgram(fused_chunk_program(*shape, stage="check", **layout))
+        rerun = CompiledProgram(fused_chunk_program(*shape, stage="rerun", **layout))
 
         def two_launch(qf, kf, vf, gf, bf, state, offsets):
             o, final_state, flags = check(qf, kf, vf, gf, bf, state, offsets)

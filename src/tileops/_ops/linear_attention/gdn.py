@@ -49,9 +49,16 @@ class GDNFwdOp(Op):
     any combination of the three input transforms. Prefill runs on SM89 and
     SM90, equal-length or packed, with a sequence that is not a whole number
     of 64-token chunks. On SM89, shared memory holds the offsets of at most
-    703 packed sequences over a 128-wide state. Decode runs one token per
-    sequence on SM80, SM89 and SM90, and does not take ``cu_seqlens``.
-    Other calls need an external target implementation.
+    703 packed sequences over a 128-wide state. Decode runs on SM80, SM89 and
+    SM90: one token per sequence, which takes no ``cu_seqlens``, or, with
+    ``num_accepted_tokens``, each sequence's tokens, equal-length or packed,
+    one after another on the state it keeps in registers. A state pool
+    (``state_indices``) is served by decode and by SM90 prefill, one state a
+    sequence; with ``num_accepted_tokens``, decode keeps one a token. A
+    packed sequence of more tokens than ``state_indices`` holds slots breaks
+    the call's contract, which no check enforces; the in-tree kernel may then
+    write states outside that sequence's slots and leaves its outputs
+    undefined. Other calls need an external target implementation.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -90,8 +97,10 @@ class GDNFwdOp(Op):
                 compute ``-exp(A_log) * softplus(g + dt_bias)``. Otherwise,
                 ``g`` must already contain the log-space decay.
             validate_inputs: Check on the CPU that ``cu_seqlens`` (and
-                ``cu_seqlens_cpu``) start at 0, never decrease and end at ``S``, and that
-                ``state_indices`` and ``num_accepted_tokens`` lie in their manifest ranges.
+                ``cu_seqlens_cpu``) start at 0, never decrease, end at ``S`` and, with
+                ``num_accepted_tokens``, hold no sequence longer than a ``state_indices`` row,
+                and that ``state_indices`` and ``num_accepted_tokens`` lie in their manifest
+                ranges.
                 It synchronizes the device; leave it off under CUDA Graph capture.
             target: Backend target, or ``None`` to resolve from the input
                 device.
@@ -174,11 +183,13 @@ class GDNFwdOp(Op):
                 cu_seqlens_cpu,
                 A_log,
                 dt_bias,
+                state_indices,
+                num_accepted_tokens,
             )
         )
         batch, seq_len, heads, dim_k = q.shape
         value_heads, dim_v = v.shape[2:]
-        return self.kernel_for(
+        o, final_state = self.kernel_for(
             "gdn",
             lambda: GDNCall(
                 batch=batch,
@@ -199,6 +210,12 @@ class GDNFwdOp(Op):
                 allow_neg_eigval=self.allow_neg_eigval,
                 pooled=state_indices is not None,
                 rollback=num_accepted_tokens is not None,
+                drafts=0 if num_accepted_tokens is None else state_indices.shape[1],
                 device=q.device,
             ),
         )(*inputs)
+        if state_indices is not None and final_state is not initial_state:
+            # A strided pool was advanced as a contiguous copy; the call updates the caller's.
+            initial_state.copy_(final_state)
+            final_state = initial_state
+        return o, final_state

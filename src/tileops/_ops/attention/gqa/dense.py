@@ -22,7 +22,11 @@ from tileops._kernels.attention.call_spec import (
 )
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops.attention.gqa.parameters import rope_rotary_dim, score_softcap
+from tileops._ops.attention.gqa.parameters import (
+    attention_window,
+    rope_rotary_dim,
+    score_softcap,
+)
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -82,6 +86,7 @@ class _GQADenseFwdOpBase(Op):
         rope_on = self.pos_encoding_mode == "rope"
         is_fp8 = q.dtype == torch.float8_e4m3fn
         zero_query = self._zero_query
+        positions = max(seq_len_q, seq_len_kv)
         return AttentionCall(
             # The element type an implementation is compiled for. FP8 inputs are
             # computed in the type the op was constructed with.
@@ -95,8 +100,8 @@ class _GQADenseFwdOpBase(Op):
             is_causal=self.is_causal,
             sm_scale=1.0 if zero_query else self.sm_scale,
             softcap=0.0 if zero_query else self.softcap,
-            window_size_left=self.window_size_left,
-            window_size_right=self.window_size_right,
+            window_size_left=attention_window(self.window_size_left, positions),
+            window_size_right=attention_window(self.window_size_right, positions),
             is_fp8=is_fp8,
             has_sinks=sinks is not None,
             fuse_rope=rope_on,

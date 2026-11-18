@@ -40,10 +40,19 @@ def _summation_order_verification(dtype: torch.dtype, length: int):
 
     The kernel sums them in another order than the float32 reference; a cancelled output
     keeps only that order's error, which grows with *length*.
+
+    A float32 output of 16-bit products keeps the tensor cores' accumulation error: each
+    step adds its products to the float32 sum with truncation, so the error of standard
+    normal operands grows as ``length ** 1.5`` (on H200, at most 1.5e-3 over 4096 terms
+    and 7.0e-3 over 16384, as cuBLAS's 16-bit GEMM with a float32 output). The bound
+    keeps three times that, and stays far below the error of rounding to bfloat16
+    (1.0 over 4096 terms).
     """
     from workloads.numerics import Exact
 
-    tol = {torch.float16: 1e-3, torch.float32: 1e-5}.get(dtype, 1.6e-2)
+    if dtype == torch.float32:
+        return Exact(atol=max(1e-4, 2e-3 * (length / 2048) ** 1.5), rtol=1e-5)
+    tol = 1e-3 if dtype == torch.float16 else 1.6e-2
     return Exact(atol=tol * max(1.0, length / 2048), rtol=tol)
 
 

@@ -1,17 +1,28 @@
-"""Public FusedQKNormRoPEFwdOp semantics: both layouts, partial rotation, every dtype pair."""
+"""Public FusedQKNormRoPEFwdOp semantics: both layouts, partial rotation, every dtype pair, the
+zero-centered weight and interleaved multimodal RoPE."""
 
 import pytest
 import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import TestBase
+from tileops.backend import OpNotAvailableError
+from tileops.manifest.primitives import stacked_positions
 from tileops.norm import FusedQKNormRoPEFwdOp
-from workloads.norm import FusedQKNormRoPEWorkload, fused_qk_norm_rope_result
+from workloads.norm import (
+    FusedQKNormRoPEWorkload,
+    FusedQKNormRoPEZeroCenteredOffsetWorkload,
+    fused_qk_norm_rope_result,
+)
 from workloads.numerics import compare_outputs
 
 
 class FusedQKNormRoPETest(FusedQKNormRoPEWorkload, TestBase):
     """The workload as a test case: the reference and its policy come from the workload."""
+
+
+class FusedQKNormRoPEZeroCenteredOffsetTest(FusedQKNormRoPEZeroCenteredOffsetWorkload, TestBase):
+    pass
 
 
 def _packed(*lengths: int) -> list[int]:
@@ -115,6 +126,139 @@ def test_fused_qk_norm_rope(
     )
     op = FusedQKNormRoPEFwdOp(heads, kv_heads, rope_layout=layout)
     test.check(op, *test.gen_inputs(), runs=lambda *args: fused_qk_norm_rope_result(op, *args))
+
+
+def _mrope(lengths, image, heads, kv_heads, dim, rot, dtype, cache, layout, centered, sections):
+    """Sequences of *lengths* tokens, each opening with an *image* (height, width) of patches
+    and going on in text, on a cache of the largest position + 1 rows."""
+    positions = stacked_positions((3,), lengths, image)
+    last = max(map(max, positions)) + 1
+    return (positions, heads, kv_heads, dim, rot, last, dtype, cache, layout, centered, sections)
+
+
+_MROPE = (
+    # Qwen3.6's call: zero-centered, 64 of 256 values rotated, sections [11, 11, 10]; two
+    # sequences, each a 4 x 6 image then text.
+    pytest.param(
+        *_mrope(
+            [32, 30], (4, 6), 4, 2, 256, 64, "bfloat16", "bfloat16", "neox", True, [11, 11, 10]
+        ),
+        marks=_SMOKE,
+        id="qwen3.6",
+    ),
+    pytest.param(
+        *_mrope([32, 30], (4, 6), 4, 2, 256, 64, "float16", "float32", "neox", False, [11, 11, 10]),
+        marks=_SMOKE,
+        id="float16-float32-cache",
+    ),
+    # Height and width frequencies end at 9: from there on every frequency takes the temporal
+    # row, at angles an 8 x 8 image's positions move past the tolerance.
+    pytest.param(
+        *_mrope([72], (8, 8), 4, 2, 256, 64, "bfloat16", "bfloat16", "neox", True, [26, 3, 3]),
+        marks=_FULL,
+        id="sections-end-early",
+    ),
+    pytest.param(
+        *_mrope(
+            [30], (5, 4), 4, 2, 256, 64, "bfloat16", "float32", "interleaved", True, [11, 11, 10]
+        ),
+        marks=_FULL,
+        id="interleaved-layout",
+    ),
+    # Empty height and width sections: [3, N] positions still take the multimodal program,
+    # which the sections' presence selects, not their ends. R = 2: 1-value accesses.
+    pytest.param(
+        *_mrope([12], (3, 2), 2, 1, 64, 2, "bfloat16", "bfloat16", "neox", True, [1, 0, 0]),
+        marks=_FULL,
+        id="vec-1-empty-sections",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "positions, heads, kv_heads, dim, rot, positions_max, dtype, cache_dtype, layout, "
+    "zero_centered, sections",
+    _MROPE,
+)
+def test_fused_qk_norm_rope_mrope(
+    positions,
+    heads,
+    kv_heads,
+    dim,
+    rot,
+    positions_max,
+    dtype,
+    cache_dtype,
+    layout,
+    zero_centered,
+    sections,
+) -> None:
+    """Each frequency rotates by the cache row of the temporal, height or width position its
+    interleaved section names; image tokens carry three different positions."""
+    test = FusedQKNormRoPETest(
+        positions,
+        heads,
+        kv_heads,
+        dim,
+        rot,
+        positions_max,
+        getattr(torch, dtype),
+        getattr(torch, cache_dtype),
+        layout,
+        zero_centered=zero_centered,
+        mrope_section=sections,
+        mrope_interleaved=True,
+    )
+    op = FusedQKNormRoPEFwdOp(
+        heads,
+        kv_heads,
+        rope_layout=layout,
+        zero_centered=zero_centered,
+        mrope_section=sections,
+        mrope_interleaved=True,
+    )
+    test.check(op, *test.gen_inputs(), runs=lambda *args: fused_qk_norm_rope_result(op, *args))
+
+
+@pytest.mark.parametrize(
+    "positions, sections",
+    [
+        pytest.param([[0] * 6] * 3, [11, 11, 10], marks=_SMOKE, id="mrope"),
+        pytest.param([0] * 6, None, marks=_FULL, id="one-position"),
+    ],
+)
+def test_fused_qk_norm_rope_zero_centered_offset(positions, sections) -> None:
+    """The zero-centered scale 1 + weight is formed in float32: rounded to bfloat16 first, it
+    moves outputs these inputs hold exactly."""
+    mrope = {"mrope_section": sections, "mrope_interleaved": sections is not None}
+    test = FusedQKNormRoPEZeroCenteredOffsetTest(
+        positions, 4, 2, 256, 64, 1, torch.bfloat16, torch.bfloat16, zero_centered=True, **mrope
+    )
+    op = FusedQKNormRoPEFwdOp(4, 2, zero_centered=True, **mrope)
+    test.check(op, *test.gen_inputs(), runs=lambda *args: fused_qk_norm_rope_result(op, *args))
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_fused_qk_norm_rope_refuses_consecutive_sections() -> None:
+    """No in-tree kernel assigns frequencies to the three positions in consecutive sections:
+    the op refuses such a call, naming the reason, before it builds a kernel."""
+    arguments = {"mrope_section": [11, 11, 10]}
+    test = FusedQKNormRoPETest(
+        stacked_positions((3,), [8], (2, 2)),
+        2,
+        1,
+        64,
+        64,
+        8,
+        torch.bfloat16,
+        torch.bfloat16,
+        **arguments,
+    )
+    op = FusedQKNormRoPEFwdOp(2, 1, **arguments)
+    with pytest.raises(OpNotAvailableError, match="mrope_interleaved"):
+        op(*test.gen_inputs())
+    assert not op._entries_built("fused_qk_norm_rope")
 
 
 @pytest.mark.smoke

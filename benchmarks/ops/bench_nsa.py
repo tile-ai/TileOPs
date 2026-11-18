@@ -5,9 +5,10 @@ passes also write LSE; its cached sequence metadata helpers run warm during timi
 """
 
 import pytest
+import torch
 
 from benchmarks import api as bench
-from benchmarks.baselines import FLA_TAG, fla_op
+from benchmarks.baselines import FLA_TAG, fla_op, optional_baseline
 from tileops.attention import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
 
@@ -36,6 +37,63 @@ def _fla_nsa_fwd(workload: NSAFwdCall):
             token_indices_q=token_indices,
         )
         return o.squeeze(0)
+
+    return fn
+
+
+def _fa3_paged_nsa_fwd(workload: NSAFwdCall, inputs: tuple):
+    """FA3 decode over a page table of the selected blocks, for a causal row fla's tiles
+    refuse. None where FA3 cannot express the row.
+
+    A page is one selected block: one batch element per token and KV head, whose pages are
+    the token's live slots and whose ``cache_seqlens`` is its visible key count. That is the
+    selection only when every request's keys start on a block boundary and each token's live
+    slots lead its list with the one block its position cuts, if any, last. The page table
+    is built before timing, as FlashInfer's ``plan``.
+    """
+    fwd = optional_baseline("flash_attn_interface", "fa3", "flash_attn_with_kvcache")
+    if fwd is None:
+        return None
+    q, k, v, block_indices, block_counts, cu_seqlens, token_indices, *rest = inputs
+    cu_seqlens_k = rest[0] if rest and rest[0] is not None else cu_seqlens
+    bs, groups = workload.block_size, workload.groups
+    if bool((cu_seqlens_k % bs != 0).any()):
+        return None
+    request = token_indices[:, 0].long()
+    n_q = (cu_seqlens[1:] - cu_seqlens[:-1]).long()[request]
+    n_k = (cu_seqlens_k[1:] - cu_seqlens_k[:-1]).long()[request]
+    limit = token_indices[:, 1].long() + n_k - n_q + 1
+    bos_k = cu_seqlens_k[:-1].long()[request]
+    slots = torch.arange(block_indices.shape[-1], device=q.device)
+    calls = []
+    for h in range(k.shape[1]):
+        start = block_indices[:, h].long() * bs
+        live = (slots < block_counts[:, h, None]) & (start >= 0) & (start < limit[:, None])
+        keys = torch.where(live, (limit[:, None] - start).clamp(max=bs), 0)
+        n_live = live.sum(-1, keepdim=True)
+        last = slots == n_live - 1
+        if not bool((live == (slots < n_live)).all()) or bool((live & ~last & (keys < bs)).any()):
+            return None
+        calls.append(
+            (
+                q[:, h * groups : (h + 1) * groups].unsqueeze(1).contiguous(),
+                k.view(-1, bs, k.shape[1], k.shape[2])[:, :, h : h + 1],
+                v.view(-1, bs, v.shape[1], v.shape[2])[:, :, h : h + 1],
+                keys.sum(-1).to(torch.int32),
+                torch.where(live, (bos_k[:, None] + start) // bs, 0).to(torch.int32),
+            )
+        )
+
+    def fn(*_inputs):
+        return torch.cat(
+            [
+                fwd(qh, kc, vc, cache_seqlens=lens, page_table=pages, softmax_scale=workload.scale)[
+                    :, 0
+                ]
+                for qh, kc, vc, lens, pages in calls
+            ],
+            dim=1,
+        )
 
     return fn
 
@@ -102,7 +160,13 @@ def test_nsa_topk_varlen_bench(case) -> None:
 def test_nsa_fwd_varlen_bench(case) -> None:
     op = NSAVarlenFwdOp(**case.arguments)
     fla_fn = _fla_nsa_fwd(case.workload)
-    if fla_fn is None:
-        bench.Runner(op, case).compare({"torch-ref": case.reference})
+    if fla_fn is not None:
+        bench.Runner(op, case).compare({FLA_TAG: fla_fn})
         return
-    bench.Runner(op, case).compare({FLA_TAG: fla_fn})
+    implementations = {"torch-ref": case.reference}
+    # A causal row fla refuses is one its tiles do not take.
+    if case.workload.is_causal:
+        fa3_fn = _fa3_paged_nsa_fwd(case.workload, case.inputs)
+        if fa3_fn is not None:
+            implementations["fa3"] = fa3_fn
+    bench.Runner(op, case).compare(implementations)

@@ -18,6 +18,7 @@ from tileops._kernels.mamba import (
     CausalConv1dUpdateCall,
     CausalConv1dUpdateFwdInterface,
     CausalConv1dUpdateKernel,
+    CausalConv1dUpdateRollbackKernel,
 )
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -128,6 +129,7 @@ class CausalConv1dFwdOp(Op):
             cu_seqlens.contiguous(),
             None if bias is None else bias.contiguous(),
             None if has_initial_state is None else has_initial_state.contiguous(),
+            None if cache_indices is None else cache_indices.contiguous(),
         )
 
 
@@ -147,7 +149,9 @@ class CausalConv1dUpdateFwdOp(Op):
     With ``num_accepted_tokens``, as vLLM's ``causal_conv1d_update`` takes it, sequence ``b``
     with ``a = num_accepted_tokens[b]`` and ``q`` tokens reads its history from column
     ``a - 1``, and its first ``(W - 1) * d + q - 1`` columns become its last that many
-    tokens, so the next call resumes after whichever draft was accepted.
+    tokens, so the next call resumes after whichever draft was accepted. A sequence of more
+    than ``L - (W - 1) * d + 1`` tokens breaks the call's contract, which no check enforces;
+    the in-tree kernel then leaves the outputs of its tokens past that count unwritten.
 
     The products accumulate in float32 and each output rounds once to the input dtype.
     SiLU uses the hardware's approximate exponential and reciprocal, each within two float32
@@ -155,7 +159,8 @@ class CausalConv1dUpdateFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "causal_conv1d_update": CausalConv1dUpdateKernel
+        "causal_conv1d_update": CausalConv1dUpdateKernel,
+        "causal_conv1d_update_rollback": CausalConv1dUpdateRollbackKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "causal_conv1d_update": CausalConv1dUpdateFwdInterface
@@ -177,8 +182,9 @@ class CausalConv1dUpdateFwdOp(Op):
             dilation: Tokens between adjacent filter taps.
             max_query_len: The most tokens a sequence holds, with ``query_start_loc``.
             validate_inputs: Check on the CPU that ``query_start_loc`` starts at 0, never
-                decreases and ends at ``x``'s token count, and that ``conv_state_indices`` and
-                ``num_accepted_tokens`` lie in their manifest ranges.
+                decreases, ends at ``x``'s token count and holds no sequence longer than
+                ``max_query_len``, and that ``conv_state_indices`` and ``num_accepted_tokens``
+                lie in their manifest ranges.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -239,4 +245,7 @@ class CausalConv1dUpdateFwdOp(Op):
             weight.contiguous(),
             conv_state,
             None if bias is None else bias.contiguous(),
+            None if conv_state_indices is None else conv_state_indices.contiguous(),
+            None if num_accepted_tokens is None else num_accepted_tokens.contiguous(),
+            None if query_start_loc is None else query_start_loc.contiguous(),
         )

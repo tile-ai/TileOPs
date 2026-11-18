@@ -1,5 +1,7 @@
 """GQAPagedFwdOp tests against the workload's reference."""
 
+import dataclasses
+
 import pytest
 import torch
 
@@ -127,14 +129,22 @@ def test_gqa_paged_split_combine_row_blocks(
             {"is_causal": False, "window_size_left": 255, "window_size_right": 255},
             "GQAPagedFwdWSKernel",
         ),
+        # INT32_MAX hides no key; added to a query position it overflows int32.
+        ({"is_causal": True, "window_size_right": 2**31 - 1}, "GQAPagedFwdWSKernel"),
     ],
-    ids=["left-inside-table", "left-at-last-key", "right-inside-table", "both-at-last-key"],
+    ids=[
+        "left-inside-table",
+        "left-at-last-key",
+        "right-inside-table",
+        "both-at-last-key",
+        "right-int32-max",
+    ],
 )
 def test_gqa_paged_window_reaching_the_last_key_is_no_window(
     semantics: dict, kernel_name: str
 ) -> None:
     """Without RoPE, the WS kernel serves a window reaching key 255, the last of four 64-row
-    pages, and refuses one a key narrower."""
+    pages, and refuses one a key narrower. A window of INT32_MAX keys is no window."""
     workload = GQAPagedFwdWorkload(16, 4, 128, [256], [256], 64, 4, 4, torch.float16, **semantics)
     op = GQAPagedFwdOp(**semantics)
     inputs = workload.gen_inputs()
@@ -1065,19 +1075,30 @@ def _causal_canary(workload: GQAPagedFwdWorkload, inputs: tuple) -> tuple:
     return inputs
 
 
+# A chunk count a case does not bound.
+ANY = (1, None)
+
+
 def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
     return GQAPagedFwdOp(out_dtype=workload.out_dtype, **{"is_causal": True, **semantics})
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("q_lens", "cache_lens", "page_size", "dtype", "semantics"),
+    ("q_lens", "cache_lens", "page_size", "dtype", "semantics", "tile_rows", "splits"),
     [
         # One copy a key tile; the cache end cuts the last tile of the first request.
         pytest.param(
-            [1, 1], [513, 1000], 64, torch.float16, {}, id="f16-tensor-scale-cut"
+            [1, 1],
+            [513, 1000],
+            64,
+            torch.float16,
+            {},
+            8,
+            ANY,
+            marks=pytest.mark.smoke,
+            id="f16-tensor-scale-cut",
         ),  # fmt: skip
         # Four 16-row copies a key tile; causal rows of three query tokens a request.
         pytest.param(
@@ -1086,6 +1107,9 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             16,
             torch.bfloat16,
             {"per_request_scales": True},
+            16,
+            ANY,
+            marks=pytest.mark.smoke,
             id="bf16-request-scales-pages-16",
         ),
         # An FP8 query, its score descale under a softcap and a left window.
@@ -1095,8 +1119,163 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
             128,
             FP8,
             {"per_request_scales": True, "softcap": 30.0, "window_size_left": 200},
+            8,
+            ANY,
+            marks=pytest.mark.smoke,
             id="fp8-softcap-window",
         ),
+        # A right window of INT32_MAX keys hides none; added to a query position it overflows.
+        pytest.param(
+            [2, 2],
+            [700, 300],
+            64,
+            torch.float16,
+            {"is_causal": False, "window_size_right": 2**31 - 1},
+            8,
+            ANY,
+            marks=pytest.mark.smoke,
+            id="f16-int32-max-right-window",
+        ),
+        # Rows on M with an FP8 query, request scales, a softcap and a left window, bidirectional.
+        pytest.param(
+            [16, 16],
+            [900, 400],
+            128,
+            FP8,
+            {
+                "per_request_scales": True,
+                "softcap": 30.0,
+                "window_size_left": 200,
+                "is_causal": False,
+            },
+            64,
+            ANY,
+            marks=pytest.mark.full,
+            id="fp8-rows-on-m-softcap-window-bidirectional",
+        ),
+        # Head dimension 64 with the keys on M, a one-key cache among them.
+        pytest.param(
+            [1, 1, 1],
+            [700, 1, 1500],
+            64,
+            torch.float16,
+            {"heads": 64, "dim": 64},
+            8,
+            ANY,
+            marks=pytest.mark.full,
+            id="f16-d64-keys-on-m",
+        ),
+        # Head dimension 64 with the rows on M, two 32-row pages a key tile.
+        pytest.param(
+            [8, 8],
+            [900, 300],
+            32,
+            torch.bfloat16,
+            {"heads": 64, "dim": 64},
+            64,
+            ANY,
+            marks=pytest.mark.full,
+            id="bf16-d64-rows-on-m",
+        ),
+        # A right window and a bidirectional mask, with a request of no query token.
+        pytest.param(
+            [3, 0, 2],
+            [600, 64, 300],
+            64,
+            torch.float16,
+            {"window_size_left": 100, "window_size_right": 0, "is_causal": False},
+            8,
+            ANY,
+            marks=pytest.mark.full,
+            id="f16-right-window-empty-request",
+        ),
+        # 16-row tiles: the first request's 36 rows span three of them.
+        pytest.param(
+            [9, 1, 1, 1],
+            [600, 100, 1000, 70],
+            64,
+            torch.float16,
+            {},
+            16,
+            ANY,
+            marks=pytest.mark.full,
+            id="f16-request-spans-tiles",
+        ),  # fmt: skip
+        # The left window hides the first key tile of a chunk from the later rows, whose maximum
+        # stays at its -1e38 floor; a score scale of 8 overflows float32 if it scales that floor.
+        pytest.param(
+            [4, 4],
+            [1000, 1000],
+            64,
+            torch.float16,
+            {"sm_scale": 8.0, "window_size_left": 102},
+            16,
+            ANY,
+            marks=pytest.mark.full,
+            id="f16-keys-on-m-large-scale-hidden-tile",
+        ),
+        pytest.param(
+            [16, 16],
+            [1000, 1000],
+            64,
+            torch.float16,
+            {"sm_scale": 8.0, "window_size_left": 92},
+            64,
+            ANY,
+            marks=pytest.mark.full,
+            id="f16-rows-on-m-large-scale-hidden-tile",
+        ),
+        # A KV head stored as zeros quantizes by amax / 448 to a zero scale: every score of
+        # request 0's first head is zero, so its rows average the values they see.
+        pytest.param(
+            [1, 1],
+            [1000, 1000],
+            64,
+            torch.float16,
+            {"per_request_scales": True, "zero_key_scale": True},
+            8,
+            ANY,
+            marks=pytest.mark.full,
+            id="f16-keys-on-m-zero-key-scale",
+        ),
+        # A table of 64 key tiles takes several chunks: a 70-key request beside a 4096-key one
+        # leaves most of its chunks without a key tile, and they must weigh nothing in the
+        # combine.
+        pytest.param(
+            [16, 16],
+            [70, 4096],
+            64,
+            torch.float16,
+            {},
+            64,
+            (2, None),
+            marks=pytest.mark.full,
+            id="f16-rows-on-m-empty-chunks",
+        ),  # fmt: skip
+        # A table too short for a chunk to outlast filling its ring stays whole, so the tile
+        # writes its rows without the combine.
+        pytest.param(
+            [1, 1],
+            [200, 256],
+            64,
+            torch.float16,
+            {},
+            8,
+            (1, 1),
+            marks=pytest.mark.full,
+            id="f16-keys-on-m-unsplit",
+        ),  # fmt: skip
+        pytest.param(
+            [16, 16],
+            [200, 256],
+            64,
+            torch.float16,
+            {},
+            64,
+            (1, 1),
+            marks=pytest.mark.full,
+            id="f16-rows-on-m-unsplit",
+        ),  # fmt: skip
     ],
 )
 def test_gqa_paged_fp8_decode(
@@ -1105,19 +1284,85 @@ def test_gqa_paged_fp8_decode(
     page_size: int,
     dtype: torch.dtype,
     semantics: dict,
+    tile_rows: int,
+    splits: tuple[int, int | None],
 ) -> None:
-    """SM90 FP8 decode converts each stored tile in registers and dequantizes by the scales;
-    a NaN row past a cache must not reach the output."""
+    """SM90 FP8 decode widens each stored tile and dequantizes by the scales, holding the rows
+    on M at a full 64-row tile and the keys on M below it, its chunk count within *splits*; a
+    NaN row past a cache, or a value a causal row must not see, must not reach the output."""
     from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
+    workload_semantics = {k: v for k, v in semantics.items() if k != "zero_key_scale"}
     workload = _paged(
-        q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype, **semantics
-    )
-    op_semantics = {k: v for k, v in semantics.items() if k != "per_request_scales"}
-    op, inputs = _fp8_op(workload, **op_semantics), _poisoned_inputs(workload)
+        q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype,
+        **workload_semantics,
+    )  # fmt: skip
+    op_semantics = {
+        k: v
+        for k, v in workload_semantics.items()
+        if k not in ("per_request_scales", "heads", "dim")
+    }
+    op = _fp8_op(workload, **op_semantics)
+    inputs = _causal_canary(workload, _poisoned_inputs(workload))
+    if semantics.get("zero_key_scale"):
+        inputs[7][0, 0] = 0.0
     _check(op, workload, inputs)
-    assert isinstance(_kernel(op, inputs), GQAPagedFP8DecodeKernel)
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFP8DecodeKernel)
+    assert kernel.block_m == tile_rows
+    least, most = splits
+    chunks = kernel.chunks(inputs[0].shape[0])
+    assert least <= chunks <= (most or chunks)
+
+
+# H200's shared memory a block may take, in bytes.
+_H200_BLOCK_SHARED = 232448
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(("batch", "served"), [(44287, True), (44288, False)])
+def test_gqa_paged_fp8_decode_refuses_a_tile_prefix_past_shared_memory(
+    batch: int, served: bool
+) -> None:
+    """The FP8 decode kernel holds a per-request tile prefix in shared memory beside its tiles.
+    An 8-row tile at head dimension 128 takes 54 KB beside the prefix, so a block of 227 KB
+    serves at most 44287 requests and leaves larger batches to another kernel."""
+    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
+
+    meta = torch.device("meta")
+    q = torch.empty(batch, 8, 128, dtype=torch.float16, device=meta)
+    k_pages = torch.empty(batch, 64, 1, 128, dtype=FP8, device=meta)
+    table = torch.empty(batch, 1, dtype=torch.int32, device=meta)
+    k_scale = torch.empty(1, device=meta)
+    call = GQAPagedFwdOp(is_causal=True)._paged_call(q, k_pages, table, k_scale)
+    call = dataclasses.replace(call, smem_budget=_H200_BLOCK_SHARED)
+    refusal = GQAPagedFP8DecodeKernel.refusal(call)
+    assert (refusal is None) == served, refusal
+
+
+@pytest.mark.parametrize(
+    ("page_size", "served"),
+    [
+        pytest.param(1, False, marks=pytest.mark.smoke, id="one-row-refused"),
+        pytest.param(2, True, marks=pytest.mark.full, id="two-row-served"),
+    ],
+)
+def test_gqa_paged_fp8_decode_refuses_pages_under_128_bytes(page_size: int, served: bool) -> None:
+    """Each page's TMA copy lands at a multiple of its bytes in shared memory, which TMA needs
+    128-byte aligned, so at head dimension 64 the FP8 decode kernel serves two-row pages and
+    leaves one-row pages to another kernel."""
+    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
+
+    meta = torch.device("meta")
+    q = torch.empty(2, 8, 64, dtype=torch.float16, device=meta)
+    k_pages = torch.empty(2, page_size, 1, 64, dtype=FP8, device=meta)
+    table = torch.empty(2, 1, dtype=torch.int32, device=meta)
+    k_scale = torch.empty(1, device=meta)
+    call = GQAPagedFwdOp(is_causal=True)._paged_call(q, k_pages, table, k_scale)
+    call = dataclasses.replace(call, smem_budget=_H200_BLOCK_SHARED)
+    refusal = GQAPagedFP8DecodeKernel.refusal(call)
+    assert (refusal is None) == served, refusal
 
 
 @pytest.mark.smoke

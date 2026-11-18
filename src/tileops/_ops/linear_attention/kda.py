@@ -56,8 +56,11 @@ class KDAFwdOp(Op):
     128-wide square state with precomputed beta and either precomputed or raw gates.
     Raw gates use ``-exp(A_log) * softplus(g + dt_bias)`` without a lower bound,
     or ``lower_bound * sigmoid(exp(A_log) * (g + dt_bias))`` with one; an omitted
-    ``dt_bias`` is zero. Raw beta, value-major state and other state widths still
-    require an external target implementation.
+    ``dt_bias`` is zero. A value-major state and a state pool (``state_indices``)
+    are served by decode, and by the one-kernel prefill, which takes precomputed
+    gates and enough (sequence, value head) pairs to cover most SMs. Raw beta,
+    ``num_accepted_tokens``, other state widths and the other calls still require
+    an external target implementation.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -98,8 +101,10 @@ class KDAFwdOp(Op):
             lower_bound: Lower bound of the forget gate in log space, or
                 ``None``. Only used with ``use_gate_in_kernel=True``.
             validate_inputs: Check on the CPU that ``cu_seqlens`` (and
-                ``cu_seqlens_cpu``) start at 0, never decrease and end at ``S``, and that
-                ``state_indices`` and ``num_accepted_tokens`` lie in their manifest ranges.
+                ``cu_seqlens_cpu``) start at 0, never decrease, end at ``S`` and, with
+                ``num_accepted_tokens``, hold no sequence longer than a ``state_indices`` row,
+                and that ``state_indices`` and ``num_accepted_tokens`` lie in their manifest
+                ranges.
                 It synchronizes the device; leave it off under CUDA Graph capture.
             target: Backend target, or ``None`` to resolve from the input device.
         """
@@ -182,11 +187,12 @@ class KDAFwdOp(Op):
                 cu_seqlens_cpu,
                 A_log,
                 dt_bias,
+                state_indices,
             )
         )
         batch, seq_len, heads, dim_k = q.shape
         value_heads, dim_v = v.shape[2:]
-        return self.kernel_for(
+        o, final_state = self.kernel_for(
             "kda",
             lambda: KDACall(
                 batch=batch,
@@ -212,3 +218,8 @@ class KDAFwdOp(Op):
                 device=q.device,
             ),
         )(*inputs)
+        if state_indices is not None and final_state is not initial_state:
+            # A strided pool was advanced as a contiguous copy; the call updates the caller's.
+            initial_state.copy_(final_state)
+            final_state = initial_state
+        return o, final_state

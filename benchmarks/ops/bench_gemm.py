@@ -49,6 +49,9 @@ class _CublasLtBestGEMM:
         advanced: ``nvmath.linalg.advanced``, resolved by the caller.
         cublaslt: ``nvmath.bindings.cublasLt``, resolved by the caller.
         bias: ``[n]``, added to every row, or ``None``.
+        result_type: ``nvmath.CudaDataType.CUDA_R_32F`` for a float32 result of the
+            16-bit operands, which ``torch.mm`` with ``out_dtype`` also computes; ``None``
+            for one in the operands' dtype.
 
     Raises:
         RuntimeError: dtype unsupported, or the plan produced no algorithm.
@@ -65,6 +68,7 @@ class _CublasLtBestGEMM:
         advanced: Any,
         cublaslt: Any,
         bias: torch.Tensor | None = None,
+        result_type: Any = None,
     ) -> None:
         if a.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError(f"unsupported dtype {a.dtype}")
@@ -72,11 +76,13 @@ class _CublasLtBestGEMM:
         self._a = a
         self._b = b
         self._bias = bias
+        self._float32 = result_type is not None
         rhs = b.t() if trans_b else b
 
         options = advanced.MatmulOptions(
             compute_type=advanced.MatmulComputeType.COMPUTE_32F,
             memory_limit=self.WORKSPACE_BYTES,
+            result_type=result_type,
         )
         if bias is None:
             self._mm = advanced.Matmul(a, rhs, options=options)
@@ -103,9 +109,15 @@ class _CublasLtBestGEMM:
             algorithms,
             key=lambda al: median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=al))),
         )
-        torch_ms = median_busy_ms(bench_kernel(lambda: matmul_fp32_reduction(a, rhs, bias)))
+        torch_ms = median_busy_ms(bench_kernel(lambda: self._torch(a, rhs, bias)))
         best_ms = median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=self._algorithm)))
         self._use_torch = torch_ms < best_ms
+
+    def _torch(self, a: torch.Tensor, rhs: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
+        """The PyTorch product the cuBLASLt algorithms are ranked against."""
+        if self._float32:
+            return torch.mm(a, rhs, out_dtype=torch.float32)
+        return matmul_fp32_reduction(a, rhs, bias)
 
     def free(self) -> None:
         """Release the plan and its 256 MB workspace, one per workload row."""
@@ -129,7 +141,7 @@ class _CublasLtBestGEMM:
                 self._mm.reset_operands(a=rhs.t(), b=a.t(), epilog_inputs={"bias": bias})
             self._a, self._b, self._bias = a, b, bias
         if self._use_torch:
-            return matmul_fp32_reduction(a, rhs, bias)
+            return self._torch(a, rhs, bias)
         out = self._mm.execute(algorithm=self._algorithm)
         return out if bias is None else out.t()
 
@@ -141,20 +153,26 @@ def cublaslt_best(
     *,
     trans_a: bool,
     trans_b: bool,
+    out_dtype: torch.dtype | None = None,
 ) -> Callable | None:
     """Build a cuBLASLt searched-best GEMM callable, or None for a row it cannot take.
 
     Returns ``None`` — the caller keeps the plain ``torch-cublas`` baseline — when
-    ``trans_a`` is True, the dtype is unsupported, or the plan produced no algorithm.
-    A missing nvmath is not caught: it is a declared runner dependency, so its absence
-    is a degraded image and has to fail the row rather than drop the tag.
+    ``trans_a`` is True, the dtype is unsupported, a float32 output carries a bias (the
+    bias epilogue takes a bias of the result type, not the operands' 16-bit one), or the
+    plan produced no algorithm. A missing nvmath is not caught: it is a declared runner
+    dependency, so its absence is a degraded image and has to fail the row rather than
+    drop the tag.
     """
-    if trans_a:
+    if trans_a or (out_dtype is not None and bias is not None):
         return None
     advanced = baseline_module("nvmath.linalg.advanced", "nvmath")
     cublaslt = baseline_module("nvmath.bindings.cublasLt", "nvmath")
+    result_type = None
+    if out_dtype is not None:
+        result_type = baseline_module("nvmath", "nvmath").CudaDataType.CUDA_R_32F
     try:
-        return _CublasLtBestGEMM(a, b, trans_b, advanced, cublaslt, bias)
+        return _CublasLtBestGEMM(a, b, trans_b, advanced, cublaslt, bias, result_type)
     except RuntimeError:
         return None
 
@@ -260,10 +278,10 @@ def _deepgemm_bf16_nt(
         return None
 
     gemm = deepgemm_op("bf16_gemm_nt")
-    m, n = workload.m, workload.n
+    m, n, out_dtype = workload.m, workload.n, workload.out_dtype
 
     def run(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        out = torch.empty((m, n), dtype=a.dtype, device=a.device)
+        out = torch.empty((m, n), dtype=out_dtype or a.dtype, device=a.device)
         gemm(a, b, out)
         return out
 
@@ -475,7 +493,9 @@ def test_gemm_bench(case) -> None:
     op = GEMMFwdOp(**case.arguments)
 
     implementations = {"torch-cublas": case.torch}
-    best_fn = cublaslt_best(a, b, *bias, trans_a=trans_a, trans_b=trans_b)
+    best_fn = cublaslt_best(
+        a, b, *bias, trans_a=trans_a, trans_b=trans_b, out_dtype=workload.out_dtype
+    )
     if best_fn is not None:
         implementations[CUBLASLT_TAG] = best_fn
 
@@ -486,7 +506,8 @@ def test_gemm_bench(case) -> None:
         if deepgemm_fn is not None:
             implementations[DEEPGEMM_TAG] = deepgemm_fn
 
-    if not trans_a and not trans_b and not bias:
+    # FlagGems' mm returns the operands' dtype, so it has no float32 output.
+    if not trans_a and not trans_b and not bias and workload.out_dtype is None:
         flaggems_mm = flaggems_op("mm")
         implementations[FLAGGEMS_TAG] = flaggems_mm
 
@@ -495,7 +516,12 @@ def test_gemm_bench(case) -> None:
         quack_gemm = quack_op("gemm", "quack.gemm_interface")
 
         def quack_fn(a, b, bias=None):
-            return quack_gemm(a.T if trans_a else a, b.T if trans_b else b, bias=bias)
+            return quack_gemm(
+                a.T if trans_a else a,
+                b.T if trans_b else b,
+                bias=bias,
+                out_dtype=workload.out_dtype,
+            )
 
         implementations[QUACK_TAG] = quack_fn
     else:

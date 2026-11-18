@@ -14,6 +14,7 @@ from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 
 __all__ = [
     "COOP2_SWAP_STAGING",
+    "FP8_MIN_SLICE_K_TILES",
     "SWAP_AB_MPAD",
     "best_config",
     "fp8_ws_config",
@@ -30,6 +31,10 @@ __all__ = [
 _SWAP_AB_BLOCK_NN = 64
 
 SWAP_AB_MPAD = 8
+
+# Shortest K slice, in 128-wide K tiles, an FP8 split-K launch pays for: a slice ends in an
+# fp32 round trip through the workspace and a second launch.
+FP8_MIN_SLICE_K_TILES = 12
 
 # One coop2_swap consumer's output staging buffer: both 64-column halves of its 128 rows,
 # ``store_m = 32`` columns of C at a time.
@@ -267,7 +272,11 @@ class _Cand:
         }
 
 
-def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> list:
+def _enumerate(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int, out_bytes: int = 2
+) -> list:
+    """The candidates :func:`_score_us` ranks for a call whose output elements take
+    *out_bytes*, which each structure's output staging tile holds."""
     # Accumulator registers per thread a basic tile may hold: ``bm * bn / 128``.
     max_accum_regs = 200
     # Ring caps below the SMEM budget. Basic and split-K tiles take the deepest ring the
@@ -285,7 +294,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
 
     def _ns_basic(bm: int, bn: int, bk: int) -> int:
         ring = (bm + bn) * bk * 2
-        return _ring_budget(bm * bn * 2, bn) // ring
+        return _ring_budget(bm * bn * out_bytes, bn) // ring
 
     def _coop2_ns_sn(bn: int, bk: int):
         """Deepest ring under ``ns_cap`` the SMEM budget allows; shrink the epilogue
@@ -295,7 +304,8 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         for sn in (bn, bn // 2, bn // 4):
             if sn < 32 or bn % sn:
                 continue
-            ns = min(ns_cap["coop2"], (BLOCK_SHARED_BYTES_OPT_IN[90] - 2 * 64 * sn * 2) // ring)
+            staging = 2 * 64 * sn * out_bytes
+            ns = min(ns_cap["coop2"], (BLOCK_SHARED_BYTES_OPT_IN[90] - staging) // ring)
             if ns < 3:
                 continue
             if best is None or (ns, sn) > best[:2]:
@@ -327,7 +337,9 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
             ):
                 continue
             if one_wave_192:
-                rings = [(128, 3)] if nt else [(64, 5)]
+                # Offered only where that ring fits beside the output staging tile.
+                bk, ns = (128, 3) if nt else (64, 5)
+                rings = [(bk, ns)] if _ns_basic(bm, bn, bk) >= ns else []
             else:
                 rings = [(bk, _ns_basic(bm, bn, bk)) for bk in (32, 64, 128)]
             for bk, ns in rings:
@@ -400,7 +412,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
-    fill = _fill_cand(m, n, k, sm_count) if nt else None
+    fill = _fill_cand(m, n, k, sm_count, out_bytes) if nt else None
     if fill is not None:
         out.append(fill)
     if nt and k > 0:
@@ -409,13 +421,14 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         # grows with m: under 6 stages a block's run of B rows is too short to stream faster
         # than the basic tiles.
         mpad, helper_width = stream_width(m)
-        staging = mpad * 64 * 2 * (2 if helper_width else 1)
+        staging = mpad * 64 * out_bytes * (2 if helper_width else 1)
         ring = BLOCK_SHARED_BYTES_OPT_IN[90] - _STATIC_SMEM_BYTES - staging
         ns = ring // ((64 + mpad) * 128 * 2)
         if ns >= 6:
             blocks = math.ceil(math.ceil(n / 64) / sm_count)
             out.append(_Cand("stream", 64, mpad, 128, ns, blocks=blocks))
-    if not nt and n % 8 == 0:
+    # The coop2_swap tile's transposed store, stmatrix.trans, writes 16-bit elements only.
+    if not nt and n % 8 == 0 and out_bytes == 2:
         # Reserve both consumers' fp16 output staging before sizing the operand ring.
         swap_epilogue = 2 * math.prod(COOP2_SWAP_STAGING) * 2
         for bn in (128, 160, 192):
@@ -429,7 +442,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     return out
 
 
-def _fill_cand(m: int, n: int, k: int, sm_count: int) -> _Cand | None:
+def _fill_cand(m: int, n: int, k: int, sm_count: int, out_bytes: int = 2) -> _Cand | None:
     """The one-wave 64-row NT tile at a width the basic tiles skip, or None.
 
     Its width is the narrowest multiple of 8 whose grid of 64-row tiles fits one wave,
@@ -454,7 +467,7 @@ def _fill_cand(m: int, n: int, k: int, sm_count: int) -> _Cand | None:
         return None
     # A stage's A and B tiles; the output staging tile.
     stage = (64 + width) * 64 * 2
-    ns = min(-(-k // 64), _ring_budget(64 * width * 2, width) // stage)
+    ns = min(-(-k // 64), _ring_budget(64 * width * out_bytes, width) // stage)
     if m_tiles == 1:
         ns = 1 << (ns.bit_length() - 1)
     return _Cand("fill", 64, width, 64, ns, panel_size=0, cluster_m=m_tiles)
@@ -712,8 +725,11 @@ def two_row_gemv_wins(n: int, k: int, sm_count: int, calibration: str | None) ->
     return cal is not None and _tiny_m_config(n, k, sm_count, True, cal.tiny_m) is _GEMV
 
 
-def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibration) -> float:
-    """Predicted microseconds; only the relative ordering is meaningful."""
+def _score_us(
+    cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibration, out_bytes: int = 2
+) -> float:
+    """Predicted microseconds of a call whose output elements take *out_bytes*; only the
+    relative ordering is meaningful."""
     if cd.structure == "stream":
         # The time the grid streams B: each CTA streams its blocks back to back, so the grid
         # streams at a rate that grows with its CTAs up to the DRAM's; A's reloads and the
@@ -724,7 +740,7 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibratio
     if cd.structure == "coop2_swap":
         m, n = n, m
     bm, bn, sk = cd.block_m, cd.block_n, cd.split_k
-    elem, elem_out = 2, 2
+    elem, elem_out = 2, out_bytes
     num_blocks = math.ceil(m / bm) * math.ceil(n / bn) * sk
     num_waves = math.ceil(num_blocks / sm_count)
     wave_eff = num_blocks / (num_waves * sm_count)
@@ -766,17 +782,18 @@ def _best_config_cached(
     sm_count: int,
     l2_bytes: int,
     cal: _Calibration,
+    out_bytes: int,
 ) -> dict:
     """Cached selection body of :func:`best_config` — do not mutate results."""
     if m <= 8 and not trans_a and trans_b:
         return _tiny_m_config(n, k, sm_count, False, cal.tiny_m)
-    cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
+    cands = _enumerate(m, n, k, trans_a, trans_b, sm_count, out_bytes)
     if not cands:
         raise AssertionError(
             f"no config candidate for {m}x{n}x{k} (trans_a={trans_a}, "
             f"trans_b={trans_b}, sm_count={sm_count})"
         )
-    best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count, cal), -c.block_k))
+    best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count, cal, out_bytes), -c.block_k))
     if best.structure == "coop2":
         nt = not trans_a and trans_b
         cfg = (nt and _pingpong_config(m, n, k, best.block_n, sm_count)) or best.to_config()
@@ -807,6 +824,7 @@ def best_config(
     calibration: str | None,
     *,
     l2_bytes: int,
+    out_bytes: int = 2,
 ) -> dict | None:
     """Return the analytically selected ``GEMMTMAKernel`` config for a shape.
 
@@ -822,6 +840,8 @@ def best_config(
             constants come from.
         l2_bytes: L2 cache of the target device, in bytes; it sets the raster group
             of a persistent coop2 or ping-pong tile.
+        out_bytes: Bytes of one output element: 2 for an output in the operands' 16-bit
+            dtype, 4 for a float32 one, whose staging tiles take twice the shared memory.
 
     Returns:
         ``None`` when no profile carries this board's ranking constants, so the
@@ -838,7 +858,7 @@ def best_config(
     cal = _calibration(calibration)
     if cal is None:
         return None
-    return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count, l2_bytes, cal))
+    return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count, l2_bytes, cal, out_bytes))
 
 
 def gemv_config(k: int) -> dict:
@@ -985,14 +1005,12 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
     else:
         num_stages = 4
     tiles = -(-m // 128) * -(-n // block_n)
-    # Shortest K slice the FP8 split-K path pays for.
-    fp8_min_slice_k_tiles = 12
     split_k = 1
     for candidate in (4, 2):
         if (
             tiles * candidate <= sm_count
             and k_iters % candidate == 0
-            and k_iters // candidate >= fp8_min_slice_k_tiles
+            and k_iters // candidate >= FP8_MIN_SLICE_K_TILES
         ):
             split_k = candidate
             break

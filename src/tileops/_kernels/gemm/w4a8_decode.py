@@ -90,10 +90,12 @@ def _grid(n: int, k: int, uw: int, block_k: int, sm_count: int, fill: tuple[int,
 
 
 def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> dict:
-    """Select a config that passes the builder's single legality check.
+    """Select a config that passes the builder's single legality check, with a ring shallow
+    enough to keep the units' partial sums in shared memory.
 
     Raises:
-        ValueError: No stage count of the selected family fits the device.
+        ValueError: No stage count of the selected family keeps the units' partial sums in
+            shared memory on the device.
     """
     # Every threshold below was measured on H200 over the manifest's W4A8 rows.
     # 8-token tiles: a weight past 32 MiB runs three warpgroups on three stages, a smaller
@@ -103,6 +105,8 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     wide_units, wide_stages = 2, 3
     # 512-K chunks where K allows, else 256-K chunks with twice the stages in flight.
     narrow_k, wide_k = 256, GEMMW4A8DecodeKernel._WIDE_ITEM_K
+    # A unit's K run up to which one CTA per 64-row tile beats splitting tiles across CTAs.
+    exchange_free_unit_k = 4 * wide_k
     nt = next(t for t in GEMMW4A8DecodeKernel.token_tiles if t >= m)
     if nt == GEMMW4A8DecodeKernel.token_tiles[0]:
         large_weight = n * k // 2 > small_weight_bytes
@@ -117,34 +121,19 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     bk = wide_k if k % wide_k == 0 else narrow_k
     if bk == narrow_k:
         stages *= wide_k // narrow_k
-    # One CTA per tile once the tiles fill three quarters of the SMs within one wave.
-    ctas = _grid(n, k, uw, bk, sm_count, (3, 4))
-    tiles = -(-n // (WGMMA_ROWS * uw))
+    # One CTA per 64-row tile, its items split over the CTA's one-warpgroup units, when the
+    # tiles fit in one wave and each unit's K run is short enough. The units add their partial
+    # sums in shared memory; a tile split over CTAs adds them through global memory, whose
+    # exchange costs more than the K a unit's run that short saves.
+    row_tiles = -(-n // WGMMA_ROWS)
     nchunk = -(-k // bk)
-    items = tiles * nchunk
-    balanced = 2 * tiles
-    # At short K, two contributors per tile pay when they keep five sixths of the SMs busy
-    # (with the tile conditions below). The K test passes up to K = 3200, and up to K = 3584
-    # only when the extra K work stays bounded, which keeps the original grid on the
-    # K = 3456 shapes it measured faster on.
-    fill_num, fill_den = 5, 6
-    if (
-        k <= 3584
-        and nt >= GEMMW4A8DecodeKernel._STAGED_MIN_TOKENS
-        and uw == 2
-        and n % (WGMMA_ROWS * uw) == 0
-        and fill_num * sm_count <= fill_den * balanced <= fill_den * sm_count
-        and balanced <= items
-        and (
-            k <= 3200
-            or (
-                bk == wide_k
-                and -(-nchunk // 2) <= -(-items // ctas)
-                and (k // GROUP_SIZE) * (ctas - balanced) <= ctas
-            )
-        )
-    ):
-        ctas = balanced
+    unit_items = -(-nchunk // nw)
+    if row_tiles <= sm_count and unit_items * bk <= exchange_free_unit_k:
+        uw = 1
+        ctas = row_tiles
+    else:
+        # One CTA per tile once the tiles fill three quarters of the SMs within one wave.
+        ctas = _grid(n, k, uw, bk, sm_count, (3, 4))
     for st in range(stages, 1, -1):
         cfg = dict(
             block_tokens=nt,
@@ -154,7 +143,12 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
             num_stages=st,
             num_ctas=ctas,
         )
-        if _check_config(m, n, k, cfg, smem_budget, sm_count) is None:
+        # A ring deep enough to push the units' partial sums out of shared memory costs more
+        # than the extra stage hides.
+        if (
+            _check_config(m, n, k, cfg, smem_budget, sm_count) is None
+            and _shared_bytes(nt, nw, uw, bk, st)[1] <= smem_budget
+        ):
             return cfg
     raise ValueError(f"no legal W4A8 decode config for m={m}, n={n}, k={k}")
 
@@ -885,8 +879,9 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     _STAGED_MIN_TOKENS = 16
     _STAGE_STRIDE = WGMMA_ROWS + 8  # Offset successive token rows by four banks.
     _PARTIAL_SLOTS = 2  # Head and tail tiles of a unit's item range.
-    # A 16- to 40-token unit's warpgroups where N allows, and its item's K where K allows:
-    # the config selection picks them and the 40-token dispatch rule counts in them.
+    # A 16- to 40-token unit's warpgroups where N allows off the exchange-free grid, and its
+    # item's K where K allows: the config selection picks them and the 40-token dispatch rule
+    # counts in them.
     _WIDE_UNIT_WARPGROUPS = 2
     _WIDE_ITEM_K = 4 * GROUP_SIZE
     # By calibration key (``tileops._utils.calibration_key``). A board without an entry keeps

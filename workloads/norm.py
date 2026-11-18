@@ -170,49 +170,65 @@ class FusedAddRMSNormWorkload(WorkloadBase):
         return norm_verification(inputs[0].dtype)
 
 
+def _offset_row(n: int, device) -> tuple[torch.Tensor, torch.Tensor]:
+    """A row of *n* values, 3 / 8 of them at +-3 and the rest at +-1, and its signs: its root
+    mean square is 2, and the normalized values are +-1.5 and +-0.5."""
+    magnitude = torch.ones(n, device=device)
+    magnitude[: 3 * n // 8] = 3
+    sign = torch.ones(n, device=device)
+    sign[1::2] = -1
+    return magnitude * sign, sign
+
+
+# One plus this weight lies between two bfloat16 values, and 1.5 times it rounds up a step
+# where 1.5 times its rounded value does not.
+_OFFSET_WEIGHT = 3 * 2**-10
+
+
+def _offset_verification(weights: tuple[int, ...]):
+    """An exact check whose negative control rounds ``1 + weight`` of the inputs at *weights*
+    to bfloat16 before the multiply."""
+    from workloads.numerics import Exact, NegativeControl
+
+    def offset_rounded(reference, inputs):
+        """The reference with 1 + weight rounded to bfloat16 before the multiply."""
+        changed = list(inputs)
+        for i in weights:
+            weight = changed[i]
+            changed[i] = ((weight.float() + 1).to(weight.dtype).float() - 1).to(weight.dtype)
+        return reference(*changed)
+
+    return Exact(
+        rtol=0.0,
+        atol=0.0,
+        controls=(NegativeControl("one-plus-weight-rounded", offset_rounded),),
+    )
+
+
 class ZeroCenteredOffsetWorkload:
     """A zero-centered RMS norm workload's bfloat16 inputs on which rounding ``1 + weight`` to
     bfloat16 before the multiply changes the output.
 
-    Each row holds 3 / 8 of its values at +-3 and the rest at +-1, so its root mean square is
-    2 and the normalized values are +-1.5 and +-0.5. The weight is 3 * 2^-10 everywhere: one
-    plus it lies between two bfloat16 values, and 1.5 times it rounds up a step where 1.5 times
-    its rounded value does not. Every output lies at least 3e-4 of its value from a bfloat16
-    rounding boundary, so any float32 evaluation rounds to the reference's value exactly. The
-    fused-add sum splits each value into ``x`` (+-2 or 0) and ``residual`` (+-1).
+    Each row is an `_offset_row` and the weight is `_OFFSET_WEIGHT` everywhere. Every output
+    lies at least 3e-4 of its value from a bfloat16 rounding boundary, so any float32
+    evaluation rounds to the reference's value exactly. The fused-add sum splits each value
+    into ``x`` (+-2 or 0) and ``residual`` (+-1).
     """
 
     def gen_inputs(self) -> tuple:
         inputs = list(super().gen_inputs())
         x = inputs[0]
-        n = x.shape[-1]
-        magnitude = torch.ones(n, device=x.device)
-        magnitude[: 3 * n // 8] = 3
-        sign = torch.ones(n, device=x.device)
-        sign[1::2] = -1
-        rows = (magnitude * sign).expand(x.shape)
+        row, sign = _offset_row(x.shape[-1], x.device)
+        rows = row.expand(x.shape)
         if len(inputs) == 3:
             inputs[0], inputs[1] = (rows - sign).to(x.dtype), sign.expand(x.shape).to(x.dtype)
         else:
             inputs[0] = rows.to(x.dtype)
-        inputs[-1] = torch.full_like(inputs[-1], 3 * 2**-10)
+        inputs[-1] = torch.full_like(inputs[-1], _OFFSET_WEIGHT)
         return tuple(inputs)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, NegativeControl
-
-        def offset_rounded(reference, inputs):
-            """The reference with 1 + weight rounded to bfloat16 before the multiply."""
-            changed = list(inputs)
-            weight = changed[-1]
-            changed[-1] = ((weight.float() + 1).to(weight.dtype).float() - 1).to(weight.dtype)
-            return reference(*changed)
-
-        return Exact(
-            rtol=0.0,
-            atol=0.0,
-            controls=(NegativeControl("one-plus-weight-rounded", offset_rounded),),
-        )
+        return _offset_verification((len(inputs) - 1,))
 
 
 class RMSNormZeroCenteredOffsetWorkload(ZeroCenteredOffsetWorkload, RMSNormWorkload):
@@ -977,6 +993,26 @@ class FusedQKNormRoPEWorkload(WorkloadBase):
             self.mrope_interleaved,
         )
         return out
+
+
+class FusedQKNormRoPEZeroCenteredOffsetWorkload(FusedQKNormRoPEWorkload):
+    """`ZeroCenteredOffsetWorkload`'s rows and weight for FusedQKNormRoPEFwdOp.
+
+    Every q and k head is an `_offset_row` and both weights are `_OFFSET_WEIGHT`. Every
+    position is 0, whose cosine 1 and sine 0 rotate each value onto itself exactly, so the
+    outputs are the zero-centered RMS norm's and rounding ``1 + weight`` to bfloat16 moves them.
+    """
+
+    def gen_inputs(self):
+        qkv, q_weight, k_weight, cache, positions = super().gen_inputs()
+        row, _ = _offset_row(self.dim, qkv.device)
+        heads = self.num_heads + self.num_kv_heads
+        qkv[:, : heads * self.dim] = row.repeat(heads).to(qkv.dtype)
+        weight = torch.full_like(q_weight, _OFFSET_WEIGHT)
+        return qkv, weight, weight.clone(), cache, torch.zeros_like(positions)
+
+    def verification(self, *inputs):
+        return _offset_verification((1, 2))
 
 
 class FusedQKNormRoPECall(CallWorkload, FusedQKNormRoPEWorkload):

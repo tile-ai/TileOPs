@@ -32,6 +32,8 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
         chunked = call.chunk_refusal
         if chunked is not None:
             return chunked
+        if call.state_v_first or call.pooled:
+            return "keeps one key-major state a sequence in batch order"
         if call.seq_len < 2:
             return "serves a sequence of at least two tokens"
         plan = launch_plan(
@@ -123,16 +125,17 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
         cu_seqlens_cpu: torch.Tensor | None = None,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
+        state_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the chunk-local half, then the scan; see the interface for the tensors."""
-        del cu_seqlens_cpu
+        del cu_seqlens_cpu, state_indices
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
         HV, V = v.shape[2], v.shape[3]
         # One kernel serves every sequence count and initial-state presence its
         # identity leaves open, so the call the driver reads restates them from this
-        # call's tensors; the variants `chunk_refusal` declines stay at their defaults.
+        # call's tensors; the variants `refusal` declines stay at their defaults.
         call = KDACall(
             batch=batch,
             seq_len=seq_len,

@@ -1,8 +1,12 @@
 """How the linear_attention family's benchmarks call their ops."""
 
+from typing import Any
+
 import torch
 
-from benchmarks._cases import Entry
+from benchmarks._cases import Entry, default_binder
+from benchmarks.api import Implementation
+from benchmarks.baselines import private_inputs
 from workloads.linear_attention.deltanet import DeltaNetChunkwiseCall
 from workloads.linear_attention.gla import GLAChunkwiseCall
 
@@ -33,7 +37,17 @@ def _gla_bwd_inputs(workload: GLAChunkwiseCall) -> tuple:
     return do, dfinal_state, q, k, v, g, h
 
 
+def _state_pool_binder(op: Any, case: Any) -> Implementation:
+    """The op; given ``state_indices``, on a private copy of the state pool it updates in place."""
+    implementation = default_binder(op, case)
+    if case.inputs[10] is None:
+        return implementation
+    return private_inputs(implementation.run, case.inputs, 5)
+
+
 ENTRIES = {
     "DeltaNetChunkBwdOp": Entry(inputs=_deltanet_bwd_inputs),
+    "GDNFwdOp": Entry(binder=_state_pool_binder),
     "GLAChunkBwdOp": Entry(inputs=_gla_bwd_inputs),
+    "KDAFwdOp": Entry(binder=_state_pool_binder),
 }
