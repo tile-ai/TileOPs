@@ -326,7 +326,7 @@ def _varlen_discriminated():
     entry = _varlen(L=[2, 3])
     inputs = entry["signature"]["inputs"]
     inputs["chunks"]["values"] = "chunk_indices(L, 4 if member(x) == 'Tensor' else 2)"
-    inputs["offsets"]["requires"] = ["max_segment(9 if present(x) else 8)"]
+    inputs["offsets"]["requires"] = ["prefix_offsets(5)", "max_segment(9 if present(x) else 8)"]
     return entry
 
 
@@ -562,6 +562,11 @@ _ENTRY_ERRORS = [
     ),
     ("Varlen", _varlen_generated(requires=["max_segment(9)"]), "reads rank 1"),
     ("Varlen", _varlen_cross_requires(), "reads 'b' where it is absent"),
+    (
+        "Varlen",
+        _varlen_with(requires=["max_segment(9)"]),
+        "max_segment needs prefix_offsets on the same tensor",
+    ),
     ("Varlen", _varlen_spliced_requires(), "needs a fixed-rank tensor"),
     (
         "Varlen",
@@ -574,7 +579,7 @@ _ENTRY_ERRORS = [
     ("Varlen", _varlen(L="prefix_sum([1])"), "not a call of a Seq[Int] primitive"),
     (
         "Varlen",
-        _varlen_with(values="prefix_sum(L)", requires=["max_segment(1)"]),
+        _varlen_with(values="prefix_sum(L)", requires=["prefix_offsets(5)", "max_segment(1)"]),
         "requires max_segment(1) fails",
     ),
 ]

@@ -896,8 +896,9 @@ def equal_inputs(sig: Signature) -> list[tuple[str, ...]]:
 def _declaration_errors(sig: Signature) -> list[str]:
     """Diagnostics of every `values` and `requires` call.
 
-    Each has a built-in callee, its arity and arguments in the language; the `requires`
-    contract holds on every discriminant point.
+    Each has a built-in callee, its arity and arguments in the language; a `max_segment` sits
+    beside a `prefix_offsets` on its tensor; the `requires` contract holds on every
+    discriminant point.
     """
     errors, valid = [], {}
     declared = {*sig.forall, *sig.params, *sig.let}
@@ -950,6 +951,12 @@ def _declaration_errors(sig: Signature) -> list[str]:
             errors += found
             if not found:
                 valid.setdefault(t.name, []).append((field, name, call))
+    # The `validate_inputs` check reads a segment bound only on offsets it checks.
+    errors += [
+        f"tensor {n!r}: max_segment needs prefix_offsets on the same tensor"
+        for n, calls in valid.items()
+        if "max_segment" in (held := {p for _, p, _ in calls}) and "prefix_offsets" not in held
+    ]
     return errors + _requires_errors(sig, valid, env)
 
 
