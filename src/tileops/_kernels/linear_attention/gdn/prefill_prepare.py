@@ -929,16 +929,13 @@ def _build_correct_h0_kernel(
 
     @T.macro
     def kernel_body(
-        bb,
         bh,
         bv,
         seq_start_idx,
-        seq_end_idx,
         num_iters,
         ht_buffer,
         mt_buffer,
         fallback_mask,
-        seq_map_r2c,
         cp_h0,
         h_fragment,
     ):
@@ -1022,16 +1019,13 @@ def _build_correct_h0_kernel(
                     ]
 
             kernel_body(
-                bb,
                 bh,
                 bv,
                 seq_start_idx,
-                seq_end_idx,
                 num_iters,
                 ht_buffer,
                 mt_buffer,
                 fallback_mask,
-                seq_map_r2c,
                 cp_h0,
                 h_fragment,
             )
@@ -1095,16 +1089,13 @@ def _build_correct_h0_kernel(
                         cp_h0[seq_start_idx, bh, ik, bv * block_DV + iv] = 0.0
 
                 kernel_body(
-                    bb,
                     bh,
                     bv,
                     seq_start_idx,
-                    seq_end_idx,
                     num_iters,
                     ht_buffer,
                     mt_buffer,
                     fallback_mask,
-                    seq_map_r2c,
                     cp_h0,
                     h_fragment,
                 )
