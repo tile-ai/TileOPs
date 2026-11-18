@@ -66,8 +66,8 @@ def _concat_kernel(vec, dtypes, out_dtype):
     """
     n = len(dtypes)
     assert n <= _SLOTS, f"a launch copies at most {_SLOTS} inputs, got {n}"
-    # Small CTAs spread a decode row's few hundred vectors over the SMs, and 16 of them fill
-    # an SM's 2048 resident threads.
+    # Small CTAs spread a decode row's few hundred vectors over the SMs, and 128 threads
+    # divide every architecture's per-SM thread limit, so whole CTAs fill an SM.
     threads = 128
     rows = T.dynamic("rows", "int64")
     total = T.dynamic("total", "int64")
