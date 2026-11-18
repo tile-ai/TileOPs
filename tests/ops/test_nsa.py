@@ -171,6 +171,33 @@ def test_nsa_varlen_op(
 _WIDE = {"heads": 24, "dim": 256, "scale": 0.0625, "block_size": 4, "groups": 12}
 
 
+def _wide_test(
+    seq_lens: "list[int]",
+    kv_lens: "list[int] | None",
+    scale: float,
+    selected_blocks: int,
+    **options,
+) -> NSAFwdTest:
+    """A causal bfloat16 call of the ``_WIDE`` head shape at *scale*, its q, k and v drawn
+    along the head dimension too."""
+    return NSAFwdTest(
+        len(seq_lens),
+        _WIDE["heads"],
+        sum(seq_lens),
+        _WIDE["dim"],
+        True,
+        scale,
+        _WIDE["block_size"],
+        _WIDE["groups"],
+        selected_blocks,
+        torch.bfloat16,
+        seq_lens,
+        kv_lens=kv_lens,
+        varied_dims=True,
+        **options,
+    )
+
+
 class NSAWideGroupFixture(FixtureBase):
     PARAMS = [
         (
@@ -258,22 +285,7 @@ def test_nsa_varlen_topk_select_selection() -> None:
     """The selection TopKSelectFwdOp makes: each token's top-512 blocks before its own
     plus its own block, one list for every KV head, in no order, padded with the block
     count where fewer than 512 blocks precede the token."""
-    tokens = 2100
-    test = NSAFwdTest(
-        1,
-        _WIDE["heads"],
-        tokens,
-        _WIDE["dim"],
-        True,
-        _WIDE["scale"],
-        _WIDE["block_size"],
-        _WIDE["groups"],
-        513,
-        torch.bfloat16,
-        [tokens],
-        varied_dims=True,
-        selection="topk",
-    )
+    test = _wide_test([2100], None, _WIDE["scale"], 513, selection="topk")
     op = NSAVarlenFwdOp(sm_scale=_WIDE["scale"], block_size=_WIDE["block_size"])
     test.check(op, *test.gen_inputs())
 
@@ -320,82 +332,48 @@ def test_nsa_varlen_padding_only_selection(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "q_value, k_value, scale",
+    "seq_lens, kv_lens, scale, selected_blocks, q_value, k_value",
     [
         # Every key scores 2**28 / 16 * 256: the splits' log-sum-exps are equal and so
         # large that a sum of their weights added back to one is lost to rounding.
-        (4096.0, 4096.0, _WIDE["scale"]),
+        pytest.param(
+            [1, 1, 2], [1500, 2101, 3000], _WIDE["scale"], 513, 4096.0, 4096.0, id="huge-scores"
+        ),
         # Every key scores -3 * 2**126: finite, but past float32 once scaled by log2(e).
-        (2.0**59, -3 * 2.0**59, 1.0),
+        pytest.param(
+            [1, 1, 2], [1500, 2101, 3000], 1.0, 513, 2.0**59, -3 * 2.0**59, id="negative-scores"
+        ),
+        # Every score is nearly 0, and a key the selection does not reach still weighs
+        # nothing: early tokens see a few keys of a step full of slots.
+        pytest.param([100], None, 1e-38, 513, None, None, id="tiny-scale"),
+        # A finite scale near float32's largest value: equal (zero) scores weigh alike.
+        pytest.param([64], None, 1.2e38, 16, 0.0, 0.0, id="huge-scale"),
     ],
 )
-def test_nsa_varlen_split_merge_extreme_scores(
-    q_value: float, k_value: float, scale: float
+def test_nsa_varlen_scores_and_scales_at_the_float32_range(
+    seq_lens: "list[int]",
+    kv_lens: "list[int] | None",
+    scale: float,
+    selected_blocks: int,
+    q_value: "float | None",
+    k_value: "float | None",
 ) -> None:
-    """Splits whose scores are all equal, huge or hugely negative merge to the mean of
-    the selected values."""
-    test = NSAFwdTest(
-        3,
-        _WIDE["heads"],
-        4,
-        _WIDE["dim"],
-        True,
-        scale,
-        _WIDE["block_size"],
-        _WIDE["groups"],
-        513,
-        torch.bfloat16,
-        [1, 1, 2],
-        kv_lens=[1500, 2101, 3000],
-        varied_dims=True,
-    )
+    """Splits whose scores are all equal, huge or hugely negative merge to the mean of the
+    selected values, and a scale near 0 or float32's largest value weighs equal scores
+    alike. ``q_value`` and ``k_value`` fill q and k, or ``None`` keeps the random inputs."""
+    test = _wide_test(seq_lens, kv_lens, scale, selected_blocks)
     q, k, *rest = test.gen_inputs()
-    q, k = torch.full_like(q, q_value), torch.full_like(k, k_value)
+    if q_value is not None:
+        q, k = torch.full_like(q, q_value), torch.full_like(k, k_value)
     op = NSAVarlenFwdOp(sm_scale=scale, block_size=_WIDE["block_size"])
     test.check(op, q, k, *rest)
-
-
-@pytest.mark.smoke
-def test_nsa_varlen_tiny_scale() -> None:
-    """At a scale so small that every score is nearly 0, a key the selection does not
-    reach still weighs nothing: early tokens see a few keys of a step full of slots."""
-    test = NSAFwdTest(
-        1,
-        _WIDE["heads"],
-        100,
-        _WIDE["dim"],
-        True,
-        1e-38,
-        _WIDE["block_size"],
-        _WIDE["groups"],
-        513,
-        torch.bfloat16,
-        [100],
-        varied_dims=True,
-    )
-    op = NSAVarlenFwdOp(sm_scale=1e-38, block_size=_WIDE["block_size"])
-    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
 def test_nsa_varlen_split_merge_opposite_extreme_scores() -> None:
     """Finite scores of opposite sign whose difference passes float32, at a scale that
     brings them back near 1: one split scores -3 * 2**126, the other +3 * 2**126."""
-    test = NSAFwdTest(
-        1,
-        _WIDE["heads"],
-        1,
-        _WIDE["dim"],
-        True,
-        1e-38,
-        _WIDE["block_size"],
-        _WIDE["groups"],
-        16,
-        torch.bfloat16,
-        [1],
-        kv_lens=[64],
-        varied_dims=True,
-    )
+    test = _wide_test([1], [64], 1e-38, 16)
     q, k, v, block_indices, block_counts, *rest = test.gen_inputs()
     q = torch.full_like(q, 2.0**59)
     k = torch.cat([torch.full_like(k[:32], -3 * 2.0**59), torch.full_like(k[32:], 3 * 2.0**59)])
@@ -407,77 +385,26 @@ def test_nsa_varlen_split_merge_opposite_extreme_scores() -> None:
 
 
 @pytest.mark.smoke
-def test_nsa_varlen_huge_scale() -> None:
-    """A finite scale near float32's largest value: equal (zero) scores weigh alike."""
-    test = NSAFwdTest(
-        1,
-        _WIDE["heads"],
-        64,
-        _WIDE["dim"],
-        True,
-        1.2e38,
-        _WIDE["block_size"],
-        _WIDE["groups"],
-        16,
-        torch.bfloat16,
-        [64],
-        varied_dims=True,
-    )
-    q, k, *rest = test.gen_inputs()
-    op = NSAVarlenFwdOp(sm_scale=1.2e38, block_size=_WIDE["block_size"])
-    test.check(op, torch.zeros_like(q), torch.zeros_like(k), *rest)
-
-
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_nsa_varlen_scale_past_float32_is_refused() -> None:
     """A finite scale whose float32 root of 2 * scale * log2(e) does not exist reaches no
     kernel: the call is refused, not answered wrong."""
-    test = NSAFwdTest(
-        1,
-        _WIDE["heads"],
-        16,
-        _WIDE["dim"],
-        True,
-        1e308,
-        _WIDE["block_size"],
-        _WIDE["groups"],
-        4,
-        torch.bfloat16,
-        [16],
-    )
+    test = _wide_test([16], None, 1e308, 4)
     op = NSAVarlenFwdOp(sm_scale=1e308, block_size=_WIDE["block_size"])
     with pytest.raises(OpNotAvailableError, match="no normal float32 root"):
         op(*test.gen_inputs())
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "heads, dim, block_size, groups, selected_blocks",
-    [
-        # Main's 16-head groups: the op copies strided inputs before any kernel.
-        (32, 128, 32, 16, 8),
-    ],
-)
-def test_nsa_varlen_strided_inputs(
-    heads: int, dim: int, block_size: int, groups: int, selected_blocks: int
-) -> None:
+def test_nsa_varlen_strided_inputs() -> None:
     """Strided views, a key tensor sliced from a wider one and one selection expanded over
-    the KV heads, give the result their contiguous copies give."""
+    the KV heads, give the result their contiguous copies give: the op copies them before
+    any kernel."""
+    dim, block_size = 128, 32
     test = NSAFwdTest(
-        2,
-        heads,
-        256,
-        dim,
-        True,
-        dim**-0.5,
-        block_size,
-        groups,
-        selected_blocks,
-        torch.bfloat16,
-        [100, 156],
+        2, 32, 256, dim, True, dim**-0.5, block_size, 16, 8, torch.bfloat16, [100, 156],
         varied_dims=True,
-    )
+    )  # fmt: skip
     q, k, v, block_indices, block_counts, cu_seqlens, token_indices = test.gen_inputs()
     block_indices = block_indices[:, :1].expand_as(block_indices)
     k = torch.cat([k, k], -1)[..., :dim]
