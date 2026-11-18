@@ -20,23 +20,6 @@ class ReLUWorkload(WorkloadBase):
         return _REFERENCES["ReLUFwdOp"]({}, x)
 
 
-class FusedGatedBenchCase:
-    """Minimal workload for fused gated ops."""
-
-    def __init__(self, M: int, N: int, dtype: torch.dtype):
-        self.M = M
-        self.N = N
-        self.n_total = M * N
-        self.dtype = dtype
-        self.output_dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.M, 2 * self.N, device=run_device(), dtype=self.dtype),)
-
-    def verification(self, *inputs):
-        return fused_gated_verification(inputs[0].dtype)
-
-
 class AddBroadcastWorkload(WorkloadBase):
     def __init__(self, a_shape: tuple, b_shape: tuple, dtype: torch.dtype):
         self.a_shape = a_shape

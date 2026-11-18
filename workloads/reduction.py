@@ -15,27 +15,6 @@ class SumWorkload(RandnWorkload):
         return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
-class MeanWorkload(RandnWorkload):
-    """Workload definition for MeanFwdOp."""
-
-    def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
-
-
-class AmaxWorkload(RandnWorkload):
-    """Workload definition for AmaxFwdOp."""
-
-    def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
-
-
-class AminWorkload(RandnWorkload):
-    """Workload definition for AminFwdOp."""
-
-    def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
-
-
 class ProdWorkload(WorkloadBase):
     """Workload definition for ProdFwdOp.
 
@@ -64,26 +43,8 @@ class StdWorkload(RandnWorkload):
         return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
 
 
-class VarWorkload(RandnWorkload):
-    """Workload definition for VarFwdOp."""
-
-    def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
-
-
-class VarMeanWorkload(RandnWorkload):
-    """Workload definition for VarMeanFwdOp."""
-
-    def verification(self, *inputs):
-        return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
-
-
 class ArgmaxWorkload(RandnWorkload):
     """Workload definition for ArgmaxFwdOp."""
-
-
-class ArgminWorkload(RandnWorkload):
-    """Workload definition for ArgminFwdOp."""
 
 
 class SoftmaxWorkload(RandnWorkload):
@@ -129,14 +90,6 @@ class _LogicalWorkload(WorkloadBase):
 
 class AnyWorkload(_LogicalWorkload):
     """Workload definition for AnyFwdOp."""
-
-
-class AllWorkload(_LogicalWorkload):
-    """Workload definition for AllFwdOp."""
-
-
-class CountNonzeroWorkload(_LogicalWorkload):
-    """Workload definition for CountNonzeroFwdOp."""
 
 
 class ReductionCall(CallWorkload):
