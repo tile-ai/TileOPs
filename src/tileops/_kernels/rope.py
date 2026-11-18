@@ -977,12 +977,20 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
         if unit_columns:
             lanes = VECTOR_ACCESS_BYTES // self.dtype.itemsize
             vec = math.gcd(lanes, self.rotary_half, self.head_dim, *x_strides[:3], *y_strides[:3])
-        # One head a thread where the units fill at most half the resident threads, as in
-        # `_RoPEPositionsKernel.forward`.
         copied = 0 if self.inplace else self.head_dim - 2 * self.rotary_half
         head_units = self.rotary_half // vec + copied // vec
         tokens = x.shape[0] if packed else x.shape[0] * x.shape[1]
-        wide = 2 * tokens * self.heads * head_units <= self._resident_threads
+        units = tokens * self.heads * head_units
+        # One head a thread where the units fill at most half the resident threads, as in
+        # `_RoPEPositionsKernel.forward`. Also where they outnumber the resident threads and
+        # every unit rotates two full-width vectors: a second head would double the vectors
+        # a thread holds, and its registers leave fewer threads resident on an SM while the
+        # grid runs in turns. A copied unit or a narrower vector is too little work for a
+        # thread alone, so those calls keep two heads sharing one table load.
+        full_units = copied == 0 and vec * self.dtype.itemsize == VECTOR_ACCESS_BYTES
+        wide = 2 * units <= self._resident_threads or (
+            full_units and units > self._resident_threads
+        )
         program = self.program(self._compile, vec, unit_columns, wide)
         # The offsets are a tensor argument, or an int scalar after the tensors.
         offsets_tensor = isinstance(seqlen_offsets, torch.Tensor)

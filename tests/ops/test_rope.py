@@ -6,10 +6,14 @@ an independent reference of the vLLM formulas, and against vLLM itself at positi
 not start at 0.
 """
 
+import math
+
 import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops._kernels.build_target import target_of
+from tileops._kernels.rope import RoPECosSinKernel
 from tileops.rope import RoPECosSinFwdOp
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
@@ -524,6 +528,41 @@ _COS_SIN_CASES = (
 def test_rope_cos_sin_matches_the_reference(row, dtype_case) -> None:
     test = RoPECosSinTest(manifest_call("RoPECosSinFwdOp", dtype_case, **row))
     test.check(RoPECosSinFwdOp(**test.arguments()), *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "D, Rh, head_units, fill, one_head",
+    [
+        pytest.param(64, 32, 4, 2.0, True, marks=_SMOKE, id="full-units-past-the-device"),
+        pytest.param(64, 32, 4, 1.0, False, marks=_FULL, id="full-units-filling-the-device"),
+        pytest.param(128, 32, 12, 2.0, False, marks=_FULL, id="copied-columns"),
+        pytest.param(72, 36, 9, 2.0, False, marks=_FULL, id="narrow-vectors"),
+    ],
+)
+def test_rope_cos_sin_gives_a_thread_one_head_where_full_units_outnumber_the_device(
+    D, Rh, head_units, fill, one_head, monkeypatch
+) -> None:
+    """A bfloat16 call of 16 heads, each of *head_units* units, numbering *fill* times the
+    device's resident threads, matches the reference. Above half the resident threads, a
+    thread takes one head only where every unit rotates two 16-byte vectors and the units
+    outnumber the resident threads: a 72-column head moves 8-byte vectors, and a 128-column
+    head rotating 64 copies columns."""
+    target = target_of(torch.device(run_device()))
+    resident = target.sm_count * target.threads_per_sm
+    tokens = math.ceil(fill * resident / (16 * head_units))
+    chosen = []
+    program = RoPECosSinKernel.program
+
+    def record(self, build, *facts):
+        chosen.append(facts[-1])
+        return program(self, build, *facts)
+
+    monkeypatch.setattr(RoPECosSinKernel, "program", record)
+    row = _dense(1, tokens, 16, D, Rh)
+    test = RoPECosSinTest(manifest_call("RoPECosSinFwdOp", {"T": "bfloat16", **_F32_TABLES}, **row))
+    test.check(RoPECosSinFwdOp(**test.arguments()), *test.gen_inputs())
+    assert chosen and all(wide is one_head for wide in chosen)
 
 
 def _strided_view_call(interleaved, inplace, columns, width):
