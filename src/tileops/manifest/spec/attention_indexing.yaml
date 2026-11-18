@@ -113,9 +113,9 @@ GatedPoolCompressFwdOp:
 TopKSelectFwdOp:
   # Unordered along the top_k axis: a row selects the same positions every call and may
   # place them in different slots. A window holding fewer than top_k positions selects all
-  # of them and fills the rest with S_kv, which selects nothing; flashinfer.top_k takes no
-  # such window, DeepSeek-V4-Flash inference/model.py Indexer.forward selects
-  # topk(min(k, n)).
+  # of them and fills the rest with fill_value; flashinfer.top_k takes no such window,
+  # DeepSeek-V4-Flash inference/model.py Indexer.forward selects topk(min(k, n)) and fills
+  # with -1, the index its sparse attention skips.
   family: attention
   status: implemented
   ref_api: flashinfer.top_k
@@ -123,6 +123,8 @@ TopKSelectFwdOp:
     forall: {B: Dim, S: Dim, S_kv: Dim, G: Dim}
     params:
       top_k: {type: int}
+      # The index of a slot no key fills; None is S_kv, one past the last key.
+      fill_value: {type: "int | None", default: null, kw_only: true}
     inputs:
       logits: {dtype: float32, shape: "[B, S, S_kv, G]"}
       # Row (b, s) selects from logits[b, s, starts[b, s]:ends[b, s]].
@@ -132,17 +134,19 @@ TopKSelectFwdOp:
       indices: {dtype: int32, shape: "[B, S, G, top_k]"}
     shape_rules:
     - "0 < top_k"
+    # The indices are int32.
+    - "not present(fill_value) or (-2147483648 <= fill_value and fill_value <= 2147483647)"
   workloads:
   - {B: 1, S: 32768, S_kv: 65536, G: 1, top_k: 1024, label: prefill-k1024}
   - {B: 1, S: 32768, S_kv: 65536, G: 1, top_k: 2048, label: prefill-k2048}
   - {B: 1, S: 1, S_kv: 16384, G: 1, top_k: 2048, label: ds-v32-topk-decode-b1}
   # Top-512 of ratio-4 compressed keys (DeepSeek-V4-Flash entries, GLM-5.3-Flash pools,
   # Qwen3.8-Flash-Next blocks): S_kv is the context over 4.
-  - {B: 1, S: 4096, S_kv: 1024, G: 1, top_k: 512, label: dsv4-flash-prefill-4k}
-  - {B: 1, S: 32768, S_kv: 8192, G: 1, top_k: 512, label: dsv4-flash-prefill-32k}
-  - {B: 64, S: 1, S_kv: 8192, G: 1, top_k: 512, label: dsv4-flash-decode-b64}
+  - {B: 1, S: 4096, S_kv: 1024, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-prefill-4k}
+  - {B: 1, S: 32768, S_kv: 8192, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-prefill-32k}
+  - {B: 64, S: 1, S_kv: 8192, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-decode-b64}
   # Fewer compressed keys than top_k: a 100-token context.
-  - {B: 1, S: 1, S_kv: 25, G: 1, top_k: 512, label: dsv4-flash-short-ctx}
+  - {B: 1, S: 1, S_kv: 25, G: 1, top_k: 512, fill_value: -1, label: dsv4-flash-short-ctx}
   - {B: 64, S: 2, S_kv: 8192, G: 1, top_k: 512, label: glm-5.3-flash-mtp-b64}
   - {B: 1, S: 4096, S_kv: 1024, G: 1, top_k: 512, label: qwen3.8-flash-prefill}
   - {B: 64, S: 1, S_kv: 65536, G: 1, top_k: 512, label: qwen3.8-flash-256k-b64}
