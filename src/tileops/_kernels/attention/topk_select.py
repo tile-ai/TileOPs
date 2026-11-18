@@ -19,20 +19,6 @@ def shared_add(dst, value):
     )
 
 
-def shared_min(dst, value):
-    """``atomicMin`` on a shared-memory element."""
-    return T.call_extern(  # lint: extern-target allow: T.atomic_min is device-scope
-        "uint32", "atomicMin", T.address_of(dst), value
-    )
-
-
-def shared_max(dst, value):
-    """``atomicMax`` on a shared-memory element."""
-    return T.call_extern(  # lint: extern-target allow: T.atomic_max is device-scope
-        "uint32", "atomicMax", T.address_of(dst), value
-    )
-
-
 def half_key(x):
     """A score's fp16 value as an order-preserving int32, -32768 .. 32767: its bits read as a
     signed integer, with the magnitude flipped below zero."""
@@ -113,8 +99,8 @@ def _topk_select_kernel(
     fill_value,
     in_dtype,
     out_dtype,
-    bin_cache=65536,
-    stage_size=2048,
+    bin_cache,
+    stage_size,
 ):
     # Keys a thread loads at once, adjacent.
     VEC = 4 if kv_group == 1 and seq_len_kv % 4 == 0 else 1
@@ -417,8 +403,12 @@ def _topk_select_kernel(
                                 l_kmin = T.min(l_kmin, T.shfl_xor(l_kmin, 1 << i))
                                 l_kmax = T.max(l_kmax, T.shfl_xor(l_kmax, 1 << i))
                             if tx % 32 == 0:
-                                shared_min(s_kminmax[0], l_kmin)
-                                shared_max(s_kminmax[1], l_kmax)
+                                T.call_extern(  # lint: extern-target allow: T.atomic_min is device-scope
+                                    "uint32", "atomicMin", T.address_of(s_kminmax[0]), l_kmin
+                                )
+                                T.call_extern(  # lint: extern-target allow: T.atomic_max is device-scope
+                                    "uint32", "atomicMax", T.address_of(s_kminmax[1]), l_kmax
+                                )
                             T.sync_threads()
                             if tx == 0:
                                 s_kmin[0] = s_kminmax[0]
