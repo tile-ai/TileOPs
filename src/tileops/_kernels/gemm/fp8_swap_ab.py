@@ -73,7 +73,9 @@ def _stream_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) ->
     # split) and, under block scales, a's scales over all of K and b's for each unit.
     fixed = _STATIC_SMEM_BYTES + _ROWS * mpad * (2 if split_k == 1 else 4)
     if block_scaled:
-        fixed += (k_tiles * mpad + rounds * k_iters) * 4
+        # Each in whole KiB: TileLang aligns every other buffer to 1024 bytes, so the gap
+        # after a scale buffer is shared memory too.
+        fixed += sum(-(-count * 4 // 1024) * 1024 for count in (k_tiles * mpad, rounds * k_iters))
     deepest = (BLOCK_SHARED_BYTES_OPT_IN[90] - fixed) // stage
     if deepest < min(2, rounds * k_iters):
         return None
