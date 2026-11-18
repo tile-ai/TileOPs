@@ -223,7 +223,11 @@ def decode_program(
         body = compute_value_major if state_v_first else compute
         state_shape = [num_seqs, HV, V, K] if state_v_first else [num_seqs, HV, K, V]
         pool_shape = [T.dynamic("pool"), *state_shape[1:]]
-        if pooled and gate_in_kernel:
+        # A gate parameter a build without the raw gate leaves unread is declared one element
+        # wide.
+        a_log_shape = [HV] if gate_in_kernel else [1]
+        dt_bias_shape = [HV * K if has_dt_bias else HV] if gate_in_kernel else [1]
+        if pooled:
 
             @T.prim_func
             def main(
@@ -234,41 +238,11 @@ def decode_program(
                 beta: T.Tensor([1, num_seqs, HV], dtype),
                 h0: T.Tensor(pool_shape, accum),
                 slots: T.Tensor([num_seqs], "int32"),
-                a_log: T.Tensor([HV], "float32"),
-                dt_bias: T.Tensor([HV * K if has_dt_bias else HV], "float32"),
+                a_log: T.Tensor(a_log_shape, "float32"),
+                dt_bias: T.Tensor(dt_bias_shape, "float32"),
                 o: T.Tensor([1, num_seqs, HV, V], dtype),
             ):
                 body(q, k, v, g, beta, h0, o, h0, a_log, dt_bias, slots)
-        elif pooled:
-
-            @T.prim_func
-            def main(
-                q: T.Tensor([1, num_seqs, H, K], dtype),
-                k: T.Tensor([1, num_seqs, H, K], dtype),
-                v: T.Tensor([1, num_seqs, HV, V], dtype),
-                g: T.Tensor([1, num_seqs, HV, K], dtype),
-                beta: T.Tensor([1, num_seqs, HV], dtype),
-                h0: T.Tensor(pool_shape, accum),
-                slots: T.Tensor([num_seqs], "int32"),
-                o: T.Tensor([1, num_seqs, HV, V], dtype),
-            ):
-                body(q, k, v, g, beta, h0, o, h0, None, None, slots)
-        elif gate_in_kernel:
-
-            @T.prim_func
-            def main(
-                q: T.Tensor([1, num_seqs, H, K], dtype),
-                k: T.Tensor([1, num_seqs, H, K], dtype),
-                v: T.Tensor([1, num_seqs, HV, V], dtype),
-                g: T.Tensor([1, num_seqs, HV, K], dtype),
-                beta: T.Tensor([1, num_seqs, HV], dtype),
-                h0: T.Tensor(state_shape, accum),
-                a_log: T.Tensor([HV], "float32"),
-                dt_bias: T.Tensor([HV * K if has_dt_bias else HV], "float32"),
-                o: T.Tensor([1, num_seqs, HV, V], dtype),
-                ht: T.Tensor(state_shape, accum),
-            ):
-                body(q, k, v, g, beta, h0, o, ht, a_log, dt_bias, None)
         else:
 
             @T.prim_func
@@ -279,10 +253,12 @@ def decode_program(
                 g: T.Tensor([1, num_seqs, HV, K], dtype),
                 beta: T.Tensor([1, num_seqs, HV], dtype),
                 h0: T.Tensor(state_shape, accum),
+                a_log: T.Tensor(a_log_shape, "float32"),
+                dt_bias: T.Tensor(dt_bias_shape, "float32"),
                 o: T.Tensor([1, num_seqs, HV, V], dtype),
                 ht: T.Tensor(state_shape, accum),
             ):
-                body(q, k, v, g, beta, h0, o, ht, None, None, None)
+                body(q, k, v, g, beta, h0, o, ht, a_log, dt_bias, None)
 
         return main
 

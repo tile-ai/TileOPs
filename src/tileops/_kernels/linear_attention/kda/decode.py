@@ -177,7 +177,11 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
             if initial_state is None
             else initial_state
         )
-        gate_params = raw_gate_arguments(self.gate_in_kernel, A_log, dt_bias)
+        # A build without the raw gate reads neither gate parameter; a view of their shape
+        # fills both slots.
+        gate_params = (
+            raw_gate_arguments(self.gate_in_kernel, A_log, dt_bias) or (state.view(-1)[:1],) * 2
+        )
         tokens = packed(q), packed(k), packed(v), packed(g), packed(beta)
         program = self.program(self._compile)
         if self.pooled:
