@@ -156,9 +156,9 @@ def _rope_positions_kernel(
     blocks walk a token's parts, then the next token's. Where a head has copied columns and
     a thread holds several units, it loads all of them before it stores any; otherwise it
     loads and stores one unit at a time. ``rot_vec`` and ``tail_vec`` divide
-    every column offset they start at, so each unit moves as vectors. The clamp sits in the
-    table index, so the loads carry no branch on the position. The arithmetic is f32 and
-    rounds once.
+    every column offset they start at, so each unit moves as vectors. Each block clamps the
+    token's position into the table once, before its table loads, so a position outside the
+    table reads the nearest row. The arithmetic is f32 and rounds once.
     """
     half = rotary_dim // 2
     width, rot_units, tail_units = _head_units(neox, head_size, rotary_dim, rot_vec, tail_vec)
