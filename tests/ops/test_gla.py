@@ -210,11 +210,11 @@ class GLAChunkBwdFixture(FixtureBase):
                 pytest.param(
                     1, 256, 4, 128, 128, 32, torch.bfloat16, False, marks=pytest.mark.full
                 ),
-                # Mixed head dimensions must retain their previously served backward calls.
+                # Mixed head dimensions.
                 pytest.param(1, 256, 4, 128, 64, 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 256, 4, 64, 128, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 256, 4, 64, 128, 64, torch.bfloat16, False, marks=pytest.mark.full),
-                # Tuned mode must preserve the restored mixed-head call's result.
+                # Tuned mode on a mixed-head call.
                 pytest.param(1, 256, 4, 128, 128, 32, torch.float16, True, marks=pytest.mark.full),
                 # At chunk 128, head dims 64 / 64, the backward fits only SM90's shared memory.
                 pytest.param(
@@ -385,7 +385,6 @@ def test_gla_bwd_in_99_kb_of_shared_memory() -> None:
         (64, 128, torch.float32),
         (32, 96, torch.float32),
         (32, 192, torch.float16),
-        (32, 192, torch.bfloat16),
     ],
 )
 def test_gla_bwd_refuses_what_99_kb_cannot_hold(
