@@ -27,39 +27,61 @@ def task_walk(
     *,
     num_groups: int,
     block_m: int,
-    n_tiles: int,
+    block_n: int,
+    n: int,
+    num_sms: int,
     max_m: int | None,
     packing: str | None,
     metadata_kind: str | None,
     alignment: int,
-    m=None,
 ):
     """The task walk of one kernel build.
 
     Args:
         num_groups: Experts.
         block_m: Rows of a row tile; under aligned packing it divides ``alignment``.
-        n_tiles: Column tiles of every row tile, the fastest task index.
+        block_n: Columns of a column tile, ``n_tiles`` of which make the fastest task index.
+        n: Columns of the output.
+        num_sms: Persistent CTAs.
         max_m: A masked slab's rows; ``None`` for contiguous rows.
         packing: ``"tight"``, ``"aligned"``, or ``None`` for masked slabs.
         metadata_kind: ``"per_row"`` or ``"physical_psum"`` for contiguous rows.
         alignment: An aligned layout's run alignment.
-        m: The dynamic row count of contiguous rows.
 
     Returns:
-        A namespace of ``walk(layout_or_ends, task_id, cursor)`` (resolves a task to an expert,
-        ``num_groups`` marking exhaustion), ``tile_of(task_id, cursor, tile)``,
-        ``row_tiles_descriptor(...)``, ``recover_ends(layout, ends, tx, threads)`` and the
-        flag ``recover`` (tight per-row ids need each expert's end recovered first).
+        A namespace of the launch extents (``m``, the dynamic row count of contiguous rows;
+        ``rows_shape``, ``ragged_slab``, ``max_waves``, ``cursor_len``), ``walk(layout_or_ends, task_id, cursor)`` (resolves a task to an
+        expert, ``num_groups`` marking exhaustion), ``tile_of(task_id, cursor, tile)``, the
+        task's clamped ``expert(cursor)``, ``first_row(cursor, tile)`` and ``first_col(tile)``,
+        ``store_tile(...)``, ``row_tiles_descriptor(...)``, ``expert_rows_descriptor(...)``,
+        ``recover_ends(layout, ends, tx, threads)`` and the flag ``recover`` (tight per-row
+        ids need each expert's end recovered first).
     """
     contiguous = packing is not None
     tight = packing == "tight"
     # Aligned per-row ids name each row tile's expert; tight ones need each expert's end.
     rows_walk = metadata_kind == "per_row" and not tight
     recover = metadata_kind == "per_row" and tight
+    n_tiles = tilelang.cdiv(n, block_n)
+    # The last N tile runs past N: its loads read zeros and its stores are clipped.
+    ragged_n = n % block_n != 0
     swizzle_span = _SWIZZLE_M_TILES * n_tiles
-    tiles_per_slab = None if contiguous else tilelang.cdiv(max_m, block_m)
-    m_tiles = T.ceildiv(m, block_m) if contiguous else None
+    if contiguous:
+        m = T.dynamic("m")
+        m_tiles = T.ceildiv(m, block_m)
+        # A tight expert's last tile may hold fewer than block_m rows; aligned runs tile their
+        # padded extent exactly.
+        max_waves = T.ceildiv((m_tiles + (num_groups if tight else 0)) * n_tiles, num_sms)
+        rows_shape = (m,)
+        tiles_per_slab = ragged_slab = None
+    else:
+        m = None
+        tiles_per_slab = tilelang.cdiv(max_m, block_m)
+        # The sequence is never longer than every tile of every slab.
+        max_waves = tilelang.cdiv(num_groups * tiles_per_slab * n_tiles, num_sms)
+        # The last tile of a slab whose rows end inside it reads no scale past max_m.
+        ragged_slab = max_m % block_m != 0
+        rows_shape = (num_groups, max_m)
     cur = CURSOR
 
     @T.macro
@@ -126,6 +148,67 @@ def task_walk(
             tile[0] = first + T.truncmod(in_group, group_m_tiles)
             tile[1] = T.truncdiv(in_group, group_m_tiles)
 
+    # Bounds inline in each use, which spares TileLang's guards on the loads they index.
+    def expert(cursor):
+        return T.max(T.min(cursor[cur.g], num_groups - 1), 0)
+
+    def first_row(cursor, tile):
+        if contiguous:
+            return cursor[cur.row0] + tile[0] * block_m
+        return T.max(T.min(tile[0], tiles_per_slab - 1), 0) * block_m
+
+    def first_col(tile):
+        return T.max(T.min(tile[1], n_tiles - 1), 0) * block_n
+
+    @T.macro
+    def store_tile(output_desc, shared_c, C, cursor, tile, box_cols, box_count, tx, threads):
+        """Store the task's staged ``block_m x block_n`` bfloat16 tile from ``shared_c``, boxes of
+        ``box_cols`` columns: one TMA store a box by threads ``tx < box_count``, boxes past N
+        skipped; a tight tail tile, by rows, so the next expert's rows stay as they are."""
+        g = T.meta_var(expert(cursor))
+        m_start = T.meta_var(first_row(cursor, tile))
+        n_start = T.meta_var(first_col(tile))
+        if ragged_n:
+            store_box = T.And(tx < box_count, n_start + tx * box_cols < n)
+        else:
+            store_box = tx < box_count
+        short_tile = T.meta_var(cursor[cur.rows] - tile[0] * block_m < block_m) if tight else False
+        if not contiguous:
+            if store_box:
+                T.call_extern(
+                    "handle",
+                    "tileops::moe_fp8_tma_store_3d_issue",
+                    output_desc,
+                    T.address_of(shared_c[tx * block_m * box_cols]),
+                    n_start + tx * box_cols,
+                    m_start,
+                    g,
+                )
+                T.tma_store_arrive()
+        elif short_tile:
+            T.call_extern(
+                "handle",
+                f"tileops::moe_fp8_store_rows_bf16_swizzled<{block_m}, {block_n}>",
+                T.address_of(shared_c[0]),
+                T.address_of(C[m_start, n_start]),
+                n,
+                T.min(cursor[cur.rows] - tile[0] * block_m, m - m_start),
+                n - n_start,
+                tx,
+                threads,
+            )
+        else:
+            if store_box:
+                T.call_extern(
+                    "handle",
+                    "tileops::moe_fp8_tma_store_2d_issue",
+                    output_desc,
+                    T.address_of(shared_c[tx * block_m * box_cols]),
+                    n_start + tx * box_cols,
+                    m_start,
+                )
+                T.tma_store_arrive()
+
     @T.macro
     def recover_ends(layout, ends, tx, threads):
         """Each expert's end: the first row whose id is past it, ids not decreasing."""
@@ -190,11 +273,47 @@ def task_walk(
             TMA_OOB_FILL_NONE,
         )
 
+    def expert_rows_descriptor(dtype, tensor, row, row_bytes, box_row, swizzle, promotion):
+        """A TMA descriptor of ``block_n``-row tiles of an ``[E, n, row]`` tensor of rows of
+        ``row`` elements over ``row_bytes`` bytes; a box is ``box_row`` elements of each of
+        ``block_n`` rows."""
+        return T.create_tma_descriptor(
+            dtype,
+            3,
+            tensor.data,
+            row,
+            n,
+            num_groups,
+            1,
+            row_bytes,
+            n * row_bytes,
+            box_row,
+            block_n,
+            1,
+            1,
+            1,
+            1,
+            TMA_INTERLEAVE_NONE,
+            swizzle,
+            promotion,
+            TMA_OOB_FILL_NONE,
+        )
+
     return SimpleNamespace(
+        m=m,
+        rows_shape=rows_shape,
+        ragged_slab=ragged_slab,
+        max_waves=max_waves,
+        cursor_len=5 if contiguous else 3,
         walk=walk_rows if rows_walk else walk_ends if contiguous else walk_to,
         tile_of=tile_of,
+        expert=expert,
+        first_row=first_row,
+        first_col=first_col,
+        store_tile=store_tile,
         recover_ends=recover_ends,
         row_tiles_descriptor=row_tiles_descriptor,
+        expert_rows_descriptor=expert_rows_descriptor,
         recover=recover,
     )
 
@@ -202,12 +321,43 @@ def task_walk(
 class GroupedGEMMConfigMixin:
     """Launch-config checks of a persistent M-grouped GEMM kernel.
 
-    The kernel class defines ``_CONFIG_KEYS``, ``config_refusal(config, **inputs)`` and
-    ``_refusal_inputs()`` (the device and layout facts ``config_refusal`` takes beside the
-    config), and sets ``call``, ``sm_count`` before configuring.
+    The kernel class defines ``_CONFIG_KEYS`` (``block_m``, ``block_n``, ``num_stages`` and
+    ``num_sms`` first), their domains ``_BLOCK_M``, ``_BLOCK_N`` and ``_NUM_STAGES``,
+    ``config_refusal(config, **inputs)`` and ``_refusal_inputs()`` (the device and layout facts
+    ``config_refusal`` takes beside the config), and sets ``call``, ``sm_count`` before
+    configuring.
     """
 
     _CONFIG_KEYS: tuple[str, ...]
+    _BLOCK_M: tuple[int, ...]
+    _BLOCK_N: tuple[int, ...]
+    _NUM_STAGES: range
+
+    @classmethod
+    def _common_refusal(
+        cls, config: Mapping[str, object], *, sm_count: int, alignment: int
+    ) -> str | None:
+        """The first of the key, integer, tile, ring, grid and alignment checks *config* fails,
+        or ``None``: each kernel's ``config_refusal`` runs these before its own."""
+        if set(config) != set(cls._CONFIG_KEYS):
+            return f"needs exactly the keys {list(cls._CONFIG_KEYS)}, got {sorted(config)}"
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in config.values()):
+            return "takes integer values"
+        block_m, block_n, stages, num_sms = (config[key] for key in cls._CONFIG_KEYS[:4])
+        if block_m not in cls._BLOCK_M:
+            return f"block_m must be one of {cls._BLOCK_M}, got {block_m}"
+        if block_n not in cls._BLOCK_N:
+            return f"block_n must be one of {cls._BLOCK_N}, got {block_n}"
+        if stages not in cls._NUM_STAGES:
+            return (
+                f"num_stages must lie in [{cls._NUM_STAGES.start}, {cls._NUM_STAGES.stop - 1}], "
+                f"got {stages}"
+            )
+        if not 1 <= num_sms <= sm_count:
+            return f"num_sms must lie in [1, {sm_count}], the device's SMs, got {num_sms}"
+        if alignment % block_m:
+            return f"block_m must divide the layout's alignment {alignment}, got {block_m}"
+        return None
 
     def _refusal_inputs(self) -> dict:
         raise NotImplementedError
