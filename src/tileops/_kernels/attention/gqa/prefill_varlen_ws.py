@@ -35,6 +35,14 @@ def _head_parts(dim: int) -> tuple[int, int]:
     return width, -(-(dim - width) // 16) * 16 if dim > width else 0
 
 
+def _three_consumer_head(dim: int) -> bool:
+    """Whether a head is one 64-channel block and an edge of at most 16 channels: the head the
+    three-consumer program's attn_wgmma.h products take, and whose output fits the registers
+    three consumers hold beside their scores."""
+    width, edge = _head_parts(dim)
+    return width == _BOX and edge <= 16
+
+
 @target_cache(maxsize=32)
 # No out_idx: resolving a symbolic output shape costs host time on every call.
 @tilelang.jit(
@@ -64,7 +72,8 @@ def _gqa_prefill_varlen_ws_kernel(
     window_left=-1, window_right=-1, has_sinks=False, pack=False, chunked=False,
     wide=True, tail_n=0, tail_p=1,
 ):  # fmt: skip
-    """A persistent CTA per SM: a TMA producer warp claims work, two consumer warpgroups run it.
+    """A persistent CTA per SM: a TMA producer warp claims work, consumer warpgroups of 64 query
+    rows each run it, ``block_m // 64`` of them.
 
     With *pack*, a request's tiles may hold its KV head's group position by position."""
     score_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
@@ -74,7 +83,13 @@ def _gqa_prefill_varlen_ws_kernel(
     max_floor = finite_max_floor(scale)
     groups = heads // heads_kv
     accum = "float"
-    half = block_m // 2  # rows per consumer warpgroup: one m64 WGMMA
+    half = 64  # rows per consumer warpgroup: one m64 WGMMA
+    wgs = block_m // half
+    # Three consumer warpgroups hold 160 registers a thread, too few for a 64 x 128 tile of
+    # probabilities beside the scores and the output: P goes through shared memory, read by an
+    # SS P V. The row sums stay per-thread partials, so a key step reduces only the row max
+    # across threads.
+    shared_p = wgs == 3
     sink_scale = make_sink_scale(scale, accum, half)
     # TMA loads a head's row in 64-channel boxes under a 128-byte swizzle and the channels past
     # them in an edge tile, whose swizzle its own width sets; it fills the channels past the
@@ -85,10 +100,23 @@ def _gqa_prefill_varlen_ws_kernel(
     box = next(b for b in (_BOX, 32, 16) if width % b == 0)
     # Key steps over 128 channels issue their products through attn_wgmma.h.
     step_wgmma = dim == 128 and block_n == 128
-    # A K or V stage's size in descriptor address units (16 bytes).
-    stage_desc = block_n * dim * 2 // 16
+    # So do the three consumers' key steps, over a 64-channel block and an edge of at most 16,
+    # from descriptors built once an item: an issue turn holds only the products.
+    assert not shared_p or (_three_consumer_head(dim) and block_n == 128 and not pack), (
+        "three consumers take a 64-channel block, an edge of at most 16 and 128-key tiles"
+    )
+    # A K or V stage's size in descriptor address units (16 bytes): its block, its edge.
+    stage_desc = block_n * width * 2 // 16
+    edge_desc = block_n * edge * 2 // 16
     wgmma_dtype = "tl::DataType::kBFloat16" if dtype == "bfloat16" else "tl::DataType::kFloat16"
-    consumers = 256  # threads of the two consumer warpgroups
+    consumers = 128 * wgs  # threads of the consumer warpgroups
+    # The warpgroups take turns at the tensor cores in a ring: each waits on its own named
+    # barrier, which the warpgroup before it arrives on once its products are issued.
+    turn = 2 * 128  # the waiting warpgroup and the one before it
+    # The producer warpgroup only issues TMA; the consumers split the rest of the 64K registers,
+    # in the steps of 8 setmaxnreg takes.
+    producer_regs = 24
+    consumer_regs = (65536 // 128 - producer_regs) // wgs // 8 * 8
     policy = T.GemmWarpPolicy.FullRow
     total_q = T.dynamic("total_q")
     total_kv = T.dynamic("total_kv")
@@ -256,6 +284,26 @@ def _gqa_prefill_varlen_ws_kernel(
         )
 
     @T.macro
+    def edge_desc_of(buf, offset, leading_byte_offset):
+        """desc_of for an edge tile under the 32-byte swizzle: 8 rows 256 bytes apart."""
+        return T.call_extern(
+            "uint64",
+            f"tileops::attn_desc_swizzled<3, {leading_byte_offset}, 16>",
+            buf.access_ptr("r", offset=offset),
+        )
+
+    @T.macro
+    def add_partial_sums(acc_s, lp, alpha=None):
+        """lp (first times alpha a row) plus a tile's probabilities: column j of lp sums score
+        columns j, j + 16, ..., which the WGMMA accumulator layout keeps in one thread."""
+        if alpha is not None:
+            for i, j in T.Parallel(half, 16):
+                lp[i, j] *= alpha[i]
+        for t in T.unroll(block_n // 16):
+            for i, j in T.Parallel(half, 16):
+                lp[i, j] += acc_s[i, j + t * 16]
+
+    @T.macro
     def scale_out(acc_o, acc_e, alpha):
         """acc_o, and the edge output acc_e of a split head, times alpha a row."""
         for i, j in T.Parallel(half, width):
@@ -287,6 +335,11 @@ def _gqa_prefill_varlen_ws_kernel(
             acc_s[i, j] = T.if_then_else(
                 acc_s[i, j] == -T.infinity(accum), -T.infinity(accum), capped
             )
+
+    def p_operand(Ps, pcast, wg):
+        """The A operand of a warpgroup's P V: its rows of the shared P, or its P fragment.
+        A region named inside a macro becomes a handle, so the macro takes it from here."""
+        return Ps[wg, :, :] if shared_p else pcast
 
     def position(row, qpos, i):
         """The request position of the warpgroup's row i: row + i, or qpos[i] in the packed
@@ -326,7 +379,10 @@ def _gqa_prefill_varlen_ws_kernel(
                 alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
         for i, j in T.Parallel(half, block_n):
             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-        T.reduce_sum(acc_s, ss, dim=1, batch=2)
+        if shared_p:
+            add_partial_sums(acc_s, ss, alpha)
+        else:
+            T.reduce_sum(acc_s, ss, dim=1, batch=2)
 
     @T.macro
     def kv_step(
@@ -360,7 +416,8 @@ def _gqa_prefill_varlen_ws_kernel(
     ):
         """QK of KV tile k overlapped with PV of tile k - 1; n counts tiles across work items.
         *edges* holds a split head's edge query tiles, the item's slot and warpgroup in them,
-        its key and value stages and its edge output."""
+        its key and value stages and its edge output. With P in shared memory, *pcast* is the
+        warpgroup's P tile."""
         sk = n % stages
         svp = (n - 1) % stages
         if step_wgmma:
@@ -368,11 +425,29 @@ def _gqa_prefill_varlen_ws_kernel(
             qd, kd0, vd0 = descs
             kd = kd0 + T.cast(sk, "uint64") * stage_desc
             vd = vd0 + T.cast(svp, "uint64") * stage_desc
-        T.sync_threads(my_bar, consumers)
+        if shared_p:
+            # The item's descriptors: its query block and edge, its P tile, and stage 0 of
+            # the key and value blocks and edges, which this step offsets by its stages.
+            qd, qed, pd, kd0, ked0, vd0, ved0 = descs
+            kd = kd0 + T.cast(sk, "uint64") * stage_desc
+            ked = ked0 + T.cast(sk, "uint64") * edge_desc
+            vd = vd0 + T.cast(svp, "uint64") * stage_desc
+            ved = ved0 + T.cast(svp, "uint64") * edge_desc
+        T.sync_threads(my_bar, turn)
         T.mbarrier_wait_parity(kready[sk], (n // stages) % 2)
         if step_wgmma:
             T.call_extern(
                 "handle", f"tileops::attn_qk_64x128_d128<{wgmma_dtype}>", acc_s.data, qd, kd
+            )
+        elif shared_p:
+            T.call_extern(
+                "handle",
+                f"tileops::attn_qk_64x128_w64<{wgmma_dtype}, {edge}>",
+                acc_s.data,
+                qd,
+                kd,
+                qed,
+                ked,
             )
         else:
             T.wgmma_gemm(
@@ -380,6 +455,7 @@ def _gqa_prefill_varlen_ws_kernel(
             )
         if edges is not None:
             Qe, slot, wg, Ke, Ve, acc_e = edges
+        if edges is not None and not shared_p:
             T.wgmma_gemm(
                 Qe[slot, wg, :, :],
                 Ke[sk, :, :],
@@ -403,13 +479,23 @@ def _gqa_prefill_varlen_ws_kernel(
                 pcast.data,
                 vd,
             )
+        elif shared_p:
+            T.call_extern(
+                "handle",
+                f"tileops::attn_pv_64x128_w64<{wgmma_dtype}, {edge}>",
+                acc_o.data,
+                acc_o.data if edges is None else acc_e.data,
+                pd,
+                vd,
+                ved,
+            )
         else:
             T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=policy, clear_accum=False)
-        if edges is not None:
+        if edges is not None and not shared_p:
             T.wgmma_gemm(pcast, Ve[svp, :, :], acc_e, policy=policy, clear_accum=False)
-        T.named_barrier_arrive(nxt_bar, consumers)
+        T.named_barrier_arrive(nxt_bar, turn)
         # The QK groups are done; the PV groups, one a part, may still run.
-        T.wait_wgmma(1 if edges is None else 2)
+        T.wait_wgmma(1 if edges is None or shared_p else 2)
         T.mbarrier_arrive(kfree[sk])
         if tail:
             if has_window:
@@ -449,9 +535,14 @@ def _gqa_prefill_varlen_ws_kernel(
         if not early_v:
             T.wait_wgmma(0)
             T.mbarrier_arrive(vfree[svp])
-        for i in T.Parallel(half):
-            logsum[i] = logsum[i] * alpha[i] + ss[i]
-        T.copy(acc_s, pcast)
+        if shared_p:
+            T.call_extern(
+                "handle", f"tileops::attn_store_p_64x128<{wgmma_dtype}>", pcast, acc_s.data
+            )
+        else:
+            for i in T.Parallel(half):
+                logsum[i] = logsum[i] * alpha[i] + ss[i]
+            T.copy(acc_s, pcast)
 
     @T.macro
     def request_key(CuQ, CuKV, r):
@@ -763,18 +854,24 @@ def _gqa_prefill_varlen_ws_kernel(
 
     @T.macro
     def load_q(Q, Qs, slot, q_bar, q_start, head, edges=None):
-        """TMA 128 positions of one head, 64 rows a warpgroup."""
+        """TMA block_m positions of one head, 64 rows a warpgroup."""
         T.tma_copy(
             Q[q_start : q_start + half, head, 0:width], Qs[slot, 0, :, :], barrier=q_bar[slot]
         )
         T.tma_copy(
-            Q[q_start + half : q_start + block_m, head, 0:width],
+            Q[q_start + half : q_start + 2 * half, head, 0:width],
             Qs[slot, 1, :, :],
             barrier=q_bar[slot],
         )
+        if wgs == 3:
+            T.tma_copy(
+                Q[q_start + 2 * half : q_start + 3 * half, head, 0:width],
+                Qs[slot, 2, :, :],
+                barrier=q_bar[slot],
+            )
         if edges is not None:
             Qe = edges[0]
-            for wg in T.unroll(2):
+            for wg in T.unroll(wgs):
                 T.tma_copy(
                     Q[q_start + wg * half : q_start + (wg + 1) * half, head, width : width + edge],
                     Qe[slot, wg, :, :],
@@ -824,18 +921,25 @@ def _gqa_prefill_varlen_ws_kernel(
                 else:
                     load_q(Q, Qs, slot, q_bar, q_start, head, edges)
                 T.mbarrier_arrive(q_bar[slot])
-                if packs:
-                    # Values trail keys by one tile, the order the consumers take them in.
+                if packs or shared_p:
+                    # Values trail keys by one tile, the order the consumers take them in: a
+                    # key load never waits behind the release of a value stage.
                     for k in T.serial(meta[6] + 1):
                         if k < meta[6]:
                             sk = (issued + k) % stages
                             T.mbarrier_wait_parity(kfree[sk], (((issued + k) // stages) % 2) ^ 1)
                             key0 = kv_start + k * block_n
                             T.tma_copy(
-                                K[key0 : key0 + block_n, cv, :],
+                                K[key0 : key0 + block_n, cv, 0:width],
                                 Ks[sk, :, :],
                                 barrier=kready[sk],
                             )
+                            if edges is not None:
+                                T.tma_copy(
+                                    K[key0 : key0 + block_n, cv, width : width + edge],
+                                    edges[1][sk, :, :],
+                                    barrier=kready[sk],
+                                )
                             T.mbarrier_arrive(kready[sk])
                         if k > 0:
                             sv = (issued + k - 1) % stages
@@ -844,10 +948,16 @@ def _gqa_prefill_varlen_ws_kernel(
                             )
                             val0 = kv_start + (k - 1) * block_n
                             T.tma_copy(
-                                V[val0 : val0 + block_n, cv, :],
+                                V[val0 : val0 + block_n, cv, 0:width],
                                 Vs[sv, :, :],
                                 barrier=vready[sv],
                             )
+                            if edges is not None:
+                                T.tma_copy(
+                                    V[val0 : val0 + block_n, cv, width : width + edge],
+                                    edges[2][sv, :, :],
+                                    barrier=vready[sv],
+                                )
                             T.mbarrier_arrive(vready[sv])
                 else:
                     for k in T.serial(meta[6]):
@@ -942,14 +1052,18 @@ def _gqa_prefill_varlen_ws_kernel(
     @T.macro
     def consumer(
         wg: int, Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta,
-        Sinks, rope_cos=None, rope_sin=None, edges=None,
+        Sinks, rope_cos=None, rope_sin=None, edges=None, Ps=None,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: rows ``q0 + wg*64`` onward of each claimed query tile."""
-        T.set_max_nreg(240, 1)
+        T.set_max_nreg(consumer_regs, 1)
         my_bar = 1 + wg
-        nxt_bar = 2 - wg
+        nxt_bar = 2 - wg if wgs == 2 else 1 + (wg + 1) % wgs
         acc_s = T.alloc_fragment([half, block_n], accum)
-        pcast = T.alloc_fragment([half, block_n], dtype)
+        # P: a register fragment, or the warpgroup's tile of the shared P.
+        if shared_p:
+            pcast = Ps.access_ptr("w", offset=wg * half * block_n)
+        else:
+            pcast = T.alloc_fragment([half, block_n], dtype)
         acc_o = T.alloc_fragment([half, width], accum)
         acc_e = None
         if edges is not None:
@@ -958,7 +1072,8 @@ def _gqa_prefill_varlen_ws_kernel(
         sm = T.alloc_fragment([half], accum)
         smp = T.alloc_fragment([half], accum)
         alpha = T.alloc_fragment([half], accum)
-        ss = T.alloc_fragment([half], accum)
+        # A tile's row sums, or with P in shared memory the running per-thread partial sums.
+        ss = T.alloc_fragment([half, 16] if shared_p else [half], accum)
         red = T.alloc_fragment([half, 8], accum)
         logsum = T.alloc_fragment([half], accum)
         if vector_rope:
@@ -995,7 +1110,7 @@ def _gqa_prefill_varlen_ws_kernel(
             T.fill(sm, -T.infinity(accum))
             if rope_cos is not None:
                 # Query token i of a request sits at position kv_len - q_len + i. A
-                # warpgroup rotates its own half, which the named-barrier sync before the
+                # warpgroup rotates its own 64 rows, which the named-barrier sync before the
                 # first WGMMA fences.
                 if vector_rope:
                     rotate_half_tile(
@@ -1004,12 +1119,12 @@ def _gqa_prefill_varlen_ws_kernel(
                     )  # fmt: skip
                 else:
                     rotate_query_tile(Qs, rope_cos, rope_sin, causal_offset + row, served % 2, wg)
-            if (wg == 1) & (served == 0):
-                T.named_barrier_arrive(1, consumers)  # let warpgroup 0 go first
+            if (wg == wgs - 1) & (served == 0):
+                T.named_barrier_arrive(1, turn)  # let warpgroup 0 go first
 
             # KV tile 0: QK and softmax only.
             s0 = done % stages
-            T.sync_threads(my_bar, consumers)
+            T.sync_threads(my_bar, turn)
             T.mbarrier_wait_parity(kready[s0], (done // stages) % 2)
             T.wgmma_gemm(
                 Qs[served % 2, wg, :, :],
@@ -1028,7 +1143,7 @@ def _gqa_prefill_varlen_ws_kernel(
                     policy=policy,
                     clear_accum=False,
                 )
-            T.named_barrier_arrive(nxt_bar, consumers)
+            T.named_barrier_arrive(nxt_bar, turn)
             T.wait_wgmma(0)
             T.mbarrier_arrive(kfree[s0])
             if has_window:
@@ -1066,10 +1181,17 @@ def _gqa_prefill_varlen_ws_kernel(
                     sm[i] = T.max(sm[i], max_floor)
             for i, j in T.Parallel(half, block_n):
                 acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-            T.reduce_sum(acc_s, ss, dim=1, batch=2)
-            for i in T.Parallel(half):
-                logsum[i] = ss[i]
-            T.copy(acc_s, pcast)
+            if shared_p:
+                T.fill(ss, 0)
+                add_partial_sums(acc_s, ss)
+                T.call_extern(
+                    "handle", f"tileops::attn_store_p_64x128<{wgmma_dtype}>", pcast, acc_s.data
+                )
+            else:
+                T.reduce_sum(acc_s, ss, dim=1, batch=2)
+                for i in T.Parallel(half):
+                    logsum[i] = ss[i]
+                T.copy(acc_s, pcast)
 
             # Only tiles intersecting either window boundary need masking.
             if not has_window:
@@ -1083,10 +1205,30 @@ def _gqa_prefill_varlen_ws_kernel(
                 qd = T.alloc_var("uint64")
                 kd0 = T.alloc_var("uint64")
                 vd0 = T.alloc_var("uint64")
-                qd = desc_of(Qs, ((served % 2) * 2 + wg) * half * dim, 1)
+                qd = desc_of(Qs, ((served % 2) * wgs + wg) * half * dim, 1)
                 kd0 = desc_of(Ks, 0, 1)
                 vd0 = desc_of(Vs, 0, 1024)
                 descs = (qd, kd0, vd0)
+            if shared_p:
+                tile = (served % 2) * wgs + wg
+                qd = T.alloc_var("uint64")
+                pd = T.alloc_var("uint64")
+                kd0 = T.alloc_var("uint64")
+                vd0 = T.alloc_var("uint64")
+                qd = desc_of(Qs, tile * half * width, 1)
+                pd = desc_of(Ps, wg * half * block_n, 1)
+                kd0 = desc_of(Ks, 0, 1)
+                vd0 = desc_of(Vs, 0, 0)
+                # A head without an edge passes its block's descriptors in the edge's place.
+                descs = (qd, qd, pd, kd0, kd0, vd0, vd0)
+                if edges is not None:
+                    qed = T.alloc_var("uint64")
+                    ked0 = T.alloc_var("uint64")
+                    ved0 = T.alloc_var("uint64")
+                    qed = edge_desc_of(Qe, tile * half * edge, 1)
+                    ked0 = edge_desc_of(Ke, 0, 1)
+                    ved0 = edge_desc_of(Ve, 0, 0)
+                    descs = (qd, qed, pd, kd0, ked0, vd0, ved0)
             step_edges = None if edges is None else (Qe, served % 2, wg, Ke, Ve, acc_e)
             if has_window:
                 # One loop masks the tiles at both window edges: a short scan stays in the
@@ -1118,11 +1260,22 @@ def _gqa_prefill_varlen_ws_kernel(
             svp = (done + eff - 1) % stages
             scale_out(acc_o, acc_e, alpha)
             T.mbarrier_wait_parity(vready[svp], ((done + eff - 1) // stages) % 2)
-            T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=policy, clear_accum=False)
+            # These products fix the output fragments' layouts, which the helpers share.
+            T.wgmma_gemm(
+                p_operand(Ps, pcast, wg), Vs[svp, :, :], acc_o, policy=policy, clear_accum=False
+            )
             if edges is not None:
-                T.wgmma_gemm(pcast, Ve[svp, :, :], acc_e, policy=policy, clear_accum=False)
+                T.wgmma_gemm(
+                    p_operand(Ps, pcast, wg),
+                    Ve[svp, :, :],
+                    acc_e,
+                    policy=policy,
+                    clear_accum=False,
+                )
             T.wait_wgmma(0)
             T.mbarrier_arrive(vfree[svp])
+            if shared_p:
+                T.reduce_sum(ss, logsum, dim=1)
             if has_sinks:
                 sink_scale(sm, logsum, Sinks, head, alpha)
             # Every row sees a key: causal needs kv_len >= q_len, non-causal kv_len > 0.
@@ -1135,11 +1288,11 @@ def _gqa_prefill_varlen_ws_kernel(
                             alpha[i] = 1.0 / logsum[i]
                 scale_out(acc_o, acc_e, alpha)
                 # The warpgroup has stored the previous item before Os is reused.
-                T.sync_threads(3 + wg, 128)
+                T.sync_threads(1 + wgs + wg, 128)
                 T.copy(acc_o, Os[wg, :, :])
                 if edges is not None:
                     T.copy(acc_e, Oe[wg, :, :])
-                T.sync_threads(3 + wg, 128)
+                T.sync_threads(1 + wgs + wg, 128)
                 T.copy(Os[wg, :, :], O[q_start + row : q_start + row + half, head, 0:width])
                 if edges is not None:
                     T.copy(
@@ -1169,7 +1322,7 @@ def _gqa_prefill_varlen_ws_kernel(
         if has_window:
             first_full = T.alloc_var("int32", init=0)
         s0 = done % stages
-        T.sync_threads(my_bar, consumers)
+        T.sync_threads(my_bar, turn)
         T.mbarrier_wait_parity(kready[s0], (done // stages) % 2)
         T.wgmma_gemm(
             Qs[slot, wg, :, :],
@@ -1179,7 +1332,7 @@ def _gqa_prefill_varlen_ws_kernel(
             policy=policy,
             clear_accum=True,
         )
-        T.named_barrier_arrive(nxt_bar, consumers)
+        T.named_barrier_arrive(nxt_bar, turn)
         T.wait_wgmma(0)
         T.mbarrier_arrive(kfree[s0])
         if has_window:
@@ -1398,7 +1551,7 @@ def _gqa_prefill_varlen_ws_kernel(
             else:
                 rotate_query_tile(Qs, rope_cos, rope_sin, causal_offset + row, slot, wg)
         if (wg == 1) & (served == 0):
-            T.named_barrier_arrive(1, consumers)  # let warpgroup 0 go first
+            T.named_barrier_arrive(1, turn)  # let warpgroup 0 go first
         # The scan runs unconditionally: under a branch ptxas keeps the WGMMA descriptors
         # out of uniform registers. Warpgroup 1 of a narrow item, which holds no row, scans
         # the first key tile only and passes on the rest.
@@ -1411,9 +1564,9 @@ def _gqa_prefill_varlen_ws_kernel(
         # The product turns of the key tiles it skips, released without computing.
         for k in T.serial(1, T.if_then_else(idle, eff, 1)):
             n = done + k
-            T.sync_threads(2, consumers)
+            T.sync_threads(2, turn)
             T.mbarrier_wait_parity(kready[n % stages], (n // stages) % 2)
-            T.named_barrier_arrive(1, consumers)
+            T.named_barrier_arrive(1, turn)
             T.mbarrier_arrive(kfree[n % stages])
             T.mbarrier_wait_parity(vready[n % stages], (n // stages) % 2)
             T.mbarrier_arrive(vfree[n % stages])
@@ -1482,7 +1635,7 @@ def _gqa_prefill_varlen_ws_kernel(
         meta, Sinks, rope_cos=None, rope_sin=None, Part=None, Stat=None, Merge=None,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: its 64 rows of each claimed tile."""
-        T.set_max_nreg(240, 1)
+        T.set_max_nreg(consumer_regs, 1)
         acc_s = T.alloc_fragment([half, block_n], accum)
         pcast = T.alloc_fragment([half, block_n], dtype)
         acc_o = T.alloc_fragment([half, width], accum)
@@ -1542,11 +1695,11 @@ def _gqa_prefill_varlen_ws_kernel(
         Q, K, V, CuQ, CuKV, O, Sched, Sinks, rope_cos=None, rope_sin=None, Part=None, Stat=None,
         Merge=None, chunk=0, tail_base=0,
     ):  # fmt: skip
-        """One persistent CTA: the TMA producer warp, then the two consumer warpgroups."""
-        Qs = T.alloc_shared([2, 2, half, width], dtype)
+        """One persistent CTA: the TMA producer warp, then the consumer warpgroups."""
+        Qs = T.alloc_shared([2, wgs, half, width], dtype)
         Ks = T.alloc_shared([stages, block_n, width], dtype)
         Vs = T.alloc_shared([stages, block_n, width], dtype)
-        Os = T.alloc_shared([2, half, width], dtype)
+        Os = T.alloc_shared([wgs, half, width], dtype)
         # A ranked packed program keeps the narrow items' total past the prefix.
         tile_cum = T.alloc_shared([batch + 2 if ordered and packs else batch + 1], "int32")
         order = T.alloc_shared([batch], "int32") if ordered else None
@@ -1558,12 +1711,16 @@ def _gqa_prefill_varlen_ws_kernel(
         edges = None
         if edge:
             edges = (
-                T.alloc_shared([2, 2, half, edge], dtype),
+                T.alloc_shared([2, wgs, half, edge], dtype),
                 T.alloc_shared([stages, block_n, edge], dtype),
                 T.alloc_shared([stages, block_n, edge], dtype),
-                T.alloc_shared([2, half, edge], dtype),
+                T.alloc_shared([wgs, half, edge], dtype),
             )
             shared = shared + edges
+        # Each warpgroup's 64 x block_n probabilities, which its P V reads.
+        Ps = T.alloc_shared([wgs, half, block_n], dtype) if shared_p else None
+        if shared_p:
+            shared = shared + (Ps,)
         T.annotate_layout({buf: make_swizzled_layout(buf) for buf in shared})
         q_bar = T.alloc_barrier([32, 32])
         qfree = T.alloc_barrier([consumers, consumers])
@@ -1601,7 +1758,7 @@ def _gqa_prefill_varlen_ws_kernel(
         elif ordered and tx >= consumers and tx < consumers + 32:
             rank_requests(CuQ, CuKV, tile_cum, order, tx - consumers)
         if tx >= consumers:
-            T.set_max_nreg(24, 0)  # the producer only issues TMA
+            T.set_max_nreg(producer_regs, 0)
         if tx >= consumers and tx < consumers + 32:
             total_items = tile_cum[batch] if packs else tile_cum[batch] * heads
             producer(
@@ -1627,14 +1784,14 @@ def _gqa_prefill_varlen_ws_kernel(
         )
         if rope_cos is not None:
             args = (*args, rope_cos, rope_sin)
-        # One consumer body serves both warpgroups: warpgroup wg is threadIdx.y, broadcast
+        # One consumer body serves every warpgroup: warpgroup wg is threadIdx.y, broadcast
         # from lane 0 so ptxas keeps what derives from it in uniform registers.
         wg = T.call_extern("int32", "tileops::warp_uniform_int", T.get_thread_binding(1))
-        if wg < 2:
+        if wg < wgs:
             if packs:
                 packed_consumer(wg, *args, Part=Part, Stat=Stat, Merge=Merge)
             else:
-                consumer(wg, *args, edges=edges)
+                consumer(wg, *args, edges=edges, Ps=Ps)
 
     if splits:
         part_shape = [T.dynamic("slots"), block_m]
@@ -1658,7 +1815,7 @@ def _gqa_prefill_varlen_ws_kernel(
                 chunk: T.int32,
                 tail_base: T.int32,
             ):
-                with T.Kernel(num_ctas, threads=[128, 3]):
+                with T.Kernel(num_ctas, threads=[128, wgs + 1]):
                     launch(
                         Q, K, V, CuQ, CuKV, O, Sched, Sinks, RopeCos, RopeSin, Part, Stat,
                         Merge, chunk, tail_base,
@@ -1682,7 +1839,7 @@ def _gqa_prefill_varlen_ws_kernel(
             chunk: T.int32,
             tail_base: T.int32,
         ):
-            with T.Kernel(num_ctas, threads=[128, 3]):
+            with T.Kernel(num_ctas, threads=[128, wgs + 1]):
                 launch(
                     Q,
                     K,
@@ -1718,7 +1875,7 @@ def _gqa_prefill_varlen_ws_kernel(
             Sched: T.Tensor([2], "int32"),
             Sinks: T.Tensor([heads], "float32"),
         ):
-            with T.Kernel(num_ctas, threads=[128, 3]):
+            with T.Kernel(num_ctas, threads=[128, wgs + 1]):
                 launch(Q, K, V, CuQ, CuKV, O, Sched, Sinks, RopeCos, RopeSin)
 
         return main
@@ -1734,7 +1891,7 @@ def _gqa_prefill_varlen_ws_kernel(
         Sched: T.Tensor([2], "int32"),
         Sinks: T.Tensor([heads], "float32"),
     ):
-        with T.Kernel(num_ctas, threads=[128, 3]):
+        with T.Kernel(num_ctas, threads=[128, wgs + 1]):
             launch(Q, K, V, CuQ, CuKV, O, Sched, Sinks)
 
     return main
@@ -1746,12 +1903,13 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     A TMA row is a multiple of 16 bytes, so a 16-bit head is a multiple of 8 channels. The
     Q, K, V and O tiles of a head take 1792 bytes a channel: 128 channels fill 224 KB of the
     227 KB an SM90 block may use, and dimension 256 (448 KB) stays on the general kernel.
+    Three consumer warpgroups take 2176 bytes a channel and 48 KB of P: at most 80 channels.
     """
 
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_varlen_sliding_window"})
     _MAX_DIM: int = 128
-    # Query rows a tile holds: one m64 WGMMA for each of the two consumer warpgroups.
+    # Query rows a tile of the two-consumer program holds: one m64 WGMMA a warpgroup.
     _BLOCK_M: int = 128
     _BLOCK_N: int = 128
     _STAGES: int = 2
@@ -1784,6 +1942,11 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     def _make_kernel(
         self, chunked: bool = False, wide: bool = True, tail_n: int = 0, tail_p: int = 1
     ):
+        # Three 64-row consumer warpgroups for a wide call of such a head: a score's exponential
+        # takes 64 / W of its two products' tensor time at W channels, so at up to 80 channels
+        # one warpgroup's softmax takes as long as the products of one other; the products of a
+        # third cover it. A call of short requests keeps two, whose tiles pad it less.
+        three = wide and not self._PACK and _three_consumer_head(self.dim)
         return _gqa_prefill_varlen_ws_kernel(
             self.batch,
             self.heads,
@@ -1793,7 +1956,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
-            self._BLOCK_M,
+            self._BLOCK_M // 2 * 3 if three else self._BLOCK_M,
             self._BLOCK_N,
             # At 64 channels four K/V stages fit shared memory; calls of short requests take
             # them: one warpgroup scans a narrow item with no second warpgroup's products
@@ -1886,7 +2049,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
 
     def _wide(self, q: torch.Tensor) -> bool:
         """Whether the call's mean request holds two 128-row tiles a KV head or more: its
-        work is mostly wide items that both consumer warpgroups scan."""
+        work is mostly wide items that every consumer warpgroup scans."""
         return q.shape[0] * (self.heads // self.heads_kv) >= 2 * self._BLOCK_M * self.batch
 
     def _program_facts(self, q: torch.Tensor) -> tuple:
