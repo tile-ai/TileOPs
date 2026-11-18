@@ -111,7 +111,6 @@ class PrePermuteCall(CallSpec):
     num_tokens: int = 0
     hidden_size: int = 0
     top_k: int = 0
-    routing_input_kind: str = "topk_ids"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -195,7 +194,6 @@ class PostPermuteCall(CallSpec):
     max_m: int | None = None
     epilogue: "RoutingEpilogueSpec | None" = None
     input_dtype: torch.dtype | None = None
-    routing_weight_dtype: torch.dtype | None = None
     output_dtype: torch.dtype | None = None
     num_experts: int = 0
     materialized_rows: int = 0

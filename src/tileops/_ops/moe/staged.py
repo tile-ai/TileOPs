@@ -116,7 +116,6 @@ class MoEPrePermuteFwdOp(Op):
                 num_tokens=hidden_states.shape[0],
                 hidden_size=hidden_states.shape[1],
                 top_k=local_expert_ids.shape[1],
-                routing_input_kind="local_expert_ids",
             ),
         )
         return kernel(hidden_states, local_expert_ids)
@@ -421,7 +420,6 @@ class MoEPostPermuteFwdOp(Op):
                 max_m=self.layout.max_m,
                 epilogue=RoutingEpilogueSpec() if self.epilogue is None else self.epilogue,
                 input_dtype=expert_output.dtype,
-                routing_weight_dtype=topk_weights.dtype,
                 output_dtype=expert_output.dtype if self.out_dtype is None else self.out_dtype,
                 num_experts=expert_output.shape[0] if masked else 0,
                 materialized_rows=expert_output.numel() // expert_output.shape[-1],
