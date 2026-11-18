@@ -1172,13 +1172,30 @@ def make_fused_gated_explicit(M, N, dtype, op_name, row_scaled=False):
     float32 ``(M,)`` operand after ``x`` and passes each row's element to the op body as a third
     argument.
     """
-    if row_scaled:
 
-        @tilelang.jit(out_idx=[2], compile_flags=csrc_include("approx_math.h"))
-        def scaled_kernel(threads_arg, npt_arg):
-            op_func = op_func_for(op_name)
-            block_N = threads_arg * npt_arg
-            col_blocks = T.ceildiv(N, block_N)
+    @tilelang.jit(out_idx=[2 if row_scaled else 1], compile_flags=csrc_include("approx_math.h"))
+    def kernel(threads_arg, npt_arg):
+        op_func = op_func_for(op_name)
+        block_N = threads_arg * npt_arg
+        col_blocks = T.ceildiv(N, block_N)
+
+        @T.macro
+        def body(x, scale, y):
+            with T.Kernel(M * col_blocks, threads=threads_arg) as block:
+                by = block // col_blocks
+                bx = block % col_blocks
+                if scale is not None:
+                    row_scale = scale[by]
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    col = (bx * threads_arg + i) * npt_arg + j
+                    gate = x[by, col]
+                    value = x[by, N + col]
+                    if scale is None:
+                        y[by, col] = op_func(gate, value)
+                    else:
+                        y[by, col] = op_func(gate, value, row_scale)
+
+        if row_scaled:
 
             @T.prim_func
             def main(
@@ -1186,36 +1203,13 @@ def make_fused_gated_explicit(M, N, dtype, op_name, row_scaled=False):
                 scale: T.Tensor((M,), "float32"),
                 y: T.Tensor((M, N), dtype),
             ):
-                with T.Kernel(M * col_blocks, threads=threads_arg) as block:
-                    by = block // col_blocks
-                    bx = block % col_blocks
-                    row_scale = scale[by]
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        col = (bx * threads_arg + i) * npt_arg + j
-                        gate = x[by, col]
-                        value = x[by, N + col]
-                        y[by, col] = op_func(gate, value, row_scale)
+                body(x, scale, y)
 
             return main
 
-        return scaled_kernel
-
-    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("approx_math.h"))
-    def kernel(threads_arg, npt_arg):
-        op_func = op_func_for(op_name)
-        block_N = threads_arg * npt_arg
-        col_blocks = T.ceildiv(N, block_N)
-
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
-            with T.Kernel(M * col_blocks, threads=threads_arg) as block:
-                by = block // col_blocks
-                bx = block % col_blocks
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    col = (bx * threads_arg + i) * npt_arg + j
-                    gate = x[by, col]
-                    value = x[by, N + col]
-                    y[by, col] = op_func(gate, value)
+            body(x, None, y)
 
         return main
 
