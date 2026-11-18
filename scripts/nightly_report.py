@@ -104,9 +104,7 @@ _DTYPE_TOKEN = re.compile(r"bfloat16|bool|u?int\d+|float\d+(?:_[a-z0-9]+)?|compl
 _CONCLUSION_KEY = "device_busy_ms"
 #: Absorbs the rounding a count recovered from ``tflops`` carries.
 _DERIVED_COUNT_RTOL = 1e-3
-# A kernel file below this share of executed lines was never constructed by any
-# test. The lowest genuinely-built kernel file measures 36.9%, so the threshold
-# has room before it starts catching built kernels.
+# A kernel file below this share of executed lines was never constructed by any test.
 _KERNEL_BUILT_PCT = 25
 # Unattributed failures listed before the table says how many it left out. The
 # attributed table above caps its per-op test names at three for the same reason.

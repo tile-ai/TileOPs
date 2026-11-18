@@ -485,13 +485,9 @@ class Kernel(ABC):
     def _check_arch(self) -> None:
         """Reject construction on a device this kernel is not built for.
 
-        Read from ``device_index``, the device of this class's one device type the op
-        handed over — not from whichever device happens to be current, which need not be the
-        one the input lives on. The op layer performs no architecture check of its own;
-        selection filters an interface's implementations by availability first.
-
-        ``device_index`` ``None`` reads the current device. An op builds every kernel with
-        the call's device current (``Op.kernel_for``), so that is the call's device there.
+        Read from ``device_index``, the device the op handed over, not from the current
+        device. ``None`` reads the current device, which ``Op.kernel_for`` sets to the
+        call's device. The op layer performs no architecture check of its own.
 
         Raises:
             OpNotAvailableError: The device's architecture is not among ``supported_archs``.

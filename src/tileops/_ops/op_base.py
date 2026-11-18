@@ -493,10 +493,9 @@ class Op(ABC):
     # Operators this op registers on the torch.compile boundary; non-empty exactly when the
     # op has one. The signature generates them for a class whose entry has a call-time tensor
     # input and no composition, and such an op must compile cold with ``fullgraph=True``.
-    # Naming them is what lets a test assert the traced graph holds nothing else, which is
-    # what keeps the graph the same when another target serves the op. A tuple because a
-    # conditional in-place write registers two. Registration happens once per class, so this
-    # is class state.
+    # Naming them lets a test assert the traced graph holds nothing else, which keeps the
+    # graph the same when another target serves the op. A conditional in-place write
+    # registers two.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
     # The attributes the compile boundary's fake reads, in key order: the signature's params.

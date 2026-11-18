@@ -254,12 +254,8 @@ class TestIterKernels:
         assert list(op.iter_kernels()) == []
 
     def test_ignores_a_kernel_dict_the_op_owns(self):
-        """A private dict of kernels is unreachable — the miss reflection used to hide.
-
-        The old ``dir(self)`` walk descended dict values, so an op could keep its
-        own cache and still be tuned. Enumeration does not, which is the point:
-        the kernels have to be built through a role to be seen at all.
-        """
+        """A private dict of kernels is unreachable: only kernels built through a role are
+        enumerated."""
         tuned: list[str] = []
         op = _SlottedOp(tuned)
         op.private_cache = {torch.float16: op._installed_kernel_types["fwd"]("private")}
