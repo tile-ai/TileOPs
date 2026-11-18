@@ -20,9 +20,7 @@ class SSDChunkCumsumFwdOp(Op):
 
     Applies optional per-head bias, optional softplus activation, and clamping to
     raw dt values, then computes the chunk-local inclusive prefix sum of dA = dt * A.
-
-    Note: dt_out is cast to the target dtype for storage efficiency, but dA_cumsum
-    is computed from the fp32 dt values before casting, ensuring numerical precision.
+    dA_cumsum is computed from the float32 dt before dt_out is cast to ``out_dtype``.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

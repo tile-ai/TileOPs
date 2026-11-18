@@ -24,9 +24,8 @@ class EngramGateConvFwdOp(Op):
     via standard GEMM. This op fuses the remaining memory-bound stages:
         RMSNorm gating -> causal DWConv1D -> SiLU + residual
 
-    Returns Y plus saved intermediates for backward (strategy B):
+    Returns Y plus saved intermediates for backward:
         vhat, alpha, rrms_h, rrms_k, rrms_v
-
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -105,7 +104,6 @@ class EngramGateConvBwdOp(Op):
         dE  = dk @ W_K^T + dv @ W_V^T
         dW_K = E^T @ dk
         dW_V = E^T @ dv
-
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

@@ -142,20 +142,8 @@ def _ssd_chunk_cumsum_fwd_kernel(
 
 
 class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
-    """Mamba-2 dA_cumsum forward kernel.
-
-    Applies optional per-head bias, optional softplus activation, and clamping to
-    raw dt values, then computes the chunk-local inclusive prefix sum of dA = dt * A.
-
-    Inputs:
-        dt      (batch, seq_len, n_heads) float32 — raw dt values.
-        A       (n_heads,) float32 — State Space Model (SSM) decay parameters.
-        dt_bias (n_heads,) float32 — per-head dt bias; required when has_dt_bias=True.
-
-    Outputs:
-        dt_out    (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
-        dA_cumsum (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
-    """
+    """Mamba-2 dA_cumsum forward kernel: optional per-head bias, softplus and clamp on raw
+    dt, then the chunk-local inclusive prefix sum of dA = dt * A."""
 
     # Pad of a shared row past chunk_len, a multiple of 4; ``_head_tile`` says why.
     _ROW_PAD = 4
@@ -191,8 +179,7 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    # This backend's own capability, which may be narrower than the manifest
-    # union the op enforces.
+    # This backend's capability, possibly narrower than the op's.
     SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
     @classmethod
@@ -278,22 +265,9 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         A: torch.Tensor,
         dt_bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the dA_cumsum forward pass.
-
-        Args:
-            dt: (batch, seq_len, n_heads) float32 — raw dt values.
-            A:  (n_heads,) float32 — SSM decay parameters.
-            dt_bias: (n_heads,) float32, optional — per-head dt bias.
-                Required when the kernel was constructed with has_dt_bias=True.
-
-        Returns:
-            dt_out: (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
-            dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
-        """
         dt = dt.contiguous()
         A = A.contiguous()
-        # The no-bias specialization does not read dt_bias. Reuse A as the
-        # ABI placeholder instead of allocating/filling a dummy CUDA tensor.
+        # The no-bias build never reads dt_bias; A fills the slot.
         dt_bias = A if dt_bias is None else dt_bias.contiguous()
 
         return self.program(self._compile)(dt, A, dt_bias)

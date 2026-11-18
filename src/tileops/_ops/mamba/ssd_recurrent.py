@@ -14,8 +14,7 @@ __all__ = ["SSDRecurrentFwdOp"]
 class SSDRecurrentFwdOp(Op):
     """Mamba-2 State-Space Dual (SSD) recurrent decode step; updates ``state`` in place.
 
-    Performs a single decode step of the Mamba-2 State Space Model (SSM) core: updates the
-    recurrent state in-place and returns the output y for the current token:
+    Returns the output y for the current token:
 
       g                = h // (n_heads // n_groups)
       dA[b, h, p, n]   = exp(dt[b, h, p] * A[h, p, n])
@@ -23,9 +22,7 @@ class SSDRecurrentFwdOp(Op):
                          + dt[b,h,p] * B[b,g,n] * x[b,h,p]
       y[b, h, p]       = sum_n  state[b, h, p, n] * C[b, g, n]
 
-    The skip connection (D * x) and output gate (z * silu) are not fused
-    here and must be applied by the caller if needed.
-
+    The caller applies the skip connection (D * x) and the output gate (z * silu).
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ssd_decode": SSDDecodeKernel}

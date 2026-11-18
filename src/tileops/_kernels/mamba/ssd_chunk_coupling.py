@@ -34,7 +34,7 @@ def _ssd_chunk_coupling_kernel(
     G = n_groups
     Q = chunk_len
     N = d_state
-    S = C * Q  # Total sequence length
+    S = C * Q
 
     @tilelang.jit(out_idx=[-1])
     def kernel_func(
@@ -43,15 +43,15 @@ def _ssd_chunk_coupling_kernel(
         block_n: int,
         threads: int,
     ):
-        C_shape = (B, S, G, N)  # Accept contiguous (B, S, G, N) shape
-        B_shape = (B, S, G, N)  # Accept contiguous (B, S, G, N) shape
+        C_shape = (B, S, G, N)
+        B_shape = (B, S, G, N)
         cb_shape = (B, C, G, Q, Q)
 
         @T.prim_func
         def main(
             C_mat: T.Tensor(C_shape, dtype),  # type: ignore
             B_mat: T.Tensor(B_shape, dtype),  # type: ignore
-            cb: T.Tensor(cb_shape, dtype),  # type: ignore  OUTPUT in dtype, not accum_dtype
+            cb: T.Tensor(cb_shape, dtype),  # type: ignore
         ):
             with T.Kernel(
                 T.ceildiv(Q, block_l),  # l tiles
@@ -68,13 +68,10 @@ def _ssd_chunk_coupling_kernel(
                 l0 = bl * block_l
                 s0 = bs * block_s
 
-                # Check causality: only compute if s0 < l0 + block_l
-                # This prunes upper-triangular tiles
                 if s0 < l0 + block_l:
                     C_tile = T.alloc_shared((block_l, block_n), dtype)
                     B_tile = T.alloc_shared((block_s, block_n), dtype)
 
-                    # Swizzled layout for better memory coalescing
                     T.annotate_layout(
                         {
                             C_tile: tilelang.layout.make_swizzled_layout(C_tile),
@@ -106,7 +103,6 @@ def _ssd_chunk_coupling_kernel(
 
                         T.sync_threads()
 
-                        # GEMM: acc[l, s] += C[l, n] @ B[s, n]^T
                         T.gemm(
                             C_tile,
                             B_tile,
@@ -126,7 +122,7 @@ def _ssd_chunk_coupling_kernel(
                             else:
                                 cb[bb, bc, bg, l_abs, s_abs] = T.cast(T.float32(0.0), dtype)
                 else:
-                    # Upper-triangular tile: write zeros explicitly
+                    # Upper-triangular tile.
                     for ll, ss in T.Parallel(block_l, block_s):
                         l_abs = l0 + ll
                         s_abs = s0 + ss
@@ -143,15 +139,6 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
 
     Computes cb[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
     with causal masking (cb[l,s] = 0 if s > l).
-
-    Args:
-        batch: Batch size
-        num_chunks: Number of chunks
-        n_groups: Number of groups
-        chunk_len: Chunk length (Q)
-        d_state: State dimension (N)
-        dtype: Data type (fp16/bf16)
-        config: Tile configuration
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -192,7 +179,6 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        """Default tile configuration optimized for typical Mamba workloads."""
         return {
             "block_l": 64,
             "block_s": 64,
@@ -202,7 +188,6 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """Autotune search space."""
         configs = []
         for block_l in [32, 64, 128]:
             for block_s in [32, 64, 128]:
@@ -224,14 +209,6 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
         C_mat: torch.Tensor,
         B_mat: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Args:
-            C_mat: [B, S, G, N]  dtype (contiguous)
-            B_mat: [B, S, G, N]  dtype (contiguous)
-
-        Returns:
-            cb: [B, C, G, Q, Q]  dtype
-        """
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
         return self.program(self._compile)(C_mat, B_mat)

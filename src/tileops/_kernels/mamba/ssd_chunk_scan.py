@@ -30,7 +30,7 @@ def _ssd_chunk_scan_fwd_kernel(
     d_state: int,
     n_groups: int,
     dtype: str = "float16",
-    diagonal_microtile_size: int = 32,  # 32=M32 (only for block_l=block_s=64)
+    diagonal_microtile_size: int = 32,  # 32 takes the micro-blocks when block_l=block_s=64
 ) -> Callable:
     accum_dtype = "float"
 
@@ -53,14 +53,13 @@ def _ssd_chunk_scan_fwd_kernel(
         threads: int,
         num_stages: int,
     ):
-        # Official layouts
-        x_shape = (B, S, H, P)  # [B, S, H, P]
-        cb_shape = (B, C, G, Q, Q)  # [B, C, G, L, L]  group-owned
-        dA_shape = (B, H, C, Q)  # [B, H, C, L]
-        c_shape = (B, S, G, N)  # [B, S, G, N]     group-owned
-        states_shape = (B, C, H, P, N)  # [B, C, H, P, N]  P before N
-        dt_shape = (B, H, C, Q)  # [B, H, C, L]
-        out_shape = (B, S, H, P)  # [B, S, H, P]
+        x_shape = (B, S, H, P)
+        cb_shape = (B, C, G, Q, Q)
+        dA_shape = (B, H, C, Q)
+        c_shape = (B, S, G, N)
+        states_shape = (B, C, H, P, N)
+        dt_shape = (B, H, C, Q)
+        out_shape = (B, S, H, P)
 
         scan_annotations = {"pragma_unroll_explicit": True}
         if num_stages > 0:
@@ -76,8 +75,7 @@ def _ssd_chunk_scan_fwd_kernel(
             dt: T.Tensor(dt_shape, dtype),  # type: ignore
             out: T.Tensor(out_shape, accum_dtype),  # type: ignore
         ):
-            # Grid: (L_tiles × P_tiles, B × C, H). H gets its own axis so the
-            # load balances across heads.
+            # Grid: (L_tiles × P_tiles, B × C, H).
             with T.Kernel(
                 T.ceildiv(Q, block_l) * T.ceildiv(P, block_p),
                 B * C,
@@ -107,7 +105,6 @@ def _ssd_chunk_scan_fwd_kernel(
                 c_tile = T.alloc_shared((block_l, block_n), dtype)
                 state_tile = T.alloc_shared((block_n, block_p), dtype)
 
-                # Swizzled layouts eliminate bank conflicts and enable tensor-core GEMMs.
                 T.annotate_layout(
                     {
                         c_tile: tilelang.layout.make_swizzled_layout(c_tile),
@@ -118,7 +115,6 @@ def _ssd_chunk_scan_fwd_kernel(
                 for n_blk in T.Pipelined(T.ceildiv(N, block_n), num_stages=num_stages):
                     n0 = n_blk * block_n
 
-                    # C_mat[b, chunk_start+l, g, n]  layout: [B, S, G, N]
                     for ll, nn in T.Parallel(block_l, block_n):
                         l_abs = l0 + ll
                         n_abs = n0 + nn
@@ -130,9 +126,7 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]  float32
-                    # Iterate (block_p, block_n) so consecutive threads vary nn (the contiguous N
-                    # dim), giving coalesced 128-byte loads instead of strided-by-N accesses.
+                    # (block_p, block_n) order: consecutive threads vary the contiguous N dim.
                     for pp, nn in T.Parallel(block_p, block_n):
                         n_abs = n0 + nn
                         p_abs = p0 + pp
@@ -144,23 +138,16 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # hist_acc += c_tile @ state_tile
                     T.gemm(c_tile, state_tile, hist_acc)
 
-                # Cache dA_cumsum and dt for this chunk in shared memory.
-                # Eliminates repeated L2 round-trips in the exp_l/exp_s and
-                # diagonal-path loops.  Q fp32 scalars = Q*4 bytes (e.g. 1 KB
-                # for Q=256).  Loaded once, reused by every s-block.
+                # dA_cumsum and dt of this chunk, read by every s-block.
                 dA_smem = T.alloc_shared((Q,), accum_dtype)
                 dt_smem = T.alloc_shared((Q,), accum_dtype)
                 for q in T.Parallel(Q):
                     dA_smem[q] = dA_cumsum[bz, bh, bc_idx, q]
                     dt_smem[q] = T.cast(dt[bz, bh, bc_idx, q], accum_dtype)
                 T.sync_threads()
-                # Ensure all threads have finished loading dA_cumsum and dt into shared memory
 
-                # Precompute exp(dA_l[ll]) once per l-tile for history path scaling.
-                # Now reads from dA_smem (smem hit) instead of global.
                 exp_dA_l = T.alloc_shared((block_l,), accum_dtype)
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
@@ -172,7 +159,6 @@ def _ssd_chunk_scan_fwd_kernel(
                     )
                 T.sync_threads()
 
-                # scale by exp(dA_l[l]) and accumulate into acc
                 for ll, pp in T.Parallel(block_l, block_p):
                     l_abs = l0 + ll
                     p_abs = p0 + pp
@@ -192,27 +178,18 @@ def _ssd_chunk_scan_fwd_kernel(
                 #   dA_l[ll] - anchor <= 0  because dA_l[ll] <= dA_l[l0] = anchor
                 #   anchor - dA_s[ss] <= 0  because anchor = dA_l[l0] <= dA_s[ss]
                 #                           for any s >= l0 (full-lower condition)
-                # Non-positive exponents cannot overflow; underflow to 0 is numerically
-                # correct (the true value is also ~0).  No clamp required.
-                # MUFU count: block_l + block_s per s-block.
+                # Non-positive exponents cannot overflow, so no clamp is needed.
                 #
-                # Diagonal blocks (s0 <= l0 < s0 + block_s): s is close to l so the
-                # difference dA_l - dA_s is bounded by at most block_s decay steps
-                # (a small value); compute exp(dA_l - dA_s) directly per element.
-                # This path already has per-element guard branches, so the extra MUFU
-                # cost (block_l * block_s in the worst case) is acceptable.
-                #
-                # Upper-triangle blocks are skipped entirely by the loop bound.
+                # Diagonal blocks (s0 <= l0 < s0 + block_s) compute exp(dA_l - dA_s) per element.
+                # The loop bound skips upper-triangle blocks.
                 cb_tile = T.alloc_shared((block_l, block_s), dtype)
                 x_tile = T.alloc_shared((block_s, block_p), dtype)
-                # Full-lower buffers (l-side anchor).
                 # exp_l[ll]  = exp(dA_l[ll] - anchor),  anchor = dA_l[l0]
                 # exp_s[ss]  = exp(anchor - dA_s[ss]) * dt[ss]
                 exp_l = T.alloc_shared((block_l,), accum_dtype)
                 exp_s = T.alloc_shared((block_s,), accum_dtype)
                 lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
 
-                # Swizzled layouts for causal GEMM operands.
                 T.annotate_layout(
                     {
                         cb_tile: tilelang.layout.make_swizzled_layout(cb_tile),
@@ -220,7 +197,6 @@ def _ssd_chunk_scan_fwd_kernel(
                     }
                 )
 
-                # anchor = dA_smem at l0, the largest value in this l-tile.
                 safe_l0 = T.min(l0, Q - 1)
                 anchor = T.if_then_else(
                     l0 < Q,
@@ -228,8 +204,6 @@ def _ssd_chunk_scan_fwd_kernel(
                     T.float32(0.0),
                 )
 
-                # Precompute exp_l once before the s-loop; reused by every
-                # full-lower s-block without re-fetching dA_cumsum from global.
                 for ll in T.Parallel(block_l):
                     l_abs = l0 + ll
                     safe_l_exp = T.min(l_abs, Q - 1)
@@ -238,7 +212,6 @@ def _ssd_chunk_scan_fwd_kernel(
                         dA_smem[safe_l_exp],
                         anchor,
                     )
-                    # dA_l_val - anchor <= 0 always, so exp <= 1 (no overflow).
                     exp_l[ll] = T.exp(dA_l_val - anchor)
                 T.sync_threads()
 
@@ -249,7 +222,6 @@ def _ssd_chunk_scan_fwd_kernel(
                 ):
                     s0 = s_blk * block_s
 
-                    # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
                     for ll, ss in T.Parallel(block_l, block_s):
                         l_abs = l0 + ll
                         s_abs = s0 + ss
@@ -261,7 +233,6 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # x[b, chunk_start+s, h, p]  layout: [B, S, H, P]
                     for ss, pp in T.Parallel(block_s, block_p):
                         s_abs = s0 + ss
                         p_abs = p0 + pp
@@ -273,9 +244,7 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # full-lower path: s0 + block_s <= l0 means every (ll,ss) has
-                    # s_abs < l0 <= l_abs, so s_abs < l_abs (causal mask always true)
-                    # and anchor <= dA_s[ss] (anchor - dA_s[ss] <= 0, no overflow).
+                    # Full-lower: every (ll, ss) is causal and anchor - dA_s[ss] <= 0.
                     if s0 + block_s <= l0:
                         for ss in T.Parallel(block_s):
                             s_abs = s0 + ss
@@ -293,7 +262,6 @@ def _ssd_chunk_scan_fwd_kernel(
                             exp_s[ss] = T.exp(anchor - dA_s_val) * dt_val
                         T.sync_threads()
 
-                        # Scale cb_tile by exp_l * exp_s
                         for ll, ss in T.Parallel(block_l, block_s):
                             lcb_cast[ll, ss] = T.cast(
                                 T.cast(cb_tile[ll, ss], accum_dtype) * exp_l[ll] * exp_s[ss],
@@ -301,37 +269,24 @@ def _ssd_chunk_scan_fwd_kernel(
                             )
                     else:
                         T.sync_threads()
-                        # Diagonal path: s is within block_s steps of l, so
-                        # dA_l - dA_s is bounded and safe to compute directly.
-                        # Reads from dA_smem/dt_smem (smem) instead of global.
-
-                        # Micro-block factorization: only for block_l=block_s=64, M=32
                         if diagonal_microtile_size == 32 and block_l == 64 and block_s == 64:
-                            # Optimized 2×2 micro-block factorization
-                            # Only compute factors for the strict-lower block (1,0)
+                            # 2×2 micro-blocks; only the strict-lower block (1,0) is factored.
                             M = 32
-
-                            # Allocate minimal shared memory: only M elements each
                             row_factor = T.alloc_shared((M,), accum_dtype)
                             col_factor = T.alloc_shared((M,), accum_dtype)
 
-                            # Anchor point: dA[l0 + M] (start of second micro-row)
                             anchor_idx = T.min(l0 + M, Q - 1)
                             anchor = dA_smem[anchor_idx]
 
-                            # Precompute factors only for lower block (1,0)
                             for i in T.Parallel(M):
-                                # Row factor: for l = M..M+31 (second micro-row)
                                 safe_l = T.min(l0 + M + i, Q - 1)
                                 row_factor[i] = T.exp(dA_smem[safe_l] - anchor)
 
-                                # Column factor: for s = 0..31 (first micro-column)
                                 safe_s = T.min(s0 + i, Q - 1)
                                 col_factor[i] = T.exp(anchor - dA_smem[safe_s]) * dt_smem[safe_s]
 
                             T.sync_threads()
 
-                            # Python static unrolling: 4 micro-blocks
                             # mr=0, mc=0: diagonal block (direct exp)
                             for ll, ss in T.Parallel(M, M):
                                 l_abs = l0 + ll
@@ -349,11 +304,11 @@ def _ssd_chunk_scan_fwd_kernel(
                                     valid, T.cast(value, dtype), T.cast(T.float32(0.0), dtype)
                                 )
 
-                            # mr=0, mc=1: upper block (all zeros due to causality)
+                            # mr=0, mc=1: upper block, zero
                             for ll, ss in T.Parallel(M, M):
                                 lcb_cast[ll, M + ss] = T.cast(T.float32(0.0), dtype)
 
-                            # mr=1, mc=0: lower block (factorized - NO direct exp!)
+                            # mr=1, mc=0: lower block, factored
                             for ll, ss in T.Parallel(M, M):
                                 l_abs = l0 + M + ll
                                 s_abs = s0 + ss
@@ -384,7 +339,6 @@ def _ssd_chunk_scan_fwd_kernel(
                                     valid, T.cast(value, dtype), T.cast(T.float32(0.0), dtype)
                                 )
                         else:
-                            # Original diagonal path (fallback)
                             for ll, ss in T.Parallel(block_l, block_s):
                                 l_abs = l0 + ll
                                 s_abs = s0 + ss
@@ -417,10 +371,8 @@ def _ssd_chunk_scan_fwd_kernel(
                                     T.cast(T.float32(0.0), dtype),
                                 )
 
-                    # acc += lcb_cast @ x_tile
                     T.gemm(lcb_cast, x_tile, acc)
 
-                # write back: out[b, chunk_start+l, h, p]  layout: [B, S, H, P]
                 for ll, pp in T.Parallel(block_l, block_p):
                     l_abs = l0 + ll
                     p_abs = p0 + pp
@@ -433,21 +385,8 @@ def _ssd_chunk_scan_fwd_kernel(
 
 
 class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
-    """Mamba-2 SSD fused chunk output forward kernel.
-
-    Official-aligned interface (matches _chunk_scan_fwd in mamba_ssm):
-
-    Inputs:
-      x:           [B, S, H, P]        dtype       seqlen-fused
-      cb:          [B, C, G, L, L]     dtype       group-owned
-      dA_cumsum:   [B, H, C, L]        float32
-      C:           [B, S, G, N]        dtype       seqlen-fused, group-owned
-      prev_states: [B, C, H, P, N]     float32     P before N
-      dt:          [B, H, C, L]        dtype
-
-    Output:
-      out:         [B, S, H, P]        float32     seqlen-fused
-    """
+    """Mamba-2 SSD fused chunk output forward kernel, matching ``_chunk_scan_fwd`` in
+    mamba_ssm."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
     # The tensor-core instruction takes the history GEMM's K extent, block_n, in 16-element
@@ -506,8 +445,6 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # threads=128 (4 warps) balances parallelism with register pressure.
-        # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
         # A d_state that is not a whole number of _gemm_k_step rounds up, and the loads mask
         # the padded columns.
         return {
@@ -521,11 +458,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Search around the default, holding the axes that carry little:
-        # block_l and block_p set GEMM tile efficiency, block_n only the
-        # history-path loop count, num_stages the pipeline depth. block_s (causal
-        # GEMM tile size and s-loop count) and threads (warps per block) are the
-        # two the sweep varies.
+        # Varies block_s and threads around the default, plus a block_n sweep.
         block_n = min(128, -(-self.d_state // self._gemm_k_step) * self._gemm_k_step)
         return (
             [
@@ -541,7 +474,6 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
                 for t in [128, 256]
             ]
             + [
-                # block_n sweep at fixed block_s=64, threads=128
                 {
                     "block_l": 64,
                     "block_p": 64,
@@ -554,7 +486,6 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
                 if bn <= self.d_state
             ]
             + [
-                # threads=64 (2 warps/block): more blocks per SM, less ILP.
                 {
                     "block_l": 64,
                     "block_p": 64,
@@ -578,18 +509,6 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         prev_states: torch.Tensor,
         dt: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Args:
-            x:           [B, S, H, P]        dtype
-            cb:          [B, C, G, L, L]     dtype
-            dA_cumsum:   [B, H, C, L]        float32
-            C:           [B, S, G, N]        dtype
-            prev_states: [B, C, H, P, N]     float32     P before N
-            dt:          [B, H, C, L]        dtype
-
-        Returns:
-            out: [B, S, H, P]  float32
-        """
         return self.program(self._compile)(
             x.contiguous(),
             cb.contiguous(),
