@@ -105,7 +105,6 @@ def test_every_candidate_is_swept_and_the_winner_lands_in_its_key() -> None:
     assert swept[("o", 0)] == la.OUTPUT_CONFIGS
     assert config == {
         "fused_threads": 128,
-        # block_v=0 measured 2.0 ms against 5.0 ms for block_v=32.
         "h_num_stages": 1,
         "h_threads": 256,
         "h_block_v": 0,
@@ -449,9 +448,7 @@ def test_the_raised_error_bounds_a_long_failure_text() -> None:
     widths = len(la.h_block_v_candidates(kernel.dim_v))
     assert "\n" not in message
     assert "header line" in message, "a padded preamble must not consume the summary"
-    # One bounded summary per width, plus a fixed prefix naming the shape, so
-    # the bound scales with the candidate set rather than with however many
-    # widths happen to be offered today.
+    # One bounded summary per width, plus a fixed prefix naming the shape.
     assert len(message) < 250 * widths + 100
     assert "x" * 300 not in message, "the log body must not survive whole"
     assert log in str(e.value.__cause__), "the chained cause keeps the whole text"

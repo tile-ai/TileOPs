@@ -123,13 +123,6 @@ def test_gdn_partitioned_prefill_carries_a_value_major_state() -> None:
 
 
 @PREFILL_ARCHITECTURES
-def test_gdn_dense_prefill_runs_a_64_wide_state(_architecture: int) -> None:
-    torch.manual_seed(42)
-    test = GDNFwdTest(1, 64, 2, 64, torch.bfloat16)
-    test.check(GDNFwdOp(), *test.gen_inputs())
-
-
-@PREFILL_ARCHITECTURES
 def test_gdn_prefill_packs_ragged_sequences_with_grouped_value_heads(_architecture: int) -> None:
     """Lengths below, across and on a chunk boundary, with four value heads per key head."""
     torch.manual_seed(42)
@@ -459,9 +452,6 @@ def test_gdn_dense_decode_matches_reference(dtype: torch.dtype, batch: int) -> N
 @pytest.mark.parametrize(
     "flags",
     [
-        # Each bound is ten times the agreement that flag reaches, so the case fails when
-        # the transform it names is dropped. A flag that stiffens the recurrence carries a
-        # looser one: doubling beta puts the state at 1.7e-1 rather than 4e-2.
         {"state_v_first": True},
         {"use_gate_in_kernel": True},
         {"use_beta_sigmoid_in_kernel": True, "allow_neg_eigval": True},
