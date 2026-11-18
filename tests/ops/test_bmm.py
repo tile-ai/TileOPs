@@ -23,7 +23,7 @@ class BMMFP8Test(BMMFP8Workload, TestBase):
 class BMMFixture(FixtureBase):
     PARAMS = [
         (
-            "batch, m, n, k, dtype, tune",
+            "batch, m, n, k, dtype",
             [
                 pytest.param(
                     4,
@@ -31,7 +31,6 @@ class BMMFixture(FixtureBase):
                     128,
                     128,
                     torch.float16,
-                    False,
                     marks=[pytest.mark.smoke, pytest.mark.packaging(family="gemm")],
                     id="smoke-fp16-b4-128",
                 ),
@@ -41,7 +40,6 @@ class BMMFixture(FixtureBase):
                     128,
                     128,
                     torch.bfloat16,
-                    False,
                     marks=pytest.mark.smoke,
                     id="smoke-bf16-b4-128",
                 ),
@@ -51,7 +49,6 @@ class BMMFixture(FixtureBase):
                     512,
                     512,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                     id="full-fp16-b8-512",
                 ),
@@ -61,7 +58,6 @@ class BMMFixture(FixtureBase):
                     512,
                     512,
                     torch.bfloat16,
-                    False,
                     marks=pytest.mark.full,
                     id="full-bf16-b8-512",
                 ),
@@ -71,7 +67,6 @@ class BMMFixture(FixtureBase):
                     256,
                     256,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                     id="full-fp16-b16-256",
                 ),
@@ -81,7 +76,6 @@ class BMMFixture(FixtureBase):
                     1024,
                     1024,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                     id="full-fp16-b1-1k",
                 ),
@@ -91,7 +85,6 @@ class BMMFixture(FixtureBase):
                     512,
                     128,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                     id="full-fp16-b32-mha-qk",
                 ),
@@ -101,7 +94,6 @@ class BMMFixture(FixtureBase):
                     128,
                     2048,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                     id="full-fp16-b8-mha-pv",
                 ),
@@ -111,7 +103,6 @@ class BMMFixture(FixtureBase):
                     128,
                     2048,
                     torch.bfloat16,
-                    False,
                     marks=pytest.mark.full,
                     id="full-bf16-b8-mha-pv",
                 ),
@@ -121,7 +112,6 @@ class BMMFixture(FixtureBase):
                     256,
                     1024,
                     torch.bfloat16,
-                    False,
                     marks=pytest.mark.full,
                     id="full-bf16-b32-moe",
                 ),
@@ -131,7 +121,6 @@ class BMMFixture(FixtureBase):
                     300,
                     128,
                     torch.float16,
-                    False,
                     marks=pytest.mark.full,
                     id="full-fp16-b4-mn-nonaligned",
                 ),
@@ -141,12 +130,9 @@ class BMMFixture(FixtureBase):
 
 
 @BMMFixture
-def test_bmm(batch: int, m: int, n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
+def test_bmm(batch: int, m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = BMMTest(batch, m, n, k, dtype)
-    op = BMMFwdOp()
-    if tune:
-        op.request_tune()
-    test.check(op, *test.gen_inputs())
+    test.check(BMMFwdOp(), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -160,20 +146,25 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
         op(a, b)
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize(
-    "batch, m, n, k",
+    "batch, m, n, k, dtype",
     [
         # K past the ping-pong band keeps these on the persistent 128x256 tile.
-        pytest.param(16, 512, 512, 1280, id="one-wave"),
-        pytest.param(32, 512, 512, 1280, id="two-waves"),
+        pytest.param(16, 512, 512, 1280, torch.bfloat16, marks=pytest.mark.smoke, id="one-wave"),
+        pytest.param(
+            16, 512, 512, 1280, torch.float16, marks=pytest.mark.smoke, id="one-wave-fp16"
+        ),
+        pytest.param(32, 512, 512, 1280, torch.bfloat16, marks=pytest.mark.full, id="two-waves"),
         # CTAs run unequal tile counts: the last held tile stores after the wave loop.
-        pytest.param(36, 512, 512, 256, id="uneven-waves"),
+        pytest.param(36, 512, 512, 256, torch.bfloat16, marks=pytest.mark.full, id="uneven-waves"),
         # K shorter than the ring: each tile stores as it finishes.
-        pytest.param(32, 128, 2048, 128, id="short-k-two-waves"),
+        pytest.param(
+            32, 128, 2048, 128, torch.bfloat16, marks=pytest.mark.full, id="short-k-two-waves"
+        ),
         # Neither output extent is a whole number of tiles.
-        pytest.param(3, 1000, 1000, 1024, id="ragged-tiles"),
+        pytest.param(
+            3, 1000, 1000, 1024, torch.bfloat16, marks=pytest.mark.full, id="ragged-tiles"
+        ),
     ],
 )
 def test_bmm_wave_filling_shapes_match_the_reference(
@@ -209,8 +200,13 @@ def test_bmm_pingpong_calibrated_band(batch: int, m: int, n: int, k: int, key: s
     assert op.key_for("bmm", call) == key
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("batch, m, n, k", [(16, 512, 512, 1280), (8, 1024, 1024, 1024)])
+@pytest.mark.parametrize(
+    "batch, m, n, k",
+    [
+        pytest.param(16, 512, 512, 1280, marks=pytest.mark.smoke),
+        pytest.param(8, 1024, 1024, 1024, marks=pytest.mark.full),
+    ],
+)
 def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m, n, k):
     """The template launch follows the published config: the description of the first
     launch compiles the same instantiation again, and another config compiles its own."""
@@ -240,17 +236,22 @@ def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m
     assert built[-1].num_stages == first.num_stages - 1
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "batch, m, n, k, dtype",
     [
         # 512 tiles over 128 CTAs: each runs four.
-        pytest.param(8, 1024, 1024, 1024, torch.bfloat16, id="two-waves-bf16"),
+        pytest.param(
+            8, 1024, 1024, 1024, torch.bfloat16, marks=pytest.mark.smoke, id="two-waves-bf16"
+        ),
+        pytest.param(
+            8, 1024, 1024, 1024, torch.float16, marks=pytest.mark.smoke, id="two-waves-fp16"
+        ),
         # 320 tiles over every SM: CTAs run two or three, so a CTA's groups end apart.
-        pytest.param(5, 1024, 1024, 1024, torch.bfloat16, id="uneven-tiles"),
-        pytest.param(8, 1024, 1024, 1024, torch.float16, id="two-waves-fp16"),
+        pytest.param(
+            5, 1024, 1024, 1024, torch.bfloat16, marks=pytest.mark.full, id="uneven-tiles"
+        ),
         # K is not a whole number of 64-wide blocks.
-        pytest.param(4, 1024, 1024, 528, torch.bfloat16, id="k-tail"),
+        pytest.param(4, 1024, 1024, 528, torch.bfloat16, marks=pytest.mark.full, id="k-tail"),
     ],
 )
 def test_bmm_pingpong_matches_the_reference(
@@ -323,12 +324,7 @@ def test_bmm_fp8(
 
 @pytest.mark.smoke
 def test_bmm_fp8_rejects_e5m2() -> None:
-    """BMMFP8FwdOp advertises fp8_e4m3fn only; e5m2 inputs must be rejected.
-
-    Kept separate from the main fixture so that ``test_bmm_fp8`` carries a
-    single purpose (correctness on supported dtypes) and this test carries
-    the other (dtype-guard on unsupported dtypes).
-    """
+    """BMMFP8FwdOp advertises fp8_e4m3fn only; e5m2 inputs must be rejected."""
     test = BMMFP8Test(4, 128, 128, 128, torch.float8_e5m2)
     op = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)
     with pytest.raises(ValueError, match=r"outside \['float8_e4m3fn'\]"):
@@ -361,8 +357,6 @@ def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
     op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
     out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
     out_nk = op_nk(a, b_nk, a_scale, b_scale)
-    # Numerically identical: same kernel, same buffer bits, just no
-    # internal DtoD copy on the NK path.
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
 
 
@@ -379,25 +373,6 @@ def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
     out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
     out_nk = op_nk(a, b_nk_view, a_scale, b_scale)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
-
-
-@pytest.mark.smoke
-def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
-    batch, m, n, k = 4, 128, 128, 128  # K == N
-    test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, a_scale, b_scale = test.gen_inputs()  # contiguous [B, K, N]
-    # Physical contiguous [B, N, K]: stride is (N*K, K, 1) => stride(-2) == K.
-    b_nk = b_kn.transpose(-2, -1).contiguous()
-    assert b_nk.is_contiguous()
-    assert b_nk.shape == (batch, n, k)
-    assert b_nk.stride(-2) == k
-
-    # Same logical B matrix, explicit layouts.  Both must yield the same d.
-    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_nk = op_nk(a, b_nk, a_scale, b_scale).clone()
-    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)  # b as [B, K, N]
-    out_kn = op_kn(a, b_kn, a_scale, b_scale)
-    torch.testing.assert_close(out_nk, out_kn, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.smoke

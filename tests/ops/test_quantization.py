@@ -92,7 +92,6 @@ def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
     test.check(op_cls(), *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "rows, cols, dtype, make",
     [
@@ -102,6 +101,7 @@ def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
             1024,
             torch.float16,
             lambda w: w * (torch.arange(64, device=w.device) % 2 == 0)[:, None],
+            marks=pytest.mark.smoke,
             id="zero-rows",
         ),
         # A copy of w in a view that starts one element into its storage, off the 16-byte
@@ -115,22 +115,38 @@ def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
                 .view(w.shape)
                 .copy_(w)
             ),
+            marks=pytest.mark.smoke,
             id="misaligned-start",
         ),
-        # An odd K: rows start inside a vector, and the storage ends inside the last one.
-        pytest.param(37, 999, torch.bfloat16, lambda w: w, id="odd-k"),
-        # A K shorter than a vector, which then holds codes of several rows.
-        pytest.param(37, 3, torch.float16, lambda w: w, id="k-below-vector"),
-        # Whole vectors that do not split evenly over the threads: the last ones idle.
-        pytest.param(37, 264, torch.bfloat16, lambda w: w, id="aligned-inexact"),
         # Subnormal rows and scales, which the quotient is scaled out of and clamped.
-        pytest.param(64, 1024, torch.float32, _subnormal, id="subnormal-scale"),
+        pytest.param(
+            64, 1024, torch.float32, _subnormal, marks=pytest.mark.smoke, id="subnormal-scale"
+        ),
+        # An odd K: rows start inside a vector, and the storage ends inside the last one.
+        pytest.param(37, 999, torch.bfloat16, lambda w: w, marks=pytest.mark.full, id="odd-k"),
+        # A K shorter than a vector, which then holds codes of several rows.
+        pytest.param(
+            37, 3, torch.float16, lambda w: w, marks=pytest.mark.full, id="k-below-vector"
+        ),
+        # Whole vectors that do not split evenly over the threads: the last ones idle.
+        pytest.param(
+            37, 264, torch.bfloat16, lambda w: w, marks=pytest.mark.full, id="aligned-inexact"
+        ),
         # Above 96 MiB of w the loads take the default cache policy instead of evict-first.
-        pytest.param(14336, 4096, torch.bfloat16, lambda w: w, id="default-policy-loads"),
+        pytest.param(
+            14336,
+            4096,
+            torch.bfloat16,
+            lambda w: w,
+            marks=pytest.mark.full,
+            id="default-policy-loads",
+        ),
         # 16-bit rows of 8192 or more take four vectors a thread at five CTAs an SM: a
         # bfloat16 row in whole vectors, and a float16 row of 8193 whose vectors do not.
-        pytest.param(37, 8192, torch.bfloat16, lambda w: w, id="wide-row"),
-        pytest.param(37, 8193, torch.float16, lambda w: w, id="wide-odd-row"),
+        pytest.param(37, 8192, torch.bfloat16, lambda w: w, marks=pytest.mark.full, id="wide-row"),
+        pytest.param(
+            37, 8193, torch.float16, lambda w: w, marks=pytest.mark.full, id="wide-odd-row"
+        ),
     ],
 )
 def test_int8_quant_per_channel_edge_inputs(rows, cols, dtype, make) -> None:
@@ -161,12 +177,11 @@ def test_int8_per_channel_round_trip(dtype: torch.dtype) -> None:
     assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "dtype, make",
     [
         # The manifest's convention for an all-zero input: scale 1.0, q all zero.
-        pytest.param(torch.float16, torch.zeros_like, id="all-zero"),
+        pytest.param(torch.float16, torch.zeros_like, marks=pytest.mark.smoke, id="all-zero"),
         # A storage start off the 16-byte vector boundary.
         pytest.param(
             torch.bfloat16,
@@ -175,12 +190,13 @@ def test_int8_per_channel_round_trip(dtype: torch.dtype) -> None:
                 .copy_(x.reshape(-1))
                 .view(x.shape)
             ),
+            marks=pytest.mark.smoke,
             id="misaligned-start",
         ),
         # Subnormal inputs and scale, which the quotient is scaled out of and clamped.
-        pytest.param(torch.float32, _subnormal, id="subnormal-scale"),
+        pytest.param(torch.float32, _subnormal, marks=pytest.mark.smoke, id="subnormal-scale"),
         # A scale that underflows to zero, which torch divides by.
-        pytest.param(torch.float32, lambda x: x * 1e-45, id="zero-scale"),
+        pytest.param(torch.float32, lambda x: x * 1e-45, marks=pytest.mark.full, id="zero-scale"),
     ],
 )
 def test_int8_quant_per_tensor_edge_inputs(dtype, make) -> None:
@@ -235,26 +251,35 @@ def _misaligned(x: torch.Tensor) -> torch.Tensor:
     return view
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "rows, cols, dtype, make",
     [
         # The manifest's convention for an all-zero block: scale 1.0, q all zero.
-        pytest.param(64, 1024, torch.float16, _zero_even_blocks, id="zero-blocks"),
-        # Round half to even, on exact ties.
-        pytest.param(64, 1024, torch.float16, _ties, id="rounding-ties"),
+        pytest.param(
+            64, 1024, torch.float16, _zero_even_blocks, marks=pytest.mark.smoke, id="zero-blocks"
+        ),
         # A storage start off the 16-byte vector boundary.
-        pytest.param(64, 1024, torch.bfloat16, _misaligned, id="misaligned-start"),
+        pytest.param(
+            64, 1024, torch.bfloat16, _misaligned, marks=pytest.mark.smoke, id="misaligned-start"
+        ),
+        # Subnormal scales, which the quotient is scaled out of and clamped.
+        pytest.param(
+            64, 1024, torch.float32, _subnormal, marks=pytest.mark.smoke, id="subnormal-scale"
+        ),
+        # Round half to even, on exact ties.
+        pytest.param(64, 1024, torch.float16, _ties, marks=pytest.mark.full, id="rounding-ties"),
         # Blocks on the vector boundary, a partial last block of an odd number of vectors,
         # and a partial last CTA.
-        pytest.param(17, 1000, torch.bfloat16, lambda x: x, id="partial-last-block"),
+        pytest.param(
+            17, 1000, torch.bfloat16, lambda x: x, marks=pytest.mark.full, id="partial-last-block"
+        ),
         # Blocks that start inside a vector, all-zero rows, and a storage end inside the
         # last vector.
-        pytest.param(37, 999, torch.float16, _zero_even_rows, id="odd-k"),
-        # Subnormal scales, which the quotient is scaled out of and clamped, in both
-        # kernels: blocks on the vector boundary and blocks inside a vector.
-        pytest.param(64, 1024, torch.float32, _subnormal, id="subnormal-scale"),
-        pytest.param(37, 999, torch.float32, _subnormal, id="subnormal-scale-odd-k"),
+        pytest.param(37, 999, torch.float16, _zero_even_rows, marks=pytest.mark.full, id="odd-k"),
+        # Subnormal scales in blocks that start inside a vector.
+        pytest.param(
+            37, 999, torch.float32, _subnormal, marks=pytest.mark.full, id="subnormal-scale-odd-k"
+        ),
     ],
 )
 def test_int8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
@@ -289,20 +314,23 @@ def test_int8_per_block_round_trip(dtype: torch.dtype) -> None:
     assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "rows, cols, dtype, offset, ieee",
     [
         # An odd K over more rows than the SMs hold at once: rows start inside a vector, and
         # a CTA quantizes several rows at one column offset.
-        pytest.param(1000, 999, torch.bfloat16, 0, False, id="odd-k"),
+        pytest.param(1000, 999, torch.bfloat16, 0, False, marks=pytest.mark.smoke, id="odd-k"),
         # Whole vectors that do not split evenly over the threads: the last ones idle.
-        pytest.param(37, 264, torch.float16, 0, False, id="aligned-inexact"),
+        pytest.param(
+            37, 264, torch.float16, 0, False, marks=pytest.mark.smoke, id="aligned-inexact"
+        ),
         # Copies of x and smooth in views that start one element into their storage, off
         # the 16-byte vector boundary.
-        pytest.param(64, 1024, torch.bfloat16, 1, False, id="misaligned-inputs"),
+        pytest.param(
+            64, 1024, torch.bfloat16, 1, False, marks=pytest.mark.full, id="misaligned-inputs"
+        ),
         # Factors below 2**-60 and an all-zero row, which IEEE division serves.
-        pytest.param(64, 1024, torch.bfloat16, 0, True, id="ieee-division"),
+        pytest.param(64, 1024, torch.bfloat16, 0, True, marks=pytest.mark.full, id="ieee-division"),
     ],
 )
 def test_smooth_quant_edge_inputs(rows, cols, dtype, offset, ieee) -> None:
@@ -379,7 +407,7 @@ def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
             64, 1024, 128, _int4_special_groups, id="special-groups", marks=pytest.mark.smoke
         ),
         # Two lanes to a group, and a partial last CTA.
-        pytest.param(37, 1024, 64, lambda w: w, id="group-64", marks=pytest.mark.smoke),
+        pytest.param(37, 1024, 64, lambda w: w, id="group-64", marks=pytest.mark.full),
         # One CTA of two warps to a row, whose 68 chunks leave most slots of the second empty.
         pytest.param(
             19,
@@ -387,11 +415,10 @@ def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
             2176,
             _int4_special_groups,
             id="per-channel-uneven",
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
         ),
-        pytest.param(64, 1024, 128, _misaligned, id="misaligned-start", marks=pytest.mark.smoke),
-        # Manifest workload shapes. The nightly runs `full or nightly` and the benchmark's
-        # DeepSpeed baseline is noncomparable, so these are the op's only reference check there.
+        pytest.param(64, 1024, 128, _misaligned, id="misaligned-start", marks=pytest.mark.full),
+        # Manifest workload shapes: the op's only reference check in the nightly run.
         pytest.param(14336, 4096, 128, lambda w: w, id="llama-8b-mlp-up", marks=pytest.mark.full),
         pytest.param(4096, 4096, 64, lambda w: w, id="llama-8b-q-proj", marks=pytest.mark.full),
         pytest.param(
@@ -407,8 +434,10 @@ def test_int4_quant_per_group_edge_inputs(rows, cols, group_size, make) -> None:
     test.check(INT4QuantPerGroupFwdOp(group_size), make(w))
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("group_size", [128, 1024])
+@pytest.mark.parametrize(
+    "group_size",
+    [pytest.param(128, marks=pytest.mark.smoke), pytest.param(1024, marks=pytest.mark.full)],
+)
 def test_int4_per_group_round_trip(group_size: int) -> None:
     """Nearest rounding is within half a step, except the saturated positive endpoint."""
     rows, cols = 256, 1024
@@ -477,26 +506,39 @@ def _tiny(w: torch.Tensor) -> torch.Tensor:
     return w
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "rows, cols, dtype, make",
     [
         # The manifest's convention for an all-zero tile: scale 1.0, q all zero.
-        pytest.param(256, 512, torch.bfloat16, _zero_odd_tiles, id="zero-tiles"),
+        pytest.param(
+            256, 512, torch.bfloat16, _zero_odd_tiles, marks=pytest.mark.smoke, id="zero-tiles"
+        ),
         # Partial tiles on both axes, rows on the vector boundary.
-        pytest.param(200, 392, torch.float16, lambda w: w, id="partial-tiles"),
+        pytest.param(
+            200, 392, torch.float16, lambda w: w, marks=pytest.mark.smoke, id="partial-tiles"
+        ),
         # Rows that start inside a vector: the unaligned kernel, and a storage end inside
         # the last vector.
-        pytest.param(37, 999, torch.bfloat16, _large_first_column, id="odd-k"),
-        pytest.param(37, 999, torch.float32, lambda w: w, id="odd-k-float32"),
+        pytest.param(
+            37, 999, torch.float32, lambda w: w, marks=pytest.mark.smoke, id="odd-k-float32"
+        ),
+        pytest.param(
+            37, 999, torch.bfloat16, _large_first_column, marks=pytest.mark.full, id="odd-k"
+        ),
         # A storage start off the 16-byte vector boundary.
-        pytest.param(256, 512, torch.float16, _misaligned, id="misaligned-start"),
+        pytest.param(
+            256, 512, torch.float16, _misaligned, marks=pytest.mark.full, id="misaligned-start"
+        ),
         # NaN and infinity reach scale and q as in torch; a signed zero stays signed.
-        pytest.param(200, 392, torch.bfloat16, _specials, id="nan-inf-signed-zero"),
+        pytest.param(
+            200, 392, torch.bfloat16, _specials, marks=pytest.mark.full, id="nan-inf-signed-zero"
+        ),
         # Subnormal and zero scales.
-        pytest.param(200, 2048, torch.float32, _tiny, id="tiny-scales"),
+        pytest.param(200, 2048, torch.float32, _tiny, marks=pytest.mark.full, id="tiny-scales"),
         # A correctly rounded quotient, on exact ties.
-        pytest.param(256, 512, torch.bfloat16, _fp8_ties, id="rounding-ties"),
+        pytest.param(
+            256, 512, torch.bfloat16, _fp8_ties, marks=pytest.mark.full, id="rounding-ties"
+        ),
     ],
 )
 def test_fp8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
