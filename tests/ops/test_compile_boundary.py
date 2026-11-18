@@ -81,6 +81,7 @@ from tileops._ops.quantization import (
     INT8QuantPerTokenGroupFwdOp,
     SmoothQuantFwdOp,
 )
+from tileops._ops.quantization.fp4_quant import FP4QuantPerGroupFwdOp
 from tileops._ops.quantization.fp8_quant import FP8QuantPerTokenGroupFwdOp
 from tileops._ops.rope import (
     LongRoPEFwdOp,
@@ -626,6 +627,14 @@ def _other_cases():
         x = torch.randn(64, 448, dtype=torch.bfloat16, device=run_device())
         return FP8QuantPerTokenGroupFwdOp(64, 1e-4, use_ue8m0=True, inplace=True), (x,)
 
+    def fp4_quant():
+        x = torch.randn(4, 64, 128, dtype=torch.bfloat16, device=run_device())
+        return FP4QuantPerGroupFwdOp(), (x,)
+
+    def fp4_quant_inplace():
+        x = torch.randn(4, 64, 128, dtype=torch.bfloat16, device=run_device())
+        return FP4QuantPerGroupFwdOp(inplace=True), (x,)
+
     def fp8_quant_per_block():
         return FP8QuantPerBlockFwdOp(), FP8QuantPerBlockWorkload(
             200, 392, torch.bfloat16
@@ -683,6 +692,8 @@ def _other_cases():
         ("masked-scatter", masked_scatter),
         ("fp8-quant", fp8_quant),
         ("fp8-quant-ue8m0-inplace", fp8_quant_ue8m0_inplace),
+        ("fp4-quant", fp4_quant),
+        ("fp4-quant-inplace", fp4_quant_inplace),
         ("fp8-quant-per-block", fp8_quant_per_block),
         ("int4-quant-per-group", int4_quant_per_group),
         ("int8-dequant-per-block", int8_dequant_per_block),
@@ -944,6 +955,7 @@ for _op_cls in (
     EmbeddingFwdOp,
     MaskedScatterFwdOp,
     FP8QuantPerTokenGroupFwdOp,
+    FP4QuantPerGroupFwdOp,
     ChainSpeculativeSamplingFwdOp,
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,

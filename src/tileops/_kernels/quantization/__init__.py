@@ -13,6 +13,11 @@ from tileops._kernels.quantization.call_spec import (
     QuantizeCall,
     SmoothQuantFwdInterface,
 )
+from tileops._kernels.quantization.fp4_quant import (
+    FP4QuantCall,
+    FP4QuantFwdInterface,
+    FP4QuantKernel,
+)
 from tileops._kernels.quantization.fp8_quant import (
     FP8QuantCall,
     FP8QuantFwdInterface,
@@ -45,6 +50,9 @@ from tileops._kernels.quantization.int8_quant_per_tensor import INT8QuantPerTens
 
 __all__ = [
     "DequantizeCall",
+    "FP4QuantCall",
+    "FP4QuantFwdInterface",
+    "FP4QuantKernel",
     "FP8QuantCall",
     "FP8QuantFwdInterface",
     "FP8QuantKernel",

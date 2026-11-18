@@ -76,7 +76,7 @@ FP4QuantPerGroupFwdOp:
   # x is overwritten with q * scale and returned as output, and neither q nor scale is
   # produced. DeepSeek-V4-Flash inference/kernel.py fp4_act_quant.
   family: quantization
-  status: spec-only
+  status: implemented
   ref_api: workloads.quantization.quantize.fp4_quant_per_group
   signature:
     forall: {S: Shape, N: Dim}
