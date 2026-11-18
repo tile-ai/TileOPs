@@ -4,9 +4,8 @@ vLLM is required, not optional: this file exists to compare against its routers,
 torch reference is not a comparison worth recording. `fused_topk` takes no correction
 bias, so a biased row goes to `fused_topk_bias` instead. A grouped row
 (`num_expert_group > 1`) goes to vLLM's fused CUDA `grouped_topk`, which takes only a
-biased sigmoid, so a grouped row without a bias has no vLLM comparator. A biased
-sqrt-softplus row goes to `fused_topk_bias`'s DeepSeek-V4 kernel, and a row with given
-experts to its hash-table lookup.
+biased sigmoid, so a grouped row without a bias has no vLLM comparator. A row with given
+experts goes to `fused_topk_bias`'s hash-table lookup.
 
 Real model configurations:
   Model                E    K  scoring       renorm  groups  kept  scale

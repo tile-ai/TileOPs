@@ -42,8 +42,9 @@ class FusedTopKFwdOp(Op):
     ``scoring_func="sqrtsoftplus"`` and ``expert_ids`` follow DeepSeek-V4-Flash's gate,
     whose first layers take each token's experts from a token-id table; with ``expert_ids``
     nothing is selected, the correction bias is not read, and the weights are the scores of
-    the given experts. Under sigmoid or sqrt-softplus scoring a logit below about -87,
-    where float32 ``exp(x)`` is subnormal, may score 0. The in-tree kernel adds a
+    the given experts. Under sigmoid scoring a logit below about -87, whose float32 score is
+    subnormal, scores 0, and a renormalized row of only such logits returns NaN weights. The
+    in-tree kernel adds a
     correction bias to sigmoid and sqrt-softplus scores only: a softmax call that selects
     with a bias raises ``OpNotAvailableError`` when a kernel is selected.
 
