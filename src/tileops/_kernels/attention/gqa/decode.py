@@ -897,7 +897,7 @@ class GQADecodeSplitKernel(GQADecodeKernel):
     :attr:`AttentionCall.dense_decode_program` names ``"split"``."""
 
     general: bool = False
-    # The region is measured on SM90.
+    # The region is fitted to SM90.
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_dense_decode_ws"})
     # The program's 64-row block of a KV head's group, its base key tile and its key parts,

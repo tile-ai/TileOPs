@@ -487,7 +487,7 @@ def _gqa_varlen_fp8_ws_kernel(
             """Fill meta for item *work*: KV head, offsets, lengths, first position, key tiles."""
             # Items are handed out from the last query tile of the call. Under the causal
             # mask a later tile scans more keys, so the longest go first and the closing
-            # wave carries the short ones; claiming in the opposite order costs 8%.
+            # wave carries the short ones.
             q_tiling.decode(
                 tile_cum[batch] - 1 - work // heads_kv, tile_cum, lo, hi, request, q_row
             )

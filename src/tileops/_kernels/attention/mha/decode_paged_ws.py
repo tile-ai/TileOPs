@@ -361,16 +361,12 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
     _ROW_SCALARS = 5
     # Pipeline depths of the K/V ring autotune weighs; the default takes the shallowest.
     _STAGE_CHOICES = (2, 3)
-    # Splits per output, and the grid size past which fewer are taken. Fitted on H200:
-    # 8 splits measured fastest on every manifest row of up to 64 outputs, and a split
-    # that takes the grid past 512 blocks measured slower than one split at every batch
-    # from 2 to 32 requests of 32 heads and 2048 keys; re-measure both to move them.
+    # Splits per output, and the grid size past which fewer are taken.
     _SPLITS = 8
     _MAX_BLOCKS = 512
     # Multiply-adds up to which the kernel serves several query rows, counted as
     # ``batch * heads * seqlen_q * seqlen_kv * dim`` with the pool size bounding every
-    # request. Fitted on H200: the CUDA-core contraction lost to the tensor-core kernel
-    # from 2**28 up; re-measure both kernels near the bound to move it.
+    # request. Past it the tensor-core kernel is faster than this CUDA-core contraction.
     _MAX_MULTI_QUERY_MACS = 2**27
 
     @classmethod
@@ -502,9 +498,8 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
     def _num_split(self, group: int) -> int:
         """``_SPLITS`` splits, halved while the grid would exceed ``_MAX_BLOCKS`` blocks.
 
-        Set by rule: the tuner ranks these few-microsecond candidates with a warm L2
-        and picks split counts the cold-cache benchmark measures slower. It still
-        weighs one split, which wins once the grid fills the device without splitting.
+        Set by rule because the tuner's warm-L2 timing misranks these short candidates.
+        It still weighs one split, which wins once the grid fills the device unsplit.
         """
         work_items = self.batch * (self.seqlen_q // group) * self.heads
         num_split = self._SPLITS
