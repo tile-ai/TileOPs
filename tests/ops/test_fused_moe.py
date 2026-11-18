@@ -313,7 +313,7 @@ class KimiFixture(FixtureBase):
                     True,
                     torch.bfloat16,
                     marks=pytest.mark.full,
-                    id="kimi-k2-smoke-bf16",
+                    id="kimi-k2-small-bf16",
                 ),
                 pytest.param(
                     512,
@@ -478,7 +478,7 @@ class VllmFixture(FixtureBase):
                     2.827,
                     torch.bfloat16,
                     marks=pytest.mark.full,
-                    id="kimi-k2-smoke-bf16",
+                    id="kimi-k2-small-bf16",
                 ),
                 pytest.param(
                     512,
