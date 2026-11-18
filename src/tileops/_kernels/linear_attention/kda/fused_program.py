@@ -1,10 +1,7 @@
 """The fused Kimi Delta Attention (KDA) chunk program: one CTA walks one sequence.
 
-Everything a chunk decides on its own and the recurrence that joins the chunks
-live in the same CTA, so the WY vectors, the gated query and key and the
-intra-chunk attention never leave the chip. What it costs is parallelism: the
-launch is one block per (sequence, value head), so it is the right shape only
-when there are enough of those to cover the machine.
+The chunk-local work and the recurrence share a CTA, so the WY vectors, the gated query
+and key and the intra-chunk attention never leave the chip.
 
 The WY inverse uses stable 16-row diagonal solves and block matrix products.
 Precomputed gates use reference-centred tiles where ``centred_bounds`` holds; other

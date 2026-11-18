@@ -1,11 +1,8 @@
 """The TileLang program for a single Kimi Delta Attention (KDA) decode step.
 
-A decode step reads the recurrent state once and writes it once, so what
-decides its latency is how much of the machine is reading. One block takes one
-(sequence, value head) and a slice of the value axis, holds that slice of the
-state in registers for the whole step, and never reads it twice: the decayed
-state, the delta correction, the new state and the output all come off one
-pass. Slicing the value axis is what gives a batch of one enough blocks.
+One block takes one (sequence, value head) and a slice of the value axis, and holds that
+slice of the state in registers for the whole step: the decayed state, the delta correction,
+the new state and the output all come off one read of it.
 
 A value-major state keeps a value row's key positions contiguous, so its block
 takes whole rows instead: a lane group splits one row's keys in 16-byte vectors,

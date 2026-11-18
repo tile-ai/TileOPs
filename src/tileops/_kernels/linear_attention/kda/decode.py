@@ -137,12 +137,11 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
 
     @staticmethod
     def _value_tile(blocks: int, dim_v: int, sm_count: int) -> int:
-        """How many value channels one block owns.
+        """How many value channels one block owns: the widest tile whose blocks cover three
+        quarters of the SMs.
 
-        A decode step reads the state once and writes it once, so the only thing
-        that decides its latency is how much of the machine is reading. One
-        (sequence, head) pair is one block at the full width; slicing the value
-        axis is what gives a small batch more of them.
+        A decode step's latency is set by how much of the machine reads the state, so a small
+        batch slices the value axis for more blocks.
         """
         wanted = sm_count * 3 // 4
         for tile in (dim_v, 64, 32, 16):

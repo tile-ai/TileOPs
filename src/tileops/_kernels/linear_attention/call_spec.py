@@ -36,9 +36,7 @@ __all__ = [
 def head_count_refusal(*counts: int) -> str | None:
     """Why no in-tree linear-attention kernel serves these head counts, or ``None``.
 
-    Every model that runs a gated delta rule, a delta rule or GLA splits its state into an
-    even number of heads, or into a single one, so an odd count above one is declined
-    rather than tuned for.
+    An odd count above one is declined: no model splits its state that way.
     """
     for count in counts:
         if count != 1 and count % 2:
@@ -181,9 +179,8 @@ class KDACall(CallSpec):
     def chunk_refusal(self) -> str | None:
         """Why no in-tree Kimi Delta Attention program serves this call, or ``None``.
 
-        The recurrence variants the in-tree kernels do not implement, whatever the
-        sequence length. Every implementation asks this first, then states the
-        lengths, widths and state layouts it serves itself.
+        Every implementation asks this first, then refuses the lengths, widths and state
+        layouts it does not serve.
         """
         unsupported = [
             name

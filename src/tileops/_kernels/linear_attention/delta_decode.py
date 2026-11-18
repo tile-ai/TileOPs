@@ -37,10 +37,6 @@ def decode_launch(
     lanes cover one row, and a block is two warps: the smallest block that still fills an
     SM's threads under its resident-block limit (2048 threads in 32 blocks on SM80 and SM90,
     1536 in 24 on SM89), so each block is a short burst of loads and many are in flight.
-
-    Re-fit ``blocks_per_sm`` and either block shape by sweeping ``threads`` and
-    ``lane_group`` against the decode workload rows of `benchmarks/ops/bench_deltanet.py`
-    and `benchmarks/ops/bench_gdn.py`.
     """
     if state_v_first:
         return {"threads": 2 * WARP_LANES, "lane_group": dim // 16}
