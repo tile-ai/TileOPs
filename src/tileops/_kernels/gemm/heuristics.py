@@ -1044,14 +1044,10 @@ def int8_w8a8_config(m: int, n: int, k: int, sm_count: int) -> dict:
       the narrowest tile whose grid still has an SM for every tile reads the fewest. The
       widths between are left out: TileLang issues a ``T.wgmma_gemm`` as
       ``gcd(block_n, 256)``-wide instructions, so 48 runs as three n16 WGMMAs, each
-      re-reading A (measured: 48 no faster than 64 on 64 x 6144 x 4096 at two-thirds the
-      grid); the kernel issues 96 and 160 as one WGMMA of their own width. This width was
-      the fastest measured on every decode row of the manifest.
+      re-reading A; the kernel issues 96 and 160 as one WGMMA of their own width.
     - ``block_k``: 256 where ``a`` is exactly one full 64-row tile and the tile is at most
-      160 wide, which halves the barrier round trips a K axis takes (measured 0.5-6.3%
-      faster on every ``m = 64`` row); 128 otherwise. At ``m = 1`` TileLang cannot lay out
-      a one-row 256-byte box; at ``m = 128`` and on the 256-wide tile the 256-wide step
-      measured slower.
+      160 wide, which halves the barrier round trips a K axis takes; 128 otherwise. At
+      ``m = 1`` TileLang cannot lay out a one-row 256-byte box.
     - ring depth: the deepest the shared memory holds, at most one stage a K step.
     """
     block_m = 64

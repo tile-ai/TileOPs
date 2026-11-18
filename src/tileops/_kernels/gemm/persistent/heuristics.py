@@ -92,9 +92,8 @@ class _CalibratedBands:
     staged_epilogue_stages: int = 4
     staged_epilogue_depth_cap: int = 6
     staged_epilogue_wave_limit: int = 20
-    # Waves from which a tight tile stops taking the two-buffer staged epilogue. Against
-    # the three-stage whole-width epilogue it measured faster at every shape up to 8
-    # waves, and slower at K = 7168 from 12 waves on.
+    # Waves from which a tight tile stops taking the two-buffer staged epilogue for the
+    # three-stage whole-width one.
     buffered_epilogue_wave_limit: int = 9
 
     # The band where one tile beats whatever the cost function scores: groups whose mean
@@ -716,9 +715,8 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         # bandwidth terms above decide. Over few waves *on a device the tiles do not
         # fill* there is no next tile: an SM runs one or two, and what it can overlap
         # is its own pipeline, so a shallow ring stalls however little it moves. The
-        # model prices no pipeline, which is why it reads the widest tile -- the one
-        # whose output buffer leaves room for three stages -- as cheapest exactly
-        # where it measures slowest.
+        # model prices no pipeline, so it would rank the widest tile, whose output buffer
+        # leaves room for only three stages, cheapest.
         if (
             desc.gemm_type in _CALIBRATED_PSUM_TYPES
             and features.num_waves < desc.policy.shallow_wave_limit

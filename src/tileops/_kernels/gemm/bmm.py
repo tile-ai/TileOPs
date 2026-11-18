@@ -55,10 +55,6 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
     Returns:
         A ``@tilelang.jit`` factory; calling it with ``(block_m, block_n,
         block_k, num_stages, threads)`` returns the compiled ``prim_func``.
-
-    Note:
-        WS pass is hard-disabled (``tl.disable_warp_specialized=True``);
-        a full manifest scan on H20-3e showed it never won a shape.
     """
     accum_dtype = "float"
 
@@ -760,8 +756,7 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
     """
 
     supported_archs: list[int] = [90]
-    # Fitted on the manifest workloads: square-512 reaches 128 tiles and wins, square-256
-    # reaches 64 and loses. A board without an entry keeps BMMKernel.
+    # By calibration key; a board without an entry keeps BMMKernel.
     _PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
     # None takes the template selector's configuration.
     _TEMPLATE_CONFIG: dict | None = None
@@ -932,7 +927,7 @@ class BMMPingPongKernel(BMMPersistentKernel):
             return f"fills more than {band.max_waves} waves of the persistent tile"
         if not band.min_k <= call.k <= band.max_k:
             return f"requires k in [{band.min_k}, {band.max_k}], got k={call.k}"
-        # Whole tiles leave through the asynchronous TMA store the band was measured on.
+        # Whole tiles leave through the asynchronous TMA store.
         block = cls._TEMPLATE_CONFIG["block_m"]
         if call.m % block or call.n % block:
             return f"requires m and n multiples of {block}, got m={call.m}, n={call.n}"
@@ -1274,10 +1269,8 @@ class BMMFP8TransposeKernel(Kernel, BMMFP8TransposeFwdInterface):
     ``src.transpose(-2, -1).contiguous()``.
     """
 
-    # Square staging tile and the lanes that fill it. Fitted on the FP8 BMM
-    # workloads in benchmarks/ops/bench_bmm.py; re-fit against those when the
-    # staging layout changes. Keep the thread count fixed during autotune so a
-    # BMM tune does not spend most of its time on the copy kernel. TILE must
+    # Square staging tile and the lanes that fill it. The thread count stays fixed during
+    # autotune so a BMM tune does not spend most of its time on the copy kernel. TILE must
     # appear among the candidates.
     TILE: int = 64
     THREADS: int = 128
