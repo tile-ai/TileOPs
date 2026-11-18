@@ -1349,10 +1349,11 @@ def test_gemm_w4a8_decode_tunes_the_exchange_free_grid(m: int, n: int, k: int) -
     test.check(op, *inputs, runs=_repacked(op))
     op.request_tune()
     test.check(op, *inputs, runs=_repacked(op))
-    assert kernel._generation.config in (candidate, kernel.default_config)
+    assert kernel.config in (candidate, kernel.default_config)
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 def test_w4a8_decode_ring_keeps_partial_sums_in_shared_memory() -> None:
     """The decode ring stops a stage short of pushing the units' partial sums out of shared
