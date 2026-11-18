@@ -15,10 +15,13 @@ from tileops._kernels.linear_attention.chunk_plan import (
 def split_prepare_enabled(call):
     """Whether a channel-gate chunk call prepares its chunks with the split SM90 launches.
 
-    They stay finite for strong decays of either gate form; their launch shapes are chosen
-    for SM90, so elsewhere the joint chunk program serves the call.
+    Raw gates take them on SM90: their FP32 per-pair entries stay finite for the strong
+    decays a raw gate forms, and their launch shapes are chosen for SM90. Given gates take
+    the joint chunk program everywhere: it forms the Gram matrices on tensor cores from rows
+    centred within `centred_bounds`, with per-pair entries for a chunk past them, the
+    arithmetic of the one-kernel prefill, in one launch that also normalizes the rows.
     """
-    return call.arch == 90
+    return call.arch == 90 and call.gate_in_kernel
 
 
 def chunk_plan(call):
@@ -271,11 +274,10 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
     )
     state_scan = CompiledProgram(state_scan)
     # A pooled walk takes the slots after the offsets and returns no state.
-    slotted = call.pooled
     if with_output:
 
         def walk(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
-            if slotted:
+            if call.pooled:
                 return state_scan(w, u, qg, kg, aqk, dec, h0, offsets, slots), h0
             return state_scan(w, u, qg, kg, aqk, dec, h0, offsets)
 
@@ -287,7 +289,7 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
     )
 
     def scan(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
-        if slotted:
+        if call.pooled:
             starts, values = state_scan(w, u, kg, dec, h0, offsets, slots)
             final_state = h0
         else:

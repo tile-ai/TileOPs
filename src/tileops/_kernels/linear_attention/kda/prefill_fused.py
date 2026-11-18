@@ -20,8 +20,9 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     The chunk-local work and the recurrence share a block, so the WY vectors,
     the gated query and key and the intra-chunk attention never reach global
     memory. The launch is one block per (sequence, value head), so it lasts as long as
-    the longest sequence. A call whose sequences the host does not show spanning one
-    chunk count each goes to the chunk-parallel prefill where that serves it.
+    the longest sequence. On SM90 a packed call whose sequences the host does not show
+    spanning one chunk count each runs on the chunk-parallel programs instead, where they
+    serve it.
     """
 
     supported_archs = [89, 90]
@@ -76,9 +77,10 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.state_v_first,
             call.pooled,
         )
-        # Whether the chunk-parallel programs serve the calls this one does not walk evenly.
-        uneven = KDAChunkPrefillFwdKernel.refusal(call) is None
-        return (*identity, uneven), lambda: cls(
+        # Whether the chunk-parallel programs take the calls this one does not walk evenly:
+        # on SM90, where they form the outputs in the walk, as long as they serve the call.
+        chunk_fallback = call.arch == 90 and KDAChunkPrefillFwdKernel.refusal(call) is None
+        return (*identity, chunk_fallback), lambda: cls(
             heads=call.heads,
             value_heads=call.value_heads,
             dim_k=call.dim_k,
@@ -91,7 +93,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             two_launch=two_launch,
             state_v_first=call.state_v_first,
             pooled=call.pooled,
-            uneven=uneven,
+            chunk_fallback=chunk_fallback,
         )
 
     def __init__(
@@ -109,10 +111,10 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         two_launch: bool = False,
         state_v_first: bool = False,
         pooled: bool = False,
-        uneven: bool = False,
+        chunk_fallback: bool = False,
     ) -> None:
-        """Hold the call facts the fused program is built from; *uneven* runs sequences of
-        unequal or unknown chunk counts on the chunk-parallel programs instead."""
+        """Hold the call facts the fused program is built from; *chunk_fallback* runs
+        sequences of unequal or unknown chunk counts on the chunk-parallel programs instead."""
         super().__init__(device_index=device_index)
         self.compact = compact
         self.heads = heads
@@ -125,7 +127,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.two_launch = two_launch
         self.state_v_first = state_v_first
         self.pooled = pooled
-        self.uneven = uneven
+        self.chunk_fallback = chunk_fallback
         # The facts the chunk-parallel programs read; this prefill takes the gate as given.
         self.gate_in_kernel = False
         self.has_dt_bias = False
@@ -149,15 +151,19 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         batch, seq_len = q.shape[:2]
         # One CTA walks each sequence, so the launch lasts as long as the longest one and
         # keeps every CTA busy only when they all walk as many chunks. Without the offsets
-        # on the host the lengths are unknown.
-        even = cu_seqlens is None or (
-            cu_seqlens_cpu is not None
-            and len({-(-int(n) // CHUNK_SIZE) for n in cu_seqlens_cpu.diff()}) == 1
-        )
-        if self.uneven and not even:
-            return chunk_prefill(
-                self, q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias, state_indices
-            )
+        # on the host the lengths are unknown. A call spec cannot carry the lengths: one is
+        # built per specialization, whatever offsets later calls pass.
+        if self.chunk_fallback and cu_seqlens is not None:
+            if cu_seqlens_cpu is None:
+                even = False
+            else:
+                chunks = (cu_seqlens_cpu.diff() + CHUNK_SIZE - 1) // CHUNK_SIZE
+                even = bool((chunks == chunks[0]).all())
+            if not even:
+                return chunk_prefill(
+                    self, q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias,
+                    state_indices,
+                )  # fmt: skip
         del cu_seqlens_cpu, A_log, dt_bias
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         H, K = q.shape[2], q.shape[3]

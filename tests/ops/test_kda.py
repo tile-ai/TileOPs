@@ -734,23 +734,25 @@ def test_kda_prefill_given_gate_mixes_ordinary_and_strong_chunks(
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "packed",
+    "spread",
     [
-        pytest.param(False, marks=pytest.mark.smoke, id="dense"),
-        pytest.param(True, marks=pytest.mark.full, id="varlen"),
+        pytest.param(None, marks=pytest.mark.smoke, id="dense"),
+        # Unequal lengths of one chunk count each, most ending in a partial chunk: the one-CTA
+        # walk of each sequence, its checking launch and its rerun.
+        pytest.param((-60, -10, 0, -30), marks=pytest.mark.full, id="varlen-even-chunks"),
+        # Lengths of different chunk counts: the chunk-parallel prefill.
+        pytest.param((-200, 100, 200, -100), marks=pytest.mark.full, id="varlen-uneven-chunks"),
     ],
 )
-def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
+def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(spread):
     """One strongly decayed sequence leaves ordinary sequences unchanged."""
     heads = 32
     sm_count = get_sm_count()
     sequences = max(4, -(-sm_count // heads))
     length = 6144  # Keeps every supported SM90 device in the long-prefill dispatch region.
     torch.manual_seed(42)
-    if packed:
-        # Unequal lengths of one chunk count each, most ending in a partial chunk, keep the
-        # one-CTA walk of each sequence.
-        lengths = tuple(length + (-60, -10, 0, -30)[i % 4] for i in range(sequences))
+    if spread is not None:
+        lengths = tuple(length + spread[i % 4] for i in range(sequences))
         workload = KDAFwdTest(1, 0, heads, 128, torch.bfloat16, sequence_lengths=lengths)
         start = lengths[0]
     else:
@@ -891,9 +893,9 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
 )
 def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, heads: int) -> None:
     """A few value heads are too few for the one-CTA walk, so the chunk-parallel prefill
-    starts from and returns value-major states. Two chunks form their outputs in the walk;
-    nineteen over two heads, whose walk covers too few SMs to carry the outputs too, form
-    them in a launch of their own after it."""
+    starts from and returns value-major states. On SM90 two chunks form their outputs in
+    the walk; nineteen over two heads, whose walk covers too few SMs to carry the outputs
+    too, form them in a launch of their own after it, as every call does elsewhere."""
     torch.manual_seed(42)
     flags = {"state_v_first": True, "use_qk_l2norm_in_kernel": True}
     shape = {"B": 1, "S": length, "H": heads, "HV": heads, "K": 128, "V": 128}
@@ -922,7 +924,31 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
                 "some": ("cu_seqlens",),
             },
             [0, 2],
+            marks=[pytest.mark.sm80, pytest.mark.full],
+        ),
+        pytest.param(
+            {},
+            {
+                "B": 1,
+                "S": sum(_UNEVEN),
+                "seq_lens": _UNEVEN,
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens",),
+            },
+            [0, 2],
             marks=[pytest.mark.sm90, pytest.mark.full],
+        ),
+        pytest.param(
+            {"state_v_first": True},
+            {
+                "B": 1,
+                "S": sum(_UNEVEN),
+                "seq_lens": _UNEVEN,
+                "HV": _FUSED_HEADS,
+                "some": ("cu_seqlens",),
+            },
+            [0, 2],
+            marks=[pytest.mark.sm80, pytest.mark.full],
         ),
         pytest.param(
             {"state_v_first": True},
@@ -988,8 +1014,10 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
     ids=[
         "decode-key-major",
         "decode-value-major",
-        "chunk-prefill-key-major",
-        "chunk-prefill-value-major",
+        "chunk-prefill-key-major-sm80",
+        "chunk-prefill-key-major-sm90",
+        "chunk-prefill-value-major-sm80",
+        "chunk-prefill-value-major-sm90",
         "fused-prefill-key-major-sm89",
         "fused-prefill-key-major-sm90",
         "fused-prefill-value-major-sm89",
