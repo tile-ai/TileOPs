@@ -260,9 +260,9 @@ def _bench_kernel(
     _bench_meta.fallback_reason = None
     _bench_meta.attribution_retries = None
     _bench_meta.block_samples = None
+    _bench_meta.l2_flush = None
     cache = l2_flush_buffer(device)
     on_cuda = device.type == "cuda"
-    _bench_meta.l2_flush = _L2_FLUSH_CUDA if on_cuda else _L2_FLUSH_OTHER
 
     def _reset_and_flush():
         if reset is not None:
@@ -272,8 +272,8 @@ def _bench_kernel(
         else:
             cache.max()
 
-    def _call_raw():
-        return fn(*args) if args else fn()
+    def _call_raw(_iteration: int = 0):
+        return fn(*args)
 
     if on_cuda:
         # Imported on first use: Triton is needed only where a CUDA device is timed.
@@ -296,16 +296,14 @@ def _bench_kernel(
     n_warmup = _clamp_iters(dry_run_ms / per_iter_ms, max_iters, min_iters)
     n_repeat = _clamp_iters(repeat_ms / per_iter_ms, max_iters, min_iters)
 
-    def _run(i):
-        return _call_raw()
-
     if _instrument_for(device) == "events":
         for _ in range(n_warmup):
             _reset_and_flush()
             _call_raw()
         torch.accelerator.synchronize()
         _bench_meta.timing = "events"
-        samples = _event_samples(_run, n_repeat, lambda i: _reset_and_flush())
+        _bench_meta.l2_flush = _L2_FLUSH_OTHER
+        samples = _event_samples(_call_raw, n_repeat, lambda i: _reset_and_flush())
         torch.accelerator.empty_cache()
         return samples
 
@@ -401,7 +399,7 @@ def _bench_kernel(
             with _native_output_suppressor():
                 samples = _read(
                     lambda n: collect_attributed(
-                        _run,
+                        _call_raw,
                         n,
                         _prepare,
                         count_copies,
@@ -422,7 +420,7 @@ def _bench_kernel(
             _bench_meta.timing = "cuda-events"
             _bench_meta.fallback_reason = str(exc)
             _logger.warning("CUPTI timing failed (%s); falling back to CUDA events.", exc)
-            samples = _read(lambda n: _event_samples(_run, n, _prepare, _finish))
+            samples = _read(lambda n: _event_samples(_call_raw, n, _prepare, _finish))
     finally:
         # A call that raised while queued behind the blocker must not leave the stream held.
         blocker.unblock()
