@@ -594,18 +594,17 @@ def test_avg_pool3d(
     )
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "l_in, kernel_l, stride_l, pad_l, dtype",
     [
-        (4096, 3, 2, 1, torch.float16),
-        (32000, 5, 4, 2, torch.float16),
-        (2048, 4, 2, 1, torch.bfloat16),
-        (28000, 12000, 4001, 0, torch.float16),
-        (127, 7, 3, 3, torch.bfloat16),
-        (30, 4, 4, 2, torch.bfloat16),
-        (33, 3, 2, 1, torch.float16),
-        (64, 1, 1, 0, torch.float16),
+        pytest.param(4096, 3, 2, 1, torch.float16, marks=pytest.mark.smoke),
+        pytest.param(2048, 4, 2, 1, torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(32000, 5, 4, 2, torch.float16, marks=pytest.mark.full),
+        pytest.param(28000, 12000, 4001, 0, torch.float16, marks=pytest.mark.full),
+        pytest.param(127, 7, 3, 3, torch.bfloat16, marks=pytest.mark.full),
+        pytest.param(30, 4, 4, 2, torch.bfloat16, marks=pytest.mark.full),
+        pytest.param(33, 3, 2, 1, torch.float16, marks=pytest.mark.full),
+        pytest.param(64, 1, 1, 0, torch.float16, marks=pytest.mark.full),
     ],
 )
 def test_avg_pool1d_staged_windows_match_the_reference(
@@ -616,15 +615,29 @@ def test_avg_pool1d_staged_windows_match_the_reference(
     _run_avg_pool_case(1, (1, 1, l_in), kernel_l, stride_l, pad_l, False, True, None, dtype, False)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "l_in, kernel_l, stride_l, pad_l, dtype, offset",
     [
-        pytest.param(4096, 3, 2, 1, torch.float16, 0, id="s2-pad-before-fp16"),
-        pytest.param(4096, 3, 2, 1, torch.float16, 1, id="misaligned-fp16"),
-        pytest.param(1024, 3, 1, 1, torch.float32, 0, id="s1-pad-both-sides-fp32"),
-        pytest.param(512, 4, 4, 0, torch.bfloat16, 0, id="s4-one-output-a-load-bf16"),
-        pytest.param(1024, 5, 4, 0, torch.float32, 0, id="s4-reach-past-the-load-fp32"),
+        pytest.param(
+            4096, 3, 2, 1, torch.float16, 0, id="s2-pad-before-fp16", marks=pytest.mark.smoke
+        ),
+        pytest.param(
+            1024, 3, 1, 1, torch.float32, 0, id="s1-pad-both-sides-fp32", marks=pytest.mark.smoke
+        ),
+        pytest.param(
+            512, 4, 4, 0, torch.bfloat16, 0, id="s4-one-output-a-load-bf16", marks=pytest.mark.smoke
+        ),
+        pytest.param(4096, 3, 2, 1, torch.float16, 1, id="misaligned-fp16", marks=pytest.mark.full),
+        pytest.param(
+            1024,
+            5,
+            4,
+            0,
+            torch.float32,
+            0,
+            id="s4-reach-past-the-load-fp32",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_avg_pool1d_windows_read_into_registers(
@@ -640,8 +653,15 @@ def test_avg_pool1d_windows_read_into_registers(
     torch.testing.assert_close(out, expected, rtol=0, atol=0)
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("l_in, kernel_l", [(15, 16), (31, 32), (100, 128), (1000, 1024)])
+@pytest.mark.parametrize(
+    "l_in, kernel_l",
+    [
+        pytest.param(15, 16, marks=pytest.mark.smoke),
+        pytest.param(31, 32, marks=pytest.mark.full),
+        pytest.param(100, 128, marks=pytest.mark.full),
+        pytest.param(1000, 1024, marks=pytest.mark.full),
+    ],
+)
 def test_max_pool1d_window_wider_than_the_row(l_in: int, kernel_l: int) -> None:
     """Ceil mode admits a window wider than the row; PyTorch pads the missing taps with -inf
     and still emits one output, which reads no tap past the row's end."""
@@ -1560,18 +1580,69 @@ def test_avg_pool_compile_fullgraph(op_cls: type, x_shape: tuple) -> None:
     assert_op_owns_graph_nodes(op, x)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "size, kernel, stride, padding, dtype, offset",
     [
-        pytest.param((112, 112), (3, 3), (2, 2), (1, 1), torch.float16, 0, id="pad-before-fp16"),
-        pytest.param((112, 112), (3, 3), (2, 2), (1, 1), torch.float16, 1, id="misaligned-fp16"),
-        pytest.param((32, 32), (2, 2), (2, 2), (0, 0), torch.float32, 0, id="no-reach-fp32"),
-        pytest.param((15, 16), (3, 2), (2, 2), (1, 0), torch.bfloat16, 0, id="pad-rows-bf16"),
         pytest.param(
-            (16, 32), (3, 3), (1, 1), (1, 1), torch.float32, 0, id="reach-both-sides-fp32"
+            (112, 112),
+            (3, 3),
+            (2, 2),
+            (1, 1),
+            torch.float16,
+            0,
+            id="pad-before-fp16",
+            marks=pytest.mark.smoke,
         ),
-        pytest.param((17, 16), (4, 5), (3, 4), (0, 0), torch.float32, 0, id="reach-after-fp32"),
+        pytest.param(
+            (32, 32),
+            (2, 2),
+            (2, 2),
+            (0, 0),
+            torch.float32,
+            0,
+            id="no-reach-fp32",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (15, 16),
+            (3, 2),
+            (2, 2),
+            (1, 0),
+            torch.bfloat16,
+            0,
+            id="pad-rows-bf16",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (112, 112),
+            (3, 3),
+            (2, 2),
+            (1, 1),
+            torch.float16,
+            1,
+            id="misaligned-fp16",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (16, 32),
+            (3, 3),
+            (1, 1),
+            (1, 1),
+            torch.float32,
+            0,
+            id="reach-both-sides-fp32",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (17, 16),
+            (4, 5),
+            (3, 4),
+            (0, 0),
+            torch.float32,
+            0,
+            id="reach-after-fp32",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_avg_pool2d_windows_read_into_registers(
@@ -2056,14 +2127,13 @@ def test_adaptive_max_pool2d_global_lane_run_selects_kernel(h_in: int, implement
     assert [type(k) for k in op.iter_kernels()] == [implementation]
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "l_in, kernel_l, stride_l, pad_l, dtype",
     [
-        pytest.param(4096, 3, 3, 0, torch.float32, id="in-row-fp32"),
-        pytest.param(4096, 3, 3, 0, torch.bfloat16, id="in-row-bf16"),
-        pytest.param(1000, 2, 3, 1, torch.float32, id="padded-fp32"),
-        pytest.param(1001, 3, 4, 1, torch.bfloat16, id="padded-bf16"),
+        pytest.param(4096, 3, 3, 0, torch.float32, id="in-row-fp32", marks=pytest.mark.smoke),
+        pytest.param(4096, 3, 3, 0, torch.bfloat16, id="in-row-bf16", marks=pytest.mark.smoke),
+        pytest.param(1000, 2, 3, 1, torch.float32, id="padded-fp32", marks=pytest.mark.full),
+        pytest.param(1001, 3, 4, 1, torch.bfloat16, id="padded-bf16", marks=pytest.mark.full),
     ],
 )
 def test_max_pool1d_windowed_taps_match_torch(
@@ -2078,14 +2148,13 @@ def test_max_pool1d_windowed_taps_match_torch(
     torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "l_in, kernel_l, stride_l, pad_l, dtype",
     [
-        pytest.param(3072, 3, 3, 0, torch.float32, id="in-row-fp32"),
-        pytest.param(3072, 3, 3, 0, torch.bfloat16, id="in-row-bf16"),
-        pytest.param(3070, 2, 3, 1, torch.float32, id="padded-fp32"),
-        pytest.param(4093, 3, 4, 1, torch.bfloat16, id="padded-bf16"),
+        pytest.param(3072, 3, 3, 0, torch.float32, id="in-row-fp32", marks=pytest.mark.smoke),
+        pytest.param(3072, 3, 3, 0, torch.bfloat16, id="in-row-bf16", marks=pytest.mark.smoke),
+        pytest.param(3070, 2, 3, 1, torch.float32, id="padded-fp32", marks=pytest.mark.full),
+        pytest.param(4093, 3, 4, 1, torch.bfloat16, id="padded-bf16", marks=pytest.mark.full),
     ],
 )
 def test_max_pool1d_indices_windowed_taps_match_torch(
@@ -2103,22 +2172,78 @@ def test_max_pool1d_indices_windowed_taps_match_torch(
     compare_outputs(op(x), expected, pool_verification(maximum=True))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "shape, kernel, stride, padding, dtype, offset, nan",
     [
-        pytest.param((2, 3, 112, 112), 3, 2, 1, torch.float16, 0, False, id="pad-before-fp16"),
-        pytest.param((2, 3, 112, 112), 3, 2, 1, torch.float16, 1, False, id="misaligned-fp16"),
-        pytest.param((2, 3, 32, 32), 2, 2, 0, torch.float32, 0, True, id="nan-fp32"),
         pytest.param(
-            (2, 3, 15, 16), (3, 2), 2, (1, 0), torch.bfloat16, 0, False, id="pad-rows-bf16"
+            (2, 3, 112, 112),
+            3,
+            2,
+            1,
+            torch.float16,
+            0,
+            False,
+            id="pad-before-fp16",
+            marks=pytest.mark.smoke,
         ),
-        pytest.param((2, 3, 16, 32), 3, 1, 1, torch.float32, 0, False, id="reach-both-sides-fp32"),
         pytest.param(
-            (2, 3, 17, 16), (4, 5), (3, 4), 0, torch.float32, 0, False, id="reach-after-fp32"
+            (2, 3, 32, 32), 2, 2, 0, torch.float32, 0, True, id="nan-fp32", marks=pytest.mark.smoke
         ),
-        # Past 128 MiB the run is read without the evict-first hint.
-        pytest.param((1, 1344, 224, 224), 2, 2, 0, torch.float16, 0, True, id="large-fp16"),
+        pytest.param(
+            (2, 3, 15, 16),
+            (3, 2),
+            2,
+            (1, 0),
+            torch.bfloat16,
+            0,
+            False,
+            id="pad-rows-bf16",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 3, 112, 112),
+            3,
+            2,
+            1,
+            torch.float16,
+            1,
+            False,
+            id="misaligned-fp16",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 3, 16, 32),
+            3,
+            1,
+            1,
+            torch.float32,
+            0,
+            False,
+            id="reach-both-sides-fp32",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 3, 17, 16),
+            (4, 5),
+            (3, 4),
+            0,
+            torch.float32,
+            0,
+            False,
+            id="reach-after-fp32",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (1, 1344, 224, 224),
+            2,
+            2,
+            0,
+            torch.float16,
+            0,
+            True,
+            id="large-fp16",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_max_pool2d_windows_read_into_registers(

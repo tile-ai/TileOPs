@@ -345,13 +345,12 @@ def test_conv1d_same_padding_even_kernel_matches_torch(use_bias: bool) -> None:
     )
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "kernel_size, stride, padding, dilation",
     [
-        pytest.param(3, 1, 1, 1, id="unit-stride"),
-        pytest.param(3, 2, 1, 1, id="generic"),
-        pytest.param(1, 1, 0, 1, id="pointwise"),
+        pytest.param(3, 1, 1, 1, id="unit-stride", marks=pytest.mark.smoke),
+        pytest.param(3, 2, 1, 1, id="generic", marks=pytest.mark.full),
+        pytest.param(1, 1, 0, 1, id="pointwise", marks=pytest.mark.full),
     ],
 )
 def test_conv1d_dispatches_kernel(

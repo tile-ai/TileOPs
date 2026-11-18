@@ -114,12 +114,14 @@ def test_rope_matches_the_reference_at_positions_past_0(name, dtype) -> None:
     compare_outputs(got_k, ref_k, rope_verification())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
 @pytest.mark.parametrize(
     ("head_size", "rotary_dim"),
-    [(64, 64), (64, 32), (65, 32)],
-    ids=["full", "partial", "odd-head"],
+    [
+        pytest.param(64, 64, marks=pytest.mark.smoke, id="full"),
+        pytest.param(64, 32, marks=pytest.mark.full, id="partial"),
+        pytest.param(65, 32, marks=pytest.mark.full, id="odd-head"),
+    ],
 )
 def test_rope_rotates_the_leading_columns_in_either_convention(neox, head_size, rotary_dim) -> None:
     """An odd head size leaves no column offset on a vector boundary: scalar accesses."""

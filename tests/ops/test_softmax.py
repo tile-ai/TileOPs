@@ -419,15 +419,14 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "shape, dim, dtype",
     [
-        pytest.param((256, 16384), -1, torch.bfloat16, id="streaming"),
-        pytest.param((64, 4096), -1, torch.float16, id="single-tile"),
-        pytest.param((300, 100000), -1, torch.float32, id="tiled"),
-        pytest.param((8, 102400), -1, torch.float32, id="split"),
-        pytest.param((4, 128, 4096), [0, 2], torch.float16, id="edge-axes"),
+        pytest.param((256, 16384), -1, torch.bfloat16, id="streaming", marks=pytest.mark.smoke),
+        pytest.param((64, 4096), -1, torch.float16, id="single-tile", marks=pytest.mark.smoke),
+        pytest.param((300, 100000), -1, torch.float32, id="tiled", marks=pytest.mark.smoke),
+        pytest.param((8, 102400), -1, torch.float32, id="split", marks=pytest.mark.full),
+        pytest.param((4, 128, 4096), [0, 2], torch.float16, id="edge-axes", marks=pytest.mark.full),
     ],
 )
 def test_logsumexp_special_values(shape: tuple, dim, dtype: torch.dtype) -> None:
@@ -859,7 +858,6 @@ def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
     )
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "op, reference",
     [
@@ -870,11 +868,8 @@ def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
 @pytest.mark.parametrize(
     "width, prefix",
     [
-        # 16384-element tiles on the streaming kernel: the first tile and most of the
-        # second are the -inf prefix.
-        pytest.param(40000, 28672, id="streaming"),
-        # Eight CTAs a row on the on-chip kernel: the first CTA's share is the prefix.
-        pytest.param(40960, 5120, id="on-chip"),
+        pytest.param(40000, 28672, id="streaming", marks=pytest.mark.smoke),
+        pytest.param(40960, 5120, id="on-chip", marks=pytest.mark.full),
     ],
 )
 def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(

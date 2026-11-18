@@ -496,20 +496,19 @@ def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, a
     compare_outputs(mine, ref, normalization_verification("InstanceNormFwdOp", x.dtype))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, spatial, dtype",
     [
-        (20, (33,), torch.float16),
-        (20, (28, 28), torch.float16),
-        (20, (32, 32), torch.float32),
-        (3, (5000,), torch.float16),
-        (1, (192, 192), torch.float16),
-        (3, (192, 192), torch.float16),
-        (1, (192, 192), torch.bfloat16),
-        (3, (192, 192), torch.bfloat16),
-        (1, (192, 192), torch.float32),
-        (3, (192, 192), torch.float32),
+        pytest.param(20, (33,), torch.float16, marks=pytest.mark.smoke),
+        pytest.param(20, (32, 32), torch.float32, marks=pytest.mark.smoke),
+        pytest.param(1, (192, 192), torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(20, (28, 28), torch.float16, marks=pytest.mark.full),
+        pytest.param(3, (5000,), torch.float16, marks=pytest.mark.full),
+        pytest.param(1, (192, 192), torch.float16, marks=pytest.mark.full),
+        pytest.param(3, (192, 192), torch.float16, marks=pytest.mark.full),
+        pytest.param(3, (192, 192), torch.bfloat16, marks=pytest.mark.full),
+        pytest.param(1, (192, 192), torch.float32, marks=pytest.mark.full),
+        pytest.param(3, (192, 192), torch.float32, marks=pytest.mark.full),
     ],
 )
 def test_instance_norm_updates_running_statistics_across_blocks(n, spatial, dtype) -> None:

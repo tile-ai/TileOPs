@@ -114,17 +114,16 @@ def _launch_size(launch: str, dtype: torch.dtype) -> int:
     }[launch]
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "launch,dtype",
     [
-        ("tiny", torch.bfloat16),
-        ("few-blocks", torch.bfloat16),
-        ("wave", torch.bfloat16),
-        ("wave", torch.float32),
-        ("ragged", torch.float32),
-        ("past-l2", torch.float32),
+        pytest.param("tiny", torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param("wave", torch.float32, marks=pytest.mark.smoke),
+        pytest.param("few-blocks", torch.bfloat16, marks=pytest.mark.full),
+        pytest.param("wave", torch.bfloat16, marks=pytest.mark.full),
+        pytest.param("ragged", torch.float32, marks=pytest.mark.full),
+        pytest.param("past-l2", torch.float32, marks=pytest.mark.full),
     ],
 )
 def test_relu_launch_sizes(launch: str, dtype: torch.dtype) -> None:

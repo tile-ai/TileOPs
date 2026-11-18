@@ -310,13 +310,12 @@ def _off_a_vector_boundary(shape: tuple) -> torch.Tensor:
     return x.view(shape)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "training, shape",
     [
-        pytest.param(True, (8, 16, 32, 32), id="wide"),
-        pytest.param(True, (4, 4, 256, 512), id="split"),
-        pytest.param(False, (8, 16, 32, 32), id="infer"),
+        pytest.param(True, (8, 16, 32, 32), id="wide", marks=pytest.mark.smoke),
+        pytest.param(True, (4, 4, 256, 512), id="split", marks=pytest.mark.full),
+        pytest.param(False, (8, 16, 32, 32), id="infer", marks=pytest.mark.full),
     ],
 )
 def test_forward_input_off_a_vector_boundary_matches_torch(training, shape) -> None:

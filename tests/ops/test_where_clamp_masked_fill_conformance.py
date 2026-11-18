@@ -186,10 +186,13 @@ def test_clamp_number_bounds(min_val, max_val):
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "input_shape, min_shape",
-    [((4, 8), (4, 8)), ((4, 8), (1, 8)), ((4, 8), ())],
+    [
+        pytest.param((4, 8), (4, 8), marks=pytest.mark.smoke),
+        pytest.param((4, 8), (1, 8), marks=pytest.mark.full),
+        pytest.param((4, 8), (), marks=pytest.mark.full),
+    ],
 )
 def test_clamp_min_only_tensor(input_shape, min_shape):
     from tileops._ops.elementwise import ClampFwdOp
@@ -203,10 +206,13 @@ def test_clamp_min_only_tensor(input_shape, min_shape):
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "input_shape, max_shape",
-    [((4, 8), (4, 8)), ((4, 8), (4, 1)), ((4, 8), ())],
+    [
+        pytest.param((4, 8), (4, 8), marks=pytest.mark.smoke),
+        pytest.param((4, 8), (4, 1), marks=pytest.mark.full),
+        pytest.param((4, 8), (), marks=pytest.mark.full),
+    ],
 )
 def test_clamp_max_only_tensor(input_shape, max_shape):
     from tileops._ops.elementwise import ClampFwdOp

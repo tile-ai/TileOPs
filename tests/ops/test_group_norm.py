@@ -396,14 +396,12 @@ def test_group_norm_takes_either_affine_tensor_alone(give: str) -> None:
     test.check(GroupNormFwdOp(num_groups=8), *inputs)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, c, spatial, g",
     [
-        # Very few rows, so the grid is one or two blocks wide.
-        (1, 24, (4, 4), 3),  # M = 3
-        (3, 30, (2, 2), 5),  # M = 15
-        (1, 16, (8, 8), 1),  # M = 1
+        pytest.param(1, 24, (4, 4), 3, marks=pytest.mark.smoke),
+        pytest.param(3, 30, (2, 2), 5, marks=pytest.mark.full),
+        pytest.param(1, 16, (8, 8), 1, marks=pytest.mark.full),
     ],
 )
 def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple, g: int) -> None:

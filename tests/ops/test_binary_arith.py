@@ -350,15 +350,13 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize(
     "a_shape, b_shape",
     [
-        # Wide enough that float32 keeps two vectors a thread.
-        pytest.param((1 << 18,), (1 << 18,), id="same"),
-        pytest.param((4, 2048), (1, 2048), id="bias"),
-        pytest.param((2, 16, 56, 56), (16, 1, 1), id="channel"),
+        pytest.param((1 << 18,), (1 << 18,), id="same", marks=pytest.mark.smoke),
+        pytest.param((4, 2048), (1, 2048), id="bias", marks=pytest.mark.full),
+        pytest.param((2, 16, 56, 56), (16, 1, 1), id="channel", marks=pytest.mark.full),
     ],
 )
 def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> None:
@@ -395,7 +393,6 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
         assert torch.equal(torch.signbit(out[number]), torch.signbit(ref[number]))
 
 
-@pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
     "dtype, make_op, ref_fn",
@@ -422,9 +419,9 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
 @pytest.mark.parametrize(
     "a_shape, b_shape",
     [
-        pytest.param((1 << 16,), (1 << 16,), id="same"),
-        pytest.param((64, 1024), (1, 1024), id="bias"),
-        pytest.param((4, 64, 35, 35), (64, 1, 1), id="channel-ragged"),
+        pytest.param((1 << 16,), (1 << 16,), id="same", marks=pytest.mark.smoke),
+        pytest.param((64, 1024), (1, 1024), id="bias", marks=pytest.mark.full),
+        pytest.param((4, 64, 35, 35), (64, 1, 1), id="channel-ragged", marks=pytest.mark.full),
     ],
 )
 def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, make_op, ref_fn) -> None:
@@ -472,16 +469,15 @@ def test_bfloat16_div_channel_broadcast_matches_torch_bit_for_bit() -> None:
 # either operand as the bias row, staged rows holding a stride-0 operand, the flat channel
 # grid and ragged channel rows.
 _DIV_LAYOUTS = [
-    pytest.param((1 << 16,), (1 << 16,), id="same"),
-    pytest.param((256, 1024), (1, 1024), id="bias"),
-    pytest.param((1, 1024), (256, 1024), id="bias-a"),
-    pytest.param((256, 2048), (256, 1), id="column"),
-    pytest.param((4, 64, 16, 16), (64, 1, 1), id="channel"),
-    pytest.param((4, 64, 35, 35), (64, 1, 1), id="channel-ragged"),
+    pytest.param((1 << 16,), (1 << 16,), id="same", marks=pytest.mark.smoke),
+    pytest.param((256, 1024), (1, 1024), id="bias", marks=pytest.mark.full),
+    pytest.param((1, 1024), (256, 1024), id="bias-a", marks=pytest.mark.full),
+    pytest.param((256, 2048), (256, 1), id="column", marks=pytest.mark.full),
+    pytest.param((4, 64, 16, 16), (64, 1, 1), id="channel", marks=pytest.mark.full),
+    pytest.param((4, 64, 35, 35), (64, 1, 1), id="channel-ragged", marks=pytest.mark.full),
 ]
 
 
-@pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("a_shape, b_shape", _DIV_LAYOUTS)
@@ -613,14 +609,13 @@ def test_lerp_op(n_total: int, dtype: torch.dtype) -> None:
         test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("a_shape", "b_shape"),
     [
-        ((2, 64, 128), (2, 64, 128)),
-        ((2, 64, 128), (2, 64, 1)),
-        ((64, 128), (1, 1)),
-        ((3, 1), (1, 4)),
+        pytest.param((2, 64, 128), (2, 64, 128), marks=pytest.mark.smoke),
+        pytest.param((2, 64, 128), (2, 64, 1), marks=pytest.mark.full),
+        pytest.param((64, 128), (1, 1), marks=pytest.mark.full),
+        pytest.param((3, 1), (1, 4), marks=pytest.mark.full),
     ],
 )
 def test_lerp_number_weight_broadcast(a_shape, b_shape) -> None:

@@ -398,20 +398,21 @@ def test_rms_norm_rows_of_two_vectors_a_thread_in_long_launches() -> None:
     _check_served_by(rows, 8192, torch.bfloat16, "RMSNormTwoPassKernel")
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "rows,n,dtype,has_weight",
     [
-        # On SM90 these four reach the on-chip kernel: one CTA staging by cp.async, a
-        # cluster of two, and one CTA read synchronously with and without weight.
-        pytest.param(3, 131072, torch.float16, True, id="on-chip-async-fp16"),
-        pytest.param(3, 262144, torch.bfloat16, True, id="on-chip-cluster-bf16"),
-        pytest.param(3, 65536, torch.float16, True, id="on-chip-fp16"),
-        pytest.param(3, 65536, torch.bfloat16, False, id="on-chip-no-weight"),
-        # Widths the on-chip kernel cannot split reach the streaming kernel: an odd width,
-        # and more rows than resident CTAs, so each CTA walks several rows.
-        pytest.param(3, 131073, torch.bfloat16, False, id="tail-no-weight"),
-        pytest.param(600, 131080, torch.bfloat16, True, id="rows-per-cta"),
+        pytest.param(
+            3, 131072, torch.float16, True, id="on-chip-async-fp16", marks=pytest.mark.smoke
+        ),
+        pytest.param(
+            3, 262144, torch.bfloat16, True, id="on-chip-cluster-bf16", marks=pytest.mark.smoke
+        ),
+        pytest.param(3, 65536, torch.float16, True, id="on-chip-fp16", marks=pytest.mark.full),
+        pytest.param(
+            3, 65536, torch.bfloat16, False, id="on-chip-no-weight", marks=pytest.mark.full
+        ),
+        pytest.param(3, 131073, torch.bfloat16, False, id="tail-no-weight", marks=pytest.mark.full),
+        pytest.param(600, 131080, torch.bfloat16, True, id="rows-per-cta", marks=pytest.mark.full),
     ],
 )
 def test_rms_norm_rows_exceeding_shared_memory(rows, n, dtype, has_weight) -> None:
@@ -446,14 +447,12 @@ def _misaligned(t: torch.Tensor) -> torch.Tensor:
     return view
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "n",
     [
-        pytest.param(4096, id="register-row"),
-        pytest.param(131080, id="streaming"),
-        # The on-chip kernel on SM90, the streaming kernel before it.
-        pytest.param(131072, id="on-chip"),
+        pytest.param(4096, id="register-row", marks=pytest.mark.smoke),
+        pytest.param(131080, id="streaming", marks=pytest.mark.full),
+        pytest.param(131072, id="on-chip", marks=pytest.mark.full),
     ],
 )
 def test_rms_norm_reads_an_input_and_weight_off_the_vector_boundary(n: int) -> None:
