@@ -103,7 +103,6 @@ def _gqa_prefill_varlen_fwd_kernel(
                 rope_layout,
                 max_position,
                 dtype,
-                rope_dtype,
                 threads=threads,
                 split_reads=True,
             )

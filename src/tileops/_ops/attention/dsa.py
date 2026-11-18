@@ -92,10 +92,7 @@ class DSADenseFwdOp(Op):
         self.sm_scale = sm_scale
         self.is_causal = is_causal
 
-        cp0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s
-
-        self._cp0 = cp0
         super().__init__(target=target)
 
     def _dsa_decode_call(
@@ -122,7 +119,6 @@ class DSADenseFwdOp(Op):
             kv_group=heads_kv,
             sm_scale=self.sm_scale,
             is_causal=self.is_causal,
-            cp0=self._cp0,
             has_attn_sink=attn_sink is not None,
             device=q.device,
         )

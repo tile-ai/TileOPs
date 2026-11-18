@@ -360,7 +360,6 @@ def _gqa_varlen_fp8_ws_kernel(
             rope_layout,
             max_position,
             _FP8_DTYPE,
-            rope_dtype,
             positions=positions_per_half,
         )
         if fuse_rope

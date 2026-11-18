@@ -917,24 +917,11 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_H = [64, 128]
-        block_N = [64, 128]
-        num_split = [1, 2, 4]
-        num_stages = [1, 2, 3]
-        threads = [384]
-        _configs = list(itertools.product(block_H, block_N, num_split, num_stages, threads))
-
-        configs = [
-            {
-                "block_H": c[0],
-                "block_N": c[1],
-                "num_split": c[2],
-                "num_stages": c[3],
-                "threads": c[4],
-            }
-            for c in _configs
+        # The warp-specialized program ignores num_stages; the key is kept for ``_compile``.
+        return [
+            {"block_H": h, "block_N": n, "num_split": s, "num_stages": 1, "threads": 384}
+            for h, n, s in itertools.product((64, 128), (64, 128), (1, 2, 4))
         ]
-        return configs
 
     def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor):
         if self.seqlen_kv == 0:

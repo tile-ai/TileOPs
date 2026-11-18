@@ -21,7 +21,7 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
     def refusal(cls, call: DSADecodeCall) -> str | None:
         if call.has_attn_sink:
             return "does not serve attn_sink"
-        # The first stride_kv - 1 outputs are left unwritten when queries start at 0.
+        # A query before position kv_stride - 1 sees no key.
         if not (
             call.q_start_index_s > call.kv_stride
             or (call.q_start_index_s == 0 and call.kv_stride == 1)
@@ -46,7 +46,6 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
             call.kv_group,
             call.sm_scale,
             call.is_causal,
-            call.cp0,
             device_index=call.device.index if call.device is not None else None,
         )
 
@@ -119,13 +118,9 @@ def _dsa_decode_kernel(
     kv_group: int = 1,
     sm_scale: float = None,
     is_causal: bool = True,
-    cp0: bool = True,
     dtype: str = "float16",
 ) -> None:
     """Build causal sparse MLA with manual warp specialization on SM90.
-
-    ``cp0`` skips the first ``kv_stride - 1`` query positions. Those output rows
-    are unwritten and must not be consumed, including by backward computations.
 
     Returns:
         JIT factory taking ``block_i`` and ``threads``."""
@@ -233,7 +228,7 @@ def _dsa_decode_kernel(
                 None: The result is stored in the `output` tensor passed by reference.
             """
             with T.Kernel(
-                (seq_len - kv_stride + 1 if cp0 else seq_len) * replicate_h,
+                seq_len * replicate_h,
                 batch,
                 kv_group,
                 threads=threads,
@@ -280,11 +275,7 @@ def _dsa_decode_kernel(
                 bar_sum_exp_ready = T.alloc_barrier(arrive_count=128)
 
                 b_i, g_i = by, bz
-                s_i = (
-                    (bx + (stride_kv - 1 if cp0 else 0))
-                    if replicate_h == 1
-                    else (bx // replicate_h + (stride_kv - 1 if cp0 else 0))
-                )
+                s_i = bx if replicate_h == 1 else bx // replicate_h
                 q_i = q_start_index_s + s_i
                 # The causal limit, clamped to the rows kv holds: a padded
                 # top-k slot must not address kv past its last row.
@@ -574,7 +565,6 @@ def _dsa_decode_basic_kernel(
     kv_group: int = 1,
     sm_scale: float = None,
     is_causal: bool = True,
-    cp0: bool = True,
     dtype: str = "float16",
 ) -> None:
     """
@@ -651,7 +641,7 @@ def _dsa_decode_basic_kernel(
             output: T.Tensor(o_shape, dtype),  # type: ignore
         ) -> None:
             with T.Kernel(
-                (seq_len - stride_kv + 1 if cp0 else seq_len) * replicate_h,
+                seq_len * replicate_h,
                 batch,
                 kv_group,
                 threads=threads,
@@ -677,11 +667,7 @@ def _dsa_decode_basic_kernel(
                 m_i_prev = T.alloc_fragment([h_per_block], accum_dtype)
 
                 b_i, g_i = by, bz
-                s_i = (
-                    (bx + (stride_kv - 1 if cp0 else 0))
-                    if replicate_h == 1
-                    else (bx // replicate_h + (stride_kv - 1 if cp0 else 0))
-                )
+                s_i = bx if replicate_h == 1 else bx // replicate_h
                 q_i = q_start_index_s + s_i
                 # The causal limit, clamped to the rows kv holds: a padded
                 # top-k slot must not address kv past its last row.
@@ -878,7 +864,6 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         kv_group: int = 1,
         sm_scale: float = None,
         is_causal: bool = True,
-        cp0: bool = True,
         config: dict | None = None,
         device_index: int | None = None,
     ) -> None:
@@ -896,7 +881,6 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         self.sm_scale = sm_scale
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
-        self.cp0 = cp0
 
         self.kernel = _dsa_decode_basic_kernel(
             self.batch,
@@ -911,7 +895,6 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
             self.kv_group,
             self.sm_scale,
             self.is_causal,
-            self.cp0,
             self.dtype_str,
         )
 
@@ -1025,7 +1008,6 @@ class DSADecodeKernel(DSADecodeKernelBase):
         kv_group: int = 1,
         sm_scale: float = None,
         is_causal: bool = True,
-        cp0: bool = True,
         config: dict | None = None,
         device_index: int | None = None,
     ) -> None:
@@ -1043,7 +1025,6 @@ class DSADecodeKernel(DSADecodeKernelBase):
         self.sm_scale = sm_scale
         self.is_causal = is_causal
         self.q_start_index_s = q_start_index_s
-        self.cp0 = cp0
 
         self.kernel = _dsa_decode_kernel(
             self.batch,
@@ -1058,7 +1039,6 @@ class DSADecodeKernel(DSADecodeKernelBase):
             self.kv_group,
             self.sm_scale,
             self.is_causal,
-            self.cp0,
             self.dtype_str,
         )
 
