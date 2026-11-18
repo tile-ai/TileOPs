@@ -554,15 +554,15 @@ class GemvBoundaryFixture(FixtureBase):
 
     PARAMS = [
         (
-            "n, k, dtype, tune",
+            "n, k, dtype",
             [
                 # lhs_row: m=1, trans_b=True — non-aligned n
-                pytest.param(3000, 1024, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param(3000, 1024, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(3000, 1024, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(3000, 1024, torch.bfloat16, marks=pytest.mark.smoke),
                 # lhs_row: non-aligned k
-                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.float16, marks=pytest.mark.full),
                 # rhs_col: n=1 — non-aligned m (mapped to gemv n param)
-                pytest.param(3001, 1024, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(3001, 1024, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -1637,12 +1637,10 @@ def test_gemm_fp8_short_call_streams_b_in_64_row_blocks(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
 @GemvBoundaryFixture
-def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
+def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, arch: int) -> None:
     """A single activation row supports non-aligned weight rows and contraction sizes."""
     test = GEMMTest(1, n, k, dtype, trans_a=False, trans_b=True)
     op = GEMMFwdOp(trans_a=False, trans_b=True)
-    if tune:
-        op.request_tune()
     test.check(op, *test.gen_inputs())
     assert all(isinstance(entry, GemvKernel) for entry in op._entries_built("gemm").values())
 
@@ -1651,13 +1649,11 @@ def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool, a
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
 @GemvBoundaryFixture
-def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
+def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, arch: int) -> None:
     """A single output column supports non-aligned activation rows and contraction sizes."""
     m = n
     test = GEMMTest(m, 1, k, dtype, trans_a=False, trans_b=False)
     op = GEMMFwdOp(trans_a=False, trans_b=False)
-    if tune:
-        op.request_tune()
     test.check(op, *test.gen_inputs())
     assert all(isinstance(entry, GemvKernel) for entry in op._entries_built("gemm").values())
 
