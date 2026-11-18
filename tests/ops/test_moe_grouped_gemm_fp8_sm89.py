@@ -27,8 +27,15 @@ def _forced_mma_op(config):
 
 
 @pytest.mark.sm89
-@pytest.mark.smoke
-@pytest.mark.parametrize("block_m,block_n", [(32, 64), (32, 128), (64, 64), (64, 128)])
+@pytest.mark.parametrize(
+    "block_m,block_n",
+    [
+        pytest.param(32, 64, marks=pytest.mark.smoke),
+        pytest.param(32, 128, marks=pytest.mark.full),
+        pytest.param(64, 64, marks=pytest.mark.full),
+        pytest.param(64, 128, marks=pytest.mark.full),
+    ],
+)
 def test_mma_explicit_configs(block_m, block_n):
     workload = _workload(65, E=3, N=256, K=256)
     op = _forced_mma_op({"block_m": block_m, "block_n": block_n})

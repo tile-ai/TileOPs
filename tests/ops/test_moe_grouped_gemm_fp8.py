@@ -71,17 +71,22 @@ def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
 @pytest.mark.parametrize(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("max_m", "dims", "counts"),
     [
-        pytest.param(64, {"N": 128, "K": 128}, [64, 0, 1, 99], id="max_m-64-n128-k128"),
-        pytest.param(65, {"K": 256}, [65, 0, 64, 1], id="max_m-65"),
-        pytest.param(128, {}, [128, -1000, 1, 0], id="max_m-128"),
-        pytest.param(129, {}, [0, 1, 64, 65, 129, 200], id="max_m-129"),
-        pytest.param(100, {}, [100, 0, 100], id="max_m-100"),
-        pytest.param(1152, {"K": 128}, [1100], id="max_m-1152-e1"),
-        pytest.param(0, {"N": 128, "K": 128}, [0, 0], id="max_m-0"),
+        pytest.param(
+            64,
+            {"N": 128, "K": 128},
+            [64, 0, 1, 99],
+            marks=pytest.mark.smoke,
+            id="max_m-64-n128-k128",
+        ),
+        pytest.param(65, {"K": 256}, [65, 0, 64, 1], marks=pytest.mark.full, id="max_m-65"),
+        pytest.param(128, {}, [128, -1000, 1, 0], marks=pytest.mark.full, id="max_m-128"),
+        pytest.param(129, {}, [0, 1, 64, 65, 129, 200], marks=pytest.mark.full, id="max_m-129"),
+        pytest.param(100, {}, [100, 0, 100], marks=pytest.mark.full, id="max_m-100"),
+        pytest.param(1152, {"K": 128}, [1100], marks=pytest.mark.full, id="max_m-1152-e1"),
+        pytest.param(0, {"N": 128, "K": 128}, [0, 0], marks=pytest.mark.full, id="max_m-0"),
     ],
 )
 def test_fp8_grouped_gemm_valid_rows_at_tile_and_slab_boundaries(
@@ -113,17 +118,16 @@ def _forced_op(layout, config: dict) -> MoEGroupedGEMMFP8FwdOp:
 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("block_n", "num_stages", "n", "stage_scales"),
     [
-        pytest.param(160, 4, 512, 0, id="bn160-static-ring"),
-        pytest.param(192, 3, 512, 0, id="bn192-index-ring"),
-        pytest.param(160, 4, 512, 1, id="bn160-static-ring-staged-scales"),
-        pytest.param(192, 3, 512, 1, id="bn192-index-ring-staged-scales"),
-        pytest.param(192, 4, 384, 0, id="bn192-two-tiles-n384"),
-        pytest.param(192, 4, 256, 0, id="bn192-two-tiles-n256"),
-        pytest.param(160, 4, 256, 0, id="bn160-two-tiles-n256"),
+        pytest.param(160, 4, 512, 0, marks=pytest.mark.smoke, id="bn160-static-ring"),
+        pytest.param(192, 3, 512, 0, marks=pytest.mark.full, id="bn192-index-ring"),
+        pytest.param(160, 4, 512, 1, marks=pytest.mark.full, id="bn160-static-ring-staged-scales"),
+        pytest.param(192, 3, 512, 1, marks=pytest.mark.full, id="bn192-index-ring-staged-scales"),
+        pytest.param(192, 4, 384, 0, marks=pytest.mark.full, id="bn192-two-tiles-n384"),
+        pytest.param(192, 4, 256, 0, marks=pytest.mark.full, id="bn192-two-tiles-n256"),
+        pytest.param(160, 4, 256, 0, marks=pytest.mark.full, id="bn160-two-tiles-n256"),
     ],
 )
 def test_fp8_grouped_gemm_wide_tiles_clip_at_n(
@@ -580,20 +584,18 @@ def test_fp8_accepts_adjacent_dlpack_output(arch: int):
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
 @pytest.mark.smoke
-@pytest.mark.parametrize("offset_inputs", [False, True])
-def test_fp8_grouped_gemm_accepts_offset_storage(offset_inputs, arch: int):
+def test_fp8_grouped_gemm_accepts_offset_storage(arch: int):
     """Offset views preserve input storage, output guards and idle expert rows."""
     workload = _workload(65, E=3, N=256, K=256)
     inputs = list(with_counts(workload, [0, 33, 65]))
-    if offset_inputs:
-        for index in (0, 2):
-            original = inputs[index]
-            shifted = torch.empty(
-                original.numel() + 1, dtype=original.dtype, device=original.device
-            )[1:].view(original.shape)
-            shifted.copy_(original)
-            inputs[index] = shifted
-            assert shifted.data_ptr() % 16
+    for index in (0, 2):
+        original = inputs[index]
+        shifted = torch.empty(original.numel() + 1, dtype=original.dtype, device=original.device)[
+            1:
+        ].view(original.shape)
+        shifted.copy_(original)
+        inputs[index] = shifted
+        assert shifted.data_ptr() % 16
     before = [x.clone() for x in inputs]
     storage = torch.full(
         (3 * 65 * 256 + 2,), SENTINEL, dtype=torch.bfloat16, device=inputs[0].device
