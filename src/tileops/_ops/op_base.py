@@ -84,6 +84,31 @@ def _addressless(t: torch.Tensor) -> bool:
     return False
 
 
+def _element_span(t: torch.Tensor) -> int:
+    """The elements from the first element of *t*, which holds one, to its last, holes of a
+    strided layout included."""
+    return sum((n - 1) * s for n, s in zip(t.shape, t.stride(), strict=True)) + 1
+
+
+def _overlaps_itself(t: torch.Tensor) -> bool:
+    """Whether two elements of *t*, which holds one, share an address.
+
+    torch decides most layouts. One it cannot is disjoint when, its dimensions of more than
+    one element ordered by stride, each stride passes the farthest element the smaller ones
+    reach, and overlaps when it holds more elements than the addresses it spans; any other
+    is the caller's obligation, since deciding it reads every offset.
+    """
+    overlap = torch._debug_has_internal_overlap(t)
+    if overlap != 2:
+        return overlap == 1
+    reach = 0
+    for stride, size in sorted((s, n) for n, s in zip(t.shape, t.stride(), strict=True) if n > 1):
+        if stride <= reach:
+            return t.numel() > _element_span(t)
+        reach += (size - 1) * stride
+    return False
+
+
 def _overlap_checks(
     op_name: str, names: tuple, tensors: tuple, written: frozenset, overlaps: Mapping
 ) -> tuple:
@@ -98,8 +123,7 @@ def _overlap_checks(
     spans = [
         0
         if not isinstance(t, torch.Tensor) or t.is_meta or not t.numel()
-        else (sum((n - 1) * s for n, s in zip(t.shape, t.stride(), strict=True)) + 1)
-        * t.element_size()
+        else _element_span(t) * t.element_size()
         for t in tensors
     ]
     checks = []
@@ -1039,31 +1063,11 @@ class Op(ABC):
         self._construction_indices = type(self)._check_construction(self)
         tensors = {**dict(zip(signature.sig.inputs, inputs, strict=True)), **writes}
         call = signature.check(self, tensors)
-        # Two elements of a written tensor at one address would be written twice. torch
-        # decides most layouts. One it cannot is disjoint when, its dimensions of more than
-        # one element ordered by stride, each stride passes the farthest element the smaller
-        # ones reach, and overlaps when it holds more elements than the addresses it spans;
-        # any other stays the caller's obligation, since deciding it reads every offset. The
-        # layout decides it, so the plan, keyed by layout, checks it once.
+        # Two elements of a written tensor at one address would be written twice. The layout
+        # decides it, so the plan, keyed by layout, checks it once.
         for name in sorted(call.written.union(writes)):
             written = tensors[name]
-            if not isinstance(written, torch.Tensor) or not written.numel():
-                continue
-            overlap = torch._debug_has_internal_overlap(written)
-            if overlap == 2:
-                dims = zip(written.shape, written.stride(), strict=True)
-                ordered = sorted((stride, size) for size, stride in dims if size > 1)
-                reach = 0
-                for stride, size in ordered:
-                    if stride <= reach:
-                        break
-                    reach += (size - 1) * stride
-                else:
-                    overlap = 0
-            if overlap == 2:
-                span = sum((size - 1) * stride for stride, size in ordered) + 1
-                overlap = int(written.numel() > span)
-            if overlap == 1:
+            if isinstance(written, torch.Tensor) and written.numel() and _overlaps_itself(written):
                 raise CheckError(f"{type(self).__name__}: {name} must not overlap itself in memory")
         present = signature.states(tensors)
         slots = (*inputs, *writes.values())
