@@ -14,6 +14,7 @@ from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 
 __all__ = [
     "COOP2_SWAP_STAGING",
+    "FP8_MIN_SLICE_K_TILES",
     "SWAP_AB_MPAD",
     "best_config",
     "fp8_ws_config",
@@ -30,6 +31,10 @@ __all__ = [
 _SWAP_AB_BLOCK_NN = 64
 
 SWAP_AB_MPAD = 8
+
+# Shortest K slice, in 128-wide K tiles, an FP8 split-K launch pays for: a slice ends in an
+# fp32 round trip through the workspace and a second launch.
+FP8_MIN_SLICE_K_TILES = 12
 
 # One coop2_swap consumer's output staging buffer: both 64-column halves of its 128 rows,
 # ``store_m = 32`` columns of C at a time.
@@ -1000,14 +1005,12 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
     else:
         num_stages = 4
     tiles = -(-m // 128) * -(-n // block_n)
-    # Shortest K slice the FP8 split-K path pays for.
-    fp8_min_slice_k_tiles = 12
     split_k = 1
     for candidate in (4, 2):
         if (
             tiles * candidate <= sm_count
             and k_iters % candidate == 0
-            and k_iters // candidate >= fp8_min_slice_k_tiles
+            and k_iters // candidate >= FP8_MIN_SLICE_K_TILES
         ):
             split_k = candidate
             break

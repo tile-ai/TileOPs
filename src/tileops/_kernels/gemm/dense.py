@@ -3651,27 +3651,6 @@ def _gemm_simple_kernel(
     return _gemm_simple_func
 
 
-@T.macro
-def swap_ab_mainloop(a, b, ct, a_smem, b_smem, bx, k, block_nn, block_k, num_stages):
-    """Accumulate one CTA's transposed tile ``ct = b[bx * block_nn:, :] @ a^T`` over K.
-
-    Each CTA reads its rows of ``b`` once, so they are evicted first; ``a`` is what L2 keeps.
-    """
-    for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
-        T.copy(b[bx * block_nn, ki * block_k], b_smem, eviction_policy="evict_first")
-        T.copy(a[0, ki * block_k], a_smem)
-        T.gemm(b_smem, a_smem, ct, transpose_B=True)
-
-
-@T.macro
-def swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad):
-    """Write a cast transposed tile back as ``c[mi, bx * block_nn + j]``, through shared memory."""
-    T.copy(ct_cast, ct_smem)
-    for mi, j in T.Parallel(mpad, block_nn):
-        if mi < m and bx * block_nn + j < n:
-            c[mi, bx * block_nn + j] = ct_smem[j, mi]
-
-
 @target_cache(maxsize=32)
 def _gemm_swap_ab_kernel(
     m: int,
@@ -3714,14 +3693,21 @@ def _gemm_swap_ab_kernel(
                 ct_cast = T.alloc_fragment((block_nn, mpad), c_dtype) if cast else ct_local
                 ct_smem = T.alloc_shared((block_nn, mpad), c_dtype)
                 T.clear(ct_local)
-                swap_ab_mainloop(
-                    a, b, ct_local, a_smem, b_smem, bx, k, block_nn, block_k, num_stages
-                )
+                # Each CTA reads its rows of ``b`` once, so they are evicted first; ``a`` is
+                # what L2 keeps.
+                for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                    T.copy(b[bx * block_nn, ki * block_k], b_smem, eviction_policy="evict_first")
+                    T.copy(a[0, ki * block_k], a_smem)
+                    T.gemm(b_smem, a_smem, ct_local, transpose_B=True)
                 if has_bias:
                     _add_bias(ct_local, bias, bx * block_nn, n, by_row=True)
                 if cast:
                     T.copy(ct_local, ct_cast)
-                swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad)
+                # The cast tile is written back transposed, through shared memory.
+                T.copy(ct_cast, ct_smem)
+                for mi, j in T.Parallel(mpad, block_nn):
+                    if mi < m and bx * block_nn + j < n:
+                        c[mi, bx * block_nn + j] = ct_smem[j, mi]
 
         return _main(
             "_gemm_swap_ab",

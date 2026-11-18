@@ -1547,6 +1547,103 @@ def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
     test.check(GEMMFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("m", "n", "k", "scale_mode", "out_dtype", "tune"),
+    [
+        # Blocks short of the SMs and a long K: K split into slices and reduced into an output
+        # whose rows TMA cannot store; 12 rows of a padded to 16.
+        pytest.param(
+            12,
+            1003,
+            3072,
+            "block128x128",
+            torch.float16,
+            False,
+            marks=pytest.mark.smoke,
+            id="split",
+        ),
+        # More 64-row blocks than SMs: CTAs stream several blocks each and the last CTA's
+        # last one is past N; a partial last block and 128-row scale block; 16 rows of a.
+        pytest.param(
+            16, None, 512, "block128x128", torch.bfloat16, False, marks=pytest.mark.full, id="units"
+        ),
+        # One row of a over one K step: a's block scale is (1, 1), b's tell the grids apart;
+        # a ring of one stage.
+        pytest.param(
+            1,
+            256,
+            128,
+            "block128x128",
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.full,
+            id="one-step",
+        ),
+        # The same blocks over a K too short to split: the unsplit tile stored row by row.
+        pytest.param(
+            12,
+            1003,
+            1024,
+            "block128x128",
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.full,
+            id="masked",
+        ),
+        # Per-tensor scales on every K slice of a split call, tuned over two ring depths: the
+        # deepest ring holds fewer K steps than a CTA streams.
+        pytest.param(
+            5,
+            1280,
+            16384,
+            "per_tensor",
+            torch.bfloat16,
+            True,
+            marks=pytest.mark.full,
+            id="split-pt",
+        ),
+        # Scales staged for a long K hold the ring to its shallowest depth.
+        pytest.param(
+            16,
+            64,
+            393216,
+            "block128x128",
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.full,
+            id="scales-fill-smem",
+        ),
+        # Scales staged for a longer K leave no room for the ring: another kernel serves it.
+        pytest.param(
+            16,
+            64,
+            524288,
+            "block128x128",
+            torch.bfloat16,
+            False,
+            marks=pytest.mark.full,
+            id="scales-past-smem",
+        ),
+    ],
+)
+def test_gemm_fp8_short_call_streams_b_in_64_row_blocks(
+    m: int, n: int | None, k: int, scale_mode: str, out_dtype: torch.dtype, tune: bool
+) -> None:
+    """A call of few rows runs as c^T = b @ a^T: WGMMA's 64-row M axis takes b's rows and its
+    N axis, a multiple of 8, takes a's."""
+    sm_count = get_sm_count(torch.device(run_device()).index)
+    n = 64 * (sm_count + 9) - 24 if n is None else n
+    test = GEMMFP8Test(m, n, k, torch.float8_e4m3fn, scale_mode, out_dtype=out_dtype)
+    op = GEMMFP8FwdOp(out_dtype=out_dtype)
+    if tune:
+        op.request_tune()
+        # The first call tunes and returns the untuned result; the check reads the tuned one.
+        op(*test.gen_inputs())
+    test.check(op, *test.gen_inputs())
+
+
 @pytest.mark.parametrize(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
