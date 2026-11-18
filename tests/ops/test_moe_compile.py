@@ -31,6 +31,7 @@ from tileops._ops.moe import (
     MaskedLayoutSpec,
     MoEGroupedGEMMFP8FwdOp,
     MoEGroupedGEMMFwdOp,
+    MoEGroupedGEMMMXFP4FwdOp,
     MoEPermuteAlignFwdOp,
     MoEPostPermuteFwdOp,
     MoEPrePermuteFwdOp,
@@ -227,6 +228,30 @@ def test_fp8_grouped_gemm_owns_its_graph_nodes() -> None:
     _assert_same_layout(_compile_cold(make(), *inputs), (make()(*inputs),))
 
 
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_mxfp4_grouped_gemm_owns_its_graph_nodes() -> None:
+    """The MXFP4 masked GEMM, whose only kernel is SM90's, traces cold to its own operator."""
+    num_experts = 2
+    max_m, n, k = 32, 128, 128
+
+    def make():
+        return MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=max_m))
+
+    def e8m0(*shape):
+        codes = torch.randint(123, 129, shape, dtype=torch.uint8, device=run_device())
+        return codes.view(torch.float8_e8m0fnu)
+
+    a = torch.randn(num_experts, max_m, k, device=run_device()).to(torch.float8_e4m3fn)
+    b = torch.randint(0, 256, (num_experts, n, k // 2), dtype=torch.uint8, device=run_device())
+    masked_m = torch.tensor([32, 5], dtype=torch.int32, device=run_device())
+    # Rows past an expert's valid count hold unspecified values.
+    inputs = (a, e8m0(num_experts, max_m, k // 128), b, e8m0(num_experts, n, k // 32), masked_m)
+    assert_op_owns_graph_nodes(make(), *inputs)
+    _assert_same_layout(_compile_cold(make(), *inputs), (make()(*inputs),))
+
+
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -350,6 +375,7 @@ for _op_cls in (
     MoEPostPermuteFwdOp,
     MoEGroupedGEMMFwdOp,
     MoEGroupedGEMMFP8FwdOp,
+    MoEGroupedGEMMMXFP4FwdOp,
     SharedExpertMLPFwdOp,
 ):
     register_compile_contract(_op_cls)

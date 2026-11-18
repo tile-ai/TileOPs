@@ -28,6 +28,8 @@ __all__ = [
     "MGroupedGEMMFP8Call",
     "MGroupedGEMMFP8FwdInterface",
     "MGroupedGEMMFwdInterface",
+    "MGroupedGEMMMXFP4Call",
+    "MGroupedGEMMMXFP4FwdInterface",
     "PermuteAlignCall",
     "PermuteAlignFwdInterface",
     "PostPermuteCall",
@@ -165,6 +167,28 @@ class MGroupedGEMMFP8Call(CallSpec):
     k: int = 0
     a_scale_shape: tuple[int, ...] = dataclasses.field(default=(), compare=False)
     b_scale_shape: tuple[int, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class MGroupedGEMMMXFP4Call(CallSpec):
+    """Complete selection facts for one MXFP4 M-grouped GEMM invocation.
+
+    The layout arrives as ``MGroupedGEMMCall``'s does. ``scale_dtype`` is the dtype of both
+    scale tensors, ``float8_e8m0fnu`` or ``float32``. ``m``, the materialized row count, is a
+    fact of the call and not of the built kernel, so it is excluded from this record's
+    equality.
+    """
+
+    kind: str = ""  # "contiguous" | "masked"
+    packing: str | None = None  # "tight" | "aligned"; None for masked
+    metadata_kind: str | None = None  # "physical_psum" | "per_row"; None for masked
+    alignment: int = 1  # 1 unless packing == "aligned"
+    max_m: int | None = None  # masked only
+    scale_dtype: torch.dtype | None = None
+    num_groups: int = 0
+    m: int = dataclasses.field(default=0, compare=False)
+    n: int = 0
+    k: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -381,6 +405,52 @@ class MGroupedGEMMFP8FwdInterface(KernelInterface):
             b: Contiguous ``(call.num_groups, call.n, call.k)`` in ``call.ab_dtype``.
             b_scale: Contiguous ``float32`` ``call.b_scale_shape``, one scale per 128x128 block
                 of *b*.
+            layout_metadata: Contiguous ``int32`` metadata of the layout: ``(call.num_groups,)``
+                valid row counts when masked, segment end rows under ``physical_psum``, or
+                ``(call.m,)`` expert ids under ``per_row``.
+            out: An optional contiguous ``bfloat16`` buffer, shaped like the return value,
+                written in place and returned; ``None`` allocates one. It shares no byte
+                with an input.
+
+        Returns:
+            ``(call.m, call.n)``, or ``(call.num_groups, call.max_m, call.n)`` when masked, in
+            ``bfloat16``.
+        """
+
+
+class MGroupedGEMMMXFP4FwdInterface(KernelInterface):
+    """One GEMM per expert of FP8 rows and packed e2m1 weights under their scales, in a masked or
+    contiguous layout."""
+
+    request = MGroupedGEMMMXFP4Call
+
+    @abstractmethod
+    def forward(
+        self,
+        a: torch.Tensor,
+        a_scale: torch.Tensor,
+        b: torch.Tensor,
+        b_scale: torch.Tensor,
+        layout_metadata: torch.Tensor,
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Contract each expert's rows with its dequantized weights.
+
+        For a row ``r`` of expert ``g``, ``out[r, n] = sum_k a[r, k] * a_scale[r, k // 128] *
+        e2m1(b[g, n, k]) * b_scale[g, n, k // 32]``, accumulated in float32 and written in
+        bfloat16. Byte ``j`` of a row of ``b`` holds the e2m1 codes of ``k = 2j`` (low nibble)
+        and ``2j + 1``. A masked layout gives expert ``g`` the first ``layout_metadata[g]`` rows
+        of its slab; a contiguous one gives it the rows its metadata marks, as
+        ``MGroupedGEMMFwdInterface`` reads them. Every other row of *out* holds unspecified
+        values. The metadata's values are not checked, since checking would synchronise.
+
+        Args:
+            a: Contiguous ``float8_e4m3fn`` ``(call.m, call.k)``, or ``(call.num_groups,
+                call.max_m, call.k)`` when masked, on ``call.device``.
+            a_scale: Contiguous ``call.scale_dtype``, *a*'s shape with ``call.k / 128``
+                columns.
+            b: Contiguous ``uint8`` ``(call.num_groups, call.n, call.k / 2)``.
+            b_scale: Contiguous ``call.scale_dtype`` ``(call.num_groups, call.n, call.k / 32)``.
             layout_metadata: Contiguous ``int32`` metadata of the layout: ``(call.num_groups,)``
                 valid row counts when masked, segment end rows under ``physical_psum``, or
                 ``(call.m,)`` expert ids under ``per_row``.

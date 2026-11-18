@@ -363,6 +363,42 @@ class MoEGroupedGEMMFP8Workload(CallWorkload):
         return Custom(validate, "valid rows of each masked expert slab, fp8 matmul bound")
 
 
+class MoEGroupedGEMMMXFP4Workload(MoEGroupedGEMMFP8Workload):
+    """FP8 expert rows under per-128 scales, packed e2m1 weights under per-32 scales, and
+    generated layout metadata; checked on the valid rows under the fp8 matmul bound."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        a, a_scale, b, b_scale, metadata = CallWorkload.gen_inputs(self)
+        # Every byte, so each nibble takes all 16 e2m1 codes, the signed zero among them.
+        b = torch.randint(0, 256, b.shape, dtype=torch.uint8, device=b.device)
+
+        def scales(like: torch.Tensor, low: int) -> torch.Tensor:
+            if like.dtype == torch.float8_e8m0fnu:
+                # Six powers of two from 2 ** (low - 127): a quantizer's spread.
+                codes = torch.randint(
+                    low, low + 6, like.shape, dtype=torch.uint8, device=like.device
+                )
+                return codes.view(torch.float8_e8m0fnu)
+            return torch.rand_like(like).add_(0.5) * 2.0 ** (low - 124)
+
+        # Scales that bring the dequantized operands to the FP8 workload's magnitudes (e2m1
+        # codes reach 6, fp8 rows are unscaled normals), so its outputs sit where the fp8
+        # matmul bound was set.
+        return a, scales(a_scale, 120), b, scales(b_scale, 121), metadata
+
+    def ref_program(
+        self,
+        a: torch.Tensor,
+        a_scale: torch.Tensor,
+        b: torch.Tensor,
+        b_scale: torch.Tensor,
+        layout_metadata: torch.Tensor,
+    ) -> torch.Tensor:
+        return ref_moe_grouped_gemm_mxfp4(
+            a, a_scale, b, b_scale, layout_metadata, self.call.params["layout"]
+        )
+
+
 class MoEExpertMLPWorkload(CallWorkload):
     """Expert-materialized input, gate/up and down weights, generated metadata, optional
     biases."""

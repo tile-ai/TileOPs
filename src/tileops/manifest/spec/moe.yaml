@@ -712,7 +712,7 @@ MoEGroupedGEMMMXFP4FwdOp:
   # DeepSeek-V4-Flash inference/kernel.py fp4_gemm, per expert as inference/model.py
   # Expert.forward calls it; its one scale_dtype covers both scales.
   family: moe
-  status: spec-only
+  status: implemented
   ref_api: workloads.moe.ref_moe_grouped_gemm_mxfp4
   signature:
     types:
