@@ -24,8 +24,6 @@ from typing import Any
 # CI also runs this script against the base ref's package; import only `load_manifest`.
 from tileops.manifest import load_manifest
 
-STATUSES = ("implemented", "spec-only", "deprecated")
-
 
 def _has_roofline(op: dict[str, Any]) -> bool:
     rf = op.get("roofline") or {}

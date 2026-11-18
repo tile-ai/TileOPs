@@ -822,7 +822,7 @@ def test_fresh_output_accepts_disjoint_dlpack_storage():
 
 def test_storage_ownership_matches_enumerated_imported_bytes():
     """Imported storage ownership matches byte-set intersection on all small slices."""
-    from tileops._ops._signature_codegen import _owns_storage_apart
+    from tileops._ops._signature_codegen import _extent, _overlaps
 
     buffer = torch.zeros(4, dtype=torch.uint8)
     views = [
@@ -832,7 +832,8 @@ def test_storage_ownership_matches_enumerated_imported_bytes():
     ]
     for first, first_bytes in views:
         for second, second_bytes in views:
-            assert _owns_storage_apart(first, (second,)) is not bool(first_bytes & second_bytes)
+            shared = _overlaps(_extent(first), [_extent(second)])
+            assert shared is bool(first_bytes & second_bytes)
 
 
 def test_fresh_output_rejects_disjoint_views_of_one_owned_storage():

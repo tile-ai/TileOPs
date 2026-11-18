@@ -1726,16 +1726,6 @@ def _overlaps(extent: tuple | None, others: list) -> bool:
     return any(o is not None and o[0] == device and start < o[2] and o[1] < end for o in others)
 
 
-def _owns_storage_apart(t: torch.Tensor, others: tuple) -> bool:
-    """Whether real tensor *t* shares no storage byte with any of *others*.
-
-    Two tensors share storage where their storages' byte ranges overlap: imported storages
-    can have different bases while owning overlapping bytes, and disjoint views of one
-    storage still share its ownership.
-    """
-    return not _overlaps(_extent(t), [_extent(o) for o in others])
-
-
 def _construction_check(plan: _SignaturePlan):
     """`_check_construction`: parameter values against their `type`, then what the construction point decides; it returns the index values solved."""
     sig = plan.sig
