@@ -205,9 +205,20 @@ class GDNFwdCall(CallWorkload):
         state_indices=None,
         num_accepted_tokens=None,
     ):
-        if num_accepted_tokens is not None:
-            raise ValueError("the reference keeps one slot a sequence, not one a token")
         p = self.call.indices
+        flags = dict(
+            scale=p["scale"],
+            raw_gate=p["use_gate_in_kernel"],
+            beta_sigmoid=p["use_beta_sigmoid_in_kernel"],
+            allow_neg_eigval=p["allow_neg_eigval"],
+            l2norm=p["use_qk_l2norm_in_kernel"],
+            state_v_first=p["state_v_first"],
+        )
+        if num_accepted_tokens is not None:
+            return gdn_rollback_ref(
+                q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, a_log, dt_bias,
+                state_indices, num_accepted_tokens, **flags,
+            )  # fmt: skip
         slots = None if state_indices is None else state_indices.long()
         o, final_state = gdn_ref(
             q,
@@ -220,12 +231,7 @@ class GDNFwdCall(CallWorkload):
             cu_seqlens_cpu,
             a_log,
             dt_bias,
-            scale=p["scale"],
-            raw_gate=p["use_gate_in_kernel"],
-            beta_sigmoid=p["use_beta_sigmoid_in_kernel"],
-            allow_neg_eigval=p["allow_neg_eigval"],
-            l2norm=p["use_qk_l2norm_in_kernel"],
-            state_v_first=p["state_v_first"],
+            **flags,
         )
         if slots is None:
             return o, final_state
@@ -356,6 +362,54 @@ def gdn_ref(
     final[order] = state
     final = final.transpose(-1, -2) if state_v_first else final
     return output, final.float()
+
+
+def gdn_rollback_ref(
+    q,
+    k,
+    v,
+    g,
+    beta,
+    pool,
+    cu_seqlens,
+    cu_seqlens_cpu,
+    a_log,
+    dt_bias,
+    state_indices,
+    num_accepted_tokens,
+    **flags,
+):
+    """The verification of drafts on a state pool: sequence ``n`` starts from slot
+    ``state_indices[n, num_accepted_tokens[n] - 1]`` and the state after its token ``t`` goes
+    to slot ``state_indices[n, t]``; every other slot keeps its state.
+
+    Each token is one FP32 step of :func:`gdn_ref`, all sequences still running stepping
+    together, so a sequence's tokens see the state exactly as one-token decode calls leave it.
+    """
+    if cu_seqlens is None:
+        rows = list(range(q.shape[0]))
+        starts, lengths = [0] * q.shape[0], [q.shape[1]] * q.shape[0]
+    else:
+        bounds = (cu_seqlens if cu_seqlens_cpu is None else cu_seqlens_cpu).tolist()
+        rows, starts = [0] * (len(bounds) - 1), bounds[:-1]
+        lengths = [end - start for start, end in zip(bounds[:-1], bounds[1:], strict=True)]
+    slots = state_indices.long()
+    sequences = torch.arange(len(lengths), device=q.device)
+    state = pool[slots[sequences, num_accepted_tokens.long() - 1]]
+    pool = pool.clone()
+    output = torch.empty_like(v)
+    for t in range(max(lengths, default=0)):
+        live = [n for n, length in enumerate(lengths) if length > t]
+        n = torch.tensor(live, dtype=torch.long, device=q.device)
+        r = torch.tensor([rows[i] for i in live], dtype=torch.long, device=q.device)
+        c = torch.tensor([starts[i] + t for i in live], dtype=torch.long, device=q.device)
+        out, state[n] = gdn_ref(
+            *(x[r, c][:, None] for x in (q, k, v, g, beta)), state[n], None, None, a_log, dt_bias,
+            **flags,
+        )  # fmt: skip
+        output[r, c] = out[:, 0]
+        pool[slots[n, t]] = state[n]
+    return output, pool
 
 
 def gated_verification(

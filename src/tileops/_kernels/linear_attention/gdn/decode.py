@@ -1,4 +1,5 @@
-"""Single-token Gated DeltaNet (GDN) inference decode."""
+"""Gated DeltaNet (GDN) inference decode: one token a sequence, or each sequence's tokens
+in turn when verifying drafts on a state pool."""
 
 import torch
 
@@ -30,22 +31,21 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
 
         One token continuing a 64- or 128-wide square state, in either layout, in batch order
         or in the slots of a state pool, under any combination of the recurrence flags the
-        operator fixes.
+        operator fixes; with ``num_accepted_tokens``, each sequence's tokens in turn,
+        equal-length or packed, a slot a token.
         """
-        if call.rollback:
-            return "keeps one state a sequence; num_accepted_tokens is not served"
         heads = head_count_refusal(call.heads, call.value_heads)
         if heads is not None:
             return heads
         unsupported = [
             name
             for name, present in (
-                ("packed varlen", call.varlen),
+                ("packed varlen", call.varlen and not call.rollback),
                 (
                     "K and V other than matching 64 or 128",
                     call.dim_k != call.dim_v or call.dim_k not in (64, 128),
                 ),
-                ("T other than 1", call.seq_len != 1),
+                ("T other than 1", call.seq_len != 1 and not call.rollback),
             )
             if present
         ]
@@ -54,8 +54,10 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
     @classmethod
     def entry_for(cls, call: GDNCall) -> Entry:
         index = call.device.index if call.device is not None else None
+        # A packed call's token count is runtime data; an equal-length one's is built in.
+        tokens = 1 if call.varlen else call.seq_len
         identity = (
-            call.batch,
+            call.num_sequences,
             call.heads,
             call.value_heads,
             call.dim_k,
@@ -68,10 +70,14 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             call.beta_sigmoid,
             call.allow_neg_eigval,
             call.pooled,
+            call.rollback,
+            call.varlen,
+            tokens,
+            call.drafts,
             index,
         )
         return identity, lambda: cls(
-            batch=call.batch,
+            batch=call.num_sequences,
             heads=call.heads,
             value_heads=call.value_heads,
             dim=call.dim_k,
@@ -84,6 +90,10 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             beta_sigmoid=call.beta_sigmoid,
             allow_neg_eigval=call.allow_neg_eigval,
             pooled=call.pooled,
+            rollback=call.rollback,
+            varlen=call.varlen,
+            tokens=tokens,
+            drafts=call.drafts,
             device_index=index,
         )
 
@@ -102,6 +112,10 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         beta_sigmoid: bool,
         allow_neg_eigval: bool,
         pooled: bool = False,
+        rollback: bool = False,
+        varlen: bool = False,
+        tokens: int = 1,
+        drafts: int = 0,
         *,
         device_index: int | None = None,
     ) -> None:
@@ -119,13 +133,18 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         self.beta_sigmoid = beta_sigmoid
         self.allow_neg_eigval = allow_neg_eigval
         self.pooled = pooled
+        self.rollback = rollback
+        self.varlen = varlen
+        self.tokens = tokens
+        self.drafts = drafts
         self.init_config()
         self.program(self._compile)
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
-        # The float32 parameters this build leaves unread are declared one element wide.
+        # The parameters this build leaves unread are declared one element wide.
         self._unread = torch.empty(1, dtype=torch.float32, device=device)
+        self._unread_offsets = torch.empty(1, dtype=torch.int64, device=device)
 
     def _compile(self, cfg: dict):
         """The decode program in the block shape *cfg* states."""
@@ -146,6 +165,10 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             threads=cfg["threads"],
             lane_group=cfg["lane_group"],
             pooled=self.pooled,
+            rollback=self.rollback,
+            varlen=self.varlen,
+            tokens=self.tokens,
+            drafts=self.drafts,
         )()
 
     @property
@@ -168,14 +191,20 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
         state_indices: torch.Tensor | None = None,
+        num_accepted_tokens: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        del cu_seqlens, cu_seqlens_cpu
+        del cu_seqlens_cpu
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         if self.has_initial_state and initial_state is None:
             raise ValueError("the build reads initial_state, but the call passed none")
         state = initial_state if self.has_initial_state else self._unread
         gate_params = (A_log, dt_bias) if self.gate_in_kernel else (self._unread, self._unread)
         program = self.program(self._compile)
+        if self.rollback:
+            offsets = cu_seqlens if self.varlen else self._unread_offsets
+            return program(
+                q, k, v, g, beta, *gate_params, state, state_indices, num_accepted_tokens, offsets
+            ), state
         if self.pooled:
             # The pool is advanced in place and returned as the final state.
             return program(q, k, v, g, beta, *gate_params, state, state_indices), state

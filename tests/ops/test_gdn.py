@@ -723,21 +723,14 @@ def test_gdn_decode_updates_a_strided_pool_in_place() -> None:
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    ("facts", "rollback", "reason"),
-    [
-        # The SM89 chunk prefill reads and writes the states in batch order.
-        ({"arch": 89, "sm_count": 128, "smem_budget": 101376}, False, "a state pool"),
-        # Every in-tree kernel keeps one state a sequence, not one a token.
-        ({"arch": 90, "sm_count": 132, "smem_budget": 232448}, True, "num_accepted_tokens"),
-    ],
-    ids=["sm89-pooled-prefill", "num-accepted-tokens"],
-)
-def test_gdn_refuses_a_pooled_call_no_kernel_serves(facts: dict, rollback: bool, reason: str):
-    """Dispatch on the given device facts refuses the pooled prefill before a build."""
+def test_gdn_refuses_a_pooled_call_no_kernel_serves():
+    """Dispatch on SM89 facts refuses the pooled prefill before a build: the SM89 chunk
+    prefill reads and writes the states in batch order."""
     (in_tree,) = Kernel.devices
     call = GDNCall(
-        **facts,
+        arch=89,
+        sm_count=128,
+        smem_budget=101376,
         batch=1,
         seq_len=256,
         heads=2,
@@ -750,8 +743,58 @@ def test_gdn_refuses_a_pooled_call_no_kernel_serves(facts: dict, rollback: bool,
         varlen=True,
         num_sequences=2,
         pooled=True,
-        rollback=rollback,
         device=torch.device(in_tree),
     )
-    with pytest.raises(OpNotAvailableError, match=f"{reason} is not served"):
+    with pytest.raises(OpNotAvailableError, match="a state pool is not served"):
         GDNFwdOp().key_for("gdn", call)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "dim", "drafts", "flags", "row"),
+    [
+        (
+            torch.bfloat16,
+            128,
+            8,
+            {"state_v_first": True, "use_qk_l2norm_in_kernel": True},
+            {"B": 1, "S": 21, "seq_lens": [8, 5, 0, 1, 7], "some": ("cu_seqlens",)},
+        ),
+        (torch.float16, 64, 4, {}, {"B": 3, "S": 3}),
+        (torch.bfloat16, 128, 4, {}, {"B": 64, "S": 3}),
+        (
+            torch.bfloat16,
+            128,
+            4,
+            {"use_gate_in_kernel": True, "use_beta_sigmoid_in_kernel": True},
+            {"B": 2, "S": 4, "some": ("A_log", "dt_bias")},
+        ),
+    ],
+    ids=[
+        "packed-two-chunks",
+        "fp16-key-major-64",
+        "key-major-one-warp",
+        "raw-gate-and-step",
+    ],
+)
+def test_gdn_decode_verifies_drafts_from_the_accepted_slot(
+    dtype: torch.dtype, dim: int, drafts: int, flags: dict, row: dict
+) -> None:
+    """With num_accepted_tokens, each sequence starts from the slot of its last accepted token,
+    a random one of its drafts, and leaves the state after each of its tokens in that token's
+    slot, every other slot keeping its state: the Qwen3.6 form, packed with full, partial,
+    one-token and empty sequences of eight drafts, more than the block stages at once; equal
+    length over a key-major 64-wide state; a key-major grid large enough for one-warp blocks,
+    which stage in several passes; and the raw gate and step size formed each token."""
+    torch.manual_seed(42)
+    row = dict(row)
+    some = ("num_accepted_tokens", *row.pop("some", ()))
+    sequences = len(row["seq_lens"]) if "seq_lens" in row else row["B"]
+    test = _pooled(
+        dtype, some=some, H=2, HV=4, K=dim, V=dim, P=sequences * drafts, L=drafts, **row, **flags
+    )
+    inputs = list(test.gen_inputs())
+    accepted = inputs[11]
+    inputs[11] = torch.randint(
+        1, drafts + 1, accepted.shape, dtype=accepted.dtype, device=accepted.device
+    )
+    test.check(GDNFwdOp(**flags), *inputs)

@@ -49,11 +49,16 @@ class GDNFwdOp(Op):
     any combination of the three input transforms. Prefill runs on SM89 and
     SM90, equal-length or packed, with a sequence that is not a whole number
     of 64-token chunks. On SM89, shared memory holds the offsets of at most
-    703 packed sequences over a 128-wide state. Decode runs one token per
-    sequence on SM80, SM89 and SM90, and does not take ``cu_seqlens``. A state
-    pool (``state_indices``) is served by decode and by SM90 prefill, one
-    state a sequence. Other calls, among them any with
-    ``num_accepted_tokens``, need an external target implementation.
+    703 packed sequences over a 128-wide state. Decode runs on SM80, SM89 and
+    SM90: one token per sequence, which takes no ``cu_seqlens``, or, with
+    ``num_accepted_tokens``, each sequence's tokens, equal-length or packed,
+    one after another on the state it keeps in registers. A state pool
+    (``state_indices``) is served by decode and by SM90 prefill, one state a
+    sequence; with ``num_accepted_tokens``, decode keeps one a token. A
+    packed sequence of more tokens than ``state_indices`` holds slots breaks
+    the call's contract, which no check enforces; the in-tree kernel may then
+    write states outside that sequence's slots and leaves its outputs
+    undefined. Other calls need an external target implementation.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -177,6 +182,7 @@ class GDNFwdOp(Op):
                 A_log,
                 dt_bias,
                 state_indices,
+                num_accepted_tokens,
             )
         )
         batch, seq_len, heads, dim_k = q.shape
@@ -202,6 +208,7 @@ class GDNFwdOp(Op):
                 allow_neg_eigval=self.allow_neg_eigval,
                 pooled=state_indices is not None,
                 rollback=num_accepted_tokens is not None,
+                drafts=0 if num_accepted_tokens is None else state_indices.shape[1],
                 device=q.device,
             ),
         )(*inputs)

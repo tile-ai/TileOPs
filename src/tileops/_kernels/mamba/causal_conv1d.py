@@ -1,5 +1,6 @@
-"""Depthwise causal short convolution of a Mamba-2 block: prefill over packed sequences and the
-one-token decode step, both with fused SiLU and a per-sequence convolution state.
+"""Depthwise causal short convolution of a Mamba-2 block: prefill over packed sequences, the
+one-token decode step and draft verification, all with fused SiLU and a per-sequence
+convolution state.
 
 For a sequence occupying packed tokens ``[a, e)``, with ``h`` its ``W - 1`` preceding tokens
 (``conv_state[s]`` where ``has_initial_state[s]``, zeros otherwise)::
@@ -8,9 +9,14 @@ For a sequence occupying packed tokens ``[a, e)``, with ``h`` its ``W - 1`` prec
     y[a + i, c]    = act(bias[c] + sum_k weight[c, k] * xp[c, i + k])
     conv_state[s] <- xp[c, e - a : e - a + W - 1]       (its last W - 1 tokens)
 
-An empty sequence (``e == a``) keeps its state.
+An empty sequence (``e == a``) keeps its state. Draft verification reads ``h`` from
+column ``num_accepted_tokens[s] - 1`` of an ``L``-column state and keeps the last
+``(W - 1) * dilation + q - 1`` tokens of history and its ``q`` tokens in the state's first
+columns.
 The products accumulate in float32 and the output rounds once to the input dtype.
 """
+
+import math
 
 import tilelang
 import tilelang.language as T
@@ -29,7 +35,7 @@ from tileops._kernels.mamba.call_spec import (
 )
 from tileops._kernels.state_pool import state_row
 
-__all__ = ["CausalConv1dKernel", "CausalConv1dUpdateKernel"]
+__all__ = ["CausalConv1dKernel", "CausalConv1dUpdateKernel", "CausalConv1dUpdateRollbackKernel"]
 
 
 def _activate(acc, silu: bool):
@@ -624,7 +630,10 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         conv_state: torch.Tensor,
         bias: torch.Tensor | None = None,
         conv_state_indices: torch.Tensor | None = None,
+        num_accepted_tokens: torch.Tensor | None = None,
+        query_start_loc: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        del num_accepted_tokens, query_start_loc
         y = torch.empty_like(x)
         if self.pooled:
             states = (conv_state.view(conv_state.shape[0], -1), conv_state_indices)
@@ -635,6 +644,246 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
             weight.view(-1),
             bias if bias is not None else x[0],
             *states,
+            y,
+        )
+        return y
+
+
+def _rollback_block(dim: int) -> tuple[int, int]:
+    """The threads of a draft-verification block and the channels a thread convolves.
+
+    Two channels a thread: one 4-byte load of each 16-bit token, and a 128-thread block of 256
+    channels whose state region is 3 KiB at six columns.
+    """
+    return 128, math.gcd(dim, 2)
+
+
+@target_cache(maxsize=64)
+def _causal_conv1d_rollback_kernel(
+    dim: int,
+    width: int,
+    dilation: int,
+    state_len: int,
+    dtype: str,
+    weight_dtype: str,
+    has_bias: bool,
+    silu: bool,
+    pooled: bool,
+    varlen: bool,
+):
+    span = (width - 1) * dilation
+    # The most tokens a sequence verifies: its state keeps span + q - 1 columns.
+    tokens = state_len - span + 1 if varlen else 1
+    window = span + tokens
+    # Elements of the state region one 16-byte vector moves; the region of every block
+    # starts and ends on one.
+    state_vec = math.gcd(dim * state_len, 16 // DataType(dtype).bytes)
+
+    @tilelang.jit(out_idx=[])
+    def _func(threads: int, vec: int):
+        batch = T.dynamic("batch")
+        pool = T.dynamic("pool")
+        packed = T.dynamic("tokens")
+        block_d = threads * vec
+        region = block_d * state_len
+
+        @T.macro
+        def step(x, weight, bias, conv_state, slots, accepted, offsets, y):
+            # A block is block_d channels of one sequence; their state rows are one contiguous
+            # region, staged through shared memory in 16-byte vectors, and a thread convolves
+            # vec adjacent channels.
+            with T.Kernel(T.ceildiv(dim, block_d), batch, threads=threads) as (bd, b):
+                tx = T.get_thread_binding()
+                c_first = bd * block_d
+                c0 = c_first + tx * vec
+                held = T.min(block_d, dim - c_first) * state_len
+                rows = T.alloc_shared((region,), dtype)
+                win = T.alloc_local((vec * window,), "float32")
+                wraw = T.alloc_local((vec * width,), weight_dtype)
+                bv = T.alloc_local((vec,), weight_dtype)
+                xv = T.alloc_local((tokens * vec,), dtype)
+                acc = T.alloc_local((vec,), "float32")
+                out = T.alloc_local((vec,), dtype)
+                slot = state_row(slots if pooled else None, b)
+                first = accepted[b] - 1
+                start = offsets[b] if varlen else b
+                length = offsets[b + 1] - start if varlen else 1
+                # The tokens, filters and state rows are all read before the first barrier, so
+                # their loads are in flight together.
+                if c0 < dim:
+                    for i in T.unroll(tokens):
+                        if i < length:
+                            for v in T.vectorized(vec):
+                                xv[i * vec + v] = x[start + i, c0 + v]
+                    for q in T.unroll(width):
+                        for v in T.vectorized(vec):
+                            wraw[q * vec + v] = weight[c0 * width + q * vec + v]
+                    if has_bias:
+                        for v in T.vectorized(vec):
+                            bv[v] = bias[c0 + v]
+                for i in T.serial(T.ceildiv(region, threads * state_vec)):
+                    flat = (tx + i * threads) * state_vec
+                    if flat < held:
+                        for e in T.vectorized(state_vec):
+                            rows[flat + e] = conv_state[slot, c_first * state_len + flat + e]
+                T.sync_threads()
+                if c0 < dim:
+                    for v in T.unroll(vec):
+                        for j in T.unroll(span):
+                            win[v * window + j] = T.cast(
+                                rows[(tx * vec + v) * state_len + first + j], "float32"
+                            )
+                        for i in T.unroll(tokens):
+                            win[v * window + span + i] = T.cast(xv[i * vec + v], "float32")
+                    for i in T.unroll(tokens):
+                        if i < length:
+                            for v in T.unroll(vec):
+                                acc[v] = T.cast(bv[v], "float32") if has_bias else T.float32(0)
+                                for k in T.unroll(width):
+                                    acc[v] += (
+                                        T.cast(wraw[v * width + k], "float32")
+                                        * win[v * window + i + k * dilation]
+                                    )
+                                out[v] = T.cast(_activate(acc[v], silu), dtype)
+                            for v in T.vectorized(vec):
+                                y[start + i, c0 + v] = out[v]
+                # The first span + q - 1 columns take the window after its first token; the
+                # columns past them keep what they held, and a sequence with no token keeps
+                # its state.
+                if length > 0:
+                    if c0 < dim:
+                        for v in T.unroll(vec):
+                            for j in T.unroll(state_len):
+                                if j < span + length - 1:
+                                    rows[(tx * vec + v) * state_len + j] = T.cast(
+                                        win[v * window + j + 1], dtype
+                                    )
+                    T.sync_threads()
+                    for i in T.serial(T.ceildiv(region, threads * state_vec)):
+                        flat = (tx + i * threads) * state_vec
+                        if flat < held:
+                            for e in T.vectorized(state_vec):
+                                conv_state[slot, c_first * state_len + flat + e] = rows[flat + e]
+
+        @T.prim_func
+        def main(
+            x: T.Tensor((packed if varlen else batch, dim), dtype),
+            weight: T.Tensor((dim * width,), weight_dtype),
+            bias: T.Tensor((dim,), weight_dtype),
+            conv_state: T.Tensor((pool if pooled else batch, dim * state_len), dtype),
+            slots: T.Tensor((batch,) if pooled else (1,), "int32"),
+            accepted: T.Tensor((batch,), "int32"),
+            offsets: T.Tensor((batch + 1,) if varlen else (1,), "int32"),
+            y: T.Tensor((packed if varlen else batch, dim), dtype),
+        ):
+            step(x, weight, bias, conv_state, slots, accepted, offsets, y)
+
+        return main
+
+    return _func
+
+
+class CausalConv1dUpdateRollbackKernel(Kernel, CausalConv1dUpdateFwdInterface):
+    """Draft verification: each sequence's tokens in turn from the state of its last accepted
+    token, a CTA a run of channels of one sequence.
+
+    The block stages the contiguous ``L``-column state rows of its channels in shared memory;
+    a thread reads each of its channels' history from column ``num_accepted_tokens - 1`` and
+    rewrites the row's first ``(W - 1) * dilation + q - 1`` columns, the others as they were,
+    before the block writes the rows back.
+
+    Args:
+        dim: Channels, ``D``.
+        width: Kernel width ``W``, 2 to 4.
+        dilation: Tokens between adjacent filter taps.
+        state_len: Columns of a state, ``L``.
+        dtype: float16 or bfloat16.
+        weight_dtype: The weight's and the bias's dtype, the activations' or float32.
+        has_bias: Whether a bias is added.
+        silu: Whether SiLU follows the convolution.
+        pooled: Whether each sequence's state is the pool row its slot names.
+        varlen: Whether ``query_start_loc`` packs several tokens a sequence.
+        device_index: The device the kernel runs on.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def refusal(cls, call: CausalConv1dUpdateCall) -> str | None:
+        if not call.rollback:
+            return "verifies drafts; a call without num_accepted_tokens is not served"
+        threads, vec = _rollback_block(call.dim)
+        need = threads * vec * call.state_len * call.dtype.itemsize
+        if need > call.smem_budget:
+            return f"a block stages {need} bytes of state, past the {call.smem_budget} a block has"
+        return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: CausalConv1dUpdateCall) -> Entry:
+        args = (
+            call.dim, call.width, call.dilation, call.state_len, call.dtype, call.weight_dtype,
+            call.has_bias, call.silu, call.pooled, call.varlen,
+        )  # fmt: skip
+        index = call.device.index if call.device is not None else None
+        return (*args, index), lambda: cls(*args, device_index=index)
+
+    def __init__(
+        self,
+        dim: int,
+        width: int,
+        dilation: int,
+        state_len: int,
+        dtype: torch.dtype,
+        weight_dtype: torch.dtype,
+        has_bias: bool,
+        silu: bool,
+        pooled: bool,
+        varlen: bool,
+        device_index: int | None = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.dim, self.dtype, self.pooled, self.varlen = dim, dtype, pooled, varlen
+        weight_name = str(DataType(str(weight_dtype).removeprefix("torch.")))
+        self.kernel = _causal_conv1d_rollback_kernel(
+            dim, width, dilation, state_len, self.dtype_str, weight_name, has_bias, silu, pooled,
+            varlen,
+        )  # fmt: skip
+
+        self.init_config()
+        device = (
+            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
+        )
+        # The index tensors this build leaves unread are declared one element wide.
+        self._unread = torch.zeros(1, dtype=torch.int32, device=device)
+
+    @property
+    def default_config(self) -> dict:
+        threads, vec = _rollback_block(self.dim)
+        return {"threads": threads, "vec": vec}
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        conv_state: torch.Tensor,
+        bias: torch.Tensor | None = None,
+        conv_state_indices: torch.Tensor | None = None,
+        num_accepted_tokens: torch.Tensor | None = None,
+        query_start_loc: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        y = torch.empty_like(x)
+        self.program(self._compile)(
+            x,
+            weight.view(-1),
+            bias if bias is not None else weight.view(-1)[: self.dim],
+            conv_state.view(conv_state.shape[0], -1),
+            conv_state_indices if self.pooled else self._unread,
+            num_accepted_tokens,
+            query_start_loc if self.varlen else self._unread,
             y,
         )
         return y
