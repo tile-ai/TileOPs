@@ -36,7 +36,7 @@ def _head_parts(dim: int) -> tuple[int, int]:
 
 
 @target_cache(maxsize=32)
-# No out_idx: resolving a symbolic output shape costs about 170 us of host time per call.
+# No out_idx: resolving a symbolic output shape costs host time on every call.
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

@@ -831,9 +831,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         At dimension 256 a tile holds at most 64 rows: the query tile and two stages of key
         and value tiles then fill the 227 KB of shared memory.
 
-        A box smaller than a page costs the producer a table read and a TMA copy per box: at
-        a 48-row page, 128-row tiles of 16-row boxes measured slower than 96-row tiles of
-        whole pages.
+        A box smaller than a page costs the producer a table read and a TMA copy per box, so a
+        tile of whole pages wins over a wider tile of boxes cut from pages.
         """
         widest = 128 if dim <= 128 else 64
         for block_n in (128, 112, 96, 80, 64, 48, 32, 16):
