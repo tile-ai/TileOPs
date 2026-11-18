@@ -10,6 +10,8 @@ from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import KernelInterface
 
 __all__ = [
+    "HyperConnectionHeadCall",
+    "HyperConnectionHeadFwdInterface",
     "HyperConnectionPostCall",
     "HyperConnectionPostFwdInterface",
     "HyperConnectionPreCall",
@@ -107,4 +109,49 @@ class HyperConnectionPostFwdInterface(KernelInterface):
 
         Returns:
             A new contiguous ``[*S, call.n, call.c]`` bfloat16 tensor on ``call.device``.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class HyperConnectionHeadCall(CallSpec):
+    """One manifold hyper-connection head collapse of ``n`` streams of ``c`` columns a token.
+
+    The token axes ``*S`` are not part of the call: one kernel serves any token count.
+    """
+
+    n: int = 0
+    c: int = 0
+    rms_norm_eps: float = 1e-6
+    hc_eps: float = 1e-6
+
+
+class HyperConnectionHeadFwdInterface(KernelInterface):
+    """The ``n`` residual streams collapsed into one under weights computed from them."""
+
+    request = HyperConnectionHeadCall
+
+    @abstractmethod
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        hc_fn: torch.Tensor,
+        hc_scale: torch.Tensor,
+        hc_base: torch.Tensor,
+    ) -> torch.Tensor:
+        """Collapse each token's streams into one.
+
+        Per token, with ``x`` the streams flattened to ``n * c`` float32 values,
+        ``pre = sigmoid((x @ hc_fn^T) * rsqrt(mean(x^2) + call.rms_norm_eps) * hc_scale +
+        hc_base) + call.hc_eps``, and the output is ``sum_i pre_i * hidden_states_i``,
+        rounded once to bfloat16. Nothing is written in place, and the output aliases no
+        input.
+
+        Args:
+            hidden_states: ``[*S, call.n, call.c]`` bfloat16, contiguous.
+            hc_fn: ``[call.n, call.n * call.c]`` float32, contiguous.
+            hc_scale: ``[1]`` float32.
+            hc_base: ``[call.n]`` float32.
+
+        Returns:
+            A new contiguous ``[*S, call.c]`` bfloat16 tensor on ``call.device``.
         """

@@ -9,6 +9,10 @@ projection squares each bfloat16 stream element in bfloat16, so vLLM's row has n
 Each post row times vLLM's ``mhc_post_tilelang``, the TileLang kernel of DeepSeek's TileKernels
 ``mhc_post_fwd``. It takes float32 mixes only, as vLLM's pre step emits them, so a row's mixes
 are cast before timing. TileKernels itself needs a newer TileLang than the one TileOPs pins.
+
+Each head row times vLLM's ``hc_head_fused_kernel_tilelang``, the head it serves DeepSeek-V4
+with. TileKernels has no fused head: its path runs DeepGEMM's TF32 GEMM and three kernels,
+and needs the newer TileLang too.
 """
 
 import pytest
@@ -16,7 +20,11 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, baseline_module, compiled_reference
-from tileops.sequence_modeling import HyperConnectionPostFwdOp, HyperConnectionPreFwdOp
+from tileops.sequence_modeling import (
+    HyperConnectionHeadFwdOp,
+    HyperConnectionPostFwdOp,
+    HyperConnectionPreFwdOp,
+)
 
 
 def _vllm_mhc_pre(residual: torch.Tensor, params: dict):
@@ -100,6 +108,34 @@ def test_hyper_connection_post_bench(case) -> None:
     bench.Runner(op, case).compare(
         {
             VLLM_TAG: vllm,
+            "torch-ref": case.torch,
+            TORCH_COMPILE_TAG: compiled_reference(case.torch),
+        }
+    )
+
+
+@pytest.mark.parametrize("case", bench.cases(HyperConnectionHeadFwdOp), ids=lambda case: case.id)
+def test_hyper_connection_head_bench(case) -> None:
+    op = HyperConnectionHeadFwdOp(**case.arguments)
+    wrappers = baseline_module("vllm.model_executor.kernels.mhc.tilelang", VLLM_TAG)
+    arguments = case.arguments
+
+    def vllm_fn(hidden_states, hc_fn, hc_scale, hc_base):
+        # vLLM's kernel takes one token axis.
+        n, c = hidden_states.shape[-2:]
+        output = wrappers.hc_head_fused_kernel_tilelang(
+            hidden_states.reshape(-1, n, c),
+            hc_fn,
+            hc_scale,
+            hc_base,
+            arguments["rms_norm_eps"],
+            arguments["hc_eps"],
+        )
+        return output.view(*hidden_states.shape[:-2], c)
+
+    bench.Runner(op, case).compare(
+        {
+            VLLM_TAG: vllm_fn,
             "torch-ref": case.torch,
             TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }

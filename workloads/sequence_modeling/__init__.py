@@ -8,6 +8,7 @@ from workloads.sequence_modeling.engram import (
     ref_engram_gate_conv_bwd,
 )
 from workloads.sequence_modeling.hyper_connection import (
+    HyperConnectionHeadWorkload,
     HyperConnectionPostWorkload,
     HyperConnectionPreCall,
     hc_head,
@@ -21,6 +22,7 @@ __all__ = [
     "EngramDecodeWorkload",
     "EngramGateConvBwdWorkload",
     "EngramGateConvFwdWorkload",
+    "HyperConnectionHeadWorkload",
     "HyperConnectionPostWorkload",
     "HyperConnectionPreCall",
     "engram_decode_step_torch",

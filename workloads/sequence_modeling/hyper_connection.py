@@ -7,7 +7,14 @@ import torch
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["HyperConnectionPostWorkload", "HyperConnectionPreCall", "hc_head", "hc_post", "hc_pre"]
+__all__ = [
+    "HyperConnectionHeadWorkload",
+    "HyperConnectionPostWorkload",
+    "HyperConnectionPreCall",
+    "hc_head",
+    "hc_post",
+    "hc_pre",
+]
 
 
 def hc_pre(
@@ -124,3 +131,55 @@ class HyperConnectionPostWorkload(WorkloadBase):
         comb_res_mix: torch.Tensor,
     ) -> torch.Tensor:
         return hc_post(x, residual, post_layer_mix, comb_res_mix)
+
+
+class HyperConnectionHeadWorkload(WorkloadBase):
+    """``HyperConnectionHeadFwdOp`` over tokens of ``shape``: ``n`` streams of ``c`` columns.
+    ``hc_fn`` is scaled so that a normalized token's projections are of order one, where the
+    sigmoid is steepest."""
+
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        n: int,
+        c: int,
+        rms_norm_eps: float = 1e-6,
+        hc_eps: float = 1e-6,
+    ):
+        self.shape = tuple(shape)
+        self.n = n
+        self.c = c
+        self.rms_norm_eps = rms_norm_eps
+        self.hc_eps = hc_eps
+
+    @classmethod
+    def from_call(cls, call: Any) -> "HyperConnectionHeadWorkload":
+        """The workload of one manifest call of ``HyperConnectionHeadFwdOp``."""
+        shape, _dtype = call.tensors["hidden_states"]
+        return cls(
+            tuple(shape[:-2]),
+            shape[-2],
+            shape[-1],
+            call.params["rms_norm_eps"],
+            call.params["hc_eps"],
+        )
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        device = run_device()
+        k = self.n * self.c
+        hidden_states = torch.randn(
+            (*self.shape, self.n, self.c), dtype=torch.bfloat16, device=device
+        )
+        hc_fn = torch.randn((self.n, k), device=device) / k**0.5
+        hc_scale = 1 + torch.rand(1, device=device)
+        hc_base = torch.randn(self.n, device=device) / 4
+        return hidden_states, hc_fn, hc_scale, hc_base
+
+    def ref_program(
+        self,
+        hidden_states: torch.Tensor,
+        hc_fn: torch.Tensor,
+        hc_scale: torch.Tensor,
+        hc_base: torch.Tensor,
+    ) -> torch.Tensor:
+        return hc_head(hidden_states, hc_fn, hc_scale, hc_base, self.rms_norm_eps, self.hc_eps)
