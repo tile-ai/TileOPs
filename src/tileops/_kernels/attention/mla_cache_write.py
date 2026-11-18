@@ -31,8 +31,8 @@ def _vector(columns: int, itemsize: int) -> int:
     """The elements of the widest access, at most 16 bytes, that tiles a row exactly.
 
     A thread then moves its share of a row with whole-vector loads and stores. 16 bytes is
-    a power-of-two number of elements, so the gcd is the largest power of two under it
-    that divides the row.
+    a power-of-two number of elements, so the gcd is the largest power of two, at most
+    that number, that divides the row.
     """
     return math.gcd(columns, VECTOR_ACCESS_BYTES // itemsize)
 
