@@ -1310,7 +1310,7 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> Non
     ],
 )
 def test_w4a8_forty_token_dispatch(m: int, n: int, k: int, key: str) -> None:
-    """The 40-token selection is measured on a 132-SM H200."""
+    """The 40-token selection is calibrated for a 132-SM H200."""
     op = GEMMW4A8FwdOp(target=BUILTIN)
     call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
@@ -1372,7 +1372,7 @@ def test_gemm_w4a8_prefill_runs_a_full_one_wave_grid_a_tile_a_cta(
     m: int, n: int, k: int, stream_k: int
 ) -> None:
     """The cases count row tiles and idle K groups against the 132 SMs of an H200, the board
-    the schedule selection was measured on."""
+    the schedule selection is calibrated for."""
     op = GEMMW4A8FwdOp(target=BUILTIN)
     call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
@@ -2799,7 +2799,7 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
     ],
 )
 def test_gemm_w4a16_pinned_tile_matches_the_reference(m: int, n: int, k: int, config: dict) -> None:
-    """Pinned tiles preserve coverage of metadata staging and deferred scaling."""
+    """Each pinned tile matches the reference."""
     _check_w4a16_config(m, n, k, config)
 
 
@@ -2866,12 +2866,8 @@ def _leave_nan_in_free_blocks() -> None:
     ],
 )
 def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tuple) -> None:
-    """On 132 SMs a deferred-scale tile on one consumer warpgroup runs twice its weight rows
-    on two warpgroups over as many K slices as keep its CTAs, a stream-K pick included; it
-    keeps its tile where that split leaves a slice under two K tiles, the paired tile does
-    not fit, its N tiles do not pair up, the last keeping its stream, or a paired slice its
-    ring holds would add K tiles to the longest slice or run as a cluster pair whose pick does
-    not refill its ring or whose grid takes more than one wave."""
+    """On 132 SMs a deferred-scale tile on one consumer warpgroup pairs into twice its weight
+    rows on two warpgroups, or keeps its tile; each case's comment names why."""
     cfg = _select_config(m, n, k, 128, 132)
     assert (cfg["block_n"], cfg["threads"], cfg["split_k"], cfg["stream_ctas"] > 0) == tile
 
