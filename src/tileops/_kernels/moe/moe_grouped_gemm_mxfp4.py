@@ -20,6 +20,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     QUANT_SCALE_BLOCK,
     SETMAXNREG_GRANULARITY,
+    SHARED_BUFFER_ALIGN_BYTES,
     SM90_REGISTERS,
     TMA_DTYPE_BFLOAT16,
     TMA_DTYPE_UINT8,
@@ -28,6 +29,8 @@ from tileops._kernels.constants import (
     TMA_SWIZZLE_64B,
     TMA_SWIZZLE_128B,
     TMA_SWIZZLE_NONE,
+    WARPGROUP_THREADS,
+    WGMMA_ROWS,
 )
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import (
@@ -39,19 +42,15 @@ from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = ["MoEGroupedGEMMMXFP4Kernel"]
 
-_CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms")
-
 # K values one ``b`` scale covers.
 _B_SCALE_BLOCK = 32
 # Sub-blocks of one 128-wide K step, each under its own ``b`` scale.
 _SUB_BLOCKS = QUANT_SCALE_BLOCK // _B_SCALE_BLOCK
-# Weight rows of one math warp-group: the WGMMA M extent.
-_WARPGROUP_ROWS = 64
 
 
 def _math_warps(block_n: int) -> int:
     """Math warps of a tile: a 64-row warp-group of four warps per 64 weight rows."""
-    return block_n // _WARPGROUP_ROWS * 4
+    return block_n // WGMMA_ROWS * 4
 
 
 def _table_box(scale_k: int) -> int:
@@ -71,7 +70,7 @@ def _smem_bytes(
     ring = num_stages * (block_m * QUANT_SCALE_BLOCK + block_n * QUANT_SCALE_BLOCK // 2)
     if tables:
         token_codes = 2 * block_m * scale_k if _table_box(scale_k) else 0
-        tables_bytes = 2 * block_n * scale_k * 4 + 1024 + token_codes
+        tables_bytes = 2 * block_n * scale_k * 4 + SHARED_BUFFER_ALIGN_BYTES + token_codes
     else:
         tables_bytes = num_stages * block_n * _SUB_BLOCKS * scale_bytes
     # Each math warp's token scales of two steps, as floats.
@@ -144,7 +143,13 @@ def _moe_grouped_gemm_mxfp4_kernel(
     def _moe_grouped_gemm_mxfp4_func(
         block_m: int, block_n: int, num_stages: int, num_sms: int
     ) -> Callable:
-        config = dict(zip(_CONFIG_KEYS, (block_m, block_n, num_stages, num_sms), strict=True))
+        config = dict(
+            zip(
+                MoEGroupedGEMMMXFP4Kernel._CONFIG_KEYS,
+                (block_m, block_n, num_stages, num_sms),
+                strict=True,
+            )
+        )
         reason = MoEGroupedGEMMMXFP4Kernel.config_refusal(
             config,
             sm_count=sm_count,
@@ -171,9 +176,9 @@ def _moe_grouped_gemm_mxfp4_kernel(
         row_tiles_descriptor = tasks.row_tiles_descriptor
         walk, tile_of, recover = tasks.walk, tasks.tile_of, tasks.recover
         # One math warp-group per 64 weight rows, each over every row (token) of the tile.
-        math_threads = block_n // _WARPGROUP_ROWS * 128
+        math_threads = block_n // WGMMA_ROWS * WARPGROUP_THREADS
         math_warps = _math_warps(block_n)
-        fragment_regs = _WARPGROUP_ROWS * block_m // 128
+        fragment_regs = WGMMA_ROWS * block_m // WARPGROUP_THREADS
         # Named barriers of the math threads: shared_c free to restage, the vote on a task's
         # scale check, and shared_c staged.
         reuse_barrier, check_barrier, staged_barrier = 12, 13, 14
@@ -188,12 +193,12 @@ def _moe_grouped_gemm_mxfp4_kernel(
         # setmaxnreg.inc waits for registers another warp-group released, so the math count
         # is the launch count (the register file over the block's threads) plus that share.
         launch_regs = (
-            SM90_REGISTERS // (math_threads + 128) // SETMAXNREG_GRANULARITY
+            SM90_REGISTERS // (math_threads + WARPGROUP_THREADS) // SETMAXNREG_GRANULARITY
         ) * SETMAXNREG_GRANULARITY
         producer_regs = 40
         math_regs = (
             launch_regs
-            + (128 * (launch_regs - producer_regs) // math_threads)
+            + (WARPGROUP_THREADS * (launch_regs - producer_regs) // math_threads)
             // SETMAXNREG_GRANULARITY
             * SETMAXNREG_GRANULARITY
         )
@@ -613,7 +618,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
             layout: T.Tensor((m,) if metadata_kind == "per_row" else (num_groups,), "int32"),  # type: ignore
             C: T.Tensor((*rows_shape, n), cd_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(num_sms, threads=math_threads + 128) as (pid,):
+            with T.Kernel(num_sms, threads=math_threads + WARPGROUP_THREADS) as (pid,):
                 a_shared = T.alloc_shared((num_stages, block_m, block_k), a_dtype)
                 b_packed = T.alloc_shared((num_stages, block_n, packed_k), "uint8")
                 # B scales a stage, unless the code tables hold them (then one unused row).
@@ -669,7 +674,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 tx = T.get_thread_binding()
                 if recover:
                     ends = T.alloc_shared((num_groups,), "int32", scope="shared")
-                    tasks.recover_ends(layout, ends, tx, math_threads + 128)
+                    tasks.recover_ends(layout, ends, tx, math_threads + WARPGROUP_THREADS)
                 T.sync_threads()
                 # [m, N] or [E, max_m, N], so the store of a run's or slab's last rows is
                 # clipped at its end.
@@ -825,9 +830,11 @@ def _moe_grouped_gemm_mxfp4_kernel(
                             ring_index = ring_index + (1 if static_ring else scale_k)
                 else:
                     T.inc_max_nreg(math_regs)
-                    math_wg_idx = T.tvm_warp_shuffle(T.uint32(0xFFFFFFFF), tx // 128, 0, 32, 32)
+                    math_wg_idx = T.tvm_warp_shuffle(
+                        T.uint32(0xFFFFFFFF), tx // WARPGROUP_THREADS, 0, 32, 32
+                    )
                     # The warp-group's 64 weight rows of the tile.
-                    wg_row0 = math_wg_idx * _WARPGROUP_ROWS
+                    wg_row0 = math_wg_idx * WGMMA_ROWS
                     # The rows' ring as a 128B-swizzled K-major WGMMA operand; a slot or K32
                     # slice is an offset in 16-byte units of the descriptor's low word, kept
                     # warp-uniform (the low word the C++ WGMMA issue above takes).
@@ -1022,6 +1029,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
     supported_archs: list[int] = [90]
 
+    _CONFIG_KEYS: ClassVar[tuple[str, ...]] = ("block_m", "block_n", "num_stages", "num_sms")
     # Row (token) tiles: the WGMMA N extent, a multiple of 8 rows of TMA box.
     _BLOCK_M: ClassVar[tuple[int, ...]] = (8, 16, 32, 64, 128)
     # Weight tiles: one 64-row math warp-group each 64 rows, whole 64-column store boxes; two
@@ -1064,7 +1072,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         reason = cls._common_refusal(config, sm_count=sm_count, alignment=alignment)
         if reason is not None:
             return reason
-        block_m, block_n, stages, _ = (config[key] for key in _CONFIG_KEYS)
+        block_m, block_n, stages, _ = (config[key] for key in cls._CONFIG_KEYS)
         smem = _config_smem(block_m, block_n, stages, scale_bytes, scale_k, smem_limit)
         if smem > smem_limit:
             return f"takes {smem} bytes of shared memory, past the {smem_limit} a block may"
@@ -1126,8 +1134,6 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
             call.alignment,
         )
         self.init_config()
-
-    _CONFIG_KEYS = _CONFIG_KEYS
 
     def _refusal_inputs(self) -> dict:
         return {

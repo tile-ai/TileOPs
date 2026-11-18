@@ -25,6 +25,8 @@ from tileops._kernels.constants import (
     TMA_SWIZZLE_64B,
     TMA_SWIZZLE_128B,
     TMA_SWIZZLE_NONE,
+    WARPGROUP_THREADS,
+    WGMMA_ROWS,
 )
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import MGroupedGEMMFP8Call, MGroupedGEMMFP8FwdInterface
@@ -32,8 +34,6 @@ from tileops._kernels.moe.grouped_tasks import CURSOR, GroupedGEMMConfigMixin, t
 from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = ["MoEGroupedGEMMFP8Kernel"]
-
-_CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms", "stage_scales")
 
 
 def _b_scale_sub_blocks(block_n: int) -> int:
@@ -100,7 +100,6 @@ def _moe_grouped_gemm_fp8_kernel(
     the alignment; id ``num_groups`` denotes trailing padding. Tight tail stores
     must preserve the next expert's rows. N tails and all output stores are bounded.
     """
-    warpgroup_m = 64
     cur_g = CURSOR.g
     accum_dtype = "float"
     ab_dtype = "float8_e4m3fn"
@@ -123,7 +122,11 @@ def _moe_grouped_gemm_fp8_kernel(
         block_m: int, block_n: int, num_stages: int, num_sms: int, stage_scales: int
     ) -> Callable:
         config = dict(
-            zip(_CONFIG_KEYS, (block_m, block_n, num_stages, num_sms, stage_scales), strict=True)
+            zip(
+                MoEGroupedGEMMFP8Kernel._CONFIG_KEYS,
+                (block_m, block_n, num_stages, num_sms, stage_scales),
+                strict=True,
+            )
         )
         reason = MoEGroupedGEMMFP8Kernel.config_refusal(
             config,
@@ -155,9 +158,9 @@ def _moe_grouped_gemm_fp8_kernel(
         last_scale_b_row = n // QUANT_SCALE_BLOCK - 1
         # The previous task's TMA store must have read shared_c before the next is staged.
         multi_wave = contiguous or max_waves > 1
-        math_threads = block_m // warpgroup_m * 128
+        math_threads = block_m // WGMMA_ROWS * WARPGROUP_THREADS
         math_warps = math_threads // 32
-        fragment_regs = warpgroup_m * block_n // 128
+        fragment_regs = WGMMA_ROWS * block_n // WARPGROUP_THREADS
         # Named barriers of the math threads: shared_c free to restage, and shared_c staged.
         reuse_barrier, staged_barrier = 13, 14
         tma_scales = _tma_a_scales(block_m, num_stages, stage_scales, scale_k)
@@ -210,7 +213,7 @@ def _moe_grouped_gemm_fp8_kernel(
             layout: T.Tensor((m,) if metadata_kind == "per_row" else (num_groups,), "int32"),  # type: ignore
             C: T.Tensor((*rows_shape, n), cd_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(num_sms, threads=math_threads + 128) as (pid,):
+            with T.Kernel(num_sms, threads=math_threads + WARPGROUP_THREADS) as (pid,):
                 a_shared = T.alloc_shared((num_stages, block_m, block_k), ab_dtype)
                 b_shared = T.alloc_shared((num_stages, block_n, block_k), ab_dtype)
                 # scope="shared": a shared.dyn store here makes TileLang fence it against the TMA
@@ -256,7 +259,7 @@ def _moe_grouped_gemm_fp8_kernel(
                 if recover:
                     # Each expert's end: the first row whose id is past it, ids not decreasing.
                     ends = T.alloc_shared((num_groups,), "int32", scope="shared")
-                    tasks.recover_ends(layout, ends, tx, math_threads + 128)
+                    tasks.recover_ends(layout, ends, tx, math_threads + WARPGROUP_THREADS)
                     T.sync_threads()
                 # [m, N] or [E, max_m, N], so the store of a run's or slab's last rows is
                 # clipped at its end.
@@ -425,8 +428,10 @@ def _moe_grouped_gemm_fp8_kernel(
                                 ring_index = ring_index + 1
                 else:
                     T.inc_max_nreg(232)
-                    math_wg_idx = T.tvm_warp_shuffle(T.uint32(0xFFFFFFFF), tx // 128, 0, 32, 32)
-                    math_wg_offset = math_wg_idx * warpgroup_m
+                    math_wg_idx = T.tvm_warp_shuffle(
+                        T.uint32(0xFFFFFFFF), tx // WARPGROUP_THREADS, 0, 32, 32
+                    )
+                    math_wg_offset = math_wg_idx * WGMMA_ROWS
                     a_desc_lo = T.call_extern(
                         "uint32",
                         "tileops::moe_fp8_wgmma_desc_lo",
@@ -563,6 +568,13 @@ class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8Fwd
 
     supported_archs: list[int] = [90]
 
+    _CONFIG_KEYS: ClassVar[tuple[str, ...]] = (
+        "block_m",
+        "block_n",
+        "num_stages",
+        "num_sms",
+        "stage_scales",
+    )
     # Tile heights: one or two 64-row math warp-groups.
     _BLOCK_M: ClassVar[tuple[int, ...]] = (64, 128)
     # Tile widths the helper header instantiates; 160 and 192, which 128 does not divide, span
@@ -701,7 +713,7 @@ class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8Fwd
         reason = cls._common_refusal(config, sm_count=sm_count, alignment=alignment)
         if reason is not None:
             return reason
-        block_m, block_n, stages, _, stage_scales = (config[key] for key in _CONFIG_KEYS)
+        block_m, block_n, stages, _, stage_scales = (config[key] for key in cls._CONFIG_KEYS)
         if stage_scales not in (0, 1):
             return f"stage_scales must be 0 or 1, got {stage_scales}"
         smem = _smem_bytes(block_m, block_n, stages, stage_scales, scale_k)
@@ -768,8 +780,6 @@ class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8Fwd
             call.alignment,
         )
         self.init_config()
-
-    _CONFIG_KEYS = _CONFIG_KEYS
 
     def _refusal_inputs(self) -> dict:
         return {

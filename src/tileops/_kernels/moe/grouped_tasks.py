@@ -19,8 +19,6 @@ __all__ = ["CURSOR", "GroupedGEMMConfigMixin", "task_walk"]
 
 # Cursor fields: expert, preceding M tiles, expert tiles, first row, row count.
 CURSOR = SimpleNamespace(g=0, m=1, tiles=2, row0=3, rows=4)
-# Group M tiles to share weight tiles within a wave.
-_SWIZZLE_M_TILES = 16
 
 
 def task_walk(
@@ -62,10 +60,12 @@ def task_walk(
     # Aligned per-row ids name each row tile's expert; tight ones need each expert's end.
     rows_walk = metadata_kind == "per_row" and not tight
     recover = metadata_kind == "per_row" and tight
+    # M tiles grouped to share weight tiles within a wave.
+    swizzle_m_tiles = 16
     n_tiles = tilelang.cdiv(n, block_n)
     # The last N tile runs past N: its loads read zeros and its stores are clipped.
     ragged_n = n % block_n != 0
-    swizzle_span = _SWIZZLE_M_TILES * n_tiles
+    swizzle_span = swizzle_m_tiles * n_tiles
     if contiguous:
         m = T.dynamic("m")
         m_tiles = T.ceildiv(m, block_m)
@@ -134,7 +134,7 @@ def task_walk(
         """
         local = task_id - cursor[cur.m] * n_tiles
         expert_tiles = cursor[cur.tiles]
-        if not contiguous and tiles_per_slab <= _SWIZZLE_M_TILES:
+        if not contiguous and tiles_per_slab <= swizzle_m_tiles:
             # One group spans every M tile of the expert. A runtime divisor costs a long
             # division, so each of the tiles_per_slab values the count can take gets its own.
             for i in T.unroll(tiles_per_slab):
@@ -142,9 +142,9 @@ def task_walk(
                     tile[0] = T.truncmod(local, i + 1)
                     tile[1] = T.truncdiv(local, i + 1)
         else:
-            first = T.truncdiv(local, swizzle_span) * _SWIZZLE_M_TILES
+            first = T.truncdiv(local, swizzle_span) * swizzle_m_tiles
             in_group = T.truncmod(local, swizzle_span)
-            group_m_tiles = T.min(_SWIZZLE_M_TILES, expert_tiles - first)
+            group_m_tiles = T.min(swizzle_m_tiles, expert_tiles - first)
             tile[0] = first + T.truncmod(in_group, group_m_tiles)
             tile[1] = T.truncdiv(in_group, group_m_tiles)
 
