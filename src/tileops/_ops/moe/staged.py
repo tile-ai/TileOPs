@@ -27,9 +27,27 @@ from tileops._perf.profile import tensor_core_roof
 __all__ = [
     "MoEExpertMLPFwdOp",
     "MoEGroupedGEMMFwdOp",
+    "MoELayoutRowsRoofline",
     "MoEPostPermuteFwdOp",
     "MoEPrePermuteFwdOp",
 ]
+
+
+class MoELayoutRowsRoofline:
+    """The roofline terms of an op over expert layout rows, mixed in before ``Op``."""
+
+    def roofline_data_terms(self) -> dict[str, int]:
+        """The valid rows this call's layout metadata marks, which its flops follow."""
+        from tileops._perf.formulas import moe_layout_rows
+
+        return {"valid_rows": moe_layout_rows(self.last_call)}
+
+    def eval_roofline_read_bytes(self) -> int:
+        """``bytes`` less the write of ``output``, which a masked slab makes on its valid rows
+        only, where the base class would take the whole output off."""
+        from tileops._perf.formulas import moe_slab_bytes
+
+        return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
 
 
 class MoEPrePermuteFwdOp(Op):
@@ -104,7 +122,7 @@ class MoEPrePermuteFwdOp(Op):
         return kernel(hidden_states, local_expert_ids)
 
 
-class MoEGroupedGEMMFwdOp(Op):
+class MoEGroupedGEMMFwdOp(MoELayoutRowsRoofline, Op):
     """M-grouped GEMM over expert-materialized rows: ``out[rows of g] = a[rows of g] @ b[g]^T``.
 
     It groups rows by an MoE expert layout and can fuse a gated activation and a bias,
@@ -151,19 +169,6 @@ class MoEGroupedGEMMFwdOp(Op):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "grouped_gemm": MGroupedGEMMFwdInterface
     }
-
-    def roofline_data_terms(self) -> dict[str, int]:
-        """The valid rows this call's layout metadata marks, which its flops follow."""
-        from tileops._perf.formulas import moe_layout_rows
-
-        return {"valid_rows": moe_layout_rows(self.last_call)}
-
-    def eval_roofline_read_bytes(self) -> int:
-        """``bytes`` less the write of ``output``, which a masked slab makes on its valid rows
-        only, where the base class would take the whole output off."""
-        from tileops._perf.formulas import moe_slab_bytes
-
-        return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
 
     def __init__(
         self,
@@ -245,7 +250,7 @@ class MoEGroupedGEMMFwdOp(Op):
         return kernel(a, b, layout_metadata, out=out, bias=bias)
 
 
-class MoEExpertMLPFwdOp(Op):
+class MoEExpertMLPFwdOp(MoELayoutRowsRoofline, Op):
     """Two grouped GEMMs on one expert layout, the gated activation fused into the first.
 
     It takes rows already grouped by expert and returns one unweighted result row per input
@@ -271,19 +276,6 @@ class MoEExpertMLPFwdOp(Op):
         "gate_up": MoEGroupedGEMMFwdOp,
         "down": MoEGroupedGEMMFwdOp,
     }
-
-    def roofline_data_terms(self) -> dict[str, int]:
-        """The valid rows this call's layout metadata marks, which its flops follow."""
-        from tileops._perf.formulas import moe_layout_rows
-
-        return {"valid_rows": moe_layout_rows(self.last_call)}
-
-    def eval_roofline_read_bytes(self) -> int:
-        """``bytes`` less the write of ``output``, which a masked slab makes on its valid rows
-        only, where the base class would take the whole output off."""
-        from tileops._perf.formulas import moe_slab_bytes
-
-        return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
 
     def __init__(
         self,
