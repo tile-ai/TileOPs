@@ -283,8 +283,7 @@ def make_corrected_row_reduce(block_m, n, n_padded, eps):
 def warp_row_vector(n: int, elem_bytes: int) -> int | None:
     """Return a 16-byte vector width for aligned rows of at most 1024 elements."""
     vec = VECTOR_ACCESS_BYTES // elem_bytes
-    # At 2048 16-bit columns the fragment body led it on H200: by 3% at 128 rows with one
-    # row a block, and at parity at 512 rows.
+    # Wider rows go to the fragment body.
     widest = 1024
     if n % vec or n > widest:
         return None

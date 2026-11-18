@@ -847,12 +847,11 @@ def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("flags", "row", "padded"),
     [
-        ({}, {"B": 5, "S": 1}, [1, 3]),
-        ({"state_v_first": True}, {"B": 5, "S": 1}, [1, 3]),
+        pytest.param({}, {"B": 5, "S": 1}, [1, 3], marks=pytest.mark.smoke),
+        pytest.param({"state_v_first": True}, {"B": 5, "S": 1}, [1, 3], marks=pytest.mark.full),
         pytest.param(
             {},
             {
@@ -863,7 +862,7 @@ def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
                 "some": ("cu_seqlens",),
             },
             [0, 2],
-            marks=pytest.mark.sm90,
+            marks=[pytest.mark.sm90, pytest.mark.full],
         ),
         pytest.param(
             {"state_v_first": True},
@@ -875,7 +874,7 @@ def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
                 "some": ("cu_seqlens",),
             },
             [0, 2],
-            marks=pytest.mark.sm90,
+            marks=[pytest.mark.sm90, pytest.mark.full],
         ),
     ],
     ids=[
@@ -886,7 +885,7 @@ def test_kda_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
     ],
 )
 def test_kda_skips_the_states_of_negative_slots(flags: dict, row: dict, padded: list) -> None:
-    """The decode and the one-kernel prefill read and write no state for a slot of -1, in either
+    """The decode and the one-kernel prefill write no state for a slot of -1, in either
     layout: the pool's neighbours and the slots of the padded sequences keep their states, every
     other slot ends as in the unpadded call."""
     torch.manual_seed(42)

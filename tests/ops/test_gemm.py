@@ -2900,6 +2900,7 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
         # last K tile, 67 tiles of whole K tiles.
         pytest.param(1, 4416, 32896, id="kept-stream-k-tail", marks=pytest.mark.full),
         pytest.param(1, 4288, 81920, id="kept-stream-whole-k", marks=pytest.mark.full),
+        pytest.param(8, 5056, 32896, id="kept-stream-eight-rows", marks=pytest.mark.full),
     ],
 )
 def test_gemm_w4a16_deferred_scale_tiles_match_the_reference(m: int, n: int, k: int) -> None:

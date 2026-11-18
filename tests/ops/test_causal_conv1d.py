@@ -332,30 +332,32 @@ _PADDED_PREFILL = {"D": 264, "L": 3, "Tt": 92, "seq_lens": [1, 2, 0, 3, 5, 17, 0
 _PADDED_ROLLBACK = {"D": 264, "L": 6, "Tt": 15, "seq_lens": [4, 1, 0, 3, 2, 4, 1]}
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("op_type", "test_type", "row", "some", "slots_at"),
     [
-        (
+        pytest.param(
             CausalConv1dFwdOp,
             CausalConv1dFwdTest,
             _PADDED_PREFILL,
             ["bias", "has_initial_state", "cache_indices"],
             6,
+            marks=pytest.mark.smoke,
         ),
-        (
+        pytest.param(
             CausalConv1dUpdateFwdOp,
             CausalConv1dUpdateFwdTest,
             {"B": 8, "D": 264, "L": 3},
             ["conv_state_indices"],
             4,
+            marks=_FULL,
         ),
-        (
+        pytest.param(
             CausalConv1dUpdateFwdOp,
             CausalConv1dUpdateFwdTest,
             {**_PADDED_ROLLBACK, "max_query_len": 4},
             ["conv_state_indices", "num_accepted_tokens", "query_start_loc"],
             4,
+            marks=_FULL,
         ),
     ],
     ids=["prefill", "update", "rollback"],
@@ -363,7 +365,7 @@ _PADDED_ROLLBACK = {"D": 264, "L": 6, "Tt": 15, "seq_lens": [4, 1, 0, 3, 2, 4, 1
 def test_causal_conv1d_skips_the_states_of_negative_slots(
     op_type, test_type, row, some, slots_at
 ) -> None:
-    """Each convolution kernel reads and writes no state for a slot of -1: the pool's neighbours
+    """Each convolution kernel writes no state for a slot of -1: the pool's neighbours
     and the slots of the padded sequences keep their states, every other slot ends as in the
     unpadded call."""
     torch.manual_seed(42)

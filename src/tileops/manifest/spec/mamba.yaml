@@ -266,7 +266,7 @@ CausalConv1dFwdOp:
   # activations upcast to float32 (transformers modeling_glm5_next causal_conv1d_fn, conv1d
   # kept in float32). With cache_indices, conv_state is a pool of P states and sequence b
   # reads and writes conv_state[cache_indices[b]], the slots other than -1 distinct across the
-  # call. A slot of -1 (vLLM's pad_slot_id) is neither read nor written and its sequence's
+  # call. A slot of -1 (vLLM's pad_slot_id) is never written and its sequence's
   # outputs are unspecified; every other slot index names a state, vLLM's null slot 0 is not
   # declared. A state is the first (W - 1) * dilation tokens of its L columns, the rest not
   # touched.
@@ -357,7 +357,7 @@ CausalConv1dUpdateFwdOp:
   # with a = num_accepted_tokens[b] and q tokens reads the (W - 1) * dilation tokens from
   # column a - 1, and its first (W - 1) * dilation + q - 1 columns become its last such
   # tokens, so a later call resumes from any accepted draft. A slot of -1 (vLLM's
-  # pad_slot_id) is neither read nor written and its sequence's outputs are unspecified;
+  # pad_slot_id) is never written and its sequence's outputs are unspecified;
   # every other slot index names a state, vLLM's null slot 0 is not declared.
   family: mamba
   status: implemented

@@ -177,8 +177,8 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
             if initial_state is None
             else initial_state
         )
-        # A build without the raw gate reads neither gate parameter; a view of their shape
-        # fills both slots.
+        # A build without the raw gate reads neither gate parameter; a one-element view of
+        # the state fills both slots.
         gate_params = (
             raw_gate_arguments(self.gate_in_kernel, A_log, dt_bias) or (state.view(-1)[:1],) * 2
         )

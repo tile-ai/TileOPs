@@ -847,7 +847,7 @@ _ROLLBACK = {"B": 3, "S": 3, "P": 12, "L": 4, "some": ("num_accepted_tokens",)}
 def test_gdn_skips_the_states_of_negative_slots(
     dtype: torch.dtype, flags: dict, row: dict, padded: list
 ) -> None:
-    """Each program that reads a pool reads and writes no state for a slot of -1: the pool's
+    """Each program that reads a pool writes no state for a slot of -1: the pool's
     neighbours and the slots of the padded sequences keep their states, every other slot ends as
     in the unpadded call. Under rollback a padded start slot skips the sequence and a padded
     token slot skips that token's store."""

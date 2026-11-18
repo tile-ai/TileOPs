@@ -886,8 +886,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
         )
         if m > 128 and -(-m // 192) == -(-m // 256):
             block_m = 192
-        # Thresholds below are H200's over the manifest's W4A8 rows. Up to K = 3584
-        # (the TP8 down projections) a tile has few K steps, so an extra segment or a
+        # Up to K = 3584 a tile has few K steps, so an extra segment or a
         # stream-K split costs more than it saves; from K = 7168 it can pay.
         short_k, long_k = 3584, 7168
         base_workers = _worker_count(m, n, k, hardware_sms, block_m, 1, 2)

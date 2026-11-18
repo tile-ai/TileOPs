@@ -514,7 +514,7 @@ def _compiled_smem(program) -> int:
     ("k", "scale_dtype", "block_m", "block_n"),
     [
         pytest.param(2048, torch.float8_e8m0fnu, 64, 256, marks=pytest.mark.smoke, id="tma-tables"),
-        # Code-table rows of 44 bytes come by one bulk copy and take no token table.
+        # Code-table rows of 176 bytes come by one bulk copy and take no token table.
         pytest.param(1408, torch.float8_e8m0fnu, 64, 192, marks=pytest.mark.full, id="bulk-tables"),
         pytest.param(512, torch.float32, 64, 192, marks=pytest.mark.full, id="scales-a-stage"),
     ],

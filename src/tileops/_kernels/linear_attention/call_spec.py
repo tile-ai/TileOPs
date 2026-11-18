@@ -503,7 +503,7 @@ class GDNFwdInterface(KernelInterface):
                 slots other than -1 distinct across the call. Under ``call.rollback`` it is
                 ``(n, L)``, one slot a token: the state after token ``t`` of sequence ``i`` is
                 written to ``initial_state[state_indices[i, t]]``, a sequence holding at most
-                ``L`` tokens. A slot of -1 is neither read nor written; a sequence starting from
+                ``L`` tokens. A slot of -1 is never written; a sequence starting from
                 it has unspecified outputs and leaves unspecified states in its other slots.
             num_accepted_tokens: ``int32`` ``(n,)``, passed exactly when ``call.rollback``:
                 sequence ``i`` starts from ``initial_state[state_indices[i, a - 1]]``, ``a`` its
@@ -564,7 +564,7 @@ class KDAFwdInterface(KernelInterface):
                 sequence ``i`` starts from ``initial_state[state_indices[i]]`` and its
                 final state is written back there. *initial_state* is then a pool of
                 states, one a slot, the slots other than -1 distinct across the call. A slot
-                of -1 is neither read nor written, and its sequence's outputs are unspecified.
+                of -1 is never written, and its sequence's outputs are unspecified.
 
         Returns:
             ``(o, final_state)``: a new ``o`` shaped like *v* in ``call.dtype``, and
