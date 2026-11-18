@@ -1161,12 +1161,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             if ahead[cur_g] < num_groups:
                 tile_of(next_task, ahead, ahead_tile)
                 buf = index % 2
-                T.call_extern(
-                    "handle",
-                    "tileops::mxfp4_wait",
-                    T.address_of(tab_empty[buf]),
-                    (index // 2 & 1) ^ 1,
-                )
+                T.barrier_wait(tab_empty[buf], (index // 2 & 1) ^ 1)
                 if T.shuffle_elect(32):
                     # Whole boxes land, rows past N zero-filled.
                     T.mbarrier_arrive_expect_tx(
@@ -1220,10 +1215,8 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             tokens[1] = _e8m0_value(
                 T.cast(token_codes[buf, (acc_row0 + 8) * scale_k + kk], "uint32")
             )
-            T.call_extern("handle", "tileops::mxfp4_wait", T.address_of(full[slot]), phase)
-            T.call_extern(
-                "handle", "tileops::mxfp4_wait", T.address_of(decoded_full[stage]), stage_phase
-            )
+            T.barrier_wait(full[slot], phase)
+            T.barrier_wait(decoded_full[stage], stage_phase)
             a_lo = T.meta_var(a_desc_lo + T.uint32(slot * block_m * (block_k // 16)))
             b_lo = T.meta_var(b_desc_lo + T.uint32(stage * block_n * (block_k // 16)))
             if fold != 0:
@@ -1400,12 +1393,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                 n_start = T.meta_var(tasks.first_col(tile))
                                 for kk in T.serial(scale_k):
                                     packed_slot, packed_phase = position(step_index, _PACKED_STAGES)
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::mxfp4_wait",
-                                        T.address_of(packed_empty[packed_slot]),
-                                        packed_phase ^ 1,
-                                    )
+                                    T.barrier_wait(packed_empty[packed_slot], packed_phase ^ 1)
                                     if T.shuffle_elect(32):
                                         T.mbarrier_arrive_expect_tx(
                                             packed_full[packed_slot], block_n * packed_k
@@ -1420,12 +1408,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                             0,
                                         )
                                     slot, phase = position(step_index, num_stages)
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::mxfp4_wait",
-                                        T.address_of(empty[slot]),
-                                        phase ^ 1,
-                                    )
+                                    T.barrier_wait(empty[slot], phase ^ 1)
                                     if T.shuffle_elect(32):
                                         T.mbarrier_arrive_expect_tx(full[slot], block_m * block_k)
                                         T.tma_load(
@@ -1464,12 +1447,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                 tile_of(task_id, cursor, tile)
                                 n_start = T.meta_var(tasks.first_col(tile))
                                 buf = task_index % 2
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::mxfp4_wait",
-                                    T.address_of(tab_full[buf]),
-                                    task_index // 2 & 1,
-                                )
+                                T.barrier_wait(tab_full[buf], task_index // 2 & 1)
                                 # C++: barrier.red.and over the decode threads, of the scan.
                                 fold = T.call_extern(
                                     "int32",
@@ -1505,18 +1483,8 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                 for kk in T.serial(scale_k):
                                     packed_slot, packed_phase = position(step_index, _PACKED_STAGES)
                                     stage, stage_phase = position(step_index, _DECODED_STAGES)
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::mxfp4_wait",
-                                        T.address_of(packed_full[packed_slot]),
-                                        packed_phase,
-                                    )
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::mxfp4_wait",
-                                        T.address_of(decoded_empty[stage]),
-                                        stage_phase ^ 1,
-                                    )
+                                    T.barrier_wait(packed_full[packed_slot], packed_phase)
+                                    T.barrier_wait(decoded_empty[stage], stage_phase ^ 1)
                                     T.call_extern(
                                         "handle",
                                         f"tileops::mxfp4_decode_shared<{layout_args}, "
@@ -1569,20 +1537,10 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                             tile_of(task_id, cursor, tile)
                             buf = task_index % 2
                             T.clear(final)
-                            T.call_extern(
-                                "handle",
-                                "tileops::mxfp4_wait",
-                                T.address_of(tab_full[buf]),
-                                task_index // 2 & 1,
-                            )
+                            T.barrier_wait(tab_full[buf], task_index // 2 & 1)
                             # The decode threads set the task's flag before its first stage.
                             first_stage, first_phase = position(step_index, _DECODED_STAGES)
-                            T.call_extern(
-                                "handle",
-                                "tileops::mxfp4_wait",
-                                T.address_of(decoded_full[first_stage]),
-                                first_phase,
-                            )
+                            T.barrier_wait(decoded_full[first_stage], first_phase)
                             fold = T.alloc_var("int32")
                             fold = flags[buf]
                             for kk in T.serial(scale_k):
@@ -1606,8 +1564,6 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                     tx,
                                 )
                                 step_index = step_index + 1
-                            if tx % 32 == 0:
-                                T.barrier_arrive(tab_empty[buf])
                             if fold != 0:
                                 T.call_extern(
                                     "handle",
@@ -1615,6 +1571,10 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                     final.data,
                                     T.address_of(column_scales[buf, 0]),
                                 )
+                            # After the last read of the task's codes and column scales: the
+                            # release lets the next tables land and the decode warps rescan.
+                            if tx % 32 == 0:
+                                T.barrier_arrive(tab_empty[buf])
                             # The previous task's stores must be done with shared_c.
                             if tx < store_count:
                                 T.tma_store_wait(0)
@@ -1914,7 +1874,8 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
 
     128 rows of ``a`` are the WGMMA M operand, 128 decoded weight rows its N operand. A task
     folds when each of its weight rows' codes lie in [64, 190] and span at most eleven binades
-    over K, and each of its token codes is 0 or lies in [64, 190]: its sub-blocks then carry
+    over K, and each of its token codes, its padding rows' among them, is 0 or lies in
+    [64, 190]: its sub-blocks then carry
     their scales relative to their row's largest code less six, each step is added under its
     token scales alone, and each column is scaled by its row's reference after the last step.
     Another task contracts sub-block by sub-block, its products split into mantissa and

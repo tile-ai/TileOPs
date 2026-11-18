@@ -704,18 +704,4 @@ __device__ __forceinline__ void mxfp4_store_flag(int* flag, int value) {
   *reinterpret_cast<volatile int*>(flag) = value;
 }
 
-// Wait for phase ``phase`` of ``barrier`` to complete, retrying try_wait
-// without a sleep between tries: a waiting role resumes as soon as the other
-// role's arrival lands.
-__device__ __forceinline__ void mxfp4_wait(void* barrier, int phase) {
-  uint32_t const bar = static_cast<uint32_t>(__cvta_generic_to_shared(barrier));
-  asm volatile(
-      "{\n .reg .pred done;\n"
-      "retry:\n"
-      " mbarrier.try_wait.parity.shared::cta.b64 done, [%0], %1;\n"
-      " @!done bra retry;\n}" ::"r"(bar),
-      "r"(phase)
-      : "memory");
-}
-
 }  // namespace tileops

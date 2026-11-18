@@ -64,8 +64,10 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
     contiguous rows under e8m0 scales, the alignment a multiple of 128 and ``K`` a multiple of
     2048 whose code tables fit in shared memory (``K`` up to 10240 on SM90), instead decode each
     weight tile once into shared memory: there a tile folds when each weight row's scales lie in
-    ``[2 ** -63, 2 ** 63]`` and span at most eleven binades over ``K`` and each ``a_scale`` is
-    code 0 (flushed as above) or lies in ``[2 ** -63, 2 ** 63]``; its sub-blocks enter the
+    ``[2 ** -63, 2 ** 63]`` and span at most eleven binades over ``K`` and each ``a_scale`` of
+    its rows, padding rows included, is code 0 (flushed as above) or lies in
+    ``[2 ** -63, 2 ** 63]`` (a padding row left holding other codes sends its tile to the
+    sub-block contraction, which is slower); its sub-blocks enter the
     contraction scaled relative to a reference six binades under their row's largest scale
     (exact while the e2m1 values stay e4m3 normals), each block is added under the row's
     ``a_scale``, and each column is scaled by its reference once at the end. Other tiles there are

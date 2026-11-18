@@ -452,6 +452,58 @@ def test_mxfp4_grouped_gemm_shared_decode_unfolded_tasks() -> None:
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_folds_a_row_spanning_eleven_binades() -> None:
+    """Weight row 77's codes span eleven binades over K, the most a fold takes: its lowest
+    sub-block sits five binades under the row's reference, its highest six over. Even tokens'
+    only nonzero products lie in the lowest sub-block, odd tokens' in the highest, and each
+    keeps its exact value: 32 * 0.5 * 2 ** -12 and 32 * 0.5 * 2 ** -1."""
+    workload = _aligned_workload(256, 2048)
+    a, a_scale, b, b_scale, ids = workload.gen_inputs()
+    a = torch.zeros_like(a.float())
+    a[0::2, 288:320] = 1.0
+    a[1::2, 1280:1312] = 1.0
+    a = a.to(torch.float8_e4m3fn)
+    b = torch.full_like(b, 0x11)
+    a_codes = torch.full_like(a_scale.view(torch.uint8), 127)
+    b_codes = torch.full_like(b_scale.view(torch.uint8), 120)
+    b_codes[:, 77, 9] = 115
+    b_codes[:, 77, 40] = 126
+    inputs = (a, a_codes.view(a_scale.dtype), b, b_codes.view(b_scale.dtype), ids)
+    out = _shared_decode_op(workload, inputs)(*inputs)
+    owned = ids < len(SIZES)
+    even = owned & (torch.arange(ids.numel(), device=ids.device) % 2 == 0)
+    assert bool((out[even, 77] == 2.0**-8).all())
+    assert bool((out[owned & ~even, 77] == 8.0).all())
+    assert bool((out[owned][:, :77] == 2.0**-3).all())
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_weight_scales_past_the_fold() -> None:
+    """Whole weight rows under e8m0 codes the fold does not take, each on the sub-block
+    contraction with the other rows of its tile: code 255 (NaN) makes its column NaN, and
+    codes 0 (2 ** -127, subnormal), 30 and 200 give the exact sums 2048 * 2 ** -127,
+    2048 * 2 ** -97 and 2048 * 2 ** 73; the second weight tile folds."""
+    workload = _aligned_workload(256, 2048)
+    a, a_scale, b, b_scale, ids = workload.gen_inputs()
+    a = torch.ones_like(a.float()).to(a.dtype)
+    b = torch.full_like(b, 0x22)
+    a_codes = torch.full_like(a_scale.view(torch.uint8), 127)
+    b_codes = torch.full_like(b_scale.view(torch.uint8), 127)
+    for row, code in ((3, 255), (7, 0), (11, 30), (13, 200)):
+        b_codes[:, row, :] = code
+    inputs = (a, a_codes.view(a_scale.dtype), b, b_codes.view(b_scale.dtype), ids)
+    out = _shared_decode_op(workload, inputs)(*inputs)[ids < len(SIZES)]
+    assert bool(out[:, 3].isnan().all())
+    for row, value in ((7, 2.0**-116), (11, 2.0**-86), (13, 2.0**84)):
+        assert bool((out[:, row] == value).all())
+    assert bool((out[:, 128:] == 2048).all())
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
 def test_mxfp4_grouped_gemm_shared_decode_token_scale_past_the_fold() -> None:
     """A token scale of 2 ** 123 beside weight scales of 2 ** -63: folded to the row's
     reference, a step's products under the token scale alone overflow float32. The task
