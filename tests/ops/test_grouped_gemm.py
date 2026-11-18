@@ -12,16 +12,10 @@ class GroupedGEMMTest(GroupedGEMMWorkload, TestBase):
     pass
 
 
-# Shared helper
-
-
-# Parametrized grouped GEMM test
-
-
 class GroupedGEMMFixture(FixtureBase):
     PARAMS = [
         (
-            "batch_sum, batch_count, N, K, dtype, trans_a, trans_b, tune",
+            "batch_sum, batch_count, N, K, dtype, trans_a, trans_b",
             [
                 pytest.param(
                     16384,
@@ -31,7 +25,6 @@ class GroupedGEMMFixture(FixtureBase):
                     torch.float16,
                     False,
                     True,
-                    False,
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
@@ -42,8 +35,7 @@ class GroupedGEMMFixture(FixtureBase):
                     torch.float16,
                     False,
                     True,
-                    False,
-                    marks=pytest.mark.smoke,
+                    marks=pytest.mark.full,
                     id="uneven-unaligned",
                 ),
                 pytest.param(
@@ -54,8 +46,7 @@ class GroupedGEMMFixture(FixtureBase):
                     torch.float16,
                     False,
                     False,
-                    False,
-                    marks=pytest.mark.smoke,
+                    marks=pytest.mark.full,
                     id="nn-uneven-unaligned",
                 ),
                 pytest.param(
@@ -66,7 +57,6 @@ class GroupedGEMMFixture(FixtureBase):
                     torch.float16,
                     False,
                     False,
-                    False,
                     marks=pytest.mark.full,
                 ),
                 pytest.param(
@@ -77,7 +67,6 @@ class GroupedGEMMFixture(FixtureBase):
                     torch.float16,
                     True,
                     False,
-                    False,
                     marks=pytest.mark.full,
                 ),
                 pytest.param(
@@ -88,7 +77,6 @@ class GroupedGEMMFixture(FixtureBase):
                     torch.float16,
                     True,
                     True,
-                    False,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -105,21 +93,23 @@ def test_grouped_gemm(
     dtype: torch.dtype,
     trans_a: bool,
     trans_b: bool,
-    tune: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     test = GroupedGEMMTest(batch_sum, batch_count, N, K, dtype, trans_a, trans_b)
-    op = GroupedGEMMFwdOp(trans_a=trans_a, trans_b=trans_b)
-    if tune:
-        op.request_tune()
-    test.check(op, *test.gen_inputs())
+    test.check(GroupedGEMMFwdOp(trans_a=trans_a, trans_b=trans_b), *test.gen_inputs())
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("trans_b", [True, False], ids=["tn", "tt"])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize(
+    "dtype, trans_b",
+    [
+        pytest.param(torch.float16, True, marks=pytest.mark.smoke, id="fp16-tn"),
+        pytest.param(torch.bfloat16, True, marks=pytest.mark.smoke, id="bf16-tn"),
+        pytest.param(torch.float16, False, marks=pytest.mark.full, id="fp16-tt"),
+        pytest.param(torch.bfloat16, False, marks=pytest.mark.full, id="bf16-tt"),
+    ],
+)
 def test_k_grouped_gemm_with_ragged_groups(
     dtype: torch.dtype, trans_b: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -146,7 +136,7 @@ _ONE_ROW_TILE = [40, 0, 64, 17, 60, 64, 3, 50]
     [
         # Empty first and last groups end where the next group starts and at the last row.
         pytest.param(_EMPTY_ENDS, 256, 512, True, marks=pytest.mark.smoke, id="empty-ends-nt"),
-        pytest.param(_EMPTY_ENDS, 256, 512, False, marks=pytest.mark.smoke, id="empty-ends-nn"),
+        pytest.param(_EMPTY_ENDS, 256, 512, False, marks=pytest.mark.full, id="empty-ends-nn"),
         # Enough groups that their row ends leave the 192-wide ping-pong tile a deeper ring
         # only when it stages its output by 64-column box; it needs a K-major B, so NT only.
         pytest.param(
@@ -189,6 +179,3 @@ def test_m_grouped_gemm_skewed_pingpong_tails(n: int, dtype: torch.dtype) -> Non
     test.batch_sizes_list = _SKEWED
     op = GroupedGEMMFwdOp(trans_a=False, trans_b=True)
     test.check(op, *test.gen_inputs())
-
-
-# Which kernel serves which call

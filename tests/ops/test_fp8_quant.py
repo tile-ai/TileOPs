@@ -14,27 +14,24 @@ class FP8QuantTest(FP8QuantWorkload, TestBase):
 class FP8QuantFixture(FixtureBase):
     PARAMS = [
         (
-            "shape, group_size, dtype, tune",
+            "shape, group_size, dtype",
             [
-                pytest.param((8192, 64), 64, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param((8192, 64), 64, torch.bfloat16, False, marks=pytest.mark.smoke),
-                pytest.param((8192, 64), 64, torch.float32, False, marks=pytest.mark.smoke),
-                pytest.param((2, 64, 512), 128, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param((4096, 128), 128, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((16384, 32), 32, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((1024, 4, 64), 64, torch.float16, False, marks=pytest.mark.full),
+                pytest.param((8192, 64), 64, torch.float16, marks=pytest.mark.smoke),
+                pytest.param((8192, 64), 64, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param((8192, 64), 64, torch.float32, marks=pytest.mark.smoke),
+                pytest.param((2, 64, 512), 128, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param((4096, 128), 128, torch.float32, marks=pytest.mark.full),
+                pytest.param((16384, 32), 32, torch.float32, marks=pytest.mark.full),
+                pytest.param((1024, 4, 64), 64, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
 @FP8QuantFixture
-def test_fp8_quant_op(shape, group_size: int, dtype: torch.dtype, tune: bool) -> None:
+def test_fp8_quant_op(shape, group_size: int, dtype: torch.dtype) -> None:
     test = FP8QuantTest(shape, group_size, dtype)
-    op = FP8QuantPerTokenGroupFwdOp(group_size)
-    if tune:
-        op.request_tune()
-    test.check(op, *test.gen_inputs())
+    test.check(FP8QuantPerTokenGroupFwdOp(group_size), *test.gen_inputs())
 
 
 @pytest.mark.smoke
