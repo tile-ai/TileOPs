@@ -242,7 +242,7 @@ NGramHashFwdOp:
   # o + 1 followed by every call token. A sequence with no tokens leaves its row untouched. A
   # sequence with no history starts from a row of eos_token_id.
   family: sequence_modeling
-  status: spec-only
+  status: implemented
   ref_api: workloads.sequence_modeling.ngram_hash.ngram_hash
   signature:
     forall: {B: Dim, L: Dim, Tt: Dim, N: Dim, Hd: Dim, S: Dim, W: Dim, seq_lens: "Seq[Int]"}

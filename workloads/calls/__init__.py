@@ -22,6 +22,7 @@ _FAMILIES = (
     "linear_attention",
     "mamba",
     "moe",
+    "ngram_hash",
     "norm",
     "pool",
     "quantization",
