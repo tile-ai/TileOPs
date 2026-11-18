@@ -1367,26 +1367,36 @@ def test_w4a8_decode_exchange_free_grid(m: int, n: int, k: int, grid: tuple[int,
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.smoke
-def test_gemm_w4a8_decode_tunes_the_exchange_free_grid() -> None:
-    """Past the unit K limit, tuning times one CTA per 64-row tile against the default grid and
-    publishes one of the two; both serve the call."""
+@pytest.mark.parametrize(
+    "m, n, k",
+    [
+        # One CTA per 64-row tile is the untuned config.
+        pytest.param(32, 7168, 2304, marks=pytest.mark.smoke, id="exchange-free-untuned"),
+        # Past the unit K limit the untuned config splits tiles across CTAs.
+        pytest.param(16, 4096, 4608, marks=pytest.mark.full, id="unit-k-past-limit"),
+    ],
+)
+def test_gemm_w4a8_decode_tunes_over_the_exchange_free_grid(m: int, n: int, k: int) -> None:
+    """Tuning times the untuned config and one CTA per 64-row tile and publishes one of them;
+    each serves the call."""
     from tileops._kernels.gemm.w4a8_decode import GEMMW4A8DecodeKernel
 
-    test = GEMMW4A8Test(16, 4096, 4608, 128)
+    test = GEMMW4A8Test(m, n, k, 128)
     inputs = test.gen_inputs()
     op = GEMMW4A8FwdOp(target=BUILTIN)
     test.check(op, *inputs, runs=_repacked(op))
     (kernel,) = [k for k in op.iter_kernels() if isinstance(k, GEMMW4A8DecodeKernel)]
     default = kernel.config
-    (candidate,) = kernel.autotune_configs
-    assert (candidate["unit_warpgroups"], candidate["num_ctas"]) == (1, 64)
-    kernel.config = candidate
-    test.check(op, *inputs, runs=_repacked(op))
+    candidates = kernel.tuning_candidates(kernel.autotune_configs or [default])
+    grids = {(config["unit_warpgroups"], config["num_ctas"]) for config in candidates}
+    assert (1, -(-n // 64)) in grids
+    for config in candidates:
+        kernel.config = config
+        test.check(op, *inputs, runs=_repacked(op))
     kernel.config = default
     op.request_tune()
     test.check(op, *inputs, runs=_repacked(op))
-    assert kernel.config in (candidate, default)
+    assert kernel.config in candidates
 
 
 @pytest.mark.in_tree_kernels
