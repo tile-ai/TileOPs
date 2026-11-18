@@ -45,8 +45,8 @@ from workloads.numerics import compare_outputs
             marks=[pytest.mark.smoke, pytest.mark.packaging(family="mamba")],
         ),
         pytest.param(1, 2, 64, 1, 64, torch.bfloat16, False, marks=pytest.mark.smoke),
-        pytest.param(1, 2, 64, 2, 64, torch.float16, False, marks=pytest.mark.smoke),
         pytest.param(1, 2, 64, 1, 64, torch.float16, True, marks=pytest.mark.full),
+        pytest.param(1, 2, 64, 2, 64, torch.float16, False, marks=pytest.mark.full),
         pytest.param(1, 2, 64, 1, 96, torch.float16, False, marks=pytest.mark.full),
         pytest.param(1, 2, 128, 1, 64, torch.bfloat16, False, marks=pytest.mark.full),
         pytest.param(1, 2, 256, 1, 64, torch.float16, False, marks=pytest.mark.full),
@@ -180,8 +180,6 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     dA_cumsum = -torch.rand(b, h, c, Q, dtype=torch.float32, device=run_device()).cumsum(-1)
     dt = torch.rand(b, h, c, Q, dtype=torch.float32, device=run_device()) * 0.1 + 0.01
 
-    # First chunk ends with seq_idx == -1 (whole chunk should zero out).
-    # Second chunk is a normal sequence (seq_idx == 1 throughout).
     seq_idx = torch.ones(b, seq_len, dtype=torch.int32, device=run_device())
     seq_idx[:, :Q] = -1
 
@@ -192,11 +190,11 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     workload = SSDChunkStateFwdWorkload(b, c, Q, h, p, n, g, dtype, True)
     compare_outputs(out, ref, workload.verification(x))
 
-    # Pin the semantic: chunk 0 (seq_idx == -1 throughout) must be exactly zero;
-    # chunk 1 (seq_idx == 1 throughout) must have non-zero state.
+    # A chunk whose sequence is -1 throughout is all zero.
     assert torch.count_nonzero(out[:, 0]) == 0
     assert out[:, 1].abs().max().item() > 0
 
+    # A call without seq_idx must not read the freed seq_idx's memory.
     poison = torch.full((b, seq_len), -1, dtype=torch.int32, device=run_device())
     torch.accelerator.synchronize()
     del poison
@@ -232,14 +230,15 @@ def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
     test.check(op, *test.gen_inputs(), runs=lambda *args: ssd_decode_result(op, *args))
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize(
-    "batch,seqlen,n_heads,d_head,d_state,n_groups,chunk_size",
+    "batch,seqlen,n_heads,d_head,d_state,n_groups,chunk_size,dtype",
     [
-        (1, 256, 4, 64, 32, 1, 256),
-        (2, 512, 8, 64, 64, 2, 256),
-        (1, 512, 4, 64, 128, 1, 256),  # d_state=16 not supported by SSDChunkScanFwdKernel
+        pytest.param(1, 256, 4, 64, 32, 1, 256, torch.float16, marks=pytest.mark.smoke),
+        pytest.param(1, 256, 4, 64, 32, 1, 256, torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(2, 512, 8, 64, 64, 2, 256, torch.float16, marks=pytest.mark.full),
+        pytest.param(2, 512, 8, 64, 64, 2, 256, torch.bfloat16, marks=pytest.mark.full),
+        pytest.param(1, 512, 4, 64, 128, 1, 256, torch.float16, marks=pytest.mark.full),
+        pytest.param(1, 512, 4, 64, 128, 1, 256, torch.bfloat16, marks=pytest.mark.full),
     ],
 )
 def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk_size, dtype):

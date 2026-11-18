@@ -117,14 +117,13 @@ class EngramDecodeTest(EngramDecodeWorkload, TestBase):
 
 class EngramDecodeFixture(FixtureBase):
     PARAMS = [
-        # (batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune)
         (
             "batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune",
             [
                 pytest.param(1, 512, 256, 12, 4, 3, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(1, 512, 256, 12, 4, 3, torch.bfloat16, False, marks=pytest.mark.smoke),
-                pytest.param(17, 519, 256, 12, 4, 3, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param(1, 512, 256, 1, 1, 1, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(17, 519, 256, 12, 4, 3, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 512, 256, 1, 1, 1, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(4, 1024, 512, 20, 4, 5, torch.float16, True, marks=pytest.mark.full),
                 pytest.param(8, 512, 256, 18, 4, 3, torch.bfloat16, False, marks=pytest.mark.full),
             ],
@@ -144,7 +143,7 @@ def test_engram_decode(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation
 
 @pytest.mark.smoke
 def test_engram_decode_multi_step():
-    """Verify multi-step decode with growing conv_state and dilated conv."""
+    """Multi-step decode with a growing conv_state and a dilated conv."""
     B, d_mem, d = 2, 256, 256
     conv_kernel_size = 4
     dilation = 3
@@ -161,11 +160,10 @@ def test_engram_decode_multi_step():
 
     op = EngramDecodeFwdOp(max_conv_len, conv_kernel_size, dilation)
 
-    # Start with empty conv_state (like empty KV cache)
     conv_state = torch.zeros(B, 0, d, dtype=dtype, device=run_device())
     conv_state_ref = conv_state.clone()
 
-    num_steps = max_conv_len + 8  # go past growing phase into steady state
+    num_steps = max_conv_len + 8  # past the growing phase
     for step in range(num_steps):
         e_t = torch.randn(B, d_mem, dtype=dtype, device=run_device()) * 0.1
         h_t = torch.randn(B, d, dtype=dtype, device=run_device())
@@ -186,7 +184,6 @@ def test_engram_decode_multi_step():
         )
 
         y_err = (y_op.float() - y_ref.float()).abs().max().item()
-        # Compare valid portion of conv_state
         ref_len = conv_state_ref.shape[1]
         op_state_valid = conv_state[:, -ref_len:, :]
         s_err = (op_state_valid.float() - conv_state_ref.float()).abs().max().item()

@@ -39,10 +39,10 @@ _PREFILL = (
         [100, 900], 8192, 4, "float16", _BOTH, "silu", marks=_SMOKE, id="start-mid-chunk-fp16"
     ),
     pytest.param(
-        [64, 64, 128], 512, 4, "bfloat16", _BOTH, "silu", marks=_SMOKE, id="start-on-chunk"
+        [64, 64, 128], 512, 4, "bfloat16", _BOTH, "silu", marks=_FULL, id="start-on-chunk"
     ),
     pytest.param(
-        [62, 70], 256, 4, "bfloat16", _BOTH, "silu", marks=_SMOKE, id="head-past-chunk-end"
+        [62, 70], 256, 4, "bfloat16", _BOTH, "silu", marks=_FULL, id="head-past-chunk-end"
     ),
     pytest.param(
         [1, 2, 0, 3, 5, 17, 0, 64, 33, 1, 0],
@@ -51,7 +51,7 @@ _PREFILL = (
         "bfloat16",
         _BOTH,
         "silu",
-        marks=_SMOKE,
+        marks=_FULL,
         id="short-and-empty",
     ),
     pytest.param(
@@ -61,13 +61,13 @@ _PREFILL = (
         "float16",
         ["has_initial_state"],
         None,
-        marks=_SMOKE,
+        marks=_FULL,
         id="no-bias-no-act",
     ),
-    pytest.param([129, 70], 768, 4, "bfloat16", ["bias"], "silu", marks=_SMOKE, id="no-state"),
+    pytest.param([129, 70], 768, 4, "bfloat16", ["bias"], "silu", marks=_FULL, id="no-state"),
     # An empty sequence without has_initial_state keeps its state.
     pytest.param(
-        [0, 4, 0, 70], 256, 4, "bfloat16", ["bias"], "silu", marks=_SMOKE, id="empty-keeps-state"
+        [0, 4, 0, 70], 256, 4, "bfloat16", ["bias"], "silu", marks=_FULL, id="empty-keeps-state"
     ),
     pytest.param(
         [0, 0, 7, 70, 0],
