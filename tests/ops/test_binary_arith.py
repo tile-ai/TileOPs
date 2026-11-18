@@ -354,6 +354,7 @@ def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize(
     "a_shape, b_shape",
     [
+        # Wide enough that float32 keeps two vectors a thread.
         pytest.param((1 << 18,), (1 << 18,), id="same", marks=pytest.mark.smoke),
         pytest.param((4, 2048), (1, 2048), id="bias", marks=pytest.mark.full),
         pytest.param((2, 16, 56, 56), (16, 1, 1), id="channel", marks=pytest.mark.full),

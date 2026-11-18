@@ -867,7 +867,10 @@ def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
 @pytest.mark.parametrize(
     "width, prefix",
     [
+        # 16384-element tiles on the streaming kernel: the first tile and most of the
+        # second are the -inf prefix.
         pytest.param(40000, 28672, id="streaming", marks=pytest.mark.smoke),
+        # Eight CTAs a row on the on-chip kernel: the first CTA's share is the prefix.
         pytest.param(40960, 5120, id="on-chip", marks=pytest.mark.full),
     ],
 )

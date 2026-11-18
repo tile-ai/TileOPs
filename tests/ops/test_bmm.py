@@ -376,6 +376,25 @@ def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
 
 
 @pytest.mark.smoke
+def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
+    batch, m, n, k = 4, 128, 128, 128  # K == N
+    test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, a_scale, b_scale = test.gen_inputs()  # contiguous [B, K, N]
+    # Physical contiguous [B, N, K]: stride is (N*K, K, 1) => stride(-2) == K.
+    b_nk = b_kn.transpose(-2, -1).contiguous()
+    assert b_nk.is_contiguous()
+    assert b_nk.shape == (batch, n, k)
+    assert b_nk.stride(-2) == k
+
+    # Same logical B matrix, explicit layouts.  Both must yield the same d.
+    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
+    out_nk = op_nk(a, b_nk, a_scale, b_scale).clone()
+    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)  # b as [B, K, N]
+    out_kn = op_kn(a, b_kn, a_scale, b_scale)
+    torch.testing.assert_close(out_nk, out_kn, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
 def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     """Extents that leave a tail under every staging tile transpose exactly."""
     batch, m, n, k = 3, 128, 80, 160

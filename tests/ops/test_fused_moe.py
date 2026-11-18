@@ -301,7 +301,7 @@ class KimiFixture(FixtureBase):
                     True,
                     torch.bfloat16,
                     marks=pytest.mark.full,
-                    id="smoke-bias-bf16",
+                    id="bias-bf16",
                 ),
                 pytest.param(
                     64,

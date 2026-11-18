@@ -402,6 +402,8 @@ def test_rms_norm_rows_of_two_vectors_a_thread_in_long_launches() -> None:
 @pytest.mark.parametrize(
     "rows,n,dtype,has_weight",
     [
+        # On SM90 these four reach the on-chip kernel: one CTA staging by cp.async, a
+        # cluster of two, and one CTA read synchronously with and without weight.
         pytest.param(
             3, 131072, torch.float16, True, id="on-chip-async-fp16", marks=pytest.mark.smoke
         ),
@@ -412,6 +414,8 @@ def test_rms_norm_rows_of_two_vectors_a_thread_in_long_launches() -> None:
         pytest.param(
             3, 65536, torch.bfloat16, False, id="on-chip-no-weight", marks=pytest.mark.full
         ),
+        # Widths the on-chip kernel cannot split reach the streaming kernel: an odd width,
+        # and more rows than resident CTAs, so each CTA walks several rows.
         pytest.param(3, 131073, torch.bfloat16, False, id="tail-no-weight", marks=pytest.mark.full),
         pytest.param(600, 131080, torch.bfloat16, True, id="rows-per-cta", marks=pytest.mark.full),
     ],
@@ -446,6 +450,7 @@ def test_rms_norm_widest_row_past_the_sm_count() -> None:
     [
         pytest.param(4096, id="register-row", marks=pytest.mark.smoke),
         pytest.param(131080, id="streaming", marks=pytest.mark.full),
+        # The on-chip kernel on SM90, the streaming kernel before it.
         pytest.param(131072, id="on-chip", marks=pytest.mark.full),
     ],
 )

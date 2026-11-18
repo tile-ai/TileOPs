@@ -2233,6 +2233,7 @@ def test_max_pool1d_indices_windowed_taps_match_torch(
             id="reach-after-fp32",
             marks=pytest.mark.full,
         ),
+        # Past 128 MiB the run is read without the evict-first hint.
         pytest.param(
             (1, 1344, 224, 224),
             2,

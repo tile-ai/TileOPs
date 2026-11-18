@@ -48,11 +48,20 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
     synchronise: a masked count past ``max_m`` is read as ``max_m`` and a negative one as 0,
     and nothing outside ``out`` is written.
 
-    The weights are decoded to fp8 (e4m3 holds every e2m1 value) and contracted with ``a``'s
-    fp8 rows one 128-wide block of K at a time, each block added into a float32 accumulator
-    under its scales. A row under a subnormal ``a_scale`` (e8m0 code 0, ``2 ** -127``) may lose
-    results below ``K * 2 ** -52``, and the accumulator flushes terms and sums below
-    ``2 ** -126`` to zero. The result is written in bfloat16.
+    The weights are decoded to fp8 (e4m3, which holds every e2m1 value) and contracted with
+    ``a``'s fp8 rows on the tensor core, one 128-wide block of K at a time, each block added
+    into a float32 accumulator under its scales. Under e8m0 scales a block's four weight
+    sub-blocks enter one contraction scaled, exactly, relative to the largest of their four
+    scales, and the block is added under that scale and the row's ``a_scale``; under float32
+    scales each 32-wide sub-block is contracted alone and added under its two scales, as
+    DeepSeek-V4-Flash's ``fp4_gemm`` does. A weight tile whose blocks' e8m0 scales span more
+    than five binades, or holding a weight scale outside ``[2 ** -63, 2 ** 63]``, is
+    contracted sub-block by sub-block, each product's scales applied by mantissa and
+    exponent apart, so no scale product overflows or flushes before it is added. Other tiles
+    apply the row's ``a_scale`` last, where a subnormal one (e8m0 code 0, ``2 ** -127``) is
+    flushed to zero: a row under that scale loses results below ``K * 2 ** -52``. The float32
+    accumulator flushes terms and sums below ``2 ** -126`` to zero. The result is written in
+    bfloat16.
 
     Accuracy: on the valid rows the output matches an fp32 reference that dequantizes both
     operands under their scales to ``atol = 2e-2 * sqrt(max(1, K / 1024))`` and

@@ -400,9 +400,10 @@ def test_group_norm_takes_either_affine_tensor_alone(give: str) -> None:
 @pytest.mark.parametrize(
     "n, c, spatial, g",
     [
-        pytest.param(1, 24, (4, 4), 3, marks=pytest.mark.smoke),
-        pytest.param(3, 30, (2, 2), 5, marks=pytest.mark.full),
-        pytest.param(1, 16, (8, 8), 1, marks=pytest.mark.full),
+        # Very few rows, so the grid is one or two blocks wide.
+        pytest.param(1, 24, (4, 4), 3, marks=pytest.mark.smoke),  # M = 3
+        pytest.param(3, 30, (2, 2), 5, marks=pytest.mark.full),  # M = 15
+        pytest.param(1, 16, (8, 8), 1, marks=pytest.mark.full),  # M = 1
     ],
 )
 def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple, g: int) -> None:

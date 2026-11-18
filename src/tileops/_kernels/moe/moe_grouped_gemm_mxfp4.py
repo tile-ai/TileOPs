@@ -1011,7 +1011,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
     WGMMA.
 
     Each task first checks that its weight scales lie in ``[2 ** -63, 2 ** 63]`` and, under
-    e8m0, that each step's span at most five binades. A passing task folds each e8m0 step's
+    e8m0, that each step's spans at most five binades. A passing task folds each e8m0 step's
     four sub-blocks into one contraction (float32 steps go sub-block by sub-block); a failing
     one contracts sub-block by sub-block, its scale products split into mantissa and exponent.
     Rows of a slab past its valid count, inside a tile that holds a valid one, are stored like
@@ -1159,6 +1159,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         # Every row tile converts its weights once, so aligned runs take the tallest tile
         # their alignment allows. A masked slab's tile is the narrowest holding twice an
         # expert's mean rows; float32 scales' sub-block path spills in four warp-groups.
+        # Four warp-groups take a 4-deep ring.
         call = self.call
         if call.kind == "contiguous":
             unaligned_m, block_n = self._CONTIGUOUS_TILE

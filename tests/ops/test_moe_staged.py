@@ -1041,6 +1041,10 @@ def test_post_permute_adds_the_residual_before_the_cast(dtype: torch.dtype) -> N
             for masked in (False, True)
             if (shift, masked) != ("a", False)
         ),
+        *(
+            pytest.param(torch.float16, shift, True, marks=pytest.mark.full)
+            for shift in ("a", "b", "bias", "out")
+        ),
     ],
 )
 def test_grouped_gemm_accepts_offset_storage(dtype, shift, masked, arch):
