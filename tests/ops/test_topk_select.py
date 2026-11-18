@@ -24,6 +24,10 @@ class TopKSelectFixture(FixtureBase):
                 pytest.param(
                     8, 512, 2048, 1, 64, "float32", "int32", False, marks=pytest.mark.full
                 ),
+                # Enough rows to skip the register kernel, past 2048 keys: 512-thread blocks.
+                pytest.param(
+                    4, 128, 8192, 1, 512, "float32", "int32", False, marks=pytest.mark.full
+                ),
                 pytest.param(
                     1,
                     32 * 1024,
