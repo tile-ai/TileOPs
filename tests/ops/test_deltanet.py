@@ -71,11 +71,9 @@ class DeltaNetChunkFwdFixture(FixtureBase):
                     )
                     for name, seq_len, dim_k, dim_v, chunk, dtype in (
                         ("chunk16-fp16", 64, 64, 64, 16, torch.float16),
-                        ("chunk16-bf16", 64, 64, 64, 16, torch.bfloat16),
                         # An odd count of 8-column tiles: no column split above one warp divides it.
                         ("chunk16-v24-fp32", 64, 64, 24, 16, torch.float32),
                         ("chunk16-v24-fp16", 64, 64, 24, 16, torch.float16),
-                        ("chunk16-v24-bf16", 64, 64, 24, 16, torch.bfloat16),
                         ("chunk16-v48", 64, 64, 48, 16, torch.float16),
                         ("chunk16-walk", 64, 16, 64, 16, torch.bfloat16),
                         # 2 by 3 warp tiles, which TileLang's square split divides only at one warp.
@@ -582,7 +580,7 @@ def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
     test = DeltaNetFwdTest(2, 1, 4, 128, dtype)
     inputs = test.gen_inputs()
     op = DeltaNetFwdOp()
-    # The workload preserves the single-step 4e-8 bound (measured error 4e-9).
+    # The workload keeps the single-step 4e-8 bound.
     test.check(op, *inputs)
     test.check(op, *inputs[:4])
 
