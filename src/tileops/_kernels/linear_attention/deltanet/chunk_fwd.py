@@ -678,7 +678,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             *args, late_v=self._fused_late_v, walk_operands=walk
         )(cfg["fused_threads"])
         o_fn = _output_o_tl(*args, late_loads=self._o_late_loads, from_walk=walk)(cfg["o_threads"])
-        h_block_v = cfg.get("h_block_v", 0)
+        h_block_v = cfg["h_block_v"]
         if walk:
             state_fn = _state_walk_tl(*args)(h_block_v, cfg["h_num_stages"], cfg["h_threads"])
         else:

@@ -310,5 +310,5 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
             cfg["block_p"],
             cfg["block_l"],
             cfg["threads"],
-            cfg.get("num_stages", 2),
+            cfg["num_stages"],
         )

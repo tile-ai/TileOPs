@@ -291,11 +291,8 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
 
     def _programs(self, cfg: dict) -> tuple:
         """The gate, state, attention and output launches *cfg* states."""
-        ns = cfg.get("num_stages", 3)
-        thr_seq = cfg.get("threads_seq", cfg.get("threads", 64))
-        thr_par = cfg.get("threads_par", cfg.get("threads", 64))
-        num_vp = cfg.get("num_v_partitions", 4)
-        num_kp = cfg.get("num_k_partitions", 2)
+        ns, thr_seq, thr_par = cfg["num_stages"], cfg["threads_seq"], cfg["threads_par"]
+        num_vp, num_kp = cfg["num_v_partitions"], cfg["num_k_partitions"]
         g_fn = gla_precompute_g_kernel(
             self.batch, self.seq_len, self.heads, self.dim_k, 64, self.dtype_name
         )(thr_par)

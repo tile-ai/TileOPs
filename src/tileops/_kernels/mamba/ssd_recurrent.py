@@ -200,14 +200,13 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
         )
         self.init_config(config)
         cfg = self.config
-        bp, bn, threads = cfg.get("block_p"), cfg.get("block_n"), cfg.get("threads")
-        _bn_is_pow2 = bn is not None and bn > 0 and (bn & (bn - 1)) == 0
-        if not _bn_is_pow2:
+        bp, bn, threads = cfg["block_p"], cfg["block_n"], cfg["threads"]
+        if bn <= 0 or bn & (bn - 1):
             raise ValueError(
                 f"SSDDecodeKernel requires block_n to be a power of 2 for the "
                 f"log-depth tree reduction, but got block_n={bn}."
             )
-        if bp is not None and bn is not None and threads != bp * bn:
+        if threads != bp * bn:
             raise ValueError(
                 f"SSDDecodeKernel requires threads == block_p * block_n "
                 f"({bp} * {bn} = {bp * bn}) for the 2D T.Parallel layout, "
