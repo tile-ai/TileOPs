@@ -102,9 +102,7 @@ class GELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     BYTES_PER_THREAD = 32
     # The erf body costs more than its access, so a row the shrink reaches keeps two
-    # elements a thread instead of four: 1 x 14336 bfloat16 runs 56 blocks instead of
-    # 28, as torch-compile does, at 1.344 us against 1.440 us. One element a thread
-    # measured no faster in 16 bits and slower in float32.
+    # elements a thread instead of four.
     MIN_NUM_PER_THREAD = 2
 
     @classmethod
@@ -366,7 +364,7 @@ def _make_softplus_kernel(N, dtype, beta, threshold):
     """Build softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
 
     Binding ``softplus`` as a statement lifts the exponential and the logarithm
-    out of the guard. float16 rows are 1.2% slower with them inside it.
+    out of the guard.
     """
 
     @tilelang.jit(out_idx=[1])

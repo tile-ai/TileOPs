@@ -189,9 +189,8 @@ def _logical_fold_kernel(
         full_steps = run_units // step
         tail = full_steps * step != run_units
         num_warps = threads // WARP_LANES
-        # Up to this many warps one lane folds their values in serially: at (32, 4096)
-        # float16 any 1.535 us against 1.600 for the first warp shuffling them; at 32 warps
-        # ((32, 32768) float16 count_nonzero) 2.688 against 2.624, so the shuffle stays.
+        # Up to this many warps one lane folds their values in serially; past it the
+        # first warp shuffles them.
         lane_fold_max_warps = 16
 
         @T.macro
@@ -281,7 +280,6 @@ def _fold_units(
     word, and float16, bfloat16 and float32 two or one, where a run is whole words and starts
     on one: a lane then tests a word's elements with bit operations rather than an element
     at a time.
-    (32, 4096) float16 any took 1.600 us against 1.664 comparing elements (H200).
     """
     scalar_dtype, components = _SCALAR_VIEWS.get(dtype, (dtype, 1))
     # These floats can be read as words: bits past the sign decide whether each lane is
@@ -291,8 +289,7 @@ def _fold_units(
     # The word tests split a 32-bit word into lanes of one element.
     word_size = torch.uint32.itemsize
     whole = cols * size % word_size == 0 and address % word_size == 0
-    # A count of float lanes measured slower as words: (32, 32768) float16 count_nonzero
-    # 2.752 us against 2.624 comparing elements.
+    # A count of float lanes is slower as words.
     word_floats = scalar_dtype in word_float_dtypes and op_kind != "count_nonzero"
     # Only these floats have a sign-bit mask that matches torch's truth;
     # any other float (float8, where 0x80 is -0.0 or NaN by format) compares elements.

@@ -268,7 +268,6 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
         self.dtype = dtype
         self.has_gate = has_gate
         self.N_padded = align_up(N, ALIGNMENT)
-        # Shape policy is benchmarked independently from block/thread tuning.
         self.use_cp_async = _should_use_cp_async(N, dtype, has_gate)
         self.init_config(config)
 

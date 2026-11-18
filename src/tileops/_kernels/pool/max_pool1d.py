@@ -303,9 +303,7 @@ def _windowed_indices_builder(shape: _Shape, plan: _SignaturePlan):
         ):
             with T.Kernel(T.ceildiv(total_output, block_ol), threads=threads) as bx:
                 # A thread takes adjacent outputs and stores them, and their indices, as
-                # vectors, as Inductor's kernel does. With the evict-last loads, (2560, 4096)
-                # float32 took 21.15 us against 22.19 and float16 15.23 against 15.62 (H200);
-                # the same loads on one output a thread took float16 to 16.67.
+                # vectors, as Inductor's kernel does.
                 if tail_free and block_ol % threads == 0:
                     tx = T.get_thread_binding()
                     vals = T.alloc_local([per_thread], dtype)
@@ -586,8 +584,7 @@ class _MaxPool1dKernelBase(Kernel):
 
     _BLOCK_OUTPUTS: ClassVar[int] = 256
     _FALLBACK_THREADS: ClassVar[int] = 128
-    # ``(block_ol, threads)`` per body, fitted on the calibration device. A body is given one thread
-    # count where its rate falls off either side of it.
+    # ``(block_ol, threads)`` candidates per body.
     _CANDIDATES: ClassVar[dict] = {
         "windowed": ((256, 128), (512, 256), (1024, 256)),
         "staged": ((256, 128),),

@@ -399,20 +399,13 @@ class BlockConfigPlanner:
         flattens that loop, the thread owning column *j* of row *i* is
         ``(i * cols + j) / vec % threads``, and the map repeats from row to row
         only when ``cols`` is a whole number of passes or divides one evenly.
-        Measured 44 of 44 over fp16/fp32 x {128, 256} threads x cols in
-        [256, 4096].
 
-        The kernels serialise the row loop, so the map does not depend on the row
-        and nearly every width builds.  One narrow residue survives --
-        softmax, log_softmax and logsumexp fail layout inference at
-        ``block_m=4, cols=768`` -- and this envelope still excludes it, so it
-        stays as the guard.  Everything it admits builds; some of what it
-        rejects would now build too.
+        The kernels serialise the row loop, so most widths it rejects build too; it
+        stays as the guard because softmax, log_softmax and logsumexp fail layout
+        inference at ``block_m=4, cols=768``, which it excludes.
 
-        ``block_m == 1`` has no row-to-row shift, but the columns still have to divide
-        across the block: layout inference finds no layout otherwise. Exact over 72 of
-        72 combinations of nine widths, four thread counts and fp16/fp32 -- a
-        ``(1, cols)`` fragment builds if and only if ``threads`` divides ``cols``.
+        ``block_m == 1`` has no row-to-row shift, but a ``(1, cols)`` fragment builds
+        if and only if ``threads`` divides ``cols``.
         """
         if block_m == 1:
             return cols % threads == 0
@@ -528,11 +521,7 @@ def compute_tile_n(
     ``num_buffers * block_m * tile_n_max * elem_bytes <= budget``.
     The return value may be a smaller divisor of *N_padded* when that
     divisor does not increase the number of N-tiles, because an exact
-    division eliminates the nearly-empty remainder tile and reduces
-    wasted memory traffic.  For example, N_padded=32768 with
-    tile_n_max=32512 gives 2 tiles where tile 2 has only 256 valid
-    columns (99.2% waste), while divisor=16384 also gives 2 tiles with
-    zero waste.
+    division eliminates the nearly-empty remainder tile.
 
     When every divisor requires strictly more tiles, the full
     budget-derived cap is returned and the tiled kernel handles the
@@ -582,17 +571,8 @@ def compute_tile_n(
             best_dividing = candidate
             break
 
-    # Accept the divisor when it does not increase the number of
-    # N-tiles.  Each tile incurs a global-memory pass in both passes of
-    # the 2-pass softmax, so fewer tiles is always cheaper.  When the
-    # divisor gives the same tile count as tile_n_max, prefer the
-    # divisor because it eliminates the nearly-empty remainder tile
-    # (e.g. N_padded=32768, tile_n_max=32512 → 2 tiles with a 256-col
-    # remainder vs divisor=16384 → 2 even tiles with zero waste).
-    #
-    # When the divisor requires strictly more tiles (e.g. smaller
-    # divisors of N_padded), stick with tile_n_max and handle the
-    # single remainder tile via masked loads.
+    # Each tile costs a global-memory pass in both passes of the 2-pass
+    # softmax, so a divisor that adds tiles loses to tile_n_max.
     if best_dividing > 0:
         div_tiles = N_padded // best_dividing  # exact division
         max_tiles = (N_padded + tile_n_max - 1) // tile_n_max

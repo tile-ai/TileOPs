@@ -60,9 +60,7 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
     slabs = bins + 1
     # Bins one level of the nucleus walk splits its key range into. A range narrower than
     # this settles the bound in one level, which is what a row whose k leaves a handful of
-    # values gives; a wider table trades its own cost against the levels it saves. Re-fit by
-    # timing the manifest rows: at [256, 128256] float16 the walk takes 262.2 us over 256
-    # bins, 205.7 over 512 and 235.0 over 1024, and at bfloat16 249.2, 262.6 and 321.7.
+    # values gives; a wider table trades its own cost against the levels it saves.
     walk_bins = 512
     walk_bits = walk_bins.bit_length() - 1
 
@@ -647,7 +645,7 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general = True
 
-    # Calibrated block width for the supported cluster sizes.
+    # Block width for the supported cluster sizes.
     _THREADS: ClassVar[int] = 1024
     # Cap register-held vectors; larger rows spread over more CTAs to preserve occupancy.
     _MAX_SLOTS: ClassVar[int] = 4

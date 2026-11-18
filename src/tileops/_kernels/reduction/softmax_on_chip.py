@@ -536,9 +536,8 @@ class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
         """``(cluster, threads, min_blocks)`` for *call*'s rows, or ``None``."""
         if call.op_kind != "softmax":
             return None
-        # A widened output writes each 16-byte input vector as two; on H200 that ran slower
-        # than the split at every measured shape. For many rows it moves six bytes an element
-        # instead of four, and the exponentials a byte fall toward an fp32 row's.
+        # A widened output writes each 16-byte input vector as two, which runs slower than
+        # the split: it moves six bytes an element instead of four.
         if call.out_dtype != call.dtype:
             return None
         if cls.split_seg_n(call) > 0:
@@ -549,8 +548,7 @@ class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
             vectors_per_thread = 5
             # Bytes a CTA reads and writes at most. A cluster moves a row through 16 SMs where
             # the split spreads it over the device, so a CTA's share bounds the cluster's
-            # time; on H200 past this share an fp32 row of one or two rows ran slower than the
-            # split.
+            # time; past this share the split is faster.
             max_cta_bytes = 48 * 1024
             vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
             if (

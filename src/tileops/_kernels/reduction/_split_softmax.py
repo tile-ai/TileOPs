@@ -45,8 +45,8 @@ def split_seg_n(M: int, N: int, block_m: int, sm_count: int) -> int:
     count targets ``SPLIT_BLOCKS_PER_SM`` blocks per SM and the width stays aligned and
     within the fragment cap.
     """
-    # Rows shorter than this cannot amortize the fold pass. Measured threshold,
-    # not derived: below it the second launch outweighs the extra blocks.
+    # Rows shorter than this cannot amortize the fold pass: the second launch outweighs
+    # the extra blocks.
     split_min_amortized_cols = 16384
     target_blocks = SPLIT_BLOCKS_PER_SM * sm_count
     if align_up(N, DEFAULT_ALIGNMENT) < split_min_amortized_cols:
