@@ -632,7 +632,7 @@ def _gemm_fp8_block128_wave_kernel(
                 forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
             )
 
-        def consumer_row_layout(buf):
+        def consumer_row_layout():
             """One value per accumulator row, held by the four lanes of that row's quad.
 
             Row i lives in consumer warp i // 16; its quad is lane (i % 8) * 4..+3 and
@@ -1068,9 +1068,9 @@ def _gemm_fp8_block128_wave_kernel(
                         final0: consumer_acc_layout(final0),
                         final1: consumer_acc_layout(final1),
                         c_cast: consumer_acc_layout(c_cast),
-                        row_scale: consumer_row_layout(row_scale),
-                        row_scale1: consumer_row_layout(row_scale1),
-                        row_scale2: consumer_row_layout(row_scale2),
+                        row_scale: consumer_row_layout(),
+                        row_scale1: consumer_row_layout(),
+                        row_scale2: consumer_row_layout(),
                     }
                 )
 

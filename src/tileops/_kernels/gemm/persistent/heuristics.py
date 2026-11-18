@@ -700,7 +700,7 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             num_stages=_num_stages(desc, layout),
         )
 
-    def _tile_cycles(desc: GEMMDesc, layout: _Layout, features: _LayoutFeatures) -> int:
+    def _tile_cycles(desc: GEMMDesc, features: _LayoutFeatures) -> int:
         """Estimated cycles: the bandwidth a wave moves, over how full that wave is."""
         if features.num_blocks == 0:  # a call with no rows or no columns runs nothing
             return 0
@@ -728,7 +728,7 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
 
     def _best_layout(desc: GEMMDesc, candidates: list[_Layout]) -> _Layout:
         """The tile the cycle model prefers."""
-        return min(candidates, key=lambda lay: _tile_cycles(desc, lay, _layout_features(desc, lay)))
+        return min(candidates, key=lambda lay: _tile_cycles(desc, _layout_features(desc, lay)))
 
     def _short_group_layout(desc: GEMMDesc) -> _Layout | None:
         """The tile pinned for short tight groups, or ``None`` outside that band."""

@@ -96,7 +96,7 @@ _CALIBRATION = _CALIBRATIONS["h200"]
 # kernel's stream-K reduce, so the configs ranked are the configs built.
 _CONFIG_SPACE = _ConfigSpace()
 
-__all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GEMMW4A16Kernel", "GEMMW4A16MMAKernel", "W4A16Layout"]
+__all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GEMMW4A16Kernel", "GEMMW4A16MMAKernel"]
 
 
 @target_cache(maxsize=32)
