@@ -32,6 +32,14 @@ _CASES = (
     pytest.param(
         [[16, 64], [16, 32], [16, 8]], -1, [_BF16, _FP16, _BF16], marks=_FULL, id="promote"
     ),
+    # A float32 output of a float16 input: each thread copies two vectors. The float16 input's
+    # second vectors end inside a CTA's tile; the float32 input's second vectors are all live
+    # in its first tile and all skipped in its second.
+    pytest.param(
+        [[2, 800], [2, 1032]], -1, [_FP16, _FP32], marks=_FULL, id="promote-second-vector"
+    ),
+    # The same with widths that shrink the vector to one element: narrower stores.
+    pytest.param([[2, 259], [2, 3]], -1, [_FP16, _FP32], marks=_FULL, id="promote-second-element"),
     # Along dim 0 the output is one row.
     pytest.param([[5], [7]], 0, [_FP32] * 2, marks=_FULL, id="rank-1"),
     # One input: a launch with one tensor slot.

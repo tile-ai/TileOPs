@@ -69,6 +69,12 @@ def _concat_kernel(vec, dtypes, out_dtype):
     # Small CTAs spread a decode row's few hundred vectors over the SMs, and 16 of them fill
     # an SM's 2048 resident threads.
     threads = 128
+    # A thread copies `per_thread` vectors, one CTA width apart, so each warp instruction stays
+    # contiguous. An input narrower than the output reads that fraction of each vector's
+    # output bytes; with a whole 16-byte output vector, `per_thread` restores 16 bytes of the
+    # launch's narrowest input per thread.
+    per_thread = DataType(out_dtype).bits // min(DataType(d).bits for d in dtypes)
+    span = threads * per_thread
     rows = T.dynamic("rows", "int64")
     total = T.dynamic("total", "int64")
     cols = [T.dynamic(f"cols{k}", "int64") for k in range(n)]
@@ -76,10 +82,12 @@ def _concat_kernel(vec, dtypes, out_dtype):
     # compare of its tile index, the same for every thread of the CTA.
     first, offset = [0], [0]
     for k in range(n):
-        first.append(first[k] + T.ceildiv(cols[k], threads))
+        first.append(first[k] + T.ceildiv(cols[k], span))
         offset.append(offset[k] + cols[k])
     # An input whose vector is a whole 16-byte access reads it with an L2 hint.
     whole = [vec * DataType(d).bits == VECTOR_ACCESS_BYTES * 8 for d in dtypes]
+    # An output vector that is a whole 16-byte access is written by one 16-byte store.
+    whole_out = vec * DataType(out_dtype).bits == VECTOR_ACCESS_BYTES * 8
 
     def slot(k):
         return T.Tensor((rows, cols[k], vec), dtypes[k]) if k < n else None
@@ -87,17 +95,34 @@ def _concat_kernel(vec, dtypes, out_dtype):
     @T.macro
     def copy(out, x, k, t, r, base):
         if t >= first[k] and t < first[k + 1]:
-            c = (t - first[k]) * threads + T.get_thread_binding()
-            if c < cols[k]:
-                held = T.alloc_local((vec,), dtypes[k])
-                if whole[k]:
-                    # Evict-last: the read lines stay in L2 while the output's lines go first.
-                    load16_evict_last(held, 0, x, (r, c, 0))
-                else:
-                    for v in T.vectorized(vec):
-                        held[v] = x[r, c, v]
-                for v in T.vectorized(vec):
-                    out[r, base + offset[k] + c, v] = T.cast(held[v], out_dtype)
+            held = T.alloc_local((per_thread, vec), dtypes[k])
+            lane = (t - first[k]) * span + T.get_thread_binding()
+            # All reads issue before the first write, so they are in flight together.
+            for u in T.unroll(per_thread):
+                c = lane + u * threads
+                if c < cols[k]:
+                    if whole[k]:
+                        # Evict-last: the read lines stay in L2 while the output's lines go first.
+                        load16_evict_last(held, (u, 0), x, (r, c, 0))
+                    else:
+                        for v in T.vectorized(vec):
+                            held[u, v] = x[r, c, v]
+            for u in T.unroll(per_thread):
+                c = lane + u * threads
+                if c < cols[k]:
+                    if whole_out:
+                        wide = T.alloc_local((vec,), out_dtype)
+                        for v in T.vectorized(vec):
+                            wide[v] = T.cast(held[u, v], out_dtype)
+                        T.call_extern(
+                            "handle",
+                            "tileops::store16_global",
+                            T.address_of(out[r, base + offset[k] + c, 0]),
+                            T.address_of(wide[0]),
+                        )
+                    else:
+                        for v in T.vectorized(vec):
+                            out[r, base + offset[k] + c, v] = T.cast(held[u, v], out_dtype)
 
     @T.prim_func
     def concat(
@@ -122,7 +147,7 @@ def _concat_kernel(vec, dtypes, out_dtype):
     return tilelang.compile(
         concat,
         out_idx=[],
-        compile_flags=csrc_include("streaming_load.h"),
+        compile_flags=csrc_include("streaming_load.h", "vector_store.h"),
         # Every access is inside its tensor by the `c < cols[k]` guard; the checks TileLang
         # would add for the dynamic `base` repeat it on each store.
         pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True},
@@ -133,9 +158,10 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
     """Each input copied into its columns of the output rows, converted on the way.
 
     Viewed as ``[rows, total]``, the output takes input ``j`` at the columns after the
-    previous inputs'. A thread moves one vector: the most elements, up to 16 bytes of the
-    widest dtype, that divide every input's row width, so a vector never crosses a row or an
-    input. A program is built for the vector and the dtypes of the inputs it copies; one
+    previous inputs'. A vector is the most elements, up to 16 bytes of the widest dtype, that
+    divide every input's row width, so a vector never crosses a row or an input. A thread
+    moves one vector, or two when the output is twice as wide as the narrowest input of its
+    launch. A program is built for the vector and the dtypes of the inputs it copies; one
     program serves every row count and row width. Inputs share a launch ``_SLOTS`` at a time.
     """
 
