@@ -83,10 +83,13 @@ def _uses_tables(
     block_m: int, block_n: int, num_stages: int, scale_bytes: int, scale_k: int, smem_limit: int
 ) -> bool:
     """Whether a config reads its e8m0 scales from per-task tables: they grow with K, so past
-    the shared memory a block may take beside the ring, the scales come a stage at a time."""
+    the shared memory a block may take beside the ring, the scales come a stage at a time. A
+    table that comes by one bulk copy, without token code tables, is taken under the bound of a
+    table that comes by TMA: only where the two token code tables would fit beside it too."""
+    bulk_room = 0 if _table_box(scale_k) else 2 * block_m * scale_k
     return (
         scale_bytes == 1
-        and _smem_bytes(block_m, block_n, num_stages, 1, scale_k, True) <= smem_limit
+        and _smem_bytes(block_m, block_n, num_stages, 1, scale_k, True) + bulk_room <= smem_limit
     )
 
 

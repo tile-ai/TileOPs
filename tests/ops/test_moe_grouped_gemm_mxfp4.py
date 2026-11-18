@@ -542,3 +542,16 @@ def test_mxfp4_grouped_gemm_smem_model_matches_the_build(
     assert tables == (scale_bytes == 1)
     modelled = _smem_bytes(block_m, block_n, 4, scale_bytes, scale_k, tables)
     assert modelled - _compiled_smem(kernel.kernel(**config)) == (1024 if tables else 0)
+
+
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_takes_bulk_tables_under_the_tma_bound() -> None:
+    """A code table whose rows no TMA box divides comes by one bulk copy without token code
+    tables; it is taken only where those token tables would fit beside it too. On a 128 x 128
+    tile and a 7-deep ring, K = 1792's tables fit by their own size but not with token tables,
+    so the scales come a stage at a time; a smaller tile takes them."""
+    smem_limit = 232448 - 2048
+    scale_k = 1792 // 128
+    assert _smem_bytes(128, 128, 7, 1, scale_k, True) <= smem_limit
+    assert not _uses_tables(128, 128, 7, 1, scale_k, smem_limit)
+    assert _uses_tables(64, 128, 4, 1, scale_k, smem_limit)
