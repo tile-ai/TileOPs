@@ -179,10 +179,36 @@ def _narrow_tile(block_m: int) -> bool:
     return block_m == 8
 
 
-def _pair_reduced(threads: int, block_n: int, split_k: int) -> bool:
-    """Whether a split runs as a two-CTA cluster whose consumer warpgroups swap halves of
-    the tile over distributed shared memory instead of launching a reduction."""
+def _two_warpgroup_pair(threads: int, block_n: int, split_k: int) -> bool:
+    """Whether a split is the two-consumer-warpgroup pair: 128 weight rows split two ways, whose
+    CTAs swap halves of the tile over distributed shared memory."""
     return split_k == 2 and threads == 256 and block_n == 128
+
+
+def _landing_bytes(block_m: int, block_n: int, threads: int) -> int:
+    """Shared memory a pair's landing area takes: one consumer warpgroup's FP32 partial."""
+    return block_n * block_m // threads * 128 * 4
+
+
+def _pair_reduced(m: int, n: int, k: int, group_size: int, sms: int, cfg: dict) -> bool:
+    """Whether ``cfg``'s split runs as a two-CTA cluster that sums its two K slices over
+    distributed shared memory instead of launching a reduction. The two-warpgroup pair always
+    does. One consumer warpgroup on 64 weight rows sends its whole partial to the peer, and
+    pairs only where that landing area fits beside its ring and every cluster launches in the
+    first wave; past it, where a later cluster waits for two SMs of one GPC to free at once, it
+    keeps the reduction launch."""
+    block_m, block_n = cfg["block_m"], cfg["block_n"]
+    threads, split_k = cfg["threads"], cfg["split_k"]
+    if _two_warpgroup_pair(threads, block_n, split_k):
+        return True
+    if split_k != 2 or threads != 128 or block_n != 64:
+        return False
+    ctas = -(-m // block_m) * -(-n // block_n) * split_k
+    ring = _pipelined_smem_bytes(
+        block_m, block_n, cfg["block_k"], cfg["num_stages"], threads, k, group_size, split_k
+    )
+    landing = _landing_bytes(block_m, block_n, threads)
+    return ctas <= sms and ring + landing <= _CONFIG_SPACE.smem_bytes
 
 
 def _cross_tile_meta_cols(k: int, block_k: int, split_k: int) -> int:
@@ -201,7 +227,7 @@ def _cross_tile_smem_bytes(
     total = num_stages * (block_m * block_k * 2 + block_n * block_k // 2)
     total += block_n * _cross_tile_meta_cols(k, block_k, split_k) * 3
     if split_k == 2:
-        total += block_n // 2 * block_m * 4
+        total += _landing_bytes(block_m, block_n, 256)
     return total
 
 
@@ -233,6 +259,24 @@ def _cross_tile_wgmma(
     )
 
 
+def _pipelined_smem_bytes(
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    k: int,
+    group_size: int,
+    split_k: int,
+) -> int:
+    """Shared memory of the pipelined mainloop's ring and metadata, without a pair's landing."""
+    per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, k // group_size)
+    k_tiles = -(-k // block_k)
+    k_slice = -(-k_tiles // split_k)
+    meta_groups = block_k // group_size if per_tile_meta else k_slice * (block_k // group_size)
+    return num_stages * (block_m * block_k * 2 + block_n * block_k // 2) + block_n * meta_groups * 3
+
+
 def _smem_bytes(
     block_m: int,
     block_n: int,
@@ -246,15 +290,13 @@ def _smem_bytes(
     """Return dynamic shared memory required by one CTA."""
     if _cross_tile_wgmma(block_m, block_n, block_k, num_stages, threads, k, group_size, split_k):
         return _cross_tile_smem_bytes(block_m, block_n, block_k, num_stages, k, split_k)
-    per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, k // group_size)
-    k_tiles = -(-k // block_k)
-    k_slice = -(-k_tiles // split_k)
-    meta_groups = block_k // group_size if per_tile_meta else k_slice * (block_k // group_size)
-    total = (
-        num_stages * (block_m * block_k * 2 + block_n * block_k // 2) + block_n * meta_groups * 3
+    total = _pipelined_smem_bytes(
+        block_m, block_n, block_k, num_stages, threads, k, group_size, split_k
     )
-    if _pair_reduced(threads, block_n, split_k):
-        total += block_n // 2 * block_m * 4
+    # A two-warpgroup pair's landing area. A one-warpgroup split pairs only where its landing
+    # fits (`_pair_reduced`), so the landing never decides its legality.
+    if _two_warpgroup_pair(threads, block_n, split_k):
+        total += _landing_bytes(block_m, block_n, threads)
     return total
 
 
@@ -433,7 +475,7 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
         k_iters = -(-k // best["block_k"])
         k_slice = -(-k_iters // paired["split_k"])
         pick_slice = -(-k_iters // best["split_k"])
-        cluster = _pair_reduced(paired["threads"], paired["block_n"], paired["split_k"])
+        cluster = _two_warpgroup_pair(paired["threads"], paired["block_n"], paired["split_k"])
         # The second warpgroup doubles the rate the consumers free ring stages at, which a
         # paired slice longer than the ring keeps on the path. A slice the ring holds has
         # every K tile in flight from the start: the pair then pays only if it adds no K
@@ -475,8 +517,11 @@ def _gemm_w4a16_kernel(
     n: int,
     k: int,
     dtype: str,
-    group_size: int = GROUP_SIZE,
+    group_size: int,
+    sms: int,
 ) -> Callable:
+    """The W4A16 tile builder for one shape; ``sms`` is the build target's SM count, which
+    decides whether a one-warpgroup split runs as a cluster pair (`_pair_reduced`)."""
     if k % group_size != 0:
         raise ValueError(f"K must be divisible by group_size={group_size}, got {k}")
 
@@ -1046,7 +1091,15 @@ def _gemm_w4a16_kernel(
                     partials[bz, m_start : m_start + block_m, n_start : n_start + block_n],
                 )
 
-        pair = _pair_reduced(threads, block_n, split_k)
+        tile = {
+            "block_m": block_m,
+            "block_n": block_n,
+            "block_k": block_k,
+            "num_stages": num_stages,
+            "threads": threads,
+            "split_k": split_k,
+        }
+        pair = _pair_reduced(m, n, k, group_size, sms, tile)
         wg_regs = block_n * block_m // threads
         wg_rows = block_n // 2
 
@@ -1059,7 +1112,8 @@ def _gemm_w4a16_kernel(
             output: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
             """`sliced` over a two-CTA cluster: CTA ``bz`` keeps consumer warpgroup ``bz``'s
-            rows, adds the peer's partial of them from ``landing``, and stores them.
+            rows, adds the peer's partial of them from ``landing``, and stores them. With one
+            consumer warpgroup, CTA 0 keeps every row and CTA 1 only sends.
 
             ``landing`` may share memory with ``out_shared``, so both warpgroups meet at a
             barrier between the last read of one and the first write of the other.
@@ -1116,10 +1170,16 @@ def _gemm_w4a16_kernel(
                         tx % 128,
                     )
                 T.sync_threads(barrier_id=6, arrive_count=threads)
-                # Both warpgroups stage so no inserted barrier sits in a one-warpgroup branch.
+                # Every warpgroup stages so no inserted barrier sits in a one-warpgroup branch.
                 for i, j in T.Parallel(block_n, block_m):
                     buf.out_shared[j, i] = T.cast(buf.output_local[i, j], dtype)
-                if bz == 0:
+                if threads == 128:
+                    if bz == 0:
+                        T.copy(
+                            buf.out_shared,
+                            output[m_start : m_start + block_m, n_start : n_start + block_n],
+                        )
+                elif bz == 0:
                     T.copy(
                         buf.out_shared[:, 0:wg_rows],
                         output[m_start : m_start + block_m, n_start : n_start + wg_rows],
@@ -1504,7 +1564,9 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
         return self.m if _narrow_tile(block_m) else -(-self.m // block_m) * block_m
 
     def _builder(self, m_pad: int) -> Callable:
-        return _gemm_w4a16_kernel(m_pad, self.n, self.k, self.dtype_str, self.group_size)
+        return _gemm_w4a16_kernel(
+            m_pad, self.n, self.k, self.dtype_str, self.group_size, self.build_target.sm_count
+        )
 
     @property
     def default_config(self) -> dict:
@@ -1581,7 +1643,9 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
             reduce_ = _w4a16_streamk_reduce_kernel(
                 tiles_n, _CONFIG_SPACE.stream_slots, m_pad, n, block_n, self.dtype_str
             )()
-        elif cfg["split_k"] > 1 and not _pair_reduced(cfg["threads"], block_n, cfg["split_k"]):
+        elif cfg["split_k"] > 1 and not _pair_reduced(
+            m_pad, n, self.k, self.group_size, self.build_target.sm_count, cfg
+        ):
             reduce_ = splitk_reduce_kernel(cfg["split_k"], m_pad, n, self.dtype_str)()
         else:
             return CompiledProgram(mainloop), m_pad

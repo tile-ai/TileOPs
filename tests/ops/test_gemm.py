@@ -7,7 +7,7 @@ from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
 from tileops._kernels.gemm.heuristics import int8_pingpong_grid
-from tileops._kernels.gemm.w4a16 import _cross_tile_wgmma, _select_config
+from tileops._kernels.gemm.w4a16 import _cross_tile_wgmma, _pair_reduced, _select_config
 from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -2821,6 +2821,50 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
     inputs = test.gen_inputs()
     _leave_nan_in_free_blocks()
     test.check(GEMMW4A16FwdOp(target=BUILTIN), *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k, paired",
+    [
+        # One consumer warpgroup split two ways, on at most 72 CTAs: a deferred-scale 16-row
+        # tile over padded rows, a partial last N tile and a partial last K tile.
+        pytest.param(9, 2248, 1792, True, id="pair-deferred-scale", marks=pytest.mark.smoke),
+        # A scale-in-decode 64-row tile over padded rows and the same tails.
+        pytest.param(48, 2248, 1792, True, id="pair-64-rows", marks=pytest.mark.full),
+        # The narrow tile at a logical M under its eight rows.
+        pytest.param(1, 1672, 1792, True, id="pair-narrow", marks=pytest.mark.full),
+        # A split whose landing area does not fit beside its ring keeps the reduction launch,
+        # on 96 CTAs so that the landing alone decides it.
+        pytest.param(128, 3072, 4096, False, id="landing-unfit", marks=pytest.mark.full),
+    ],
+)
+def test_gemm_w4a16_one_warpgroup_split_matches_the_reference(
+    m: int, n: int, k: int, paired: bool
+) -> None:
+    """A one-warpgroup tile split two ways sums its K slices over a two-CTA cluster, the
+    second CTA sending its whole partial to the first, which stores every row of the tile."""
+    # On 132 SMs each case picks a one-warpgroup two-way split and runs the program `paired`
+    # names: the cluster pair, or the reduction launch.
+    cfg = _select_config(m, n, k, 128, 132)
+    assert (cfg["block_n"], cfg["threads"], cfg["split_k"]) == (64, 128, 2)
+    m_pad = m if cfg["block_m"] == 8 else -(-m // cfg["block_m"]) * cfg["block_m"]
+    assert _pair_reduced(m_pad, n, k, 128, 132, cfg) == paired
+    test = GEMMW4A16Test(m, n, k, torch.float16)
+    inputs = test.gen_inputs()
+    _leave_nan_in_free_blocks()
+    test.check(GEMMW4A16FwdOp(target=BUILTIN), *inputs)
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_pairs_a_one_warpgroup_split_in_one_wave() -> None:
+    """On 132 SMs a one-warpgroup tile split two ways sums its slices over a cluster pair
+    where every cluster launches in the first wave, and keeps the reduction launch past it."""
+    narrow = _select_config(1, 2176, 1024, 128, 132)
+    assert _pair_reduced(1, 2176, 1024, 128, 132, narrow)
+    # 141 N tiles split two ways: 282 CTAs.
+    assert not _pair_reduced(1, 9000, 1024, 128, 132, narrow)
 
 
 @pytest.mark.in_tree_kernels
