@@ -1010,11 +1010,10 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
     """MXFP4 grouped GEMM over masked expert slabs or contiguous expert rows, on SM90 TMA and
     WGMMA.
 
-    The weights are the WGMMA's M operand: each 64-row math warp-group decodes its packed e2m1
-    rows to e4m3 A fragments in registers, the next step's decode overlapping this step's
-    WGMMA, whose B operand is the step's ``block_m`` fp8 rows of ``a`` as TMA loads them. Each
-    task first checks its weight scales and takes the folded or the sub-block path
-    ``MoEGroupedGEMMMXFP4FwdOp`` describes.
+    Each task first checks that its weight scales lie in ``[2 ** -63, 2 ** 63]`` and, under
+    e8m0, that each step's span at most five binades. A passing task folds each e8m0 step's
+    four sub-blocks into one contraction (float32 steps go sub-block by sub-block); a failing
+    one contracts sub-block by sub-block, its scale products split into mantissa and exponent.
     Rows of a slab past its valid count, inside a tile that holds a valid one, are stored like
     the others with unspecified values; rows past ``max_m`` are not written. A count is
     clamped to ``[0, max_m]``.
@@ -1157,15 +1156,9 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
     @property
     def default_config(self) -> dict:
-        # Every row tile converts its weights once, so aligned contiguous runs take the
-        # tallest tile their alignment allows, under two 64-row weight warp-groups (a 128-row
-        # tile's accumulators need their 232 registers). A masked slab is a decode layout whose
-        # experts hold max_m / E rows on average: the narrowest tile of at least twice that
-        # holds most experts' rows in one tile with the least MMA wasted. Its weight tile is
-        # three or, under e8m0 scales, four 64-row warp-groups (float32 scales' sub-block path
-        # spills in four warp-groups' registers), the width whose tasks take the fewest waves
-        # times width, counted over the experts max_m rows spread at random occupy. Four
-        # warp-groups take a 4-deep ring.
+        # Every row tile converts its weights once, so aligned runs take the tallest tile
+        # their alignment allows. A masked slab's tile is the narrowest holding twice an
+        # expert's mean rows; float32 scales' sub-block path spills in four warp-groups.
         call = self.call
         if call.kind == "contiguous":
             unaligned_m, block_n = self._CONTIGUOUS_TILE

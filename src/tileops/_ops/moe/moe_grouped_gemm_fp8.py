@@ -52,8 +52,7 @@ class MoEGroupedGEMMFP8FwdOp(MoELayoutRowsRoofline, Op):
     Accuracy: on the valid rows the output matches an fp32 reference that dequantizes both
     operands under their scales to ``atol = 2e-2 * sqrt(max(1, K / 1024))`` and
     ``rtol = 2e-2``, a bound that grows with ``K`` as the fp8 accumulation noise does. The
-    scales are applied in DeepGEMM's order; on SM90, the TMA implementation's manifest E = 8
-    outputs are bit-identical to ``deep_gemm.m_grouped_fp8_gemm_nt_masked``.
+    scales are applied in DeepGEMM's order.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

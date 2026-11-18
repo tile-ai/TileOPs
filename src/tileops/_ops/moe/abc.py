@@ -130,8 +130,8 @@ class FusedMoEExperts(Op, ABC):
     def _output_shape(self, T_prime: int, H: int) -> tuple[int, int]:
         """Return the shape of the tensor written by forward().
 
-        Implementations that perform internal unpermute + weighted reduction
-        (Nopad, Padded) return (T_prime, H).  No-EP: T_prime == T.
+        Implementations that perform internal unpermute + weighted reduction return
+        (T_prime, H).  No-EP: T_prime == T.
         Implementations that do not reduce return (T_prime * topk, H).
         """
 

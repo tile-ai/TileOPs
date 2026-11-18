@@ -65,8 +65,6 @@ class GroupTiling:
         """Build the tile-count prefix sum from packed row offsets.
 
         ``(offsets[g + 1] - offsets[g]) * rows_per_offset`` is the row count of group ``g``.
-        Varlen operators already receive that representation, so they should
-        not materialize a second sizes tensor merely to schedule row tiles.
         The offsets are read at whatever integer width they arrive in.
         """
         block_m, rows = self.block_m, self.rows_per_offset
@@ -114,8 +112,8 @@ def _tile_prefix_sum(num_groups, tiles):
     shuffles, and adds the totals of the warps before it. The macro ends with a block
     barrier, and every thread of the block must reach it.
     """
-    # Up to this many groups the scan's shuffles and barriers cost paged attention up to
-    # 5% over a loop on every thread (H200); from 16 groups on the scan is no slower.
+    # Up to this many groups a loop on every thread costs less than the scan's shuffles
+    # and barriers.
     serial_groups = 8
     if num_groups <= serial_groups:
 
@@ -143,7 +141,7 @@ def _tile_prefix_sum(num_groups, tiles):
         # Only as many warps as there are runs of WARP_LANES groups take part. A thread
         # holds one tile count a round in registers, and the rounds unroll: past
         # `max_rounds` rounds the CTA scans in passes, each carrying the passes before it.
-        # 32 rounds is 4096 groups on 128 threads, and holds 56 registers (H200).
+        # 32 rounds is 4096 groups on 128 threads.
         max_rounds = 32
         runs = -(-num_groups // WARP_LANES)
         warps = min(threads // WARP_LANES, runs)
