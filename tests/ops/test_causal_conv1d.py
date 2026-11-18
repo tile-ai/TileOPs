@@ -1,10 +1,12 @@
+from dataclasses import replace
+
 import pytest
 import torch
 
 from tests.state_pool_guard import check_padded_slots_skipped
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
-from tileops._kernels.mamba import CausalConv1dUpdateCall
+from tileops._kernels.mamba import CausalConv1dCall, CausalConv1dUpdateCall
 from tileops.backend import OpNotAvailableError
 from tileops.mamba import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
 from workloads.device import run_device
@@ -86,6 +88,17 @@ _PREFILL = (
         [13, 60], 7, 4, "bfloat16", ["has_initial_state"], "silu", marks=_FULL, id="vec-1-no-async"
     ),
     pytest.param([1] * 300, 256, 4, "bfloat16", _BOTH, "silu", marks=_FULL, id="tokens-a-sequence"),
+    # A short sequence starting before the chunk must not suppress the next one's head.
+    pytest.param(
+        [1, 62, 2, 0, 1, 67],
+        136,
+        4,
+        "float16",
+        _BOTH,
+        "silu",
+        marks=_FULL,
+        id="short-sequence-past-chunk-end",
+    ),
     pytest.param(
         [2500, 1000, 500, 96],
         8192,
@@ -138,6 +151,226 @@ def test_causal_conv1d_update(batch, dim, width, dtype, some, activation) -> Non
         L=width - 1,
         activation=activation,
         some=some,
+    )
+    test = CausalConv1dUpdateFwdTest(call)
+    op = CausalConv1dUpdateFwdOp(**call.arguments())
+    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+
+
+# A dilated filter spans (W - 1) * dilation tokens, so its state carries that many and one
+# token feeds outputs up to that far ahead of it; a float32 filter over 16-bit activations
+# widens the arithmetic of the same window. One case per served row of the two pilot models,
+# then the shapes that stress the wider ring.
+_SERVED_PREFILL = (
+    # GLM-5.3-Flash KDA convolution: float32 filters over bf16 activations.
+    pytest.param(
+        [1024, 1024, 1024, 1024],
+        24576,
+        4,
+        1,
+        3,
+        None,
+        "bfloat16",
+        "float32",
+        ["has_initial_state"],
+        marks=_SMOKE,
+        id="glm-fp32-filters",
+    ),
+    # Dilated width-three taps at the existing float16 smoke shape.
+    pytest.param(
+        [100, 900],
+        8192,
+        3,
+        2,
+        4,
+        None,
+        "float16",
+        "float16",
+        ["has_initial_state"],
+        marks=_SMOKE,
+        id="dilated-width-3",
+    ),
+    # Qwen3.8-Flash-Next PLE short conv: dilation 3, a 9-token state, SiLU, no bias.
+    pytest.param(
+        [1024, 1024, 1024, 1024],
+        10240,
+        4,
+        3,
+        9,
+        None,
+        "bfloat16",
+        "bfloat16",
+        ["has_initial_state"],
+        marks=_FULL,
+        id="ple-4k",
+    ),
+    pytest.param(
+        [1024, 1024, 1024, 1024],
+        10240,
+        4,
+        3,
+        9,
+        256,
+        "bfloat16",
+        "bfloat16",
+        ["has_initial_state", "cache_indices"],
+        marks=_FULL,
+        id="ple-4k-pool",
+    ),
+    # An initialized short sequence starts two tokens before a chunk boundary; its head
+    # crosses that boundary while the next chunk must not read its updated state.
+    pytest.param(
+        [1, 77, 5, 0, 2, 161],
+        136,
+        4,
+        3,
+        12,
+        8,
+        "float16",
+        "float32",
+        ["bias", "has_initial_state", "cache_indices"],
+        marks=_FULL,
+        id="dilated-head-past-chunk-end",
+    ),
+    # The dilated window and a wide weight at once, over a state wider than the window: its
+    # columns past the span keep their values.
+    pytest.param(
+        [100, 900],
+        256,
+        4,
+        3,
+        12,
+        None,
+        "float16",
+        "float32",
+        ["has_initial_state"],
+        marks=_FULL,
+        id="dilated-fp32-wide-state",
+    ),
+    # A sequence shorter than the window, and empty ones that keep their state.
+    pytest.param(
+        [0, 2, 7, 0, 1, 70],
+        264,
+        4,
+        3,
+        9,
+        None,
+        "bfloat16",
+        "bfloat16",
+        ["bias", "has_initial_state"],
+        marks=_FULL,
+        id="dilated-short-and-empty",
+    ),
+    pytest.param(
+        [5, 3, 2, 0, 90],
+        40,
+        2,
+        4,
+        4,
+        None,
+        "bfloat16",
+        "bfloat16",
+        ["bias"],
+        marks=_FULL,
+        id="dilated-width-2",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "seq_lens, dim, width, dilation, state_len, pool, dtype, weight_dtype, some", _SERVED_PREFILL
+)
+def test_causal_conv1d_dilation_and_float32_filters(
+    seq_lens, dim, width, dilation, state_len, pool, dtype, weight_dtype, some
+) -> None:
+    call = manifest_call(
+        "CausalConv1dFwdOp",
+        {"T": dtype, "Tw": weight_dtype},
+        D=dim,
+        W=width,
+        L=state_len,
+        Tt=sum(seq_lens),
+        seq_lens=seq_lens,
+        dilation=dilation,
+        some=some,
+        **({} if "bias" in some else {"bias": None}),
+        **({} if pool is None else {"P": pool}),
+    )
+    test = CausalConv1dFwdTest(call)
+    op = CausalConv1dFwdOp(**call.arguments())
+    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+
+
+_SERVED_DECODE = (
+    # Float32 filters and bias: vec=8 requires two weight_vec=4 bias loads per thread.
+    pytest.param(
+        64,
+        24576,
+        4,
+        1,
+        3,
+        256,
+        "bfloat16",
+        "float32",
+        ["bias", "conv_state_indices"],
+        marks=_SMOKE,
+        id="glm-fp32-filters-pool",
+    ),
+    # No pool and no bias, using the existing float16 decode smoke shape.
+    pytest.param(
+        3, 8192, 4, 3, 9, None, "float16", "float16", [], marks=_SMOKE, id="dilated-no-pool"
+    ),
+    # Qwen3.8-Flash-Next PLE decode: dilation 3 over a 9-token state in a pool of 256.
+    pytest.param(
+        64,
+        10240,
+        4,
+        3,
+        9,
+        256,
+        "bfloat16",
+        "bfloat16",
+        ["conv_state_indices"],
+        marks=_FULL,
+        id="ple-dec-pool",
+    ),
+    # A state wider than the window is advanced in its first span columns, the rest untouched.
+    pytest.param(
+        64,
+        10240,
+        4,
+        3,
+        12,
+        256,
+        "bfloat16",
+        "float32",
+        ["conv_state_indices"],
+        marks=_FULL,
+        id="dilated-fp32-wide-state",
+    ),
+    # A width whose whole window is three taps apart, with a wide weight over no pool.
+    pytest.param(
+        2, 7, 2, 4, 4, None, "float16", "float32", [], marks=_FULL, id="width-2-dilation-4"
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "batch, dim, width, dilation, state_len, pool, dtype, weight_dtype, some", _SERVED_DECODE
+)
+def test_causal_conv1d_update_dilation_and_float32_filters(
+    batch, dim, width, dilation, state_len, pool, dtype, weight_dtype, some
+) -> None:
+    call = manifest_call(
+        "CausalConv1dUpdateFwdOp",
+        {"T": dtype, "Tw": weight_dtype},
+        B=batch,
+        D=dim,
+        W=width,
+        L=state_len,
+        dilation=dilation,
+        some=some,
+        **({} if pool is None else {"P": pool}),
     )
     test = CausalConv1dUpdateFwdTest(call)
     op = CausalConv1dUpdateFwdOp(**call.arguments())
@@ -253,6 +486,98 @@ def test_causal_conv1d_update_advances_its_slots_of_a_state_pool() -> None:
     test = CausalConv1dUpdateFwdTest(call)
     op = CausalConv1dUpdateFwdOp(**call.arguments())
     test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
+def test_causal_conv1d_float32_bias(dtype: str) -> None:
+    """Float32 weights and an offset float32 bias retain their dtype without activation."""
+    call = manifest_call(
+        "CausalConv1dFwdOp",
+        {"T": dtype, "Tw": "float32"},
+        D=256,
+        W=4,
+        L=3,
+        Tt=72,
+        seq_lens=[7, 65],
+        activation=None,
+        some=["bias", "has_initial_state"],
+    )
+    test = CausalConv1dFwdTest(call)
+    inputs = list(test.gen_inputs())
+    bias = inputs[4]
+    storage = torch.empty(bias.numel() + 1, dtype=bias.dtype, device=bias.device)
+    inputs[4] = storage[1:]
+    inputs[4].copy_(bias)
+    op = CausalConv1dFwdOp(**call.arguments())
+    test.check(op, *inputs, runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "op_type, workload_type, shape, serving",
+    [
+        pytest.param(
+            CausalConv1dFwdOp,
+            CausalConv1dFwdTest,
+            {"Tt": 87, "seq_lens": [2, 85]},
+            ["has_initial_state", "cache_indices"],
+            marks=pytest.mark.cuda_graph(op="CausalConv1dFwdOp"),
+            id="prefill",
+        ),
+        pytest.param(
+            CausalConv1dUpdateFwdOp,
+            CausalConv1dUpdateFwdTest,
+            {"B": 2},
+            ["conv_state_indices"],
+            marks=pytest.mark.cuda_graph(op="CausalConv1dUpdateFwdOp"),
+            id="decode",
+        ),
+    ],
+)
+def test_causal_conv1d_dilated_graph_replay(op_type, workload_type, shape, serving) -> None:
+    """Replay consumes updated tokens, filters and slots, and preserves the evolving state."""
+    call = manifest_call(
+        op_type.__name__,
+        {"T": "bfloat16", "Tw": "float32"},
+        D=100,
+        W=4,
+        L=12,
+        P=4,
+        dilation=3,
+        activation=None,
+        some=["bias", *serving],
+        **shape,
+    )
+    test = workload_type(call)
+    inputs = list(test.gen_inputs())
+    initial_state = inputs[2].clone()
+    args, keywords = call.signature.forward_arguments(inputs)
+    op = op_type(**call.arguments())
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(*args, **keywords)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        output = op(*args, **keywords)
+
+    inputs[2].copy_(initial_state)
+    expected_inputs = list(inputs)
+    expected_inputs[2] = initial_state.clone()
+    evidence = test.verification(*inputs)
+    slots = inputs[6] if op_type is CausalConv1dFwdOp else inputs[4]
+    # More replays than the history span: both carried history and newly arrived tokens
+    # must advance through every column, including when the pool mapping changes.
+    for _ in range(11):
+        inputs[0].mul_(0.5)
+        inputs[1].mul_(0.9)
+        slots.copy_(slots.roll(1))
+        expected = test.ref_program(*expected_inputs)
+        graph.replay()
+        compare_outputs((output, inputs[2]), expected, evidence)
 
 
 _ROLLBACK = (
@@ -375,6 +700,24 @@ def test_causal_conv1d_skips_the_states_of_negative_slots(
     inputs = test_type(call).gen_inputs()
     op = op_type(**{**call.arguments(), "validate_inputs": True})
     check_padded_slots_skipped(op, inputs, 2, slots_at, [0, 4])
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_causal_conv1d_prefill_refuses_a_ring_past_shared_memory() -> None:
+    """A dilated staging ring must fit the stated block budget before the kernel builds."""
+    (in_tree,) = Kernel.devices
+    call = CausalConv1dCall(
+        arch=89, sm_count=142, smem_budget=101376, dim=256, width=4, dtype=torch.bfloat16,
+        weight_dtype=torch.bfloat16, state_len=210, dilation=70, device=torch.device(in_tree),
+    )  # fmt: skip
+    op = CausalConv1dFwdOp(dilation=70)
+    with pytest.raises(OpNotAvailableError, match="108032 bytes of tokens, past the 101376"):
+        op.key_for("causal_conv1d", call)
+    # A stated budget exactly equal to the ring fits; one byte less does not.
+    assert op.key_for("causal_conv1d", replace(call, smem_budget=108032)) == "causal_conv1d"
+    with pytest.raises(OpNotAvailableError, match="108032 bytes of tokens, past the 108031"):
+        op.key_for("causal_conv1d", replace(call, smem_budget=108031))
 
 
 @pytest.mark.smoke
