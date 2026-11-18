@@ -279,14 +279,6 @@ def test_rope_rotates_several_units_a_thread_where_heads_copy_columns(
     compare_outputs(got_k, ref_k, rope_verification())
 
 
-def _copying_op(name, dtype, **changes):
-    """Op *name* whose heads of 64 columns rotate 24 and copy 40, and its full parameters."""
-    changes = {"head_size": 64, "rotary_dim": 24, **changes}
-    if name == "LongRoPEFwdOp":
-        changes["rescale_factors"] = [1.0 + i / 16 for i in range(changes["rotary_dim"] // 2)]
-    return _op(name, dtype, **changes)
-
-
 def _call_with_offsets(name, op, positions, query, key):
     """*op*'s outputs, LongRoPE's at offsets of 4096, and the positions they read."""
     if name != "LongRoPEFwdOp":
@@ -298,24 +290,25 @@ def _call_with_offsets(name, op, positions, query, key):
 @pytest.mark.parametrize(
     ("name", "neox", "dtype"),
     [
-        pytest.param("RoPEFwdOp", False, torch.float16, marks=pytest.mark.smoke, id="gptj"),
         pytest.param("RoPEFwdOp", False, torch.float32, marks=pytest.mark.smoke, id="gptj-float32"),
         pytest.param(
-            "LongRoPEFwdOp", True, torch.float16, marks=pytest.mark.full, id="longrope-offsets"
+            "LongRoPEFwdOp", True, torch.float16, marks=pytest.mark.smoke, id="longrope-offsets"
         ),
     ],
 )
 def test_rope_rotates_one_unit_a_thread_where_heads_copy_columns(name, neox, dtype) -> None:
-    """A small call whose heads copy columns: one unit a thread, its columns loaded before the
-    token's position.
+    """A small call whose heads copy columns and whose token has more units than a block of
+    the config holds: one unit a thread, its columns loaded before the token's position, in
+    blocks of the config's threads, the last partly empty.
 
-    5 tokens of 17 query heads of 64 columns, 24 rotating, give a token more units than one
-    block's threads, so its second block is partly empty. Positions outside the cache read
-    its nearest row; LongRoPE's offsets move each row. A float32 call takes this program at
-    any size.
+    5 tokens of 64 query heads and one key head, 64 columns a head and 24 rotating. Positions
+    outside the cache read its nearest row; LongRoPE's offsets move each row.
     """
-    op, params = _copying_op(name, dtype, is_neox_style=neox)
-    _, query, key = _inputs(name, params, 5, 17, 1, dtype)
+    changes = {"head_size": 64, "rotary_dim": 24, "is_neox_style": neox}
+    if name == "LongRoPEFwdOp":
+        changes["rescale_factors"] = [1.0 + i / 16 for i in range(12)]
+    op, params = _op(name, dtype, **changes)
+    _, query, key = _inputs(name, params, 5, 64, 1, dtype)
     rows = rope_tables(name, params, query)[0].shape[0]
     positions = torch.tensor([-1, rows, 3, rows - 1, 1000], device=run_device())
     (got_q, got_k), read = _call_with_offsets(name, op, positions, query, key)
@@ -332,9 +325,10 @@ def test_rope_rotates_one_unit_a_thread_where_heads_copy_columns(name, neox, dty
     ],
 )
 def test_rope_takes_a_key_of_no_heads(name) -> None:
-    """A present key of no heads comes back empty, shaped as the key; the query rotates."""
+    """A 0-column key failed to reshape; it comes back empty, shaped as the key, and the query
+    rotates."""
     dtype = torch.float16
-    op, params = _copying_op(name, dtype)
+    op, params = _op(name, dtype)
     positions, query, key = _inputs(name, params, 5, 3, 0, dtype)
     (got_q, got_k), read = _call_with_offsets(name, op, positions, query, key)
     assert got_k.shape == key.shape

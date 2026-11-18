@@ -482,7 +482,6 @@ class _RoPEPositionsKernel(Kernel):
         tail_vec = math.gcd(lanes, head_size, rotary_dim)
         _, rotating, copying = _head_units(self._NEOX, head_size, rotary_dim, rot_vec, tail_vec)
         self._token_units = (query_heads + key_heads) * (rotating + copying)
-        self._copies = copying > 0
         self._resident_threads = resident_threads
         self.kernel = _rope_positions_kernel(
             query_heads,
@@ -534,12 +533,12 @@ class _RoPEPositionsKernel(Kernel):
         return query_out.view(query.shape), key_out.view(key.shape)
 
     def _compile(self, cfg: dict, wide: bool):
-        """The program ``forward`` launches, compiled from *cfg*; *wide* gives a thread one unit
-        and, where heads copy no columns, a block a thread per unit of its token, whole warps,
-        up to the block limit."""
-        if wide and self._copies:
-            # Blocks of cfg's width spread a small call's tokens over more SMs than one block a
-            # token, where a block's time is its SM's load and store traffic.
+        """The program ``forward`` launches, compiled from *cfg*; *wide* gives a thread one unit,
+        and a block a thread per unit of its token, whole warps, unless the token has more units
+        than a block of *cfg* holds."""
+        if wide and self._token_units > cfg["threads"] * cfg["units"]:
+            # One block would put more of the token's loads and stores on one SM than *cfg*'s
+            # block does; blocks of cfg's width spread them over several SMs.
             return self.kernel(cfg["threads"], 1)
         if wide:
             return self.kernel(min(1024, -(-self._token_units // 32) * 32), 1)
