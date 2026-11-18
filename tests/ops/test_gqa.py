@@ -124,16 +124,16 @@ def test_gqa_dense_prefill_matches_reference(
             *case,
             marks=[
                 pytest.mark.sm89 if arch == 89 else pytest.mark.sm90,
-                pytest.mark.smoke if index < 2 else pytest.mark.full,
+                pytest.mark.smoke if index < 3 else pytest.mark.full,
             ],
         )
         for index, case in enumerate(
             [
                 (1, 2049, 0.125, 50.0, None, None, torch.bfloat16),
+                (255, 1793, 0.0625, 50.0, "interleaved", 128, torch.bfloat16),
                 (256, 1792, 0.125, 0.0, None, None, torch.float16),
                 (255, 1793, 0.0625, 50.0, None, None, torch.float16),
                 (256, 1792, 0.125, 0.0, "neox", 64, torch.float16),
-                (255, 1793, 0.0625, 50.0, "interleaved", 128, torch.bfloat16),
             ]
         )
         for arch in (89, 90)

@@ -1122,7 +1122,8 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
 
         A request shorter than the query tile pads it, so a packing holding a few of them
         takes the narrow tile. A key tile the page holds is copied contiguously and a wider
-        one amortises the copy; a page under 32 rows holds no contiguous tile and gathers 64.
+        one amortises the copy; a page under 32 rows holds no contiguous tile and gathers 64, since
+        a wider gather costs more per tile than it saves.
         """
         page = self.page_size
         # A tile row of 128 bytes or less leaves the contiguous copy too little to move per

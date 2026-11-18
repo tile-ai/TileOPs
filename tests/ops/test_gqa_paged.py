@@ -1584,6 +1584,18 @@ def test_gqa_paged_fp8_decode_refuses_pages_under_128_bytes(page_size: int, serv
             marks=pytest.mark.smoke,
             id="bf16-shared-memory-limit",
         ),
+        # An FP8 query reads the stored keys; float16 output, no causal mask.
+        pytest.param(
+            [200, 1],
+            [700, 333],
+            64,
+            FP8,
+            torch.float16,
+            {"per_request_scales": True, "is_causal": False},
+            False,
+            marks=pytest.mark.smoke,
+            id="fp8-out-f16-bidirectional",
+        ),
         # Two 48-row pages a 96-row key tile, scales per request.
         pytest.param(
             [200, 1],
@@ -1595,18 +1607,6 @@ def test_gqa_paged_fp8_decode_refuses_pages_under_128_bytes(page_size: int, serv
             False,
             marks=pytest.mark.full,
             id="bf16-pages-48",
-        ),
-        # An FP8 query reads the stored keys; float16 output, no causal mask.
-        pytest.param(
-            [200, 1],
-            [700, 333],
-            64,
-            FP8,
-            torch.float16,
-            {"per_request_scales": True, "is_causal": False},
-            False,
-            marks=pytest.mark.full,
-            id="fp8-out-f16-bidirectional",
         ),
         # Part of one 256-row page a key tile; the softcap reads the dequantized score.
         pytest.param(

@@ -452,7 +452,8 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
     _Q_SLOTS: int = 1
     # The shared buffers hold the Q slot, both key halves and V: at block_n 128 and
     # two stages that is 208 KB of the 227 KB an SM90 block may use, leaving the
-    # per-request prefix room. A second Q slot would need 256 KB and does not fit.
+    # per-request prefix room. A second Q slot would need 256 KB and does not fit, and a
+    # wider key tile is worth more than prefetching the next item's Q.
     _MAX_BATCH: int = 256
 
     @classmethod
