@@ -2308,11 +2308,11 @@ def test_gemm_coop2_swap_refuses_a_float32_output() -> None:
 @pytest.mark.parametrize(
     ("m", "n"),
     [
-        # DeepSeek-V4-Flash's LM head over one decode token, a GEMV.
-        pytest.param(1, 129280, marks=pytest.mark.full, id="lm-head-gemv"),
-        # Its router and LM head over 64 decode tokens.
+        # DeepSeek-V4-Flash's router and LM head over 64 decode tokens.
         pytest.param(64, 256, marks=pytest.mark.smoke, id="router-decode"),
         pytest.param(64, 129280, marks=pytest.mark.full, id="lm-head-decode"),
+        # Its LM head over one decode token, a GEMV.
+        pytest.param(1, 129280, marks=pytest.mark.full, id="lm-head-gemv"),
         # Its LM head over 24 decode tokens, which streams the weight 64 rows at a time.
         pytest.param(24, 129280, marks=pytest.mark.full, id="lm-head-stream"),
         # Its router and KV compressors over an 8192-token prefill.
