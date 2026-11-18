@@ -4,13 +4,27 @@ The timing layer owns the measurement and nothing else -- it knows how to run a 
 n times and return each run's device latency. What the numbers mean, and where they are
 written, belong to the layers above.
 
+Every iteration restores the mutable inputs, reads a private eviction buffer, then calls;
+only the call is read. Three prepared calls calibrate the warm-up and repeat counts.
+
 A CUDA device is timed with the pieces of NVIDIA nvbench's cold measurement
 (``nvbench/detail/measure_cold.cuh``): every sample flushes L2 before the call, runs behind
-nvbench's blocking kernel, and records the SM clock it ran at. nvbench holds each sample
-alone and drains the device after it; here one blocking kernel holds a block of samples
-queued with no host synchronization between them. The readings come from CUPTI. Another
-accelerator is timed with torch's device events, which bracket each call: its ``timing``
-reads ``events``, and the busy time equals the latency.
+nvbench's blocking kernel, and records SM 0's clock around the call; persisting L2 priority
+is reset before each block of samples. nvbench holds each sample alone and drains the
+device after it; here one blocking kernel holds a block of samples queued with no host
+synchronization between them, so host launch cost never becomes device idle time. Warm-up
+loads the blocking kernel, then runs each call unheld and drained, as nvbench's does. No
+sample is discarded for its clock (nvbench's ``--throttle-threshold 0``): a compute-bound
+call at the power cap runs throttled in steady state, and the protocol asks only that every
+implementation run in the same power state. A block whose queue filled
+before the host released it is measured again in smaller blocks; where the queue holds no
+sample, every sample is measured again unheld and drained, as nvbench runs a launcher that
+cannot be held (``exec_tag::sync``). ``block_samples`` records the most samples a block
+then held, 0 for none, and ``l2_flush`` whether the samples were held or drained.
+
+The readings come from CUPTI. Another accelerator is timed with torch's device events,
+which bracket each call: its ``timing`` reads ``events``, and the busy time equals the
+latency.
 
 A kernel belongs to the iteration whose external correlation id it carries, so nothing
 is inferred from timestamps and a kernel shorter than the host overhead around it is
@@ -62,9 +76,10 @@ _BLOCK_TIMEOUT_S = 1.0
 _bench_meta = threading.local()
 
 
-# Cache preparation identifiers separate incompatible historical measurements. On CUDA a
-# sample is either queued behind the blocking kernel or, where none can be held, drained
-# before and after its call; elsewhere samples are queued with no drain between them.
+# Cache preparation identifiers, recorded with each result, keep results taken under
+# different preparations apart. On CUDA a sample is either queued behind the blocking
+# kernel or, where none can be held, drained before and after its call; elsewhere samples
+# are queued with no drain between them.
 _L2_FLUSH_CUDA = "triton-read-2x-l2-held"
 _L2_FLUSH_CUDA_DRAINED = "triton-read-2x-l2-drained"
 _L2_FLUSH_OTHER = "torch-max-2x-l2-undrained"
@@ -163,46 +178,26 @@ def bench_kernel(
     reset: Callable[[], None] | None = None,
     device: torch.device | None = None,
 ) -> list[Sample]:
-    """Time *fn* on *device*, one :class:`Sample` per iteration.
+    """Time *fn* on *device*, one :class:`Sample` per iteration, by the protocol in this
+    module's docstring.
 
-    Every call uses the same preparation: restore mutable inputs, then read a private
-    eviction buffer. On CUDA, persisting L2 priority is reset once before the first call and
-    before each block of timed calls. Preparation is excluded from timing. Calibration
-    measures three consecutive prepared calls to set the iteration counts within
-    ``[min_iters, max_iters]``. Each kernel is attributed to the iteration that launched it,
-    so *fn* must launch its own work rather than hand it to another thread. A phase whose
+    The warm-up and repeat counts are *dry_run_ms* and *repeat_ms* divided by the calibrated
+    cost of one iteration, clamped to ``[min_iters, max_iters]``. A phase whose
     records CUPTI discarded is measured again; attribution otherwise fails closed unless
     ``allow_events_fallback`` is true. ``None`` takes the run's setting,
     ``--tileops-allow-events-fallback``.
-
-    On CUDA the samples take nvbench's cold measurement with one change: nvbench holds each
-    sample behind its own blocking kernel and drains the device after it, while here one
-    blocking kernel holds a block of samples queued with no host synchronization between
-    them, so host launch cost never becomes device idle time between samples. Warm-up loads
-    the blocking kernel, then runs each call unheld and drained before and after, as
-    nvbench's warm-up does. SM 0's clock is read around every call and kept in the sample.
-    No sample is discarded for its clock (nvbench's ``--throttle-threshold 0``): a
-    compute-bound call at the power cap runs throttled in steady state, and the protocol
-    asks only that every implementation run in the same power state. A block whose queue
-    filled before the host released it is measured again in smaller blocks. Where the queue
-    holds no sample, every sample is measured again unheld and drained before and after, as
-    nvbench runs a launcher that cannot be held (``exec_tag::sync``). ``block_samples``
-    records the most samples a block then held, 0 for none, and ``l2_flush`` names whether
-    the samples were held or drained.
 
     ``count_copies`` adds device-to-device copies to what is attributed, for a row whose
     implementations compute part of the result with one. It is off by default because a
     staging copy is not the arithmetic being timed; turn it on for every tag in a row or
     for none, since the two sides are otherwise read off different instruments.
 
-    ``reset`` restores the state *fn* overwrites. Every iteration runs ``reset``, then the
-    L2 flush, then *fn*; ``reset`` is never part of the reading, and the flush evicts what
-    it wrote. ``reset`` enqueues its work on the current stream, the flush's, which is what
-    orders the two.
+    ``reset`` restores the state *fn* overwrites, before the L2 flush, which evicts what it
+    wrote. It enqueues its work on the current stream, the flush's, which orders the two.
 
     Everything runs on *device*, by default :func:`bench_device`. A CUDA device is timed
-    through CUPTI as above; any other is timed with device events, which neither attribute
-    kernels nor fall back.
+    through CUPTI; any other is timed with device events, which neither attribute kernels
+    nor fall back.
 
     Raises:
         TypeError: *args* is not a tuple.
@@ -366,9 +361,8 @@ def _bench_kernel(
             retried = 0
             readings = reading(size)
             if blocking and blocker.timed_out():
-                # The queue took fewer samples than the block held. Measure again in blocks
-                # of what it took; where it took none, measure every sample again unheld, so
-                # no reading mixes held and drained samples.
+                # The queue took fewer samples than the block held. A queue that took none
+                # drops what was kept, so no reading mixes held and drained samples.
                 per_block = fitted if fitted is not None else size - 1
                 if per_block == 0:
                     blocking, per_block = False, n_repeat
