@@ -108,6 +108,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         EngramGateConvBwdKernel,
         EngramGateConvFwdKernel,
     )
+    from tileops._kernels.sequence_modeling.hyper_connection import HyperConnectionPreKernel
     from tileops._kernels.transform import (
         HadamardBaseExchangeKernel,
         HadamardExchangeKernel,
@@ -187,6 +188,7 @@ _LAZY = {
     "HadamardMultiPassKernel": ".transform",
     "HadamardSharedRowsKernel": ".transform",
     "HadamardWarpRowsKernel": ".transform",
+    "HyperConnectionPreKernel": ".sequence_modeling.hyper_connection",
     "GemvKernel": ".gemm",
     "GroupConv1dKernel": ".convolution",
     "GroupConv2dKernel": ".convolution",
