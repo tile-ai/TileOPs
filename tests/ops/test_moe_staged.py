@@ -13,6 +13,7 @@ from tileops._kernels.moe import (
     PrePermuteCall,
 )
 from tileops._ops import moe as public_moe
+from tileops._ops.elementwise import SiLUAndMulFwdOp
 from tileops._ops.moe import (
     ContiguousLayoutSpec,
     MaskedLayoutSpec,
@@ -25,6 +26,7 @@ from tileops._ops.moe import (
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
+from tileops.gemm import GEMMFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.moe import (
     MoEExpertMLPWorkload,
@@ -32,7 +34,7 @@ from workloads.moe import (
     MoEPostPermuteWorkload,
     post_permute_verification,
 )
-from workloads.numerics import compare_outputs
+from workloads.numerics import assert_normalized_error, compare_outputs
 from workloads.workload_base import manifest_call
 
 _TIGHT = ContiguousLayoutSpec.tight_physical_psum()
@@ -937,6 +939,46 @@ def test_post_permute_more_tokens_than_sms_at_gpt_oss_hidden_size() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_post_permute_adds_the_residual_to_the_scaled_reduction(
+    dtype: torch.dtype, scale: float
+) -> None:
+    """The routing scale multiplies the reduction, the residual is added once, and the result
+    is written into ``out``."""
+    tokens, top_k, hidden = 37, 6, 4096
+    routes = tokens * top_k
+    expert_output = torch.randn(routes, hidden, dtype=dtype, device=run_device())
+    weights = torch.rand(tokens, top_k, device=run_device())
+    inverse = torch.randperm(routes, device=run_device()).int()
+    residual = torch.randn(tokens, hidden, dtype=dtype, device=run_device())
+    op = MoEPostPermuteFwdOp(_TIGHT, RoutingEpilogueSpec(routed_scaling_factor=scale))
+    out = torch.empty(tokens, hidden, dtype=dtype, device=run_device())
+    assert op(expert_output, weights, inverse, out=out, residual=residual) is out
+    routed = expert_output[inverse.long()].float().view(tokens, top_k, hidden)
+    expected = (routed * weights[..., None]).sum(dim=1) * scale + residual.float()
+    compare_outputs(out.float(), expected, post_permute_verification(scale))
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_post_permute_adds_the_residual_before_the_cast(dtype: torch.dtype) -> None:
+    """Routes of 1 and eps / 2 against a residual of -1 leave eps / 2: rounding the reduction
+    first would round 1 + eps / 2 to 1 and leave 0."""
+    tokens, top_k, hidden = 4, 2, 64
+    half_eps = torch.finfo(dtype).eps / 2
+    expert_output = torch.full((tokens * top_k, hidden), half_eps, dtype=dtype, device=run_device())
+    expert_output[0::2] = 1.0
+    inverse = torch.arange(tokens * top_k, dtype=torch.int32, device=run_device())
+    weights = torch.ones(tokens, top_k, device=run_device())
+    residual = torch.full((tokens, hidden), -1.0, dtype=dtype, device=run_device())
+    out = MoEPostPermuteFwdOp(_TIGHT)(expert_output, weights, inverse, residual=residual)
+    assert torch.equal(out, torch.full_like(out, half_eps))
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
@@ -1006,6 +1048,8 @@ def _post_permute_in_workspace(name, overlap):
         "inverse_indices": torch.arange(tokens * top_k, dtype=torch.int32, device=run_device()),
         "topk_weights": torch.ones(tokens, top_k, device=run_device()),
     }
+    if name == "residual":
+        inputs[name] = torch.randn(tokens, hidden, dtype=torch.bfloat16, device=run_device())
     source = inputs[name]
     out_like = torch.empty(tokens, hidden, dtype=inputs["expert_output"].dtype)
     workspace = torch.zeros(out_like.nbytes + source.nbytes, dtype=torch.uint8, device=run_device())
@@ -1022,7 +1066,7 @@ def _post_permute_in_workspace(name, overlap):
 def test_post_permute_refuses_overlapping_dlpack_output():
     """The manifest lets ``out`` overlap no input: an output sharing an element with any input
     is refused without writing."""
-    for name in ("expert_output", "topk_weights", "inverse_indices"):
+    for name in ("expert_output", "topk_weights", "inverse_indices", "residual"):
         op, inputs, out, _, workspace = _post_permute_in_workspace(name, True)
         before = workspace.clone()
         with pytest.raises(ValueError, match=f"out must not overlap {name}"):
@@ -1040,3 +1084,73 @@ def test_post_permute_accepts_adjacent_dlpack_output():
     args = (inputs["expert_output"], inputs["topk_weights"], inputs["inverse_indices"])
     compare_outputs(out, workload.ref_program(*args), workload.verification(*args))
     assert torch.equal(workspace[out.nbytes :], before[out.nbytes :])
+
+
+def _deepseek_v4_moe(x, ids, weights, w_gate_up, w_down, shared_gate_up, shared_down, limit):
+    """DeepSeek-V4-Flash inference/model.py ``MoE.forward`` over ``Expert.forward``, its
+    linears in the dtype of *x*: bfloat16 runs the official code, float32 the reference."""
+
+    def expert(x, w_gate_up, w_down, weight=None):
+        gate, up = torch.nn.functional.linear(x, w_gate_up).float().chunk(2, dim=-1)
+        h = torch.nn.functional.silu(gate.clamp(max=limit)) * up.clamp(-limit, limit)
+        if weight is not None:
+            h = weight * h
+        return torch.nn.functional.linear(h.to(x.dtype), w_down)
+
+    y = torch.zeros(x.shape, dtype=torch.float32, device=x.device)
+    for e in range(w_gate_up.shape[0]):
+        token, k = torch.where(ids == e)
+        y[token] += expert(x[token], w_gate_up[e], w_down[e], weights[token, k, None])
+    y += expert(x, shared_gate_up, shared_down)
+    return y.to(x.dtype)
+
+
+def _normalized_error(got: torch.Tensor, expected: torch.Tensor) -> float:
+    got, expected = got.double(), expected.double()
+    return ((got - expected).pow(2).sum() / (got.pow(2) + expected.pow(2)).sum()).item()
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "tokens, hidden, inter, experts",
+    [
+        pytest.param(64, 512, 256, 16, marks=pytest.mark.smoke),
+        # DeepSeek-V4-Flash's sizes at 32768 tokens, over one rank's 32 of 256 experts.
+        pytest.param(32768, 4096, 2048, 32, marks=pytest.mark.full),
+    ],
+)
+def test_deepseek_v4_moe_block_matches_the_float32_reference(
+    tokens: int, hidden: int, inter: int, experts: int
+) -> None:
+    """DeepSeek-V4-Flash's MoE block from TileOPs ops, its weights spread so the clamp engages:
+    the routing weight scales each clamped SwiGLU row before the down projection, and the
+    shared expert joins the float32 sum before the one cast. Its error against the float32
+    reference stays within twice the official bfloat16 code's."""
+    top_k, limit = 6, 10.0
+    device, dtype = run_device(), torch.bfloat16
+    spread = 7 * hidden**-0.5
+    x = torch.randn(tokens, hidden, device=device).to(dtype)
+    w_gate_up = (torch.randn(experts, 2 * inter, hidden, device=device) * spread).to(dtype)
+    w_down = (torch.randn(experts, hidden, inter, device=device) * inter**-0.5).to(dtype)
+    shared_gate_up = (torch.randn(2 * inter, hidden, device=device) * spread).to(dtype)
+    shared_down = (torch.randn(hidden, inter, device=device) * inter**-0.5).to(dtype)
+    ids = torch.rand(tokens, experts, device=device).argsort(dim=-1)[:, :top_k].int()
+    weights = torch.rand(tokens, top_k, device=device)
+    weights = weights / weights.sum(dim=-1, keepdim=True) * 1.5
+
+    rows, ends, inverse = MoEPrePermuteFwdOp(_TIGHT, num_local_experts=experts)(x, ids)
+    row_weights = torch.empty(rows.shape[0], device=device)
+    row_weights[inverse.long()] = weights.flatten()
+    activation = SiLUAndMulFwdOp(swiglu_limit=limit)
+    gate_up = MoEGroupedGEMMFwdOp(_TIGHT)(rows, w_gate_up, ends)
+    routed = MoEGroupedGEMMFwdOp(_TIGHT)(activation(gate_up, scale=row_weights), w_down, ends)
+    shared = GEMMFwdOp()(activation(GEMMFwdOp()(x, shared_gate_up)), shared_down)
+    got = MoEPostPermuteFwdOp(_TIGHT)(routed, torch.ones_like(weights), inverse, residual=shared)
+
+    tensors = (x, ids, weights, w_gate_up, w_down, shared_gate_up, shared_down)
+    official = _deepseek_v4_moe(*tensors, limit)
+    reference = _deepseek_v4_moe(
+        *(t.float() if t.is_floating_point() else t for t in tensors), limit
+    )
+    bound = 2 * _normalized_error(official.float(), reference)
+    assert_normalized_error(got.float(), reference, bound)

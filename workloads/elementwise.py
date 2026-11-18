@@ -878,6 +878,21 @@ class SiLUAndMulEdgeWorkload(ElementwiseWorkload):
         return fused_gated_verification(inputs[0].dtype)
 
 
+class SiLUAndMulClampEdgeWorkload(ElementwiseWorkload):
+    """Edge gates against edge values under ``swiglu_limit`` 10, every pair in one row scaled
+    by 1.5: values at, inside and past the limit, infinite and NaN."""
+
+    def __init__(self, dtype):
+        edges = [0.0, -0.0, 1.0, -9.5, 10.0, -10.0, 10.5, -10.5, 1e4, -1e4]
+        edges += [float("inf"), -float("inf"), float("nan")]
+        edge = torch.tensor(edges, device=run_device()).to(dtype)
+        gate, value = torch.cartesian_prod(edge, edge).unbind(1)
+        scale = torch.full((1,), 1.5, device=run_device())
+        super().__init__(
+            "SiLUAndMulFwdOp", (torch.cat([gate, value])[None], scale), swiglu_limit=10.0
+        )
+
+
 class GELUAndMulTailWorkload(ElementwiseWorkload):
     """GELU's saturated tails as gates against a value of one: exact closed forms."""
 

@@ -10,9 +10,11 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.elementwise import GELUAndMulFwdOp, SiLUAndMulFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
+    ElementwiseWorkload,
     GELUAndMulCase,
     GELUAndMulTailWorkload,
     SiLUAndMulCase,
+    SiLUAndMulClampEdgeWorkload,
     SiLUAndMulEdgeWorkload,
     SiLUAndMulGateSweepWorkload,
 )
@@ -30,6 +32,8 @@ class SiLUAndMulFixture(FixtureBase):
                 pytest.param(1024, 1032, torch.bfloat16, marks=pytest.mark.smoke),
                 # Tile boundary: the second 1024-column block is half past N.
                 pytest.param(1024, 1536, torch.bfloat16, marks=pytest.mark.smoke),
+                # More rows than a grid's y dimension holds.
+                pytest.param(65537, 128, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
             ],
         ),
@@ -92,6 +96,53 @@ def test_silu_and_mul_input_off_a_vector_boundary() -> None:
     x = torch.empty(aligned.numel() + 1, device=run_device(), dtype=aligned.dtype)[1:]
     x = x.view(aligned.shape).copy_(aligned)
     test.check(SiLUAndMulFwdOp(), x)
+
+
+class SiLUAndMulClampedFixture(FixtureBase):
+    PARAMS = [
+        (
+            "m, n, dtype, swiglu_limit, scaled",
+            [
+                # DeepSeek-V4-Flash's routed rows of one token at top 6.
+                pytest.param(6, 2048, torch.bfloat16, 10.0, True, marks=pytest.mark.smoke),
+                # Its shared expert: clamped, not scaled.
+                pytest.param(64, 2048, torch.bfloat16, 10.0, False, marks=pytest.mark.smoke),
+                # Scaled, not clamped, on a row off the vector width.
+                pytest.param(37, 1001, torch.bfloat16, 0.0, True, marks=pytest.mark.smoke),
+                pytest.param(64, 1024, torch.float16, 10.0, True, marks=pytest.mark.smoke),
+                pytest.param(64, 1024, torch.float32, 10.0, True, marks=pytest.mark.smoke),
+                # More rows than a grid's y dimension holds.
+                pytest.param(65537, 128, torch.bfloat16, 10.0, True, marks=pytest.mark.smoke),
+                # A limit bfloat16 does not hold.
+                pytest.param(64, 1024, torch.bfloat16, 7.3, True, marks=pytest.mark.full),
+                # DeepSeek-V4-Flash's routed rows of 4096 and 32768 tokens.
+                pytest.param(24576, 2048, torch.bfloat16, 10.0, True, marks=pytest.mark.full),
+                pytest.param(196608, 2048, torch.bfloat16, 10.0, True, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@SiLUAndMulClampedFixture
+def test_silu_and_mul_clamps_and_scales_rows(
+    m: int, n: int, dtype: torch.dtype, swiglu_limit: float, scaled: bool
+) -> None:
+    """Gates and values spread past the limit are clamped, and each row's product scaled, in
+    float32 before the one rounding."""
+    x = (torch.randn(m, 2 * n, device=run_device()) * 8).to(dtype)
+    scale = torch.rand(m, device=run_device()) * 1.5 if scaled else None
+    workload = ElementwiseWorkload("SiLUAndMulFwdOp", (x, scale), swiglu_limit=swiglu_limit)
+    TestBase.check(workload, SiLUAndMulFwdOp(swiglu_limit=swiglu_limit), x, scale)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_silu_and_mul_clamp_keeps_nan(dtype: torch.dtype) -> None:
+    """Edge: a NaN gate or value passes the clamp, an infinite value clamps to the limit, and
+    a gate of -inf stays -inf."""
+    workload = SiLUAndMulClampEdgeWorkload(dtype)
+    x, scale = workload.gen_inputs()
+    TestBase.check(workload, SiLUAndMulFwdOp(swiglu_limit=10.0), x, scale)
 
 
 class GELUAndMulFixture(FixtureBase):
