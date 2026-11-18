@@ -84,6 +84,17 @@ def _addressless(t: torch.Tensor) -> bool:
     return False
 
 
+def _slot_spec(t: object) -> object:
+    """What a kernel builder is told of the input *t*: a ``TensorSpec`` for a tensor, a tuple of
+    them for a tensor sequence, ``None`` for an absent input, and its type for a call-time
+    scalar."""
+    if t is None:
+        return None
+    if isinstance(t, (list, tuple)):
+        return tuple(map(TensorSpec.of, t))
+    return TensorSpec.of(t) if isinstance(t, torch.Tensor) else type(t)
+
+
 def _element_span(t: torch.Tensor) -> int:
     """The elements from the first element of *t*, which holds one, to its last, holes of a
     strided layout included."""
@@ -1282,25 +1293,12 @@ class Op(ABC):
         if device is None:
             device = self._traced_device(leaves((*inputs, *writes.values())))
         params = self._manifest_params()
-        # An absent input keeps its slot as ``None``, so two calls differing only in which
-        # one they omit key apart; a call-time scalar keys by its type, never its value. The
-        # builder keys too: a kernel serves only the builder that built it.
-        signature = (
-            device,
-            *(
-                None
-                if t is None
-                else tuple((x.dtype, tuple(x.shape)) for x in t)
-                if isinstance(t, (list, tuple))
-                else (t.dtype, tuple(t.shape))
-                if isinstance(t, torch.Tensor)
-                else type(t)
-                for t in inputs
-            ),
-            _snapshot(params),
-            builder,
-        )
-        named = dict(zip(names, inputs, strict=True))
+        # The builder's description of each input keys the kernel: an absent input keeps its
+        # slot as ``None``, so two calls differing only in which one they omit key apart, and a
+        # call-time scalar keys by its type, never its value. The builder keys too: a kernel
+        # serves only the builder that built it.
+        specs = tuple(map(_slot_spec, inputs))
+        signature = (device, *specs, _snapshot(params), builder)
         built = self._target_kernels
         kernel = built.get(signature)
         if kernel is None:
@@ -1310,12 +1308,12 @@ class Op(ABC):
                 if kernel is None:
                     owned = copy.deepcopy(params)
                     kernel = built[signature] = self._build_target_kernel(
-                        builder, device, named, owned
+                        builder, device, specs, owned
                     )
         result = kernel(*inputs, **writes, **(execution or {}))
         # An op whose every output is an input it writes returns nothing, as its forward does.
         outputs = self._forward_outputs()
-        if outputs and all(name in named for name in outputs):
+        if outputs and all(name in names for name in outputs):
             return None
         return result
 
@@ -1330,11 +1328,11 @@ class Op(ABC):
         self,
         builder: object,
         device: "torch.device | None",
-        inputs: "dict[str, torch.Tensor | None]",
+        specs: tuple,
         params: "dict[str, object]",
     ) -> object:
-        """Ask *builder* for the kernel serving calls on *device* described by *inputs*, built
-        with the manifest *params*.
+        """Ask *builder* for the kernel serving calls on *device* whose inputs *specs*
+        describe, one :func:`_slot_spec` each, built with the manifest *params*.
 
         The builder runs with *device* current. In tuned mode the kernel is tuned before it
         is returned, so a kernel whose tuning raised is never cached and the next call builds
@@ -1343,17 +1341,6 @@ class Op(ABC):
         Raises:
             OpNotAvailableError: The builder returned something that is not callable.
         """
-        # A call-time scalar is described by its type.
-        specs = tuple(
-            None
-            if t is None
-            else tuple(TensorSpec.of(x) for x in t)
-            if isinstance(t, (list, tuple))
-            else TensorSpec.of(t)
-            if isinstance(t, torch.Tensor)
-            else type(t)
-            for t in inputs.values()
-        )
         # Built with its device current, as an in-tree entry is: a builder may compile or
         # allocate for whichever device is current.
         with device_context(device):
