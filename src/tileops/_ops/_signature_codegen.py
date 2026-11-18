@@ -1018,7 +1018,7 @@ class _CallCheck:
 
 def _call_scalars(sig: Signature) -> set[str]:
     """The call-time arguments with a scalar member, and the `let`s that read them."""
-    return {t for t, d in sig.inputs.items() if d.scalars} | call_scalar_lets(sig)
+    return sig.scalar_inputs | call_scalar_lets(sig)
 
 
 def _passes_buffer(sig: Signature, point: dict) -> bool:

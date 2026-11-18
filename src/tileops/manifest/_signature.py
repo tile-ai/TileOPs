@@ -212,6 +212,11 @@ class Signature:
     adts: dict[str, dict[str, Any]] = field(default_factory=dict)
     dtype_combos: list[dict[str, Any]] = field(default_factory=list)
 
+    @property
+    def scalar_inputs(self) -> set[str]:
+        """The call-time inputs with a scalar member."""
+        return {t for t, d in self.inputs.items() if d.scalars}
+
     def written(self, point: dict[str, object], present: set[str]) -> frozenset[str]:
         """The inputs a call at `point` writes: `mutated` where its condition holds, `write_only`."""
         return frozenset(
@@ -418,7 +423,7 @@ def parse_signature(name: str, entry: dict, adts: dict) -> Signature:
 
 def call_scalar_lets(sig: Signature) -> set[str]:
     """The `let`s that read a call-time scalar member, directly or through another `let`."""
-    scalars = {t for t, d in sig.inputs.items() if d.scalars}
+    scalars = sig.scalar_inputs
     reads = {}
     for n, e in sig.let.items():
         try:
