@@ -9,7 +9,12 @@ import torch
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import KernelInterface
 
-__all__ = ["HyperConnectionPreCall", "HyperConnectionPreFwdInterface"]
+__all__ = [
+    "HyperConnectionPostCall",
+    "HyperConnectionPostFwdInterface",
+    "HyperConnectionPreCall",
+    "HyperConnectionPreFwdInterface",
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -60,4 +65,46 @@ class HyperConnectionPreFwdInterface(KernelInterface):
         Returns:
             New contiguous float32 ``post_mix`` ``[*S, call.n, 1]``, float32 ``comb_mix``
             ``[*S, call.n, call.n]`` and bfloat16 ``layer_input`` ``[*S, call.c]``.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class HyperConnectionPostCall(CallSpec):
+    """One manifold hyper-connection post mix of ``n`` streams of ``c`` columns a token.
+
+    The token axes ``*S`` are not part of the call: one kernel serves any token count.
+    """
+
+    n: int = 0
+    c: int = 0
+    mix_dtype: torch.dtype = torch.float32
+
+
+class HyperConnectionPostFwdInterface(KernelInterface):
+    """The block output and the residual streams mixed into ``n`` new streams."""
+
+    request = HyperConnectionPostCall
+
+    @abstractmethod
+    def forward(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor,
+        post_layer_mix: torch.Tensor,
+        comb_res_mix: torch.Tensor,
+    ) -> torch.Tensor:
+        """Mix each token's block output into its residual streams.
+
+        Stream ``j`` of the output is ``post_layer_mix[j] * x + sum_i comb_res_mix[i, j] *
+        residual[i]``, summed in float32 and rounded once to bfloat16. Nothing is written in
+        place, and the output aliases no input.
+
+        Args:
+            x: ``[*S, call.c]`` bfloat16, contiguous.
+            residual: ``[*S, call.n, call.c]`` bfloat16, contiguous.
+            post_layer_mix: ``[*S, call.n, 1]`` in ``call.mix_dtype``, contiguous.
+            comb_res_mix: ``[*S, call.n, call.n]`` in ``call.mix_dtype``, contiguous.
+
+        Returns:
+            A new contiguous ``[*S, call.n, call.c]`` bfloat16 tensor on ``call.device``.
         """

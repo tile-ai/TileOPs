@@ -33,7 +33,7 @@ from workloads.attention.nsa import NSAFwdWorkload
 from workloads.norm import mrope_rows, rms_norm_gated
 from workloads.quantization import int8_dequant
 from workloads.quantization import quantize as quantization
-from workloads.sequence_modeling import hc_head, hc_pre, ngram_hash
+from workloads.sequence_modeling import hc_head, hc_post, hc_pre, ngram_hash
 
 pytestmark = pytest.mark.smoke
 
@@ -350,11 +350,8 @@ def _hyper_connection_pre(p, t):
 
 
 def _hyper_connection_post(p, t):
-    # vllm.model_executor.kernels.mhc.torch.mhc_post_torch
-    x, residual = t["x"], t["residual"]
-    mixed = torch.einsum("...ij,...ih->...jh", t["comb_res_mix"].float(), residual.float())
-    out = t["post_layer_mix"].float() * x.unsqueeze(-2).float() + mixed
-    return {"output": out.to(residual.dtype)}
+    names = ("x", "residual", "post_layer_mix", "comb_res_mix")
+    return {"output": hc_post(*(t[n] for n in names))}
 
 
 def _hyper_connection_head(p, t):

@@ -99,7 +99,10 @@ from tileops._ops.sampling.top_k_top_p_mask import TopKTopPMaskFwdOp
 from tileops._ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops._ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops._ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
-from tileops._ops.sequence_modeling.hyper_connection import HyperConnectionPreFwdOp
+from tileops._ops.sequence_modeling.hyper_connection import (
+    HyperConnectionPostFwdOp,
+    HyperConnectionPreFwdOp,
+)
 from tileops._ops.transform import HadamardTransformFwdOp
 from workloads.attention.dsa import DSADecodeWorkload, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
@@ -836,11 +839,22 @@ def _sequence_modeling_cases():
             _x(q, dtype=torch.float32),
         )
 
+    def hyper_connection_post():
+        streams = 4
+        mix = dict(dtype=torch.float32)
+        return HyperConnectionPostFwdOp(), (
+            _x(_M, _SEQ_LEN, _D),
+            _x(_M, _SEQ_LEN, streams, _D),
+            _x(_M, _SEQ_LEN, streams, 1, **mix),
+            _x(_M, _SEQ_LEN, streams, streams, **mix),
+        )
+
     return (
         ("engram-gate-conv-fwd", engram_gate_conv_fwd),
         ("engram-gate-conv-bwd", engram_gate_conv_bwd),
         ("engram-decode", engram_decode),
         ("hyper-connection-pre", hyper_connection_pre),
+        ("hyper-connection-post", hyper_connection_post),
     )
 
 
@@ -1011,6 +1025,7 @@ for _op_cls in (
     EngramGateConvBwdOp,
     EngramDecodeFwdOp,
     HyperConnectionPreFwdOp,
+    HyperConnectionPostFwdOp,
     RoPEFwdOp,
     RoPELlama31FwdOp,
     YaRNFwdOp,
