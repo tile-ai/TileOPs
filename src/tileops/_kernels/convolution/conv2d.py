@@ -137,15 +137,14 @@ def _conv2d_kernel(
     dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
-    pad_h_end: int | None = None,
-    pad_w_end: int | None = None,
+    *,
+    pad_h_end: int,
+    pad_w_end: int,
 ):
     # Swizzle panel: a power of two so the block remap divides by shift, and the
     # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
-    # The end of each axis may pad more than the start; unset, it pads the same.
-    pad_h_end = pad_h if pad_h_end is None else pad_h_end
-    pad_w_end = pad_w if pad_w_end is None else pad_w_end
+    # The end of each axis may pad more than the start.
     accum_dtype = "float"
     out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
     out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
@@ -280,15 +279,14 @@ def _conv2d_group_kernel(
     groups: int = 1,
     c_in_g: int = 0,
     c_out_g: int = 0,
-    pad_h_end: int | None = None,
-    pad_w_end: int | None = None,
+    *,
+    pad_h_end: int,
+    pad_w_end: int,
 ):
     # Swizzle panel: a power of two so the block remap divides by shift, and the
     # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
-    # The end of each axis may pad more than the start; unset, it pads the same.
-    pad_h_end = pad_h if pad_h_end is None else pad_h_end
-    pad_w_end = pad_w if pad_w_end is None else pad_w_end
+    # The end of each axis may pad more than the start.
     accum_dtype = "float"
     out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
     out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
@@ -439,8 +437,9 @@ def _conv2d_depthwise_kernel(
     dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
-    pad_h_end: int | None = None,
-    pad_w_end: int | None = None,
+    *,
+    pad_h_end: int,
+    pad_w_end: int,
 ):
     """Build the depthwise Conv2d program: one input channel feeds one output channel.
 
@@ -451,9 +450,7 @@ def _conv2d_depthwise_kernel(
     # Swizzle panel: a power of two so the block remap divides by shift, and the
     # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
-    # The end of each axis may pad more than the start; unset, it pads the same.
-    pad_h_end = pad_h if pad_h_end is None else pad_h_end
-    pad_w_end = pad_w if pad_w_end is None else pad_w_end
+    # The end of each axis may pad more than the start.
     accum_dtype = "float"
     out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
     out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
@@ -463,8 +460,6 @@ def _conv2d_depthwise_kernel(
     def _conv2d_depthwise_func(
         block_m: int,
         block_n: int,
-        block_k: int,
-        num_stages: int,
         threads: int,
         enable_rasterization: bool,
     ):
@@ -1245,13 +1240,10 @@ class DepthwiseConv2dKernel(GroupConv2dKernel):
 
     @property
     def default_config(self) -> dict:
-        # No GEMM here, so block_k and num_stages carry nothing: one channel per block
-        # row, a strip of outputs per block column.
+        # One channel per block row, a strip of outputs per block column.
         return {
             "block_m": 1,
             "block_n": 128,
-            "block_k": 1,
-            "num_stages": 1,
             "threads": 128,
             "enable_rasterization": True,
         }

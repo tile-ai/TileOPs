@@ -85,7 +85,7 @@ class _PairOps(NamedTuple):
     warp_reduce: object
 
 
-def _make_pair_ops(op_kind: str, n: int):
+def _make_pair_ops(n: int):
     """Create argreduce-local pair operations shared by all launch paths."""
 
     @T.macro
@@ -196,7 +196,7 @@ def _argreduce_warp_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumul
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m: int, threads: int):
-        ops = _make_pair_ops(op_kind, N)
+        ops = _make_pair_ops(N)
         key_of = _ordering_key(op_kind)
 
         @T.prim_func
@@ -261,7 +261,7 @@ def _argreduce_output_kernel(
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m: int, threads: int):
-        ops = _make_pair_ops(op_kind, N)
+        ops = _make_pair_ops(N)
         key_of = _ordering_key(op_kind)
         per_thread = max(1, block_m // threads)
         span = per_thread * threads
@@ -350,7 +350,7 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumula
         held = threads * FRAGMENT_ELEMS_PER_THREAD >= N
         chunks = N // (threads * vec)
         vector_run = held and N % (threads * vec) == 0
-        ops = _make_pair_ops(op_kind, N)
+        ops = _make_pair_ops(N)
         key_of = _ordering_key(op_kind)
         block_reduce = _make_block_reduce(ops, num_warps, num_accumulators)
 
@@ -438,7 +438,7 @@ def _argreduce_multicta_partial_kernel(
         num_partials = M * ctas_per_row
         num_warps = threads // WARP_LANES
         iterations = (chunk_size + threads * num_accumulators - 1) // (threads * num_accumulators)
-        ops = _make_pair_ops(op_kind, N)
+        ops = _make_pair_ops(N)
         key_of = _ordering_key(op_kind)
         block_reduce = _make_block_reduce(ops, num_warps, num_accumulators)
 
@@ -512,7 +512,7 @@ def _argreduce_multicta_final_kernel(
 
     @tilelang.jit(out_idx=[2])
     def _func():
-        ops = _make_pair_ops(op_kind, N)
+        ops = _make_pair_ops(N)
 
         @T.prim_func
         def main(

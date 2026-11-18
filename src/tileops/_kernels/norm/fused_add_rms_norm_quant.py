@@ -87,7 +87,7 @@ def _pair(buf, at):
     return buf[T.Ramp(at, 1, 2)]
 
 
-def _constants(dtype, quant_dtype, scale_ub):
+def _constants(quant_dtype, scale_ub):
     """``(fp8, qmax, min_scale, bound)`` of a code dtype and amax bound."""
     fp8 = quant_dtype == "float8_e4m3fn"
     # vLLM's floor on a row's scale, so an all-zero row divides by a positive number.
@@ -228,7 +228,7 @@ def _fused_add_rms_norm_quant_kernel(M, N, eps, dtype, quant_dtype, scale_ub, ve
     The tensors are viewed as ``(M * cluster, N // cluster)``, one CTA a row of the view.
     ``vec`` divides a CTA's share; an access past the share's end is skipped whole.
     """
-    fp8, qmax, min_scale, bound = _constants(dtype, quant_dtype, scale_ub)
+    fp8, qmax, min_scale, bound = _constants(quant_dtype, scale_ub)
     chunk = N // cluster
 
     @tilelang.jit(
@@ -379,7 +379,7 @@ def _fused_add_rms_norm_quant_stream_kernel(M, N, eps, dtype, quant_dtype, scale
     absolute maximum, the third writes the codes, walking the tiles back from the row's end
     so the tiles read last are read first, while they are likeliest in L2.
     """
-    fp8, qmax, min_scale, bound = _constants(dtype, quant_dtype, scale_ub)
+    fp8, qmax, min_scale, bound = _constants(quant_dtype, scale_ub)
 
     @tilelang.jit(out_idx=[3, 4, 5], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads, accesses):
