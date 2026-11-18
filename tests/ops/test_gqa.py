@@ -1790,6 +1790,15 @@ def test_gqa_dense_bwd_refuses_what_its_kernels_do_not_serve() -> None:
         GQADenseBwdOp(is_causal=True, window_size_left=32)(*inputs)
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gqa_dense_bwd_int32_max_right_window_is_no_window() -> None:
+    """The forward serves a right window of INT32_MAX keys as no window, so the backward
+    serves the same window and returns the unwindowed gradients."""
+    test = GQABwdTest(1, 4, 2, 128, 64, False, torch.bfloat16)
+    test.check(GQADenseBwdOp(window_size_right=2**31 - 1, target=BUILTIN), *test.gen_inputs())
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.smoke
