@@ -2948,6 +2948,8 @@ def test_gemm_w4a16_one_warpgroup_split_matches_the_reference(
     assert (cfg["block_n"], cfg["threads"], cfg["split_k"]) == (64, 128, 2)
     m_pad = m if cfg["block_m"] == 8 else -(-m // cfg["block_m"]) * cfg["block_m"]
     assert _pair_reduced(m_pad, n, k, 128, 132, cfg) == paired
+    if get_sm_count(torch.device(run_device()).index) != 132:
+        pytest.skip("the op selects on the device's SMs, and the program checked counts 132")
     test = GEMMW4A16Test(m, n, k, torch.float16)
     inputs = test.gen_inputs()
     _leave_nan_in_free_blocks()
