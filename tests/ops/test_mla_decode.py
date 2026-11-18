@@ -100,19 +100,18 @@ def test_mla_decode_masks_keys_past_the_cache_end(seq_len_kv: int) -> None:
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "batch, heads, seq_len_kv, dtype, splits",
     [
         # Two requests of two head blocks leave the SMs mostly idle: runs of two tiles.
-        pytest.param(2, 128, 1000, torch.float16, 8, id="split"),
-        # Nine tiles in four runs of three: the last run starts past the cache end.
-        pytest.param(2, 128, 520, torch.float16, 4, id="empty-run"),
+        pytest.param(2, 128, 1000, torch.float16, 8, marks=pytest.mark.smoke, id="split"),
         # One head block a request, which no other block shares tiles with: no L2 prefetch.
-        pytest.param(2, 64, 1000, torch.bfloat16, 8, id="one-head-block"),
+        pytest.param(2, 64, 1000, torch.bfloat16, 8, marks=pytest.mark.smoke, id="one-head-block"),
+        # Nine tiles in four runs of three: the last run starts past the cache end.
+        pytest.param(2, 128, 520, torch.float16, 4, marks=pytest.mark.full, id="empty-run"),
         # 68 blocks fill a wave: one run a request.
-        pytest.param(34, 128, 130, torch.bfloat16, 1, id="whole"),
+        pytest.param(34, 128, 130, torch.bfloat16, 1, marks=pytest.mark.full, id="whole"),
     ],
 )
 def test_mla_decode_takes_the_seesaw_on_sm90(batch, heads, seq_len_kv, dtype, splits) -> None:

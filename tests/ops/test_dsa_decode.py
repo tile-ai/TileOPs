@@ -183,14 +183,15 @@ def test_dsa_decode_decode_ignores_padded_topk_slots() -> None:
     assert torch.equal(op(q, kv, in_range_pad), expected)
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     ("dim", "dim_tail", "heads", "heads_kv", "stride_kv", "dtype"),
     [
-        pytest.param(512, 0, 128, 2, 1, torch.float16, id="512-kv-groups"),
-        pytest.param(512, 64, 64, 1, 2, torch.bfloat16, id="512-kv-stride"),
-        pytest.param(256, 64, 64, 1, 1, torch.bfloat16, id="256"),
+        pytest.param(512, 0, 128, 2, 1, torch.float16, marks=pytest.mark.smoke, id="512-kv-groups"),
+        pytest.param(
+            512, 64, 64, 1, 2, torch.bfloat16, marks=pytest.mark.smoke, id="512-kv-stride"
+        ),
+        pytest.param(256, 64, 64, 1, 1, torch.bfloat16, marks=pytest.mark.full, id="256"),
     ],
 )
 def test_dsa_decode_ignores_keys_past_the_causal_limit(
@@ -215,11 +216,16 @@ def test_dsa_decode_ignores_keys_past_the_causal_limit(
     test.check(op, q, kv, indices)
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("row", ["no-valid-index", "very-negative-score"])
 @pytest.mark.parametrize(
     "kernel", [DSADecodeWSKernel, DSADecodeKernel, DSADecodeBasicKernel], ids=lambda k: k.__name__
+)
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param("no-valid-index", marks=pytest.mark.smoke),
+        pytest.param("very-negative-score", marks=pytest.mark.full),
+    ],
 )
 def test_dsa_decode_row_normalization(kernel, row) -> None:
     """Every kernel zeroes a row with no valid key and normalizes a very negative score."""

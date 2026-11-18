@@ -88,7 +88,7 @@ class NSAFwdFixture(FixtureBase):
                     torch.float16,
                     False,
                     [100, 156],
-                    marks=pytest.mark.smoke,
+                    marks=pytest.mark.full,
                 ),
                 pytest.param(
                     4,
@@ -330,24 +330,37 @@ def test_nsa_varlen_padding_only_selection(
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "seq_lens, kv_lens, scale, selected_blocks, q_value, k_value",
     [
         # Every key scores 2**28 / 16 * 256: the splits' log-sum-exps are equal and so
         # large that a sum of their weights added back to one is lost to rounding.
         pytest.param(
-            [1, 1, 2], [1500, 2101, 3000], _WIDE["scale"], 513, 4096.0, 4096.0, id="huge-scores"
+            [1, 1, 2],
+            [1500, 2101, 3000],
+            _WIDE["scale"],
+            513,
+            4096.0,
+            4096.0,
+            marks=pytest.mark.smoke,
+            id="huge-scores",
         ),
         # Every key scores -3 * 2**126: finite, but past float32 once scaled by log2(e).
         pytest.param(
-            [1, 1, 2], [1500, 2101, 3000], 1.0, 513, 2.0**59, -3 * 2.0**59, id="negative-scores"
+            [1, 1, 2],
+            [1500, 2101, 3000],
+            1.0,
+            513,
+            2.0**59,
+            -3 * 2.0**59,
+            marks=pytest.mark.full,
+            id="negative-scores",
         ),
         # Every score is nearly 0, and a key the selection does not reach still weighs
         # nothing: early tokens see a few keys of a step full of slots.
-        pytest.param([100], None, 1e-38, 513, None, None, id="tiny-scale"),
+        pytest.param([100], None, 1e-38, 513, None, None, marks=pytest.mark.full, id="tiny-scale"),
         # A finite scale near float32's largest value: equal (zero) scores weigh alike.
-        pytest.param([64], None, 1.2e38, 16, 0.0, 0.0, id="huge-scale"),
+        pytest.param([64], None, 1.2e38, 16, 0.0, 0.0, marks=pytest.mark.full, id="huge-scale"),
     ],
 )
 def test_nsa_varlen_scores_and_scales_at_the_float32_range(

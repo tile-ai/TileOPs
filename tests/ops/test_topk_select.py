@@ -73,9 +73,15 @@ def test_topk_select_op(
     test.check(op, *inputs)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("fill_value", [None, -1], ids=["fill-default", "fill-minus-one"])
-@pytest.mark.parametrize("width", [0, 5, 32], ids=["empty", "short", "exactly-topk"])
+@pytest.mark.parametrize(
+    "width",
+    [
+        pytest.param(0, marks=pytest.mark.smoke, id="empty"),
+        pytest.param(5, marks=pytest.mark.full, id="short"),
+        pytest.param(32, marks=pytest.mark.full, id="exactly-topk"),
+    ],
+)
 def test_topk_select_returns_a_short_window_whole(width: int, fill_value: int | None) -> None:
     """A window with at most ``topk`` keys selects all of them and pads with ``fill_value``."""
     batch, seq_len, seq_len_kv, topk = 2, 16, 256, 32
@@ -93,9 +99,13 @@ def test_topk_select_returns_a_short_window_whole(width: int, fill_value: int | 
     compare_outputs(out, reference, workload.verification(scores, starts, ends))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("fill_value", [None, -1], ids=["fill-default", "fill-minus-one"])
-@pytest.mark.parametrize("seq_len_kv", [0, 1, 25, 511], ids=lambda n: f"keys{n}")
+@pytest.mark.parametrize(
+    "seq_len_kv",
+    [pytest.param(0, marks=pytest.mark.smoke)]
+    + [pytest.param(n, marks=pytest.mark.full) for n in (1, 25, 511)],
+    ids=lambda n: f"keys{n}",
+)
 def test_topk_select_top_k_above_the_keys(seq_len_kv: int, fill_value: int | None) -> None:
     """Fewer keys than ``top_k``: each row selects its whole window and fills the rest.
 
