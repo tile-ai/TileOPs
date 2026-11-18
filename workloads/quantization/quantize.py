@@ -98,6 +98,36 @@ def round_up_to_power_of_two(t: torch.Tensor) -> torch.Tensor:
     return torch.ldexp(torch.ones_like(t), exponent - (mantissa == 0.5).to(exponent.dtype))
 
 
+class StridedInput:
+    """A quantize workload whose ``x`` is the view *index* of a random tensor of *wide_shape*:
+    the columns of rows wider than ``x``, or rows not evenly spaced. Mixed in before the
+    workload it changes."""
+
+    def __init__(self, wide_shape: tuple[int, ...], index: tuple, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.wide_shape = tuple(wide_shape)
+        self.index = index
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        x, *rest = super().gen_inputs()
+        view = torch.randn(self.wide_shape, dtype=x.dtype, device=x.device)[self.index]
+        assert view.shape == x.shape
+        view.copy_(x)
+        return (view, *rest)
+
+
+def fill_with_ties(x: torch.Tensor, group: int, ties: tuple[float, ...], octaves: int) -> None:
+    """Overwrite *x* with *ties* repeated through each *group* columns of its last axis, row
+    ``r`` times ``2 ** (r % octaves - octaves // 2)``, and zero every fifth row from the second,
+    so that a power-of-two scale keeps every tie and a zero row takes the amax floor."""
+    rows = x.view(-1, x.shape[-1])
+    values = torch.tensor(ties, dtype=torch.float32, device=x.device)
+    pattern = values.repeat(-(-group // values.numel()))[:group].repeat(rows.shape[1] // group)
+    shift = torch.arange(rows.shape[0], device=x.device) % octaves - octaves // 2
+    rows.copy_((pattern * torch.exp2(shift.float())[:, None]).to(x.dtype))
+    rows[1::5] = 0
+
+
 # Midpoints between adjacent e2m1 magnitudes 0, 0.5, 1, 1.5, 2, 3, 4, 6.
 _E2M1_MIDPOINTS = (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0)
 
