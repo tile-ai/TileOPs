@@ -33,8 +33,7 @@ class GLAFwdOp(Op):
 
     Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call is
     equal-length prefill, packed-varlen prefill, or single-token decode. An absent
-    ``initial_state`` starts from zero; every call returns ``(o, final_state)``. The
-    in-tree kernels serve equal-length prefill, packed-varlen prefill and decode.
+    ``initial_state`` starts from zero; every call returns ``(o, final_state)``.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

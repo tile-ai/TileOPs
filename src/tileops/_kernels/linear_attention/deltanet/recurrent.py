@@ -7,12 +7,6 @@ DeltaNet decode (single-step recurrence, ungated).
     S_new    = S + outer(k, v_new)
 
 Unlike Gated DeltaNet (GDN), there is no gate parameter g and no alpha = exp(g).
-
-Optimization:
-  - T.Pipelined + T.copy: async prefetch state tiles from HBM
-  - fp32 scalar accumulation for the recurrent matvecs
-  - Native dtype: bf16/fp16 halve state bandwidth vs fp32
-  - K-tiling: small shared memory footprint -> high occupancy
 """
 
 import warnings
@@ -268,13 +262,7 @@ def _decode_entry(cls: type, call: DeltaNetDecodeCall) -> Entry:
 
 
 class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
-    """DeltaNet single-step decode kernel (ungated).
-
-    Uses T.Pipelined + T.copy for async state prefetch and full-fp32
-    scalar accumulation for the recurrent matvecs.  The scalar path avoids
-    TileLang 0.1.9 fragment-copy lowering failures on fp16/bf16 and keeps
-    decode numerics aligned with the fp32 reference.
-    """
+    """DeltaNet single-step decode kernel (ungated): pipelined state prefetch, fp32 matvecs."""
 
     supported_archs: list[int] = [80, 89, 90]
     # The key-dimension tile the untuned decode program splits the state into, so it is
@@ -532,9 +520,6 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
         return self.program(self._compile)(q, k, v, beta, state)
 
 
-# FP32-precision decode kernel (no T.gemm -> avoids TF32 mantissa truncation)
-
-
 @target_cache(maxsize=32)
 def _deltanet_decode_fp32_tl(
     batch: int,
@@ -545,10 +530,8 @@ def _deltanet_decode_fp32_tl(
 ):
     """FP32 decode kernel using element-wise matvec instead of T.gemm.
 
-    T.gemm on fp32 inputs uses TF32 tensor cores which truncate the mantissa
-    to 10 bits (~1e-3 error per op).  For multi-step decode the error
-    compounds through the recurrent state.  This kernel avoids T.gemm
-    entirely, computing S@k and S@q via scalar accumulation in full fp32.
+    T.gemm on fp32 inputs rounds to TF32, whose error compounds through the recurrent
+    state over decode steps, so S@k and S@q accumulate in scalar fp32.
     """
     dtype = "float32"
     accum_dtype = "float32"
@@ -631,12 +614,7 @@ def _deltanet_decode_fp32_tl(
 
 
 class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
-    """FP32-precision DeltaNet decode kernel (no TF32 tensor cores).
-
-    Uses element-wise matvec instead of T.gemm to avoid TF32 mantissa
-    truncation that causes ~1e-3 error per step, compounding over multi-step
-    decode.  Intended for fp32 dtype only.
-    """
+    """FP32 DeltaNet decode kernel, for fp32 inputs, with no TF32 tensor-core products."""
 
     supported_archs: list[int] = [80, 89, 90]
     # The key-dimension tile the untuned decode program splits the state into, so it is

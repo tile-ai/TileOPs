@@ -38,9 +38,6 @@ __all__ = [
 ]
 
 
-# Split kernel: bwd_parallel (fully parallel over chunks)
-
-
 @target_cache(maxsize=32)
 def _bwd_parallel_tl(
     batch: int,
@@ -205,9 +202,6 @@ def _bwd_parallel_tl(
     return _func
 
 
-# Split kernel: dh_walk (sequential backward over chunks)
-
-
 @target_cache(maxsize=32)
 def _dh_walk_tl(
     batch: int,
@@ -320,19 +314,7 @@ def walk_threads(block_v: int, dim_k: int, wgmma: bool) -> int:
 
 
 class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
-    """DeltaNet backward kernel.
-
-    Full backward: do -> (dq, dk, dv, dbeta).
-    No gate parameter, so no dg output.
-
-    Split pipeline:
-      1. bwd_parallel: per-chunk gradients and the walk's operator -(W^T K)
-         (grid: num_chunks x B x H)
-      2. dh_walk: sequential dh propagation, one matmul a chunk
-         (grid: DV / block_v x B x H)
-      3. compute_w_u_bwd: the dh corrections, the w/u backward and the A_inv backward
-         -> dk, dv, dbeta (grid: num_chunks x B x H)
-    """
+    """DeltaNet backward kernel: do -> (dq, dk, dv, dbeta) in the module's three programs."""
 
     supported_archs: list[int] = [80, 89, 90]
 
@@ -358,9 +340,8 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
 
         Reads the shared memory the three programs hold as written at their smallest
         configuration (the walk at one stage over its narrowest value tile, the w/u program
-        reusing storage where the head dims are equal). TileLang may place a program in more,
-        and such a call is built and fails at launch, or in less, and such a call is refused
-        although it would fit.
+        reusing storage where the head dims are equal); TileLang may place a program in more
+        or less.
         """
         reason = head_count_refusal(call.heads) or extent_refusal(call, reduces_v=True)
         if reason is not None or not call.smem_budget:

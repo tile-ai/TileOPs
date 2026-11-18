@@ -53,9 +53,6 @@ from tileops._kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
 __all__ = ["DeltaNetChunkFwdKernel"]
 
 
-# Split kernel: h_recurrence  (sequential over chunks, state update only)
-
-
 @target_cache(maxsize=32)
 def _h_recurrence_tl(
     batch: int,
@@ -112,13 +109,11 @@ def _h_recurrence_tl(
                 v_new_c = T.alloc_shared([block_C, BV], dtype)
 
                 ws_frag = T.alloc_fragment([block_C, BV], accum_dtype)
-                # Precise fp32 accumulator for running state (avoids
-                # compounding quantization error over many chunks).
+                # fp32 running state, so quantization error does not compound over chunks.
                 h_fp32 = T.alloc_fragment([dim_k, BV], accum_dtype)
 
                 v_offset = vid * BV
 
-                # Initialise h tile from S_0 and promote to fp32
                 T.copy(S_0[bid, hid, :, v_offset : v_offset + BV], h_c, disable_tma=True)
                 for i, j in T.Parallel(dim_k, BV):
                     h_fp32[i, j] = T.cast(h_c[i, j], accum_dtype)
@@ -134,7 +129,6 @@ def _h_recurrence_tl(
                         disable_tma=True,
                     )
 
-                    # Cast precise state to dtype for gemm input
                     T.copy(h_fp32, h_c)
 
                     # v_new_tile = u_tile - w @ h_tile (no exp scaling)
@@ -157,9 +151,6 @@ def _h_recurrence_tl(
         return h_recurrence_kernel
 
     return _func
-
-
-# Split kernel: state_walk  (sequential over chunks, one matmul a chunk)
 
 
 @target_cache(maxsize=32)
@@ -231,9 +222,6 @@ def _state_walk_tl(
         return state_walk_kernel
 
     return _func
-
-
-# Split kernel: output_o  (fully parallel over chunks)
 
 
 @target_cache(maxsize=32)
@@ -355,13 +343,7 @@ def _output_o_tl(
 
 
 class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
-    """DeltaNet chunked forward: the w/u preparation, a serial state walk, the output pass.
-
-    Where dim_k is below twice the chunk length and the walk's programs fit the device's
-    shared memory, the state pass is the walk h <- h + k^T u - (k^T w) h, one matmul a chunk,
-    over operands the preparation writes; otherwise it is the recurrence, and the preparation
-    does not write those operands.
-    """
+    """DeltaNet chunked forward: the w/u preparation, a state pass, the output pass."""
 
     @staticmethod
     def _may_walk(chunk_size: int, dim_k: int) -> bool:

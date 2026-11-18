@@ -239,8 +239,7 @@ def _gla_fwd_partitioned_replay_kernel(
 ) -> Callable:
     """Replay independent partitions while producing output in the same CTA.
 
-    This is the GLA specialization of the GDN prefill replay skeleton.  GLA
-    has no delta-rule correction, so the transform warpgroup only prepares
+    GLA has no delta-rule correction, so the transform warpgroup only prepares
     gate-adjusted Q/K while the state and output warpgroups run concurrently.
     """
     accum_dtype = "float32"
@@ -381,7 +380,7 @@ def _gla_fwd_partitioned_replay_kernel(
 
 
 class _PartitionFit(NamedTuple):
-    """Where a 16-chunk partition beats the serial-state kernel on one calibrated board."""
+    """The shapes a board serves with 16-chunk partitions rather than the serial-state kernel."""
 
     dim: int
     min_seq_len: int

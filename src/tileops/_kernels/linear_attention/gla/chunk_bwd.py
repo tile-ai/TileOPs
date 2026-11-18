@@ -495,10 +495,7 @@ def _gla_bwd_chunk_kernel(
 
 class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     """GLA backward kernel: a chunk-parallel state-gradient update, a walk of the state
-    gradient with no matmul on its chain, and a chunk-parallel pass for dq, dk, dv and dg.
-
-    h is read from forward's h_out (no recomputation needed).
-    """
+    gradient with no matmul on its chain, and a chunk-parallel pass for dq, dk, dv and dg."""
 
     supported_archs: list[int] = [80, 89, 90]
 
@@ -645,9 +642,8 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
                     2 * cv + c * c * elem + kv + ck * elem if elem == 2 else 0,
                 )
             )
-            # The peak already includes the tail. Rounding to whole gate tiles and
-            # the extra 4*k together are the placement allowance tuned for SM89's 99 KiB
-            # budget, not a bound for other budgets.
+            # The peak includes the tail. Rounding to whole gate tiles plus 4*k is a placement
+            # allowance for SM89's 99 KiB budget, not a bound for other budgets.
             tile = 4 * ck
             return ((peak + tile - 1) // tile) * tile + 4 * k
         if not late_dv_state:

@@ -309,17 +309,15 @@ def _gla_decode_fp32_tl(
         ):
             with T.Kernel(batch, head, threads=threads) as (bid, hid):
                 h_tile = T.alloc_shared([k_tile, dim_v], dtype)
-                # Fragment accumulator for S @ q_gated
                 sq_frag = T.alloc_fragment([dim_v], accum_dtype)
                 qk_dot = T.alloc_local([1], accum_dtype)
-                # Preload q, k, v, gk into shared memory to avoid global access
-                # in pipelined loop (fixes TileLang warp-specialization issue)
+                # The pipelined loop reads no global memory, which TileLang's warp
+                # specialization requires here.
                 q_shared = T.alloc_shared([dim_k], dtype)
                 k_shared = T.alloc_shared([dim_k], dtype)
                 v_shared = T.alloc_shared([dim_v], dtype)
                 gk_shared = T.alloc_shared([dim_k], dtype)
 
-                # Preload tensors into shared memory
                 for i in T.Parallel(dim_k):
                     q_shared[i] = q[bid, hid, i]
                     k_shared[i] = k[bid, hid, i]

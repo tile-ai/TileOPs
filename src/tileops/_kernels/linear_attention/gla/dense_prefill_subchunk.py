@@ -233,7 +233,7 @@ def _gla_fwd_o_from_a_kernel(
 
 
 class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
-    """Retain the proven state pass while replacing the costly output pass."""
+    """The chunked state pass, then outputs from tiled gate-aware intra-chunk products."""
 
     supported_archs = [80, 89, 90]
     general = True

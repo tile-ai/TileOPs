@@ -27,11 +27,7 @@ def gla_precompute_g_kernel(
     dtype: str,
     output_dtype: str = "float32",
 ) -> Callable:
-    """Pre-compute intra-chunk cumulative sum of g.
-
-    Parallel over (batch, heads, chunks): B*H*NC thread blocks.
-    Each block computes cumsum for one chunk independently.
-    """
+    """Intra-chunk cumulative sum of g, one block a (batch, head, chunk)."""
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
 
@@ -754,8 +750,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
     Three launches: every chunk's state update in parallel; a walk of the state across the
     chunks, which writes the state entering each chunk (the backward reads it) and carries no
     matmul on its serial chain; and every chunk's output in parallel from the state it is
-    handed. The walk takes the narrowest tile of state rows whose blocks fit one wave, else the
-    widest whose stage fits shared memory.
+    handed.
     """
 
     # The one-element state a walk from zeros is handed and never reads, made on first use.
