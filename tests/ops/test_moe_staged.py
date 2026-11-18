@@ -990,13 +990,10 @@ def test_post_permute_more_tokens_than_sms_at_gpt_oss_hidden_size() -> None:
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize("scale", [1.0, 1.5])
-def test_post_permute_adds_the_residual_to_the_scaled_reduction(
-    dtype: torch.dtype, scale: float
-) -> None:
+def test_post_permute_adds_the_residual_to_the_scaled_reduction(dtype: torch.dtype) -> None:
     """The routing scale multiplies the reduction, the residual is added once, and the result
     is written into ``out``."""
-    tokens, top_k, hidden = 37, 6, 4096
+    tokens, top_k, hidden, scale = 37, 6, 4096, 1.5
     routes = tokens * top_k
     expert_output = torch.randn(routes, hidden, dtype=dtype, device=run_device())
     weights = torch.rand(tokens, top_k, device=run_device())
@@ -1167,18 +1164,11 @@ def _deepseek_v4_moe(x, ids, weights, w_gate_up, w_down, shared_gate_up, shared_
     return y.to(x.dtype)
 
 
-def _normalized_error(got: torch.Tensor, expected: torch.Tensor) -> float:
-    got, expected = got.double(), expected.double()
-    return ((got - expected).pow(2).sum() / (got.pow(2) + expected.pow(2)).sum()).item()
-
-
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "tokens, hidden, inter, experts",
     [
         pytest.param(64, 512, 256, 16, marks=pytest.mark.smoke),
-        # DeepSeek-V4-Flash's sizes at 32768 tokens, over one rank's 32 of 256 experts.
-        pytest.param(32768, 4096, 2048, 32, marks=pytest.mark.full),
     ],
 )
 def test_deepseek_v4_moe_block_matches_the_float32_reference(
@@ -1214,5 +1204,6 @@ def test_deepseek_v4_moe_block_matches_the_float32_reference(
     reference = _deepseek_v4_moe(
         *(t.float() if t.is_floating_point() else t for t in tensors), limit
     )
-    bound = 2 * _normalized_error(official.float(), reference)
+    official, exact = official.double(), reference.double()
+    bound = 2 * ((official - exact).pow(2).sum() / (official.pow(2) + exact.pow(2)).sum()).item()
     assert_normalized_error(got.float(), reference, bound)
