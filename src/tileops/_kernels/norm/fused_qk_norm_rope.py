@@ -22,6 +22,7 @@ import torch
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.norm._config import rms_scale, warp_sum
 from tileops._kernels.norm.call_spec import FusedQKNormRoPECall, FusedQKNormRoPEFwdInterface
 
 __all__ = ["FusedQKNormRoPEKernel"]
@@ -84,24 +85,6 @@ def _fused_qk_norm_rope_kernel(
             a = x[i]
             x[i] = a * c - x[j] * s
             x[j] = x[j] * c + a * s
-
-        @T.macro
-        def add_lanes(ss, mask):
-            ss[0] = ss[0] + T.shfl_xor(ss[0], mask)
-
-        def weight(w):
-            """The float32 scale of a weight value: ``1 + w`` zero-centered, else ``w``."""
-            if zero_centered:
-                return T.cast(w, "float32") + T.float32(1)
-            return T.cast(w, "float32")
-
-        def reduce_group(ss):
-            """Sum ss over the row's group of lanes. A plain function: the builder would turn a
-            loop inside the prim_func into a TIR loop."""
-            mask = group // 2
-            while mask:
-                add_lanes(ss, mask)
-                mask //= 2
 
         @T.prim_func
         def main(
@@ -203,11 +186,13 @@ def _fused_qk_norm_rope_kernel(
                     x[v] = T.cast(va[v], "float32")
                     x[vec + v] = T.cast(vb[v], "float32")
                     ss[0] += x[v] * x[v] + x[vec + v] * x[vec + v]
-                reduce_group(ss)
+                warp_sum(ss, 1, lanes=group)
                 scale = T.rsqrt(ss[0] / T.float32(dim) + T.float32(eps))
                 for v in T.unroll(vec):
-                    x[v] = x[v] * scale * weight(wa[v])
-                    x[vec + v] = x[vec + v] * scale * weight(wb[v])
+                    x[v] = x[v] * scale * rms_scale(T.cast(wa[v], "float32"), zero_centered)
+                    x[vec + v] = (
+                        x[vec + v] * scale * rms_scale(T.cast(wb[v], "float32"), zero_centered)
+                    )
                 if rotates:
                     for u in T.unroll(vec):
                         c = T.cast(cr[u], "float32")

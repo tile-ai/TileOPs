@@ -10,6 +10,8 @@ For a row ``x``, its gate row ``z`` and a group of ``G`` columns of the row::
 arithmetic is float32 and ``y`` rounds once to the dtype of ``x``.
 """
 
+import math
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -18,6 +20,7 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.norm._config import warp_sum
 from tileops._kernels.norm.call_spec import RMSNormGatedCall, RMSNormGatedFwdInterface
 from tileops._utils import WARP_LANES
 
@@ -39,9 +42,8 @@ def _rms_norm_gated_kernel(
     groups = n // group
     # An access moves the widest of 16 bytes of x, or of a halving of it, that divides the
     # group.
-    vec = VECTOR_ACCESS_BYTES // torch.empty((), dtype=getattr(torch, dtype)).element_size()
-    while group % vec:
-        vec //= 2
+    itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    vec = math.gcd(group, VECTOR_ACCESS_BYTES // itemsize)
     accesses = group // vec
     # A lane makes two accesses where the group has two, so it has two loads of each tensor
     # in flight, and one where the group has one; a group of up to 64 accesses then fits a
@@ -76,18 +78,6 @@ def _rms_norm_gated_kernel(
         # gate below.
         shift = 64
         unshift = T.float32(2.0**-shift)
-
-        @T.macro
-        def add_lanes(ss, mask):
-            ss[0] = ss[0] + T.shfl_xor(ss[0], mask)
-
-        def warp_sum(ss):
-            """Sum ``ss[0]`` over the warp's lanes of one group. A plain function: the builder
-            would turn a loop inside the prim_func into a TIR loop."""
-            mask = warp_lanes // 2
-            while mask:
-                add_lanes(ss, mask)
-                mask //= 2
 
         @T.prim_func
         def main(
@@ -162,7 +152,7 @@ def _rms_norm_gated_kernel(
                         if not norm_before_gate:
                             h[j] = h[j] * gate[j]
                     ss[0] += h[j] * h[j]
-                warp_sum(ss)
+                warp_sum(ss, 1, lanes=warp_lanes)
                 if group_warps > 1:
                     if tx % WARP_LANES == 0:
                         part[tx // WARP_LANES] = ss[0]
