@@ -60,26 +60,17 @@ class NGramHashFwdInterface(KernelInterface):
 
 
 @target_cache(maxsize=32)
-def _ngram_hash_kernel(
-    batch,
-    length,
-    total,
-    slots,
-    width,
-    row_stride,
-    col_stride,
-    order,
-    heads,
-    eos,
-    packed,
-    slotted,
-    rollback,
-):
+def _ngram_hash_kernel(width, row_stride, col_stride, order, packed, slotted, rollback, heads, eos):
     @tilelang.jit(out_idx=[])
     def build(block, threads):
+        batch = T.dynamic("batch")
+        length = 0 if packed else T.dynamic("length")
+        total = T.dynamic("total") if packed else batch * length
+        slots = T.dynamic("slots")
+
         @T.prim_func
         def hash_ids(
-            Tokens: T.Tensor((total,), "int64"),
+            Tokens: T.Tensor((total,) if packed else (batch, length), "int64"),
             Context: T.StridedTensor((slots, width), (row_stride, col_stride), "int64"),
             Multipliers: T.Tensor((order,), "int64"),
             Primes: T.Tensor((heads,), "int64"),
@@ -119,7 +110,10 @@ def _ngram_hash_kernel(
                             value = T.alloc_var("int64", init=eos)
                             if i == 0 or not blocked:
                                 if token - begin >= i:
-                                    value = Tokens[token - i]
+                                    if packed:
+                                        value = Tokens[token - i]
+                                    else:
+                                        value = Tokens[seq, token - begin - i]
                                 else:
                                     value = Context[slot, start + order - 1 + token - begin - i]
                             # Only a previous EOS blocks history; the current EOS still hashes.
@@ -144,14 +138,17 @@ def _ngram_hash_kernel(
 
 
 @target_cache(maxsize=32)
-def _ngram_context_kernel(
-    batch, length, total, slots, width, row_stride, col_stride, order, packed, slotted, rollback
-):
+def _ngram_context_kernel(width, row_stride, col_stride, order, packed, slotted, rollback):
     @tilelang.jit(out_idx=[])
     def build(threads):
+        batch = T.dynamic("batch")
+        length = 0 if packed else T.dynamic("length")
+        total = T.dynamic("total") if packed else batch * length
+        slots = T.dynamic("slots")
+
         @T.prim_func
         def update(
-            Tokens: T.Tensor((total,), "int64"),
+            Tokens: T.Tensor((total,) if packed else (batch, length), "int64"),
             Context: T.StridedTensor((slots, width), (row_stride, col_stride), "int64"),
             Cu: T.Tensor((batch + 1,) if packed else (total,), "int32" if packed else "int64"),
             Slots: T.Tensor((batch,) if slotted else (total,), "int32" if slotted else "int64"),
@@ -176,7 +173,10 @@ def _ngram_context_kernel(
                             if source < order - 1:
                                 Context[slot, j] = old[source]
                             else:
-                                Context[slot, j] = Tokens[begin + source - (order - 1)]
+                                if packed:
+                                    Context[slot, j] = Tokens[begin + source - (order - 1)]
+                                else:
+                                    Context[slot, j] = Tokens[b, source - (order - 1)]
 
         return update
 
@@ -188,40 +188,41 @@ class NGramHashKernel(Kernel, NGramHashFwdInterface):
 
     @classmethod
     def entry_for(cls, call: NGramHashCall) -> Entry:
-        return call, lambda: cls(call)
-
-    def __init__(self, call):
-        super().__init__(device_index=call.device.index)
-        self.call = call
-        self.dtype = torch.int64
-        self.kernel = _ngram_hash_kernel(
-            call.batch,
-            call.length,
-            call.total,
-            call.slots,
+        # Token counts and context pool size are runtime tensor dimensions.
+        args = (
             call.width,
             call.row_stride,
             call.col_stride,
             call.order,
+            call.packed,
+            call.slotted,
+            call.rollback,
             call.heads,
             call.eos,
-            call.packed,
-            call.slotted,
-            call.rollback,
         )
-        self.context_kernel = _ngram_context_kernel(
-            call.batch,
-            call.length,
-            call.total,
-            call.slots,
-            call.width,
-            call.row_stride,
-            call.col_stride,
-            call.order,
-            call.packed,
-            call.slotted,
-            call.rollback,
-        )
+        device_index = call.device.index
+        return (*args, device_index), lambda: cls(*args, device_index=device_index)
+
+    def __init__(
+        self,
+        width,
+        row_stride,
+        col_stride,
+        order,
+        packed,
+        slotted,
+        rollback,
+        heads,
+        eos,
+        *,
+        device_index,
+    ):
+        super().__init__(device_index=device_index)
+        self.heads = heads
+        self.dtype = torch.int64
+        shared = (width, row_stride, col_stride, order, packed, slotted, rollback)
+        self.kernel = _ngram_hash_kernel(*shared, heads, eos)
+        self.context_kernel = _ngram_context_kernel(*shared)
         self.init_config(None)
 
     @property
@@ -247,7 +248,7 @@ class NGramHashKernel(Kernel, NGramHashFwdInterface):
         num_accepted_tokens=None,
     ):
         output = torch.empty(
-            (*input_ids.shape, self.call.heads), device=input_ids.device, dtype=torch.int64
+            (*input_ids.shape, self.heads), device=input_ids.device, dtype=torch.int64
         )
         if input_ids.numel() == 0:
             return output
@@ -255,9 +256,9 @@ class NGramHashKernel(Kernel, NGramHashFwdInterface):
         cu = tokens if cu_seqlens is None else cu_seqlens
         slots = tokens if context_indices is None else context_indices
         accepted = tokens if num_accepted_tokens is None else num_accepted_tokens
-        if self.call.heads:
+        if self.heads:
             self.program(self._compile_hash)(
-                tokens,
+                input_ids,
                 context,
                 multipliers,
                 primes,
@@ -265,7 +266,7 @@ class NGramHashKernel(Kernel, NGramHashFwdInterface):
                 cu,
                 slots,
                 accepted,
-                output.view(-1, self.call.heads),
+                output.view(-1, self.heads),
             )
-        self.program(self._compile_context)(tokens, context, cu, slots, accepted)
+        self.program(self._compile_context)(input_ids, context, cu, slots, accepted)
         return output

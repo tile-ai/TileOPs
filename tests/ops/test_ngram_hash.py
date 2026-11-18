@@ -103,12 +103,22 @@ def test_ngram_hash_rollback():
     _check(workload, op, inputs)
 
 
-@pytest.mark.smoke
-def test_ngram_hash_tuned():
-    workload = NGramHashWorkload([7])
-    op = NGramHashFwdOp(workload.eos_token_id)
-    op.request_tune()
-    _check(workload, op)
+@pytest.mark.parametrize(
+    "packed",
+    [
+        pytest.param(False, marks=pytest.mark.smoke, id="dense"),
+        pytest.param(True, marks=pytest.mark.full, id="packed"),
+    ],
+)
+def test_ngram_hash_changing_shapes(packed):
+    """One op accepts growing and shrinking token batches and context pools."""
+    op = None
+    for batch, length in [(2, 3), (4, 1), (1, 137), (2, 3)]:
+        lengths = list(range(length, length + batch)) if packed else [length] * batch
+        workload = NGramHashWorkload(lengths, packed=packed)
+        if op is None:
+            op = NGramHashFwdOp(workload.eos_token_id)
+        _check(workload, op)
 
 
 register_compile_contract(NGramHashFwdOp)
