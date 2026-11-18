@@ -388,12 +388,16 @@ def _enumerate(
                 )
     # The narrowest coop2 width whose grid of 128-row tiles fits one wave, among the widths
     # the coop2 kernel issues as one WGMMA per 16 of K: those dividing 256, which
-    # ``T.wgmma_gemm`` issues whole, and those ``dense_wgmma_helper.h`` names.
+    # ``T.wgmma_gemm`` issues whole, and those ``dense_wgmma_helper.h`` names. Offered only
+    # where the last row tile gives both 64-row consumers rows, and where that grid fills 15/16
+    # of the wave, as for split-K coop2 below; a wider tile only fills fewer SMs.
     one_wave = None
-    if nt:
-        rows = math.ceil(m / 128)
+    rows = math.ceil(m / 128)
+    if nt and (m % 128 == 0 or m % 128 > 64):
         widths = (64, 128, 144, 160, 176, 192, 224, 240, 256)
         one_wave = next((w for w in widths if rows * math.ceil(n / w) <= sm_count), None)
+        if one_wave is not None and 16 * rows * math.ceil(n / one_wave) < 15 * sm_count:
+            one_wave = None
     for bn in sorted({64, 128, 176, 192, 256, one_wave or 256}):
         for bk in (32, 64, 128):
             # 176 fills the waves of some N that 192 and 256 leave a partial last
