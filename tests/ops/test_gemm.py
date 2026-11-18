@@ -2618,8 +2618,8 @@ def test_gemm_one_wave_coop2_needs_both_consumers_and_a_full_wave(
     m: int, n: int, out_dtype: torch.dtype | None
 ) -> None:
     """The one-wave coop2 tile is not offered where its last row tile leaves a 64-row consumer
-    without rows, or where its grid fills less than 15/16 of the wave; the call keeps the tile
-    it ran before. The cases count tiles against the 132 SMs of an H200."""
+    without rows, or where its grid fills less than 15/16 of the wave; the call runs a tile other
+    than coop2. The cases count tiles against the 132 SMs of an H200."""
     k = 1032
     call = GEMMCall(
         m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=True, out_dtype=out_dtype, device=run_device()

@@ -389,15 +389,17 @@ def _enumerate(
     # The narrowest coop2 width whose grid of 128-row tiles fits one wave, among the widths
     # the coop2 kernel issues as one WGMMA per 16 of K: those dividing 256, which
     # ``T.wgmma_gemm`` issues whole, and those ``dense_wgmma_helper.h`` names. Offered only
-    # where the last row tile gives both 64-row consumers rows, and where that grid fills 15/16
-    # of the wave, as for split-K coop2 below; a wider tile only fills fewer SMs.
-    one_wave = None
+    # where the last row tile gives both 64-row consumers rows, and where that grid takes at
+    # least ``wave_15_16`` SMs, the fraction split-K coop2 below accepts for whole row tiles; a
+    # wider tile only fills fewer SMs.
     rows = math.ceil(m / 128)
+    wave_15_16 = -(-15 * sm_count // 16)
+    one_wave = None
     if nt and (m % 128 == 0 or m % 128 > 64):
         widths = (64, 128, 144, 160, 176, 192, 224, 240, 256)
-        one_wave = next((w for w in widths if rows * math.ceil(n / w) <= sm_count), None)
-        if one_wave is not None and 16 * rows * math.ceil(n / one_wave) < 15 * sm_count:
-            one_wave = None
+        fits = [w for w in widths if rows * math.ceil(n / w) <= sm_count]
+        if fits and rows * math.ceil(n / fits[0]) >= wave_15_16:
+            one_wave = fits[0]
     for bn in sorted({64, 128, 176, 192, 256, one_wave or 256}):
         for bk in (32, 64, 128):
             # 176 fills the waves of some N that 192 and 256 leave a partial last
@@ -411,8 +413,8 @@ def _enumerate(
             ns, sn = d
             if not _stage_rule_ok(128, bn, ns):
                 continue
-            coop2_ok = bn == 256 or (nt and bn >= 176)
-            mn_tiles = math.ceil(m / 128) * math.ceil(n / bn)
+            coop2_ok = bn == 256 or (nt and bn in (176, 192))
+            mn_tiles = rows * math.ceil(n / bn)
             # At 128 or narrower a coop2 tile scores as the basic tile of its width listed above,
             # which a tie keeps. A width 256 does not divide is one WGMMA only over 64-wide K steps.
             one_wave_ok = bn == one_wave and bn > 128 and (bk == 64 or 256 % bn == 0)
@@ -424,7 +426,7 @@ def _enumerate(
                 if ns_sk >= 3 and bn <= 128:
                     # 15/16 of a wave suffices when no 128-row tile runs past ``m``; tiles with
                     # rows past ``m`` need a full wave.
-                    min_ctas = -(-15 * sm_count // 16) if m % 128 == 0 else sm_count
+                    min_ctas = wave_15_16 if m % 128 == 0 else sm_count
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
