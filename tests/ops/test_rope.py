@@ -297,12 +297,13 @@ def _call_with_offsets(name, op, positions, query, key):
     ],
 )
 def test_rope_rotates_one_unit_a_thread_where_heads_copy_columns(name, neox, dtype) -> None:
-    """A small call whose heads copy columns and whose token has more units than a block of
-    the config holds: one unit a thread, its columns loaded before the token's position, in
-    blocks of the config's threads, the last partly empty.
+    """A small call whose heads copy columns: one unit a thread, its columns loaded before the
+    token's position.
 
-    5 tokens of 64 query heads and one key head, 64 columns a head and 24 rotating. Positions
-    outside the cache read its nearest row; LongRoPE's offsets move each row.
+    5 tokens of 64 query heads and one key head, 64 columns a head and 24 rotating. In float32
+    a token fills the 1024-thread block limit, so it runs in blocks of the config's threads,
+    the last partly empty. Positions outside the cache read its nearest row; LongRoPE's
+    offsets move each row.
     """
     changes = {"head_size": 64, "rotary_dim": 24, "is_neox_style": neox}
     if name == "LongRoPEFwdOp":
