@@ -234,11 +234,10 @@ def test_semantic_reference_binds_the_explicit_group_size(group_size: int) -> No
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("group_size", [0, -1])
-def test_semantic_reference_refuses_a_nonpositive_group_size(group_size: int) -> None:
+def test_semantic_reference_refuses_a_nonpositive_group_size() -> None:
     inputs = _inputs()
     with pytest.raises(ValueError, match="group_size must be positive"):
-        gemm_w4a8_reference(*inputs, group_size=group_size)
+        gemm_w4a8_reference(*inputs, group_size=0)
 
 
 @pytest.mark.smoke

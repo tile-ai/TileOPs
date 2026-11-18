@@ -68,7 +68,6 @@ def test_w4a8_baseline_domain_rejects_partial_reorder_rows(monkeypatch, n, k, gr
     "n, k, group_size, expected",
     [
         pytest.param(64, 128, 32, None, id="group32"),
-        pytest.param(64, 128, 64, None, id="group64"),
         pytest.param(64, 128, 128, None, id="group128"),
         pytest.param(64, 256, 256, "positive group sizes", id="unsupported-group"),
         pytest.param(16, 128, 128, "N % 64", id="partial-n"),

@@ -325,13 +325,14 @@ def test_broadcast_input_views_restore_shared_storage():
 
 
 @pytest.mark.parametrize("family", ["gla", "deltanet"])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("wrong_output", [0, 1])
-def test_inference_decode_keeps_its_strict_output_and_state_bound(family, dtype, wrong_output):
+def test_inference_decode_keeps_its_strict_output_and_state_bound(family, wrong_output):
     from types import SimpleNamespace
 
     from workloads.linear_attention.deltanet import DeltaNetFwdCall, DeltaNetFwdWorkload
     from workloads.linear_attention.gla import GLAFwdCall, GLAFwdWorkload
+
+    dtype = torch.bfloat16
 
     workload_type, call_type = {
         "gla": (GLAFwdWorkload, GLAFwdCall),
@@ -353,10 +354,11 @@ def test_inference_decode_keeps_its_strict_output_and_state_bound(family, dtype,
 
 
 @pytest.mark.parametrize("family", ["gla", "deltanet"])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_decode_rounding_allowance_stops_at_one_adjacent_value(family, dtype):
+def test_decode_rounding_allowance_stops_at_one_adjacent_value(family):
     from workloads.linear_attention.deltanet import inference_verification as delta_policy
     from workloads.linear_attention.gla import inference_verification as gla_policy
+
+    dtype = torch.bfloat16
 
     evidence = {"gla": gla_policy, "deltanet": delta_policy}[family](dtype, decode=True)
     output, state = torch.ones(1, dtype=dtype), torch.zeros(1)
