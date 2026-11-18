@@ -533,14 +533,10 @@ class _RoPEPositionsKernel(Kernel):
         return query_out.view(query.shape), key_out.view(key.shape)
 
     def _compile(self, cfg: dict, wide: bool):
-        """The program ``forward`` launches, compiled from *cfg*; *wide* gives a thread one unit,
-        and a block a thread per unit of its token, whole warps, below the block limit."""
+        """The program ``forward`` launches, compiled from *cfg*; *wide* gives a block a thread
+        per unit of its token, whole warps, up to the block limit."""
         if wide:
-            width = -(-self._token_units // 32) * 32
-            # A token that fills the 1024-thread block limit runs in blocks of cfg's width,
-            # spread over several SMs; a narrower token keeps one block, where blocks of cfg's
-            # width were not faster.
-            return self.kernel(cfg["threads"] if width >= 1024 else width, 1)
+            return self.kernel(min(1024, -(-self._token_units // 32) * 32), 1)
         return self.kernel(cfg["threads"], cfg["units"])
 
 
