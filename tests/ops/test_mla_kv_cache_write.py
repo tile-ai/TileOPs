@@ -88,6 +88,21 @@ def _check(workload, op):
             marks=pytest.mark.full,
             id="bf16-columns-off-the-vector",
         ),
+        # Two 4104-wide latent rows are 1026 vectors, past a block's 1024 threads: the latent
+        # takes a second round, and k_pe's 1024 vectors start on the threads it leaves idle in
+        # that round and run into a third.
+        pytest.param(
+            3,
+            4104,
+            4096,
+            7,
+            3,
+            BF16,
+            BF16,
+            [20, 0, 6],
+            marks=pytest.mark.full,
+            id="bf16-latent-past-the-block",
+        ),
         # No latent columns: the latent copy writes nothing and is never built.
         pytest.param(
             3,
