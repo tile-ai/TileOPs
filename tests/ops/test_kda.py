@@ -36,17 +36,9 @@ def test_kda_prefill_matches_reference(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_kda_prefill_packs_ragged_sequences() -> None:
-    torch.manual_seed(42)
-    _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(100, 70, 130))
-
-
-@pytest.mark.smoke
 def test_kda_prefill_packs_a_batch_holding_an_empty_sequence() -> None:
-    """A sequence with no token owns no chunk, and the ones around it keep their own.
-
-    Such a sequence applies no update, so it ends on the state it started from.
-    """
+    """A sequence with no token owns no chunk, applies no update and ends on its initial
+    state; the ones around it keep their own chunks."""
     torch.manual_seed(42)
     _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(100, 0, 70, 130))
 
@@ -355,11 +347,17 @@ def test_kda_raw_gate_matches_reference(
     test.check(op, *inputs)
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="KDAFwdOp")
-@pytest.mark.parametrize("seqlen", [1, 65], ids=["decode", "prefill"])
-@pytest.mark.parametrize("lower_bound", [None, -5.0], ids=["unbounded", "bounded"])
+@pytest.mark.parametrize(
+    "seqlen,lower_bound",
+    [
+        pytest.param(1, None, marks=pytest.mark.smoke, id="unbounded-decode"),
+        pytest.param(65, -5.0, marks=pytest.mark.smoke, id="bounded-prefill"),
+        pytest.param(65, None, marks=pytest.mark.full, id="unbounded-prefill"),
+        pytest.param(1, -5.0, marks=pytest.mark.full, id="bounded-decode"),
+    ],
+)
 def test_kda_raw_gate_graph_replay(seqlen, lower_bound):
     """Replay reads changed gates and initial state and overwrites both returned tensors."""
     test, op = _raw_gate_test(1, seqlen, 64, lower_bound, ["initial_state", "dt_bias"])
@@ -519,7 +517,6 @@ def test_kda_raw_gate_decode_continues_from_prefill() -> None:
     """Raw-gate decode consumes the FP32 state returned by raw-gate prefill."""
     test, op = _raw_gate_test(1, 65, 64, None, ["initial_state", "dt_bias"])
     inputs = test.gen_inputs()
-    op = op
     first = list(inputs[:-2])
     first[:5] = [tensor[:, :-1] for tensor in inputs[:5]]
     first_o, carried = op(*first)

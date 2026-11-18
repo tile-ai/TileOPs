@@ -43,13 +43,6 @@ except ImportError:
     fused_recurrent_gla = None
 
 
-def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Compute cosine similarity between two tensors (flattened)."""
-    a_flat = a.float().flatten()
-    b_flat = b.float().flatten()
-    return (torch.dot(a_flat, b_flat) / (a_flat.norm() * b_flat.norm() + 1e-12)).item()
-
-
 class GLAChunkFwdFixture(FixtureBase):
     PARAMS = [
         (
@@ -93,15 +86,12 @@ def test_gla_fwd(
     v = torch.randn(B, T, H, V, device=run_device(), dtype=dtype) * 0.1
     g = -torch.rand(B, T, H, K, device=run_device(), dtype=dtype)
 
-    # --- Torch reference ---
     ref_o, ref_h = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale, with_chunk_states=True)
 
     # --- FLA reference (if available; its Triton kernels need CUDA) ---
     fla = chunk_gla is not None and run_device_is_cuda()
     if fla:
         fla_o, _ = chunk_gla(q.float(), k.float(), v.float(), g.float(), scale=scale)
-        cos = cosine_sim(ref_o, fla_o)
-        print(f"  FLA vs ref o: cosine={cos:.6f}")
         compare_outputs(fla_o.to(dtype), ref_o.to(dtype), chunkwise_verification(dtype))
 
     fwd_op = GLAChunkFwdOp(
@@ -112,18 +102,13 @@ def test_gla_fwd(
         fwd_op.request_tune()
     op_o, op_final_state, op_h = fwd_op(q, k, v, g)
 
-    cos = cosine_sim(ref_o, op_o)
-    print(f"  TileOPs vs ref o: cosine={cos:.6f}")
     compare_outputs(
         (op_o, op_final_state, op_h),
         (ref_o.to(op_o.dtype), ref_h[:, -1].float(), ref_h.float()),
         chunkwise_verification(dtype),
     )
 
-    # --- TileOPs vs FLA ---
     if fla:
-        cos = cosine_sim(fla_o, op_o)
-        print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
         compare_outputs(op_o, fla_o.to(op_o.dtype), chunkwise_verification(dtype))
 
 
@@ -247,7 +232,6 @@ def test_gla_bwd(
     torch.manual_seed(42)
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
 
-    # GLA layout: BTHD — [B, T, H, K/V]
     q = torch.randn(B, T, H, K, device=run_device(), dtype=dtype) * 0.1
     k = torch.randn(B, T, H, K, device=run_device(), dtype=dtype) * 0.1
     v = torch.randn(B, T, H, V, device=run_device(), dtype=dtype) * 0.1
@@ -256,7 +240,6 @@ def test_gla_bwd(
 
     scale = K**-0.5
 
-    # --- Torch reference via autograd ---
     ref_dq, ref_dk, ref_dv, ref_dg = gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
     ref_grads = {"dq": ref_dq, "dk": ref_dk, "dv": ref_dv, "dg": ref_dg}
 
@@ -519,10 +502,18 @@ def test_gla_fwd_roofline_counts_packed_states(seeded: bool) -> None:
         assert op.eval_roofline() == (7 * 2 * (5 * 8 * 6 + 8 + 6), expected_bytes)
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-@pytest.mark.parametrize("seq_len, dim", [(128, 64), (128, 128), (1024, 64)])
+@pytest.mark.parametrize(
+    "dtype, seq_len, dim",
+    [
+        pytest.param(torch.float16, 128, 64, marks=pytest.mark.smoke, id="fp16-128-64"),
+        pytest.param(torch.bfloat16, 128, 64, marks=pytest.mark.smoke, id="bf16-128-64"),
+        pytest.param(torch.float16, 128, 128, marks=pytest.mark.full, id="fp16-128-128"),
+        pytest.param(torch.bfloat16, 128, 128, marks=pytest.mark.full, id="bf16-128-128"),
+        pytest.param(torch.float16, 1024, 64, marks=pytest.mark.full, id="fp16-1024-64"),
+        pytest.param(torch.bfloat16, 1024, 64, marks=pytest.mark.full, id="bf16-1024-64"),
+    ],
+)
 def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: int) -> None:
     torch.manual_seed(2160)
     test = GLAFwdTest(2, seq_len, 4, dim, dim, dtype, has_initial_state=True)
@@ -535,10 +526,16 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
     test.check(op, *inputs)
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("dtype,dim", [(torch.bfloat16, 64), (torch.float16, 128)])
-@pytest.mark.parametrize("scale", [None, 0.3])
+@pytest.mark.parametrize(
+    "dtype,dim,scale",
+    [
+        pytest.param(torch.bfloat16, 64, None, marks=pytest.mark.smoke),
+        pytest.param(torch.float16, 128, None, marks=pytest.mark.smoke),
+        pytest.param(torch.bfloat16, 64, 0.3, marks=pytest.mark.full),
+        pytest.param(torch.float16, 128, 0.3, marks=pytest.mark.full),
+    ],
+)
 def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: float | None) -> None:
     """Sequence lengths from one token up, with the state and the host offsets each absent.
 
@@ -664,14 +661,13 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     )
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "dtype,dim,has_initial_state,scale",
     [
-        (torch.float16, 128, True, None),
-        (torch.bfloat16, 64, False, None),
-        (torch.bfloat16, 64, True, 0.3),
+        pytest.param(torch.float16, 128, True, None, marks=pytest.mark.smoke),
+        pytest.param(torch.bfloat16, 64, False, None, marks=pytest.mark.smoke),
+        pytest.param(torch.bfloat16, 64, True, 0.3, marks=pytest.mark.full),
     ],
 )
 def test_gla_dense_decode_matches_fla(
@@ -775,7 +771,7 @@ def test_gla_decode_multi_step(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    """Test multiple sequential decode steps to verify state propagation."""
+    """Sequential decode steps propagate the state."""
     torch.manual_seed(42)
     num_steps = 8
     B, H, DK, DV = batch, heads, dim_k, dim_v
@@ -828,8 +824,7 @@ def test_gla_decode_vs_fla(
     gk = -torch.rand(B, H, DK, device=run_device(), dtype=dtype)
     state = torch.randn(B, H, DK, DV, device=run_device(), dtype=dtype) * 0.1
 
-    # FLA: needs BTHD layout with T=1
-    # q [B,H,DK] -> [B,1,H,DK]
+    # FLA takes BTHD with T=1.
     q_fla = q.unsqueeze(1)
     k_fla = k.unsqueeze(1)
     v_fla = v.unsqueeze(1)
