@@ -466,7 +466,6 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             "partition_chunks": 16,
             "num_v_partitions": 1,
             "num_k_partitions": 2,
-            "g_num_stages": 2,
             "g_threads": 128,
             "h_num_stages": 2,
             "h_threads": 128,
@@ -491,7 +490,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             64,
             self.dtype_name,
             gate_dtype,
-        )(cfg["g_num_stages"], cfg["g_threads"])
+        )(cfg["g_threads"])
         summary_fn = _gla_fwd_h_summary_kernel(
             self.batch,
             self.seq_len,

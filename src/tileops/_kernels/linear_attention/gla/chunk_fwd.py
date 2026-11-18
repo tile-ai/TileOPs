@@ -43,7 +43,7 @@ def gla_precompute_g_kernel(
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
     )
-    def _fn(num_stages, threads=128):
+    def _fn(threads=128):
         g_shape = [batch, seq_len, heads, dim_k]
         g_cumsum_shape = [batch, seq_len, heads, dim_k]
 

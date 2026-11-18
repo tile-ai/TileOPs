@@ -58,7 +58,6 @@ class _StubKernel:
         # took its fallback width from here would return an unbuildable one.
         fused, output = la.chunk_gemm_configs(self.chunk_size, self.dim_v, self.dim_k, self.wgmma)
         return {
-            "fused_num_stages": 2,
             "fused_threads": max(config["threads"] for config in fused),
             "h_num_stages": 2,
             "h_threads": 256,
@@ -89,7 +88,7 @@ def _run(kernel: _StubKernel) -> dict:
 def test_every_candidate_is_swept_and_the_winner_lands_in_its_key() -> None:
     kernel = _StubKernel()
     kernel.results = {
-        ("fused", 0): ({"num_stages": 1, "threads": 128}, 3.0),
+        ("fused", 0): ({"threads": 128}, 3.0),
         ("h", 0): ({"num_stages": 1, "threads": 256}, 2.0),
         ("h", 32): ({"num_stages": 2, "threads": 128}, 5.0),
         ("o", 0): ({"threads": 64}, 1.0),
@@ -100,12 +99,11 @@ def test_every_candidate_is_swept_and_the_winner_lands_in_its_key() -> None:
     swept = {
         (name, build["block_v"] if build else 0): configs for name, build, configs in kernel.sweeps
     }
-    assert swept[("fused", 0)] == la.PIPELINE_CONFIGS
+    assert swept[("fused", 0)] == ({"threads": 128}, {"threads": 256})
     assert swept[("h", 0)] == la.PIPELINE_CONFIGS
     assert swept[("h", 32)] == la.PIPELINE_CONFIGS
     assert swept[("o", 0)] == la.OUTPUT_CONFIGS
     assert config == {
-        "fused_num_stages": 1,
         "fused_threads": 128,
         # block_v=0 measured 2.0 ms against 5.0 ms for block_v=32.
         "h_num_stages": 1,
@@ -226,7 +224,7 @@ def test_each_sweep_is_seeded_with_its_sub_kernel_untuned_launch() -> None:
 
     assert kernel.default_config["h_block_v"] == 32
     assert kernel.seeds == {
-        ("fused", 0): {"num_stages": 2, "threads": 256},
+        ("fused", 0): {"threads": 256},
         ("h", 0): dict(la.PIPELINE_CONFIGS[0]),
         ("h", 32): {"num_stages": 2, "threads": 256},
         ("o", 0): {"threads": 256},

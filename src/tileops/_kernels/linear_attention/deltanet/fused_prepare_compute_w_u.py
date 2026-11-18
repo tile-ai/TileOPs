@@ -58,7 +58,7 @@ def fused_prepare_compute_w_u_tl(
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
-    def _fused_func(num_stages, threads=128):
+    def _fused_func(threads=128):
         @T.macro
         def _fused_body(
             k: T.Tensor([batch, head, seq_len, dim_k], dtype),

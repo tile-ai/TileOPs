@@ -534,7 +534,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         h_num_stages = 2 if cls._state_shared_bytes(c, k, width, elem, 2) <= budget else 1
         fused_configs, output_configs = chunk_gemm_configs(c, v, k, wgmma)
         return {
-            "fused_num_stages": 2,
             "fused_threads": max(config["threads"] for config in fused_configs),
             "h_num_stages": h_num_stages,
             "h_threads": default_h_threads(v, h_block_v, c, k, wgmma),
@@ -570,7 +569,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             chunk_size, dim_v, dim_k, wgmma, walk=True
         )
         return {
-            "fused_num_stages": 2,
             "fused_threads": max(config["threads"] for config in fused_configs),
             "h_num_stages": 2 if two else 1,
             "h_threads": walk_threads(block_v, dim_k, wgmma),
@@ -600,7 +598,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         )
         return [
             {
-                "fused_num_stages": fused["num_stages"],
                 "fused_threads": fused["threads"],
                 "h_num_stages": walk["num_stages"],
                 "h_threads": walk["threads"],
@@ -659,7 +656,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         fused = tune(
             fused_builder(*shape),
             [dict(c) for c in fused_configs],
-            {"num_stages": default["fused_num_stages"], "threads": default["fused_threads"]},
+            {"threads": default["fused_threads"]},
         )
         walk = tune(
             _state_walk_tl(*shape),
@@ -675,7 +672,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         )
         self._publish_tuned(
             {
-                "fused_num_stages": fused["num_stages"],
                 "fused_threads": fused["threads"],
                 "h_num_stages": walk["num_stages"],
                 "h_threads": walk["threads"],
@@ -698,7 +694,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         walk = self._walk
         fused_fn = fused_prepare_compute_w_u_tl(
             *args, late_v=self._fused_late_v, walk_operands=walk
-        )(cfg["fused_num_stages"], cfg["fused_threads"])
+        )(cfg["fused_threads"])
         o_fn = _output_o_tl(*args, late_loads=self._o_late_loads, from_walk=walk)(cfg["o_threads"])
         h_block_v = cfg.get("h_block_v", 0)
         if walk:

@@ -298,7 +298,7 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         num_kp = cfg.get("num_k_partitions", 2)
         g_fn = gla_precompute_g_kernel(
             self.batch, self.seq_len, self.heads, self.dim_k, 64, self.dtype_name
-        )(ns, thr_par)
+        )(thr_par)
         h_fn = gla_fwd_h_kernel(
             self.batch,
             self.seq_len,

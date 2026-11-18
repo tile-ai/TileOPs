@@ -29,7 +29,8 @@ __all__ = [
     "tune_delta_rule_fwd",
 ]
 
-# ``num_stages`` / ``threads`` candidates for the two matmul-heavy sub-kernels.
+# ``num_stages`` / ``threads`` candidates for the recurrence; the preparation takes their
+# ``threads`` alone.
 PIPELINE_CONFIGS: tuple[dict[str, int], ...] = tuple(
     {"num_stages": num_stages, "threads": threads}
     for num_stages in (1, 2)
@@ -57,7 +58,7 @@ def chunk_gemm_configs(
     c, k, v = chunk_size, dim_k, dim_v
     fused = [(c, c), (c, k), (c, v)] + ([(k, k), (k, v)] if walk else [])
     return (
-        fit_launches(PIPELINE_CONFIGS, wgmma, *fused),
+        fit_launches([{"threads": c["threads"]} for c in PIPELINE_CONFIGS], wgmma, *fused),
         fit_launches(OUTPUT_CONFIGS, wgmma, (c, c), (c, v)),
     )
 
@@ -158,7 +159,6 @@ def delta_rule_fwd_autotune_configs(
     fused_configs, output_configs = chunk_gemm_configs(chunk_size, dim_v, dim_k, wgmma)
     return [
         {
-            "fused_num_stages": fused["num_stages"],
             "fused_threads": fused["threads"],
             "h_num_stages": recurrence["num_stages"],
             "h_threads": recurrence["threads"],
@@ -318,7 +318,7 @@ def tune_delta_rule_fwd(
         fused_configs,
         warmup,
         rep,
-        {"num_stages": default["fused_num_stages"], "threads": default["fused_threads"]},
+        {"threads": default["fused_threads"]},
     )
 
     h_config: dict[str, int] | None = None
@@ -384,7 +384,6 @@ def tune_delta_rule_fwd(
     )
 
     config = {
-        "fused_num_stages": _tuned_value(fused_config, "num_stages", default["fused_num_stages"]),
         "fused_threads": _tuned_value(fused_config, "threads", default["fused_threads"]),
         "h_num_stages": _tuned_value(h_config, "num_stages", default["h_num_stages"]),
         "h_threads": _tuned_value(
