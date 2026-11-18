@@ -606,5 +606,6 @@ class FusedQKNormRoPEFwdInterface(KernelInterface):
             q_weight: ``(call.dim,)`` in ``call.dtype``.
             k_weight: ``(call.dim,)`` in ``call.dtype``.
             cos_sin_cache: ``(positions, call.rot)`` in ``call.cache_dtype``, cosines then sines.
-            positions: ``int64`` ``(tokens,)``, each a row of *cos_sin_cache*.
+            positions: ``int64`` ``(tokens,)``, each a row of *cos_sin_cache*; ``(3, tokens)``,
+                the temporal, height and width rows, with ``call.mrope_section``.
         """
