@@ -287,5 +287,5 @@ class FP8QuantPerBlockUnalignedFwdKernel(_FP8QuantPerBlockFwdKernel):
 
     general = True
 
-    # Fitted on the ragged-k row: caps of 64 and 85 registers measured 1% slower than none.
+    # No register cap: a cap only slows the ragged-K row.
     _REGISTERS = None

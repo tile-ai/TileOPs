@@ -73,7 +73,7 @@ def _quantize_rows(
     # finite 16-bit x whose quotient lies in [2**-40, 2**40]; a quotient above that range
     # stays above it or turns non-finite, one below stays below it. A row whose amax is in
     # [2**-30, 2**40] thus has the exact amax, and its quotients below 2**-40 round to code
-    # 0 either way. Checked against torch on every finite float16 and bfloat16 value.
+    # 0 either way.
     # The bounds as float32 bit patterns, which order as the magnitudes do and put a NaN
     # above every number: a float32 2**e has the pattern (127 + e) << 23.
     smooth_lo = (127 - 60) << 23
@@ -496,7 +496,7 @@ class _INT8QuantPerRowKernel(Kernel):
     def default_config(self) -> dict:
         if self.cols >= self._WIDE_ROW and self.dtype.itemsize == 2:
             # Four vectors a thread, five CTAs an SM; a sixth caps a thread below what it
-            # holds ([5120, 8192] bfloat16: 33.4 us, 35.2 at 512 threads of two vectors).
+            # holds.
             vpt = 4
             threads = self.config_for(vpt, True, True, 1)["threads"]
             min_blocks = min(5, self._resident_threads // threads)
@@ -509,8 +509,7 @@ class _INT8QuantPerRowKernel(Kernel):
             threads = self.config_for(vpt, True, True, 1)["threads"]
             min_blocks = max(2, self._register_file // (threads * self._MAX_REGISTERS))
         evict_first = self.rows * self.cols * self.dtype.itemsize < self._EVICT_FIRST_BYTES
-        # Pairs of adjacent vectors store 16 bytes of codes at a time: [5120, 8192]
-        # bfloat16 runs 32.5 us with them and 33.1 without.
+        # Pairs of adjacent vectors store 16 bytes of codes at a time.
         return self.config_for(vpt, True, evict_first, min_blocks)
 
     @property
@@ -596,7 +595,7 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         # Fewer rows a CTA than fill the SMs once, which a row count that the fill does not
-        # divide can prefer ([3000, 2880] bfloat16: 11.1 us at 8 rows a CTA, 11.7 at 12).
+        # divide can prefer.
         rows_per_cta = -(-self.rows // self.default_config["ctas"])
         fewer = self._launch(-(-2 * rows_per_cta // 3))
         return [self.default_config] + ([fewer] if fewer != self.default_config else [])
