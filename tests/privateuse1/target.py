@@ -13,6 +13,7 @@ import torch
 
 from tests.conftest import UnservedError
 from tests.privateuse1 import DEVICE_TYPE
+from tileops._ops._signature_codegen import leaves
 from tileops.backend import (
     DeviceFacts,
     register_detector,
@@ -172,12 +173,7 @@ class _Reference:
 
     def _device(self, inputs: tuple, writes: dict) -> torch.device:
         """The call device, by the rule the op's checks place a call by."""
-        tensors = [
-            t
-            for value in (*inputs, *writes.values())
-            for t in (value if isinstance(value, (list, tuple)) else (value,))
-            if isinstance(t, torch.Tensor)
-        ]
+        tensors = [t for t in leaves((*inputs, *writes.values())) if isinstance(t, torch.Tensor)]
         devices = {t.device for t in tensors if t.device.type != "cpu"} or {
             t.device for t in tensors
         }
