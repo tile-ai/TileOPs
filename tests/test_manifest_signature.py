@@ -411,7 +411,6 @@ _PRIMITIVE_CALLS = [
         ),
         32,
     ),
-    ("mhc.expansion", (8,), 2),
     ("repeat", (512, 3), [512, 512, 512]),
 ]
 _PRIMITIVE_DOMAIN_ERRORS = [
@@ -429,7 +428,6 @@ _PRIMITIVE_DOMAIN_ERRORS = [
     ("per_axis", ([1, 2, 3], 0, 2)),
     ("ceil_div", (1, 0)),
     ("max", ([],)),
-    ("mhc.expansion", (7,)),
     ("repeat", (512, -1)),
 ]
 

@@ -28,8 +28,9 @@ class TopKSelectFwdOp(Op):
 
     - The indices come back in no particular order along the ``top_k`` axis. Two calls on
       one input select the same positions and may place them in different slots.
-    - A window holding fewer than ``top_k`` positions fills the rest with ``seq_len_kv``,
-      one past the last key, which selects nothing.
+    - A window holding fewer than ``top_k`` positions, ``top_k`` above ``seq_len_kv``
+      included, selects all of them and fills the rest with ``fill_value``; by default
+      ``seq_len_kv``, one past the last key, which selects nothing.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"topk_select_kernel": TopKSelectKernel}
@@ -47,16 +48,21 @@ class TopKSelectFwdOp(Op):
         self,
         top_k: int,
         *,
+        fill_value: int | None = None,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             top_k: Manifest ``params.top_k``, ``int``.
+            fill_value: Manifest ``params.fill_value``, ``int | None``: the index written to
+                the slots a window leaves unselected, such as ``-1``; ``None`` writes each
+                call's ``seq_len_kv``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.top_k = top_k
+        self.fill_value = fill_value
         self.out_dtype = torch.int32
 
         super().__init__(target=target)
@@ -85,6 +91,7 @@ class TopKSelectFwdOp(Op):
                 seq_len_kv=seq_len_kv,
                 kv_group=kv_group,
                 topk=self.top_k,
+                fill_value=self.fill_value,
                 dtype=logits.dtype,
                 out_dtype=self.out_dtype,
                 device=logits.device,

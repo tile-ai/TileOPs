@@ -22,7 +22,14 @@ class EngramGateConvFwdFixture(FixtureBase):
         (
             "M, seq_len, d, dtype, tune",
             [
-                pytest.param(1, 32, 256, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(
+                    1,
+                    32,
+                    256,
+                    torch.float16,
+                    False,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="sequence_modeling")],
+                ),
                 pytest.param(1, 32, 256, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param(2, 64, 512, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(2, 16, 256, torch.bfloat16, False, marks=pytest.mark.full),

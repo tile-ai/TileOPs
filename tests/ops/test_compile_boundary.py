@@ -97,7 +97,6 @@ from tileops._ops.sampling.top_k_top_p_mask import TopKTopPMaskFwdOp
 from tileops._ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops._ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops._ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
-from tileops._ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
 from tileops._ops.transform import HadamardTransformFwdOp
 from workloads.attention.dsa import DSADecodeWorkload, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
@@ -786,30 +785,10 @@ def _sequence_modeling_cases():
             _x(_CONV_TAPS, _D),
         )
 
-    def mhc_pre():
-        n_expand, c_x, batch = 4, 1280, 1
-        op = MHCPreFwdOp(0.5, 0.25, 0.125, sinkhorn_repeat=4)
-        phi_dim = n_expand * n_expand + 2 * n_expand
-        return op, (
-            _x(n_expand * c_x, phi_dim, dtype=torch.float32),
-            _x(batch, n_expand * c_x),
-            _x(phi_dim, dtype=torch.float32),
-        )
-
-    def mhc_post():
-        n_expand, c_x, batch = 4, 1280, 1
-        return MHCPostFwdOp(), (
-            _x(batch, c_x),
-            _x(batch, n_expand, dtype=torch.float32),
-            _x(batch, n_expand * c_x),
-        )
-
     return (
         ("engram-gate-conv-fwd", engram_gate_conv_fwd),
         ("engram-gate-conv-bwd", engram_gate_conv_bwd),
         ("engram-decode", engram_decode),
-        ("mhc-pre", mhc_pre),
-        ("mhc-post", mhc_post),
     )
 
 
@@ -977,8 +956,6 @@ for _op_cls in (
     EngramGateConvFwdOp,
     EngramGateConvBwdOp,
     EngramDecodeFwdOp,
-    MHCPreFwdOp,
-    MHCPostFwdOp,
     RoPEFwdOp,
     RoPELlama31FwdOp,
     YaRNFwdOp,

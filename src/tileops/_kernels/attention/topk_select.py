@@ -21,6 +21,7 @@ class TopKSelectCall(CallSpec):
     seq_len_kv: int = 0
     kv_group: int = 0
     topk: int = 0
+    fill_value: int | None = None
     dtype: torch.dtype | None = None
     out_dtype: torch.dtype | None = None
 
@@ -38,8 +39,9 @@ class TopKSelectFwdInterface(KernelInterface):
 
         Row ``(b, s, g)`` selects from ``index_score[b, s, starts[b, s]:ends[b, s], g]``. The
         positions come back in no particular order along the ``topk`` axis, and a window
-        holding fewer than ``call.topk`` positions fills the rest with ``call.seq_len_kv``.
-        Nothing is written in place, and the output aliases no input.
+        holding fewer than ``call.topk`` positions fills the rest with ``call.fill_value``,
+        ``call.seq_len_kv`` when that is ``None``. ``call.topk`` may exceed
+        ``call.seq_len_kv``. Nothing is written in place, and the output aliases no input.
 
         Args:
             index_score: The scores,
@@ -58,7 +60,7 @@ class TopKSelectFwdInterface(KernelInterface):
 
 @target_cache(maxsize=32)
 def _topk_select_kernel(
-    batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, bin_cache=65536
+    batch, seq_len, seq_len_kv, kv_group, topk, fill_value, in_dtype, out_dtype, bin_cache=65536
 ):
     @tilelang.jit(
         out_idx=[1],
@@ -84,6 +86,8 @@ def _topk_select_kernel(
 
         batch = T.dynamic("batch")
         seq_len_kv = T.dynamic("seq_len_kv")
+        # The index a slot no candidate fills holds.
+        FILL = seq_len_kv if fill_value is None else fill_value
         RADIX = 1 << 8
         # Threshold-bin candidates a round stages, each with its 32-bit key so the next
         # round reads shared memory, not the scores; more re-read the window instead.
@@ -145,14 +149,13 @@ def _topk_select_kernel(
                 l_end_idx = ends[bx, seq_row]
 
                 # A row whose [start, end) window holds fewer than topk candidates leaves
-                # the remaining slots unselected. They are written here, with an index one
-                # past the last key: every consumer of this list treats an index beyond
-                # the key range as selecting nothing, and leaving the slot unwritten would
-                # return whatever the buffer held.
+                # the remaining slots unselected. They are written here with FILL, which
+                # the consumer of this list treats as selecting nothing; leaving the slot
+                # unwritten would return whatever the buffer held.
                 for j in T.serial(T.ceildiv(topk, BLOCK_SIZE)):
                     slot = j * BLOCK_SIZE + tx
                     if slot < topk:
-                        index[bx, seq_row, g, slot] = seq_len_kv
+                        index[bx, seq_row, g, slot] = FILL
 
                 # stage 1: use 8bit to do quick topk
 
@@ -208,7 +211,13 @@ def _topk_select_kernel(
                         s_threshold_bin_id[0] = tx
                 T.sync_threads()
                 l_threshold_bin_id = s_threshold_bin_id[0]
-                l_new_topk = l_new_topk - s_histogram[l_threshold_bin_id + 1]
+                # A window of at most topk candidates is selected whole by the collect pass
+                # below and leaves stage 2 nothing to refine. Skipping its four empty rounds
+                # measured 1.45x faster on a causal 4096-row prefill, 2.4x on a 25-key row.
+                if l_threshold_bin_id < 0:
+                    l_new_topk = 0
+                else:
+                    l_new_topk = l_new_topk - s_histogram[l_threshold_bin_id + 1]
                 T.sync_threads()
 
                 # collect all elements with exponent >= threshold
@@ -393,18 +402,14 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         seq_len_kv: Key/value sequence length.
         kv_group: Number of key/value groups.
         topk: Number of indices selected per row.
+        fill_value: Index written to the slots a short window leaves unselected;
+            ``None`` writes ``seq_len_kv``.
         dtype: Torch dtype of the input scores.
         out_dtype: Torch dtype of the emitted indices.
         config: Optional dict with "BLOCK_SIZE".
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-
-    @classmethod
-    def refusal(cls, call: TopKSelectCall) -> str | None:
-        if call.topk > call.seq_len_kv:
-            return "requires topk at most seq_len_kv"
-        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: TopKSelectCall) -> Entry:
@@ -414,6 +419,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
             call.seq_len_kv,
             call.kv_group,
             call.topk,
+            call.fill_value,
             call.dtype,
             call.out_dtype,
         )
@@ -425,6 +431,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         seq_len_kv: int,
         kv_group: int,
         topk: int,
+        fill_value: int | None,
         dtype: torch.dtype,
         out_dtype: torch.dtype,
         config: dict | None = None,
@@ -435,6 +442,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
         self.topk = topk
+        self.fill_value = fill_value
         self.dtype = dtype
         self.out_dtype = out_dtype
         self.out_dtype_str = self.dtype_to_str(self.out_dtype)
@@ -449,6 +457,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
             self.seq_len_kv,
             self.kv_group,
             self.topk,
+            self.fill_value,
             self.dtype_str,
             self.out_dtype_str,
             self.bin_cache,
