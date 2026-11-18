@@ -12,9 +12,14 @@ from tests.ops.moe_grouped_gemm_helpers import (
     run_into_guarded_out,
     with_counts,
 )
-from tileops._kernels.moe import MGroupedGEMMMXFP4Call
-from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import _smem_bytes, _uses_tables
+from tileops._kernels.moe import MGroupedGEMMMXFP4Call, MoEGroupedGEMMMXFP4SharedDecodeKernel
+from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import (
+    _shared_decode_smem_bytes,
+    _smem_bytes,
+    _uses_tables,
+)
 from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMMXFP4FwdOp
+from tileops.backend import BUILTIN
 from tileops.manifest import load_workloads
 from workloads.device import run_device
 from workloads.moe import MoEGroupedGEMMMXFP4Workload
@@ -368,13 +373,136 @@ def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
     run_into_guarded_out(op, workload, *workload.gen_inputs())
 
 
+def _aligned_workload(
+    n: int, k: int, metadata_kind: str = "per_row"
+) -> MoEGroupedGEMMMXFP4Workload:
+    """Every expert's rows of ``SIZES``, runs aligned to 128 rows, under e8m0 scales."""
+    rows = sum(-(-size // 128) * 128 for size in SIZES)
+    stated = {"P": rows} if metadata_kind == "physical_psum" else {}
+    return MoEGroupedGEMMMXFP4Workload(
+        manifest_call(
+            _OP,
+            _E8M0,
+            layout=contiguous_layout("aligned", metadata_kind, 128),
+            E=len(SIZES),
+            sizes=SIZES,
+            N=n,
+            K=k,
+            **stated,
+        )
+    )
+
+
+def _shared_decode_op(workload: MoEGroupedGEMMMXFP4Workload, inputs: tuple):
+    """The op on *workload*'s layout, built on *inputs*, which decode to shared memory."""
+    op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
+    op(*inputs)
+    assert isinstance(next(op.iter_kernels()), MoEGroupedGEMMMXFP4SharedDecodeKernel)
+    return op
+
+
 @pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("metadata_kind", "n", "k"),
+    [
+        # 64-byte code-table rows; the last weight tile holds 72 of N's columns.
+        pytest.param("per_row", 328, 2048, marks=pytest.mark.smoke, id="per-row-n328-k2048"),
+        # 128-byte code-table rows; experts found from their physical row ends.
+        pytest.param("physical_psum", 256, 4096, marks=pytest.mark.full, id="psum-k4096"),
+    ],
+)
+def test_mxfp4_grouped_gemm_decodes_aligned_rows_into_shared_memory(
+    metadata_kind: str, n: int, k: int
+) -> None:
+    """Aligned 128-row runs under e8m0 scales, K a multiple of 2048, decode each weight tile once
+    into shared memory and match the reference."""
+    workload = _aligned_workload(n, k, metadata_kind)
+    inputs = workload.gen_inputs()
+    run_into_guarded_out(_shared_decode_op(workload, inputs), workload, *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_mxfp4_grouped_gemm_skips_trailing_padding_tiles() -> None:
+def test_mxfp4_grouped_gemm_shared_decode_unfolded_tasks() -> None:
+    """288 tasks on persistent CTAs, so each runs two or three and reuses its code tables, flags
+    and column scales: one weight row whose codes span twelve binades over K puts its tasks on
+    the sub-block by sub-block contraction, the others fold. The rows' only nonzero products
+    lie in one sub-block, under codes whose largest, so each column's scale, steps from one
+    weight tile to the next (by sevens, so a CTA's tasks, four tiles apart, differ); the
+    spanning row's sub-block keeps its full value (32 * 0.5 * its scale), which folding would
+    lose six binades under its row's reference."""
+    workload = _aligned_workload(4096, 2048)
+    a, a_scale, b, b_scale, ids = workload.gen_inputs()
+    a = torch.zeros_like(a.float())
+    a[:, 288:320] = 1.0
+    a = a.to(torch.float8_e4m3fn)
+    b = torch.full_like(b, 0x11)
+    a_codes = torch.full_like(a_scale.view(torch.uint8), 127)
+    steps = torch.arange(b.shape[1], device=b.device).div(128, rounding_mode="floor").remainder(7)
+    steps = steps.to(torch.uint8)
+    b_codes = torch.randint_like(b_scale.view(torch.uint8), 0, 4) + 115 + steps[:, None]
+    b_codes[4, 700, 9] = b_codes[4, 700].max() - 12
+    inputs = (a, a_codes.view(a_scale.dtype), b, b_codes.view(b_scale.dtype), ids)
+    out = run_into_guarded_out(_shared_decode_op(workload, inputs), workload, *inputs)
+    assert bool((out[ids == 4, 700] == 2.0 ** (int(b_codes[4, 700, 9]) - 123)).all())
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_token_scale_past_the_fold() -> None:
+    """A token scale of 2 ** 123 beside weight scales of 2 ** -63: folded to the row's
+    reference, a step's products under the token scale alone overflow float32. The task
+    contracts sub-block by sub-block instead, and each output is the products' finite sum,
+    2048 * 448 * 6 * 2 ** 60."""
+    workload = _aligned_workload(256, 2048)
+    a, a_scale, b, b_scale, ids = workload.gen_inputs()
+    a = torch.full_like(a.float(), 448.0).to(a.dtype)
+    b = torch.full_like(b, 0x77)
+    a_scale = torch.full_like(a_scale.view(torch.uint8), 250).view(a_scale.dtype)
+    b_scale = torch.full_like(b_scale.view(torch.uint8), 64).view(b_scale.dtype)
+    inputs = (a, a_scale, b, b_scale, ids)
+    out = _shared_decode_op(workload, inputs)(*inputs)
+    expected = torch.tensor(2048 * 448 * 6 * 2.0**60, dtype=torch.bfloat16)
+    assert bool((out[ids < len(SIZES)] == expected.to(out.device)).all())
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_token_code_zero() -> None:
+    """A token code of 0 (2 ** -127), an all-zero block's, keeps its task folded, where the
+    scale flushes to zero as the register path's does: each output, K * 2 ** 63 * 2 ** -127,
+    comes out 0, within the documented ``K * 2 ** -52``; the unfolded contraction would keep
+    it."""
+    workload = _aligned_workload(256, 2048)
+    a, a_scale, b, b_scale, ids = workload.gen_inputs()
+    a = torch.ones_like(a.float()).to(a.dtype)
+    a_scale = torch.zeros_like(a_scale.view(torch.uint8)).view(a_scale.dtype)
+    b = torch.full_like(b, 0x22)
+    b_scale = torch.full_like(b_scale.view(torch.uint8), 190).view(b_scale.dtype)
+    inputs = (a, a_scale, b, b_scale, ids)
+    out = _shared_decode_op(workload, inputs)(*inputs)[ids < len(SIZES)]
+    assert bool((out == 0).all())
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "align",
+    [
+        # Runs of whole 128-row tiles: the shared-decode kernel.
+        pytest.param(256, marks=pytest.mark.smoke, id="shared-decode"),
+        # 64-row tiles: the register-fragment kernel.
+        pytest.param(64, marks=pytest.mark.full, id="register-fragments"),
+    ],
+)
+def test_mxfp4_grouped_gemm_skips_trailing_padding_tiles(align: int) -> None:
     """Aligned per-row ids ending in padding row tiles marked E: those tiles are skipped, and
     with more tasks than SMs (64 weight tiles a row tile) each CTA meets skipped tasks after
-    the ones it runs, which take no scale table."""
-    sizes, align, pad = [5, 300, 0, 77], 256, 512
+    the ones it runs, which load no code table."""
+    sizes, pad = [5, 300, 0, 77], 512
     workload = MoEGroupedGEMMMXFP4Workload(
         manifest_call(
             _OP,
@@ -502,7 +630,7 @@ def _compiled_smem(program) -> int:
     dynamic = int(
         re.findall(r"\(\(int64_t\)(\d+)\)", host[: host.rfind("_kernel_packed == NULL")])[-1]
     )
-    element_bytes = {"uint64_t": 8, "float": 4, "uchar": 1}
+    element_bytes = {"uint64_t": 8, "float": 4, "int": 4, "uchar": 1}
     arrays = re.findall(
         r"__shared__ (?:__align__\(\d+\) )?(\w+) \w+\[(\d+)\]", program.get_kernel_source()
     )
@@ -542,6 +670,67 @@ def test_mxfp4_grouped_gemm_smem_model_matches_the_build(
     assert tables == (scale_bytes == 1)
     modelled = _smem_bytes(block_m, block_n, 4, scale_bytes, scale_k, tables)
     assert modelled - _compiled_smem(kernel.kernel(**config)) == (1024 if tables else 0)
+
+
+def _aligned_kernel(k: int):
+    """The implementation the op selects for 512 rows of four experts in aligned 128-row runs
+    under e8m0 scales, N = 256."""
+    call = MGroupedGEMMMXFP4Call(
+        device=torch.device(run_device()),
+        kind="contiguous",
+        packing="aligned",
+        metadata_kind="per_row",
+        alignment=128,
+        scale_dtype=torch.float8_e8m0fnu,
+        num_groups=4,
+        m=512,
+        n=256,
+        k=k,
+    )
+    layout = _aligned_workload(256, k).call.arguments()["layout"]
+    op = MoEGroupedGEMMMXFP4FwdOp(layout, target=BUILTIN)
+    return op.kernel_for("grouped_gemm_mxfp4", lambda: call)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "k",
+    [
+        pytest.param(2048, marks=pytest.mark.smoke, id="k2048"),
+        pytest.param(4096, marks=pytest.mark.full, id="k4096"),
+    ],
+)
+def test_mxfp4_grouped_gemm_shared_decode_smem_model_matches_the_build(k: int) -> None:
+    """``_shared_decode_smem_bytes``, which the dispatch, the config refusal and the stage choice
+    read, counts the shared memory the built program takes, plus 1024 bytes of code-table
+    alignment."""
+    kernel = _aligned_kernel(k)
+    assert isinstance(kernel, MoEGroupedGEMMMXFP4SharedDecodeKernel)
+    config = kernel.default_config
+    modelled = _shared_decode_smem_bytes(config["block_n"], config["num_stages"], kernel.scale_k)
+    assert modelled - _compiled_smem(kernel.kernel(**config)) == 1024
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_takes_the_modelled_shared_memory() -> None:
+    """A shared-decode config is refused one byte under the shared memory
+    ``_shared_decode_smem_bytes`` models and taken at it; a call whose shallowest ring does not
+    fit (K = 16384, whose code tables alone pass 160 KiB) keeps the register-fragment kernel."""
+    scale_k = 4096 // 128
+    config = {"block_m": 128, "block_n": 128, "num_stages": 4, "num_sms": 132}
+    need = _shared_decode_smem_bytes(128, 4, scale_k)
+
+    def refusal(smem_limit: int) -> str | None:
+        return MoEGroupedGEMMMXFP4SharedDecodeKernel.config_refusal(
+            config, sm_count=132, smem_limit=smem_limit, scale_k=scale_k, alignment=128
+        )
+
+    assert "shared memory" in refusal(need - 1)
+    assert refusal(need) is None
+    assert not isinstance(_aligned_kernel(16384), MoEGroupedGEMMMXFP4SharedDecodeKernel)
 
 
 @pytest.mark.smoke
