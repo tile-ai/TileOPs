@@ -240,14 +240,6 @@ def rope_yarn_cache_rows(max_position_embeddings: int, scaling_factor: float) ->
     return rows
 
 
-def mhc_expansion(q: int) -> int:
-    """The positive `n` with `n * n + 2 * n == q`."""
-    n = math.isqrt(q + 1) - 1
-    if n <= 0 or n * n + 2 * n != q:
-        raise ValueError(f"no positive n satisfies n * n + 2 * n == {q}")
-    return n
-
-
 def balanced_sizes(total: int, count: int) -> list[int]:
     """`count` sizes summing to `total`, each `total // count`, the first `total % count` one larger."""
     if count <= 0 or total < 0:
@@ -317,7 +309,6 @@ PRIMITIVES: dict[str, Callable[..., Any]] = {
     "conv.out": conv_out,
     "pool.out": pool_out,
     "moe.capacity": moe_capacity,
-    "mhc.expansion": mhc_expansion,
     "rope.yarn_cache_rows": rope_yarn_cache_rows,
     "promote_int_to_float": promote_int_to_float,
     "coalesce_dtype": coalesce_dtype,
@@ -361,7 +352,6 @@ PRIMITIVE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "conv.out": (("Int", "Int", "Int", "Int", "Int"), "Int"),
     "pool.out": (("Int", "Int", "Int", "Int", "Int", "Bool"), "Dim"),
     "moe.capacity": (("ADT", "Int", "Int"), "Dim"),
-    "mhc.expansion": (("Int",), "Dim"),
     "rope.yarn_cache_rows": (("Int", "Value"), "Dim"),
     "promote_int_to_float": (("DType",), "DType"),
     "coalesce_dtype": (("Maybe[DType]", "DType"), "DType"),

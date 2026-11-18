@@ -108,7 +108,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         EngramGateConvBwdKernel,
         EngramGateConvFwdKernel,
     )
-    from tileops._kernels.sequence_modeling.mhc import MHCPostKernel, MHCPreKernel
     from tileops._kernels.transform import (
         HadamardBaseExchangeKernel,
         HadamardExchangeKernel,
@@ -198,8 +197,6 @@ _LAZY = {
     "Kernel": ".kernel_base",
     "LayerNormKernel": ".norm",
     "LayerNormWarpRowKernel": ".norm",
-    "MHCPostKernel": ".sequence_modeling.mhc",
-    "MHCPreKernel": ".sequence_modeling.mhc",
     "MLADecodeWSKernel": ".attention",
     "MaxPool1dKernel": ".pool",
     "MaxPool1dWithIndicesKernel": ".pool",

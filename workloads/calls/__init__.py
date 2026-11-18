@@ -21,7 +21,6 @@ _FAMILIES = (
     "indexing",
     "linear_attention",
     "mamba",
-    "mhc",
     "moe",
     "norm",
     "pool",
