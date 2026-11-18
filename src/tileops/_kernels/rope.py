@@ -90,7 +90,7 @@ class RoPEPositionsFwdInterface(KernelInterface):
             query: ``[*S, call.query_heads * call.head_size]`` in ``call.dtype`` on
                 ``call.device``, contiguous.
             key: ``[*S, call.key_heads * call.head_size]`` in the same dtype, device and
-                layout, or None where ``call.key_heads`` is 0.
+                layout, or None; with ``call.key_heads`` 0 it may still be present, and empty.
             offsets: ``[*S]`` in ``call.offset_dtype``, ``int32`` or ``int64``, on
                 ``call.device``, contiguous, or None where ``call.offset_dtype`` is. A call
                 with offsets has a key.
@@ -163,12 +163,12 @@ def _rope_positions_kernel(
     pairs; or ``tail_vec`` columns past ``rotary_dim``, copied. A token's query units come
     before its key units, so one launch serves both. A block holds ``threads * units`` units
     of one token, ``units`` a thread, and reads the token's position once; consecutive
-    blocks walk a token's parts, then the next token's. Where a head has copied columns and
-    a thread holds several units, it loads all of them before it stores any; otherwise it
-    loads and stores one unit at a time. ``rot_vec`` and ``tail_vec`` divide
-    every column offset they start at, so each unit moves as vectors. Each block clamps the
-    token's position into the table once, before its table loads, so a position outside the
-    table reads the nearest row. The arithmetic is f32 and rounds once.
+    blocks walk a token's parts, then the next token's. Where a head has copied columns, a
+    thread loads all its units before it stores any, and a thread of one unit loads it before
+    the token's position; otherwise it loads and stores one unit at a time. ``rot_vec`` and
+    ``tail_vec`` divide every column offset they start at, so each unit moves as vectors.
+    Each block clamps the token's position into the table once, before its table loads, so a
+    position outside the table reads the nearest row. The arithmetic is f32 and rounds once.
     """
     half = rotary_dim // 2
     width, rot_units, tail_units = _head_units(neox, head_size, rotary_dim, rot_vec, tail_vec)
@@ -190,8 +190,9 @@ def _rope_positions_kernel(
 
         @T.macro
         def move_unit(r, row, x, y, token, head, slot, cos_table, sin_table, regs, load, store):
-            # Thread unit r: load reads its columns and cos/sin row into regs, store rotates and
-            # writes them; with regs None the unit takes registers of its own, at index 0.
+            # Thread unit r: load reads its columns into regs, a row reads its cos/sin row, store
+            # rotates and writes them; with regs None the unit takes registers of its own, at
+            # index 0.
             if regs is None:
                 r = 0
                 regs = (
@@ -219,6 +220,7 @@ def _rope_positions_kernel(
                     if neox:
                         for j in T.vectorized(width):
                             hi[r * width + j] = x[token, low + half + j]
+                if row is not None:
                     for j in T.vectorized(table_width):
                         cs[r * table_width + j] = cos_table[row, first + j]
                     for j in T.vectorized(table_width):
@@ -267,7 +269,7 @@ def _rope_positions_kernel(
             part,
         ):
             # move_unit on each of the thread's units, in the query or the key; row is the
-            # token's table row buffer, or None where no unit loads.
+            # token's table row buffer, or None where no unit reads the tables.
             shared = (cos_table, sin_table, regs, load, store)
             for r in T.unroll(units):
                 within = (part * units + r) * threads + T.get_thread_binding()
@@ -295,19 +297,21 @@ def _rope_positions_kernel(
                     )
 
         @T.macro
-        def rotate_token(
-            positions, offsets, query, key, cos_table, sin_table, query_out, key_out, token, part
-        ):
-            # The position first: the table loads wait on it, and the input loads issued
-            # behind it overlap that wait.
-            row = T.alloc_local([1], "int64" if offset_dtype else position_dtype)
+        def table_row(positions, offsets, token, row):
             if offset_dtype:
                 seen = T.Cast("int64", positions[token]) + T.Cast("int64", offsets[token])
                 row[0] = T.max(0, T.min(seen, max_position - 1))
             else:
                 row[0] = T.max(0, T.min(positions[token], max_position - 1))
+
+        @T.macro
+        def rotate_token(
+            positions, offsets, query, key, cos_table, sin_table, query_out, key_out, token, part
+        ):
+            row = T.alloc_local([1], "int64" if offset_dtype else position_dtype)
             tensors = (query, key, cos_table, sin_table, query_out, key_out, token, part)
-            if tail_units == 0 or units == 1:
+            if tail_units == 0:
+                table_row(positions, offsets, token, row)
                 each_unit(row, None, True, True, *tensors)
             else:
                 # A warp can hold rotating and copying units, each path waiting out a load-to-store
@@ -317,8 +321,16 @@ def _rope_positions_kernel(
                 cs = T.alloc_local([units * table_width], dtype)
                 sn = T.alloc_local([units * table_width], dtype)
                 regs = (lo, hi, cs, sn, lo)
-                each_unit(row, regs, True, False, *tensors)
-                each_unit(None, regs, False, True, *tensors)
+                if units == 1:
+                    # A copying lane needs no position, so its columns load first: ptxas waits
+                    # out the position's load at its clamp, before any load issued after it.
+                    each_unit(None, regs, True, False, *tensors)
+                    table_row(positions, offsets, token, row)
+                    each_unit(row, regs, False, True, *tensors)
+                else:
+                    table_row(positions, offsets, token, row)
+                    each_unit(row, regs, True, False, *tensors)
+                    each_unit(None, regs, False, True, *tensors)
 
         if offset_dtype:
 
@@ -470,6 +482,7 @@ class _RoPEPositionsKernel(Kernel):
         tail_vec = math.gcd(lanes, head_size, rotary_dim)
         _, rotating, copying = _head_units(self._NEOX, head_size, rotary_dim, rot_vec, tail_vec)
         self._token_units = (query_heads + key_heads) * (rotating + copying)
+        self._copies = copying > 0
         self._resident_threads = resident_threads
         self.kernel = _rope_positions_kernel(
             query_heads,
@@ -509,18 +522,25 @@ class _RoPEPositionsKernel(Kernel):
         rows = positions.view(-1)
         wide = 2 * rows.numel() * self._token_units <= self._resident_threads
         program = self.program(self._compile, wide)
-        query_rows = query.view(-1, query.shape[-1])
-        if key is None:
-            return program(rows, query_rows, cos, sin).view(query.shape), None
-        tensors = (rows, query_rows, key.view(-1, key.shape[-1]))
+        query_rows = query.view(rows.numel(), query.shape[-1])
+        if not self.key_heads and offsets is None:
+            # A key of no heads is built into the query-only program.
+            query_out = program(rows, query_rows, cos, sin).view(query.shape)
+            return query_out, None if key is None else torch.empty_like(key)
+        tensors = (rows, query_rows, key.view(rows.numel(), key.shape[-1]))
         if offsets is not None:
             tensors += (offsets.view(-1),)
         query_out, key_out = program(*tensors, cos, sin)
         return query_out.view(query.shape), key_out.view(key.shape)
 
     def _compile(self, cfg: dict, wide: bool):
-        """The program ``forward`` launches, compiled from *cfg*; *wide* gives a block a thread
-        per unit of its token, whole warps, up to the block limit."""
+        """The program ``forward`` launches, compiled from *cfg*; *wide* gives a thread one unit
+        and, where heads copy no columns, a block a thread per unit of its token, whole warps,
+        up to the block limit."""
+        if wide and self._copies:
+            # Blocks of cfg's width spread a small call's tokens over more SMs than one block a
+            # token, where a block's time is its SM's load and store traffic.
+            return self.kernel(cfg["threads"], 1)
         if wide:
             return self.kernel(min(1024, -(-self._token_units // 32) * 32), 1)
         return self.kernel(cfg["threads"], cfg["units"])
