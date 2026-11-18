@@ -1009,15 +1009,12 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
     The weights are the WGMMA's M operand: each 64-row math warp-group decodes its packed e2m1
     rows to e4m3 A fragments in registers, the next step's decode overlapping this step's
-    WGMMA, whose B operand is the step's ``block_m`` fp8 rows of ``a`` as TMA loads them.
-    Under e8m0 scales each 32-wide sub-block's values take its scale relative to the largest of
-    its row's four in the step, exactly, so the step accumulates in the tensor core and is
-    promoted once under that scale and the token's. Each task first checks its weight scales:
-    a tile whose steps span more than five binades, or holding a weight scale outside
-    ``[2 ** -63, 2 ** 63]``, contracts each sub-block alone and applies each product's two
-    scales by mantissa and exponent apart; float32 scales always take the sub-block path.
+    WGMMA, whose B operand is the step's ``block_m`` fp8 rows of ``a`` as TMA loads them. Each
+    task first checks its weight scales and takes the folded or the sub-block path
+    ``MoEGroupedGEMMMXFP4FwdOp`` describes.
     Rows of a slab past its valid count, inside a tile that holds a valid one, are stored like
-    the others with unspecified values; rows past ``max_m`` are not written. A count is clamped to ``[0, max_m]``.
+    the others with unspecified values; rows past ``max_m`` are not written. A count is
+    clamped to ``[0, max_m]``.
     Contiguous rows past an aligned expert's end are its padding and are stored like the
     others; a tight expert's are the next expert's and are not stored. Under aligned packing
     ``block_m`` divides the alignment.
@@ -1157,17 +1154,15 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
     @property
     def default_config(self) -> dict:
-        # The rows are the WGMMA N extent and every row tile converts its weights once.
-        # Aligned contiguous runs take the tallest tile their alignment allows, which
-        # converts each weight tile the fewest times, under two 64-row weight warp-groups of
-        # 232 registers (a 128-row tile's accumulators need them). A masked slab is a decode
-        # layout whose capacity is the batch: its experts hold max_m / E rows on average, and
-        # the narrowest tile of at least twice that holds most experts' rows in one tile with
-        # the least MMA wasted. Its weight tile is three or, under e8m0 scales, four 64-row
-        # warp-groups (float32 scales' sub-block path spills in four warp-groups' registers).
-        # A decode tile's time grows with its width, so the width whose tasks take the fewest
-        # waves times width wins, its tasks counted over the experts max_m rows spread at
-        # random occupy. Four warp-groups take a 4-deep ring.
+        # Every row tile converts its weights once, so aligned contiguous runs take the
+        # tallest tile their alignment allows, under two 64-row weight warp-groups (a 128-row
+        # tile's accumulators need their 232 registers). A masked slab is a decode layout whose
+        # experts hold max_m / E rows on average: the narrowest tile of at least twice that
+        # holds most experts' rows in one tile with the least MMA wasted. Its weight tile is
+        # three or, under e8m0 scales, four 64-row warp-groups (float32 scales' sub-block path
+        # spills in four warp-groups' registers), the width whose tasks take the fewest waves
+        # times width, counted over the experts max_m rows spread at random occupy. Four
+        # warp-groups take a 4-deep ring.
         call = self.call
         if call.kind == "contiguous":
             unaligned_m, block_n = self._CONTIGUOUS_TILE

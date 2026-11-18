@@ -211,8 +211,8 @@ def _worker_count(
     m: int, n: int, k: int, sms: int, block_m: int, cluster: int, stream_k: int
 ) -> int:
     """Choose the resident worker count shared by the launch and workspace plan."""
-    # The balanced grid was measured faster only for 48- and 64-token tiles from K = 3072,
-    # and only while the idle SMs would leave at most 22 K groups each.
+    # The balanced grid pays only for 48- and 64-token tiles from K = 3072, and only while
+    # the idle SMs would leave at most 22 K groups each.
     if not (
         GEMMW4A8DecodeKernel.base_token_limit < m <= block_m
         and block_m in (48, 64)
@@ -241,7 +241,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
     slice_bytes = 2 * W4A8_LAYOUT.unit_bytes
     rows_per_slice = slice_bytes // LAYOUT.tma_row_bytes
     # Scale bytes are prefetched four K steps ahead into an eight-register ring per lane,
-    # measured deep enough to hide their load behind the decode.
+    # deep enough to hide their load behind the decode.
     depth = 4
     odd_k = kg % 2 == 1
     clamp = "true" if ragged else "false"
@@ -886,7 +886,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
         )
         if m > 128 and -(-m // 192) == -(-m // 256):
             block_m = 192
-        # Thresholds below were measured on H200 over the manifest's W4A8 rows. Up to K = 3584
+        # Thresholds below are H200's over the manifest's W4A8 rows. Up to K = 3584
         # (the TP8 down projections) a tile has few K steps, so an extra segment or a
         # stream-K split costs more than it saves; from K = 7168 it can pay.
         short_k, long_k = 3584, 7168
@@ -910,8 +910,8 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
         # 192- and 256-token tiles store their output in two 64-token buffers.
         epilogue_tokens = block_m if block_m <= 128 else 64
         epilogue_buffers = 2 if block_m in (192, 256) else 1
-        # A two-CTA cluster multicasts the activation; measured faster only on outputs at
-        # most 2304 wide.
+        # A two-CTA cluster multicasts the activation, which pays only on outputs at most
+        # 2304 wide.
         cluster = 2 if block_m == 256 and n % (2 * LAYOUT.block_n) == 0 and n <= 2304 else 1
         group_m = 16 if cluster == 2 else 8
         if short_dp:

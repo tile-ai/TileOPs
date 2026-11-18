@@ -395,8 +395,7 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
 
         10 MiB is the DRAM bandwidth times its loaded latency; past it a deeper ring queues
         loads without adding bandwidth. A ring holding every K step a CTA streams issues all
-        of its loads before the first product, as main's swap-AB kernel does on such calls,
-        so a tuned call loads no later than that kernel.
+        of its loads before the first product.
         """
         default = self.default_config
         k_iters = -(-self.k // _BLOCK_K) // default["split_k"]
