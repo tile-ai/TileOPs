@@ -8,6 +8,7 @@ cases; these hold GEMM's, BMM's and the selective scan's.
 import pytest
 import torch
 
+from tests.misaligned import misaligned
 from tileops._ops.gemm.bmm import BMMFwdOp
 from tileops._ops.gemm.gemm import GEMMFP8FwdOp, GEMMFwdOp
 from tileops.mamba import SelectiveScanFwdOp
@@ -19,13 +20,6 @@ pytestmark = [
     pytest.mark.smoke,
     pytest.mark.skipif(not run_device_available(), reason="the run device is not available"),
 ]
-
-
-def _shifted(t: torch.Tensor) -> torch.Tensor:
-    """*t*'s values in a contiguous view starting one element past a 16-byte boundary."""
-    view = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
-    assert view.data_ptr() % 16
-    return view.copy_(t)
 
 
 def _gemm():
@@ -68,5 +62,5 @@ def _selective_scan():
 def test_an_offset_operand_runs_as_an_aligned_one(case, shifted):
     op, inputs = case()
     expected = op(*inputs)
-    inputs[shifted] = _shifted(inputs[shifted])
+    inputs[shifted] = misaligned(inputs[shifted])
     torch.testing.assert_close(op(*inputs), expected, rtol=0, atol=0)

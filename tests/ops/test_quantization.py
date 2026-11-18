@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.misaligned import misaligned
 from tests.workload_test_base import TestBase
 from tileops.quantization import (
     FP8QuantPerBlockFwdOp,
@@ -243,14 +244,6 @@ def _ties(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def _misaligned(x: torch.Tensor) -> torch.Tensor:
-    """*x* copied into a contiguous view that starts one element into its storage."""
-    flat = torch.empty(x.numel() + 1, dtype=x.dtype, device=x.device)
-    view = flat[1:].view(x.shape)
-    view.copy_(x)
-    return view
-
-
 @pytest.mark.parametrize(
     "rows, cols, dtype, make",
     [
@@ -260,7 +253,7 @@ def _misaligned(x: torch.Tensor) -> torch.Tensor:
         ),
         # A storage start off the 16-byte vector boundary.
         pytest.param(
-            64, 1024, torch.bfloat16, _misaligned, marks=pytest.mark.smoke, id="misaligned-start"
+            64, 1024, torch.bfloat16, misaligned, marks=pytest.mark.smoke, id="misaligned-start"
         ),
         # Subnormal scales, which the quotient is scaled out of and clamped.
         pytest.param(
@@ -349,7 +342,7 @@ def test_smooth_quant_edge_inputs(rows, cols, dtype, offset, ieee) -> None:
     shifted = torch.empty(cols + offset, dtype=smooth.dtype, device=smooth.device)[offset:]
     shifted.copy_(smooth * sign)
     if offset:
-        x = _misaligned(x)
+        x = misaligned(x)
     test.check(SmoothQuantFwdOp(), x, shifted)
 
 
@@ -417,7 +410,7 @@ def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
             id="per-channel-uneven",
             marks=pytest.mark.full,
         ),
-        pytest.param(64, 1024, 128, _misaligned, id="misaligned-start", marks=pytest.mark.full),
+        pytest.param(64, 1024, 128, misaligned, id="misaligned-start", marks=pytest.mark.full),
         # Manifest workload shapes: the op's only reference check in the nightly run.
         pytest.param(14336, 4096, 128, lambda w: w, id="llama-8b-mlp-up", marks=pytest.mark.full),
         pytest.param(4096, 4096, 64, lambda w: w, id="llama-8b-q-proj", marks=pytest.mark.full),
@@ -527,7 +520,7 @@ def _tiny(w: torch.Tensor) -> torch.Tensor:
         ),
         # A storage start off the 16-byte vector boundary.
         pytest.param(
-            256, 512, torch.float16, _misaligned, marks=pytest.mark.full, id="misaligned-start"
+            256, 512, torch.float16, misaligned, marks=pytest.mark.full, id="misaligned-start"
         ),
         # NaN and infinity reach scale and q as in torch; a signed zero stays signed.
         pytest.param(
