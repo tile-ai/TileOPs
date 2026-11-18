@@ -3,8 +3,8 @@
 A persistent CTA walks tasks ``num_sms * wave + pid``; each task is one ``block_m``-row tile of
 one expert's rows by one ``block_n``-column tile. ``task_walk`` builds the TileLang pieces that
 resolve a task id to its expert and tile for masked slabs and for tight or aligned contiguous
-runs, and the TMA descriptor of row tiles; ``GroupedGEMMConfigMixin`` holds the config checks
-the kernels share.
+runs, store a task's output tile, and describe row and expert-weight tiles to TMA;
+``GroupedGEMMConfigMixin`` holds the config checks the kernels share.
 """
 
 from collections.abc import Mapping
@@ -48,9 +48,10 @@ def task_walk(
 
     Returns:
         A namespace of the launch extents (``m``, the dynamic row count of contiguous rows;
-        ``rows_shape``, ``ragged_slab``, ``max_waves``, ``cursor_len``), ``walk(layout_or_ends, task_id, cursor)`` (resolves a task to an
-        expert, ``num_groups`` marking exhaustion), ``tile_of(task_id, cursor, tile)``, the
-        task's clamped ``expert(cursor)``, ``first_row(cursor, tile)`` and ``first_col(tile)``,
+        ``rows_shape``, ``ragged_slab``, ``max_waves``, ``cursor_len``),
+        ``walk(layout_or_ends, task_id, cursor)`` (resolves a task to an expert, ``num_groups``
+        marking exhaustion), ``tile_of(task_id, cursor, tile)``, the task's clamped
+        ``expert(cursor)``, ``first_row(cursor, tile)`` and ``first_col(tile)``,
         ``store_tile(...)``, ``row_tiles_descriptor(...)``, ``expert_rows_descriptor(...)``,
         ``recover_ends(layout, ends, tx, threads)`` and the flag ``recover`` (tight per-row
         ids need each expert's end recovered first).
