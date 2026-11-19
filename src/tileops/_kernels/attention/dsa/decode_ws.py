@@ -142,17 +142,16 @@ def _dsa_decode_ws_kernel(
         """Whether pair `pair` has an odd block: not when it lies wholly past ``topk``."""
         return not tail_half or pair + 1 < pairs
 
-    @T.macro
-    def read_slot(Indices, b, s, g, slot, limit, idx, live):
-        """Slot `slot`'s index into ``idx[0]``, -1 past ``topk``, and whether it is live."""
+    def slot_index(Indices, b, s, g, slot):
+        """Slot `slot`'s key index, -1 past ``topk``."""
         if ragged:
-            idx[0] = T.if_then_else(slot < topk, Indices[b, s, g, T.min(slot, topk - 1)], -1)
-        else:
-            idx[0] = Indices[b, s, g, slot]
-        if is_causal:
-            live[0] = idx[0] >= 0 and idx[0] < seq_len_kv and idx[0] * kv_stride <= limit
-        else:
-            live[0] = idx[0] >= 0 and idx[0] < seq_len_kv
+            return T.if_then_else(slot < topk, Indices[b, s, g, T.min(slot, topk - 1)], -1)
+        return Indices[b, s, g, slot]
+
+    def slot_live(idx, limit):
+        """Whether key index `idx` is a key the query reads."""
+        live = T.And(idx >= 0, idx < seq_len_kv)
+        return T.And(live, idx * kv_stride <= limit) if is_causal else live
 
     @T.macro
     def copy_cols(dst, row, src, i0, i1, i2, col0, ntiles, lane, live):
@@ -203,8 +202,6 @@ def _dsa_decode_ws_kernel(
 
         src_rows = T.alloc_local([2, block_k // rows_per_pass], "int32")
         live_rows = T.alloc_local([2, block_k // rows_per_pass], "bool")
-        idx = T.alloc_local([1], "int32")
-        live = T.alloc_local([1], "bool")
         limit = q_start + s - kv_stride + 1
         for pair in T.serial(pairs):
             free_phase = (pair % 2) ^ 1
@@ -212,9 +209,9 @@ def _dsa_decode_ws_kernel(
             for blk in T.unroll(2):
                 for r in T.unroll(block_k // rows_per_pass):
                     slot = (2 * pair + blk) * block_k + rows_per_pass * r + group
-                    read_slot(Indices, b, s, g, slot, limit, idx, live)
-                    live_rows[blk, r] = live[0]
-                    src_rows[blk, r] = idx[0] * T.Cast("int32", live[0])
+                    idx = slot_index(Indices, b, s, g, slot)
+                    live_rows[blk, r] = slot_live(idx, limit)
+                    src_rows[blk, r] = idx * T.Cast("int32", live_rows[blk, r])
             # Refill each part in the order its last reader releases it.
             T.mbarrier_wait_parity(k_free[part_0l], free_phase)
             load_part(
@@ -239,8 +236,9 @@ def _dsa_decode_ws_kernel(
                 )  # fmt: skip
             # Bias is rewritten after the K1L free wait, which follows every read of the
             # previous pair's mask. Thread p masks slot p; the producer has 2 * block_k threads.
-            read_slot(Indices, b, s, g, 2 * pair * block_k + p, limit, idx, live)
-            Bias[p // block_k, p % block_k] = T.if_then_else(live[0], 0.0, -T.infinity(accum))
+            idx = slot_index(Indices, b, s, g, 2 * pair * block_k + p)
+            live = slot_live(idx, limit)
+            Bias[p // block_k, p % block_k] = T.if_then_else(live, 0.0, -T.infinity(accum))
             T.mbarrier_arrive(bias_ready[0])
 
     @T.macro
@@ -291,7 +289,7 @@ def _dsa_decode_ws_kernel(
             rO[i, j] *= keep[i]
 
     @T.macro
-    def finish(w, rO, rM, rL, factor, sL, out, staged, O, Sinks, b, s, h0):
+    def finish(w, rO, rM, rL, sL, out, staged, O, Sinks, b, s, h0):
         """Normalize consumer `w`'s value dims by both row sums and store them with TMA.
 
         The output is staged in this consumer's Q tile, which every score has finished reading.
@@ -299,16 +297,15 @@ def _dsa_decode_ws_kernel(
         for i in T.Parallel(block_h):
             sL[w, i] = rL[i]
         T.sync_threads(sums_ready, consumer_threads)
+        # Only a row with no valid key sums to 0; its rO is 0, and so is its output.
         for i in T.Parallel(block_h):
             rL[i] = sL[0, i] + sL[1, i]
+            if not has_sink:
+                rL[i] = 1 / T.if_then_else(rL[i] == 0, 1.0, rL[i])
         if has_sink:
-            sink_scale(rM, rL, Sinks, h0, factor)
-        else:
-            # Only a row with no valid key sums to 0; its rO is 0, and so is its output.
-            for i in T.Parallel(block_h):
-                factor[i] = 1 / T.if_then_else(rL[i] == 0, 1.0, rL[i])
+            sink_scale(rM, rL, Sinks, h0, rL)
         for i, j in T.Parallel(block_h, half):
-            out[i, j] = rO[i, j] * factor[i]
+            out[i, j] = rO[i, j] * rL[i]
         T.copy(out, staged)
         T.fence_proxy_async()
         T.sync_threads(staged_ready + w, warpgroup)
@@ -373,7 +370,7 @@ def _dsa_decode_ws_kernel(
             else:
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(k_free[part_1l])
-        finish(0, rO, rM, rL, keep, sL, out, QL, O, Sinks, b, s, h0)
+        finish(0, rO, rM, rL, sL, out, QL, O, Sinks, b, s, h0)
 
     @T.macro
     def consumer1(O, Sinks, QL, QR, QT, K0R, K1L, K1R, K1T, S0, S1, Bias, sM, sL, q_full, k_ready, k_free, bias_ready, b, s, h0):  # fmt: skip
@@ -422,7 +419,7 @@ def _dsa_decode_ws_kernel(
                 T.mbarrier_arrive(k_free[part_1r])
             T.wait_wgmma(0)
             T.mbarrier_arrive(k_free[part_0r])
-        finish(1, rO, rM, rL, keep, sL, out, QR, O, Sinks, b, s, h0)
+        finish(1, rO, rM, rL, sL, out, QR, O, Sinks, b, s, h0)
 
     @T.macro
     def attend(Q, KV, Indices, O, Sinks):
