@@ -4,7 +4,6 @@ Provides:
   - HyperConnectionPreFwdOp: the pre step of a block over ``n`` residual streams
 """
 
-import math
 from collections.abc import Mapping
 from typing import ClassVar
 
@@ -98,34 +97,21 @@ class HyperConnectionPreFwdOp(Op):
             ``post_mix`` ``(*S, n, 1)`` float32, ``comb_mix`` ``(*S, n, n)`` float32 and
             ``layer_input`` ``(*S, C)`` bfloat16.
         """
-        *lead, n, c = residual.shape
-        tokens = math.prod(lead)
-        if tokens == 0:
-            return (
-                residual.new_empty((*lead, n, 1), dtype=torch.float32),
-                residual.new_empty((*lead, n, n), dtype=torch.float32),
-                residual.new_empty((*lead, c)),
-            )
-        broadcast = n > 1 and residual.stride(-2) == 0
-        stored = residual.select(-2, 0) if broadcast else residual
-        x = stored.reshape(tokens, 1 if broadcast else n, c).contiguous()
-        post_mix, comb_mix, layer_input = self.kernel_for(
+        fn = fn.contiguous()
+        hc_scale = hc_scale.contiguous()
+        hc_base = hc_base.contiguous()
+        kernel = self.kernel_for(
             "hyper_connection_pre",
             lambda: HyperConnectionPreCall(
                 device=residual.device,
-                tokens=tokens,
-                n=n,
-                c=c,
-                broadcast=broadcast,
+                n=residual.shape[-2],
+                c=residual.shape[-1],
+                broadcast=residual.shape[-2] > 1 and residual.stride(-2) == 0,
                 rms_eps=self.rms_eps,
                 hc_pre_eps=self.hc_pre_eps,
                 hc_sinkhorn_eps=self.hc_sinkhorn_eps,
                 hc_post_mult_value=self.hc_post_mult_value,
                 sinkhorn_repeat=self.sinkhorn_repeat,
             ),
-        )(x, fn.contiguous(), hc_scale.contiguous(), hc_base.contiguous())
-        return (
-            post_mix.view(*lead, n, 1),
-            comb_mix.view(*lead, n, n),
-            layer_input.view(*lead, c),
         )
+        return kernel(residual, fn, hc_scale, hc_base)

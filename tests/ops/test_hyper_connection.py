@@ -1,5 +1,6 @@
 """Public HyperConnectionPreFwdOp semantics: each token count's path, leading shapes, a
-broadcast residual, and the DeepSeek-V4-Flash and GLM-5.3-Flash constants."""
+broadcast residual, the DeepSeek-V4-Flash and GLM-5.3-Flash constants, and one kernel serving
+every token count."""
 
 import pytest
 
@@ -69,3 +70,16 @@ def test_hyper_connection_pre_reads_a_broadcast_residual(leading) -> None:
     residual, fn, hc_scale, hc_base = test.gen_inputs()
     residual = residual[..., :1, :].expand_as(residual)
     test.check(HyperConnectionPreFwdOp(**call.arguments()), residual, fn, hc_scale, hc_base)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_hyper_connection_pre_serves_new_token_counts_from_one_kernel() -> None:
+    """Token counts of one launch share its programs, and one of 128-token tiles adds its own
+    to the same kernel."""
+    op = HyperConnectionPreFwdOp(**_DSV4)
+    for tokens in (3, 9, 70):
+        test = HyperConnectionPreTest(_call([tokens], _DSV4))
+        test.check(op, *test.gen_inputs())
+    (kernel,) = op.iter_kernels()
+    assert len(kernel._generation.programs) == 2

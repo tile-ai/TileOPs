@@ -14,14 +14,14 @@ __all__ = ["HyperConnectionPreCall", "HyperConnectionPreFwdInterface"]
 
 @dataclasses.dataclass(frozen=True)
 class HyperConnectionPreCall(CallSpec):
-    """One pre step over ``tokens`` tokens of ``n`` streams of ``c`` channels, with the
-    constants the op fixed at construction.
+    """One pre step over ``n`` streams of ``c`` channels a token, with the constants the op
+    fixed at construction.
 
-    ``broadcast`` states that every stream of a token is one stored stream, as a residual
-    expanded from one stream with a stride-0 stream axis is.
+    ``broadcast`` states that the residual's stream axis has stride 0, as a residual expanded
+    from one stream has. The token axes ``*S`` are not part of the call: one kernel serves
+    any token count.
     """
 
-    tokens: int = 0
     n: int = 0
     c: int = 0
     broadcast: bool = False
@@ -47,17 +47,17 @@ class HyperConnectionPreFwdInterface(KernelInterface):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Mix the streams down to the block input; nothing is written in place.
 
-        Every tensor is contiguous on ``call.device``.
+        Every tensor is on ``call.device``.
 
         Args:
-            residual: bfloat16 ``(call.tokens, s, call.c)`` with ``s`` 1 when
-                ``call.broadcast``, else ``call.n``.
-            fn: float32 ``(call.n * call.n + 2 * call.n, call.n * call.c)``.
-            hc_scale: float32 ``(3,)``.
-            hc_base: float32 ``(call.n * call.n + 2 * call.n,)``.
+            residual: bfloat16 ``[*S, call.n, call.c]`` of any strides; with
+                ``call.broadcast`` its stream axis has stride 0 and only the first stream is
+                read.
+            fn: float32 ``(call.n * call.n + 2 * call.n, call.n * call.c)``, contiguous.
+            hc_scale: float32 ``(3,)``, contiguous.
+            hc_base: float32 ``(call.n * call.n + 2 * call.n,)``, contiguous.
 
         Returns:
-            New float32 ``post_mix`` ``(call.tokens, call.n)``, float32 ``comb_mix``
-            ``(call.tokens, call.n * call.n)`` and bfloat16 ``layer_input``
-            ``(call.tokens, call.c)``.
+            New contiguous float32 ``post_mix`` ``[*S, call.n, 1]``, float32 ``comb_mix``
+            ``[*S, call.n, call.n]`` and bfloat16 ``layer_input`` ``[*S, call.c]``.
         """

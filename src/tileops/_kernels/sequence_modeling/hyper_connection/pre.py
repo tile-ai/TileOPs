@@ -17,7 +17,11 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import WARPGROUP_THREADS
+from tileops._kernels.constants import (
+    SHARED_BUFFER_ALIGN_BYTES,
+    WARPGROUP_THREADS,
+    WGMMA_ROWS,
+)
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.sequence_modeling.hyper_connection.call_spec import (
     HyperConnectionPreCall,
@@ -62,7 +66,6 @@ def _split_fn_kernel(rows: int, cols: int):
 
 @target_cache(maxsize=32)
 def _prenorm_gemm_kernel(
-    tokens: int,
     n: int,
     c: int,
     streams: int,
@@ -95,6 +98,7 @@ def _prenorm_gemm_kernel(
     split_slice = f"tileops::hc_split_slice<{q}, {steps}, {workers}, 4>"
     weight_shape = (q, k_total) if resident else (rows, k_total)
     weight_dtype = "float32" if resident else "bfloat16"
+    tokens = T.dynamic("tokens")
 
     @tilelang.jit(
         out_idx=[2, 3],
@@ -209,7 +213,6 @@ def _prenorm_gemm_kernel(
 
 @target_cache(maxsize=32)
 def _pre_mix_kernel(
-    tokens: int,
     n: int,
     c: int,
     streams: int,
@@ -227,6 +230,7 @@ def _pre_mix_kernel(
     q = n * n + 2 * n
     parts = math.gcd(4, splits)
     block = math.gcd(512, c)
+    tokens = T.dynamic("tokens")
 
     @tilelang.jit(
         out_idx=[5, 6, 7],
@@ -334,20 +338,22 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
     """The manifold hyper-connection pre step on SM90 tensor cores, for four streams.
 
     The projection's products are exact and each 64-channel slot's add into float32, so the
-    mixes are as accurate as a float32 matrix product. A call of at most 512 tokens whose
-    slice of the terms fits in shared memory beside the token ring splits ``fn`` in the
-    projection; any other splits it in a launch of its own.
+    mixes are as accurate as a float32 matrix product. The token count is a runtime extent:
+    a launch picks the tile, the reduction splits and the paths from it, so a new token count
+    builds programs only where it picks a new set. A call of few tokens whose slice of the terms
+    fits in shared memory beside the token ring splits ``fn`` in the projection; any other
+    splits it in a launch of its own.
 
     Args:
-        tokens: Tokens of the call.
         n: Streams a token.
         c: Channels a stream.
-        broadcast: Whether the residual stores one stream that stands for all ``n``.
+        broadcast: Whether the residual's stream axis has stride 0, its first stream
+            standing for all ``n``.
         rms_eps, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value, sinkhorn_repeat: The op's
             constants.
         sm_count: Device SM count, which sizes the reduction splits.
-        config: Optional ``block_m``, ``num_stages``, ``splits``, ``resident`` and
-            ``staged_mix``.
+        smem_budget: Shared memory a block may take, which bounds the slice of the terms
+            the projection holds.
     """
 
     supported_archs: list[int] = [90]
@@ -365,7 +371,6 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
     @classmethod
     def entry_for(cls, call: HyperConnectionPreCall) -> Entry:
         return call, lambda: cls(
-            call.tokens,
             call.n,
             call.c,
             call.broadcast,
@@ -375,11 +380,11 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
             call.hc_post_mult_value,
             call.sinkhorn_repeat,
             sm_count=call.sm_count,
+            smem_budget=call.smem_budget,
         )
 
     def __init__(
         self,
-        tokens: int,
         n: int,
         c: int,
         broadcast: bool,
@@ -388,12 +393,11 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         hc_sinkhorn_eps: float,
         hc_post_mult_value: float,
         sinkhorn_repeat: int,
-        config: dict | None = None,
         *,
-        sm_count: int = 132,
+        sm_count: int,
+        smem_budget: int,
     ):
         super().__init__()
-        self.tokens = tokens
         self.n = n
         self.c = c
         self.broadcast = broadcast
@@ -403,27 +407,40 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         self.hc_post_mult_value = hc_post_mult_value
         self.sinkhorn_repeat = sinkhorn_repeat
         self.sm_count = sm_count
-        self.init_config(config)
+        self.smem_budget = smem_budget
+        self.init_config()
 
-    @property
-    def default_config(self) -> dict:
-        resident_max, smem_budget, staged_mix_max = 512, 200 * 1024, 4096
-        small = self.tokens <= 64
-        block_m, num_stages = (64, 4) if small else (128, 6)
+    def _launch(self, tokens: int) -> tuple[int, int, int, bool, bool]:
+        """The ``block_m``, ``num_stages``, ``splits``, ``resident`` and ``staged_mix`` a call
+        of *tokens* tokens launches with."""
+        # Two warpgroups a tile share each slot's terms; a call one WGMMA's rows hold would
+        # leave the second idle.
+        small = tokens <= WGMMA_ROWS
+        block_m, num_stages = (WGMMA_ROWS, 4) if small else (2 * WGMMA_ROWS, 6)
+        # More splits fill more SMs but add partial sums for the mix launch to read, more of
+        # them a split the larger the tile.
+        max_splits = 128 if small else 64
         steps = self.n * self.c // _STEP
-        splits = max(1, min(128 if small else 64, self.sm_count // -(-self.tokens // block_m)))
+        splits = max(1, min(max_splits, self.sm_count // -(-tokens // block_m)))
         while steps % splits:
             splits -= 1
         q = self.n * self.n + 2 * self.n
         terms = steps // splits * 3 * q * _STEP * 2
         ring = num_stages * block_m * _STEP * 2
-        return {
-            "block_m": block_m,
-            "num_stages": num_stages,
-            "splits": splits,
-            "resident": self.tokens <= resident_max and terms + ring <= smem_budget,
-            "staged_mix": self.tokens <= staged_mix_max,
-        }
+        # The barriers take one aligned slot ahead of the slice and the ring.
+        fits = SHARED_BUFFER_ALIGN_BYTES + terms + ring <= self.smem_budget
+        # Every token tile splits the fn slice itself, work that outgrows the launch it saves.
+        resident_max = 512
+        # Staging overlaps a block's loads with its sums while few blocks share an SM; more
+        # tokens fill the SMs, and whole rows in registers skip the copy.
+        staged_mix_max = 4096
+        return (
+            block_m,
+            num_stages,
+            splits,
+            fits and tokens <= resident_max,
+            tokens <= staged_mix_max,
+        )
 
     def forward(
         self,
@@ -433,39 +450,44 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         hc_base: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         self._require_devices(residual=residual, fn=fn, hc_scale=hc_scale, hc_base=hc_base)
-        split, gemm, mix = self.program(self._compile)
+        lead = residual.shape[:-2]
+        tokens = math.prod(lead)
+        stored = residual[..., :1, :] if self.broadcast else residual
+        x = stored.reshape(tokens, stored.shape[-2], self.c).contiguous()
+        split, gemm, mix = self.program(self._compile, *self._launch(tokens))
         weight = fn if split is None else split(fn)
-        partial, sqr = gemm(residual.view(self.tokens, -1), weight)
-        return mix(residual, partial, sqr, hc_scale, hc_base)
+        partial, sqr = gemm(x.view(tokens, -1), weight)
+        post_mix, comb_mix, layer_input = mix(x, partial, sqr, hc_scale, hc_base)
+        return (
+            post_mix.view(*lead, self.n, 1),
+            comb_mix.view(*lead, self.n, self.n),
+            layer_input.view(*lead, self.c),
+        )
 
     def _compile(
-        self, cfg: dict
+        self,
+        cfg: dict,
+        block_m: int,
+        num_stages: int,
+        splits: int,
+        resident: bool,
+        staged_mix: bool,
     ) -> tuple[CompiledProgram | None, CompiledProgram, CompiledProgram]:
-        """The split, projection and mix programs ``forward`` launches, compiled from *cfg*."""
+        """The split, projection and mix programs a launch of these facts runs."""
         streams = 1 if self.broadcast else self.n
         q = self.n * self.n + 2 * self.n
-        split = None if cfg["resident"] else CompiledProgram(_split_fn_kernel(q, self.n * self.c))
-        gemm = _prenorm_gemm_kernel(
-            self.tokens,
-            self.n,
-            self.c,
-            streams,
-            cfg["splits"],
-            cfg["block_m"],
-            cfg["num_stages"],
-            cfg["resident"],
-        )
+        split = None if resident else CompiledProgram(_split_fn_kernel(q, self.n * self.c))
+        gemm = _prenorm_gemm_kernel(self.n, self.c, streams, splits, block_m, num_stages, resident)
         mix = _pre_mix_kernel(
-            self.tokens,
             self.n,
             self.c,
             streams,
-            cfg["splits"],
+            splits,
             self.rms_eps,
             self.hc_pre_eps,
             self.hc_sinkhorn_eps,
             self.hc_post_mult_value,
             self.sinkhorn_repeat,
-            cfg["staged_mix"],
+            staged_mix,
         )
         return split, CompiledProgram(gemm), CompiledProgram(mix)
