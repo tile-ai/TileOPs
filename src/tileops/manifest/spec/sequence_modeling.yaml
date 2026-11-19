@@ -133,7 +133,7 @@ HyperConnectionPreFwdOp:
   # Glm5NextTextHyperConnection. The reference's n_splits, a split-K factor of its kernel,
   # is not declared.
   family: sequence_modeling
-  status: spec-only
+  status: implemented
   ref_api: vllm.model_executor.kernels.mhc.torch.mhc_pre_torch
   signature:
     forall: {S: Shape, n: Dim, C: Dim}

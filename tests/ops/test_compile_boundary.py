@@ -99,6 +99,7 @@ from tileops._ops.sampling.top_k_top_p_mask import TopKTopPMaskFwdOp
 from tileops._ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops._ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops._ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
+from tileops._ops.sequence_modeling.hyper_connection import HyperConnectionPreFwdOp
 from tileops._ops.transform import HadamardTransformFwdOp
 from workloads.attention.dsa import DSADecodeWorkload, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
@@ -824,10 +825,22 @@ def _sequence_modeling_cases():
             _x(_CONV_TAPS, _D),
         )
 
+    def hyper_connection_pre():
+        n, c = 4, 256
+        op = HyperConnectionPreFwdOp(1e-6, 1e-6, 1e-6, 2.0, 20)
+        q = n * n + 2 * n
+        return op, (
+            _x(3, n, c),
+            _x(q, n * c, dtype=torch.float32) / (n * c) ** 0.5,
+            _x(3, dtype=torch.float32),
+            _x(q, dtype=torch.float32),
+        )
+
     return (
         ("engram-gate-conv-fwd", engram_gate_conv_fwd),
         ("engram-gate-conv-bwd", engram_gate_conv_bwd),
         ("engram-decode", engram_decode),
+        ("hyper-connection-pre", hyper_connection_pre),
     )
 
 
@@ -997,6 +1010,7 @@ for _op_cls in (
     EngramGateConvFwdOp,
     EngramGateConvBwdOp,
     EngramDecodeFwdOp,
+    HyperConnectionPreFwdOp,
     RoPEFwdOp,
     RoPELlama31FwdOp,
     YaRNFwdOp,

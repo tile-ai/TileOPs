@@ -33,7 +33,7 @@ from workloads.attention.nsa import NSAFwdWorkload
 from workloads.norm import mrope_rows, rms_norm_gated
 from workloads.quantization import int8_dequant
 from workloads.quantization import quantize as quantization
-from workloads.sequence_modeling import hc_head, ngram_hash
+from workloads.sequence_modeling import hc_head, hc_pre, ngram_hash
 
 pytestmark = pytest.mark.smoke
 
@@ -344,23 +344,9 @@ def _moe_grouped_gemm_mxfp4(p, t):
 
 
 def _hyper_connection_pre(p, t):
-    # vllm.model_executor.kernels.mhc.torch.mhc_pre_torch
-    residual, fn, scale, base = t["residual"], t["fn"], t["hc_scale"], t["hc_base"]
-    n, c = residual.shape[-2:]
-    x = residual.flatten(-2).float()
-    mixes = (x @ fn.T) * torch.rsqrt(x.square().mean(-1, keepdim=True) + p["rms_eps"])
-    pre = torch.sigmoid(mixes[..., :n] * scale[0] + base[:n]) + p["hc_pre_eps"]
-    post = torch.sigmoid(mixes[..., n : 2 * n] * scale[1] + base[n : 2 * n])
-    comb = mixes[..., 2 * n :].unflatten(-1, (n, n)) * scale[2] + base[2 * n :].view(n, n)
-    eps = p["hc_sinkhorn_eps"]
-    comb = comb.softmax(-1) + eps
-    comb = comb / (comb.sum(-2, keepdim=True) + eps)
-    for _ in range(p["sinkhorn_repeat"] - 1):
-        comb = comb / (comb.sum(-1, keepdim=True) + eps)
-        comb = comb / (comb.sum(-2, keepdim=True) + eps)
-    layer_input = (pre.unsqueeze(-1) * residual.float()).sum(-2).to(torch.bfloat16)
-    post_mix = (post * p["hc_post_mult_value"]).unsqueeze(-1)
-    return {"post_mix": post_mix, "comb_mix": comb, "layer_input": layer_input}
+    names = ("residual", "fn", "hc_scale", "hc_base")
+    post_mix, comb_mix, layer_input = hc_pre(*(t[n] for n in names), **p)
+    return {"post_mix": post_mix, "comb_mix": comb_mix, "layer_input": layer_input}
 
 
 def _hyper_connection_post(p, t):
