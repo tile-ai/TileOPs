@@ -234,15 +234,13 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         # One block an SM, of the fewest whole warps that cover the launch: every block an
         # SM runs past its first is one more to dispatch, and with all of them resident at
         # once no later wave hides the dispatch. It applies where the row grid puts a second
-        # block on some SM (more row blocks than SMs); where a block of at most
-        # MAX_BLOCK_THREADS covers an SM's share, the block limit rather than the SM's
-        # residency, since past it an SM needs a second block anyway; and where it launches
-        # fewer blocks than the row grid, whose dispatch it would otherwise add to.
+        # block on some SM (more row blocks than SMs), so that it launches fewer blocks, at
+        # most one an SM; and where a block of at most MAX_BLOCK_THREADS covers an SM's
+        # share, the block limit rather than the SM's residency, since past it an SM needs
+        # a second block anyway.
         one_block_threads = -(-warps // call.sm_count) * WARP_LANES
         one_block_an_sm = (
-            row_blocks > call.sm_count
-            and warps * WARP_LANES <= call.sm_count * MAX_BLOCK_THREADS
-            and -(-units // one_block_threads) < row_blocks
+            row_blocks > call.sm_count and warps * WARP_LANES <= call.sm_count * MAX_BLOCK_THREADS
         )
         flat = one_block_an_sm or row_idles_sm or window.rows > MAX_GRID_YZ_BLOCKS
         threads = one_block_threads if one_block_an_sm else multi_wave_threads

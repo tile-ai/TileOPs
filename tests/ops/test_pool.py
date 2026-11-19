@@ -803,9 +803,6 @@ def test_avg_pool1d_windows_read_into_registers(
             "past-one-block-an-sm", id="past-one-block-an-sm-row-grid", marks=pytest.mark.full
         ),
         pytest.param(
-            "no-fewer-blocks", id="no-fewer-blocks-than-the-row-grid", marks=pytest.mark.full
-        ),
-        pytest.param(
             "row-grid-in-one-wave", id="row-grid-no-more-blocks-than-sms", marks=pytest.mark.full
         ),
         pytest.param("short-rows", id="short-rows-one-axis", marks=pytest.mark.full),
@@ -816,8 +813,8 @@ def test_avg_pool1d_windows_read_into_registers(
 )
 def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
     """Where the row grid puts a second block on some SM, a launch that one block an SM of
-    at most 1024 threads covers, in fewer blocks than the row grid, runs as one block an SM
-    of the fewest whole warps that cover it. Another runs 128-thread blocks along each row,
+    at most 1024 threads covers runs as one block an SM of the fewest whole warps that cover
+    it. Another runs 128-thread blocks along each row,
     unless the row grid has more blocks than the SMs hold at once and a row leaves so many
     of a block's threads idle that the blocks an SM holds cannot fill it: then its blocks
     span rows on one grid axis."""
@@ -834,8 +831,7 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
         # Rows of 128 runs fill a row-grid block, so the blocks an SM holds fill it on every
         # supported architecture.
         "past-one-block-an-sm": (1, sm_count * 8 + 1, 512),
-        "no-fewer-blocks": (1, sm_count, 512),
-        # One row-grid block an SM: one block an SM would launch one block fewer.
+        # As many row-grid blocks as SMs: one block an SM would launch one block fewer.
         "row-grid-in-one-wave": (1, sm_count, 508),
         # Rows of 8 runs: past the blocks the SMs hold at once, and within them.
         "short-rows": (1, 60000, 32),
@@ -847,7 +843,6 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
         "sub-wave": {"flat": True, "threads": -(-32768 // 32 // sm_count) * 32},
         "widest": {"flat": True, "threads": 1024},
         "past-one-block-an-sm": {"flat": False, "threads": 128},
-        "no-fewer-blocks": {"flat": False, "threads": 128},
         "row-grid-in-one-wave": {"flat": False, "threads": 128},
         "short-rows": {"flat": True, "threads": 128},
         "short-rows-resident": {"flat": False, "threads": 128},
