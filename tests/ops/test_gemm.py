@@ -2677,11 +2677,12 @@ def test_gemm_one_wave_grid_runs_the_narrowest_coop2_tile(
     test = GEMMTest(m, n, k, dtype, False, True, bias=bias, out_dtype=out_dtype)
     op = GEMMFwdOp(trans_b=True, out_dtype=out_dtype, target=BUILTIN)
     config = op.kernel_for("gemm", lambda: call).config
-    if tile is None:
-        assert not config.get("coop2")
-    else:
-        assert config.get("coop2")
-        assert (config["block_n"], config.get("stage_n") or config["block_n"]) == tile
+    got = (
+        (config["block_n"], config.get("stage_n") or config["block_n"])
+        if config.get("coop2")
+        else None
+    )
+    assert got == tile
     test.check(op, *test.gen_inputs())
 
 
