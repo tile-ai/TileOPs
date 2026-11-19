@@ -187,16 +187,15 @@ def _meta_window(
     A K tile's zero points are under four bytes a row, a load the producer waits for before it
     issues the K tile's TMA, so each K tile's data arrives one DRAM round trip late. Where one
     consumer warpgroup's ring is never refilled, the producer instead copies the four groups at
-    a multiple of four that hold the K tile's one, two or four groups (`_CONFIG_SPACE.block_ks`):
-    4- and 8-byte copies, aligned and inside the row when K's groups are a multiple of four.
+    a multiple of four that hold the K tile's groups: 4- and 8-byte copies, aligned and inside
+    the row when K's groups are a multiple of four, and holding the K tile's groups when their
+    count divides four.
     """
     window = 4
     per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, k // group_size)
     unrefilled = not _ring_refills(k, block_k, split_k, num_stages, stream_ctas)
-    aligned = (k // group_size) % window == 0
-    # Why one consumer warpgroup: a measured scope, not a derived rule. Two-warpgroup tiles also
-    # load their zero points synchronously, but some of their splits did not run faster with the
-    # window, and no program fact separates those from the ones that did.
+    aligned = (k // group_size) % window == 0 and window % (block_k // group_size) == 0
+    # One consumer warpgroup: only those tiles ran faster with the window.
     return window if threads == 128 and per_tile_meta and unrefilled and aligned else 0
 
 
