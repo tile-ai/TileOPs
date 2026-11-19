@@ -805,41 +805,52 @@ def test_avg_pool1d_windows_read_into_registers(
         pytest.param(
             "no-fewer-blocks", id="no-fewer-blocks-than-the-row-grid", marks=pytest.mark.full
         ),
+        pytest.param(
+            "row-grid-in-one-wave", id="row-grid-no-more-blocks-than-sms", marks=pytest.mark.full
+        ),
         pytest.param("short-rows", id="short-rows-one-axis", marks=pytest.mark.full),
+        pytest.param(
+            "short-rows-resident", id="short-rows-all-resident-row-grid", marks=pytest.mark.full
+        ),
     ],
 )
 def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
-    """A launch that one block an SM of at most 1024 threads covers, in fewer blocks than
-    the row grid, runs as one block an SM of the fewest whole warps that cover it. Another
-    runs 128-thread blocks along each row, unless a row leaves so many of a block's threads
-    idle that the blocks an SM holds cannot fill it: then its blocks span rows on one grid
-    axis."""
+    """Where the row grid puts a second block on some SM, a launch that one block an SM of
+    at most 1024 threads covers, in fewer blocks than the row grid, runs as one block an SM
+    of the fewest whole warps that cover it. Another runs 128-thread blocks along each row,
+    unless the row grid has more blocks than the SMs hold at once and a row leaves so many
+    of a block's threads idle that the blocks an SM holds cannot fill it: then its blocks
+    span rows on one grid axis."""
     sm_count = device_facts(run_device().index).sm_count
-    # fp32 input, kernel 2, stride 2: one thread a 16-byte run of four values. A row of 128
-    # runs fills a row-grid block, so the blocks an SM holds fill it on every supported
-    # architecture.
+    # fp32 input, kernel 2, stride 2: one thread a 16-byte run of four values, l_in // 4 runs
+    # a row.
     shape = {
+        # 128 rows of 128 runs.
         "fixture": (2, 64, 512),
+        # Rows of 64 runs; one block an SM covers either launch, so the row grid's fill does
+        # not decide it.
         "sub-wave": (1, 512, 256),
         "widest": (1, sm_count * 16, 256),
+        # Rows of 128 runs fill a row-grid block, so the blocks an SM holds fill it on every
+        # supported architecture.
         "past-one-block-an-sm": (1, sm_count * 8 + 1, 512),
         "no-fewer-blocks": (1, sm_count, 512),
+        # One row-grid block an SM: one block an SM would launch one block fewer.
+        "row-grid-in-one-wave": (1, sm_count, 508),
+        # Rows of 8 runs: past the blocks the SMs hold at once, and within them.
         "short-rows": (1, 60000, 32),
+        "short-rows-resident": (1, 64, 32),
     }[case]
-    threads = shape[0] * shape[1] * shape[2] // 4
-    one_block = -(-threads // 32 // sm_count) * 32
     launch = {
-        # 128 rows of 128 runs: one block an SM where that launches fewer than 128 blocks.
-        "fixture": (
-            {"flat": True, "threads": one_block}
-            if -(-threads // one_block) < 128
-            else {"flat": False, "threads": 128}
-        ),
-        "sub-wave": {"flat": True, "threads": one_block},
+        "fixture": {},
+        # The fewest whole warps that cover an SM's share of the 32768 threads.
+        "sub-wave": {"flat": True, "threads": -(-32768 // 32 // sm_count) * 32},
         "widest": {"flat": True, "threads": 1024},
         "past-one-block-an-sm": {"flat": False, "threads": 128},
         "no-fewer-blocks": {"flat": False, "threads": 128},
+        "row-grid-in-one-wave": {"flat": False, "threads": 128},
         "short-rows": {"flat": True, "threads": 128},
+        "short-rows-resident": {"flat": False, "threads": 128},
     }[case]
     op = AvgPool1dFwdOp(kernel_size=2, stride=2, target=BUILTIN)
     op(torch.randn(*shape, device=run_device(), dtype=torch.float32))

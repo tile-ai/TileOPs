@@ -222,23 +222,29 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         multi_wave_threads = 128
         row_blocks = window.rows * -(-groups // multi_wave_threads)
         # A row of fewer groups than a block has threads leaves the rest idle, and an SM
-        # holds at most SM_RESIDENT_BLOCKS blocks: where those cannot keep threads_per_sm
-        # threads busy, the launch runs on one grid axis, its blocks spanning rows.
-        row_fills_sm = (
-            SM_RESIDENT_BLOCKS[call.arch] * min(groups, multi_wave_threads) >= call.threads_per_sm
+        # holds at most SM_RESIDENT_BLOCKS blocks. Where the row grid has more blocks than
+        # the SMs hold at once, that cap binds; where the blocks it lets an SM hold cannot
+        # keep threads_per_sm threads busy, the launch runs its blocks spanning rows on one
+        # grid axis. Such a row takes one row-grid block, so that launches fewer blocks.
+        resident = SM_RESIDENT_BLOCKS[call.arch]
+        row_idles_sm = (
+            row_blocks > call.sm_count * resident
+            and resident * min(groups, multi_wave_threads) < call.threads_per_sm
         )
-        # One block an SM, of the fewest whole warps that cover the launch: every block
-        # past one an SM is one more to dispatch, and with all of them resident at once no
-        # later wave hides the dispatch. It applies where a block of at most
+        # One block an SM, of the fewest whole warps that cover the launch: every block an
+        # SM runs past its first is one more to dispatch, and with all of them resident at
+        # once no later wave hides the dispatch. It applies where the row grid puts a second
+        # block on some SM (more row blocks than SMs); where a block of at most
         # MAX_BLOCK_THREADS covers an SM's share, the block limit rather than the SM's
         # residency, since past it an SM needs a second block anyway; and where it launches
         # fewer blocks than the row grid, whose dispatch it would otherwise add to.
         one_block_threads = -(-warps // call.sm_count) * WARP_LANES
         one_block_an_sm = (
-            warps * WARP_LANES <= call.sm_count * MAX_BLOCK_THREADS
+            row_blocks > call.sm_count
+            and warps * WARP_LANES <= call.sm_count * MAX_BLOCK_THREADS
             and -(-units // one_block_threads) < row_blocks
         )
-        flat = one_block_an_sm or not row_fills_sm or window.rows > MAX_GRID_YZ_BLOCKS
+        flat = one_block_an_sm or row_idles_sm or window.rows > MAX_GRID_YZ_BLOCKS
         threads = one_block_threads if one_block_an_sm else multi_wave_threads
         identity = (
             window.rows,
