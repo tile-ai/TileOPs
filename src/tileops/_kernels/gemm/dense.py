@@ -2213,8 +2213,9 @@ def _gemm_coop2_kernel(
 
     Ring counters carry across waves to overlap TMA stores with the next tile.
     K tails are TMA zero-filled; output tails use TMA stores where aligned and
-    predicated row stores otherwise. Widths 176/192 use ``dense_wgmma_helper.h``
-    to keep WGMMA at the full N width. ``sm_count`` is part of the cache key.
+    predicated row stores otherwise. Widths 256 does not divide use
+    ``dense_wgmma_helper.h`` to keep WGMMA at the full N width. ``sm_count`` is part of the
+    cache key.
 
     With ``narrow_n`` set, the last ``narrow_rows`` row tiles start with
     ``narrow_cols`` tiles ``narrow_n`` wide that run after every wide tile.
@@ -2266,8 +2267,10 @@ def _gemm_coop2_kernel(
                 f"narrow_n {narrow_n} needs n % 8 == 0, {sn}-wide chunks at most and "
                 f"64-wide K steps"
             )
-        if (trans_a or not trans_b) and (block_n in (176, 192) or mixed):
-            raise ValueError("176/192-wide and narrow coop2 tiles are NT-only")
+        if (trans_a or not trans_b) and (256 % block_n or mixed):
+            raise ValueError(
+                "coop2 tiles of a width 256 does not divide, and narrow ones, are NT-only"
+            )
         a_tile = (block_k, half_m) if trans_a else (half_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         total_tiles = grid.total_tiles
@@ -2276,25 +2279,17 @@ def _gemm_coop2_kernel(
         k_iters = T.ceildiv(k, block_k)
         # TileLang 0.1.12 issues a ``T.wgmma_gemm`` of a width that does not divide 256
         # as gcd(width, 256)-wide WGMMAs, each re-reading A: 176 as eleven n16, 192 as
-        # three n64. ``dense_wgmma_helper.h`` issues these two widths as one N-wide
-        # WGMMA per 16 of K, over 64-wide K steps; other K steps keep T.wgmma_gemm.
-        wide_wgmma = (block_n in (176, 192) or mixed) and block_k == 64
+        # three n64. ``dense_wgmma_helper.h`` issues each such width as one N-wide WGMMA
+        # per 16 of K, over 64-wide K steps; other K steps keep T.wgmma_gemm.
+        wide_wgmma = (256 % block_n or mixed) and block_k == 64
         wgmma_helper = f"tileops::dense_wgmma_{wgmma_dtype_tag}_64x{block_n}_k64"
         narrow_helper = f"tileops::dense_wgmma_{wgmma_dtype_tag}_64x{narrow_n}_k64"
-        # The accumulator layout T.wgmma_gemm gives one consumer's 64 x block_n tile;
-        # the helper writes the same registers.
-        acc_emitter = WgmmaEmitter(
-            a_dtype=dtype,
-            b_dtype=dtype,
-            accum_dtype="float32",
-            a_transposed=False,
-            b_transposed=True,
-            block_row_warps=4,
-            block_col_warps=1,
-            warp_row_tiles=half_m // 4,
-            warp_col_tiles=block_n,
-            chunk=block_k,
-        )
+        # The accumulator layout T.wgmma_gemm gives one consumer's 64 x block_n tile; the
+        # helper writes the same registers. TileLang places the warpgroup by the branch's
+        # threads when it copies a 16-bit tile out with stmatrix, or a float32 one in
+        # chunks, but copies a whole float32 tile with a loop over the layout's own
+        # threads: then the layout starts at the consumer's first thread.
+        acc_first = 128 if not cast and n_chunks == 1 else 0
 
         @T.macro
         def consumer_wgmma(a_ring, b_ring, slot, acc, ki, narrow):
@@ -2447,8 +2442,18 @@ def _gemm_coop2_kernel(
                 if wide_wgmma:
                     T.annotate_layout(
                         {
-                            c_local_0: acc_emitter.make_mma_store_layout(c_local_0),
-                            c_local_1: acc_emitter.make_mma_store_layout(c_local_1),
+                            c_local_0: native_acc_layout(
+                                c_local_0, half_m, block_n, block_k, dtype, "float32", acc_first
+                            ),
+                            c_local_1: native_acc_layout(
+                                c_local_1,
+                                half_m,
+                                block_n,
+                                block_k,
+                                dtype,
+                                "float32",
+                                2 * acc_first,
+                            ),
                         }
                     )
 
