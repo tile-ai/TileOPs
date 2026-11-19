@@ -83,6 +83,18 @@ def _check(test):
             marks=pytest.mark.full,
             id="bf16-long-window",
         ),
+        # A window of two batches a warp, which rescales a warp's sums across its batches, and
+        # channels off the block's lane width, which masks the last chunk's lanes.
+        pytest.param(
+            torch.float32,
+            96,
+            128,
+            True,
+            [300],
+            [0],
+            marks=pytest.mark.full,
+            id="ratio128-overlap-dim96",
+        ),
         # Channels off the 4-wide vector, and a ratio off a power of two.
         pytest.param(
             torch.bfloat16, 10, 3, True, [20, 5], [0, 4], marks=pytest.mark.full, id="dim10-ratio3"
