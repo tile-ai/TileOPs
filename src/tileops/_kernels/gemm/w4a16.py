@@ -164,6 +164,40 @@ def _stage_meta_per_tile(
     )
 
 
+def _ring_refills(k: int, block_k: int, split_k: int, num_stages: int, stream_ctas: int) -> bool:
+    """Whether the producer refills a stage while a CTA runs: its longest slice has more K tiles
+    than the ring has stages, or it streams a varying K range."""
+    k_tiles = -(-k // block_k)
+    return stream_ctas > 0 or -(-k_tiles // split_k) > num_stages
+
+
+def _meta_window(
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    split_k: int,
+    stream_ctas: int,
+    k: int,
+    group_size: int,
+) -> int:
+    """Groups of a per-K-tile metadata copy that goes out as ``cp.async``, or 0 for a plain copy.
+
+    A K tile's zero points are under four bytes a row, a load the producer waits for before it
+    issues the K tile's TMA, so each K tile's data arrives one DRAM round trip late. Where one
+    consumer warpgroup's ring is never refilled, the producer instead copies the four groups at
+    a multiple of four that hold the K tile's groups: 4- and 8-byte copies, aligned and inside
+    the row when K's groups are a multiple of four, and holding the K tile's groups when their
+    count divides four.
+    """
+    window = 4
+    per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, k // group_size)
+    unrefilled = not _ring_refills(k, block_k, split_k, num_stages, stream_ctas)
+    aligned = (k // group_size) % window == 0 and window % (block_k // group_size) == 0
+    return window if threads == 128 and per_tile_meta and unrefilled and aligned else 0
+
+
 def _defers_scale(block_m: int) -> bool:
     """Whether a tile applies group scales to FP32 partials instead of to the FP16 weight:
     a tile of at most 32 rows is bound by the instructions its consumer issues, and
@@ -274,7 +308,12 @@ def _pipelined_smem_bytes(
     k_tiles = -(-k // block_k)
     k_slice = -(-k_tiles // split_k)
     meta_groups = block_k // group_size if per_tile_meta else k_slice * (block_k // group_size)
-    return num_stages * (block_m * block_k * 2 + block_n * block_k // 2) + block_n * meta_groups * 3
+    ring = num_stages * (block_m * block_k * 2 + block_n * block_k // 2)
+    # Each stage holds its K tile's metadata window.
+    window = _meta_window(block_m, block_n, block_k, num_stages, threads, split_k, 0, k, group_size)
+    if window:
+        return ring + num_stages * block_n * window * 3
+    return ring + block_n * meta_groups * 3
 
 
 def _smem_bytes(
@@ -576,7 +615,13 @@ def _gemm_w4a16_kernel(
         # stages its slice's groups once; a partial K tile is zero-filled, so only the scale
         # and zero reads need the clamp below.
         per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, all_groups)
-        meta_groups = tile_groups if per_tile_meta else k_slice * tile_groups
+        stream_k = stream_ctas > 0
+        # Only a refilled stage's release must wait for the WGMMAs reading it.
+        refills = _ring_refills(k, block_k, split_k, num_stages, stream_ctas)
+        meta_window = _meta_window(
+            block_m, block_n, block_k, num_stages, threads, split_k, stream_ctas, k, group_size
+        )
+        meta_groups = meta_window or (tile_groups if per_tile_meta else k_slice * tile_groups)
         # Groups per vectorized load of a split's metadata: its slice starts at a multiple of
         # the slice's length when the split divides the K tiles, else of a K tile's groups.
         # A partial K tile pads past the last group, so its loads clamp one group at a time.
@@ -586,10 +631,6 @@ def _gemm_w4a16_kernel(
             else math.gcd(16, meta_groups, all_groups, meta_groups if even_slices else tile_groups)
         )
         defer_scale = _defers_scale(block_m)
-        stream_k = stream_ctas > 0
-        # Whether the producer refills a stage while a CTA runs: only then must a stage's
-        # release wait for the WGMMAs reading it. A streamed CTA runs a varying K range.
-        refills = stream_k or k_slice > num_stages
         # A two-stage ring refills a stage while the consumer runs only the next K tile, so the
         # wait for the last WGMMA before its release reaches the consumer; there the last
         # sub-step's columns get a buffer of their own and the rest is released before it.
@@ -658,7 +699,7 @@ def _gemm_w4a16_kernel(
             """
             group = (
                 (ks * step_k) // group_size
-                if per_tile_meta
+                if per_tile_meta and not meta_window
                 else (meta_k // group_size + (ks * step_k) // group_size)
             )
             for i, j in T.Parallel(block_n, block_m):
@@ -696,7 +737,7 @@ def _gemm_w4a16_kernel(
             last = ks == steps - 1
             group = (
                 (ks * step_k) // group_size
-                if per_tile_meta
+                if per_tile_meta and not meta_window
                 else (meta_k // group_size + (ks * step_k) // group_size)
             )
             decode_step(
@@ -744,13 +785,19 @@ def _gemm_w4a16_kernel(
         @T.macro
         def k_tile_decode(k_start, meta_k, n_start, m_start, tensors, buf):
             """Load one K tile and decode its sub-steps; ``meta_k`` is its offset into the
-            staged metadata.
+            staged metadata, or into the metadata window.
 
             With ``defer_scale`` the drained partials are left in ``buf.tmps`` and
             ``buf.scales``; otherwise they accumulate into ``buf.output_local``.
             """
             activation, packed_weight, weight_scale, weight_zero = tensors
-            if per_tile_meta:
+            if meta_window:
+                window = k_start // group_size // meta_window * meta_window
+                for i in T.Parallel(block_n):
+                    for v in T.vectorized(meta_window):
+                        buf.scale_shared[i, v] = weight_scale[n_start + i, window + v]
+                        buf.zero_shared[i, v] = weight_zero[n_start + i, window + v]
+            elif per_tile_meta:
                 for i, g in T.Parallel(block_n, tile_groups):
                     # A partial K tile is zero-filled; clamp its metadata to a valid group.
                     g_src = (
@@ -928,7 +975,10 @@ def _gemm_w4a16_kernel(
 
             for kk_local in T.Pipelined(kk_count, num_stages=num_stages):
                 kk = kk_first + kk_local
-                k_tile_decode(kk * block_k, kk_local * block_k, n_start, m_start, tensors, buf)
+                meta_k = (
+                    kk * block_k % (meta_window * group_size) if meta_window else kk_local * block_k
+                )
+                k_tile_decode(kk * block_k, meta_k, n_start, m_start, tensors, buf)
                 if defer_scale:
                     drain_defer(buf.output_local, buf)
 

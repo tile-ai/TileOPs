@@ -7,7 +7,12 @@ from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
 from tileops._kernels.gemm.heuristics import int8_pingpong_grid
-from tileops._kernels.gemm.w4a16 import _cross_tile_wgmma, _pair_reduced, _select_config
+from tileops._kernels.gemm.w4a16 import (
+    _cross_tile_wgmma,
+    _meta_window,
+    _pair_reduced,
+    _select_config,
+)
 from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -3100,6 +3105,10 @@ def test_gemm_w4a16_deferred_scale_tiles_match_the_reference(m: int, n: int, k: 
         pytest.param(48, 2248, 1792, True, id="pair-64-rows", marks=pytest.mark.full),
         # The narrow tile at a logical M under its eight rows.
         pytest.param(1, 1672, 1792, True, id="pair-narrow", marks=pytest.mark.full),
+        # Deferred-scale 32-row and scale-in-decode 64-row pairs whose 256-wide K tiles copy
+        # metadata as four-group windows, starting at groups 0 and 2 of a window.
+        pytest.param(33, 2048, 1024, True, id="pair-two-group-tiles", marks=pytest.mark.full),
+        pytest.param(33, 3072, 1536, True, id="pair-scale-in-decode", marks=pytest.mark.full),
         # A split whose landing area does not fit beside its ring keeps the reduction launch,
         # on 96 CTAs so that the landing alone decides it.
         pytest.param(128, 3072, 4096, False, id="landing-unfit", marks=pytest.mark.full),
@@ -3132,6 +3141,36 @@ def test_gemm_w4a16_pairs_a_one_warpgroup_split_in_one_wave() -> None:
     assert _pair_reduced(1, 2176, 1024, 128, 132, narrow)
     # 141 N tiles split two ways: 282 CTAs.
     assert not _pair_reduced(1, 9000, 1024, 128, 132, narrow)
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_keeps_plain_metadata_copies_off_the_unrefilled_one_warpgroup_ring() -> None:
+    """A per-K-tile metadata copy stays plain on two consumer warpgroups, on a refilled or
+    streamed ring, where K's groups are not a multiple of four and where the slice is staged
+    once."""
+    # Arguments: block_m, block_n, block_k, num_stages, threads, split_k, stream_ctas, K, group.
+    # Two consumer warpgroups, slices of four 512-wide K tiles on a four-stage ring.
+    assert _meta_window(16, 128, 512, 4, 256, 2, 0, 4096, 128) == 0
+    # Slices of six 256-wide K tiles refill a three-stage ring.
+    assert _meta_window(64, 64, 256, 3, 128, 2, 0, 3072, 128) == 0
+    # A streamed ring, whose slice of four 256-wide K tiles would otherwise fit its four stages.
+    assert _meta_window(8, 64, 256, 4, 128, 1, 132, 1024, 128) == 0
+    # 14 groups: a window at a multiple of four is not 4-byte aligned in every row.
+    assert _meta_window(64, 64, 256, 4, 128, 2, 0, 1792, 128) == 0
+    # 512-wide K tiles of a 128-thread tile stage their small slice once before the ring.
+    assert _meta_window(32, 64, 512, 3, 128, 1, 0, 1536, 128) == 0
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("m, n, k", [(33, 2048, 1024), (33, 3072, 1536)])
+def test_gemm_w4a16_copies_metadata_windows_where_the_one_warpgroup_ring_holds_the_slice(
+    m: int, n: int, k: int
+) -> None:
+    """On 132 SMs a one-warpgroup tile whose ring holds its slice copies each K tile's metadata
+    as a four-group window, on the 32-row deferred-scale tile and on the 64-row tile."""
+    cfg = _select_config(m, n, k, 128, 132)
+    fields = ("block_m", "block_n", "block_k", "num_stages", "threads", "split_k", "stream_ctas")
+    assert _meta_window(*(cfg[field] for field in fields), k, 128) == 4
 
 
 @pytest.mark.in_tree_kernels
