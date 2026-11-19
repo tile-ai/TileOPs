@@ -50,8 +50,9 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
     # The builder closes over scalars only, so the span is unpacked here.
     whole = counted is None
     lo, hi = (0, 0) if whole else counted
-    # An input of 2**31 elements or more takes int64 extents and an int64 thread index, so
-    # that every element offset is computed in int64; a smaller one keeps int32.
+    # An input of 2**31 elements or more (the output is never the longer row) takes int64
+    # extents and an int64 block index on either grid, so that every element offset is
+    # computed in int64; a smaller one keeps int32.
     wide = rows * l_in >= 2**31
 
     @tilelang.jit(out_idx=[1])
@@ -134,7 +135,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
             ):
                 with T.Kernel(T.ceildiv(groups, threads), rows, threads=threads) as (bx, row):
                     tx = T.get_thread_binding()
-                    group = bx * threads + tx
+                    group = (T.cast(bx, "int64") if wide else bx) * threads + tx
                     means = T.alloc_local([outputs], dtype)
                     pool(x, row, T.min(group, groups - 1), means)
                     if group < groups:
