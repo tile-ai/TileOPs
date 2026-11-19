@@ -2913,6 +2913,10 @@ def test_gemm_w4a16_deferred_scale_tiles_match_the_reference(m: int, n: int, k: 
         pytest.param(48, 2248, 1792, True, id="pair-64-rows", marks=pytest.mark.full),
         # The narrow tile at a logical M under its eight rows.
         pytest.param(1, 1672, 1792, True, id="pair-narrow", marks=pytest.mark.full),
+        # Deferred-scale 32-row and scale-in-decode 64-row pairs whose 256-wide K tiles copy
+        # metadata as four-group windows, starting at groups 0 and 2 of a window.
+        pytest.param(33, 2048, 1024, True, id="pair-two-group-tiles", marks=pytest.mark.full),
+        pytest.param(33, 3072, 1536, True, id="pair-scale-in-decode", marks=pytest.mark.full),
         # A split whose landing area does not fit beside its ring keeps the reduction launch,
         # on 96 CTAs so that the landing alone decides it.
         pytest.param(128, 3072, 4096, False, id="landing-unfit", marks=pytest.mark.full),
@@ -2957,36 +2961,24 @@ def test_gemm_w4a16_keeps_plain_metadata_copies_off_the_unrefilled_one_warpgroup
     assert _meta_window(16, 128, 512, 4, 256, 2, 0, 4096, 128) == 0
     # Slices of six 256-wide K tiles refill a three-stage ring.
     assert _meta_window(64, 64, 256, 3, 128, 2, 0, 3072, 128) == 0
-    # A streamed ring.
-    assert _meta_window(8, 64, 512, 4, 128, 1, 132, 2048, 128) == 0
+    # A streamed ring, whose slice of four 256-wide K tiles would otherwise fit its four stages.
+    assert _meta_window(8, 64, 256, 4, 128, 1, 132, 1024, 128) == 0
     # 14 groups: a window at a multiple of four is not 4-byte aligned in every row.
     assert _meta_window(64, 64, 256, 4, 128, 2, 0, 1792, 128) == 0
     # 512-wide K tiles of a 128-thread tile stage their small slice once before the ring.
     assert _meta_window(32, 64, 512, 3, 128, 1, 0, 1536, 128) == 0
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.sm90
-@pytest.mark.parametrize(
-    "m, n, k",
-    [
-        # A 32-row deferred-scale cluster pair over padded rows: 256-wide K tiles start at
-        # groups 0 and 2 of their windows.
-        pytest.param(33, 2048, 1024, id="pair-two-group-tiles", marks=pytest.mark.smoke),
-        # The same on the 64-row tile, which scales the decoded weight.
-        pytest.param(33, 3072, 1536, id="pair-scale-in-decode", marks=pytest.mark.full),
-    ],
-)
-def test_gemm_w4a16_metadata_window_matches_the_reference(m: int, n: int, k: int) -> None:
-    """A call whose K tiles copy their metadata as four-group windows matches the reference."""
-    # On 132 SMs each case picks a one-warpgroup tile whose ring holds its slice.
+@pytest.mark.smoke
+@pytest.mark.parametrize("m, n, k", [(33, 2048, 1024), (33, 3072, 1536)])
+def test_gemm_w4a16_copies_metadata_windows_where_the_one_warpgroup_ring_holds_the_slice(
+    m: int, n: int, k: int
+) -> None:
+    """On 132 SMs a one-warpgroup tile whose ring holds its slice copies each K tile's metadata
+    as a four-group window, on the 32-row deferred-scale tile and on the 64-row tile."""
     cfg = _select_config(m, n, k, 128, 132)
     fields = ("block_m", "block_n", "block_k", "num_stages", "threads", "split_k", "stream_ctas")
     assert _meta_window(*(cfg[field] for field in fields), k, 128) == 4
-    if get_sm_count(torch.device(run_device()).index) != 132:
-        pytest.skip("the op selects on the device's SMs, and the programs checked count 132")
-    test = GEMMW4A16Test(m, n, k, torch.float16)
-    test.check(GEMMW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
