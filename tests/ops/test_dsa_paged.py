@@ -102,10 +102,10 @@ def test_dsa_paged(row, arch) -> None:
 # GLM-5.3-Flash's latent rows: a topk off the 64-slot block, its last block's slots past topk
 # dead; key splits.
 _LATENT = dict(S_q=1, H=64, DK=512, K=2051, NP=80, PS=64, W=40, cache_lens=[2100, 300])
-# A DeepSeek-V4-Flash sink row with a single split.
+# A DeepSeek-V4-Flash sink row with a single split over two 64-head blocks.
 _SINK_UNSPLIT = dict(
     S_q=1,
-    H=64,
+    H=128,
     DK=512,
     K=256,
     NP=216,
