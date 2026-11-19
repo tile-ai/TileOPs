@@ -23,6 +23,7 @@ from tests.compile_contract import (
 )
 from tileops._ops.attention.dsa import DSADenseFwdOp, DSAPagedFwdOp
 from tileops._ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+from tileops._ops.attention.gated_pool_compress import GatedPoolCompressFwdOp
 from tileops._ops.attention.gqa.bwd import GQADenseBwdOp
 from tileops._ops.attention.gqa.dense import GQADenseFwdOp, GQADenseWithLSEFwdOp
 from tileops._ops.attention.gqa.paged import GQAPagedFwdOp
@@ -243,6 +244,26 @@ def _attention_cases():
         ends = torch.full((1, 256), 512, dtype=torch.int32, device=run_device())
         return TopKSelectFwdOp(top_k=64), (score, starts, ends)
 
+    def gated_pool_compress():
+        kv = torch.randn(33, 256, dtype=torch.float32, device=run_device())
+        score = torch.randn(33, 256, dtype=torch.float32, device=run_device())
+        ape = torch.randn(4, 256, dtype=torch.float32, device=run_device())
+        kv_state = torch.randn(4, 8, 256, dtype=torch.float32, device=run_device())
+        score_state = torch.randn(4, 8, 256, dtype=torch.float32, device=run_device())
+        cu_seqlens = torch.tensor([0, 1, 33], dtype=torch.int32, device=run_device())
+        start_pos = torch.tensor([11, 0], dtype=torch.int32, device=run_device())
+        state_slots = torch.tensor([2, 0], dtype=torch.int32, device=run_device())
+        return GatedPoolCompressFwdOp(4, True), (
+            kv,
+            score,
+            ape,
+            kv_state,
+            score_state,
+            cu_seqlens,
+            start_pos,
+            state_slots,
+        )
+
     return (
         ("gqa-dense", gqa_dense),
         # Only the SM90 kernel serves it.
@@ -268,6 +289,8 @@ def _attention_cases():
         # Picks the same set every time, but the atomic increments that claim the slots
         # decide which index lands where.
         ("topk-selector", topk_select, False),
+        # Entries are defined at the closing tokens only; the rest of the tensor is unwritten.
+        ("gated-pool-compress", gated_pool_compress, False),
     )
 
 
@@ -911,6 +934,7 @@ for _op_cls in (
     DSADenseFwdOp,
     DSAPagedFwdOp,
     FP8LightningIndexerFwdOp,
+    GatedPoolCompressFwdOp,
     TopKSelectFwdOp,
     GEMMFwdOp,
     GEMMFP8FwdOp,

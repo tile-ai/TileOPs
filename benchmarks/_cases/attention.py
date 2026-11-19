@@ -5,6 +5,7 @@ from typing import Any
 from benchmarks._cases import Entry, default_binder
 from benchmarks.api import Implementation
 from benchmarks.baselines import private_inputs
+from workloads.attention.gated_pool_compress import gated_pool_compress_result
 from workloads.attention.mla_cache_write import mla_cache_write_result
 from workloads.attention.paged_cache_write import paged_cache_write_result
 
@@ -24,6 +25,11 @@ def _mla_cache_write_binder(op: Any, case: Any) -> Implementation:
     return private_inputs(lambda *args: mla_cache_write_result(op, *args), case.inputs, 2)
 
 
+def _gated_pool_compress_binder(op: Any, case: Any) -> Implementation:
+    """The op on private rings it writes, returning its entries, valid flags and both rings."""
+    return private_inputs(lambda *args: gated_pool_compress_result(op, *args), case.inputs, 3, 4)
+
+
 ENTRIES = {
     "PagedKVCacheGatherFwdOp": Entry(binder=_paged_cache_gather_binder, count_copies=True),
     "MergeAttentionStatesFwdOp": Entry(count_copies=True),
@@ -32,4 +38,5 @@ ENTRIES = {
     "MLADenseDecodeFwdOp": Entry(count_copies=True),
     "MLAKVCacheWriteFwdOp": Entry(binder=_mla_cache_write_binder),
     "FP8LightningIndexerFwdOp": Entry(count_copies=True),
+    "GatedPoolCompressFwdOp": Entry(binder=_gated_pool_compress_binder),
 }

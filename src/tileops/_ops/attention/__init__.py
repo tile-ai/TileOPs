@@ -1,5 +1,6 @@
 from tileops._ops.attention.dsa import DSADenseFwdOp, DSAPagedFwdOp
 from tileops._ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+from tileops._ops.attention.gated_pool_compress import GatedPoolCompressFwdOp
 from tileops._ops.attention.gqa.bwd import GQADenseBwdOp
 from tileops._ops.attention.gqa.dense import GQADenseFwdOp, GQADenseWithLSEFwdOp
 from tileops._ops.attention.gqa.paged import GQAPagedFwdOp
@@ -32,6 +33,7 @@ __all__ = [
     "GQADenseWithLSEFwdOp",
     "GQAPagedFwdOp",
     "GQAVarlenFwdOp",
+    "GatedPoolCompressFwdOp",
     "MHAPagedFwdOp",
     "MLADenseBwdOp",
     "MLADenseDecodeFwdOp",

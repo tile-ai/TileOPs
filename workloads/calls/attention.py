@@ -4,6 +4,7 @@ from typing import Any
 
 from workloads.attention.dsa import DSADecodeCall, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerCall
+from workloads.attention.gated_pool_compress import GatedPoolCompressFwdCall
 from workloads.attention.gqa.bwd import GQABwdCall
 from workloads.attention.gqa.dense import (
     GQADenseDecodeCall,
@@ -76,4 +77,5 @@ WORKLOADS = {
     "NSAVarlenFwdOp": NSAFwdCall,
     "TopKSelectFwdOp": TopKSelectCall,
     "FP8LightningIndexerFwdOp": FP8LightningIndexerCall,
+    "GatedPoolCompressFwdOp": GatedPoolCompressFwdCall,
 }

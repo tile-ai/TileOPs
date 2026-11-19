@@ -13,6 +13,11 @@ from tileops._kernels.attention.fp8_lightning_indexer import (
     FP8LightningIndexerKernel,
     FP8LightningIndexerWSKernel,
 )
+from tileops._kernels.attention.gated_pool_compress import (
+    GatedPoolCompressCall,
+    GatedPoolCompressFwdInterface,
+    GatedPoolCompressKernel,
+)
 from tileops._kernels.attention.gqa.bwd import (
     GQABwdMMAKernel,
     GQABwdPreprocessKernel,
@@ -123,6 +128,9 @@ __all__ = [
     "GQAVarlenFP8FwdKernel",
     "GQAVarlenFP8WSFwdKernel",
     "GQAVarlenPackedWSFwdKernel",
+    "GatedPoolCompressCall",
+    "GatedPoolCompressFwdInterface",
+    "GatedPoolCompressKernel",
     "MHADecodePagedKernel",
     "MHADecodePagedWSKernel",
     "MLADecodeCall",
