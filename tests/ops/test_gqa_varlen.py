@@ -755,18 +755,25 @@ def test_varlen_ws_runs_three_consumer_warpgroups_on_long_requests_on_sm90(
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "q_lens, dim, rows",
+    "q_lens, kv_lens, dim, rows",
     [
-        # Short requests keep 128-row tiles, which pad them less.
-        pytest.param([100, 100], 72, 128, marks=pytest.mark.smoke, id="d72-narrow"),
+        # Short requests keep 128-row tiles, which pad them less: the d72 bf16 smoke shape.
+        pytest.param(
+            [129, 65, 6, 0, 300],
+            [33, 131, 2, 0, 400],
+            72,
+            128,
+            marks=pytest.mark.smoke,
+            id="d72-narrow",
+        ),
     ],
 )
 def test_varlen_ws_keeps_two_consumers_for_short_requests_on_sm90(
-    q_lens: list[int], dim: int, rows: int
+    q_lens: list[int], kv_lens: list[int], dim: int, rows: int
 ) -> None:
     """Tiles of three 64-row consumer warpgroups pad short requests more than tiles of two, so a
     call of short requests keeps two."""
-    test = GQAVarlenFwdTest(len(q_lens), q_lens, q_lens, 4, 4, dim, False, -1, -1, torch.bfloat16)
+    test = GQAVarlenFwdTest(len(q_lens), q_lens, kv_lens, 4, 4, dim, False, -1, -1, torch.bfloat16)
     op = GQAVarlenFwdOp()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
