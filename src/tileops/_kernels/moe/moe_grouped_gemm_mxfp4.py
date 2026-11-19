@@ -112,6 +112,58 @@ def _e8m0_value(code):
     return T.reinterpret(bits, "float32")
 
 
+def _code_tables_copy(
+    tasks, *, contiguous: bool, block_m: int, block_n: int, scale_k: int, table_box: int
+):
+    """The macro that copies a task's weight-code and token-code tables by TMA, for a kernel
+    whose task walk is ``tasks`` over ``block_m x block_n`` tiles and ``scale_k`` K steps, each
+    code-table row in boxes of ``table_box`` bytes."""
+    table_row_bytes = scale_k * 4
+
+    @T.macro
+    def copy_code_tables(
+        table_desc, token_desc, codes, token_codes, full, empty, index, cursor, tile
+    ):
+        """Copy the weight and token codes of the task at ``cursor`` and ``tile`` into tables
+        ``index % 2`` once their consumers have released them."""
+        buf = index % 2
+        T.barrier_wait(empty[buf], (index // 2 & 1) ^ 1)
+        if T.shuffle_elect(32):
+            # Whole boxes land, rows past N (or past the tokens) zero-filled.
+            T.mbarrier_arrive_expect_tx(full[buf], block_n * table_row_bytes + block_m * scale_k)
+            if contiguous:
+                T.tma_load(
+                    token_desc,
+                    full[buf],
+                    T.address_of(token_codes[buf, 0]),
+                    0,
+                    tasks.first_row(cursor, tile),
+                    0,
+                )
+            else:
+                T.tma_load(
+                    token_desc,
+                    full[buf],
+                    T.address_of(token_codes[buf, 0]),
+                    0,
+                    tasks.first_row(cursor, tile),
+                    tasks.expert(cursor),
+                    0,
+                )
+            for box in T.unroll(table_row_bytes // table_box):
+                T.tma_load(
+                    table_desc,
+                    full[buf],
+                    T.address_of(codes[buf, box * block_n * table_box // 4]),
+                    box * table_box,
+                    tasks.first_col(tile),
+                    tasks.expert(cursor),
+                    0,
+                )
+
+    return copy_code_tables
+
+
 @target_cache(maxsize=32)
 def _moe_grouped_gemm_mxfp4_kernel(
     num_groups: int,
@@ -234,6 +286,14 @@ def _moe_grouped_gemm_mxfp4_kernel(
         tables = _uses_tables(block_m, block_n, num_stages, scale_bytes, scale_k, smem_limit)
         table_row_bytes = scale_k * 4
         table_box = _table_box(scale_k) if tables else 0
+        copy_code_tables = _code_tables_copy(
+            tasks,
+            contiguous=contiguous,
+            block_m=block_m,
+            block_n=block_n,
+            scale_k=scale_k,
+            table_box=table_box,
+        )
 
         def ring_position(kk, ring_index):
             """Ring slot and barrier phase of K step ``kk`` of a task, shared by producers and
@@ -330,46 +390,24 @@ def _moe_grouped_gemm_mxfp4_kernel(
             rows)."""
             tasks.walk_to_running(walk_source, task_id, ahead, ahead_tile)
             if ahead[cur_g] < num_groups:
-                ahead_g = tasks.expert(ahead)
-                ahead_n = tasks.first_col(ahead_tile)
-                buf = check_index % 2
-                T.barrier_wait(check_empty[buf], (check_index // 2 & 1) ^ 1)
-                if T.shuffle_elect(32):
-                    if table_box:
-                        # Whole boxes land, rows past N (or past the tokens) zero-filled.
-                        T.mbarrier_arrive_expect_tx(
-                            check_full[buf], block_n * table_row_bytes + block_m * scale_k
-                        )
-                        if contiguous:
-                            T.tma_load(
-                                token_desc,
-                                check_full[buf],
-                                T.address_of(token_codes[buf, 0]),
-                                0,
-                                tasks.first_row(ahead, ahead_tile),
-                                0,
-                            )
-                        else:
-                            T.tma_load(
-                                token_desc,
-                                check_full[buf],
-                                T.address_of(token_codes[buf, 0]),
-                                0,
-                                tasks.first_row(ahead, ahead_tile),
-                                ahead_g,
-                                0,
-                            )
-                        for box in T.unroll(table_row_bytes // table_box):
-                            T.tma_load(
-                                table_desc,
-                                check_full[buf],
-                                T.address_of(check_codes[buf, box * block_n * table_box // 4]),
-                                box * table_box,
-                                ahead_n,
-                                ahead_g,
-                                0,
-                            )
-                    else:
+                if table_box:
+                    copy_code_tables(
+                        table_desc,
+                        token_desc,
+                        check_codes,
+                        token_codes,
+                        check_full,
+                        check_empty,
+                        check_index,
+                        ahead,
+                        ahead_tile,
+                    )
+                else:
+                    ahead_g = tasks.expert(ahead)
+                    ahead_n = tasks.first_col(ahead_tile)
+                    buf = check_index % 2
+                    T.barrier_wait(check_empty[buf], (check_index // 2 & 1) ^ 1)
+                    if T.shuffle_elect(32):
                         # C++: arrive.expect_tx and the 1-D bulk copy on it.
                         T.call_extern(
                             "handle",
@@ -1092,6 +1130,14 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
         m, max_waves = tasks.m, tasks.max_waves
         row_tiles_descriptor = tasks.row_tiles_descriptor
         walk, tile_of = tasks.walk, tasks.tile_of
+        copy_code_tables = _code_tables_copy(
+            tasks,
+            contiguous=True,
+            block_m=block_m,
+            block_n=block_n,
+            scale_k=scale_k,
+            table_box=table_box,
+        )
         math_threads = block_m // WGMMA_ROWS * WARPGROUP_THREADS
         math_warps = math_threads // 32
         fragment_regs = WGMMA_ROWS * block_n // WARPGROUP_THREADS
@@ -1142,31 +1188,17 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             consuming roles have released them."""
             tasks.walk_to_running(layout, task_id, ahead, ahead_tile)
             if ahead[cur_g] < num_groups:
-                buf = index % 2
-                T.barrier_wait(tab_empty[buf], (index // 2 & 1) ^ 1)
-                if T.shuffle_elect(32):
-                    # Whole boxes land, rows past N zero-filled.
-                    T.mbarrier_arrive_expect_tx(
-                        tab_full[buf], block_n * table_row_bytes + block_m * scale_k
-                    )
-                    T.tma_load(
-                        token_desc,
-                        tab_full[buf],
-                        T.address_of(token_codes[buf, 0]),
-                        0,
-                        tasks.first_row(ahead, ahead_tile),
-                        0,
-                    )
-                    for box in T.unroll(table_row_bytes // table_box):
-                        T.tma_load(
-                            table_desc,
-                            tab_full[buf],
-                            T.address_of(codes[buf, box * block_n * table_box // 4]),
-                            box * table_box,
-                            tasks.first_col(ahead_tile),
-                            tasks.expert(ahead),
-                            0,
-                        )
+                copy_code_tables(
+                    table_desc,
+                    token_desc,
+                    codes,
+                    token_codes,
+                    tab_full,
+                    tab_empty,
+                    index,
+                    ahead,
+                    ahead_tile,
+                )
 
         @T.macro
         def math_step(
