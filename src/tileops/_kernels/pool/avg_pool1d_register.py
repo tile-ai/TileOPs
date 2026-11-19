@@ -15,6 +15,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     MAX_BLOCK_THREADS,
     MAX_GRID_YZ_BLOCKS,
+    SM_RESIDENT_BLOCKS,
     VECTOR_ACCESS_BYTES,
 )
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -148,12 +149,12 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
 class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
     """Average pooling over rows, a thread's windows read into registers.
 
-    Serves every divisor torch's avg_pool1d takes: a window cut by the row's edge
-    divides by the positions it counts. The stride must divide the
-    elements of a 16-byte load, so that one covers whole outputs; the outputs must
-    divide into those loads and the windows stay within the padded row. A thread's
-    windows reach at most one element past its load on either side, each one a load
-    of its own.
+    Serves every divisor but ``divisor_override``: a window cut by the row's edge, or by
+    a ceil-mode overhang past the padded row, divides by the positions it counts. The
+    stride must divide the elements of a 16-byte load, so that one covers whole outputs;
+    the outputs must divide into those loads, and the loads into the row. A thread's
+    windows reach at most one element past its load on either side, each one a load of
+    its own.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
@@ -169,7 +170,7 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
             pad=call.pad,
             ceil_mode=call.ceil_mode,
             count_include_pad=call.count_include_pad,
-            divisor_override=None,
+            divisor_override=call.divisor_override,
         )
 
     @classmethod
@@ -178,6 +179,8 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
             return f"requires float16, bfloat16 or float32, got {call.dtype}"
         if len(call.size) != 1:
             return "serves a 1-d window"
+        if call.divisor_override is not None:
+            return "does not serve divisor_override"
         (l_in,), (kernel_l,), (stride_l,), (pad_l,) = call.size, call.window, call.stride, call.pad
         run, outputs = _run(call.dtype.itemsize, stride_l)
         if run % stride_l:
@@ -208,20 +211,35 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         if not window.whole_window_divides:
             ((lo,), (hi,)) = window.overlap
             counted = (lo, hi)
-        # One thread a group of outputs. A launch whose warps one block per SM holds runs
-        # as that: every block it adds past one an SM is one more to dispatch, and a
-        # sub-wave launch has no later wave to hide it behind. A larger launch runs
-        # along each row while the rows fit the grid's y axis.
+        # One thread a group of outputs, ``groups`` a row.
         _, outputs = _run(call.dtype.itemsize, stride_l)
-        units = window.rows * (out_l // outputs)
+        groups = out_l // outputs
+        units = window.rows * groups
         warps = -(-units // WARP_LANES)
-        one_block_an_sm = warps * WARP_LANES <= call.sm_count * MAX_BLOCK_THREADS
-        flat = one_block_an_sm or window.rows > MAX_GRID_YZ_BLOCKS
-        # Past one block an SM the threads resident on an SM, not the block width, set the
-        # bytes it has in flight; four warps a block leave a row's last block at most 127
-        # idle threads while 16 blocks still fill an SM's 2048 threads.
+        # The row grid: 128-thread blocks along each row. Past one block an SM, the threads
+        # resident on an SM, not the block width, set the bytes it has in flight; four warps
+        # a block leave a row's last block at most 127 idle threads.
         multi_wave_threads = 128
-        threads = -(-warps // call.sm_count) * WARP_LANES if one_block_an_sm else multi_wave_threads
+        row_blocks = window.rows * -(-groups // multi_wave_threads)
+        # A row of fewer groups than a block has threads leaves the rest idle, and an SM
+        # holds at most SM_RESIDENT_BLOCKS blocks: where those cannot keep threads_per_sm
+        # threads busy, the launch runs on one grid axis, its blocks spanning rows.
+        row_fills_sm = (
+            SM_RESIDENT_BLOCKS[call.arch] * min(groups, multi_wave_threads) >= call.threads_per_sm
+        )
+        # One block an SM, of the fewest whole warps that cover the launch: every block
+        # past one an SM is one more to dispatch, and with all of them resident at once no
+        # later wave hides the dispatch. It applies where a block of at most
+        # MAX_BLOCK_THREADS covers an SM's share, the block limit rather than the SM's
+        # residency, since past it an SM needs a second block anyway; and where it launches
+        # fewer blocks than the row grid, whose dispatch it would otherwise add to.
+        one_block_threads = -(-warps // call.sm_count) * WARP_LANES
+        one_block_an_sm = (
+            warps * WARP_LANES <= call.sm_count * MAX_BLOCK_THREADS
+            and -(-units // one_block_threads) < row_blocks
+        )
+        flat = one_block_an_sm or not row_fills_sm or window.rows > MAX_GRID_YZ_BLOCKS
+        threads = one_block_threads if one_block_an_sm else multi_wave_threads
         identity = (
             window.rows,
             l_in,
