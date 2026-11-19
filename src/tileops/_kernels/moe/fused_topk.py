@@ -581,9 +581,9 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             selection is restricted by; 1 selects over all experts.
         topk_group: Groups kept per token, best group score first.
         routed_scaling_factor: Multiplier on the written weights.
-        with_expert_ids: If True, forward() takes each token's experts and selects nothing.
         dtype: Input logits dtype; routing arithmetic remains float32.
         config: Optional kernel config dict (key: "TOKENS_PER_BLOCK").
+        with_expert_ids: If True, forward() takes each token's experts and selects nothing.
 
     """
 
@@ -649,10 +649,10 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
         num_expert_group: int = 1,
         topk_group: int = 1,
         routed_scaling_factor: float = 1.0,
-        with_expert_ids: bool = False,
         dtype: torch.dtype = torch.float32,
         config: dict | None = None,
         device_index: int | None = None,
+        with_expert_ids: bool = False,
     ):
         super().__init__(device_index=device_index)
         if top_k > num_experts:
