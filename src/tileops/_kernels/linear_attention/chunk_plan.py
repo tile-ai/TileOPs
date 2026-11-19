@@ -7,6 +7,13 @@ from tileops._kernels.tiling import align_up
 CHUNK_SIZE = 64
 
 
+def fp32_exponent_range(dtype):
+    """Whether *dtype*, a torch dtype or its name, keeps FP32's exponent range, so a factor in it
+    overflows and flushes where an FP32 factor would."""
+    dtype = dtype if isinstance(dtype, torch.dtype) else getattr(torch, dtype)
+    return torch.finfo(dtype).tiny <= torch.finfo(torch.float32).tiny
+
+
 def packed_offsets(batch, seq_len, cu_seqlens, device):
     if cu_seqlens is not None:
         return cu_seqlens
@@ -42,8 +49,11 @@ def scan_value_tile(value_tile, arch, *, total, num_seqs, value_heads, dim):
     return value_tile
 
 
-def _prepare_bytes(dim, element, sequences, lean):
+def _prepare_bytes(dim, element, sequences, lean, l2norm):
     tiles = 4 * CHUNK_SIZE * dim * element + 4 * CHUNK_SIZE * dim + 4 * CHUNK_SIZE
+    if l2norm:
+        # The FP32 inverse norms of the chunk's query and key rows.
+        tiles += 2 * CHUNK_SIZE * 4
     inverse = 2 * CHUNK_SIZE * CHUNK_SIZE * element
     if lean:
         inverse = max(0, inverse - CHUNK_SIZE * dim * element)
@@ -55,12 +65,12 @@ def _scan_bytes(dim, value_tile, element, sequences):
     return tiles * element + align_up(4 * (sequences + 1), 16)
 
 
-def launch_plan(dim, element, sequences, budget, arch):
+def launch_plan(dim, element, sequences, budget, arch, l2norm):
     def fits(size):
         return (align_up(size, 1024) if arch == 90 else size) <= budget
 
-    lean = not fits(_prepare_bytes(dim, element, sequences, lean=False))
-    if lean and not fits(_prepare_bytes(dim, element, sequences, lean=True)):
+    lean = not fits(_prepare_bytes(dim, element, sequences, lean=False, l2norm=l2norm))
+    if lean and not fits(_prepare_bytes(dim, element, sequences, lean=True, l2norm=l2norm)):
         return None
     for value_tile in (dim, dim // 2):
         if fits(_scan_bytes(dim, value_tile, element, sequences)):

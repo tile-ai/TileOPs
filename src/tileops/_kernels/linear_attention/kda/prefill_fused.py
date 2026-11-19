@@ -8,7 +8,9 @@ from tileops._kernels.linear_attention.call_spec import (
     KDAFwdInterface,
 )
 from tileops._kernels.linear_attention.chunk_plan import CHUNK_SIZE, packed_offsets
+from tileops._kernels.linear_attention.chunk_prefill import split_prepare_enabled
 from tileops._kernels.linear_attention.kda.fused_program import fused_chunk_program
+from tileops._kernels.linear_attention.kda.prefill import KDAChunkPrefillFwdKernel, chunk_prefill
 
 __all__ = ["KDAFusedPrefillFwdKernel"]
 
@@ -18,7 +20,10 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
 
     The chunk-local work and the recurrence share a block, so the WY vectors,
     the gated query and key and the intra-chunk attention never reach global
-    memory. The launch is one block per (sequence, value head).
+    memory. The launch is one block per (sequence, value head), so it lasts as long as
+    the longest sequence. On SM90 a packed call whose sequences the host does not show
+    spanning one chunk count each runs on the chunk-parallel programs instead, where they
+    serve it.
     """
 
     supported_archs = [89, 90]
@@ -73,7 +78,12 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.state_v_first,
             call.pooled,
         )
-        return identity, lambda: cls(
+        chunk_fallback = (
+            call.arch == 90
+            and not split_prepare_enabled(call)
+            and KDAChunkPrefillFwdKernel.refusal(call) is None
+        )
+        return (*identity, chunk_fallback), lambda: cls(
             heads=call.heads,
             value_heads=call.value_heads,
             dim_k=call.dim_k,
@@ -86,6 +96,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             two_launch=two_launch,
             state_v_first=call.state_v_first,
             pooled=call.pooled,
+            chunk_fallback=chunk_fallback,
         )
 
     def __init__(
@@ -103,6 +114,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         two_launch: bool = False,
         state_v_first: bool = False,
         pooled: bool = False,
+        chunk_fallback: bool = False,
     ) -> None:
         """Hold the call facts the fused program is built from."""
         super().__init__(device_index=device_index)
@@ -117,6 +129,11 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.two_launch = two_launch
         self.state_v_first = state_v_first
         self.pooled = pooled
+        self.chunk_fallback = chunk_fallback
+        # The facts the chunk-parallel programs read; this prefill takes the gate as given.
+        self.gate_in_kernel = False
+        self.has_dt_bias = False
+        self.lower_bound = None
 
     def forward(
         self,
@@ -133,9 +150,24 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         state_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run every chunk inside its own CTA; see the interface for the tensors."""
+        batch, seq_len = q.shape[:2]
+        # One CTA walks each sequence, so the launch lasts as long as the longest one and
+        # keeps every CTA busy only when they all walk as many chunks. Without the offsets
+        # on the host the lengths are unknown. A call spec cannot carry the lengths: one is
+        # built per specialization, whatever offsets later calls pass.
+        if self.chunk_fallback and cu_seqlens is not None:
+            if cu_seqlens_cpu is None:
+                even = False
+            else:
+                chunks = (cu_seqlens_cpu.diff() + CHUNK_SIZE - 1) // CHUNK_SIZE
+                even = bool((chunks == chunks[0]).all())
+            if not even:
+                return chunk_prefill(
+                    self, q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias,
+                    state_indices,
+                )  # fmt: skip
         del cu_seqlens_cpu, A_log, dt_bias
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
-        batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
         HV, V = v.shape[2], v.shape[3]
         total = batch * seq_len
