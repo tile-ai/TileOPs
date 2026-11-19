@@ -1,5 +1,7 @@
 """Varlen GQA tests against a pure-PyTorch reference."""
 
+import re
+
 import pytest
 import torch
 
@@ -17,6 +19,15 @@ class GQAVarlenFwdTest(GQAVarlenFwdWorkload, TestBase):
 def _padded(inputs: tuple) -> tuple:
     """A workload's inputs padded to the op's eleven forward arguments."""
     return tuple(inputs) + (None,) * (11 - len(inputs))
+
+
+def _launched_rows(op: GQAVarlenFwdOp, inputs: tuple) -> int:
+    """Query rows a tile of the program the warp-specialized kernel launched for *inputs*:
+    64 a consumer warpgroup, read from the program's thread count."""
+    kernel = op._get_kernel(_padded(inputs))
+    program = kernel.program(kernel._compile, *kernel._program_facts(inputs[0]))
+    threads = re.search(r"__launch_bounds__\((\d+)", program.jit.get_kernel_source())
+    return 64 * (int(threads.group(1)) // 128 - 1)
 
 
 class GQAVarlenFwdFixture(FixtureBase):
@@ -619,6 +630,178 @@ def test_varlen_ws_serves_head_dims_off_the_contraction_step_on_sm90(
     inputs = test.gen_inputs()
     assert op.key_for("gqa_varlen", op._varlen_call(_padded(inputs))) == "gqa_varlen_ws"
     test.check(op, *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, heads, heads_kv, dim, dtype, options",
+    [
+        # Requests that fill whole 192-row tiles and partial ones on a 64-channel block and a
+        # 16-channel edge (8 channels and 8 zeros).
+        pytest.param(
+            [256, 512],
+            [256, 512],
+            4,
+            4,
+            72,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.smoke,
+            id="d72-bidirectional",
+        ),
+        # The causal ranking claims items of 192 rows; a group of 2 still leaves the call to
+        # the one-head program, as its head has an edge.
+        pytest.param(
+            [256, 512],
+            [256, 512],
+            4,
+            2,
+            72,
+            torch.float16,
+            {"is_causal": True},
+            marks=pytest.mark.smoke,
+            id="d72-causal",
+        ),
+        # q_len > kv_len, a request shorter than a tile and an empty request in a wide call.
+        pytest.param(
+            [700, 65, 0, 450],
+            [500, 900, 0, 450],
+            4,
+            4,
+            72,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="d72-ragged",
+        ),
+        # Causal masks aligned to the end of keys longer than the queries.
+        pytest.param(
+            [700, 300],
+            [900, 300],
+            4,
+            2,
+            72,
+            torch.float16,
+            {"is_causal": True},
+            marks=pytest.mark.full,
+            id="d72-causal-offset",
+        ),
+        # Windows long enough that a row's maximum rises after its first key tiles, which the
+        # running partial sums must take as a correction.
+        pytest.param(
+            [600, 330],
+            [700, 330],
+            4,
+            4,
+            72,
+            torch.bfloat16,
+            {"window_size_left": 100, "window_size_right": 50},
+            marks=pytest.mark.full,
+            id="d72-window",
+        ),
+        pytest.param(
+            [600, 330],
+            [700, 330],
+            4,
+            4,
+            72,
+            torch.bfloat16,
+            {"has_sinks": True},
+            marks=pytest.mark.full,
+            id="d72-sinks",
+        ),
+        # A whole 64-channel block, no edge; RoPE rotates each warpgroup's 64 rows.
+        pytest.param(
+            [700, 65, 450],
+            [500, 900, 450],
+            4,
+            4,
+            64,
+            torch.float16,
+            {"pos_encoding_mode": "rope"},
+            marks=pytest.mark.full,
+            id="d64-rope",
+        ),
+        # One part padded to 64 channels (56 and 8 zeros).
+        pytest.param(
+            [700, 450],
+            [500, 450],
+            4,
+            4,
+            56,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="d56",
+        ),
+        # An edge of 16 channels with no padding.
+        pytest.param(
+            [700, 450],
+            [500, 450],
+            4,
+            4,
+            80,
+            torch.bfloat16,
+            {"is_causal": True},
+            marks=pytest.mark.full,
+            id="d80-causal",
+        ),
+    ],
+)
+def test_varlen_ws_runs_three_consumer_warpgroups_on_long_requests_on_sm90(
+    q_lens: list[int],
+    kv_lens: list[int],
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    dtype: torch.dtype,
+    options: dict,
+) -> None:
+    """SM90's register file leaves three consumer warpgroups too few registers for P beside the
+    scores and the output, so with three consumer warpgroups each reads P from shared memory
+    through an SS WGMMA."""
+    options = dict(options)
+    is_causal = options.pop("is_causal", False)
+    wl = options.pop("window_size_left", -1)
+    wr = options.pop("window_size_right", -1)
+    has_sinks = options.pop("has_sinks", False)
+    test = GQAVarlenFwdTest(
+        len(q_lens), q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, wr, dtype,
+        has_sinks=has_sinks, **options,
+    )  # fmt: skip
+    op = GQAVarlenFwdOp(is_causal=is_causal, window_size_left=wl, window_size_right=wr, **options)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    assert _launched_rows(op, inputs) == 192
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, dim, rows",
+    [
+        # Short requests keep 128-row tiles, which pad them less: the d72 bf16 smoke shape.
+        pytest.param(
+            [129, 65, 6, 0, 300],
+            [33, 131, 2, 0, 400],
+            72,
+            128,
+            marks=pytest.mark.smoke,
+            id="d72-narrow",
+        ),
+    ],
+)
+def test_varlen_ws_keeps_two_consumers_for_short_requests_on_sm90(
+    q_lens: list[int], kv_lens: list[int], dim: int, rows: int
+) -> None:
+    """Tiles of three 64-row consumer warpgroups pad short requests more than tiles of two, so a
+    call of short requests keeps two."""
+    test = GQAVarlenFwdTest(len(q_lens), q_lens, kv_lens, 4, 4, dim, False, -1, -1, torch.bfloat16)
+    op = GQAVarlenFwdOp()
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    assert _launched_rows(op, inputs) == rows
 
 
 @pytest.mark.sm90
