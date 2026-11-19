@@ -17,6 +17,7 @@ from tileops._kernels.moe import (
     MGroupedGEMMMXFP4Call,
     MGroupedGEMMMXFP4FwdInterface,
     MoEGroupedGEMMMXFP4Kernel,
+    MoEGroupedGEMMMXFP4SharedDecodeKernel,
 )
 from tileops._ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec
 from tileops._ops.moe.staged import MoELayoutRowsRoofline
@@ -59,9 +60,19 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
     contracted sub-block by sub-block, each product's scales applied by mantissa and
     exponent apart, so no scale product overflows or flushes before it is added. Other tiles
     apply the row's ``a_scale`` last, where a subnormal one (e8m0 code 0, ``2 ** -127``) is
-    flushed to zero: a row under that scale loses results below ``K * 2 ** -52``. The float32
-    accumulator flushes terms and sums below ``2 ** -126`` to zero. The result is written in
-    bfloat16.
+    flushed to zero: a row under that scale loses results below ``K * 2 ** -52``. Aligned
+    contiguous rows under e8m0 scales, the alignment a multiple of 128 and ``K`` a multiple of
+    2048 whose code tables fit in shared memory (``K`` up to 10240 on SM90), instead decode each
+    weight tile once into shared memory: there a tile folds when each weight row's scales lie in
+    ``[2 ** -63, 2 ** 63]`` and span at most eleven binades over ``K`` and each ``a_scale`` of
+    its rows, padding rows included, is code 0 (flushed as above) or lies in
+    ``[2 ** -63, 2 ** 63]`` (a padding row left holding other codes sends its tile to the
+    sub-block contraction, which is slower); its sub-blocks enter the
+    contraction scaled relative to a reference six binades under their row's largest scale
+    (exact while the e2m1 values stay e4m3 normals), each block is added under the row's
+    ``a_scale``, and each column is scaled by its reference once at the end. Other tiles there are
+    contracted sub-block by sub-block as above. The float32 accumulator flushes terms and sums
+    below ``2 ** -126`` to zero. The result is written in bfloat16.
 
     Accuracy: on the valid rows the output matches an fp32 reference that dequantizes both
     operands under their scales to ``atol = 2e-2 * sqrt(max(1, K / 1024))`` and
@@ -77,6 +88,7 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "grouped_gemm_mxfp4": MoEGroupedGEMMMXFP4Kernel,
+        "grouped_gemm_mxfp4_shared_decode": MoEGroupedGEMMMXFP4SharedDecodeKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "grouped_gemm_mxfp4": MGroupedGEMMMXFP4FwdInterface

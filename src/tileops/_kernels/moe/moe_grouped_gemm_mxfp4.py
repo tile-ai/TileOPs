@@ -40,7 +40,7 @@ from tileops._kernels.moe.call_spec import (
 from tileops._kernels.moe.grouped_tasks import CURSOR, GroupedGEMMConfigMixin, task_walk
 from tileops.manifest.primitives import moe_layout_metadata
 
-__all__ = ["MoEGroupedGEMMMXFP4Kernel"]
+__all__ = ["MoEGroupedGEMMMXFP4Kernel", "MoEGroupedGEMMMXFP4SharedDecodeKernel"]
 
 # K values one ``b`` scale covers.
 _B_SCALE_BLOCK = 32
@@ -99,6 +99,69 @@ def _config_smem(
     """Shared memory of a config, with or without the tables as ``_uses_tables`` picks."""
     tables = _uses_tables(block_m, block_n, num_stages, scale_bytes, scale_k, smem_limit)
     return _smem_bytes(block_m, block_n, num_stages, scale_bytes, scale_k, tables)
+
+
+def _e8m0_value(code):
+    """The float a ``uint32`` e8m0 code stands for: 2 ** (code - 127), 2 ** -127 at code 0 and
+    NaN at 255, as torch's float8_e8m0fnu reads them."""
+    bits = T.if_then_else(
+        code == 0,
+        T.uint32(0x00400000),
+        T.if_then_else(code == 255, T.uint32(0x7FC00000), code << 23),
+    )
+    return T.reinterpret(bits, "float32")
+
+
+def _code_tables_copy(
+    tasks, *, contiguous: bool, block_m: int, block_n: int, scale_k: int, table_box: int
+):
+    """The macro that copies a task's weight-code and token-code tables by TMA, for a kernel
+    whose task walk is ``tasks`` over ``block_m x block_n`` tiles and ``scale_k`` K steps, each
+    code-table row in boxes of ``table_box`` bytes."""
+    table_row_bytes = scale_k * 4
+
+    @T.macro
+    def copy_code_tables(
+        table_desc, token_desc, codes, token_codes, full, empty, index, cursor, tile
+    ):
+        """Copy the weight and token codes of the task at ``cursor`` and ``tile`` into tables
+        ``index % 2`` once their consumers have released them."""
+        buf = index % 2
+        T.barrier_wait(empty[buf], (index // 2 & 1) ^ 1)
+        if T.shuffle_elect(32):
+            # Whole boxes land, rows past N (or past the tokens) zero-filled.
+            T.mbarrier_arrive_expect_tx(full[buf], block_n * table_row_bytes + block_m * scale_k)
+            if contiguous:
+                T.tma_load(
+                    token_desc,
+                    full[buf],
+                    T.address_of(token_codes[buf, 0]),
+                    0,
+                    tasks.first_row(cursor, tile),
+                    0,
+                )
+            else:
+                T.tma_load(
+                    token_desc,
+                    full[buf],
+                    T.address_of(token_codes[buf, 0]),
+                    0,
+                    tasks.first_row(cursor, tile),
+                    tasks.expert(cursor),
+                    0,
+                )
+            for box in T.unroll(table_row_bytes // table_box):
+                T.tma_load(
+                    table_desc,
+                    full[buf],
+                    T.address_of(codes[buf, box * block_n * table_box // 4]),
+                    box * table_box,
+                    tasks.first_col(tile),
+                    tasks.expert(cursor),
+                    0,
+                )
+
+    return copy_code_tables
 
 
 @target_cache(maxsize=32)
@@ -223,6 +286,14 @@ def _moe_grouped_gemm_mxfp4_kernel(
         tables = _uses_tables(block_m, block_n, num_stages, scale_bytes, scale_k, smem_limit)
         table_row_bytes = scale_k * 4
         table_box = _table_box(scale_k) if tables else 0
+        copy_code_tables = _code_tables_copy(
+            tasks,
+            contiguous=contiguous,
+            block_m=block_m,
+            block_n=block_n,
+            scale_k=scale_k,
+            table_box=table_box,
+        )
 
         def ring_position(kk, ring_index):
             """Ring slot and barrier phase of K step ``kk`` of a task, shared by producers and
@@ -231,16 +302,6 @@ def _moe_grouped_gemm_mxfp4_kernel(
             if static_ring:
                 return kk % num_stages, (ring_index * rings_per_task + kk // num_stages) & 1
             return (ring_index + kk) % num_stages, ((ring_index + kk) // num_stages) & 1
-
-        def e8m0_value(code):
-            """The float an e8m0 code stands for: 2 ** (code - 127), 2 ** -127 at code 0 and
-            NaN at 255, as torch's float8_e8m0fnu reads them."""
-            bits = T.if_then_else(
-                code == 0,
-                T.uint32(0x00400000),
-                T.if_then_else(code == 255, T.uint32(0x7FC00000), code << 23),
-            )
-            return T.reinterpret(bits, "float32")
 
         @T.macro
         def load_token_scales(A_scale, token_scales, g, m_start, kk, tx):
@@ -258,7 +319,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 else:
                     value = A_scale[g, row, kk]
                 if e8m0:
-                    token_scales[j] = e8m0_value(T.cast(value, "uint32"))
+                    token_scales[j] = _e8m0_value(T.cast(value, "uint32"))
                 else:
                     token_scales[j] = value
 
@@ -327,53 +388,26 @@ def _moe_grouped_gemm_mxfp4_kernel(
             ``check_index % 2`` once the math threads have released it: a word of four codes a
             K step, rows up to N's last, 16-byte aligned (N a multiple of 8, tiles of 64
             rows)."""
-            next_task = T.alloc_var("int32", init=task_id)
-            walk(walk_source, next_task, ahead)
-            while T.And(ahead[cur_g] >= num_groups, next_task + num_sms < max_waves * num_sms):
-                next_task = next_task + num_sms
-                walk(walk_source, next_task, ahead)
+            tasks.walk_to_running(walk_source, task_id, ahead, ahead_tile)
             if ahead[cur_g] < num_groups:
-                tile_of(next_task, ahead, ahead_tile)
-                ahead_g = tasks.expert(ahead)
-                ahead_n = tasks.first_col(ahead_tile)
-                buf = check_index % 2
-                T.barrier_wait(check_empty[buf], (check_index // 2 & 1) ^ 1)
-                if T.shuffle_elect(32):
-                    if table_box:
-                        # Whole boxes land, rows past N (or past the tokens) zero-filled.
-                        T.mbarrier_arrive_expect_tx(
-                            check_full[buf], block_n * table_row_bytes + block_m * scale_k
-                        )
-                        if contiguous:
-                            T.tma_load(
-                                token_desc,
-                                check_full[buf],
-                                T.address_of(token_codes[buf, 0]),
-                                0,
-                                tasks.first_row(ahead, ahead_tile),
-                                0,
-                            )
-                        else:
-                            T.tma_load(
-                                token_desc,
-                                check_full[buf],
-                                T.address_of(token_codes[buf, 0]),
-                                0,
-                                tasks.first_row(ahead, ahead_tile),
-                                ahead_g,
-                                0,
-                            )
-                        for box in T.unroll(table_row_bytes // table_box):
-                            T.tma_load(
-                                table_desc,
-                                check_full[buf],
-                                T.address_of(check_codes[buf, box * block_n * table_box // 4]),
-                                box * table_box,
-                                ahead_n,
-                                ahead_g,
-                                0,
-                            )
-                    else:
+                if table_box:
+                    copy_code_tables(
+                        table_desc,
+                        token_desc,
+                        check_codes,
+                        token_codes,
+                        check_full,
+                        check_empty,
+                        check_index,
+                        ahead,
+                        ahead_tile,
+                    )
+                else:
+                    ahead_g = tasks.expert(ahead)
+                    ahead_n = tasks.first_col(ahead_tile)
+                    buf = check_index % 2
+                    T.barrier_wait(check_empty[buf], (check_index // 2 & 1) ^ 1)
+                    if T.shuffle_elect(32):
                         # C++: arrive.expect_tx and the 1-D bulk copy on it.
                         T.call_extern(
                             "handle",
@@ -1006,6 +1040,592 @@ def _moe_grouped_gemm_mxfp4_kernel(
     return _moe_grouped_gemm_mxfp4_func
 
 
+def _shared_decode_smem_bytes(block_n: int, num_stages: int, scale_k: int) -> int:
+    """Bytes of a shared-decode config: the ring of fp8 token rows, the packed-weight and
+    decoded fp8 stages, two tasks' weight-code and token-code tables (1024 bytes of alignment),
+    two tasks' row references, column scales and flags, the bfloat16 output tile and the
+    barriers."""
+    kernel = MoEGroupedGEMMMXFP4SharedDecodeKernel
+    block_m = kernel._TILE_ROWS
+    packed_stages, decoded_stages = kernel._PACKED_STAGES, kernel._DECODED_STAGES
+    ring = num_stages * block_m * QUANT_SCALE_BLOCK
+    packed = packed_stages * block_n * QUANT_SCALE_BLOCK // 2
+    decoded = decoded_stages * block_n * QUANT_SCALE_BLOCK
+    tables = 2 * (block_n * scale_k * 4 + block_m * scale_k) + SHARED_BUFFER_ALIGN_BYTES
+    task_info = 2 * (2 * block_n * 4 + 4)
+    barriers = (2 * num_stages + 2 * packed_stages + 2 * decoded_stages + 4) * 8
+    return ring + packed + decoded + tables + task_info + block_m * block_n * 2 + barriers
+
+
+@target_cache(maxsize=32)
+def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
+    num_groups: int,
+    n: int,
+    k: int,
+    sm_count: int,
+    smem_limit: int,
+    metadata_kind: str,
+    alignment: int,
+) -> Callable:
+    """Build a persistent MXFP4 grouped GEMM over aligned contiguous rows under e8m0 scales that
+    decodes each weight tile once into shared memory.
+
+    The tokens are the WGMMA M operand (two 64-row math warp-groups), the decoded weights its N
+    operand, both read from shared memory. The first warp of two producer warp-groups issues
+    the TMA loads; their other seven decode each step's packed weights into an fp8 stage. A
+    task whose rows fold (``mxfp4_scan_task``) contracts each step at once and promotes it under
+    its token scales alone, its columns scaled once at the end; another contracts each
+    sub-block alone and promotes it by ``mxfp4_scaled_exact``.
+    """
+    cur_g = CURSOR.g
+    block_k = QUANT_SCALE_BLOCK
+    packed_k = block_k // 2
+    scale_k = k // block_k
+    table_row_bytes = scale_k * 4
+    table_box = _table_box(scale_k)
+    packed_stages = MoEGroupedGEMMMXFP4SharedDecodeKernel._PACKED_STAGES
+    decoded_stages = MoEGroupedGEMMMXFP4SharedDecodeKernel._DECODED_STAGES
+    # Columns of one output staging box: 128 bytes of bfloat16, the TMA store's 128B swizzle.
+    store_box_cols = 64
+
+    @tilelang.jit(
+        pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
+        compile_flags=[
+            "-O3",
+            "--use_fast_math",
+            "-DENABLE_BF16",
+            *csrc_include("moe_grouped_gemm_mxfp4_helper.h"),
+        ],
+    )
+    def _moe_grouped_gemm_mxfp4_shared_decode_func(
+        block_m: int, block_n: int, num_stages: int, num_sms: int
+    ) -> Callable:
+        config = dict(
+            zip(
+                MoEGroupedGEMMMXFP4Kernel._CONFIG_KEYS,
+                (block_m, block_n, num_stages, num_sms),
+                strict=True,
+            )
+        )
+        reason = MoEGroupedGEMMMXFP4SharedDecodeKernel.config_refusal(
+            config,
+            sm_count=sm_count,
+            smem_limit=smem_limit,
+            alignment=alignment,
+            scale_k=scale_k,
+        )
+        if reason is not None:
+            raise ValueError(f"cannot build the MXFP4 grouped GEMM for {config}: {reason}")
+        tasks = task_walk(
+            num_groups=num_groups,
+            block_m=block_m,
+            block_n=block_n,
+            n=n,
+            num_sms=num_sms,
+            max_m=None,
+            packing="aligned",
+            metadata_kind=metadata_kind,
+            alignment=alignment,
+        )
+        m, max_waves = tasks.m, tasks.max_waves
+        row_tiles_descriptor = tasks.row_tiles_descriptor
+        walk, tile_of = tasks.walk, tasks.tile_of
+        copy_code_tables = _code_tables_copy(
+            tasks,
+            contiguous=True,
+            block_m=block_m,
+            block_n=block_n,
+            scale_k=scale_k,
+            table_box=table_box,
+        )
+        math_threads = block_m // WGMMA_ROWS * WARPGROUP_THREADS
+        math_warps = math_threads // 32
+        fragment_regs = WGMMA_ROWS * block_n // WARPGROUP_THREADS
+        store_count = block_n // store_box_cols
+        # Named barriers: the math threads' shared_c free to restage and shared_c staged, and
+        # the decode threads' vote on a task's fold.
+        reuse_barrier, staged_barrier, vote_barrier = 12, 13, 14
+        # Producer warp-groups: their first warp issues the TMA loads, the other seven decode,
+        # two to each scheduler but one, so one decode warp's dependent chain issues while the
+        # other's waits.
+        producer_groups = 2
+        decode_warps = producer_groups * 4 - 1
+        # Registers of a math thread: a step's and the task's 64 accumulators. The producer
+        # threads take what the register file leaves.
+        math_regs = 168
+        layout_args = f"{scale_k}, {table_box}, {block_n}"
+        decode_threads = decode_warps * 32
+        # Decode units (a sub-block of a weight row) a decode thread takes each step.
+        unit_slots = -(-_SUB_BLOCKS * block_n // decode_threads)
+        producer_threads = producer_groups * WARPGROUP_THREADS
+        producer_regs = (
+            (SM90_REGISTERS - math_threads * math_regs)
+            // producer_threads
+            // SETMAXNREG_GRANULARITY
+            * SETMAXNREG_GRANULARITY
+        )
+
+        def position(step, depth):
+            """Stage and barrier phase of a role's ``step``-th K step in a ring of ``depth``."""
+            return step % depth, (step // depth) & 1
+
+        @T.macro
+        def copy_tables(
+            table_desc,
+            token_desc,
+            layout,
+            ahead,
+            ahead_tile,
+            task_id,
+            tab_full,
+            tab_empty,
+            codes,
+            token_codes,
+            index,
+        ):
+            """Copy the weight and token codes of the first task from ``task_id`` on, a wave
+            apart, that runs (``ahead`` walked on to it) into tables ``index % 2`` once both
+            consuming roles have released them."""
+            tasks.walk_to_running(layout, task_id, ahead, ahead_tile)
+            if ahead[cur_g] < num_groups:
+                copy_code_tables(
+                    table_desc,
+                    token_desc,
+                    codes,
+                    token_codes,
+                    tab_full,
+                    tab_empty,
+                    index,
+                    ahead,
+                    ahead_tile,
+                )
+
+        @T.macro
+        def math_step(
+            fold,
+            buf,
+            kk,
+            step_index,
+            a_desc_lo,
+            b_desc_lo,
+            token_codes,
+            codes,
+            tokens,
+            step,
+            final,
+            full,
+            empty,
+            decoded_full,
+            decoded_empty,
+            acc_row0,
+            tx,
+        ):
+            """K step ``kk`` of the task: its WGMMAs, the release of its stages, its promotion;
+            all at once under the task's ``fold`` flag, sub-block by sub-block otherwise."""
+            slot, phase = position(step_index, num_stages)
+            stage, stage_phase = position(step_index, decoded_stages)
+            # The token scales of the thread's two accumulator rows.
+            tokens[0] = _e8m0_value(T.cast(token_codes[buf, acc_row0 * scale_k + kk], "uint32"))
+            tokens[1] = _e8m0_value(
+                T.cast(token_codes[buf, (acc_row0 + 8) * scale_k + kk], "uint32")
+            )
+            T.barrier_wait(full[slot], phase)
+            T.barrier_wait(decoded_full[stage], stage_phase)
+            a_lo = T.meta_var(a_desc_lo + T.uint32(slot * block_m * (block_k // 16)))
+            b_lo = T.meta_var(b_desc_lo + T.uint32(stage * block_n * (block_k // 16)))
+            if fold != 0:
+                T.call_extern(
+                    "handle",
+                    f"tileops::moe_fp8_wgmma_64x128_by_128xN_lo<{block_n}>",
+                    step.data,
+                    a_lo,
+                    b_lo,
+                )
+                T.wait_wgmma(0)
+                if tx % 32 == 0:
+                    T.barrier_arrive(empty[slot])
+                    T.barrier_arrive(decoded_empty[stage])
+                T.call_extern(
+                    "handle",
+                    f"tileops::moe_fp8_promote<{block_n}>",
+                    step.data,
+                    final.data,
+                    tokens[0],
+                    tokens[1],
+                    T.float32(1.0),
+                )
+            else:
+                for sub_block in T.unroll(_SUB_BLOCKS):
+                    T.call_extern(
+                        "handle",
+                        f"tileops::mxfp4_wgmma_ss_slice<{block_n}>",
+                        step.data,
+                        a_lo,
+                        b_lo,
+                        sub_block,
+                    )
+                    T.wait_wgmma(0)
+                    T.call_extern(
+                        "handle",
+                        f"tileops::mxfp4_promote_exact<{layout_args}>",
+                        step.data,
+                        final.data,
+                        T.address_of(codes[buf, 0]),
+                        kk,
+                        sub_block,
+                        tokens[0],
+                        tokens[1],
+                    )
+                if tx % 32 == 0:
+                    T.barrier_arrive(empty[slot])
+                    T.barrier_arrive(decoded_empty[stage])
+
+        @T.prim_func
+        def _moe_grouped_gemm_mxfp4_shared_decode_main(
+            A: T.Tensor((m, k), "float8_e4m3fn"),  # type: ignore
+            A_scale: T.Tensor((m, scale_k), "uint8"),  # type: ignore
+            B: T.Tensor((num_groups, n, k // 2), "uint8"),  # type: ignore
+            B_scale: T.Tensor((num_groups, n, k // _B_SCALE_BLOCK), "uint8"),  # type: ignore
+            layout: T.Tensor((m,) if metadata_kind == "per_row" else (num_groups,), "int32"),  # type: ignore
+            C: T.Tensor((m, n), "bfloat16"),  # type: ignore
+        ) -> None:
+            with T.Kernel(num_sms, threads=math_threads + producer_threads) as (pid,):
+                a_shared = T.alloc_shared((num_stages, block_m, block_k), "float8_e4m3fn")
+                b_packed = T.alloc_shared((packed_stages, block_n, packed_k), "uint8")
+                b_decoded = T.alloc_shared((decoded_stages, block_n, block_k), "float8_e4m3fn")
+                shared_c = T.alloc_shared((block_m * block_n,), "bfloat16")
+                # Words: a byte buffer of 2 * 32768 overflows TVM's 16-bit vector lanes.
+                codes = T.alloc_shared((2, block_n * scale_k), "uint32")
+                token_codes = T.alloc_shared((2, block_m * scale_k), "uint8")
+                # A task's row references, column scales and fold flag, which the decode threads
+                # write. scope="shared": a shared.dyn store here makes TileLang fence it against
+                # the TMA writes with a barrier one warp cannot complete.
+                refs = T.alloc_shared((2, block_n), "int32", scope="shared")
+                column_scales = T.alloc_shared((2, block_n), "float32", scope="shared")
+                flags = T.alloc_shared((2,), "int32", scope="shared")
+                T.annotate_layout(
+                    {
+                        a_shared: tilelang.layout.make_swizzled_layout(a_shared),
+                        b_decoded: tilelang.layout.make_swizzled_layout(b_decoded),
+                    }
+                )
+                step = T.alloc_local((fragment_regs,), "float32")
+                final = T.alloc_local((fragment_regs,), "float32")
+                tokens = T.alloc_local((2,), "float32")
+                unit_refs = T.alloc_local((unit_slots,), "int32")
+                # A token-row stage is full once its TMA bytes land; the math warps release it.
+                full = T.alloc_barrier([1] * num_stages)
+                empty = T.alloc_barrier([math_warps] * num_stages)
+                packed_full = T.alloc_barrier([1] * packed_stages)
+                packed_empty = T.alloc_barrier([decode_warps] * packed_stages)
+                decoded_full = T.alloc_barrier([decode_warps] * decoded_stages)
+                decoded_empty = T.alloc_barrier([math_warps] * decoded_stages)
+                tab_full = T.alloc_barrier([1, 1])
+                tab_empty = T.alloc_barrier([decode_warps + math_warps] * 2)
+                ahead = T.alloc_local((tasks.cursor_len,), "int32")
+                ahead_tile = T.alloc_local((2,), "int32")
+                cursor = T.alloc_local((tasks.cursor_len,), "int32")
+                tile = T.alloc_local((2,), "int32")
+                # Each role's count of the K steps and of the tasks it has run. Not the wave
+                # index: a skipped task advances no barrier.
+                step_index = T.alloc_var("int32", init=0)
+                task_index = T.alloc_var("int32", init=0)
+                for i in T.unroll(tasks.cursor_len):
+                    cursor[i] = 0
+                    ahead[i] = 0
+                tx = T.get_thread_binding()
+                T.sync_threads()
+                output_desc = row_tiles_descriptor(
+                    TMA_DTYPE_BFLOAT16,
+                    C,
+                    n,
+                    n * 2,
+                    store_box_cols,
+                    TMA_SWIZZLE_128B,
+                    TMA_L2_PROMOTION_128B,
+                )
+                a_load_desc = row_tiles_descriptor(
+                    TMA_DTYPE_UINT8, A, k, k, block_k, TMA_SWIZZLE_128B, TMA_L2_PROMOTION_256B
+                )
+                # Rows of 64 packed bytes, unswizzled: a decode warp reads 512 consecutive bytes.
+                b_load_desc = tasks.expert_rows_descriptor(
+                    TMA_DTYPE_UINT8,
+                    B,
+                    k // 2,
+                    k // 2,
+                    packed_k,
+                    TMA_SWIZZLE_NONE,
+                    TMA_L2_PROMOTION_256B,
+                )
+                token_desc = row_tiles_descriptor(
+                    TMA_DTYPE_UINT8,
+                    A_scale,
+                    scale_k,
+                    scale_k,
+                    scale_k,
+                    TMA_SWIZZLE_NONE,
+                    TMA_L2_PROMOTION_128B,
+                )
+                table_desc = tasks.expert_rows_descriptor(
+                    TMA_DTYPE_UINT8,
+                    B_scale,
+                    table_row_bytes,
+                    table_row_bytes,
+                    table_box,
+                    TMA_SWIZZLE_128B if table_box == 128 else TMA_SWIZZLE_64B,
+                    TMA_L2_PROMOTION_128B,
+                )
+
+                if tx >= math_threads:
+                    T.dec_max_nreg(producer_regs)
+                    producer_tx = tx - math_threads
+                    # Shuffled so the value stays warp-uniform for NVCC's uniform datapath.
+                    producer_warp = T.tvm_warp_shuffle(
+                        T.uint32(0xFFFFFFFF), producer_tx // 32, 0, 32, 32
+                    )
+                    if producer_warp == 0:
+                        copy_tables(
+                            table_desc,
+                            token_desc,
+                            layout,
+                            ahead,
+                            ahead_tile,
+                            pid,
+                            tab_full,
+                            tab_empty,
+                            codes,
+                            token_codes,
+                            0,
+                        )
+                        for wave in T.serial(max_waves):
+                            task_id = num_sms * wave + pid
+                            walk(layout, task_id, cursor)
+                            if cursor[cur_g] < num_groups:
+                                tile_of(task_id, cursor, tile)
+                                g = T.meta_var(tasks.expert(cursor))
+                                m_start = T.meta_var(tasks.first_row(cursor, tile))
+                                n_start = T.meta_var(tasks.first_col(tile))
+                                for kk in T.serial(scale_k):
+                                    packed_slot, packed_phase = position(step_index, packed_stages)
+                                    T.barrier_wait(packed_empty[packed_slot], packed_phase ^ 1)
+                                    if T.shuffle_elect(32):
+                                        T.mbarrier_arrive_expect_tx(
+                                            packed_full[packed_slot], block_n * packed_k
+                                        )
+                                        T.tma_load(
+                                            b_load_desc,
+                                            packed_full[packed_slot],
+                                            T.address_of(b_packed[packed_slot, 0, 0]),
+                                            kk * packed_k,
+                                            n_start,
+                                            g,
+                                            0,
+                                        )
+                                    slot, phase = position(step_index, num_stages)
+                                    T.barrier_wait(empty[slot], phase ^ 1)
+                                    if T.shuffle_elect(32):
+                                        T.mbarrier_arrive_expect_tx(full[slot], block_m * block_k)
+                                        T.tma_load(
+                                            a_load_desc,
+                                            full[slot],
+                                            T.address_of(a_shared[slot, 0, 0]),
+                                            kk * block_k,
+                                            m_start,
+                                            0,
+                                        )
+                                    # The next task's codes once this task's step num_stages - 1
+                                    # has its slot: by then both consumers are past the task
+                                    # before this one.
+                                    if kk == num_stages - 1:
+                                        copy_tables(
+                                            table_desc,
+                                            token_desc,
+                                            layout,
+                                            ahead,
+                                            ahead_tile,
+                                            task_id + num_sms,
+                                            tab_full,
+                                            tab_empty,
+                                            codes,
+                                            token_codes,
+                                            task_index + 1,
+                                        )
+                                    step_index = step_index + 1
+                                task_index = task_index + 1
+                    else:
+                        decode_tx = producer_tx - 32
+                        for wave in T.serial(max_waves):
+                            task_id = num_sms * wave + pid
+                            walk(layout, task_id, cursor)
+                            if cursor[cur_g] < num_groups:
+                                tile_of(task_id, cursor, tile)
+                                n_start = T.meta_var(tasks.first_col(tile))
+                                buf = task_index % 2
+                                T.barrier_wait(tab_full[buf], task_index // 2 & 1)
+                                # C++: barrier.red.and over the decode threads, of the scan.
+                                fold = T.call_extern(
+                                    "int32",
+                                    "tileops::mxfp4_all_threads",
+                                    T.call_extern(
+                                        "bool",
+                                        f"tileops::mxfp4_scan_task<{layout_args}, {block_m}, "
+                                        f"{decode_threads}>",
+                                        T.address_of(codes[buf, 0]),
+                                        T.address_of(token_codes[buf, 0]),
+                                        T.address_of(refs[buf, 0]),
+                                        T.address_of(column_scales[buf, 0]),
+                                        n - 1 - n_start,
+                                        decode_tx,
+                                    ),
+                                    vote_barrier,
+                                    decode_threads,
+                                )
+                                T.call_extern(
+                                    "handle",
+                                    f"tileops::mxfp4_unit_refs<{block_n}, {decode_threads}>",
+                                    T.address_of(refs[buf, 0]),
+                                    unit_refs.data,
+                                    decode_tx,
+                                )
+                                if decode_tx == 0:
+                                    T.call_extern(
+                                        "handle",
+                                        "tileops::mxfp4_store_flag",
+                                        T.address_of(flags[buf]),
+                                        fold,
+                                    )
+                                for kk in T.serial(scale_k):
+                                    packed_slot, packed_phase = position(step_index, packed_stages)
+                                    stage, stage_phase = position(step_index, decoded_stages)
+                                    T.barrier_wait(packed_full[packed_slot], packed_phase)
+                                    T.barrier_wait(decoded_empty[stage], stage_phase ^ 1)
+                                    T.call_extern(
+                                        "handle",
+                                        f"tileops::mxfp4_decode_shared<{layout_args}, "
+                                        f"{decode_threads}>",
+                                        T.address_of(b_packed[packed_slot, 0, 0]),
+                                        T.address_of(codes[buf, 0]),
+                                        T.address_of(b_decoded[stage, 0, 0]),
+                                        T.address_of(packed_empty[packed_slot]),
+                                        unit_refs.data,
+                                        fold != 0,
+                                        kk,
+                                        decode_tx,
+                                    )
+                                    # C++: the WGMMA reads the stage through the async proxy, so
+                                    # each thread fences its stores before its warp arrives.
+                                    T.call_extern(
+                                        "handle",
+                                        "tileops::mxfp4_publish_stage",
+                                        T.address_of(decoded_full[stage]),
+                                    )
+                                    step_index = step_index + 1
+                                T.call_extern(
+                                    "handle",
+                                    "tileops::mxfp4_warp_arrive",
+                                    T.address_of(tab_empty[buf]),
+                                )
+                                task_index = task_index + 1
+                else:
+                    T.inc_max_nreg(math_regs)
+                    math_wg_idx = T.tvm_warp_shuffle(
+                        T.uint32(0xFFFFFFFF), tx // WARPGROUP_THREADS, 0, 32, 32
+                    )
+                    math_wg_offset = math_wg_idx * WGMMA_ROWS
+                    a_desc_lo = T.call_extern(
+                        "uint32",
+                        "tileops::moe_fp8_wgmma_desc_lo",
+                        T.address_of(a_shared[0, math_wg_offset, 0]),
+                    )
+                    b_desc_lo = T.call_extern(
+                        "uint32",
+                        "tileops::moe_fp8_wgmma_desc_lo",
+                        T.address_of(b_decoded[0, 0, 0]),
+                    )
+                    # Lanes 4i..4i+3 of warp w hold accumulator rows w*16 + i and w*16 + i + 8.
+                    acc_row0 = (tx // 32) * 16 + (tx % 32) // 4
+                    for wave in T.serial(max_waves):
+                        task_id = num_sms * wave + pid
+                        walk(layout, task_id, cursor)
+                        if cursor[cur_g] < num_groups:
+                            tile_of(task_id, cursor, tile)
+                            buf = task_index % 2
+                            T.clear(final)
+                            T.barrier_wait(tab_full[buf], task_index // 2 & 1)
+                            # The decode threads set the task's flag before its first stage.
+                            first_stage, first_phase = position(step_index, decoded_stages)
+                            T.barrier_wait(decoded_full[first_stage], first_phase)
+                            fold = T.alloc_var("int32")
+                            fold = flags[buf]
+                            for kk in T.serial(scale_k):
+                                math_step(
+                                    fold,
+                                    buf,
+                                    kk,
+                                    step_index,
+                                    a_desc_lo,
+                                    b_desc_lo,
+                                    token_codes,
+                                    codes,
+                                    tokens,
+                                    step,
+                                    final,
+                                    full,
+                                    empty,
+                                    decoded_full,
+                                    decoded_empty,
+                                    acc_row0,
+                                    tx,
+                                )
+                                step_index = step_index + 1
+                            if fold != 0:
+                                T.call_extern(
+                                    "handle",
+                                    f"tileops::mxfp4_scale_columns<{block_n}>",
+                                    final.data,
+                                    T.address_of(column_scales[buf, 0]),
+                                )
+                            # After every lane's last read of the task's codes and column
+                            # scales (C++: __syncwarp, then one arrival a warp): the release lets
+                            # the next tables land and the decode warps rescan.
+                            T.call_extern(
+                                "handle",
+                                "tileops::mxfp4_warp_arrive",
+                                T.address_of(tab_empty[buf]),
+                            )
+                            # The previous task's stores must be done with shared_c.
+                            if tx < store_count:
+                                T.tma_store_wait(0)
+                            T.sync_threads(barrier_id=reuse_barrier, arrive_count=math_threads)
+                            T.call_extern(
+                                "handle",
+                                f"tileops::moe_fp8_stsm_bf16_swizzled<{block_m}, {block_n}>",
+                                final.data,
+                                T.address_of(shared_c[0]),
+                                math_wg_offset,
+                            )
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=staged_barrier, arrive_count=math_threads)
+                            tasks.store_tile(
+                                output_desc,
+                                shared_c,
+                                C,
+                                cursor,
+                                tile,
+                                store_box_cols,
+                                store_count,
+                                tx,
+                                math_threads,
+                            )
+                            task_index = task_index + 1
+                    if tx < store_count:
+                        T.tma_store_wait(0)
+
+        return _moe_grouped_gemm_mxfp4_shared_decode_main
+
+    return _moe_grouped_gemm_mxfp4_shared_decode_func
+
+
 class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP4FwdInterface):
     """MXFP4 grouped GEMM over masked expert slabs or contiguous expert rows, on SM90 TMA and
     WGMMA.
@@ -1264,3 +1884,129 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
     def _compile(self, cfg: dict):
         """The program of config *cfg*."""
         return self.kernel(**cfg)
+
+
+class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
+    """MXFP4 grouped GEMM over aligned contiguous rows under e8m0 scales that decodes each
+    weight tile once into shared memory (``_moe_grouped_gemm_mxfp4_shared_decode_kernel``).
+
+    128 rows of ``a`` are the WGMMA M operand, 128 decoded weight rows its N operand. A task
+    folds when each of its weight rows' codes lie in [64, 190] and span at most eleven binades
+    over K, and each of its token codes, its padding rows' among them, is 0 or lies in
+    [64, 190]: its sub-blocks then carry
+    their scales relative to their row's largest code less six, each step is added under its
+    token scales alone, and each column is scaled by its row's reference after the last step.
+    Another task contracts sub-block by sub-block, its products split into mantissa and
+    exponent. Rows past an aligned expert's end are its padding and are stored like the others.
+
+    A config is ``{block_m, block_n, num_stages, num_sms}`` with ``block_m`` and ``block_n``
+    128; ``num_stages`` is the depth of the ring of ``a``'s rows.
+    """
+
+    preferred_over: ClassVar[frozenset[str]] = frozenset({"grouped_gemm_mxfp4"})
+    # Rows of a tile: two 64-row math warp-groups of tokens, the WGMMA M operand.
+    _TILE_ROWS: ClassVar[int] = 2 * WGMMA_ROWS
+    # Weight rows of a tile, the WGMMA N extent: a math thread holds a step's and the task's
+    # accumulators, 64 floats each.
+    _TILE_COLUMNS: ClassVar[int] = 128
+    # Decoded fp8 stages: the decode warps fill one while the math warp-groups contract the
+    # other.
+    _DECODED_STAGES: ClassVar[int] = 2
+    # Stages of packed weights: the decode warps release a stage once they have read it, a step
+    # ahead of the math warp-groups, so the ring of fp8 token rows sets the loads' lead.
+    _PACKED_STAGES: ClassVar[int] = 3
+    _BLOCK_M: ClassVar[tuple[int, ...]] = (_TILE_ROWS,)
+    _BLOCK_N: ClassVar[tuple[int, ...]] = (_TILE_COLUMNS,)
+
+    @classmethod
+    def config_refusal(
+        cls,
+        config: Mapping[str, object],
+        *,
+        sm_count: int,
+        smem_limit: int,
+        scale_k: int,
+        alignment: int,
+    ) -> str | None:
+        """Why the builder cannot instantiate *config*, or ``None`` when it can.
+
+        Args:
+            config: A candidate config.
+            sm_count: The device's SM count, which bounds ``num_sms``: the grid is persistent.
+            smem_limit: The shared memory one block may take on the device.
+            scale_k: The 128-wide K steps, which size the code tables.
+            alignment: The layout's alignment, which ``block_m`` divides.
+
+        Returns:
+            The first violated constraint, or ``None``.
+        """
+        reason = cls._common_refusal(config, sm_count=sm_count, alignment=alignment)
+        if reason is not None:
+            return reason
+        smem = _shared_decode_smem_bytes(config["block_n"], config["num_stages"], scale_k)
+        if smem > smem_limit:
+            return f"takes {smem} bytes of shared memory, past the {smem_limit} a block may"
+        return None
+
+    @classmethod
+    def refusal(cls, call: MGroupedGEMMMXFP4Call) -> str | None:
+        """Aligned contiguous runs of whole 128-row tiles under e8m0 scales, K whose token code
+        rows (K / 128 bytes) are whole 16-byte TMA units, and the shallowest ring fitting."""
+        if call.packing != "aligned" or call.alignment % cls._TILE_ROWS:
+            return f"decodes aligned runs of whole {cls._TILE_ROWS}-row tiles"
+        if call.scale_dtype != torch.float8_e8m0fnu:
+            return f"folds e8m0 scales only, got {call.scale_dtype}"
+        scale_k = call.k // QUANT_SCALE_BLOCK
+        if call.k % QUANT_SCALE_BLOCK or not _table_box(scale_k):
+            return f"loads code tables by TMA, which needs K a multiple of 2048, got K = {call.k}"
+        least = _shared_decode_smem_bytes(cls._TILE_COLUMNS, min(cls._NUM_STAGES), scale_k)
+        room = call.smem_budget - cls._SMEM_HEADROOM
+        if least > room:
+            return f"takes {least} bytes of shared memory on the shallowest ring, past {room}"
+        return super().refusal(call)
+
+    def __init__(self, call: MGroupedGEMMMXFP4Call) -> None:
+        Kernel.__init__(self, device_index=call.device.index if call.device is not None else None)
+        self.call = call
+        self.scale_k = call.k // QUANT_SCALE_BLOCK
+        self.sm_count = self.build_target.sm_count
+        self.smem_limit = self.build_target.smem_budget - self._SMEM_HEADROOM
+        self.alignment = call.alignment
+        self.kernel = _moe_grouped_gemm_mxfp4_shared_decode_kernel(
+            call.num_groups,
+            call.n,
+            call.k,
+            self.sm_count,
+            self.smem_limit,
+            call.metadata_kind,
+            call.alignment,
+        )
+        self.init_config()
+
+    def _refusal_inputs(self) -> dict:
+        return {
+            "sm_count": self.sm_count,
+            "smem_limit": self.smem_limit,
+            "scale_k": self.scale_k,
+            "alignment": self.alignment,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # Every ring depth that fits beside the tiles; the ring keeps its position across tasks.
+        return [
+            {
+                "block_m": self._TILE_ROWS,
+                "block_n": self._TILE_COLUMNS,
+                "num_stages": stages,
+                "num_sms": self.sm_count,
+            }
+            for stages in self._NUM_STAGES
+            if _shared_decode_smem_bytes(self._TILE_COLUMNS, stages, self.scale_k)
+            <= self.smem_limit
+        ]
+
+    @property
+    def default_config(self) -> dict:
+        # The deepest ring that fits: it sets how far the loads of a's rows run ahead.
+        return max(self.autotune_configs, key=lambda config: config["num_stages"])
