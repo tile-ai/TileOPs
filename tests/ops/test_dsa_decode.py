@@ -5,6 +5,7 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.attention import DSADecodeBasicKernel, DSADecodeKernel, DSADecodeWSKernel
 from tileops._utils import get_sm_version
 from tileops.attention import DSADenseFwdOp
+from tileops.backend import OpNotAvailableError
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
 from workloads.attention.dsa import DSADecodeWorkload
@@ -258,3 +259,50 @@ def test_dsa_decode_row_normalization(kernel, row) -> None:
     assert isinstance(next(op.iter_kernels()), Pinned)
     if row == "no-valid-index":
         assert op(q, kv, indices)[:, ::2].eq(0).all()
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("batch", "seq_len", "seq_len_kv", "topk", "with_sink"),
+    [
+        # The bf16-no-tail shape, index-only with a sink over whole pairs.
+        pytest.param(1, 7, 256, 128, True, marks=pytest.mark.smoke, id="sink-whole-pairs"),
+        pytest.param(1, 9, 1000, 160, True, marks=pytest.mark.full, id="odd-block-past-topk"),
+        pytest.param(1, 9, 1000, 200, True, marks=pytest.mark.full, id="both-blocks-ragged"),
+        pytest.param(4, 2, 1000, 640, False, marks=pytest.mark.full, id="mtp-rows"),
+    ],
+)
+def test_dsa_decode_index_only(batch, seq_len, seq_len_kv, topk, with_sink) -> None:
+    """With is_causal false only the indices select keys: -1 skips a slot, an index past
+    the query's position still counts, and a sink of +inf zeroes its head while -inf leaves
+    it as without a sink."""
+    heads = 64
+    test = DSADecodeTest(
+        batch, heads, seq_len, seq_len_kv, 512, 0, topk, 1, 1, 0, is_causal=False,
+        dtype=torch.bfloat16,
+    )  # fmt: skip
+    q, kv, _ = test.gen_inputs()
+    generator = torch.Generator().manual_seed(0)
+    rows = [torch.randperm(seq_len_kv, generator=generator)[:topk] for _ in range(batch * seq_len)]
+    indices = torch.stack(rows).view(batch, seq_len, 1, topk).to(torch.int32)
+    indices[torch.rand(indices.shape, generator=generator) < 0.3] = -1
+    inputs = [q, kv, indices.to(q.device)]
+    if with_sink:
+        sink = torch.randn(heads, generator=generator)
+        sink[0], sink[1] = float("inf"), float("-inf")
+        inputs.append(sink.to(q.device))
+    test.check(DSADenseFwdOp(0, 1, 0, is_causal=False), *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_dsa_decode_refuses_index_only_selection_off_dim_512() -> None:
+    """Only the SM90 kernel for value dim 512 serves is_causal false; the others need the
+    causal mask, so the op refuses a dim-256 call before anything is built."""
+    test = DSADecodeTest(1, 64, 1, 256, 256, 64, 128, 1, 1, 0, is_causal=False)
+    op = DSADenseFwdOp(64, 1, 0, is_causal=False)
+    with pytest.raises(OpNotAvailableError, match="requires dim 512.*requires the causal mask"):
+        op(*test.gen_inputs())
+    for interface in DSADenseFwdOp.interfaces:
+        assert not op._entries_built(interface)

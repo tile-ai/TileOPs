@@ -12,8 +12,10 @@ from tilelang.layout import make_swizzled_layout
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import DSADecodeCall
 from tileops._kernels.attention.dsa.decode import DSADecodeKernelBase
+from tileops._kernels.attention.online_softmax import make_sink_scale
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
+from tileops._kernels.kernel_base import Entry
 
 __all__ = ["DSADecodeWSKernel"]
 
@@ -82,7 +84,7 @@ _register_uniform_role_branches()
 )
 def _dsa_decode_ws_kernel(
     batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride, q_start, kv_group,
-    sm_scale, dtype,
+    sm_scale, dtype, is_causal, has_sink,
 ):  # fmt: skip
     """One CTA per (token, 64-head block); the selected keys are taken in block pairs.
 
@@ -91,6 +93,11 @@ def _dsa_decode_ws_kernel(
     hands them to the other through smem. The row max is one chain through both blocks:
     consumer 1 continues from consumer 0's max, and consumer 0 rescales its weights to the
     pair's final max before handing them over.
+
+    A slot is live when its index is in ``[0, seq_len_kv)`` and, if *is_causal*, within
+    the query's causal limit; slots past ``topk`` in the last pair are dead. With
+    *has_sink* the program takes per-head ``Sinks`` logits that join each row's
+    denominator.
     """
     # The tiles below are fixed; DSADecodeWSKernel.refusal states the shapes they cover.
     block_h = 64  # query heads per CTA: one m64 WGMMA row block
@@ -124,10 +131,28 @@ def _dsa_decode_ws_kernel(
     dq = dim + tail_dim
     group_heads = heads // kv_group
     head_blocks = group_heads // block_h
-    pairs = topk // (2 * block_k)
+    pairs = -(-topk // (2 * block_k))
+    ragged = topk % (2 * block_k) != 0
+    tail_half = 0 < topk % (2 * block_k) <= block_k
     scale = (dq**-0.5 if sm_scale is None else sm_scale) * LOG2E
     accum = "float"
     has_tail = tail_dim > 0
+    sink_scale = make_sink_scale(1.0, accum, block_h, rows_per_head=1)
+
+    def has_odd(pair):
+        """Whether pair `pair` has an odd block: not when it lies wholly past ``topk``."""
+        return not tail_half or pair + 1 < pairs
+
+    def slot_index(Indices, b, s, g, slot):
+        """Slot `slot`'s key index, -1 past ``topk``."""
+        if ragged:
+            return T.if_then_else(slot < topk, Indices[b, s, g, T.min(slot, topk - 1)], -1)
+        return Indices[b, s, g, slot]
+
+    def slot_live(idx, limit):
+        """Whether key index `idx` is a key the query reads."""
+        live = T.And(idx >= 0, idx < seq_len_kv)
+        return T.And(live, idx * kv_stride <= limit) if is_causal else live
 
     @T.macro
     def copy_cols(dst, row, src, i0, i1, i2, col0, ntiles, lane, live):
@@ -184,32 +209,36 @@ def _dsa_decode_ws_kernel(
             # A dead row names row 0 and is zero-filled; its bias makes it weigh nothing.
             for blk in T.unroll(2):
                 for r in T.unroll(block_k // rows_per_pass):
-                    idx = Indices[b, s, g, (2 * pair + blk) * block_k + rows_per_pass * r + group]
-                    live_rows[blk, r] = idx >= 0 and idx < seq_len_kv and idx * kv_stride <= limit
+                    slot = (2 * pair + blk) * block_k + rows_per_pass * r + group
+                    idx = slot_index(Indices, b, s, g, slot)
+                    live_rows[blk, r] = slot_live(idx, limit)
                     src_rows[blk, r] = idx * T.Cast("int32", live_rows[blk, r])
             # Refill each part in the order its last reader releases it.
             T.mbarrier_wait_parity(k_free[part_0l], free_phase)
             load_part(
                 K0L, K0T, False, 0, src_rows, live_rows, 0, KV, b, g, group, lane, k_ready, part_0l
             )
-            T.mbarrier_wait_parity(k_free[part_1r], free_phase)
-            load_part(
-                K1R, K1T, True, half, src_rows, live_rows, 1, KV, b, g, group, lane, k_ready,
-                part_1r,
-            )  # fmt: skip
+            if has_odd(pair):
+                T.mbarrier_wait_parity(k_free[part_1r], free_phase)
+                load_part(
+                    K1R, K1T, True, half, src_rows, live_rows, 1, KV, b, g, group, lane, k_ready,
+                    part_1r,
+                )  # fmt: skip
             T.mbarrier_wait_parity(k_free[part_0r], free_phase)
             load_part(
                 K0R, K0T, True, half, src_rows, live_rows, 0, KV, b, g, group, lane, k_ready,
                 part_0r,
             )  # fmt: skip
             T.mbarrier_wait_parity(k_free[part_1l], free_phase)
-            load_part(
-                K1L, K1T, False, 0, src_rows, live_rows, 1, KV, b, g, group, lane, k_ready, part_1l
-            )
+            if has_odd(pair):
+                load_part(
+                    K1L, K1T, False, 0, src_rows, live_rows, 1, KV, b, g, group, lane, k_ready,
+                    part_1l,
+                )  # fmt: skip
             # Bias is rewritten after the K1L free wait, which follows every read of the
             # previous pair's mask. Thread p masks slot p; the producer has 2 * block_k threads.
-            idx = Indices[b, s, g, 2 * pair * block_k + p]
-            live = idx >= 0 and idx < seq_len_kv and idx * kv_stride <= limit
+            idx = slot_index(Indices, b, s, g, 2 * pair * block_k + p)
+            live = slot_live(idx, limit)
             Bias[p // block_k, p % block_k] = T.if_then_else(live, 0.0, -T.infinity(accum))
             T.mbarrier_arrive(bias_ready[0])
 
@@ -251,7 +280,17 @@ def _dsa_decode_ws_kernel(
             sM[i] = rM[i]
 
     @T.macro
-    def finish(w, rO, rL, sL, out, staged, O, b, s, h0):
+    def rebase(rO, rM, rL, prev, keep):
+        """Move rO and rL to the max `prev` of a pair with no odd block."""
+        for i in T.Parallel(block_h):
+            keep[i] = T.exp2(rM[i] - T.if_then_else(prev[i] == -T.infinity(accum), 0.0, prev[i]))
+            rM[i] = prev[i]
+            rL[i] *= keep[i]
+        for i, j in T.Parallel(block_h, half):
+            rO[i, j] *= keep[i]
+
+    @T.macro
+    def finish(w, rO, rM, rL, sL, out, staged, O, Sinks, b, s, h0):
         """Normalize consumer `w`'s value dims by both row sums and store them with TMA.
 
         The output is staged in this consumer's Q tile, which every score has finished reading.
@@ -262,7 +301,10 @@ def _dsa_decode_ws_kernel(
         # Only a row with no valid key sums to 0; its rO is 0, and so is its output.
         for i in T.Parallel(block_h):
             rL[i] = sL[0, i] + sL[1, i]
-            rL[i] = 1 / T.if_then_else(rL[i] == 0, 1.0, rL[i])
+            if not has_sink:
+                rL[i] = 1 / T.if_then_else(rL[i] == 0, 1.0, rL[i])
+        if has_sink:
+            sink_scale(rM, rL, Sinks, h0, rL)
         for i, j in T.Parallel(block_h, half):
             out[i, j] = rO[i, j] * rL[i]
         T.copy(out, staged)
@@ -271,7 +313,7 @@ def _dsa_decode_ws_kernel(
         T.copy(staged, O[b, s, h0 : h0 + block_h, w * half : (w + 1) * half])
 
     @T.macro
-    def consumer0(O, QL, QR, QT, K0L, K0R, K0T, K1L, S0, S1, Bias, sM, sL, q_full, k_ready, k_free, bias_ready, b, s, h0):  # fmt: skip
+    def consumer0(O, Sinks, QL, QR, QT, K0L, K0R, K0T, K1L, S0, S1, Bias, sM, sL, q_full, k_ready, k_free, bias_ready, b, s, h0):  # fmt: skip
         """Scores the even blocks; accumulates value dims [0, 256)."""
         T.set_max_nreg(consumer_regs, 1)
         rP = T.alloc_fragment([block_h, block_k], accum)
@@ -313,10 +355,11 @@ def _dsa_decode_ws_kernel(
             T.copy(rS, S0)
             T.fence_proxy_async()
             T.named_barrier_arrive(s0_ready, consumer_threads)
-            T.sync_threads(s1_ready, consumer_threads)
-            for i, j in T.Parallel(block_h, half):
-                rO[i, j] *= keep[i]
-            T.wgmma_gemm(S1, K1L, rO)
+            if has_odd(pair):
+                T.sync_threads(s1_ready, consumer_threads)
+                for i, j in T.Parallel(block_h, half):
+                    rO[i, j] *= keep[i]
+                T.wgmma_gemm(S1, K1L, rO)
             if pair + 1 < pairs:
                 T.mbarrier_wait_parity(k_ready[part_0l], phase ^ 1)
                 score_left(QL, K0L, rP, True)
@@ -328,10 +371,10 @@ def _dsa_decode_ws_kernel(
             else:
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(k_free[part_1l])
-        finish(0, rO, rL, sL, out, QL, O, b, s, h0)
+        finish(0, rO, rM, rL, sL, out, QL, O, Sinks, b, s, h0)
 
     @T.macro
-    def consumer1(O, QL, QR, QT, K0R, K1L, K1R, K1T, S0, S1, Bias, sM, sL, q_full, k_ready, k_free, bias_ready, b, s, h0):  # fmt: skip
+    def consumer1(O, Sinks, QL, QR, QT, K0R, K1L, K1R, K1T, S0, S1, Bias, sM, sL, q_full, k_ready, k_free, bias_ready, b, s, h0):  # fmt: skip
         """Scores the odd blocks; accumulates value dims [256, 512)."""
         T.set_max_nreg(consumer_regs, 1)
         rP = T.alloc_fragment([block_h, block_k], accum)
@@ -349,37 +392,38 @@ def _dsa_decode_ws_kernel(
         T.mbarrier_wait_parity(q_full[0], 0)
         for pair in T.serial(pairs):
             phase = pair % 2
-            T.mbarrier_wait_parity(k_ready[part_1r], phase)
-            score_right(QR, QT, K1R, K1T, rP, True)
-            T.mbarrier_wait_parity(k_ready[part_1l], phase)
-            score_left(QL, K1L, rP, False)
-            T.wait_wgmma(0)
-            T.mbarrier_wait_parity(bias_ready[0], phase)
+            if has_odd(pair):
+                T.mbarrier_wait_parity(k_ready[part_1r], phase)
+                score_right(QR, QT, K1R, K1T, rP, True)
+                T.mbarrier_wait_parity(k_ready[part_1l], phase)
+                score_left(QL, K1L, rP, False)
+                T.wait_wgmma(0)
+                T.mbarrier_wait_parity(bias_ready[0], phase)
             # Consumer 0 has scored the even block: continue its max.
             T.sync_threads(even_max_ready, consumer_threads)
             for i in T.Parallel(block_h):
                 prev[i] = sM[i]
-            softmax(rP, rS, rO, rM, rL, prev, cur, keep, Bias, 1, sM)
+            if has_odd(pair):
+                softmax(rP, rS, rO, rM, rL, prev, cur, keep, Bias, 1, sM)
+            else:
+                rebase(rO, rM, rL, prev, keep)
             T.named_barrier_arrive(pair_max_ready, consumer_threads)
-            T.wgmma_gemm(rS, K1R, rO)
-            T.copy(rS, S1)
+            if has_odd(pair):
+                T.wgmma_gemm(rS, K1R, rO)
+                T.copy(rS, S1)
             T.sync_threads(s0_ready, consumer_threads)
             T.wgmma_gemm(S0, K0R, rO)
-            T.fence_proxy_async()
-            T.named_barrier_arrive(s1_ready, consumer_threads)
-            T.wait_wgmma(1)
-            T.mbarrier_arrive(k_free[part_1r])
+            if has_odd(pair):
+                T.fence_proxy_async()
+                T.named_barrier_arrive(s1_ready, consumer_threads)
+                T.wait_wgmma(1)
+                T.mbarrier_arrive(k_free[part_1r])
             T.wait_wgmma(0)
             T.mbarrier_arrive(k_free[part_0r])
-        finish(1, rO, rL, sL, out, QR, O, b, s, h0)
+        finish(1, rO, rM, rL, sL, out, QR, O, Sinks, b, s, h0)
 
-    @T.prim_func
-    def main(
-        Q: T.Tensor([batch, seq_len, heads, dq], dtype),
-        KV: T.Tensor([batch, seq_len_kv, kv_group, dq], dtype),
-        Indices: T.Tensor([batch, seq_len, kv_group, topk], "int32"),
-        O: T.Tensor([batch, seq_len, heads, dim], dtype),
-    ):
+    @T.macro
+    def attend(Q, KV, Indices, O, Sinks):
         with T.Kernel(
             seq_len * head_blocks, kv_group, batch, threads=consumer_threads + producer_threads
         ) as (
@@ -427,41 +471,70 @@ def _dsa_decode_ws_kernel(
                 )  # fmt: skip
             with T.ws(0):
                 consumer0(
-                    O, QL, QR, QT, K0L, K0R, K0T, K1L, S0, S1, Bias, sM, sL, q_full, k_ready,
+                    O, Sinks, QL, QR, QT, K0L, K0R, K0T, K1L, S0, S1, Bias, sM, sL, q_full, k_ready,
                     k_free, bias_ready, b, s, h0,
                 )  # fmt: skip
             with T.ws(1):
                 consumer1(
-                    O, QL, QR, QT, K0R, K1L, K1R, K1T, S0, S1, Bias, sM, sL, q_full, k_ready,
+                    O, Sinks, QL, QR, QT, K0R, K1L, K1R, K1T, S0, S1, Bias, sM, sL, q_full, k_ready,
                     k_free, bias_ready, b, s, h0,
                 )  # fmt: skip
+
+    if has_sink:
+
+        @T.prim_func
+        def with_sinks(
+            Q: T.Tensor([batch, seq_len, heads, dq], dtype),
+            KV: T.Tensor([batch, seq_len_kv, kv_group, dq], dtype),
+            Indices: T.Tensor([batch, seq_len, kv_group, topk], "int32"),
+            O: T.Tensor([batch, seq_len, heads, dim], dtype),
+            Sinks: T.Tensor([heads], accum),
+        ):
+            attend(Q, KV, Indices, O, Sinks)
+
+        return with_sinks
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor([batch, seq_len, heads, dq], dtype),
+        KV: T.Tensor([batch, seq_len_kv, kv_group, dq], dtype),
+        Indices: T.Tensor([batch, seq_len, kv_group, topk], "int32"),
+        O: T.Tensor([batch, seq_len, heads, dim], dtype),
+    ):
+        attend(Q, KV, Indices, O, None)
 
     return main
 
 
 class DSADecodeWSKernel(DSADecodeKernelBase):
-    """SM90 sparse MLA decode: value dim 512, a key tail of 0 or 64, 64-head blocks."""
+    """SM90 sparse MLA decode: value dim 512, a key tail of 0 or 64, 64-head blocks, with
+    or without the causal mask and the attention sink."""
 
     supported_archs: list[int] = [90]
     # Both consumers score and both accumulate, where the older warp-specialized kernel
     # leaves the scores, the softmax and half the sums to one of them.
     preferred_over: ClassVar[frozenset[str]] = frozenset({"dsa_decode_kernel"})
+    serves_attn_sink: ClassVar[bool] = True
 
     @classmethod
     def refusal(cls, call: DSADecodeCall) -> str | None:
-        if not call.is_causal:
-            return "requires the causal mask"
         if call.dtype not in (torch.float16, torch.bfloat16):
             return "requires float16 or bfloat16"
         # The builder's tiles: 64-head blocks, pairs of 64-key blocks, two 256-wide value
         # halves and a key tail of at most one 64-column swizzle atom.
         if (call.heads // call.kv_group) % 64 != 0:
             return "requires a multiple of 64 heads per KV group"
-        if call.topk % 128 != 0:
-            return "requires topk a multiple of 128"
         if call.dim != 512 or call.tail_dim not in (0, 64):
             return "requires dim 512 and tail_dim 0 or 64"
         return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: DSADecodeCall) -> Entry:
+        return call, lambda: cls(
+            *cls.constructor_args(call),
+            device_index=call.device.index if call.device is not None else None,
+            has_attn_sink=call.has_attn_sink,
+        )
 
     def __init__(
         self,
@@ -479,6 +552,8 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         sm_scale: float | None = None,
         is_causal: bool = True,
         device_index: int | None = None,
+        *,
+        has_attn_sink: bool = False,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -494,6 +569,7 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         self.kv_group = kv_group
         self.sm_scale = sm_scale
         self.is_causal = is_causal
+        self.has_attn_sink = has_attn_sink
         self.program(self._compile)
 
     def _compile(self, cfg: dict):
@@ -501,7 +577,7 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         self.kernel = kernel = _dsa_decode_ws_kernel(
             self.batch, self.seq_len, self.seq_len_kv, self.heads, self.dim, self.tail_dim,
             self.topk, self.kv_stride, self.q_start_index_s, self.kv_group, self.sm_scale,
-            self.dtype_str,
+            self.dtype_str, self.is_causal, self.has_attn_sink,
         )  # fmt: skip
         return kernel
 
@@ -516,9 +592,10 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         indices: torch.Tensor,
         attn_sink: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        self._require_devices(q=q, kv=kv, indices=indices)
+        self._require_devices(q=q, kv=kv, indices=indices, attn_sink=attn_sink)
         out = torch.empty(
             (self.batch, self.seq_len, self.heads, self.dim), dtype=q.dtype, device=q.device
         )
-        self.program(self._compile)(q, kv, indices, out)
+        sinks = () if attn_sink is None else (attn_sink,)
+        self.program(self._compile)(q, kv, indices, out, *sinks)
         return out
