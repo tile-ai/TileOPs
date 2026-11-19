@@ -770,41 +770,46 @@ def test_kda_prefill_given_gate_mixes_ordinary_and_strong_chunks(
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "dim", [pytest.param(128, marks=pytest.mark.smoke), pytest.param(64, marks=pytest.mark.full)]
+    ("dim", "l2norm", "heads"),
+    [
+        pytest.param(128, True, 4, marks=pytest.mark.smoke, id="normalized-128"),
+        pytest.param(64, True, 4, marks=pytest.mark.full, id="normalized-64"),
+        pytest.param(128, False, 2, marks=pytest.mark.full, id="unnormalized-grouped-128"),
+    ],
 )
-def test_kda_prefill_given_gate_drops_inside_its_blocks(dim):
+def test_kda_prefill_given_gate_drops_inside_its_blocks(dim, l2norm, heads):
     """A bf16 chunk whose decay drops 100 nats on the fifth row of every 16-row block, and
     nowhere else, lies past the bounds while the entries inside each block stay of order one,
-    so its per-pair diagonal blocks decide the output at both supported widths."""
+    so its per-pair diagonal blocks decide the output: at both supported widths, and with
+    unnormalized rows of key heads shared by two value heads."""
     torch.manual_seed(42)
-    workload = KDAFwdTest(1, 128, 4, dim, torch.bfloat16)
+    workload = KDAFwdTest(1, 128, heads, dim, torch.bfloat16, l2norm=l2norm, value_heads=4)
     q, k, v, g, beta, state = workload.gen_inputs()
+    if not l2norm:
+        # Unit keys keep the delta rule contractive without the in-kernel normalization.
+        q, k = (x / x.norm(dim=-1, keepdim=True) for x in (q, k))
     row = torch.arange(g.shape[1], device=g.device) % 16
     g = torch.where(row == 4, -100.0, 0.0)[None, :, None, None].expand_as(g).to(g.dtype)
-    workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), q, k, v, g, beta, state)
+    workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=l2norm), q, k, v, g, beta, state)
 
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "spread",
+    "packed",
     [
-        pytest.param(None, marks=pytest.mark.smoke, id="dense"),
-        # Unequal lengths of one chunk count each, most ending in a partial chunk: the one-CTA
-        # walk of each sequence, its checking launch and its rerun.
-        pytest.param((-60, -10, 0, -30), marks=pytest.mark.full, id="varlen-even-chunks"),
-        # Lengths of different chunk counts: the chunk-parallel prefill.
-        pytest.param((-200, 100, 200, -100), marks=pytest.mark.full, id="varlen-uneven-chunks"),
+        pytest.param(False, marks=pytest.mark.smoke, id="dense"),
+        pytest.param(True, marks=pytest.mark.full, id="varlen"),
     ],
 )
-def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(spread):
+def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
     """One strongly decayed sequence leaves ordinary sequences unchanged."""
     heads = 32
     sm_count = get_sm_count()
     sequences = max(4, -(-sm_count // heads))
     length = 6144  # Keeps every supported SM90 device in the long-prefill dispatch region.
     torch.manual_seed(42)
-    if spread is not None:
-        lengths = tuple(length + spread[i % 4] for i in range(sequences))
+    if packed:
+        lengths = tuple(length + (-200, 100, 200, -100)[i % 4] for i in range(sequences))
         workload = KDAFwdTest(1, 0, heads, 128, torch.bfloat16, sequence_lengths=lengths)
         start = lengths[0]
     else:
@@ -893,28 +898,27 @@ _HOST = ("cu_seqlens", "cu_seqlens_cpu")
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("state_v_first", [False, True], ids=["key-major", "value-major"])
 @pytest.mark.parametrize(
-    ("offsets", "seq_lens", "dtype", "chunked", "arch"),
+    ("offsets", "seq_lens", "dtype", "chunked"),
     [
         pytest.param(
-            _HOST, _UNEVEN, torch.bfloat16, True, "sm89",
+            _HOST, _UNEVEN, torch.bfloat16, False,
             marks=[pytest.mark.sm89, pytest.mark.smoke], id="uneven-chunks-sm89",
         ),
         pytest.param(
-            _HOST, _UNEVEN, torch.bfloat16, True, "sm90",
+            _HOST, _UNEVEN, torch.bfloat16, True,
             marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-sm90",
         ),
         # fp16 chunks take the split preparation on SM90, which the one-CTA walk outruns.
         pytest.param(
-            _HOST, _UNEVEN, torch.float16, False, "sm90",
+            _HOST, _UNEVEN, torch.float16, False,
             marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-fp16-sm90",
         ),
-        # Only SM90 reads the host lengths; SM89 walks every packed call in one CTA a sequence.
         pytest.param(
-            ("cu_seqlens",), _EVEN, torch.bfloat16, True, "sm90",
+            ("cu_seqlens",), _EVEN, torch.bfloat16, True,
             marks=[pytest.mark.sm90, pytest.mark.full], id="device-offsets-sm90",
         ),
         pytest.param(
-            _HOST, _EVEN, torch.bfloat16, False, "sm90",
+            _HOST, _EVEN, torch.bfloat16, True,
             marks=[pytest.mark.sm90, pytest.mark.full], id="even-chunks-sm90",
         ),
     ],
@@ -925,14 +929,12 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
     seq_lens: list,
     dtype: torch.dtype,
     chunked: bool,
-    arch,
     monkeypatch,
 ) -> None:
     """Packed sequences start from and end in their slots, in either state layout; an empty
     sequence leaves its slot as it was. Enough (sequence, value head) pairs for the one-CTA
-    walk of each sequence, which serves the call only when the host shows every sequence
-    spanning one chunk count; on SM90 the chunk-parallel prefill serves the rest of the bf16
-    calls, and SM89 keeps the one-CTA walk."""
+    walk of each sequence; on SM90 the chunk-parallel prefill serves bf16 given gates
+    whatever their lengths, and the one-CTA walk serves fp16 ones and every SM89 call."""
     torch.manual_seed(42)
     runs = []
 
@@ -947,7 +949,7 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
         K=128, V=128, P=12, **flags,
     )  # fmt: skip
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
-    assert bool(runs) == (chunked and arch == "sm90")
+    assert bool(runs) == chunked
 
 
 @pytest.mark.smoke

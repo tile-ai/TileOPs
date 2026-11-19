@@ -8,7 +8,7 @@ from tileops._kernels.linear_attention.call_spec import (
     KDAFwdInterface,
 )
 from tileops._kernels.linear_attention.chunk_plan import launch_plan
-from tileops._kernels.linear_attention.chunk_prefill import run_chunk_prefill
+from tileops._kernels.linear_attention.chunk_prefill import run_chunk_prefill, staged_norms
 
 __all__ = ["KDAChunkPrefillFwdKernel"]
 
@@ -40,7 +40,7 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.sequences,
             call.smem_budget,
             call.arch,
-            call.l2norm,
+            staged_norms=staged_norms(call),
         )
         if plan is None:
             return (
@@ -140,42 +140,32 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the chunk-local half, then the scan; see the interface for the tensors."""
         del cu_seqlens_cpu
-        return chunk_prefill(
-            self, q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias, state_indices
+        self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
+        batch, seq_len = q.shape[:2]
+        H, K = q.shape[2], q.shape[3]
+        HV, V = v.shape[2], v.shape[3]
+        # One kernel serves every sequence count and initial-state presence its
+        # identity leaves open, so the call the driver reads restates them from this
+        # call's tensors; the variants `refusal` declines stay at their defaults.
+        call = KDACall(
+            batch=batch,
+            seq_len=seq_len,
+            sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
+            has_initial_state=initial_state is not None,
+            varlen=cu_seqlens is not None,
+            heads=H,
+            value_heads=HV,
+            dim_k=K,
+            dim_v=V,
+            dtype=self.dtype,
+            scale=self.scale,
+            l2norm=self.l2norm,
+            gate_in_kernel=self.gate_in_kernel,
+            has_dt_bias=self.has_dt_bias,
+            lower_bound=self.lower_bound,
+            state_v_first=self.state_v_first,
+            pooled=self.pooled,
+            device=q.device,
         )
-
-
-def chunk_prefill(
-    kernel, q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias, state_indices
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The chunk-local half, then the scan, on the programs *kernel* holds and its recurrence
-    facts (``scale``, ``l2norm``, ``dtype``, the gate facts and the state layout)."""
-    kernel._require_devices(q=q, k=k, v=v, g=g, beta=beta)
-    batch, seq_len = q.shape[:2]
-    H, K = q.shape[2], q.shape[3]
-    HV, V = v.shape[2], v.shape[3]
-    # One kernel serves every sequence count and initial-state presence its
-    # identity leaves open, so the call the driver reads restates them from this
-    # call's tensors; the variants `refusal` declines stay at their defaults.
-    call = KDACall(
-        batch=batch,
-        seq_len=seq_len,
-        sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
-        has_initial_state=initial_state is not None,
-        varlen=cu_seqlens is not None,
-        heads=H,
-        value_heads=HV,
-        dim_k=K,
-        dim_v=V,
-        dtype=kernel.dtype,
-        scale=kernel.scale,
-        l2norm=kernel.l2norm,
-        gate_in_kernel=kernel.gate_in_kernel,
-        has_dt_bias=kernel.has_dt_bias,
-        lower_bound=kernel.lower_bound,
-        state_v_first=kernel.state_v_first,
-        pooled=kernel.pooled,
-        device=q.device,
-    )
-    inputs = (q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias)
-    return run_chunk_prefill(kernel, call, inputs, gate_mode="channel", slots=state_indices)
+        inputs = (q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias)
+        return run_chunk_prefill(self, call, inputs, gate_mode="channel", slots=state_indices)

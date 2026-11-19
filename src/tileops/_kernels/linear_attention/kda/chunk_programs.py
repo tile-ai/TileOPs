@@ -472,7 +472,7 @@ def chunk_prepare_program(
                     flag = T.alloc_shared([1], "int32")
                 acc = T.alloc_fragment([BT, K], accum)
                 rowsum = T.alloc_fragment([BT], accum)
-                if l2norm:
+                if referenced and l2norm:
                     inverse_norms = T.alloc_shared([2 * BT], accum)
 
                 if single:
@@ -501,7 +501,7 @@ def chunk_prepare_program(
                         )
                         acc[i, j] = raw_q * raw_q
                         qa_s[i, j] = T.cast(raw_q * scale, dtype)
-                if centred and not fixed_bound and rows == BT:
+                if referenced and not fixed_bound and rows == BT:
                     T.copy(q[0, bos : bos + BT, ih, :], qa_s)
                     T.copy(k[0, bos : bos + BT, ih, :], ka_s)
                     T.copy(g[0, bos : bos + BT, ihv, :], b_s)
@@ -563,12 +563,17 @@ def chunk_prepare_program(
                             query_limit[i] = centred_row_bound(
                                 bounds, bounds.flush_limit, rowsum[i], bounds.query_scale_log2
                             )
-                    if l2norm:
+                    if referenced and l2norm:
                         for i in T.Parallel(BT):
                             inverse_norms[i] = T.rsqrt(rowsum[i] + L2_EPS)
                     else:
                         for i, j in T.Parallel(BT, K):
-                            qa_s[i, j] = T.cast(T.cast(qa_s[i, j], accum) * 1.0 * scale, dtype)
+                            qa_s[i, j] = T.cast(
+                                T.cast(qa_s[i, j], accum)
+                                * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0)
+                                * scale,
+                                dtype,
+                            )
                 for i, j in T.Parallel(BT, K):
                     acc[i, j] = T.cast(ka_s[i, j], accum) * T.cast(ka_s[i, j], accum)
                 T.reduce_sum(acc, rowsum, dim=1)
@@ -577,7 +582,7 @@ def chunk_prepare_program(
                 if centred and not l2norm and not fixed_bound:
                     for i in T.Parallel(BT):
                         limit[i] = centred_row_bound(bounds, query_limit[i], rowsum[i], 0.0)
-                if l2norm:
+                if referenced and l2norm:
                     # Through shared memory, every thread scales the rows: a loop reading the
                     # reduced fragment takes its replicated layout, and one thread in eight.
                     for i in T.Parallel(BT):
@@ -590,9 +595,13 @@ def chunk_prepare_program(
                         ka_s[i, j] = T.cast(
                             T.cast(ka_s[i, j], accum) * inverse_norms[BT + i], dtype
                         )
-                elif not centred:
+                elif l2norm or not centred:
                     for i, j in T.Parallel(BT, K):
-                        ka_s[i, j] = T.cast(T.cast(ka_s[i, j], accum) * 1.0, dtype)
+                        ka_s[i, j] = T.cast(
+                            T.cast(ka_s[i, j], accum)
+                            * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0),
+                            dtype,
+                        )
                 if centred:
                     # A block's prefix is monotone for one-signed gates, so |gc_i - gc_REF|
                     # peaks at its first and last rows. The barrier below publishes the flag.

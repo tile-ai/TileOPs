@@ -28,14 +28,15 @@ def split_prepare_enabled(call):
     return call.arch == 90 and (call.gate_in_kernel or not fp32_exponent_range(call.dtype))
 
 
+def staged_norms(call):
+    """Whether the joint chunk program stages a channel-gate call's inverse norms in shared
+    memory: its referenced SM90 form, which normalizes the rows itself."""
+    return call.arch == 90 and not split_prepare_enabled(call) and call.l2norm
+
+
 def chunk_plan(call):
     return launch_plan(
-        call.dim_k,
-        call.dtype.itemsize,
-        call.num_sequences,
-        call.smem_budget,
-        call.arch,
-        call.l2norm,
+        call.dim_k, call.dtype.itemsize, call.num_sequences, call.smem_budget, call.arch
     )
 
 
@@ -131,7 +132,12 @@ def build_programs(
 
     total = call.batch * call.seq_len
     plan = launch_plan(
-        call.dim_k, call.dtype.itemsize, num_sequences, call.smem_budget, call.arch, call.l2norm
+        call.dim_k,
+        call.dtype.itemsize,
+        num_sequences,
+        call.smem_budget,
+        call.arch,
+        staged_norms=gate_mode == "channel" and staged_norms(call),
     )
     if plan is None:
         raise ValueError(f"{num_sequences} sequences need more shared memory than the device has")
