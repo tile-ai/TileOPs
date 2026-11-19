@@ -3146,8 +3146,8 @@ def test_gemm_w4a16_pairs_a_one_warpgroup_split_in_one_wave() -> None:
 @pytest.mark.smoke
 def test_gemm_w4a16_keeps_plain_metadata_copies_off_the_unrefilled_one_warpgroup_ring() -> None:
     """A per-K-tile metadata copy stays plain on two consumer warpgroups, on a refilled or
-    streamed ring, where K's groups are not a multiple of four and where the slice is staged
-    once."""
+    streamed ring, where K's groups are not a multiple of four, where the slice is staged once
+    and where a K tile's groups do not divide the window."""
     # Arguments: block_m, block_n, block_k, num_stages, threads, split_k, stream_ctas, K, group.
     # Two consumer warpgroups, slices of four 512-wide K tiles on a four-stage ring.
     assert _meta_window(16, 128, 512, 4, 256, 2, 0, 4096, 128) == 0
@@ -3159,6 +3159,8 @@ def test_gemm_w4a16_keeps_plain_metadata_copies_off_the_unrefilled_one_warpgroup
     assert _meta_window(64, 64, 256, 4, 128, 2, 0, 1792, 128) == 0
     # 512-wide K tiles of a 128-thread tile stage their small slice once before the ring.
     assert _meta_window(32, 64, 512, 3, 128, 1, 0, 1536, 128) == 0
+    # 384-wide K tiles of an explicit config: three groups a K tile do not divide the window.
+    assert _meta_window(8, 64, 384, 4, 128, 24, 0, 36864, 128) == 0
 
 
 @pytest.mark.smoke

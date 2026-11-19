@@ -189,7 +189,9 @@ def _meta_window(
     consumer warpgroup's ring is never refilled, the producer instead copies the four groups at
     a multiple of four that hold the K tile's groups: 4- and 8-byte copies, aligned and inside
     the row when K's groups are a multiple of four, and holding the K tile's groups when their
-    count divides four.
+    count divides four. The selector's 128-, 256- and 512-wide K tiles hold one, two or four
+    groups; a 384-wide K tile, which the builder accepts from an explicit config, holds three and
+    keeps the plain copy.
     """
     window = 4
     per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, k // group_size)
