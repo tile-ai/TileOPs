@@ -116,6 +116,20 @@ def _check(workload, op):
             marks=pytest.mark.full,
             id="no-latent-columns",
         ),
+        # No k_pe columns, GLM-5.3-Flash's latent-only row: the 16-bit program copies the
+        # latent alone and never builds the k_pe copy.
+        pytest.param(
+            5,
+            512,
+            0,
+            64,
+            2,
+            BF16,
+            BF16,
+            [70, -1, 0, 127, 64],
+            marks=pytest.mark.full,
+            id="bf16-no-rope-columns",
+        ),
         # An odd token count leaves the last block with one token.
         pytest.param(
             4095,

@@ -11,25 +11,46 @@ def _call(**row):
     return manifest_call("DSAPagedFwdOp", {"KV": "uint8"}, DK=576, **row)
 
 
-def _check(call):
-    """Compare the op with the reference; the verification's negative controls must fail.
+def _bf16_call(**row):
+    return manifest_call("DSAPagedFwdOp", {"KV": "bfloat16"}, **row)
+
+
+def _run(op, attn_sink):
+    """The op as a function of the call's inputs, ``attn_sink`` last when the call has one."""
+    if attn_sink is None:
+        return op
+
+    def run(*args):
+        return op(*args[:5], attn_sink=args[5])
+
+    return run
+
+
+def _check(call, dead_request=False):
+    """Compare the op with the reference; on the FP8 row the verification's negative controls
+    must fail.
 
     Every other dead slot holds a position at or past its request's cache_seqlens instead
-    of -1: both are dead.
+    of -1 where the request's pages have room past it: both are dead. With
+    ``dead_request`` request 0 has no live slot at all.
     """
     workload = DSAPagedCall(call)
-    q, kv_cache, block_table, cache_seqlens, indices, _attn_sink = workload.gen_inputs()
+    q, kv_cache, block_table, cache_seqlens, indices, attn_sink = workload.gen_inputs()
     length = cache_seqlens.long()[:, None, None]
     room = block_table.shape[1] * kv_cache.shape[1] - length
     flat = torch.arange(indices.numel(), device=indices.device).view_as(indices)
-    past = (length + flat // 2 % room).to(indices.dtype)
-    indices = torch.where((indices < 0) & (flat % 2 == 0), past, indices)
+    past = (length + flat // 2 % room.clamp_min(1)).to(indices.dtype)
+    indices = torch.where((indices < 0) & (flat % 2 == 0) & (room > 0), past, indices)
+    if dead_request:
+        indices[0] = -1
     inputs = (q, kv_cache, block_table, cache_seqlens, indices)
+    if attn_sink is not None:
+        inputs = (*inputs, attn_sink)
     verify(
         workload.ref_program,
         inputs,
         evidence=workload.verification(*inputs),
-        requests={"tileops": Request(DSAPagedFwdOp(**call.arguments()), inputs)},
+        requests={"tileops": Request(_run(DSAPagedFwdOp(**call.arguments()), attn_sink), inputs)},
     )
 
 
@@ -78,6 +99,72 @@ def test_dsa_paged(row, arch) -> None:
     _check(_call(**row))
 
 
+# A DeepSeek-V4-Flash sink row merged over key splits, and one with a single split.
+_SINK_SPLIT = dict(
+    S_q=2, H=64, DK=512, K=640, NP=33, PS=64, W=11, cache_lens=[700, 70, 2], some=["attn_sink"]
+)
+_SINK_UNSPLIT = dict(
+    S_q=1,
+    H=64,
+    DK=512,
+    K=256,
+    NP=216,
+    PS=64,
+    W=3,
+    cache_lens="repeat(130, 72)",
+    some=["attn_sink"],
+)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "row",
+    [
+        # GLM-5.3-Flash's latent rows: a topk off the 64-slot block, its last block's slots
+        # past topk dead; key splits.
+        pytest.param(
+            dict(S_q=1, H=64, DK=512, K=2051, NP=80, PS=64, W=40, cache_lens=[2100, 300]),
+            id="latent-topk-off-the-block",
+            marks=pytest.mark.smoke,
+        ),
+        # DeepSeek-V4-Flash's MTP rows with a sink, merged over key splits; a request
+        # shorter than topk pads with -1.
+        pytest.param(_SINK_SPLIT, id="sink-split", marks=pytest.mark.full),
+        # Enough query rows to fill the SMs: one split, the sink applied in place.
+        pytest.param(_SINK_UNSPLIT, id="sink-unsplit", marks=pytest.mark.full),
+        # 64 key columns past the value; 32-row pages.
+        pytest.param(
+            dict(S_q=1, H=64, DK=576, K=256, NP=24, PS=32, W=8, cache_lens=[256, 100, 31]),
+            id="key-tail",
+            marks=pytest.mark.full,
+        ),
+        # Two 64-head blocks of a query row, each gathering every row.
+        pytest.param(
+            dict(S_q=1, H=128, DK=512, K=128, NP=16, PS=64, W=4, cache_lens=[200, 130]),
+            id="h128",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_dsa_paged_bfloat16_rows(row) -> None:
+    """bfloat16 rows on the SM90 kernel, the only one that reads them."""
+    _check(_bf16_call(**row))
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param(_SINK_SPLIT, id="split", marks=pytest.mark.smoke),
+        pytest.param(_SINK_UNSPLIT, id="unsplit", marks=pytest.mark.full),
+    ],
+)
+def test_dsa_paged_sink_on_a_request_without_live_slots(row) -> None:
+    """A query row with no live slot gives zeros and lse -inf whatever the sink, merged over
+    key splits or not; SM90 only, as test_dsa_paged_bfloat16_rows."""
+    _check(_bf16_call(**row), dead_request=True)
+
+
 @pytest.mark.parametrize(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
@@ -97,11 +184,65 @@ def test_dsa_paged(row, arch) -> None:
             id="topk-not-multiple-of-64",
             marks=pytest.mark.full,
         ),
+        pytest.param(
+            dict(
+                S_q=1,
+                H=64,
+                K=128,
+                NP=8,
+                PS=64,
+                W=2,
+                cache_lens="repeat(128, 2)",
+                some=["attn_sink"],
+            ),
+            "attn_sink",
+            id="fp8-sink",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_dsa_paged_refuses(row, reason, arch) -> None:
-    """The in-tree kernel serves 64-head blocks and 64-slot key blocks only."""
-    call = _call(**row)
-    inputs = DSAPagedCall(call).gen_inputs()[:5]
+    """The in-tree kernels serve 64-head blocks, and on the FP8 row 64-slot key blocks and no
+    sink only."""
+    _check_refused(_call(**row), reason)
+
+
+def _check_refused(call, reason):
+    inputs = DSAPagedCall(call).gen_inputs()
     with pytest.raises(Exception, match=reason):
-        DSAPagedFwdOp(**call.arguments())(*inputs)
+        _run(DSAPagedFwdOp(**call.arguments()), inputs[5])(*(i for i in inputs if i is not None))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "row, reason",
+    [
+        # The SM89 kernel reads the FP8 row only.
+        pytest.param(
+            dict(S_q=1, H=64, DK=512, K=128, NP=8, PS=64, W=2, cache_lens="repeat(128, 2)"),
+            "FP8 656-byte",
+            id="bfloat16-on-sm89",
+            marks=[pytest.mark.sm89, pytest.mark.smoke],
+        ),
+        # The SM90 kernel's bfloat16 rows hold 512 value columns.
+        pytest.param(
+            dict(
+                S_q=1,
+                H=64,
+                DK=576,
+                K=128,
+                NP=8,
+                PS=64,
+                W=2,
+                cache_lens="repeat(128, 2)",
+                head_dim_v=448,
+            ),
+            "512 value columns",
+            id="bfloat16-value-width",
+            marks=[pytest.mark.sm90, pytest.mark.full],
+        ),
+    ],
+)
+def test_dsa_paged_refuses_bfloat16_rows(row, reason) -> None:
+    """bfloat16 rows the in-tree kernels do not read."""
+    _check_refused(_bf16_call(**row), reason)

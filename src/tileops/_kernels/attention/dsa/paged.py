@@ -1,7 +1,8 @@
-"""SM90 DeepSeek Sparse Attention decode over a paged FP8 latent cache.
+"""SM90 DeepSeek Sparse Attention decode over a paged latent cache.
 
-The cache row is FlashMLA's DeepSeek-V3.2 FP8 layout: 512 float8_e4m3fn latent values, one
-float32 scale per 128 of them, then 64 bfloat16 rope values, 656 bytes in all.
+An FP8 cache row is FlashMLA's DeepSeek-V3.2 layout: 512 float8_e4m3fn latent values, one
+float32 scale per 128 of them, then 64 bfloat16 rope values, 656 bytes in all. A bfloat16
+cache row is 512 latent values and 0 or 64 more key values.
 """
 
 from typing import ClassVar
@@ -46,25 +47,40 @@ _COMPILE_FLAGS = [
     },
     compile_flags=[*_COMPILE_FLAGS, *csrc_include("warp_uniform.h", "row_gather.h")],
 )
-def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, cluster):
+def _dsa_paged_kernel(
+    batch, seq_len, heads, topk, page_size, split, sm_scale, cluster, bf16, tail, sink
+):  # fmt: skip
     """One thread block (CTA) per (query row, 64-head block, key split).
 
     Two 64-slot key buffers alternate. Warpgroup 0 scores and accumulates value dims [0, 256); warpgroup 1 gathers the next
     block and accumulates [256, 512); the producer warpgroup dequantizes in place. With
     ``cluster == 2``, each CTA of a pair dequantizes half of every block for both.
+
+    With ``bf16`` the rows are bfloat16, 512 latent values and ``tail`` more key values: the
+    gather lands them where the consumers read them, and the producer only publishes each
+    landed block. Slots past ``topk`` in its last block are dead. With ``sink`` and no key
+    split, ``Sink`` joins each head's softmax denominator.
     """
+    if bf16 and (cluster != 1 or tail not in (0, 64)):
+        # A cluster shares dequantized rows, which bfloat16 rows never are; the rope tile
+        # loads 64 columns.
+        raise ValueError(f"bfloat16 rows need cluster 1 and tail 0 or 64, got {cluster}, {tail}")
+    if not bf16 and tail != 64:
+        raise ValueError(f"the FP8 row has a 64-column rope tail, got {tail}")
     block_h = 64  # query heads per CTA: one m64 WGMMA row block
     block_k = 64  # selected slots per block
     stages = 2  # key-block buffers: one read while the other is filled
     half = 256  # value dims each consumer warpgroup accumulates
     # FP8 row: 512 fp8 latent, f32 scales from byte 512, 64 bf16 rope from byte 528.
     dim = 512
-    rope = 64
+    rope = tail  # key columns past the latent
     groups = dim // 128
     scale_col = dim // 4  # in float32 elements
-    rope_col = (dim + 4 * groups) // 2  # in bfloat16 elements
-    row_bytes = dim + 4 * groups + 2 * rope
+    rope_col = dim if bf16 else (dim + 4 * groups) // 2  # in bfloat16 elements
+    row_bytes = 2 * (dim + rope) if bf16 else dim + 4 * groups + 2 * rope
     dq = dim + rope
+    # A block's weights stage in the rope tile, so it keeps 64 columns without a rope.
+    tile = 64
     atom = 64  # bf16 columns one 128-byte swizzle atom holds
     vec = 8  # bf16 elements one 16-byte copy moves
     rows_mine = block_k // cluster  # the rows of a block this CTA gathers and dequantizes
@@ -91,8 +107,9 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
 
     tokens = batch * seq_len
     head_blocks = heads // block_h
-    span = topk // split
-    blocks = span // block_k
+    # Key blocks a split reads at most; a last block past topk is part dead.
+    key_blocks = -(-topk // block_k)
+    blocks = -(-key_blocks // split) if bf16 else topk // split // block_k
     scale = (dq**-0.5 if sm_scale is None else sm_scale) * LOG2E
     dtype = "bfloat16"
     accum = "float"
@@ -100,6 +117,12 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
     num_pages = T.dynamic("num_pages")
     table_width = T.dynamic("table_width")
     cache_rows = num_pages * page_size
+
+    def position(Indices, t, slot):
+        """The position of `slot` of row `t`; a slot past topk is dead."""
+        if bf16 and topk % block_k != 0:
+            return T.if_then_else(slot < topk, Indices[t, T.min(slot, topk - 1)], -1)
+        return Indices[t, T.min(slot, topk - 1)]
 
     @T.macro
     def resolve(Table, length, b, pos, src):
@@ -109,6 +132,37 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
         src[0] = T.if_then_else(
             live, Table[b, live_pos // page_size] * page_size + live_pos % page_size, -1
         )
+
+    @T.macro
+    def issue_bf16(Rows16, KL, KR, KT, Rows, landed, stage, base, p):
+        """Start gathering a block's bfloat16 rows where the consumers read them; dead rows
+        land as zeros. A warp copies 512 contiguous bytes of one row an instruction."""
+        warp_rows = rows_mine // (warpgroup // 32)  # rows each mixer warp gathers
+        lane = p % 32
+        for i in T.unroll(warp_rows * 2):
+            r = base + p // 32 * warp_rows + i // 2
+            row = Rows[stage, r]
+            if i % 2 == 0:
+                T.call_extern(
+                    "handle", "tileops::cp_async16_l2_256", T.access_ptr(KL[stage, r, lane * vec], "w"),
+                    T.access_ptr(Rows16[T.max(row, 0), lane * vec], "r"), row >= 0,
+                )  # fmt: skip
+            else:
+                T.call_extern(
+                    "handle", "tileops::cp_async16_l2_256", T.access_ptr(KR[stage, r, lane * vec], "w"),
+                    T.access_ptr(Rows16[T.max(row, 0), half + lane * vec], "r"), row >= 0,
+                )  # fmt: skip
+        if rope > 0:
+            for k in T.unroll(block_k * tail_lanes // producer_threads):
+                slot = k * (producer_threads // tail_lanes) + p // tail_lanes
+                trow = Rows[stage, slot]
+                T.ptx_cp_async(
+                    T.access_ptr(KT[stage, slot, p % tail_lanes * vec], "w", vec),
+                    T.access_ptr(Rows16[T.max(trow, 0), rope_col + p % tail_lanes * vec], "r", vec),
+                    vec,
+                    trow >= 0,
+                )
+        T.cp_async_barrier_noinc(landed[stage])
 
     @T.macro
     def issue(Rows16, Scales, KL, KR, KT, sScales, Rows, landed, stage, base, p):
@@ -212,11 +266,12 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
                     T.access_ptr(Q[t, h0 + row, half + c * atom + col], "r", vec),
                     vec,
                 )
-            T.ptx_cp_async(
-                T.access_ptr(QT[row, col], "w", vec),
-                T.access_ptr(Q[t, h0 + row, dim + col], "r", vec),
-                vec,
-            )
+            if rope > 0:
+                T.ptx_cp_async(
+                    T.access_ptr(QT[row, col], "w", vec),
+                    T.access_ptr(Q[t, h0 + row, dim + col], "r", vec),
+                    vec,
+                )
         T.cp_async_barrier_noinc(q_full[0])
 
         warp = p // 32
@@ -233,7 +288,8 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
                         "handle", "tileops::expect_bytes", T.address_of(k_remote[stage]),
                         rows_mine * dim * 2,
                     )  # fmt: skip
-                convert(KL, KR, sScales, k_remote, stage, held, outv, warp, lane, base, peer)
+                if not bf16:
+                    convert(KL, KR, sScales, k_remote, stage, held, outv, warp, lane, base, peer)
                 T.fence_proxy_async()
                 T.mbarrier_arrive(k_ready[stage])
 
@@ -254,7 +310,7 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
             T.copy(rO, O[sp, t, h0 : h0 + block_h, w * half : (w + 1) * half])
 
     @T.macro
-    def scorer(O, LSE, QL, QR, QT, KL, KR, KT, Rows, sScale, sInv, q_full, k_ready, k_remote, k_free, sp, t, h0, count, tx, peer):  # fmt: skip
+    def scorer(O, LSE, Sink, QL, QR, QT, KL, KR, KT, Rows, sScale, sInv, q_full, k_ready, k_remote, k_free, sp, t, h0, count, tx, peer):  # fmt: skip
         """Warpgroup 0: scores, softmax and value dims [0, 256)."""
         T.set_max_nreg(scorer_regs, 1)
         rP = T.alloc_fragment([block_h, block_k], accum)
@@ -280,7 +336,8 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
                     T.mbarrier_wait_parity(k_remote[stage], (j // stages) % 2)
                 T.wgmma_gemm(QL, KL[stage, :, :], rP, transpose_B=True, clear_accum=True)
                 T.wgmma_gemm(QR, KR[stage, :, :], rP, transpose_B=True)
-                T.wgmma_gemm(QT, KT[stage, :, :], rP, transpose_B=True)
+                if rope > 0:
+                    T.wgmma_gemm(QT, KT[stage, :, :], rP, transpose_B=True)
                 T.wait_wgmma(0)
                 # Bias after scaling, so any sign of scale masks dead slots.
                 for i, k in T.Parallel(block_h, block_k):
@@ -309,7 +366,11 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
         # A row without a live key has rL = 0: output 0, lse -inf.
         for i in T.Parallel(block_h):
             LSE[sp, t // seq_len, h0 + i, t % seq_len] = (rM[i] + T.log2(rL[i])) / LOG2E
-            sInv[i] = 1 / T.max(rL[i], 1.0)
+            if sink and split == 1:
+                # The sink joins the denominator only: e^sink against the row's max.
+                sInv[i] = 1 / T.max(rL[i] + T.exp2(Sink[h0 + i] * LOG2E - rM[i]), 1.0)
+            else:
+                sInv[i] = 1 / T.max(rL[i], 1.0)
         T.named_barrier_arrive(sums_ready, consumer_threads)
         finish(0, rO, sInv, out, QL, O, sp, t, h0)
 
@@ -321,9 +382,12 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
         if x < block_k:
             Rows[stage, slot] = src[0]
         T.sync_threads(rows_ready, warpgroup)
-        issue(Rows16, Scales, KL, KR, KT, sScales, Rows, k_landed, stage, base, x)
+        if bf16:
+            issue_bf16(Rows16, KL, KR, KT, Rows, k_landed, stage, base, x)
+        else:
+            issue(Rows16, Scales, KL, KR, KT, sScales, Rows, k_landed, stage, base, x)
         resolve(Table, length, b, pos[0], src)
-        pos[0] = Indices[t, T.min(k0 + (j + 2) * block_k + slot, topk - 1)]
+        pos[0] = position(Indices, t, k0 + (j + 2) * block_k + slot)
 
     @T.macro
     def mixer(O, QR, KL, KR, KT, Rows16, Scales, Indices, Table, Lens, sScales, Rows, sScale, sInv, k_landed, k_free, sp, t, b, h0, k0, count, base, peer, x):  # fmt: skip
@@ -338,8 +402,8 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
         T.fill(rO, 0)
         length = Lens[b]
         # Positions load two blocks ahead, rows resolve one block ahead.
-        resolve(Table, length, b, Indices[t, T.min(k0 + x % block_k, topk - 1)], src)
-        pos[0] = Indices[t, T.min(k0 + block_k + x % block_k, topk - 1)]
+        resolve(Table, length, b, position(Indices, t, k0 + x % block_k), src)
+        pos[0] = position(Indices, t, k0 + block_k + x % block_k)
         if count > 0:
             gather(
                 Rows16, Scales, Indices, Table, KL, KR, KT, sScales, Rows, k_landed, src, pos,
@@ -372,6 +436,7 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
         Table: T.Tensor([batch, table_width], "int32"),
         Lens: T.Tensor([batch], "int32"),
         Indices: T.Tensor([tokens, topk], "int32"),
+        Sink: T.Tensor([heads], accum),
         O: T.Tensor([split, tokens, heads, dim], out_dtype),
         LSE: T.Tensor([split, batch, heads, seq_len], accum),
     ):
@@ -406,12 +471,18 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
             base = rank * rows_mine
             QL = T.alloc_shared([block_h, half], dtype)
             QR = T.alloc_shared([block_h, half], dtype)
-            QT = T.alloc_shared([block_h, rope], dtype)
+            QT = T.alloc_shared([block_h, rope], dtype) if rope > 0 else None
             KL = T.alloc_shared([stages, block_k, half], dtype)
             KR = T.alloc_shared([stages, block_k, half], dtype)
-            KT = T.alloc_shared([stages, block_k, rope], dtype)
-            T.annotate_layout({buf: make_swizzled_layout(buf) for buf in [QL, QR, QT, KL, KR, KT]})
-            sScales = T.alloc_shared([stages, block_k, groups], accum)
+            KT = T.alloc_shared([stages, block_k, tile], dtype)
+            T.annotate_layout(
+                {
+                    buf: make_swizzled_layout(buf)
+                    for buf in [QL, QR, QT, KL, KR, KT]
+                    if buf is not None
+                }
+            )
+            sScales = T.alloc_shared([stages, block_k, groups], accum) if not bf16 else None
             Rows = T.alloc_shared([stages, block_k], "int32")
             sScale = T.alloc_shared([stages, block_h], accum)
             sInv = T.alloc_shared([block_h], accum)
@@ -437,7 +508,7 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
                 )  # fmt: skip
             with T.ws(0):
                 scorer(
-                    O, LSE, QL, QR, QT, KL, KR, KT, Rows, sScale, sInv, q_full, k_ready,
+                    O, LSE, Sink, QL, QR, QT, KL, KR, KT, Rows, sScale, sInv, q_full, k_ready,
                     k_remote, k_free, sp, t, h0, count, tx, peer,
                 )  # fmt: skip
             with T.ws(1):
@@ -454,17 +525,24 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
     return main
 
 
+def _no_sink(heads: int, device: torch.device) -> torch.Tensor:
+    """The sink parameter of a call without one: zeros the kernels do not read. A kernel
+    allocates it once and keeps it."""
+    return torch.zeros(heads, dtype=torch.float32, device=device)
+
+
 @target_cache(maxsize=32)
-def _dsa_paged_combine_kernel(batch, seq_len, heads, split, target="sm_90"):
+def _dsa_paged_combine_kernel(batch, seq_len, heads, split, target="sm_90", sink=False):
     """Cache the merge by its explicit compilation target as well as its shape."""
     builder = tilelang.jit(target={"kind": "cuda", "arch": target}, compile_flags=_COMPILE_FLAGS)(
         _dsa_paged_combine
     )
-    return builder(batch, seq_len, heads, split)
+    return builder(batch, seq_len, heads, split, sink)
 
 
-def _dsa_paged_combine(batch, seq_len, heads, split):
-    """Merge each row's `split` partial outputs by their log-sum-exps."""
+def _dsa_paged_combine(batch, seq_len, heads, split, sink):
+    """Merge each row's `split` partial outputs by their log-sum-exps; with `sink`, ``Sink``
+    joins each head's denominator."""
     dim = 512  # value dims
     threads = 128
     cols = dim // threads
@@ -474,6 +552,7 @@ def _dsa_paged_combine(batch, seq_len, heads, split):
     def combine(
         Part: T.Tensor([split, tokens, heads, dim], "float"),
         PartLSE: T.Tensor([split, batch, heads, seq_len], "float"),
+        Sink: T.Tensor([heads], "float"),
         O: T.Tensor([tokens, heads, dim], "bfloat16"),
         LSE: T.Tensor([batch, heads, seq_len], "float"),
     ):
@@ -495,8 +574,15 @@ def _dsa_paged_combine(batch, seq_len, heads, split):
                     total += w
                     for c in T.vectorized(cols):
                         acc[c] += w * Part[s, t, h, tx * cols + c]
+            # The sink weighs e^(sink - peak). With no live key acc is 0, and the sink, whose
+            # weight against a peak of -inf is undefined, stays out of the denominator.
+            denom = T.max(total, 1.0)
+            if sink:
+                denom = denom + T.if_then_else(
+                    peak > -T.infinity("float"), T.exp2((Sink[h] - peak) * LOG2E), 0.0
+                )
             for c in T.vectorized(cols):
-                O[t, h, tx * cols + c] = T.Cast("bfloat16", acc[c] / T.max(total, 1.0))
+                O[t, h, tx * cols + c] = T.Cast("bfloat16", acc[c] / denom)
             if tx == 0:
                 LSE[b, h, s_q] = T.if_then_else(total > 0, peak + T.log(total), peak)
 
@@ -504,28 +590,38 @@ def _dsa_paged_combine(batch, seq_len, heads, split):
 
 
 class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
-    """SM90 sparse Multi-head Latent Attention (MLA) decode over a paged FP8 cache."""
+    """SM90 sparse Multi-head Latent Attention (MLA) decode over a paged FP8 cache, or, in
+    the single-CTA kernel, a bfloat16 cache of 512 latent values and 0 or 64 more key values.
+    """
 
     supported_archs: list[int] = [90]
     cluster: ClassVar[int]
 
     @classmethod
     def refusal(cls, call: DSAPagedCall) -> str | None:
-        if call.cache_dtype != torch.uint8:
-            return "reads the FP8 656-byte cache row only"
-        if call.has_attn_sink:
-            return "does not serve attn_sink"
+        if call.cache_dtype == torch.bfloat16:
+            if cls.cluster != 1:
+                return "reads bfloat16 rows in the single-CTA kernel only"
+            if call.dim != 512 or call.dim_tail not in (0, 64):
+                return "reads bfloat16 rows of 512 value columns and 0 or 64 more only"
+        else:
+            if call.has_attn_sink:
+                return "does not serve attn_sink on the FP8 row"
+            if call.topk % 64 != 0:
+                return "requires topk a multiple of 64 on the FP8 row"
         if call.heads % (64 * cls.cluster) != 0:
             return f"requires a multiple of {64 * cls.cluster} heads"
-        if call.topk % 64 != 0:
-            return "requires topk a multiple of 64"
         return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: DSAPagedCall) -> Entry:
         index = call.device.index if call.device is not None else None
-        split = cls.split_for(
-            call.batch * call.seq_len * (call.heads // 64), call.topk, call.sm_count
+        bf16 = call.cache_dtype == torch.bfloat16
+        ctas = call.batch * call.seq_len * (call.heads // 64)
+        split = (
+            cls.split_blocks_for(ctas, call.topk, call.sm_count)
+            if bf16
+            else cls.split_for(ctas, call.topk, call.sm_count)
         )
         args = (
             call.batch,
@@ -535,6 +631,9 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
             call.page_size,
             split,
             call.sm_scale,
+            bf16,
+            call.dim_tail,
+            call.has_attn_sink,
         )
         return (*args, index), lambda: cls(*args, device_index=index)
 
@@ -546,19 +645,38 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
             split *= 2
         return split
 
-    def __init__(self, batch, seq_len, heads, topk, page_size, split, sm_scale, device_index=None):
+    @staticmethod
+    def split_blocks_for(ctas: int, topk: int, sms: int) -> int:
+        """The most key splits whose CTAs still fit one wave, each over at least four 64-slot
+        blocks of topk: a shorter split spends more on its own start and the merge than its
+        CTA saves. Splits divide the row's live blocks at run time, so trailing ones may be
+        empty."""
+        blocks = -(-topk // 64)
+        split = 1
+        while ctas * split * 2 <= sms and blocks >= split * 2 * 4:
+            split *= 2
+        return split
+
+    def __init__(
+        self, batch, seq_len, heads, topk, page_size, split, sm_scale, bf16, tail, sink,
+        device_index=None,
+    ):  # fmt: skip
         super().__init__(device_index=device_index)
         self.batch, self.seq_len, self.heads = batch, seq_len, heads
         self.split = split
         self._args = (batch, seq_len, heads, topk, page_size, split, sm_scale)
+        self._rows = (bf16, tail, sink)
+        self._sinkless = None
         self.program(self._compile)
 
     def _compile(self, cfg: dict):
         """The attention program and, over several key splits, the merge; no configuration."""
         batch, seq_len, heads, _, _, split, _ = self._args
-        self.kernel = kernel = _dsa_paged_kernel(*self._args, self.cluster)
+        self.kernel = kernel = _dsa_paged_kernel(*self._args, self.cluster, *self._rows)
         combine = (
-            CompiledProgram(_dsa_paged_combine_kernel(batch, seq_len, heads, split))
+            CompiledProgram(
+                _dsa_paged_combine_kernel(batch, seq_len, heads, split, sink=self._rows[2])
+            )
             if split > 1
             else None
         )
@@ -570,9 +688,10 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
             indices=indices,
         )  # fmt: skip
         # The kernel addresses the cache's bfloat16 view with int32 offsets.
-        if kv_cache.numel() // 2 >= 2**31:
+        if kv_cache.numel() * kv_cache.element_size() // 2 >= 2**31:
             raise ValueError(
-                f"kv_cache holds {kv_cache.numel()} bytes; this kernel addresses below 2^32"
+                f"kv_cache holds {kv_cache.numel() * kv_cache.element_size()} bytes; this "
+                "kernel addresses below 2^32"
             )
         tokens = self.batch * self.seq_len
         dim = 512  # value dims
@@ -582,6 +701,9 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         lse = torch.empty(
             (self.split, self.batch, self.heads, self.seq_len), dtype=torch.float32, device=q.device
         )
+        if attn_sink is None and self._sinkless is None:
+            self._sinkless = _no_sink(self.heads, q.device)
+        sink = attn_sink if attn_sink is not None else self._sinkless
         main, combine = self.program(self._compile)
         main(
             q.view(tokens, self.heads, -1),
@@ -590,6 +712,7 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
             block_table,
             cache_seqlens,
             indices.view(tokens, -1),
+            sink,
             out,
             lse,
         )
@@ -600,12 +723,12 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
             row_lse = torch.empty(
                 (self.batch, self.heads, self.seq_len), dtype=torch.float32, device=q.device
             )
-            combine(out, lse, o, row_lse)
+            combine(out, lse, sink, o, row_lse)
         return o.view(self.batch, self.seq_len, self.heads, dim), row_lse
 
 
 class DSAPagedWSKernel(DSAPagedKernelBase):
-    """Each 64-head block of a query row gathers and dequantizes every key row itself."""
+    """Each 64-head block of a query row gathers every key row itself, dequantizing FP8 ones."""
 
     cluster: ClassVar[int] = 1
 

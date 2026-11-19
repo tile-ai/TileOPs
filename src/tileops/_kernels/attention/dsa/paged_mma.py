@@ -6,7 +6,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.attention.dsa.paged import DSAPagedKernelBase, _dsa_paged_combine_kernel
+from tileops._kernels.attention.dsa.paged import (
+    DSAPagedKernelBase,
+    _dsa_paged_combine_kernel,
+    _no_sink,
+)
 from tileops._kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
@@ -129,6 +133,12 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
     cluster: ClassVar[int] = 1
 
     @classmethod
+    def refusal(cls, call):
+        if call.cache_dtype != torch.uint8:
+            return "reads the FP8 656-byte cache row only"
+        return super().refusal(call)
+
+    @classmethod
     def entry_for(cls, call):
         split = cls.split_for(
             call.batch * call.seq_len * (call.heads // 16), call.topk, call.sm_count
@@ -140,6 +150,7 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
         Kernel.__init__(self, device_index=index)
         self.call = call
         self.split = split
+        self._sinkless = None
         self.program(self._compile)
 
     def _compile(self, cfg: dict):
@@ -193,7 +204,9 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
             final = torch.empty(
                 (call.batch, call.heads, call.seq_len), dtype=torch.float32, device=q.device
             )
-            combine(out, lse, output, final)
+            if self._sinkless is None:
+                self._sinkless = _no_sink(call.heads, q.device)
+            combine(out, lse, self._sinkless, output, final)
             out, lse = output, final
         else:
             lse = lse[0]

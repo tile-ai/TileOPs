@@ -172,8 +172,9 @@ class DSAPagedFwdOp(Op):
     The kernel rounds the dequantized key and the softmax weights to bfloat16 before their
     matmuls, which accumulate in float32. ``lse`` is the natural-log sum of exponentials of
     the scaled scores; a row with no live position returns zeros and ``lse`` -inf.
-    Serves the FP8 cache without ``attn_sink`` on SM89 and SM90, 64 or a multiple of 64
-    heads, ``topk`` a multiple of 64, and a cache below 2^32 bytes.
+    Serves a multiple of 64 heads and a cache below 2^32 bytes: the FP8 cache without
+    ``attn_sink`` and ``topk`` a multiple of 64 on SM89 and SM90, and bfloat16 rows of 512
+    value columns and 0 or 64 more key columns, with any ``topk``, on SM90.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
