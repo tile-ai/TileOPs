@@ -874,7 +874,8 @@ def test_avg_pool1d_divides_each_end_of_the_row(
 @pytest.mark.smoke
 def test_avg_pool1d_register_refuses_groups_past_its_int32_thread_index() -> None:
     """The register kernel's one-axis grid indexes a thread a group of outputs in int32, so
-    a call whose groups and one more block pass 2**31 - 1 goes to AvgPool1dKernel."""
+    a call of more rows than grid y holds whose groups and one more block pass 2**31 - 1
+    goes to AvgPool1dKernel."""
     # fp16, kernel 2, stride 2: four outputs a group, 16385 groups a row, 2**31 + 2**17 in all.
     call = AvgPoolCall(
         n=1,

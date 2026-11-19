@@ -200,8 +200,10 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         ):
             return f"requires whole {run}-element loads along the row"
         # A thread a group of outputs: the one-axis grid's int32 thread index must hold the
-        # last group's thread and the rest of its block.
-        if call.n * call.c_in * (out_l // outputs) > 2**31 - 1 - MAX_BLOCK_THREADS:
+        # last group's thread and the rest of its block. Only rows past grid y put this many
+        # groups on that grid; the row grid indexes groups within a row.
+        rows = call.n * call.c_in
+        if rows > MAX_GRID_YZ_BLOCKS and rows * (out_l // outputs) > 2**31 - 1 - MAX_BLOCK_THREADS:
             return f"serves at most 2**31 - 1 - {MAX_BLOCK_THREADS} groups of outputs"
         return super().refusal(call)
 
