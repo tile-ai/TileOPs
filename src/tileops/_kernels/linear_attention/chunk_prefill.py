@@ -3,6 +3,7 @@ import torch
 from tileops._kernels.kernel_base import CompiledProgram
 from tileops._kernels.linear_attention.chunk_plan import (
     CHUNK_SIZE,
+    fp32_exponent_range,
     launch_plan,
     packed_offsets,
     scan_value_tile,
@@ -15,10 +16,27 @@ from tileops._kernels.linear_attention.chunk_plan import (
 def split_prepare_enabled(call):
     """Whether a channel-gate chunk call prepares its chunks with the split SM90 launches.
 
-    They stay finite for strong decays of either gate form; their launch shapes are chosen
-    for SM90, so elsewhere the joint chunk program serves the call.
+    Raw gates take them on SM90: their FP32 per-pair entries stay finite for the strong
+    decays a raw gate forms, and their launch shapes are chosen for SM90. So do given gates in
+    a dtype without FP32's exponent range: past `centred_bounds` the joint program forms such
+    a chunk per pair on CUDA cores, which these launches outrun. Other given gates take the
+    joint chunk program, in one launch that also normalizes the rows: it forms the Gram
+    matrices on tensor cores from rows centred within `centred_bounds`, and a chunk past them
+    takes per-pair FP32 entries in its diagonal blocks and tensor-core products of rows
+    referenced to each block's first row below them.
     """
-    return call.arch == 90
+    return call.arch == 90 and (call.gate_in_kernel or not fp32_exponent_range(call.dtype))
+
+
+def referenced_form(call):
+    """Whether a channel-gate call's joint chunk program takes its referenced SM90 form: the
+    given gates the split launches leave to it on SM90."""
+    return call.arch == 90 and not split_prepare_enabled(call)
+
+
+def staged_norms(call):
+    """Whether the referenced form stages the call's inverse norms in shared memory."""
+    return referenced_form(call) and call.l2norm
 
 
 def chunk_plan(call):
@@ -118,7 +136,14 @@ def build_programs(
     )
 
     total = call.batch * call.seq_len
-    plan = launch_plan(call.dim_k, call.dtype.itemsize, num_sequences, call.smem_budget, call.arch)
+    plan = launch_plan(
+        call.dim_k,
+        call.dtype.itemsize,
+        num_sequences,
+        call.smem_budget,
+        call.arch,
+        staged_norms=gate_mode == "channel" and staged_norms(call),
+    )
     if plan is None:
         raise ValueError(f"{num_sequences} sequences need more shared memory than the device has")
     lean, value_tile = plan
@@ -160,6 +185,7 @@ def build_programs(
                 "gate_in_kernel": call.gate_in_kernel,
                 "has_dt_bias": call.has_dt_bias,
                 "lower_bound": call.lower_bound,
+                "referenced": referenced_form(call),
             }
             if gate_mode == "channel"
             else {}
@@ -210,6 +236,10 @@ def build_programs(
 
 def _split_scan(call, num_sequences, total, dtype, initial_state=True):
     """The scan as the state walk over the chunks, forming the outputs in the walk or after it.
+
+    The returned scan takes the prepared tensors, the initial states (a state pool under
+    ``call.pooled``), the offsets and the pool's slots, and returns ``(o, final_state)``; a
+    pool is updated in place and returned.
 
     The state walk takes the narrowest value tile whose CTAs fit one wave: a narrower tile
     shortens each CTA's chain of matmuls, a second wave doubles it. Forming the outputs in
@@ -262,18 +292,31 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
         arch=call.arch,
         with_output=with_output,
         initial_state=initial_state,
+        state_v_first=call.state_v_first,
+        pooled=call.pooled,
     )
     state_scan = CompiledProgram(state_scan)
+    # A pooled walk takes the slots after the offsets and returns no state.
     if with_output:
-        return state_scan
+
+        def walk(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
+            if call.pooled:
+                return state_scan(w, u, qg, kg, aqk, dec, h0, offsets, slots), h0
+            return state_scan(w, u, qg, kg, aqk, dec, h0, offsets)
+
+        return walk
     output = CompiledProgram(
         chunk_output_program(
             call.value_heads, call.dim_k, call.dim_v, CHUNK_SIZE, dtype, total, num_sequences
         )
     )
 
-    def scan(w, u, qg, kg, aqk, dec, h0, offsets):
-        starts, values, final_state = state_scan(w, u, kg, dec, h0, offsets)
+    def scan(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
+        if call.pooled:
+            starts, values = state_scan(w, u, kg, dec, h0, offsets, slots)
+            final_state = h0
+        else:
+            starts, values, final_state = state_scan(w, u, kg, dec, h0, offsets)
         return output(qg, aqk, starts, values, offsets), final_state
 
     return scan
@@ -292,8 +335,12 @@ def prepare_inputs(call, tensors, *, programs, gate_mode, gate_params=()):
     return prepare(q, k, v, gate, beta, offsets, inverse)
 
 
-def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False):
-    """Run one chunked prefill launch on the programs *kernel* holds for its facts."""
+def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False, slots=None):
+    """Run one chunked prefill launch on the programs *kernel* holds for its facts.
+
+    Under ``call.pooled`` the state in *inputs* is a pool and *slots* names each sequence's
+    slot; the pool is advanced in place and returned as the final state.
+    """
     q, k, v, _, beta, state, offsets, _, _ = inputs
     total = call.batch * call.seq_len
     offsets = packed_offsets(call.batch, call.seq_len, offsets, q.device)
@@ -327,5 +374,8 @@ def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False):
         gate_mode=gate_mode,
         gate_params=gate_params,
     )
-    output, final_state = programs[3](*prepared, state, offsets)
+    scan = programs[3]
+    output, final_state = (
+        scan(*prepared, state, offsets, slots) if call.pooled else scan(*prepared, state, offsets)
+    )
     return output.reshape(call.batch, call.seq_len, call.value_heads, call.dim_v), final_state

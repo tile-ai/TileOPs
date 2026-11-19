@@ -14,7 +14,14 @@ from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.linear_attention.chunk_plan import CHUNK_SIZE
 from tileops._kernels.linear_attention.gdn.prefill_common import step_size
 from tileops._kernels.linear_attention.kda.chunk_programs import L2_EPS, REFERENCE_BLOCK
-from tileops._kernels.linear_attention.kda.gate import log_decay
+from tileops._kernels.linear_attention.kda.gate import (
+    DIAGONAL_COLUMNS,
+    DIAGONAL_LANES,
+    diagonal_row_gram,
+    exact_fma,
+    log_decay,
+    scaled_query,
+)
 
 
 @target_cache(maxsize=64)
@@ -273,41 +280,6 @@ def _key_head(head, group):
     return head if group == 1 else head // group
 
 
-def _scaled(query, qscale):
-    """An FP32 query value times *qscale*, or unchanged when the staged query carries its scale."""
-    return query if qscale is None else query * qscale
-
-
-def _fma(a, b, c):
-    """``a * b + c`` rounded once to FP32, keeping subnormal values under fast math."""
-    # T.ieee_fmaf emits __fmaf_rn, which -ftz flushes; __fmaf_ieee_rn ignores the flag.
-    return T.call_extern(  # lint: extern-target allow: no T.* intrinsic ignores -ftz
-        "float32", "__fmaf_ieee_rn", a, b, c
-    )
-
-
-@T.macro
-def _group_sum8(values, part):
-    """Sums of eight per-lane partials over the eight lanes of a lane group; lane part ends with entry part."""
-    for m in T.unroll(4):
-        values[m] = _fma(
-            1.0,
-            T.if_then_else((part >> 2) & 1 == 1, values[m + 4], values[m]),
-            T.shfl_xor(T.if_then_else((part >> 2) & 1 == 1, values[m], values[m + 4]), 4),
-        )
-    for m in T.unroll(2):
-        values[m] = _fma(
-            1.0,
-            T.if_then_else((part >> 1) & 1 == 1, values[m + 2], values[m]),
-            T.shfl_xor(T.if_then_else((part >> 1) & 1 == 1, values[m], values[m + 2]), 2),
-        )
-    values[0] = _fma(
-        1.0,
-        T.if_then_else(part & 1 == 1, values[1], values[0]),
-        T.shfl_xor(T.if_then_else(part & 1 == 1, values[0], values[1]), 1),
-    )
-
-
 @T.macro
 def _warp_sum8(values, lane):
     """Warp sums of eight per-lane partials along the xor butterfly (16, 8, 4, 2, 1).
@@ -472,23 +444,13 @@ def _diagonal_program(
 
     One small CTA per 16-row block stages its q, k and gate rows with one asynchronous
     copy. Lane group i owns rows i and 15-i, whose column batches together cost the same
-    for every group; a row's batches past the diagonal hold only zeros and skip the
-    products. Every pair keeps its own exp2(g_r - g_s): kv * (key * exp2(gv - gk)) with
-    both products rounded once and no flushed subnormals. A lane sums four channels per
-    segment, the segments pairwise and the eight lanes along a butterfly, the reduction
+    for every group, and forms each with `diagonal_row_gram`, whose reduction has the
     depth of the 32-lane form in ``_diagonal_reduce_program``.
     """
     BT, BC, K, HV = CHUNK_SIZE, REFERENCE_BLOCK, dim_k, heads
     G = HV // (key_heads or HV)
-    # Eight lanes share a row; each lane holds K / 32 4-channel vectors {32 m + 4 part}, so
-    # a lane group's 16-byte reads of a staged row fill distinct banks.
-    GROUP = 8
-    VEC = 4
-    SEGS = K // (GROUP * VEC)
-    CH = SEGS * VEC
-    BW = 4
-    # ``_group_sum8`` and the pairwise segment sums below are written for these widths.
-    assert GROUP == 8 and 2 * BW == 8 and SEGS in (2, 4), "the widths these sums are written for"
+    GROUP = DIAGONAL_LANES
+    BW = DIAGONAL_COLUMNS
     # Eight lane groups, one CTA per block: many small CTAs hide the per-pair chains.
     threads = BC // 2 * GROUP
     tiling = GroupTiling(num_seqs, BT)
@@ -511,6 +473,16 @@ def _diagonal_program(
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
+        buffers, row_gram = diagonal_row_gram(K, dtype, qscale)
+
+        @T.macro
+        def store(column, part, value, kk, qk, bos, base, row, rows, head):
+            if base + row < rows:
+                if part % 2 == 0:
+                    kk[0, bos + base + row, head, base + column] = value
+                else:
+                    qk[0, bos + base + row, head, base + column] = value
+
         @T.prim_func
         def main(
             q: T.Tensor([1, total_tokens, HV // G, K], dtype),
@@ -532,15 +504,7 @@ def _diagonal_program(
                 kr = T.alloc_shared([BC, K], dtype)
                 qr = T.alloc_shared([BC, K], dtype)
                 gr = T.alloc_shared([BC, K], "float32")
-                tq = T.alloc_local([VEC], dtype)
-                tk = T.alloc_local([VEC], dtype)
-                qv = T.alloc_local([CH], "float32")
-                kv = T.alloc_local([CH], "float32")
-                gv = T.alloc_local([CH], "float32")
-                key = T.alloc_local([CH], "float32")
-                gk = T.alloc_local([CH], "float32")
-                acc = T.alloc_local([2 * BW], "float32")
-                sub = T.alloc_local([2 * SEGS], "float32")
+                regs = buffers()
                 tiling.cumsum_offsets(cu, cum)
                 tiling.decode(T.min(ic, cum[num_seqs] - 1), cum, lo, hi, seq, first)
                 bos = T.cast(cu[seq[0]], "int32") + first[0]
@@ -556,67 +520,11 @@ def _diagonal_program(
                     T.sync_threads()
                     for r in T.unroll(2):
                         row = T.if_then_else(r == 0, gi, BC - 1 - gi)
-                        for m in T.unroll(SEGS):
-                            c0 = m * GROUP * VEC + part * VEC
-                            for v in T.vectorized(VEC):
-                                tq[v] = qr[row, c0 + v]
-                            for v in T.vectorized(VEC):
-                                tk[v] = kr[row, c0 + v]
-                            for v in T.vectorized(VEC):
-                                gv[m * VEC + v] = gr[row, c0 + v]
-                            for v in T.unroll(VEC):
-                                qv[m * VEC + v] = _scaled(T.cast(tq[v], "float32"), qscale)
-                                kv[m * VEC + v] = T.cast(tk[v], "float32")
-                        for b in T.serial(row // BW + 1):
-                            for e in T.unroll(2 * BW):
-                                acc[e] = 0.0
-                            for j in T.unroll(BW):
-                                for m in T.unroll(SEGS):
-                                    c0 = m * GROUP * VEC + part * VEC
-                                    for v in T.vectorized(VEC):
-                                        tk[v] = kr[b * BW + j, c0 + v]
-                                    for v in T.vectorized(VEC):
-                                        gk[m * VEC + v] = gr[b * BW + j, c0 + v]
-                                    for v in T.unroll(VEC):
-                                        key[m * VEC + v] = T.cast(tk[v], "float32")
-                                for m in T.unroll(SEGS):
-                                    sub[m] = 0.0
-                                    sub[SEGS + m] = 0.0
-                                    for v in T.unroll(VEC):
-                                        # key * exp2(g_r - g_s) rounded once, then the two products;
-                                        # one chain of four channels per segment.
-                                        i = m * VEC + v
-                                        gk[i] = _fma(key[i], T.exp2(gv[i] - gk[i]), -0.0)
-                                        sub[m] = _fma(kv[i], gk[i], sub[m])
-                                        sub[SEGS + m] = _fma(qv[i], gk[i], sub[SEGS + m])
-                                # Pairwise over the segments, as the warp butterfly pairs lanes.
-                                if SEGS == 4:
-                                    acc[2 * j] = _fma(
-                                        1.0, _fma(1.0, sub[0], sub[1]), _fma(1.0, sub[2], sub[3])
-                                    )
-                                    acc[2 * j + 1] = _fma(
-                                        1.0,
-                                        _fma(1.0, sub[SEGS], sub[SEGS + 1]),
-                                        _fma(1.0, sub[SEGS + 2], sub[SEGS + 3]),
-                                    )
-                                else:
-                                    acc[2 * j] = _fma(1.0, sub[0], sub[1])
-                                    acc[2 * j + 1] = _fma(1.0, sub[SEGS], sub[SEGS + 1])
-                                acc[2 * j] = T.if_then_else(b * BW + j <= row, acc[2 * j], 0.0)
-                                acc[2 * j + 1] = T.if_then_else(
-                                    b * BW + j <= row, acc[2 * j + 1], 0.0
-                                )
-                            _group_sum8(acc, part)
-                            # Lane part holds column part // 2, kk (even) or qk (odd).
-                            if base + row < rows:
-                                if part % 2 == 0:
-                                    kk[0, bos + base + row, head, base + b * BW + part // 2] = acc[
-                                        0
-                                    ]
-                                else:
-                                    qk[0, bos + base + row, head, base + b * BW + part // 2] = acc[
-                                        0
-                                    ]
+                        row_gram(
+                            qr, kr, gr, 0, row, part, regs, store, kk, qk, bos, base, row, rows,
+                            head,
+                        )  # fmt: skip
+                        # Columns of the skipped batches: lanes below tail store kk, the next qk.
                         tail = BC - BW - (row // BW) * BW
                         for z in T.serial(T.ceildiv(2 * tail, GROUP)):
                             zl = z * GROUP + part
@@ -640,19 +548,19 @@ def _group_sum16(values, part):
     with entries 2 part and 2 part + 1. The additions round like the products' chains.
     """
     for m in T.unroll(8):
-        values[m] = _fma(
+        values[m] = exact_fma(
             1.0,
             T.if_then_else((part >> 2) & 1 == 1, values[m + 8], values[m]),
             T.shfl_xor(T.if_then_else((part >> 2) & 1 == 1, values[m], values[m + 8]), 4),
         )
     for m in T.unroll(4):
-        values[m] = _fma(
+        values[m] = exact_fma(
             1.0,
             T.if_then_else((part >> 1) & 1 == 1, values[m + 4], values[m]),
             T.shfl_xor(T.if_then_else((part >> 1) & 1 == 1, values[m], values[m + 4]), 2),
         )
     for m in T.unroll(2):
-        values[m] = _fma(
+        values[m] = exact_fma(
             1.0,
             T.if_then_else(part & 1 == 1, values[m + 2], values[m]),
             T.shfl_xor(T.if_then_else(part & 1 == 1, values[m], values[m + 2]), 1),
@@ -743,7 +651,7 @@ def _offdiagonal_program(
                     for v in T.unroll(VEC):
                         lq[p * CH + m * VEC + v] = T.if_then_else(
                             row0 + p < rows,
-                            _scaled(T.cast(tq[v], accum), qscale) * T.exp2(tg[v] - tr[v]),
+                            scaled_query(T.cast(tq[v], accum), qscale) * T.exp2(tg[v] - tr[v]),
                             0.0,
                         )
                         lk[p * CH + m * VEC + v] = T.if_then_else(
@@ -772,12 +680,12 @@ def _offdiagonal_program(
                     for v in T.unroll(VEC):
                         for j in T.unroll(COLS):
                             for p in T.unroll(PAIR):
-                                acc[p * 2 * COLS + j * 2] = _fma(
+                                acc[p * 2 * COLS + j * 2] = exact_fma(
                                     lk[p * CH + m * VEC + v],
                                     rv[j * VEC + v],
                                     acc[p * 2 * COLS + j * 2],
                                 )
-                                acc[p * 2 * COLS + j * 2 + 1] = _fma(
+                                acc[p * 2 * COLS + j * 2 + 1] = exact_fma(
                                     lq[p * CH + m * VEC + v],
                                     rv[j * VEC + v],
                                     acc[p * 2 * COLS + j * 2 + 1],
@@ -1093,7 +1001,7 @@ def _inverse_wy_program(
                     for e in T.vectorized(lanes):
                         scaled[e] = T.cast(T.cast(key[e], accum) * T.exp2(gate[e]) * bt_s[i], dtype)
                         gated_query[e] = T.cast(
-                            _scaled(T.cast(query[e], accum), qscale) * T.exp2(gate[e]), dtype
+                            scaled_query(T.cast(query[e], accum), qscale) * T.exp2(gate[e]), dtype
                         )
                         gated_key[e] = T.cast(
                             T.cast(key[e], accum) * T.exp2(last_s[j0 + e] - gate[e]), dtype

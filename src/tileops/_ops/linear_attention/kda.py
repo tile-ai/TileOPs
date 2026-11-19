@@ -34,7 +34,9 @@ class KDAFwdOp(Op):
     packed sequences.
 
     By default ``g`` contains the precomputed log-space decay and ``beta`` the
-    post-sigmoid update strength. ``use_gate_in_kernel=True`` instead treats
+    post-sigmoid update strength. A precomputed ``g`` is a decay, ``g <= 0``, as both
+    raw-gate forms below produce; a positive value grows the state instead and is
+    unsupported. ``use_gate_in_kernel=True`` instead treats
     ``g`` as the raw gate and requires ``A_log``;
     ``use_beta_sigmoid_in_kernel=True`` treats ``beta`` as raw logits, and with
     ``allow_neg_eigval=True`` the beta transform is ``2 * sigmoid(beta)``.
@@ -50,8 +52,7 @@ class KDAFwdOp(Op):
     Raw gates use ``-exp(A_log) * softplus(g + dt_bias)`` without a lower bound,
     or ``lower_bound * sigmoid(exp(A_log) * (g + dt_bias))`` with one; an omitted
     ``dt_bias`` is zero. A value-major state and a state pool (``state_indices``)
-    are served by decode, and by the one-kernel prefill, which takes precomputed
-    gates and enough (sequence, value head) pairs to cover most SMs. Raw beta,
+    are served by decode and prefill. Raw beta,
     ``num_accepted_tokens``, other state widths and the other calls still require
     an external target implementation.
     """

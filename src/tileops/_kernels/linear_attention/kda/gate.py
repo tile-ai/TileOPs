@@ -83,3 +83,142 @@ def raw_gate_gram(chunk_size, dim_k, load=lambda buffer, i, j: buffer[i, j]):
             qk[row, column] = totals[1]
 
     return gram
+
+
+# Lanes sharing a row, and columns sharing a batch, in `diagonal_row_gram`.
+DIAGONAL_LANES = 8
+DIAGONAL_COLUMNS = 4
+
+
+def scaled_query(query, qscale):
+    """An FP32 query value times *qscale*, or unchanged when the staged query carries its scale."""
+    return query if qscale is None else query * qscale
+
+
+def exact_fma(a, b, c):
+    """``a * b + c`` rounded once to FP32, keeping subnormal values under fast math."""
+    # T.ieee_fmaf emits __fmaf_rn, which -ftz flushes; __fmaf_ieee_rn ignores the flag.
+    return T.call_extern(  # lint: extern-target allow: no T.* intrinsic ignores -ftz
+        "float32", "__fmaf_ieee_rn", a, b, c
+    )
+
+
+@T.macro
+def group_sum8(values, part):
+    """Sums of eight per-lane partials over the eight lanes of a lane group; lane part ends with entry part."""
+    for m in T.unroll(4):
+        values[m] = exact_fma(
+            1.0,
+            T.if_then_else((part >> 2) & 1 == 1, values[m + 4], values[m]),
+            T.shfl_xor(T.if_then_else((part >> 2) & 1 == 1, values[m], values[m + 4]), 4),
+        )
+    for m in T.unroll(2):
+        values[m] = exact_fma(
+            1.0,
+            T.if_then_else((part >> 1) & 1 == 1, values[m + 2], values[m]),
+            T.shfl_xor(T.if_then_else((part >> 1) & 1 == 1, values[m], values[m + 2]), 2),
+        )
+    values[0] = exact_fma(
+        1.0,
+        T.if_then_else(part & 1 == 1, values[1], values[0]),
+        T.shfl_xor(T.if_then_else(part & 1 == 1, values[0], values[1]), 1),
+    )
+
+
+def diagonal_row_gram(dim_k, dtype, qscale=None, unroll_columns=True):
+    """One row of a 16-row diagonal block of both causal Gram matrices, per pair in FP32.
+
+    Every pair keeps its own exp2(g_r - g_s): kv * (key * exp2(gv - gk)) with both products
+    rounded once and no flushed subnormals. Eight lanes share a row and hold K / 8 channels
+    as 4-channel vectors {32 m + 4 part}, so a lane group's reads of a staged row fill
+    distinct banks. A lane sums four channels per segment, the segments pairwise and the
+    eight lanes along a butterfly. Column batches past the row hold only zeros and are
+    skipped. *qscale* multiplies each query value where it is read. Without
+    *unroll_columns* the four columns of a batch run in a loop, which keeps the code short
+    in a program that holds this pass in a branch it seldom takes.
+
+    Returns ``(buffers, row_gram)``: ``buffers()`` allocates the lane's registers, and
+    ``row_gram(q, k, cumulative, base, row, part, regs, store, *store_args)`` forms row
+    ``base + row`` of the staged tiles against their rows from *base*, calling
+    ``store(column, part, value, *store_args)`` once per four columns: lane *part* holds
+    column ``column`` of kk (even *part*) or of qk (odd *part*).
+    """
+    GROUP = DIAGONAL_LANES
+    VEC = 4
+    SEGS = dim_k // (GROUP * VEC)
+    CH = SEGS * VEC
+    BW = DIAGONAL_COLUMNS
+    assert SEGS in (2, 4) and GROUP == 8 and 2 * BW == GROUP, (
+        "the widths group_sum8 and the segment sums take"
+    )
+
+    def buffers():
+        return (
+            T.alloc_local([VEC], dtype),
+            T.alloc_local([VEC], dtype),
+            T.alloc_local([CH], "float32"),
+            T.alloc_local([CH], "float32"),
+            T.alloc_local([CH], "float32"),
+            T.alloc_local([CH], "float32"),
+            T.alloc_local([CH], "float32"),
+            T.alloc_local([2 * BW], "float32"),
+            T.alloc_local([2 * SEGS], "float32"),
+        )
+
+    @T.macro
+    def row_gram(q, k, cumulative, base, row, part, regs, store, *store_args):
+        tq, tk, qv, kv, gv, key, gk, acc, sub = regs
+        for m in T.unroll(SEGS):
+            c0 = m * GROUP * VEC + part * VEC
+            for v in T.vectorized(VEC):
+                tq[v] = q[base + row, c0 + v]
+            for v in T.vectorized(VEC):
+                tk[v] = k[base + row, c0 + v]
+            for v in T.vectorized(VEC):
+                gv[m * VEC + v] = cumulative[base + row, c0 + v]
+            for v in T.unroll(VEC):
+                qv[m * VEC + v] = scaled_query(T.cast(tq[v], "float32"), qscale)
+                kv[m * VEC + v] = T.cast(tk[v], "float32")
+        for b in T.serial(row // BW + 1):
+            for e in T.unroll(2 * BW):
+                acc[e] = 0.0
+            for j in T.unroll(BW) if unroll_columns else T.serial(BW):
+                for m in T.unroll(SEGS):
+                    c0 = m * GROUP * VEC + part * VEC
+                    for v in T.vectorized(VEC):
+                        tk[v] = k[base + b * BW + j, c0 + v]
+                    for v in T.vectorized(VEC):
+                        gk[m * VEC + v] = cumulative[base + b * BW + j, c0 + v]
+                    for v in T.unroll(VEC):
+                        key[m * VEC + v] = T.cast(tk[v], "float32")
+                for m in T.unroll(SEGS):
+                    sub[m] = 0.0
+                    sub[SEGS + m] = 0.0
+                    for v in T.unroll(VEC):
+                        # key * exp2(g_r - g_s) rounded once, then the two products;
+                        # one chain of four channels per segment.
+                        i = m * VEC + v
+                        gk[i] = exact_fma(key[i], T.exp2(gv[i] - gk[i]), -0.0)
+                        sub[m] = exact_fma(kv[i], gk[i], sub[m])
+                        sub[SEGS + m] = exact_fma(qv[i], gk[i], sub[SEGS + m])
+                # Pairwise over the segments, as the warp butterfly pairs lanes.
+                if SEGS == 4:
+                    acc[2 * j] = exact_fma(
+                        1.0,
+                        exact_fma(1.0, sub[0], sub[1]),
+                        exact_fma(1.0, sub[2], sub[3]),
+                    )
+                    acc[2 * j + 1] = exact_fma(
+                        1.0,
+                        exact_fma(1.0, sub[SEGS], sub[SEGS + 1]),
+                        exact_fma(1.0, sub[SEGS + 2], sub[SEGS + 3]),
+                    )
+                else:
+                    acc[2 * j] = exact_fma(1.0, sub[0], sub[1])
+                    acc[2 * j + 1] = exact_fma(1.0, sub[SEGS], sub[SEGS + 1])
+                acc[2 * j] = T.if_then_else(b * BW + j <= row, acc[2 * j], 0.0)
+                acc[2 * j + 1] = T.if_then_else(b * BW + j <= row, acc[2 * j + 1], 0.0)
+            group_sum8(acc, part)
+            store(b * BW + part // 2, part, acc[0], *store_args)
+
+    return buffers, row_gram
