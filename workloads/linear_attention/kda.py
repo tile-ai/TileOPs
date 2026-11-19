@@ -3,6 +3,7 @@ import torch.nn.functional as F
 
 from workloads.device import run_device
 from workloads.linear_attention.input_values import _small, _step_sizes
+from workloads.linear_attention.state_pool import read_states, write_states
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = ["KDAFwdCall", "KDAFwdWorkload", "kda_ref"]
@@ -133,7 +134,7 @@ class KDAFwdCall(CallWorkload):
             v,
             g,
             beta,
-            initial_state if slots is None else initial_state[slots],
+            initial_state if slots is None else read_states(initial_state, slots),
             cu_seqlens,
             cu_seqlens_cpu,
             a_log,
@@ -149,9 +150,9 @@ class KDAFwdCall(CallWorkload):
         if slots is None:
             return o, final_state
         # The pool is updated in place: each sequence's slot takes its final state, and every
-        # other slot keeps the state it held.
+        # other slot keeps the state it held. A slot of -1 is never written.
         pool = initial_state.clone()
-        pool[slots] = final_state
+        write_states(pool, slots, final_state)
         return o, pool
 
     def verification(self, *inputs):
