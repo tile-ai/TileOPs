@@ -313,7 +313,8 @@ class HyperConnectionHeadKernel(Kernel, HyperConnectionHeadFwdInterface):
     @property
     def default_config(self) -> dict:
         # A thread reduces its share of a token's n * c values, which a warp shuffle and one
-        # shared-memory pass then total.
+        # shared-memory pass then total: fewer threads keep too few loads in flight, more
+        # lengthen that pass.
         return {"threads": 256}
 
     def _resident_fits(self, bt: int) -> bool:
