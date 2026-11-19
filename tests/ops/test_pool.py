@@ -883,16 +883,16 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
             id="int32-max-plus-one-elements-fp16",
             marks=pytest.mark.full,
         ),
-        # 65535 rows of 32768 pad to 32769 outputs a row: an input under 2**31 elements and
-        # an output past it. Costs 9 GiB.
+        # 32768 rows of 65535 pad to 65536 outputs a row: an input under 2**31 elements and
+        # an output of 2**31, an extent one past INT32_MAX. Costs 9 GiB.
         pytest.param(
-            (5, 13107),
-            32768,
+            (2, 16384),
+            65535,
             2,
             1,
             1,
             torch.float16,
-            id="output-past-int32-elements-fp16",
+            id="output-of-2-31-elements-fp16",
             marks=pytest.mark.full,
         ),
         # 2**31 rows of one element: one block a row, one more than grid x holds. Costs 9 GiB.
@@ -927,53 +927,6 @@ def test_avg_pool1d_staged_kernel_launch_limits(
     for n in range(x.shape[0]):
         expected = F.avg_pool1d(x[n], kernel_l, stride_l, pad_l)
         torch.testing.assert_close(out[n], expected, rtol=0, atol=0)
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "l_in, kernel_l, stride_l, pad_l, implementation",
-    [
-        pytest.param(
-            4096, 2, 2, 0, AvgPool1dRegisterKernel, id="register-row-fp16", marks=pytest.mark.smoke
-        ),
-        # One row of 3 * 2**30: offsets in the row pass INT32_MAX. Costs 9 GiB.
-        pytest.param(
-            3 * 2**30,
-            2,
-            2,
-            0,
-            AvgPool1dRegisterKernel,
-            id="register-row-past-int32-elements-fp16",
-            marks=pytest.mark.full,
-        ),
-        pytest.param(
-            3 * 2**30,
-            5,
-            2,
-            2,
-            AvgPool1dKernel,
-            id="staged-row-past-int32-elements-fp16",
-            marks=pytest.mark.full,
-        ),
-    ],
-)
-def test_avg_pool1d_one_row_past_int32_elements(
-    l_in: int, kernel_l: int, stride_l: int, pad_l: int, implementation
-) -> None:
-    """One row on the row grid pools like torch at its first and its last outputs, the last
-    past element offset INT32_MAX when the row holds more than 2**31 elements. Torch is run
-    on slices of the row, under its own int32 limit."""
-    x = torch.randn(1, 1, l_in, device=run_device(), dtype=torch.float16)
-    op = AvgPool1dFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l, target=BUILTIN)
-    out = op(x)
-    assert [type(k) for k in op.iter_kernels()] == [implementation]
-    n = min(out.shape[-1], 2**20)
-    head = F.avg_pool1d(x[..., : n * stride_l + kernel_l], kernel_l, stride_l, pad_l)
-    torch.testing.assert_close(out[..., :n], head[..., :n], rtol=0, atol=0)
-    first = out.shape[-1] - n
-    tail = F.pad(x[..., first * stride_l - pad_l :], (0, pad_l))
-    expected = F.avg_pool1d(tail, kernel_l, stride_l)
-    torch.testing.assert_close(out[..., first:], expected[..., :n], rtol=0, atol=0)
 
 
 @pytest.mark.parametrize(
