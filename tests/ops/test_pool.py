@@ -784,14 +784,14 @@ def test_avg_pool1d_windows_read_into_registers(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "shape, kernel_l, pad_l, count_include_pad, kernel_type",
+    "shape, kernel_l, stride_l, pad_l, kernel_type",
     [
         # The fixture's fp16 smoke shape.
         pytest.param(
             (2, 64, 512),
             3,
+            2,
             1,
-            False,
             AvgPool1dRegisterKernel,
             id="fixture-shape-register",
             marks=pytest.mark.smoke,
@@ -800,10 +800,20 @@ def test_avg_pool1d_windows_read_into_registers(
         pytest.param(
             (1, 1, 2**31),
             3,
+            2,
             1,
-            False,
             AvgPool1dRegisterKernel,
             id="row-of-2-31-elements-register",
+            marks=pytest.mark.full,
+        ),
+        # A row past 2**31 elements: loads, windows and stores start past INT32_MAX. Costs 6 GiB.
+        pytest.param(
+            (1, 1, 2**31 + 16),
+            3,
+            2,
+            1,
+            AvgPool1dRegisterKernel,
+            id="row-past-2-31-elements-register",
             marks=pytest.mark.full,
         ),
         # A window reaching two elements past a load is staged in shared memory. Costs 6 GiB.
@@ -811,9 +821,19 @@ def test_avg_pool1d_windows_read_into_registers(
             (1, 1, 2**31),
             5,
             2,
-            False,
+            2,
             AvgPool1dKernel,
             id="row-of-2-31-elements-staged",
+            marks=pytest.mark.full,
+        ),
+        # Stride 1 past 2**31 elements: output indices pass INT32_MAX. Costs 12 GiB.
+        pytest.param(
+            (1, 1, 2**31 + 8),
+            5,
+            1,
+            2,
+            AvgPool1dKernel,
+            id="row-past-2-31-elements-staged",
             marks=pytest.mark.full,
         ),
     ],
@@ -821,28 +841,28 @@ def test_avg_pool1d_windows_read_into_registers(
 def test_avg_pool1d_divides_each_end_of_the_row(
     shape: tuple[int, int, int],
     kernel_l: int,
+    stride_l: int,
     pad_l: int,
-    count_include_pad: bool,
     kernel_type: type,
 ) -> None:
     """The windows at each end of a row divide by the positions they count, also where the
     last window's end passes INT32_MAX. torch pools a row of 2**31 elements to zeros, so
     each end is checked against torch on a slice of at most 1024 elements, dropping the
     windows the slice, not the row, cuts."""
-    stride_l, edge = 2, min(shape[-1], 1024)
+    edge = min(shape[-1], 1024)
     x = torch.randn(*shape, device=run_device(), dtype=torch.float16)
     op = AvgPool1dFwdOp(
         kernel_size=kernel_l,
         stride=stride_l,
         padding=pad_l,
-        count_include_pad=count_include_pad,
+        count_include_pad=False,
         target=BUILTIN,
     )
     out = op(x)
     assert [type(k) for k in op.iter_kernels()] == [kernel_type]
 
     def pool(part: torch.Tensor) -> torch.Tensor:
-        return F.avg_pool1d(part, kernel_l, stride_l, pad_l, False, count_include_pad)
+        return F.avg_pool1d(part, kernel_l, stride_l, pad_l, False, False)
 
     # Head windows ending inside the slice; tail windows starting inside it.
     head = pool(x[..., :edge])[..., : (edge + pad_l - kernel_l) // stride_l + 1]

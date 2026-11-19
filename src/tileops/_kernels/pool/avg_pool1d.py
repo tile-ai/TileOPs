@@ -177,7 +177,7 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
             if whole:
                 out[out_row, ol] = T.cast(total / T.cast(kernel_l, ACCUM_DTYPE), dtype)
             else:
-                start = T.cast(ol, position_dtype) * stride_l - pad_l
+                start = ol * stride_l - pad_l
                 if count_include_pad:
                     divisor = T.max(T.min(start + kernel_l, l_in + pad_l) - T.max(start, -pad_l), 1)
                 else:
@@ -199,7 +199,8 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
         def _reduce(tile, bx, out, out_row):
             """One output per lane, over the outputs this block owns."""
             for j in T.Parallel(block_ol):
-                ol = bx * block_ol + j
+                # Widened at the block index, so every position derived from it is.
+                ol = T.cast(bx, position_dtype) * block_ol + j
                 if tail_free:
                     _store_output(tile, j, ol, out, out_row)
                 else:

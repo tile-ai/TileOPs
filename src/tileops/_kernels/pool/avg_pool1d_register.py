@@ -53,8 +53,9 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
     # An input of 2**31 elements or more takes int64 extents: int32 cannot hold an extent of
     # exactly 2**31, and TileLang widens the offsets of a longer input by itself.
     wide = rows * l_in >= 2**31
-    # A window position of a row that long can pass 2**31 - 1 once the window's width is added.
-    position_dtype = "int64" if l_in + kernel_l >= 2**31 else "int32"
+    # A position of a row that long, a load's run or the window's width past an element,
+    # can pass 2**31 - 1.
+    position_dtype = "int64" if l_in + max(kernel_l, VECTOR_ACCESS_BYTES) >= 2**31 else "int32"
 
     @tilelang.jit(out_idx=[1])
     def build(threads: int, flat: bool):
@@ -74,7 +75,8 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
             values = T.alloc_local([run], dtype)
             window = T.alloc_local([pad_l + run + after], ACCUM_DTYPE)
             totals = T.alloc_local([outputs], ACCUM_DTYPE)
-            start = group * run
+            # Widened at the group, so every position of the row derived from it is.
+            start = T.cast(group, position_dtype) * run
             for i in T.vectorized(run):
                 values[i] = x[row, start + i]
             for i in T.unroll(run):
@@ -125,7 +127,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
                     pool(x, row, group, means)
                     if unit < units:
                         for e in T.vectorized(outputs):
-                            y[row, group * outputs + e] = means[e]
+                            y[row, T.cast(group, position_dtype) * outputs + e] = means[e]
 
         else:
 
@@ -141,7 +143,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
                     pool(x, row, T.min(group, groups - 1), means)
                     if group < groups:
                         for e in T.vectorized(outputs):
-                            y[row, group * outputs + e] = means[e]
+                            y[row, T.cast(group, position_dtype) * outputs + e] = means[e]
 
         return main
 
