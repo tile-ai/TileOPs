@@ -15,6 +15,7 @@ Test cases cover:
     whole warp rows and groups that straddle them, E off the warp width
   - routed_scaling_factor with and without grouping
   - caller-given experts (DeepSeek-V4-Flash hash routing) under each scoring function
+  - sigmoid logits below the float32 normal range: zero scores, NaN renormalized weights
 """
 
 import re
@@ -589,6 +590,23 @@ def test_sqrtsoftplus_keeps_float32_precision_at_extreme_logits() -> None:
     _, _, expert_ids = workload.gen_inputs()
     gating = torch.linspace(-92, 200, 64 * 64, device=run_device()).view(64, 64)
     TestBase.check(workload, FusedTopKFwdOp(64, "sqrtsoftplus"), gating, None, expert_ids)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("path", ["selected", "biased", "given"])
+def test_sigmoid_scores_a_logit_below_the_normal_range_zero(path) -> None:
+    """On each kernel path, sigmoid scores 0 for logits of -88, whose torch float32 score is
+    subnormal, and of -100, whose is 0, and a renormalized row of only such logits returns NaN
+    weights."""
+    device = run_device()
+    gating = torch.tensor([[-88.0], [-100.0]], device=device).repeat(1, 64)
+    bias = torch.zeros(64, device=device) if path == "biased" else None
+    ids = torch.arange(4, dtype=torch.int32, device=device).view(2, 2) if path == "given" else None
+    for renormalize, expected in ((False, 0.0), (True, float("nan"))):
+        weights, _ = FusedTopKFwdOp(2, "sigmoid", renormalize)(gating, bias, expert_ids=ids)
+        torch.testing.assert_close(
+            weights, torch.full_like(weights, expected), rtol=0, atol=0, equal_nan=True
+        )
 
 
 @pytest.mark.smoke

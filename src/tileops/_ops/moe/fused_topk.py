@@ -44,9 +44,8 @@ class FusedTopKFwdOp(Op):
     nothing is selected, the correction bias is not read, and the weights are the scores of
     the given experts. Under sigmoid scoring a logit below about -87, whose float32 score is
     subnormal, scores 0, and a renormalized row of only such logits returns NaN weights. The
-    in-tree kernel adds a
-    correction bias to sigmoid and sqrt-softplus scores only: a softmax call that selects
-    with a bias raises ``OpNotAvailableError`` when a kernel is selected.
+    in-tree kernel adds a correction bias to sigmoid and sqrt-softplus scores only: a softmax
+    call that selects with a bias raises ``OpNotAvailableError`` when a kernel is selected.
 
     Example:
         ```python linenums="1"
