@@ -1,6 +1,7 @@
 """The quantization ops, at the public path ``tileops.quantization``."""
 
 from tileops._ops.quantization import (
+    FP4QuantPerGroupFwdOp,
     FP8QuantPerBlockFwdOp,
     FP8QuantPerTokenGroupFwdOp,
     INT4QuantPerGroupFwdOp,
@@ -14,6 +15,7 @@ from tileops._ops.quantization import (
 )
 
 __all__ = [
+    "FP4QuantPerGroupFwdOp",
     "FP8QuantPerBlockFwdOp",
     "FP8QuantPerTokenGroupFwdOp",
     "INT4QuantPerGroupFwdOp",

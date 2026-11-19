@@ -7,6 +7,7 @@ from workloads.quantization.int8_dequant import (
     INT8DequantPerTensorWorkload,
 )
 from workloads.quantization.quantize import (
+    FP4QuantWorkload,
     FP8QuantPerBlockWorkload,
     INT4QuantPerGroupWorkload,
     INT8QuantPerBlockWorkload,
@@ -16,6 +17,7 @@ from workloads.quantization.quantize import (
 )
 
 WORKLOADS = {
+    "FP4QuantPerGroupFwdOp": FP4QuantWorkload.from_call,
     "FP8QuantPerTokenGroupFwdOp": FP8QuantWorkload.from_call,
     "FP8QuantPerBlockFwdOp": FP8QuantPerBlockWorkload.from_call,
     "INT4QuantPerGroupFwdOp": INT4QuantPerGroupWorkload.from_call,

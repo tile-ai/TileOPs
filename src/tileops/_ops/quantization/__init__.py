@@ -1,5 +1,6 @@
 """Quantization and dequantization operators."""
 
+from tileops._ops.quantization.fp4_quant import FP4QuantPerGroupFwdOp
 from tileops._ops.quantization.fp8_quant import FP8QuantPerTokenGroupFwdOp
 from tileops._ops.quantization.fp8_quant_per_block import FP8QuantPerBlockFwdOp
 from tileops._ops.quantization.int4_quant_per_group import INT4QuantPerGroupFwdOp
@@ -14,6 +15,7 @@ from tileops._ops.quantization.int8_quant_per_tensor import INT8QuantPerTensorFw
 from tileops._ops.quantization.smooth_quant import SmoothQuantFwdOp
 
 __all__ = [
+    "FP4QuantPerGroupFwdOp",
     "FP8QuantPerBlockFwdOp",
     "FP8QuantPerTokenGroupFwdOp",
     "INT4QuantPerGroupFwdOp",

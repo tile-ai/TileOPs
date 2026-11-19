@@ -92,6 +92,25 @@ def smooth_quant(x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, t
     return _to_int8(xs, scale[:, None]), scale
 
 
+def bitwise_verification(reason: str, controls: tuple = ()):
+    """A ``Custom`` declaration requiring each output's bits, a signed zero and a scale byte
+    included, to equal the reference's, and an output the reference leaves ``None`` to be
+    ``None``; *controls* are the faulty references it must reject."""
+    from workloads.numerics import Custom
+
+    def validate(got, expected):
+        for actual, reference in zip(got, expected, strict=True):
+            if reference is None:
+                assert actual is None, "an output the call does not produce is not None"
+                continue
+            assert actual.shape == reference.shape and actual.dtype == reference.dtype
+            assert torch.equal(
+                actual.contiguous().view(torch.uint8), reference.contiguous().view(torch.uint8)
+            ), "quantization bits differ"
+
+    return Custom(validate, reason, controls=controls)
+
+
 def round_up_to_power_of_two(t: torch.Tensor) -> torch.Tensor:
     """``2 ** ceil(log2(t))`` of a positive float32 *t*, subnormals included."""
     mantissa, exponent = torch.frexp(t)
@@ -143,9 +162,11 @@ def _e2m1_codes(y: torch.Tensor) -> torch.Tensor:
 
 
 def _e2m1_values(codes: torch.Tensor) -> torch.Tensor:
+    """The float32 value of each e2m1 code, a negative zero included: the magnitude is
+    multiplied by the sign, as a compiled negation, ``0 - value``, drops it."""
     grid = torch.tensor((0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0), device=codes.device)
     value = grid[(codes & 7).long()]
-    return torch.where((codes & 8) != 0, -value, value)
+    return value * torch.where((codes & 8) != 0, -1.0, 1.0)
 
 
 def unpack_e2m1(packed: torch.Tensor) -> torch.Tensor:
@@ -244,15 +265,9 @@ class FP8QuantPerBlockWorkload(_QuantizeWorkload):
         return fp8_quant_per_block(w)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
-        def validate(got, expected):
-            for actual, reference in zip(got, expected, strict=True):
-                assert torch.equal(actual.view(torch.uint8), reference.view(torch.uint8)), (
-                    "quantization bits differ"
-                )
-
-        return Custom(validate, "bitwise FP8 codes and block scales, including NaN and signed zero")
+        return bitwise_verification(
+            "bitwise FP8 codes and block scales, including NaN and signed zero"
+        )
 
 
 class INT4QuantPerGroupWorkload(_QuantizeWorkload):
@@ -282,6 +297,82 @@ class INT4QuantPerGroupWorkload(_QuantizeWorkload):
             "exact packed INT4 codes and scale/offset rounding",
             controls=(zeroed_input(0, "weight-zeroed"),),
         )
+
+
+class FP4QuantWorkload(WorkloadBase):
+    """Block-wise e2m1 quantization of a random ``bfloat16`` tensor of ``shape``."""
+
+    def __init__(self, shape: tuple[int, ...], block_size: int = 32, inplace: bool = False):
+        self.shape = tuple(shape)
+        self.block_size = block_size
+        self.inplace = inplace
+
+    @classmethod
+    def from_call(cls, call: Any) -> "FP4QuantWorkload":
+        """The workload of one manifest call of ``FP4QuantPerGroupFwdOp``."""
+        shape, _dtype = call.tensors["x"]
+        return cls(shape, call.params["block_size"], call.params["inplace"])
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        return (torch.randn(self.shape, dtype=torch.bfloat16, device=run_device()),)
+
+    def ref_program(self, x: torch.Tensor) -> tuple:
+        return fp4_quant_per_group(x, self.block_size, self.inplace)
+
+    def verification(self, *inputs):
+        from workloads.numerics import zeroed_input
+
+        return bitwise_verification(
+            "bitwise e2m1 codes, e8m0 scales and fake-quantized values",
+            controls=(zeroed_input(0, "x-zeroed"),),
+        )
+
+
+class FP4QuantViewWorkload(StridedInput, FP4QuantWorkload):
+    """``FP4QuantWorkload`` on a strided ``x``."""
+
+
+# The e2m1 midpoints under a scale of 1, which a block whose maximum is 6 has, each tie
+# going to the even code; signed zeros; and values below the first midpoint.
+_E2M1_TIES = (
+    6.0,
+    0.25,
+    0.75,
+    1.25,
+    1.75,
+    2.5,
+    3.5,
+    5.0,
+    -0.25,
+    -0.75,
+    -1.25,
+    -1.75,
+    -2.5,
+    -3.5,
+    -5.0,
+    -6.0,
+    0.0,
+    -0.0,
+    0.1875,
+    -0.1875,
+    0.3125,
+    4.5,
+    5.5,
+    -5.5,
+    1e-3,
+    -1e-3,
+)
+
+
+class FP4QuantTiesWorkload(FP4QuantWorkload):
+    """The workload on rows of e2m1 rounding ties, each row scaled by its own power of two
+    from ``2 ** -126``, where the smaller ties are ``bfloat16`` subnormals, to ``2 ** 125``,
+    and on all-zero rows, whose maximum is the ``6 * 2 ** -126`` floor."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        (x,) = super().gen_inputs()
+        fill_with_ties(x, self.block_size, _E2M1_TIES, 252)
+        return (x,)
 
 
 class SmoothQuantWorkload(_QuantizeWorkload):

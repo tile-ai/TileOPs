@@ -136,9 +136,22 @@ def test_fp8_quant_ue8m0_floors_scales_at_two_to_the_minus_126(
     test = FP8QuantScaleFloorTest((80, 512), 128, dtype, **params)
     op = FP8QuantPerTokenGroupFwdOp(128, **params)
     test.check(op, *test.gen_inputs())
-    if not inplace:
-        _, scale, _ = op(*test.gen_inputs())
-        assert scale.float().min().item() == 2.0**-126
+
+
+@pytest.mark.parametrize(
+    "dtype, eps, scale_dtype",
+    [
+        pytest.param(torch.bfloat16, 0.0, torch.float32, marks=pytest.mark.smoke),
+        pytest.param(torch.float32, 1e-36, torch.float8_e8m0fnu, marks=pytest.mark.smoke),
+        pytest.param(torch.float16, 0.0, torch.float8_e8m0fnu, marks=pytest.mark.smoke),
+    ],
+)
+def test_fp8_quant_ue8m0_returns_the_floor_scale(dtype, eps, scale_dtype) -> None:
+    """Groups below the floor return the scale ``2 ** -126``, and none returns less."""
+    params = {"eps": eps, "use_ue8m0": True, "scale_dtype": scale_dtype}
+    test = FP8QuantScaleFloorTest((80, 512), 128, dtype, **params)
+    _, scale, _ = FP8QuantPerTokenGroupFwdOp(128, **params)(*test.gen_inputs())
+    assert scale.float().min().item() == 2.0**-126
 
 
 @pytest.mark.parametrize(
@@ -149,6 +162,8 @@ def test_fp8_quant_ue8m0_floors_scales_at_two_to_the_minus_126(
         pytest.param((37, 448), torch.float16, marks=pytest.mark.smoke),
         pytest.param((37, 448), torch.float32, marks=pytest.mark.smoke),
         pytest.param((1, 448), torch.bfloat16, marks=pytest.mark.full),
+        # An input large enough for the wide launch.
+        pytest.param((10000, 448), torch.bfloat16, marks=pytest.mark.full),
     ],
 )
 def test_fp8_quant_fake_quantizes_in_place(shape, dtype) -> None:

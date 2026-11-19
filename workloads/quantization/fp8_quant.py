@@ -5,6 +5,7 @@ import torch
 from workloads.device import run_device
 from workloads.quantization.quantize import (
     StridedInput,
+    bitwise_verification,
     fill_with_ties,
     round_up_to_power_of_two,
 )
@@ -78,19 +79,8 @@ class FP8QuantWorkload(WorkloadBase):
         if not self.use_ue8m0:
             return Custom(assert_quantized, "FP8 codes and scales")
 
-        def validate(got, expected):
-            assert len(got) == len(expected) == 3
-            for actual, reference in zip(got, expected, strict=True):
-                if reference is None:
-                    assert actual is None, "an output the call does not produce is not None"
-                    continue
-                assert actual.shape == reference.shape and actual.dtype == reference.dtype
-                assert torch.equal(
-                    actual.contiguous().view(torch.uint8), reference.contiguous().view(torch.uint8)
-                ), "UE8M0 quantization bits differ"
-
         # A power-of-two scale makes x / scale exact, so only the rounding to e4m3 remains.
-        return Custom(validate, "UE8M0 codes, scales and fake-quantized values, bit for bit")
+        return bitwise_verification("UE8M0 codes, scales and fake-quantized values, bit for bit")
 
 
 class FP8QuantViewWorkload(StridedInput, FP8QuantWorkload):
