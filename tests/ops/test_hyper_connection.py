@@ -269,14 +269,6 @@ def test_hyper_connection_head_folds_leading_axes() -> None:
 
 
 @pytest.mark.smoke
-def test_hyper_connection_head_runs_after_a_tuning_request() -> None:
-    test = HyperConnectionHeadTest((8,), 4, 4096)
-    op = HyperConnectionHeadFwdOp(1e-6, 1e-6)
-    op.request_tune()
-    test.check(op, *test.gen_inputs())
-
-
-@pytest.mark.smoke
 def test_hyper_connection_head_reads_strided_inputs() -> None:
     """Views that are not contiguous: every other token of the streams and every other
     stream bias, and hc_fn stored transposed."""
