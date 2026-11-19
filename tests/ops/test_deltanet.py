@@ -609,6 +609,21 @@ def test_deltanet_decode(
     test.check(DeltaNetRecurrentFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("width", "dtype"),
+    [(64, torch.float16), (64, torch.float32), (128, torch.bfloat16)],
+)
+def test_deltanet_decode_accepts_strided_inputs(width: int, dtype: torch.dtype) -> None:
+    torch.manual_seed(42)
+    inputs = DeltaNetDecodeTest(2, 2, width, width, dtype).gen_inputs()
+    views = tuple(t.transpose(0, 1).contiguous().transpose(0, 1) for t in inputs)
+    assert all(not view.is_contiguous() for view in views)
+    op = DeltaNetRecurrentFwdOp(target=BUILTIN)
+    torch.testing.assert_close(op(*views), op(*inputs), atol=0, rtol=0)
+
+
 def _check_decode_steps(op, batch: int, heads: int, dim_k: int, dim_v: int, dtype) -> None:
     """Eight decode steps from a zero state, each output and state checked against the
     reference."""

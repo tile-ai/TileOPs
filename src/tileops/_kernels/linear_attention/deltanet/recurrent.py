@@ -372,7 +372,8 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.program(self._compile)(q, k, v, beta, state)
+        tensors = (q, k, v, beta, state)
+        return self.program(self._compile)(*(tensor.contiguous() for tensor in tensors))
 
 
 class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
@@ -517,7 +518,8 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.program(self._compile)(q, k, v, beta, state)
+        tensors = (q, k, v, beta, state)
+        return self.program(self._compile)(*(tensor.contiguous() for tensor in tensors))
 
 
 @target_cache(maxsize=32)
@@ -719,4 +721,5 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.program(self._compile)(q, k, v, beta, state)
+        tensors = (q, k, v, beta, state)
+        return self.program(self._compile)(*(tensor.contiguous() for tensor in tensors))

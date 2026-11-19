@@ -261,7 +261,8 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.program(self._compile)(q, k, v, gk, state)
+        tensors = (q, k, v, gk, state)
+        return self.program(self._compile)(*(tensor.contiguous() for tensor in tensors))
 
 
 @target_cache(maxsize=32)
@@ -472,4 +473,5 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.program(self._compile)(q, k, v, gk, state)
+        tensors = (q, k, v, gk, state)
+        return self.program(self._compile)(*(tensor.contiguous() for tensor in tensors))

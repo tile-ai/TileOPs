@@ -838,7 +838,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
         initial_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         dtype = getattr(torch, self.dtype_name)
-        q, k, v, g = (t.to(dtype) for t in (q, k, v, g))
+        q, k, v, g = (tensor.to(dtype).contiguous() for tensor in (q, k, v, g))
         update_fn, output_fn = self.program(self._programs)
         update, g_last = update_fn(k, v, g)
         if initial_state is None:
@@ -849,7 +849,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
             )
         else:
             h, final_state = self.program(self._walk_program, True)(
-                update, g_last, initial_state.to(torch.float32)
+                update, g_last, initial_state.to(torch.float32).contiguous()
             )
         o = output_fn(q, k, v, g, h)
         return o, final_state, h
