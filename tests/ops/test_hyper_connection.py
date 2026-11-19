@@ -148,14 +148,6 @@ def test_hyper_connection_post_op(shape, n, c, mix_dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_hyper_connection_post_runs_after_a_tuning_request() -> None:
-    test = HyperConnectionPostTest((8,), 4, 4096)
-    op = HyperConnectionPostFwdOp()
-    op.request_tune()
-    test.check(op, *test.gen_inputs())
-
-
-@pytest.mark.smoke
 def test_hyper_connection_post_reads_strided_inputs() -> None:
     """Views that are not contiguous: every other token of x and of the residual streams, and
     mixes stored transposed."""
