@@ -1,10 +1,3 @@
-"""Block-wise FP4 e2m1 quantization operator (L2 Op layer).
-
-Provides:
-  - FP4QuantPerGroupFwdOp: q = e2m1(clamp(x / scale, -6, 6)) per block of the last axis,
-    scale = 2 ** ceil(log2(max(amax, 6 * 2 ** -126) / 6))
-"""
-
 from collections.abc import Mapping
 from typing import ClassVar
 
@@ -35,9 +28,9 @@ class FP4QuantPerGroupFwdOp(Op):
     ``q`` holds two codes a byte, the even column in the low nibble, as ``uint8``: the
     logical dtype is ``float4_e2m1fn_x2``, which ``q.view(torch.float4_e2m1fn_x2)`` gives.
     ``scale`` is ``float8_e8m0fnu``. With ``inplace``, ``x`` is overwritten with
-    $code \\cdot s$, exact in ``bfloat16``, and returned in the third slot, ``q`` and
-    ``scale`` being ``None``; otherwise the third slot is ``None``. A block holding an
-    infinity or a NaN has no defined result.
+    $code \\cdot s$, exact in ``bfloat16`` below $|x| = 1.75 \\cdot 2^{127}$ and infinite
+    from there, and returned in the third slot, ``q`` and ``scale`` being ``None``; otherwise
+    the third slot is ``None``. A block holding an infinity or a NaN has no defined result.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp4_quant": FP4QuantKernel}
@@ -88,7 +81,6 @@ class FP4QuantPerGroupFwdOp(Op):
             ```
         """
         if not self.inplace:
-            # In place, x is written where it lies.
             x = x.contiguous()
         kernel = self.kernel_for(
             "fp4_quant",

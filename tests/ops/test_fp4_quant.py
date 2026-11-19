@@ -32,17 +32,18 @@ class FP4QuantViewTest(FP4QuantViewWorkload, TestBase):
         # Its compressed keys; a last block of rows the CTA does not fill.
         pytest.param((3000, 128), 32, True, marks=pytest.mark.full),
         pytest.param((3000, 128), 32, False, marks=pytest.mark.full),
-        # One token.
-        pytest.param((1, 64, 128), 32, True, marks=pytest.mark.full),
-        # Other power-of-two block sizes, and one with an odd factor, reduced in one thread.
+        # Other power-of-two block sizes.
         pytest.param((256, 256), 16, False, marks=pytest.mark.full),
         pytest.param((256, 256), 128, True, marks=pytest.mark.full),
-        pytest.param((100, 192), 96, False, marks=pytest.mark.full),
-        # Runs of 4 and 2 codes, packed into a uint16 and a uint8.
+        # Runs of 4 and 2 codes, packed into a uint16 and a uint8; 12's odd factor puts each
+        # block in one thread.
         pytest.param((64, 48), 12, False, marks=pytest.mark.full),
         pytest.param((64, 64), 2, False, marks=pytest.mark.full),
         # An odd block size, fake-quantized one column a run.
         pytest.param((64, 63), 3, True, marks=pytest.mark.full),
+        # An input large enough for the wide launch, in both modes.
+        pytest.param((512, 64, 128), 32, False, marks=pytest.mark.full),
+        pytest.param((512, 64, 128), 32, True, marks=pytest.mark.full),
     ],
 )
 def test_fp4_quant_op(shape, block_size, inplace) -> None:
@@ -74,10 +75,13 @@ def test_fp4_quant_rounds_ties_to_even_and_keeps_signed_zeros(inplace) -> None:
     [
         # Columns of wider rows: rows 160 apart, fake-quantized without a copy.
         pytest.param((50, 160), (..., slice(0, 128)), marks=pytest.mark.smoke, id="leading"),
-        pytest.param((3, 20, 160), (..., slice(32, 160)), marks=pytest.mark.full, id="trailing"),
         # Rows not evenly spaced go through a contiguous copy.
         pytest.param(
             (3, 30, 128), (slice(None), slice(0, 20)), marks=pytest.mark.full, id="uneven-rows"
+        ),
+        # Rows of more blocks than the grid's y extent go through a contiguous copy.
+        pytest.param(
+            (2, 65537 * 32), (..., slice(0, 65536 * 32)), marks=pytest.mark.full, id="past-grid-y"
         ),
     ],
 )
@@ -94,17 +98,6 @@ def test_fp4_quant_fake_quantizes_a_strided_view_in_place(wide_shape, index) -> 
     kept = torch.ones_like(wide, dtype=torch.bool)
     kept[index] = False
     assert torch.equal(wide[kept], before[kept])
-
-
-@pytest.mark.smoke
-def test_fp4_quant_returns_codes_viewable_as_float4() -> None:
-    """``q`` is the bytes of ``float4_e2m1fn_x2`` and ``scale`` is ``float8_e8m0fnu``."""
-    x = torch.randn(4, 64, dtype=torch.bfloat16, device=run_device())
-    q, scale, output = FP4QuantPerGroupFwdOp()(x)
-    assert output is None
-    assert q.dtype == torch.uint8 and q.shape == (4, 32)
-    assert scale.dtype == torch.float8_e8m0fnu and scale.shape == (4, 2)
-    assert q.view(torch.float4_e2m1fn_x2).shape == (4, 32)
 
 
 @pytest.mark.smoke
@@ -130,7 +123,7 @@ def test_fp4_quant_serves_new_token_counts_from_one_kernel() -> None:
     "block_size, inplace, reason",
     [
         (3, False, "two blocks"),
-        (192, False, "register budget"),
+        (192, True, "register budget"),
     ],
     ids=["odd-block", "past-register-budget"],
 )

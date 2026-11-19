@@ -22,10 +22,6 @@ from tileops._kernels.quantization.group_quant import (
 
 __all__ = ["FP4QuantCall", "FP4QuantFwdInterface", "FP4QuantKernel"]
 
-# Largest finite e2m1 magnitude. The reference clamps x / scale to +-6 before rounding; the
-# kernels need not: the scale is at least the block maximum times the float32 nearest 1 / 6,
-# which exceeds 1 / 6, rounded to float32 and then up to a power of two, so |x / scale| is at
-# most 6 * (1 + 3e-8), and that rounds to 6 as a clamped value does.
 _E2M1_MAX = 6.0
 
 
@@ -85,13 +81,11 @@ def _e2m1_code(y):
     """The e2m1 code of a float32 *y* in ``[-6, 6]``: its magnitude rounded half to even to
     the e2m1 values, and its sign in bit 3.
 
-    The magnitude over its spacing is exact, as the spacing is a power of two, and rounds to
-    ``k`` once; an even ``k`` is an even code, as a magnitude ``k`` spacings of biased
-    exponent ``step`` has code ``k + 2 * (step - 126)``.
+    The magnitude over its spacing is exact, as the spacing is a power of two; adding
+    ``2 ** 23`` rounds it half to even to ``k``, which the sum's low mantissa bits hold. An
+    even ``k`` is an even code, as a magnitude ``k`` spacings of biased exponent ``step`` has
+    code ``k + 2 * (step - 126)``.
     """
-    # Adding 2 ** 23 to a float32 below 2 ** 22 rounds it half to even to an integer, which
-    # the low mantissa bits of the sum then hold; it replaces a nearbyint and a float to
-    # integer conversion, which run at a quarter of the ALU rate.
     rounder = T.float32(2.0**23)
     bits = T.reinterpret(y, "uint32")
     step = _e2m1_step(bits)
@@ -130,18 +124,18 @@ def _vector(block_size: int, itemsize: int) -> int:
 
 def _load_blocks(block_m: int, block_size: int, vector: int):
     """A macro loading the blocks at column ``col`` of rows ``first`` onward of ``rows`` into a
-    ``[block_m, block_size // vector, vector]`` fragment, one thread's run on its last axis."""
+    ``[block_m, block_size // vector, vector]`` fragment, one thread's run on its last axis.
+
+    Only a block of rows reaching past ``rows`` bounds its loads, re-reading the last row in
+    place of the missing ones."""
     runs = block_size // vector
 
     @T.macro
     def load_blocks(input_tensor, first, rows, col, input_local):
-        # Only the last block of rows can reach past them; every other loads without the
-        # bound, which a runtime row count would otherwise cost each access.
         if first + block_m <= rows:
             for i, j, v in T.Parallel(block_m, runs, vector):
                 input_local[i, j, v] = input_tensor[first + i, col + j * vector + v]
         else:
-            # The last block of rows re-reads its last row; the stores drop those rows.
             for i, j, v in T.Parallel(block_m, runs, vector):
                 input_local[i, j, v] = input_tensor[
                     T.min(first + i, rows - 1), col + j * vector + v
@@ -151,18 +145,21 @@ def _load_blocks(block_m: int, block_size: int, vector: int):
 
 
 def _block_scales(block_m: int, block_size: int, vector: int):
-    """A macro writing each loaded block's scale exponent and the reciprocal of its scale."""
+    """A macro writing each loaded block's scale exponent and the reciprocal of its scale.
+
+    A run is reduced in the thread holding it, then across the threads holding the block.
+    The scale is at least the block maximum times the float32 nearest ``1 / 6``, as
+    ``fp4_act_quant`` multiplies rather than divides, so a bfloat16 element times the
+    reciprocal lies in ``[-6, 6]`` and needs no clamp.
+    """
     runs = block_size // vector
     amax_floor = _E2M1_MAX * 2.0**-126
-    # fp4_act_quant multiplies by the float32 reciprocal of 6 rather than dividing.
     inv_e2m1_max = float32_constant(1.0 / _E2M1_MAX)
 
     @T.macro
     def block_scales(input_local, exponent_local, recip_local):
         run_max = T.alloc_fragment((block_m, runs), "float32")
         amax_local = T.alloc_fragment((block_m,), "float32")
-        # A run is reduced in the thread holding it; the loops over (i, j) index a run's
-        # elements by a serial index, which keeps the run in one thread.
         for i, j in T.Parallel(block_m, runs):
             run_max[i, j] = 0.0
             for v in T.unroll(vector):
@@ -175,7 +172,6 @@ def _block_scales(block_m: int, block_size: int, vector: int):
     return block_scales
 
 
-# The word a run of 8, 4 or 2 codes packs into, four bits each.
 _PACKED_DTYPES = {8: "uint32", 4: "uint16", 2: "uint8"}
 
 
@@ -183,13 +179,10 @@ _PACKED_DTYPES = {8: "uint32", 4: "uint16", 2: "uint8"}
 def _fp4_quant_kernel(block_size: int, in_dtype: str, threads: int, vector: int):
     @tilelang.jit
     def _fp4_quant_fwd_func(block_m):
-        if block_m < 1:
-            raise ValueError(f"block_m={block_m} must be positive")
         runs = block_size // vector
         packed_dtype = _PACKED_DTYPES[vector]
         load_blocks = _load_blocks(block_m, block_size, vector)
         block_scales = _block_scales(block_m, block_size, vector)
-        # The block count is a runtime extent, so a new token count builds no program.
         rows = T.dynamic("rows")
 
         @T.prim_func
@@ -207,8 +200,6 @@ def _fp4_quant_kernel(block_size: int, in_dtype: str, threads: int, vector: int)
                 first = pid_m * block_m
                 load_blocks(input_tensor, first, rows, 0, input_local)
                 block_scales(input_local, exponent_local, recip_local)
-                # A run's codes go into one word, column v at bits 4v: the codes share no bit,
-                # so adding them is or-ing them, and a shift-add is one instruction.
                 for i, j in T.Parallel(block_m, runs):
                     packed = T.alloc_var("uint32")
                     packed = T.uint32(0)
@@ -217,7 +208,6 @@ def _fp4_quant_kernel(block_size: int, in_dtype: str, threads: int, vector: int)
                         packed = packed + (_e2m1_code(y) << T.cast(4 * v, "uint32"))
                     output_local[i, j] = T.cast(packed, packed_dtype)
 
-                # An e8m0 scale is the biased exponent of its power-of-two float32 scale.
                 if first + block_m <= rows:
                     for i in T.Parallel(block_m):
                         scale_tensor[first + i] = T.cast(exponent_local[i], "uint8")
@@ -242,8 +232,6 @@ def _fp4_fake_quant_kernel(
 ):
     @tilelang.jit
     def _fp4_fake_quant_fwd_func(block_m):
-        if block_m < 1:
-            raise ValueError(f"block_m={block_m} must be positive")
         runs = block_size // vector
         load_blocks = _load_blocks(block_m, block_size, vector)
         block_scales = _block_scales(block_m, block_size, vector)
@@ -254,7 +242,6 @@ def _fp4_fake_quant_kernel(
         def _fp4_fake_quant_fwd_main(
             input_tensor: T.StridedTensor[(rows, width), (row_stride, 1), in_dtype],
         ):
-            # A CTA owns one block column of block_m rows.
             with T.Kernel(T.ceildiv(rows, block_m), row_blocks, threads=threads) as (
                 pid_m,
                 pid_n,
@@ -268,8 +255,6 @@ def _fp4_fake_quant_kernel(
                 col = pid_n * block_size
                 load_blocks(input_tensor, first, rows, col, input_local)
                 block_scales(input_local, exponent_local, recip_local)
-                # An e2m1 value times the scale is exact in float32 and has at most two
-                # significant bits, so the cast to the input dtype is exact.
                 for i, j, v in T.Parallel(block_m, runs, vector):
                     y = T.cast(input_local[i, j, v], "float32") * recip_local[i]
                     output_local[i, j, v] = T.cast(
@@ -295,9 +280,7 @@ class FP4QuantKernel(Kernel, FP4QuantFwdInterface):
     A CTA owns whole blocks and reduces each across the threads holding it, or inside one
     thread where the block width leaves the reduction no power-of-two group of threads.
     Rounding to e2m1 is integer arithmetic on the float32 bits and one float32 add, so it
-    needs no FP4 conversion instruction. Fake quantization in place reads and writes the
-    blocks where they lie, rows ``row_stride`` elements apart; a layout whose rows are not
-    evenly spaced goes through a contiguous copy.
+    needs no FP4 conversion instruction.
 
     Args:
         n: Columns of the last axis.
@@ -310,7 +293,6 @@ class FP4QuantKernel(Kernel, FP4QuantFwdInterface):
 
     supported_archs: list[int] = [89, 90]
 
-    # The launch picks its program from the input size, so tuning has no candidate to time.
     autotune_configs = None
 
     @classmethod

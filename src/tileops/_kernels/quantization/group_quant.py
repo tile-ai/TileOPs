@@ -11,7 +11,7 @@ from collections.abc import Callable
 import tilelang.language as T
 import torch
 
-from tileops._kernels.constants import VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS, VECTOR_ACCESS_BYTES
 
 __all__ = [
     "LAUNCH_CONFIG",
@@ -105,10 +105,10 @@ def register_refusal(name: str, group_size: int, itemsize: int) -> str | None:
     """Why a group of *group_size* elements is refused, or None.
 
     A thread holds its share of a block's groups in registers, once loaded and once
-    converted; past 128 elements the fragments spill. The wide layout, 128 threads of two
-    vectors, gives a thread the most.
+    converted; past 128 elements the fragments spill. The default wide layout gives a thread
+    the most.
     """
-    threads, block_m = _group_launch(group_size, itemsize, 128, 2)
+    threads, block_m = launch_shape(LAUNCH_CONFIG, "wide", group_size, itemsize)
     per_thread = block_m * group_size // threads
     if per_thread > 128:
         return (
@@ -121,23 +121,27 @@ def register_refusal(name: str, group_size: int, itemsize: int) -> str | None:
 def write_in_place(
     x: torch.Tensor, k: int, group_size: int, launch: Callable[[torch.Tensor, int, int], None]
 ) -> None:
-    """Run ``launch(rows, row_groups, row_stride)`` over *x*'s groups where they lie.
+    """Run ``launch(rows, row_groups, row_stride)`` over *x*'s groups where they lie;
+    ``launch`` puts ``row_groups`` on the grid's y extent.
 
     *x* is ``[*S, k]``. Rows of unit column stride evenly spaced are written without a copy:
     rows ``k`` apart as one run of groups, ``[groups, group_size]`` with ``row_groups`` 1,
     and the columns of wider rows, the leading 448 of a ``[*S, 512]`` cache row for one, as
-    ``[rows, k]`` of ``k // group_size`` groups. Other layouts, such as a slice along a
-    middle axis, go through a contiguous copy written back.
+    ``[rows, k]`` of ``k // group_size`` groups where that is at most ``MAX_GRID_YZ_BLOCKS``.
+    Other layouts, such as a slice along a middle axis, go through a contiguous copy written
+    back.
     """
     try:
         rows = x.view(-1, k)
     except RuntimeError:
         rows = None
-    if rows is None or (k > 1 and rows.stride(1) != 1):
-        dense = x.contiguous()
-        launch(dense.view(-1, group_size), 1, group_size)
-        x.copy_(dense)
-    elif rows.shape[0] <= 1 or rows.is_contiguous():
-        launch(rows.view(-1, group_size), 1, group_size)
-    else:
-        launch(rows, k // group_size, rows.stride(0))
+    if rows is not None and (k <= 1 or rows.stride(1) == 1):
+        if rows.is_contiguous():
+            launch(rows.view(-1, group_size), 1, group_size)
+            return
+        if k // group_size <= MAX_GRID_YZ_BLOCKS:
+            launch(rows, k // group_size, rows.stride(0))
+            return
+    dense = x.contiguous()
+    launch(dense.view(-1, group_size), 1, group_size)
+    x.copy_(dense)

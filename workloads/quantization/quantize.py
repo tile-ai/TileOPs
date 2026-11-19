@@ -92,6 +92,25 @@ def smooth_quant(x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, t
     return _to_int8(xs, scale[:, None]), scale
 
 
+def bitwise_verification(reason: str):
+    """A ``Custom`` declaration requiring each output's bits, a signed zero and a scale byte
+    included, to equal the reference's, and an output the reference leaves ``None`` to be
+    ``None``."""
+    from workloads.numerics import Custom
+
+    def validate(got, expected):
+        for actual, reference in zip(got, expected, strict=True):
+            if reference is None:
+                assert actual is None, "an output the call does not produce is not None"
+                continue
+            assert actual.shape == reference.shape and actual.dtype == reference.dtype
+            assert torch.equal(
+                actual.contiguous().view(torch.uint8), reference.contiguous().view(torch.uint8)
+            ), "quantization bits differ"
+
+    return Custom(validate, reason)
+
+
 def round_up_to_power_of_two(t: torch.Tensor) -> torch.Tensor:
     """``2 ** ceil(log2(t))`` of a positive float32 *t*, subnormals included."""
     mantissa, exponent = torch.frexp(t)
@@ -143,10 +162,10 @@ def _e2m1_codes(y: torch.Tensor) -> torch.Tensor:
 
 
 def _e2m1_values(codes: torch.Tensor) -> torch.Tensor:
+    """The float32 value of each e2m1 code, a negative zero included: the magnitude is
+    multiplied by the sign, as a compiled negation, ``0 - value``, drops it."""
     grid = torch.tensor((0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0), device=codes.device)
     value = grid[(codes & 7).long()]
-    # Times the sign rather than negated: a compiled negation is 0 - value, which drops the
-    # sign of a negative zero.
     return value * torch.where((codes & 8) != 0, -1.0, 1.0)
 
 
@@ -246,15 +265,9 @@ class FP8QuantPerBlockWorkload(_QuantizeWorkload):
         return fp8_quant_per_block(w)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
-        def validate(got, expected):
-            for actual, reference in zip(got, expected, strict=True):
-                assert torch.equal(actual.view(torch.uint8), reference.view(torch.uint8)), (
-                    "quantization bits differ"
-                )
-
-        return Custom(validate, "bitwise FP8 codes and block scales, including NaN and signed zero")
+        return bitwise_verification(
+            "bitwise FP8 codes and block scales, including NaN and signed zero"
+        )
 
 
 class INT4QuantPerGroupWorkload(_QuantizeWorkload):
@@ -307,21 +320,7 @@ class FP4QuantWorkload(WorkloadBase):
         return fp4_quant_per_group(x, self.block_size, self.inplace)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
-        def validate(got, expected):
-            assert len(got) == len(expected) == 3
-            for actual, reference in zip(got, expected, strict=True):
-                if reference is None:
-                    assert actual is None, "an output the call does not produce is not None"
-                    continue
-                assert actual.shape == reference.shape and actual.dtype == reference.dtype
-                # Bits, so a signed zero and the scale byte are compared too.
-                assert torch.equal(
-                    actual.contiguous().view(torch.uint8), reference.contiguous().view(torch.uint8)
-                ), "e2m1 quantization bits differ"
-
-        return Custom(validate, "bitwise e2m1 codes, e8m0 scales and fake-quantized values")
+        return bitwise_verification("bitwise e2m1 codes, e8m0 scales and fake-quantized values")
 
 
 class FP4QuantViewWorkload(StridedInput, FP4QuantWorkload):
@@ -361,12 +360,13 @@ _E2M1_TIES = (
 
 
 class FP4QuantTiesWorkload(FP4QuantWorkload):
-    """The workload on rows of e2m1 rounding ties, each row scaled by its own power of two,
+    """The workload on rows of e2m1 rounding ties, each row scaled by its own power of two
+    from ``2 ** -126``, where the smaller ties are ``bfloat16`` subnormals, to ``2 ** 125``,
     and on all-zero rows, whose maximum is the ``6 * 2 ** -126`` floor."""
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         (x,) = super().gen_inputs()
-        fill_with_ties(x, self.block_size, _E2M1_TIES, 64)
+        fill_with_ties(x, self.block_size, _E2M1_TIES, 252)
         return (x,)
 
 
