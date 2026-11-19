@@ -146,7 +146,7 @@ class HyperConnectionPostFwdOp(Op):
     }
 
     def __init__(self, *, target: Target = None):
-        """Build the op. Shapes are taken from the first call.
+        """Build the op. Shapes are taken from each call.
 
         Args:
             target: Which set of kernels serves this op — a target name, ``BUILTIN``

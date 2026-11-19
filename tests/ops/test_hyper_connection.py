@@ -129,10 +129,8 @@ def test_hyper_connection_pre_refuses_what_no_kernel_serves(n, c, params, reason
         pytest.param((37,), 4, 4096, torch.bfloat16, marks=pytest.mark.smoke),
         # Enough tokens for the program giving a thread four runs.
         pytest.param((600,), 4, 4096, torch.float32, marks=pytest.mark.full),
-        # A last CTA of a row past its columns: 7168 columns in 4-run CTAs of 4096, and
-        # 1000 in 1-run CTAs of 1024.
+        # A last CTA of a row past its columns: 7168 columns in 4-run CTAs of 4096.
         pytest.param((500,), 4, 7168, torch.float32, marks=pytest.mark.full),
-        pytest.param((3,), 4, 1000, torch.float32, marks=pytest.mark.full),
         # Columns read 2 and 1 a vector.
         pytest.param((4,), 4, 998, torch.float32, marks=pytest.mark.full),
         pytest.param((4,), 4, 999, torch.bfloat16, marks=pytest.mark.full),

@@ -145,7 +145,8 @@ class HyperConnectionPostKernel(Kernel, HyperConnectionPostFwdInterface):
 
     @classmethod
     def refusal(cls, call: HyperConnectionPostCall) -> str | None:
-        # comb_res_mix entries a thread holds, as float32 registers.
+        # The comb_res_mix entries a thread holds as float32 get a quarter of its registers;
+        # its residual runs take half.
         max_comb_entries = 64
         if call.n * call.n > max_comb_entries:
             return (
