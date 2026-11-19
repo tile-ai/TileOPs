@@ -18,6 +18,7 @@ from tileops._kernels.pool import (
     AvgPool1dRegisterKernel,
     AvgPool2dFwdInterface,
 )
+from tileops._kernels.pool.call_spec import AvgPoolCall
 from tileops._utils import device_facts
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -783,28 +784,88 @@ def test_avg_pool1d_windows_read_into_registers(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "shape",
+    "shape, kernel_l, pad_l, count_include_pad, kernel_type",
     [
         # The fixture's fp16 smoke shape.
-        pytest.param((2, 64, 512), id="fixture-shape", marks=pytest.mark.smoke),
+        pytest.param(
+            (2, 64, 512),
+            3,
+            1,
+            False,
+            AvgPool1dRegisterKernel,
+            id="fixture-shape-register",
+            marks=pytest.mark.smoke,
+        ),
         # One row of 2**31 elements: the last window ends at 2**31. Costs 6 GiB.
-        pytest.param((1, 1, 2**31), id="row-of-2-31-elements", marks=pytest.mark.full),
+        pytest.param(
+            (1, 1, 2**31),
+            3,
+            1,
+            False,
+            AvgPool1dRegisterKernel,
+            id="row-of-2-31-elements-register",
+            marks=pytest.mark.full,
+        ),
+        # A window reaching two elements past a load is staged in shared memory. Costs 6 GiB.
+        pytest.param(
+            (1, 1, 2**31),
+            5,
+            2,
+            False,
+            AvgPool1dKernel,
+            id="row-of-2-31-elements-staged",
+            marks=pytest.mark.full,
+        ),
     ],
 )
-def test_avg_pool1d_register_divides_each_end_of_the_row(shape: tuple[int, int, int]) -> None:
+def test_avg_pool1d_divides_each_end_of_the_row(
+    shape: tuple[int, int, int],
+    kernel_l: int,
+    pad_l: int,
+    count_include_pad: bool,
+    kernel_type: type,
+) -> None:
     """The windows at each end of a row divide by the positions they count, also where the
-    last window's end, 2**31, passes INT32_MAX. torch pools a row of 2**31 elements to zeros,
-    so each end is checked against torch on a slice of at most 1024 elements."""
-    edge = min(shape[-1], 1024)
+    last window's end passes INT32_MAX. torch pools a row of 2**31 elements to zeros, so
+    each end is checked against torch on a slice of at most 1024 elements, dropping the
+    windows the slice, not the row, cuts."""
+    stride_l, edge = 2, min(shape[-1], 1024)
     x = torch.randn(*shape, device=run_device(), dtype=torch.float16)
-    op = AvgPool1dFwdOp(kernel_size=3, stride=2, padding=1, count_include_pad=False, target=BUILTIN)
+    op = AvgPool1dFwdOp(
+        kernel_size=kernel_l,
+        stride=stride_l,
+        padding=pad_l,
+        count_include_pad=count_include_pad,
+        target=BUILTIN,
+    )
     out = op(x)
-    assert [type(k) for k in op.iter_kernels()] == [AvgPool1dRegisterKernel]
-    head = F.avg_pool1d(x[..., :edge], 3, 2, 1, False, False)
-    # The tail slice's first window may be cut by the slice, not the row: drop it.
-    tail = F.avg_pool1d(x[..., -edge:], 3, 2, 1, False, False)[..., 1:]
+    assert [type(k) for k in op.iter_kernels()] == [kernel_type]
+
+    def pool(part: torch.Tensor) -> torch.Tensor:
+        return F.avg_pool1d(part, kernel_l, stride_l, pad_l, False, count_include_pad)
+
+    # Head windows ending inside the slice; tail windows starting inside it.
+    head = pool(x[..., :edge])[..., : (edge + pad_l - kernel_l) // stride_l + 1]
+    tail = pool(x[..., -edge:])[..., -(-pad_l // stride_l) :]
     torch.testing.assert_close(out[..., : head.shape[-1]], head, rtol=0, atol=0)
     torch.testing.assert_close(out[..., -tail.shape[-1] :], tail, rtol=0, atol=0)
+
+
+@pytest.mark.smoke
+def test_avg_pool1d_register_refuses_groups_past_its_int32_thread_index() -> None:
+    """The register kernel's one-axis grid indexes a thread a group of outputs in int32, so
+    a call whose groups and one more block pass 2**31 - 1 goes to AvgPool1dKernel."""
+    # fp16, kernel 2, stride 2: four outputs a group, 16385 groups a row, 2**31 + 2**17 in all.
+    call = AvgPoolCall(
+        n=1,
+        c_in=131072,
+        size=(131080,),
+        window=(2,),
+        stride=(2,),
+        pad=(0,),
+        dtype=torch.float16,
+    )
+    assert "groups of outputs" in AvgPool1dRegisterKernel.refusal(call)
 
 
 @pytest.mark.in_tree_kernels

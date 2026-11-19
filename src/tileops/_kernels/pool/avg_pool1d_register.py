@@ -58,8 +58,6 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
 
     @tilelang.jit(out_idx=[1])
     def build(threads: int, flat: bool):
-        # The one-axis grid's last thread index passes 2**31 - 1 once the units do.
-        unit_dtype = "int64" if units + threads > 2**31 - 1 else "int32"
         x_shape = (T.int64(rows), T.int64(l_in)) if wide else (rows, l_in)
         y_shape = (T.int64(rows), T.int64(out_l)) if wide else (rows, out_l)
 
@@ -120,7 +118,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
             ):
                 with T.Kernel(-(-units // threads), threads=threads) as bx:
                     tx = T.get_thread_binding()
-                    unit = T.cast(bx, unit_dtype) * threads + tx
+                    unit = bx * threads + tx
                     means = T.alloc_local([outputs], dtype)
                     last = T.min(unit, units - 1)
                     row, group = last // groups, last % groups
@@ -199,6 +197,10 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
             out_l > 0 and out_l % outputs == 0 and out_l * stride_l <= l_in and l_in % run == 0
         ):
             return f"requires whole {run}-element loads along the row"
+        # A thread a group of outputs: the one-axis grid's int32 thread index must hold the
+        # last group's thread and the rest of its block.
+        if call.n * call.c_in * (out_l // outputs) > 2**31 - 1 - MAX_BLOCK_THREADS:
+            return f"serves at most 2**31 - 1 - {MAX_BLOCK_THREADS} groups of outputs"
         return super().refusal(call)
 
     @classmethod

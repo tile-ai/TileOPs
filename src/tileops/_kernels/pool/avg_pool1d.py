@@ -136,6 +136,9 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
             block_ol, block_ol * stride_l, l_in, kernel_l, stride_l, pad_l, 1, dtype
         )
         vectors = span // vector_elems
+        # A position of a row that long can pass 2**31 - 1 once a tile's span or the
+        # window's width is added.
+        position_dtype = "int64" if l_in + max(kernel_l, span) >= 2**31 else "int32"
         # The tile holds zeros outside the row, so a tap needs no test and this offset.
         base = head - pad_l
         blocks_per_row = (out_l + block_ol - 1) // block_ol
@@ -174,7 +177,7 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
             if whole:
                 out[out_row, ol] = T.cast(total / T.cast(kernel_l, ACCUM_DTYPE), dtype)
             else:
-                start = ol * stride_l - pad_l
+                start = T.cast(ol, position_dtype) * stride_l - pad_l
                 if count_include_pad:
                     divisor = T.max(T.min(start + kernel_l, l_in + pad_l) - T.max(start, -pad_l), 1)
                 else:
@@ -207,7 +210,7 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
         def _pool_tile(x, out, bx, by):
             """Stage and pool tile ``bx`` of row ``by``."""
             tile = T.alloc_shared((span,), dtype)
-            origin = bx * (block_ol * stride_l) - head
+            origin = T.cast(bx, position_dtype) * (block_ol * stride_l) - head
             if edge_free:
                 _stage_inside(tile, x, origin, by)
             else:
