@@ -100,6 +100,7 @@ from tileops._ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops._ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops._ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops._ops.sequence_modeling.hyper_connection import (
+    HyperConnectionHeadFwdOp,
     HyperConnectionPostFwdOp,
     HyperConnectionPreFwdOp,
 )
@@ -849,12 +850,23 @@ def _sequence_modeling_cases():
             _x(_M, _SEQ_LEN, streams, streams, **mix),
         )
 
+    def hyper_connection_head():
+        streams = 4
+        f32 = dict(dtype=torch.float32)
+        return HyperConnectionHeadFwdOp(1e-6, 1e-6), (
+            _x(_M, _SEQ_LEN, streams, _D),
+            _x(streams, streams * _D, **f32),
+            _x(1, **f32),
+            _x(streams, **f32),
+        )
+
     return (
         ("engram-gate-conv-fwd", engram_gate_conv_fwd),
         ("engram-gate-conv-bwd", engram_gate_conv_bwd),
         ("engram-decode", engram_decode),
         ("hyper-connection-pre", hyper_connection_pre),
         ("hyper-connection-post", hyper_connection_post),
+        ("hyper-connection-head", hyper_connection_head),
     )
 
 
@@ -1026,6 +1038,7 @@ for _op_cls in (
     EngramDecodeFwdOp,
     HyperConnectionPreFwdOp,
     HyperConnectionPostFwdOp,
+    HyperConnectionHeadFwdOp,
     RoPEFwdOp,
     RoPELlama31FwdOp,
     YaRNFwdOp,

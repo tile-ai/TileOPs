@@ -1,6 +1,8 @@
 """Manifold hyper-connection operators (L2 Op layer).
 
 Provides:
+  - HyperConnectionHeadFwdOp: output = sum_i pre_i * hidden_states[i], pre from the streams'
+    normalized projection onto hc_fn, per token
   - HyperConnectionPostFwdOp: output[j] = post_layer_mix[j] * x + sum_i comb_res_mix[i, j] *
     residual[i], per token
   - HyperConnectionPreFwdOp: the pre step of a block over ``n`` residual streams
@@ -13,6 +15,9 @@ import torch
 
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.sequence_modeling.hyper_connection import (
+    HyperConnectionHeadCall,
+    HyperConnectionHeadFwdInterface,
+    HyperConnectionHeadKernel,
     HyperConnectionPostCall,
     HyperConnectionPostFwdInterface,
     HyperConnectionPostKernel,
@@ -23,7 +28,11 @@ from tileops._kernels.sequence_modeling.hyper_connection import (
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
-__all__ = ["HyperConnectionPostFwdOp", "HyperConnectionPreFwdOp"]
+__all__ = [
+    "HyperConnectionHeadFwdOp",
+    "HyperConnectionPostFwdOp",
+    "HyperConnectionPreFwdOp",
+]
 
 
 class HyperConnectionPreFwdOp(Op):
@@ -201,3 +210,85 @@ class HyperConnectionPostFwdOp(Op):
             ),
         )
         return kernel(x, residual, post_layer_mix, comb_res_mix)
+
+
+class HyperConnectionHeadFwdOp(Op):
+    """Collapse the ``n`` residual streams of a manifold hyper-connection into one, before the
+    LM head.
+
+    Per token, with ``x`` the ``n`` streams flattened to ``n * C`` float32 values,
+    $pre = \\sigma((x \\cdot hc\\_fn^T) / \\sqrt{mean(x^2) + rms\\_norm\\_eps} \\cdot hc\\_scale +
+    hc\\_base) + hc\\_eps$ and the output is $\\sum_i pre_i \\cdot hidden\\_states_i$, summed in
+    float32 and rounded once to ``bfloat16``. This is DeepSeek-V4-Flash ``inference/model.py``
+    ``ParallelHead.hc_head``; GLM-5.3-Flash differs in its ``rms_norm_eps``. The dots and
+    square sum are reduced in another order than the reference's matrix product, so an
+    output can differ from it by one ``bfloat16`` rounding.
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "hyper_connection_head": HyperConnectionHeadKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "hyper_connection_head": HyperConnectionHeadFwdInterface
+    }
+
+    def __init__(self, rms_norm_eps: float, hc_eps: float, *, target: Target = None):
+        """Build the op. Shapes are taken from each call.
+
+        Args:
+            rms_norm_eps: Added to the mean square of a token's streams before the root.
+            hc_eps: Added to each stream's weight after the sigmoid.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.rms_norm_eps = rms_norm_eps
+        self.hc_eps = hc_eps
+        super().__init__(target=target)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        hc_fn: torch.Tensor,
+        hc_scale: torch.Tensor,
+        hc_base: torch.Tensor,
+    ) -> torch.Tensor:
+        """Collapse each token's streams.
+
+        Args:
+            hidden_states: The ``n`` streams, $[*S \\times n \\times C]$ ``bfloat16``.
+            hc_fn: The projection giving each stream's weight logit,
+                $[n \\times n C]$ ``float32``.
+            hc_scale: The logits' scale, $[1]$ ``float32``.
+            hc_base: Each stream's logit bias, $[n]$ ``float32``.
+
+        Returns:
+            The collapsed stream, $[*S \\times C]$ ``bfloat16``.
+
+        Example:
+            ```python linenums="1"
+            import torch
+            from tileops.sequence_modeling import HyperConnectionHeadFwdOp
+
+            hidden_states = torch.randn(64, 4, 4096, dtype=torch.bfloat16, device="cuda")
+            hc_fn = torch.randn(4, 4 * 4096, device="cuda") / 128
+            hc_scale = torch.ones(1, device="cuda")
+            hc_base = torch.zeros(4, device="cuda")
+            op = HyperConnectionHeadFwdOp(rms_norm_eps=1e-6, hc_eps=1e-6)
+            output = op(hidden_states, hc_fn, hc_scale, hc_base)
+            ```
+        """
+        hidden_states = hidden_states.contiguous()
+        hc_fn = hc_fn.contiguous()
+        hc_scale = hc_scale.contiguous()
+        hc_base = hc_base.contiguous()
+        kernel = self.kernel_for(
+            "hyper_connection_head",
+            lambda: HyperConnectionHeadCall(
+                n=hidden_states.shape[-2],
+                c=hidden_states.shape[-1],
+                rms_norm_eps=self.rms_norm_eps,
+                hc_eps=self.hc_eps,
+                device=hidden_states.device,
+            ),
+        )
+        return kernel(hidden_states, hc_fn, hc_scale, hc_base)

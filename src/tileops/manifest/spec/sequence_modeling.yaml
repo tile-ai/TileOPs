@@ -201,7 +201,7 @@ HyperConnectionHeadFwdOp:
   # bfloat16. DeepSeek-V4-Flash inference/model.py ParallelHead.hc_head; parameter names
   # follow vLLM's HCHeadOp, which has no torch reference.
   family: sequence_modeling
-  status: spec-only
+  status: implemented
   ref_api: workloads.sequence_modeling.hyper_connection.hc_head
   signature:
     forall: {S: Shape, n: Dim, C: Dim}
@@ -216,11 +216,12 @@ HyperConnectionHeadFwdOp:
     outputs:
       output: {dtype: bfloat16, shape: "[*S, C]"}
   workloads:
-    # DeepSeek-V4-Flash: 4 streams of 4096, epsilons 1e-6.
+    # DeepSeek-V4-Flash: 4 streams of 4096, epsilons 1e-6; GLM-5.3-Flash differs in its 1e-5
+    # norm epsilon.
   - {S: [1], n: 4, C: 4096, rms_norm_eps: 1.0e-6, hc_eps: 1.0e-6, label: dsv4-flash-t1}
   - {S: [64], n: 4, C: 4096, rms_norm_eps: 1.0e-6, hc_eps: 1.0e-6, label: dsv4-flash-b64}
   - {S: [4096], n: 4, C: 4096, rms_norm_eps: 1.0e-6, hc_eps: 1.0e-6, label: dsv4-flash-t4096}
-  - {S: [3000], n: 4, C: 4096, rms_norm_eps: 1.0e-6, hc_eps: 1.0e-6, label: dsv4-flash-t3000}
+  - {S: [3000], n: 4, C: 4096, rms_norm_eps: 1.0e-5, hc_eps: 1.0e-6, label: glm-5.3-flash-t3000}
   roofline:
     # Per token: the projection (2 per multiply-add) and the squared sum over n * C, the
     # mean, epsilon and rsqrt, its n multiplies, the scale and base, the sigmoid and epsilon

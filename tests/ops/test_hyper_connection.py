@@ -1,15 +1,25 @@
 """Public semantics of the manifold hyper-connection ops. Pre: each token count's path,
 leading shapes, a broadcast residual, one kernel serving every token count, and the calls no
 kernel serves. Post: each launch program, ragged columns, vector widths, stream counts and the
-mix dtypes."""
+mix dtypes. Head: each program, reached from the device's SM count, ragged columns, vector
+widths and stream counts."""
 
 import pytest
 import torch
 
 from tests.workload_test_base import TestBase, smoke_first
-from tileops.sequence_modeling import HyperConnectionPostFwdOp, HyperConnectionPreFwdOp
+from tileops._utils import get_sm_count
+from tileops.sequence_modeling import (
+    HyperConnectionHeadFwdOp,
+    HyperConnectionPostFwdOp,
+    HyperConnectionPreFwdOp,
+)
 from workloads.device import run_device
-from workloads.sequence_modeling import HyperConnectionPostWorkload, HyperConnectionPreCall
+from workloads.sequence_modeling import (
+    HyperConnectionHeadWorkload,
+    HyperConnectionPostWorkload,
+    HyperConnectionPreCall,
+)
 from workloads.workload_base import manifest_call
 
 
@@ -18,6 +28,10 @@ class HyperConnectionPreTest(HyperConnectionPreCall, TestBase):
 
 
 class HyperConnectionPostTest(HyperConnectionPostWorkload, TestBase):
+    pass
+
+
+class HyperConnectionHeadTest(HyperConnectionHeadWorkload, TestBase):
     pass
 
 
@@ -204,3 +218,111 @@ def test_hyper_connection_post_refuses_streams_past_the_register_budget() -> Non
     test = HyperConnectionPostTest((2,), 9, 64)
     with pytest.raises(OpNotAvailableError, match="register budget"):
         HyperConnectionPostFwdOp()(*test.gen_inputs())
+
+
+def _head_tokens(program: str) -> int:
+    """A token count reaching *program* on the run device, whose SM count picks it: tokens a
+    CTA held in registers, or streamed. Above one token, the last CTA holds one token."""
+    sms = get_sm_count()
+    return {
+        "resident-1": 1,
+        "resident-2": 2 * sms - 1,
+        "streamed-2": 4 * sms + 1,
+        "streamed-4": 4 * (5 * sms // 4 + 1) + 1,
+    }[program]
+
+
+@pytest.mark.parametrize(
+    "program, n, c",
+    [
+        # DeepSeek-V4-Flash decoding one token.
+        pytest.param("resident-1", 4, 4096, marks=pytest.mark.smoke),
+        pytest.param("resident-2", 4, 4096, marks=pytest.mark.full),
+        pytest.param("streamed-2", 4, 4096, marks=pytest.mark.full),
+        pytest.param("streamed-4", 4, 4096, marks=pytest.mark.full),
+        # Columns no thread count divides, in both kernels.
+        pytest.param("resident-1", 4, 1000, marks=pytest.mark.full),
+        pytest.param("streamed-4", 4, 1000, marks=pytest.mark.full),
+        # Four column vectors a thread held; two tokens of them are past the register budget,
+        # so that count streams one token a CTA.
+        pytest.param("resident-1", 4, 7168, marks=pytest.mark.full),
+        pytest.param("resident-2", 4, 7168, marks=pytest.mark.full),
+        # Columns read 2 and 1 a vector.
+        pytest.param("resident-1", 4, 998, marks=pytest.mark.full),
+        pytest.param("streamed-4", 4, 999, marks=pytest.mark.full),
+        # Other stream counts: none, one, three, and the largest served.
+        pytest.param("resident-1", 0, 64, marks=pytest.mark.full),
+        pytest.param("resident-1", 1, 256, marks=pytest.mark.full),
+        pytest.param("streamed-4", 3, 384, marks=pytest.mark.full),
+        pytest.param("resident-1", 8, 4096, marks=pytest.mark.full),
+    ],
+)
+def test_hyper_connection_head_op(program, n, c) -> None:
+    test = HyperConnectionHeadTest((_head_tokens(program),), n, c)
+    test.check(HyperConnectionHeadFwdOp(1e-6, 1e-6), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_hyper_connection_head_folds_leading_axes() -> None:
+    test = HyperConnectionHeadTest((2, 3), 4, 512)
+    test.check(HyperConnectionHeadFwdOp(1e-6, 1e-6), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_hyper_connection_head_reads_strided_inputs() -> None:
+    """Views that are not contiguous: every other token of the streams and every other
+    stream bias, and hc_fn stored transposed."""
+    test = HyperConnectionHeadTest((6,), 4, 512)
+    hidden_states, hc_fn, hc_scale, hc_base = test.gen_inputs()
+    device = run_device()
+    wide = torch.randn(12, 4, 512, dtype=hidden_states.dtype, device=device)
+    wide[::2] = hidden_states
+    base_wide = torch.randn(8, device=device)
+    base_wide[::2] = hc_base
+    hc_fn_t = hc_fn.t().contiguous().t()
+    views = (wide[::2], hc_fn_t, hc_scale, base_wide[::2])
+    assert not any(view.is_contiguous() for view in views if view is not hc_scale)
+    test.check(HyperConnectionHeadFwdOp(1e-6, 1e-6), *views)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "hidden_dtype, fn_dtype, reason",
+    [
+        (torch.float16, torch.float32, "hidden_states dtype is not bfloat16"),
+        (torch.bfloat16, torch.bfloat16, "hc_fn dtype is not float32"),
+    ],
+    ids=["float16-streams", "bfloat16-hc-fn"],
+)
+def test_hyper_connection_head_rejects_dtypes_outside_the_signature(
+    hidden_dtype, fn_dtype, reason
+) -> None:
+    device = run_device()
+    hidden_states = torch.randn(2, 4, 64, dtype=hidden_dtype, device=device)
+    hc_fn = torch.randn(4, 256, device=device).to(fn_dtype)
+    hc_scale = torch.ones(1, device=device)
+    hc_base = torch.zeros(4, device=device)
+    with pytest.raises(ValueError, match=reason):
+        HyperConnectionHeadFwdOp(1e-6, 1e-6)(hidden_states, hc_fn, hc_scale, hc_base)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_hyper_connection_head_serves_new_token_counts_from_one_kernel() -> None:
+    """Token counts reaching the resident and the streamed programs share one kernel."""
+    op = HyperConnectionHeadFwdOp(1e-6, 1e-6)
+    for tokens in (3, _head_tokens("streamed-4")):
+        test = HyperConnectionHeadTest((tokens,), 4, 1024)
+        test.check(op, *test.gen_inputs())
+    assert len(list(op.iter_kernels())) == 1
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_hyper_connection_head_refuses_streams_past_the_register_budget() -> None:
+    """Nine streams give a thread hc_fn vectors of nine streams to hold."""
+    from tileops.backend import OpNotAvailableError
+
+    test = HyperConnectionHeadTest((2,), 9, 64)
+    with pytest.raises(OpNotAvailableError, match="register budget"):
+        HyperConnectionHeadFwdOp(1e-6, 1e-6)(*test.gen_inputs())
