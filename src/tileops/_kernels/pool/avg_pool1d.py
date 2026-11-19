@@ -124,10 +124,9 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
     # Rows past the 65535 blocks of the grid's y axis share grid x with the row's tiles, in
     # chunks of rows whose tiles grid x holds; grid y counts the chunks.
     flat = rows > MAX_GRID_YZ_BLOCKS
-    # An input or an output of 2**31 elements or more (padding can make the output the
-    # longer row) takes int64 extents and an int64 block index on either grid, so that every
-    # element offset is computed in int64; a smaller one keeps int32.
-    wide = rows * max(l_in, out_l) >= 2**31
+    # An input of 2**31 elements or more takes int64 extents: int32 cannot hold an extent of
+    # exactly 2**31, and TileLang widens the offsets of a longer input by itself.
+    wide = rows * l_in >= 2**31
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _avg_pool1d_func(block_ol: int, threads: int):
@@ -230,13 +229,12 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
                 out: T.Tensor(out_shape, dtype),  # type: ignore
             ):
                 with T.Kernel(blocks_per_row * chunk, chunks, threads=threads) as (b, c):
-                    block = T.cast(b, "int64") if wide else b
-                    row = (T.cast(c, "int64") if wide else c) * chunk + block // blocks_per_row
+                    row = c * chunk + b // blocks_per_row
                     if rows % chunk:
                         if row < rows:
-                            _pool_tile(x, out, block % blocks_per_row, row)
+                            _pool_tile(x, out, b % blocks_per_row, row)
                     else:
-                        _pool_tile(x, out, block % blocks_per_row, row)
+                        _pool_tile(x, out, b % blocks_per_row, row)
 
         else:
 
@@ -246,7 +244,7 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
                 out: T.Tensor(out_shape, dtype),  # type: ignore
             ):
                 with T.Kernel(blocks_per_row, rows, threads=threads) as (bx, by):
-                    _pool_tile(x, out, T.cast(bx, "int64") if wide else bx, by)
+                    _pool_tile(x, out, bx, by)
 
         return _avg_pool1d_main
 
