@@ -7,8 +7,8 @@ row runs the TileLang projection vLLM falls back to, then its fused pre kernel. 
 projection squares each bfloat16 stream element in bfloat16, so vLLM's row has no ratio.
 
 Each post row times vLLM's ``mhc_post_tilelang``, the TileLang kernel of DeepSeek's TileKernels
-``mhc_post_fwd``, which takes float32 mixes only; TileKernels itself needs a newer TileLang than
-the one TileOPs pins.
+``mhc_post_fwd``. It takes float32 mixes only, as vLLM's pre step emits them, so a row's mixes
+are cast before timing. TileKernels itself needs a newer TileLang than the one TileOPs pins.
 """
 
 import pytest
@@ -82,21 +82,24 @@ def test_hyper_connection_pre_bench(case) -> None:
 def test_hyper_connection_post_bench(case) -> None:
     op = HyperConnectionPostFwdOp(**case.arguments)
     wrappers = baseline_module("vllm.model_executor.kernels.mhc.tilelang", VLLM_TAG)
+    x, residual, post_layer_mix, comb_res_mix = case.inputs
+    n, c = residual.shape[-2:]
 
-    def vllm_fn(x, residual, post_layer_mix, comb_res_mix):
-        # vLLM's kernel takes float32 mixes and one token axis.
-        n, c = residual.shape[-2:]
-        output = wrappers.mhc_post_tilelang(
+    def vllm_fn(*args):
+        return wrappers.mhc_post_tilelang(*args).view(residual.shape)
+
+    vllm = bench.Implementation(
+        run=vllm_fn,
+        args=(
             x.reshape(-1, c),
             residual.reshape(-1, n, c),
-            post_layer_mix.reshape(-1, n, 1).to(torch.float32),
-            comb_res_mix.reshape(-1, n, n).to(torch.float32),
-        )
-        return output.view(residual.shape)
-
+            post_layer_mix.reshape(-1, n, 1).float(),
+            comb_res_mix.reshape(-1, n, n).float(),
+        ),
+    )
     bench.Runner(op, case).compare(
         {
-            VLLM_TAG: vllm_fn,
+            VLLM_TAG: vllm,
             "torch-ref": case.torch,
             TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }
