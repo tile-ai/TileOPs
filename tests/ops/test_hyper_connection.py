@@ -1,15 +1,23 @@
-"""Public HyperConnectionPreFwdOp semantics: each token count's path, leading shapes, a
-broadcast residual, one kernel serving every token count, and the calls no kernel serves."""
+"""Public semantics of the manifold hyper-connection ops. Pre: each token count's path,
+leading shapes, a broadcast residual, one kernel serving every token count, and the calls no
+kernel serves. Post: each launch program, ragged columns, vector widths, stream counts and the
+mix dtypes."""
 
 import pytest
+import torch
 
 from tests.workload_test_base import TestBase, smoke_first
-from tileops.sequence_modeling import HyperConnectionPreFwdOp
-from workloads.sequence_modeling import HyperConnectionPreCall
+from tileops.sequence_modeling import HyperConnectionPostFwdOp, HyperConnectionPreFwdOp
+from workloads.device import run_device
+from workloads.sequence_modeling import HyperConnectionPostWorkload, HyperConnectionPreCall
 from workloads.workload_base import manifest_call
 
 
 class HyperConnectionPreTest(HyperConnectionPreCall, TestBase):
+    pass
+
+
+class HyperConnectionPostTest(HyperConnectionPostWorkload, TestBase):
     pass
 
 
@@ -111,3 +119,88 @@ def test_hyper_connection_pre_refuses_what_no_kernel_serves(n, c, params, reason
     with pytest.raises(OpNotAvailableError, match=reason):
         op(*HyperConnectionPreTest(call).gen_inputs())
     assert not op._entries_built("hyper_connection_pre")
+
+
+@pytest.mark.parametrize(
+    "shape, n, c, mix_dtype",
+    [
+        # DeepSeek-V4-Flash decoding one token, and GLM-5.3-Flash's bfloat16 mixes.
+        pytest.param((1,), 4, 4096, torch.float32, marks=pytest.mark.smoke),
+        pytest.param((37,), 4, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+        # Enough tokens for the program giving a thread four runs.
+        pytest.param((600,), 4, 4096, torch.float32, marks=pytest.mark.full),
+        # A last CTA of a row past its columns: 7168 columns in 4-run CTAs of 4096.
+        pytest.param((500,), 4, 7168, torch.float32, marks=pytest.mark.full),
+        # Columns read 2 and 1 a vector.
+        pytest.param((4,), 4, 998, torch.float32, marks=pytest.mark.full),
+        pytest.param((4,), 4, 999, torch.bfloat16, marks=pytest.mark.full),
+        # Folded leading axes.
+        pytest.param((2, 5), 4, 512, torch.float32, marks=pytest.mark.full),
+        # Other stream counts: one, a mix row not a power of two, and the largest served.
+        pytest.param((3,), 1, 256, torch.float32, marks=pytest.mark.full),
+        pytest.param((3,), 3, 384, torch.bfloat16, marks=pytest.mark.full),
+        pytest.param((9,), 8, 4096, torch.float32, marks=pytest.mark.full),
+    ],
+)
+def test_hyper_connection_post_op(shape, n, c, mix_dtype) -> None:
+    test = HyperConnectionPostTest(shape, n, c, mix_dtype)
+    test.check(HyperConnectionPostFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_hyper_connection_post_reads_strided_inputs() -> None:
+    """Views that are not contiguous: every other token of x and of the residual streams, and
+    mixes stored transposed."""
+    test = HyperConnectionPostTest((6,), 4, 512)
+    x, residual, post, comb = test.gen_inputs()
+    device = run_device()
+    x_wide = torch.randn(12, 512, dtype=x.dtype, device=device)
+    x_wide[::2] = x
+    residual_wide = torch.randn(12, 4, 512, dtype=residual.dtype, device=device)
+    residual_wide[::2] = residual
+    comb_t = comb.transpose(-1, -2).contiguous().transpose(-1, -2)
+    assert not (x_wide[::2].is_contiguous() or comb_t.is_contiguous())
+    test.check(HyperConnectionPostFwdOp(), x_wide[::2], residual_wide[::2], post, comb_t)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "x_dtype, post_dtype, comb_dtype, reason",
+    [
+        (torch.float16, torch.float32, torch.float32, "x dtype is not bfloat16"),
+        (torch.bfloat16, torch.float16, torch.float16, "post_layer_mix dtype is outside"),
+        (torch.bfloat16, torch.float32, torch.bfloat16, "comb_res_mix dtype differs"),
+    ],
+    ids=["float16-streams", "float16-mixes", "mixed-mixes"],
+)
+def test_hyper_connection_post_rejects_dtypes_outside_the_signature(
+    x_dtype, post_dtype, comb_dtype, reason
+) -> None:
+    device = run_device()
+    x = torch.randn(2, 64, dtype=x_dtype, device=device)
+    residual = torch.randn(2, 4, 64, dtype=x_dtype, device=device)
+    post = torch.rand(2, 4, 1, device=device).to(post_dtype)
+    comb = torch.rand(2, 4, 4, device=device).to(comb_dtype)
+    with pytest.raises(ValueError, match=reason):
+        HyperConnectionPostFwdOp()(x, residual, post, comb)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_hyper_connection_post_serves_new_token_counts_from_one_kernel() -> None:
+    op = HyperConnectionPostFwdOp()
+    for tokens in (3, 70):
+        test = HyperConnectionPostTest((tokens,), 4, 1024)
+        test.check(op, *test.gen_inputs())
+    assert len(list(op.iter_kernels())) == 1
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_hyper_connection_post_refuses_streams_past_the_register_budget() -> None:
+    """Nine streams give a thread 81 comb_res_mix entries to hold."""
+    from tileops.backend import OpNotAvailableError
+
+    test = HyperConnectionPostTest((2,), 9, 64)
+    with pytest.raises(OpNotAvailableError, match="register budget"):
+        HyperConnectionPostFwdOp()(*test.gen_inputs())

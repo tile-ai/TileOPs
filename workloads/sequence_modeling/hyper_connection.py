@@ -1,10 +1,13 @@
 """Torch references of the hyper-connection ops that no library reference covers."""
 
+from typing import Any
+
 import torch
 
-from workloads.workload_base import CallWorkload
+from workloads.device import run_device
+from workloads.workload_base import CallWorkload, WorkloadBase
 
-__all__ = ["HyperConnectionPreCall", "hc_head", "hc_pre"]
+__all__ = ["HyperConnectionPostWorkload", "HyperConnectionPreCall", "hc_head", "hc_post", "hc_pre"]
 
 
 def hc_pre(
@@ -70,3 +73,54 @@ class HyperConnectionPreCall(CallWorkload):
         return hc_pre(residual, fn, hc_scale, hc_base, **self.call.arguments())
 
     torch_program = ref_program
+
+
+def hc_post(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    post_layer_mix: torch.Tensor,
+    comb_res_mix: torch.Tensor,
+) -> torch.Tensor:
+    """``HyperConnectionPostFwdOp``'s reference, vLLM ``mhc_post_torch``: per token,
+    ``comb_res_mix`` applied by column to the residual streams in float32, plus
+    ``post_layer_mix`` times ``x``, rounded once to bfloat16."""
+    mixed = torch.einsum("...ij,...ic->...jc", comb_res_mix.float(), residual.float())
+    return (post_layer_mix.float() * x.float().unsqueeze(-2) + mixed).to(torch.bfloat16)
+
+
+class HyperConnectionPostWorkload(WorkloadBase):
+    """``HyperConnectionPostFwdOp`` over tokens of ``shape``: ``n`` residual streams of ``c``
+    columns, the mixes in ``mix_dtype``. ``post_layer_mix`` is twice a sigmoid, as the pre
+    step makes it, and each row of ``comb_res_mix`` a softmax."""
+
+    def __init__(
+        self, shape: tuple[int, ...], n: int, c: int, mix_dtype: torch.dtype = torch.float32
+    ):
+        self.shape = tuple(shape)
+        self.n = n
+        self.c = c
+        self.mix_dtype = mix_dtype
+
+    @classmethod
+    def from_call(cls, call: Any) -> "HyperConnectionPostWorkload":
+        """The workload of one manifest call of ``HyperConnectionPostFwdOp``."""
+        shape, _dtype = call.tensors["residual"]
+        _shape, mix_dtype = call.tensors["comb_res_mix"]
+        return cls(tuple(shape[:-2]), shape[-2], shape[-1], getattr(torch, mix_dtype))
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        device = run_device()
+        x = torch.randn((*self.shape, self.c), dtype=torch.bfloat16, device=device)
+        residual = torch.randn((*self.shape, self.n, self.c), dtype=torch.bfloat16, device=device)
+        post = 2 * torch.sigmoid(torch.randn((*self.shape, self.n, 1), device=device))
+        comb = torch.softmax(torch.randn((*self.shape, self.n, self.n), device=device), dim=-1)
+        return x, residual, post.to(self.mix_dtype), comb.to(self.mix_dtype)
+
+    def ref_program(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor,
+        post_layer_mix: torch.Tensor,
+        comb_res_mix: torch.Tensor,
+    ) -> torch.Tensor:
+        return hc_post(x, residual, post_layer_mix, comb_res_mix)

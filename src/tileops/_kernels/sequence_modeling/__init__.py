@@ -9,6 +9,9 @@ from tileops._kernels.sequence_modeling.engram import (
     EngramGateConvFwdKernel,
 )
 from tileops._kernels.sequence_modeling.hyper_connection import (
+    HyperConnectionPostCall,
+    HyperConnectionPostFwdInterface,
+    HyperConnectionPostKernel,
     HyperConnectionPreCall,
     HyperConnectionPreFwdInterface,
     HyperConnectionPreKernel,
@@ -28,6 +31,9 @@ __all__ = [
     "EngramGateConvCall",
     "EngramGateConvFwdInterface",
     "EngramGateConvFwdKernel",
+    "HyperConnectionPostCall",
+    "HyperConnectionPostFwdInterface",
+    "HyperConnectionPostKernel",
     "HyperConnectionPreCall",
     "HyperConnectionPreFwdInterface",
     "HyperConnectionPreKernel",

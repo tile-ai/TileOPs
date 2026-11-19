@@ -5,6 +5,10 @@ through inductor. vLLM's ``mhc_pre_tilelang`` projects with DeepGEMM's
 ``tf32_hc_prenorm_gemm`` where DeepGEMM is installed; the installed DeepGEMM has none, so the
 row runs the TileLang projection vLLM falls back to, then its fused pre kernel. That
 projection squares each bfloat16 stream element in bfloat16, so vLLM's row has no ratio.
+
+Each post row times vLLM's ``mhc_post_tilelang``, the TileLang kernel of DeepSeek's TileKernels
+``mhc_post_fwd``. It takes float32 mixes only, as vLLM's pre step emits them, so a row's mixes
+are cast before timing. TileKernels itself needs a newer TileLang than the one TileOPs pins.
 """
 
 import pytest
@@ -12,7 +16,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, baseline_module, compiled_reference
-from tileops.sequence_modeling import HyperConnectionPreFwdOp
+from tileops.sequence_modeling import HyperConnectionPostFwdOp, HyperConnectionPreFwdOp
 
 
 def _vllm_mhc_pre(residual: torch.Tensor, params: dict):
@@ -68,6 +72,34 @@ def test_hyper_connection_pre_bench(case) -> None:
                 run=_vllm_mhc_pre(case.inputs[0], case.arguments),
                 noncomparable_reason="squares the streams in bfloat16 before summing them",
             ),
+            "torch-ref": case.torch,
+            TORCH_COMPILE_TAG: compiled_reference(case.torch),
+        }
+    )
+
+
+@pytest.mark.parametrize("case", bench.cases(HyperConnectionPostFwdOp), ids=lambda case: case.id)
+def test_hyper_connection_post_bench(case) -> None:
+    op = HyperConnectionPostFwdOp(**case.arguments)
+    wrappers = baseline_module("vllm.model_executor.kernels.mhc.tilelang", VLLM_TAG)
+    x, residual, post_layer_mix, comb_res_mix = case.inputs
+    n, c = residual.shape[-2:]
+
+    def vllm_fn(*args):
+        return wrappers.mhc_post_tilelang(*args).view(residual.shape)
+
+    vllm = bench.Implementation(
+        run=vllm_fn,
+        args=(
+            x.reshape(-1, c),
+            residual.reshape(-1, n, c),
+            post_layer_mix.reshape(-1, n, 1).float(),
+            comb_res_mix.reshape(-1, n, n).float(),
+        ),
+    )
+    bench.Runner(op, case).compare(
+        {
+            VLLM_TAG: vllm,
             "torch-ref": case.torch,
             TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }

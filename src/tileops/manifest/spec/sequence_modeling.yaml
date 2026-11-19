@@ -173,7 +173,7 @@ HyperConnectionPostFwdOp:
   # bfloat16, as transformers Glm5NextTextDecoderLayer rounds them before mixing.
   # DeepSeek-V4-Flash inference/model.py Block.hc_post.
   family: sequence_modeling
-  status: spec-only
+  status: implemented
   ref_api: vllm.model_executor.kernels.mhc.torch.mhc_post_torch
   signature:
     forall: {S: Shape, n: Dim, C: Dim, M: "DType[float32 | bfloat16]"}
