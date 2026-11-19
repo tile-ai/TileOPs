@@ -50,7 +50,9 @@ def task_walk(
         A namespace of the launch extents (``m``, the dynamic row count of contiguous rows;
         ``rows_shape``, ``ragged_slab``, ``max_waves``, ``cursor_len``),
         ``walk(layout_or_ends, task_id, cursor)`` (resolves a task to an expert, ``num_groups``
-        marking exhaustion), ``tile_of(task_id, cursor, tile)``, the task's clamped
+        marking exhaustion), ``tile_of(task_id, cursor, tile)``,
+        ``walk_to_running(layout_or_ends, task_id, cursor, tile)`` (the first running task a
+        wave apart from ``task_id`` on, resolved and tiled), the task's clamped
         ``expert(cursor)``, ``first_row(cursor, tile)`` and ``first_col(tile)``,
         ``store_tile(...)``, ``row_tiles_descriptor(...)``, ``expert_rows_descriptor(...)``,
         ``recover_ends(layout, ends, tx, threads)`` and the flag ``recover`` (tight per-row
@@ -148,6 +150,20 @@ def task_walk(
             group_m_tiles = T.min(swizzle_m_tiles, expert_tiles - first)
             tile[0] = first + T.truncmod(in_group, group_m_tiles)
             tile[1] = T.truncdiv(in_group, group_m_tiles)
+
+    walk = walk_rows if rows_walk else walk_ends if contiguous else walk_to
+
+    @T.macro
+    def walk_to_running(layout_or_ends, task_id, cursor, tile):
+        """Walk ``cursor`` on to the first task from ``task_id`` on, a wave apart, that runs, and
+        map it to ``tile``; ``cursor`` marks exhaustion when none of the CTA's tasks does."""
+        next_task = T.alloc_var("int32", init=task_id)
+        walk(layout_or_ends, next_task, cursor)
+        while T.And(cursor[cur.g] >= num_groups, next_task + num_sms < max_waves * num_sms):
+            next_task = next_task + num_sms
+            walk(layout_or_ends, next_task, cursor)
+        if cursor[cur.g] < num_groups:
+            tile_of(next_task, cursor, tile)
 
     # Bounds inline in each use, which spares TileLang's guards on the loads they index.
     def expert(cursor):
@@ -306,7 +322,8 @@ def task_walk(
         ragged_slab=ragged_slab,
         max_waves=max_waves,
         cursor_len=5 if contiguous else 3,
-        walk=walk_rows if rows_walk else walk_ends if contiguous else walk_to,
+        walk=walk,
+        walk_to_running=walk_to_running,
         tile_of=tile_of,
         expert=expert,
         first_row=first_row,
