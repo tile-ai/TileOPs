@@ -7,7 +7,12 @@ from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
 from tileops._kernels.gemm.heuristics import int8_pingpong_grid
-from tileops._kernels.gemm.w4a16 import _cross_tile_wgmma, _pair_reduced, _select_config
+from tileops._kernels.gemm.w4a16 import (
+    _cross_tile_wgmma,
+    _meta_window,
+    _pair_reduced,
+    _select_config,
+)
 from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -2940,6 +2945,48 @@ def test_gemm_w4a16_pairs_a_one_warpgroup_split_in_one_wave() -> None:
     assert _pair_reduced(1, 2176, 1024, 128, 132, narrow)
     # 141 N tiles split two ways: 282 CTAs.
     assert not _pair_reduced(1, 9000, 1024, 128, 132, narrow)
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_keeps_plain_metadata_copies_off_the_unrefilled_one_warpgroup_ring() -> None:
+    """A per-K-tile metadata copy stays plain on two consumer warpgroups, on a refilled or
+    streamed ring, where K's groups are not a multiple of four and where the slice is staged
+    once."""
+    # Arguments: block_m, block_n, block_k, num_stages, threads, split_k, stream_ctas, K, group.
+    # Two consumer warpgroups, slices of four 512-wide K tiles on a four-stage ring.
+    assert _meta_window(16, 128, 512, 4, 256, 2, 0, 4096, 128) == 0
+    # Slices of six 256-wide K tiles refill a three-stage ring.
+    assert _meta_window(64, 64, 256, 3, 128, 2, 0, 3072, 128) == 0
+    # A streamed ring.
+    assert _meta_window(8, 64, 512, 4, 128, 1, 132, 2048, 128) == 0
+    # 14 groups: a window at a multiple of four is not 4-byte aligned in every row.
+    assert _meta_window(64, 64, 256, 4, 128, 2, 0, 1792, 128) == 0
+    # 512-wide K tiles of a 128-thread tile stage their small slice once before the ring.
+    assert _meta_window(32, 64, 512, 3, 128, 1, 0, 1536, 128) == 0
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k",
+    [
+        # A 32-row deferred-scale cluster pair over padded rows: 256-wide K tiles start at
+        # groups 0 and 2 of their windows.
+        pytest.param(33, 2048, 1024, id="pair-two-group-tiles", marks=pytest.mark.smoke),
+        # The same on the 64-row tile, which scales the decoded weight.
+        pytest.param(33, 3072, 1536, id="pair-scale-in-decode", marks=pytest.mark.full),
+    ],
+)
+def test_gemm_w4a16_metadata_window_matches_the_reference(m: int, n: int, k: int) -> None:
+    """A call whose K tiles copy their metadata as four-group windows matches the reference."""
+    # On 132 SMs each case picks a one-warpgroup tile whose ring holds its slice.
+    cfg = _select_config(m, n, k, 128, 132)
+    fields = ("block_m", "block_n", "block_k", "num_stages", "threads", "split_k", "stream_ctas")
+    assert _meta_window(*(cfg[field] for field in fields), k, 128) == 4
+    if get_sm_count(torch.device(run_device()).index) != 132:
+        pytest.skip("the op selects on the device's SMs, and the programs checked count 132")
+    test = GEMMW4A16Test(m, n, k, torch.float16)
+    test.check(GEMMW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
