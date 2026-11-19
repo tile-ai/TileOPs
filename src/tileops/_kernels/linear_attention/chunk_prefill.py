@@ -28,10 +28,15 @@ def split_prepare_enabled(call):
     return call.arch == 90 and (call.gate_in_kernel or not fp32_exponent_range(call.dtype))
 
 
+def referenced_form(call):
+    """Whether a channel-gate call's joint chunk program takes its referenced SM90 form: the
+    given gates the split launches leave to it on SM90."""
+    return call.arch == 90 and not split_prepare_enabled(call)
+
+
 def staged_norms(call):
-    """Whether the joint chunk program stages a channel-gate call's inverse norms in shared
-    memory: its referenced SM90 form, which normalizes the rows itself."""
-    return call.arch == 90 and not split_prepare_enabled(call) and call.l2norm
+    """Whether the referenced form stages the call's inverse norms in shared memory."""
+    return referenced_form(call) and call.l2norm
 
 
 def chunk_plan(call):
@@ -180,10 +185,7 @@ def build_programs(
                 "gate_in_kernel": call.gate_in_kernel,
                 "has_dt_bias": call.has_dt_bias,
                 "lower_bound": call.lower_bound,
-                # On SM90 the joint program stands in for the split launches, whose blocks
-                # below the diagonal reference each block's first row in FP32; elsewhere it
-                # keeps the per-pair form past the bounds.
-                "referenced": call.arch == 90,
+                "referenced": referenced_form(call),
             }
             if gate_mode == "channel"
             else {}

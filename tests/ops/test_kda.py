@@ -795,14 +795,17 @@ def test_kda_prefill_given_gate_drops_inside_its_blocks(dim, l2norm, heads):
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "packed",
+    ("packed", "dtype"),
     [
-        pytest.param(False, marks=pytest.mark.smoke, id="dense"),
-        pytest.param(True, marks=pytest.mark.full, id="varlen"),
+        pytest.param(False, torch.bfloat16, marks=pytest.mark.smoke, id="dense"),
+        pytest.param(False, torch.float16, marks=pytest.mark.smoke, id="dense-fp16"),
+        pytest.param(True, torch.bfloat16, marks=pytest.mark.full, id="varlen"),
     ],
 )
-def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
-    """One strongly decayed sequence leaves ordinary sequences unchanged."""
+def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed, dtype):
+    """One strongly decayed sequence leaves ordinary sequences unchanged. The float16 cell runs
+    the one-CTA prefill's two-launch program: its checking launch flags the strong sequence and
+    the rerun walks that sequence again."""
     heads = 32
     sm_count = get_sm_count()
     sequences = max(4, -(-sm_count // heads))
@@ -810,10 +813,10 @@ def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
     torch.manual_seed(42)
     if packed:
         lengths = tuple(length + (-200, 100, 200, -100)[i % 4] for i in range(sequences))
-        workload = KDAFwdTest(1, 0, heads, 128, torch.bfloat16, sequence_lengths=lengths)
+        workload = KDAFwdTest(1, 0, heads, 128, dtype, sequence_lengths=lengths)
         start = lengths[0]
     else:
-        workload = KDAFwdTest(sequences, length, heads, 128, torch.bfloat16)
+        workload = KDAFwdTest(sequences, length, heads, 128, dtype)
         start = length
     inputs = list(workload.gen_inputs())
     g = inputs[3].clone()
@@ -1151,17 +1154,16 @@ def test_kda_decode_updates_a_strided_pool_in_place() -> None:
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "pooled",
+    ("pooled", "dtype"),
     [
-        pytest.param(True, marks=pytest.mark.smoke, id="value-major-pool"),
-        pytest.param(False, marks=pytest.mark.full, id="value-major"),
+        pytest.param(True, torch.bfloat16, marks=pytest.mark.smoke, id="value-major-pool"),
+        pytest.param(False, torch.float16, marks=pytest.mark.smoke, id="value-major-fp16"),
     ],
 )
-def test_kda_long_prefill_walks_a_value_major_state(pooled: bool) -> None:
-    """A value-major prefill with enough tokens a SM for the two-launch program and one strongly
-    decayed chunk. In batch order the checking launch flags that pair and the rerun walks it
-    again from its initial state; on a pool the one-launch program serves the call, since the
-    first launch overwrites the initial state a rerun would read."""
+def test_kda_long_prefill_walks_a_value_major_state(pooled: bool, dtype: torch.dtype) -> None:
+    """A long value-major prefill with one strongly decayed chunk. The float16 cell has enough
+    tokens a SM for the one-CTA prefill's two-launch program: its checking launch flags that pair
+    and the rerun walks it again from its initial state."""
     torch.manual_seed(42)
     heads = 32
     sequences = max(4, -(-get_sm_count() // heads))
@@ -1169,7 +1171,8 @@ def test_kda_long_prefill_walks_a_value_major_state(pooled: bool) -> None:
     flags = {"state_v_first": True, "use_qk_l2norm_in_kernel": True}
     some = ["initial_state", *(["state_indices"] if pooled else [])]
     call = manifest_call(
-        "KDAFwdOp", {"T": "bfloat16"}, some=some, B=sequences, S=length, H=heads, HV=heads,
+        "KDAFwdOp", {"T": str(dtype).removeprefix("torch.")}, some=some, B=sequences, S=length,
+        H=heads, HV=heads,
         K=128, V=128, **({"P": 2 * sequences} if pooled else {}), **flags,
     )  # fmt: skip
     test = KDAFwdCallTest(call)
