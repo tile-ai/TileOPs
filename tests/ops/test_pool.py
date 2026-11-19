@@ -783,6 +783,32 @@ def test_avg_pool1d_windows_read_into_registers(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
+    "shape",
+    [
+        # The fixture's fp16 smoke shape.
+        pytest.param((2, 64, 512), id="fixture-shape", marks=pytest.mark.smoke),
+        # One row of 2**31 elements: the last window ends at 2**31. Costs 6 GiB.
+        pytest.param((1, 1, 2**31), id="row-of-2-31-elements", marks=pytest.mark.full),
+    ],
+)
+def test_avg_pool1d_register_divides_each_end_of_the_row(shape: tuple[int, int, int]) -> None:
+    """The windows at each end of a row divide by the positions they count, also where the
+    last window's end, 2**31, passes INT32_MAX. torch pools a row of 2**31 elements to zeros,
+    so each end is checked against torch on a slice of at most 1024 elements."""
+    edge = min(shape[-1], 1024)
+    x = torch.randn(*shape, device=run_device(), dtype=torch.float16)
+    op = AvgPool1dFwdOp(kernel_size=3, stride=2, padding=1, count_include_pad=False, target=BUILTIN)
+    out = op(x)
+    assert [type(k) for k in op.iter_kernels()] == [AvgPool1dRegisterKernel]
+    head = F.avg_pool1d(x[..., :edge], 3, 2, 1, False, False)
+    # The tail slice's first window may be cut by the slice, not the row: drop it.
+    tail = F.avg_pool1d(x[..., -edge:], 3, 2, 1, False, False)[..., 1:]
+    torch.testing.assert_close(out[..., : head.shape[-1]], head, rtol=0, atol=0)
+    torch.testing.assert_close(out[..., -tail.shape[-1] :], tail, rtol=0, atol=0)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
     "case",
     [
         # The fixture's fp32 smoke shape.

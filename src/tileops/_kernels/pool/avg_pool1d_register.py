@@ -53,6 +53,8 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
     # An input of 2**31 elements or more takes int64 extents: int32 cannot hold an extent of
     # exactly 2**31, and TileLang widens the offsets of a longer input by itself.
     wide = rows * l_in >= 2**31
+    # A window position of a row that long can pass 2**31 - 1 once the window's width is added.
+    position_dtype = "int64" if l_in + kernel_l >= 2**31 else "int32"
 
     @tilelang.jit(out_idx=[1])
     def build(threads: int, flat: bool):
@@ -92,7 +94,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
                 if whole:
                     means[e] = T.cast(totals[e] / T.cast(kernel_l, ACCUM_DTYPE), dtype)
                 else:
-                    begin = (group * outputs + e) * stride_l - pad_l
+                    begin = (T.cast(group, position_dtype) * outputs + e) * stride_l - pad_l
                     divisor = T.min(begin + kernel_l, hi) - T.max(begin, lo)
                     # A whole window divides by the constant; only a window cut by the
                     # row's edge takes the division by a computed divisor.
@@ -114,7 +116,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
                 x: T.Tensor[x_shape, dtype],
                 y: T.Tensor[y_shape, dtype],
             ):
-                with T.Kernel(T.ceildiv(units, threads), threads=threads) as bx:
+                with T.Kernel(-(-units // threads), threads=threads) as bx:
                     tx = T.get_thread_binding()
                     unit = bx * threads + tx
                     means = T.alloc_local([outputs], dtype)
@@ -132,7 +134,7 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
                 x: T.Tensor[x_shape, dtype],
                 y: T.Tensor[y_shape, dtype],
             ):
-                with T.Kernel(T.ceildiv(groups, threads), rows, threads=threads) as (bx, row):
+                with T.Kernel(-(-groups // threads), rows, threads=threads) as (bx, row):
                     tx = T.get_thread_binding()
                     group = bx * threads + tx
                     means = T.alloc_local([outputs], dtype)

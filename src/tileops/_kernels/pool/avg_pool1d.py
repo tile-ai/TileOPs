@@ -221,6 +221,8 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
         out_shape = (T.int64(rows), T.int64(out_l)) if wide else (rows, out_l)
         chunk = min(rows, MAX_GRID_X_BLOCKS // blocks_per_row)
         chunks = -(-rows // chunk)
+        # A row past the first chunk can pass 2**31 - 1, which int32 wraps negative.
+        row_dtype = "int64" if chunks > 1 else "int32"
         if flat:
 
             @T.prim_func
@@ -229,7 +231,7 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
                 out: T.Tensor(out_shape, dtype),  # type: ignore
             ):
                 with T.Kernel(blocks_per_row * chunk, chunks, threads=threads) as (b, c):
-                    row = c * chunk + b // blocks_per_row
+                    row = T.cast(c, row_dtype) * chunk + T.cast(b, row_dtype) // blocks_per_row
                     if rows % chunk:
                         if row < rows:
                             _pool_tile(x, out, b % blocks_per_row, row)
