@@ -263,18 +263,20 @@ def test_dsa_decode_row_normalization(kernel, row) -> None:
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("batch", "seq_len", "topk", "with_sink"),
+    ("batch", "seq_len", "seq_len_kv", "topk", "with_sink"),
     [
-        pytest.param(1, 9, 160, True, marks=pytest.mark.smoke, id="odd-block-past-topk"),
-        pytest.param(1, 9, 200, True, marks=pytest.mark.full, id="both-blocks-ragged"),
-        pytest.param(4, 2, 640, False, marks=pytest.mark.full, id="mtp-rows"),
+        # The bf16-no-tail shape, index-only with a sink over whole pairs.
+        pytest.param(1, 7, 256, 128, True, marks=pytest.mark.smoke, id="sink-whole-pairs"),
+        pytest.param(1, 9, 1000, 160, True, marks=pytest.mark.full, id="odd-block-past-topk"),
+        pytest.param(1, 9, 1000, 200, True, marks=pytest.mark.full, id="both-blocks-ragged"),
+        pytest.param(4, 2, 1000, 640, False, marks=pytest.mark.full, id="mtp-rows"),
     ],
 )
-def test_dsa_decode_index_only(batch, seq_len, topk, with_sink) -> None:
+def test_dsa_decode_index_only(batch, seq_len, seq_len_kv, topk, with_sink) -> None:
     """With is_causal false only the indices select keys: -1 skips a slot, an index past
     the query's position still counts, and a sink of +inf zeroes its head while -inf leaves
     it as without a sink."""
-    seq_len_kv, heads = 1000, 64
+    heads = 64
     test = DSADecodeTest(
         batch, heads, seq_len, seq_len_kv, 512, 0, topk, 1, 1, 0, is_causal=False,
         dtype=torch.bfloat16,
