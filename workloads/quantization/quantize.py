@@ -92,10 +92,10 @@ def smooth_quant(x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, t
     return _to_int8(xs, scale[:, None]), scale
 
 
-def bitwise_verification(reason: str):
+def bitwise_verification(reason: str, controls: tuple = ()):
     """A ``Custom`` declaration requiring each output's bits, a signed zero and a scale byte
     included, to equal the reference's, and an output the reference leaves ``None`` to be
-    ``None``."""
+    ``None``; *controls* are the faulty references it must reject."""
     from workloads.numerics import Custom
 
     def validate(got, expected):
@@ -108,7 +108,7 @@ def bitwise_verification(reason: str):
                 actual.contiguous().view(torch.uint8), reference.contiguous().view(torch.uint8)
             ), "quantization bits differ"
 
-    return Custom(validate, reason)
+    return Custom(validate, reason, controls=controls)
 
 
 def round_up_to_power_of_two(t: torch.Tensor) -> torch.Tensor:
@@ -320,7 +320,12 @@ class FP4QuantWorkload(WorkloadBase):
         return fp4_quant_per_group(x, self.block_size, self.inplace)
 
     def verification(self, *inputs):
-        return bitwise_verification("bitwise e2m1 codes, e8m0 scales and fake-quantized values")
+        from workloads.numerics import zeroed_input
+
+        return bitwise_verification(
+            "bitwise e2m1 codes, e8m0 scales and fake-quantized values",
+            controls=(zeroed_input(0, "x-zeroed"),),
+        )
 
 
 class FP4QuantViewWorkload(StridedInput, FP4QuantWorkload):
