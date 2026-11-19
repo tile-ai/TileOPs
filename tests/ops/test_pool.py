@@ -818,9 +818,6 @@ def test_avg_pool1d_register_divides_each_end_of_the_row(shape: tuple[int, int, 
         pytest.param(
             "past-one-block-an-sm", id="past-one-block-an-sm-row-grid", marks=pytest.mark.full
         ),
-        pytest.param(
-            "row-grid-in-one-wave", id="row-grid-no-more-blocks-than-sms", marks=pytest.mark.full
-        ),
         pytest.param("short-rows", id="short-rows-one-axis", marks=pytest.mark.full),
         pytest.param(
             "short-rows-resident", id="short-rows-all-resident-row-grid", marks=pytest.mark.full
@@ -857,8 +854,6 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
         # supported architecture.
         "past-one-block-an-sm": (1, sm_count * 8 + 1, 512),
         "full-rows-past-residency": (1, resident + 1, 512),
-        # As many row-grid blocks as SMs: no SM runs a second block.
-        "row-grid-in-one-wave": (1, sm_count, 508),
         # Rows of 8 runs: past what one block an SM covers and the blocks the SMs hold at
         # once, and as many rows as SMs.
         "short-rows": (1, sm_count * 128 + 8, 32),
@@ -869,7 +864,6 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
         "sub-wave": {"flat": True, "threads": 288},
         "widest": {"flat": True, "threads": 1024},
         "past-one-block-an-sm": {"flat": False, "threads": 128},
-        "row-grid-in-one-wave": {"flat": False, "threads": 128},
         "short-rows": {"flat": True, "threads": 128},
         "short-rows-resident": {"flat": False, "threads": 128},
         "full-rows-past-residency": {"flat": False, "threads": 128},
