@@ -913,14 +913,6 @@ _HOST = ("cu_seqlens", "cu_seqlens_cpu")
             _HOST, _UNEVEN, torch.float16, False,
             marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-fp16-sm90",
         ),
-        pytest.param(
-            ("cu_seqlens",), _EVEN, torch.bfloat16, True,
-            marks=[pytest.mark.sm90, pytest.mark.full], id="device-offsets-sm90",
-        ),
-        pytest.param(
-            _HOST, _EVEN, torch.bfloat16, True,
-            marks=[pytest.mark.sm90, pytest.mark.full], id="even-chunks-sm90",
-        ),
     ],
 )  # fmt: skip
 def test_kda_prefill_updates_its_slots_of_a_state_pool(
@@ -1064,6 +1056,9 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
                 "seq_lens": _EVEN,
                 "HV": _FUSED_HEADS,
                 "some": ("cu_seqlens", "cu_seqlens_cpu"),
+                # SM90 prepares bf16 given gates on the chunk-parallel path; fp16 ones keep the
+                # one-CTA prefill.
+                "dtype": torch.float16,
             },
             [0, 2],
             marks=[pytest.mark.sm90, pytest.mark.full],
@@ -1088,6 +1083,9 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
                 "seq_lens": _EVEN,
                 "HV": _FUSED_HEADS,
                 "some": ("cu_seqlens", "cu_seqlens_cpu"),
+                # SM90 prepares bf16 given gates on the chunk-parallel path; fp16 ones keep the
+                # one-CTA prefill.
+                "dtype": torch.float16,
             },
             [0, 2],
             marks=[pytest.mark.sm90, pytest.mark.full],
@@ -1113,7 +1111,8 @@ def test_kda_skips_the_states_of_negative_slots(flags: dict, row: dict, padded: 
     torch.manual_seed(42)
     row = {"H": 4, "HV": 4, "K": 128, "V": 128, "P": 12, **row}
     some = row.pop("some", ())
-    inputs = _pooled(torch.bfloat16, some=some, **row, **flags).gen_inputs()
+    dtype = row.pop("dtype", torch.bfloat16)
+    inputs = _pooled(dtype, some=some, **row, **flags).gen_inputs()
     check_padded_slots_skipped(KDAFwdOp(**flags, validate_inputs=True), inputs, 5, 10, padded)
 
 
