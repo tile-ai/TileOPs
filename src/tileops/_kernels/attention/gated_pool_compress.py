@@ -73,20 +73,25 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
     # The positions a window pools, and the ring rows a request keeps.
     SPAN = C * ratio
     WIDTH = C * dim
+    # A short window's blocks keep SM_WARPS warps an SM: fewer starve the loads a prefill
+    # keeps in flight.
+    SM_WARPS = 16
+    WARP_VEC = 4
     # A window of at most REG_SPAN positions pools in a warp from registers, rounding its
-    # weights and products to kv's dtype as the reference does. A longer one pools across
-    # the block, BATCH positions a warp at a time folded in online, in float32: for float32
-    # kv the same sum, for bfloat16 kv within the entry's bfloat16 tolerance.
-    REG_SPAN = 16
+    # weights and products to kv's dtype as the reference does: its l_sc and l_kv, SPAN *
+    # WARP_VEC float32 each, take at most a thread's share of an SM's registers. A longer one
+    # pools across the block, BATCH positions a warp at a time folded in online, in float32:
+    # for float32 kv the same sum, for bfloat16 kv within the entry's bfloat16 tolerance.
+    REG_SPAN = 65536 // (SM_WARPS * 32) // (2 * WARP_VEC)
     BATCH = 8
     LONG = SPAN > REG_SPAN
     # A long window's warps, one per BATCH positions and at most 16 (at least 3, as SPAN > 16),
     # and the batches each folds.
     LONG_WARPS = min(16, -(-SPAN // BATCH))
     N_BATCH = -(-SPAN // (LONG_WARPS * BATCH))
-    # Channels a lane pools at once: four for a warp's window, two for a block's, which
+    # Channels a lane pools at once: WARP_VEC for a warp's window, two for a block's, which
     # spreads a long window's loads over twice the blocks.
-    VEC = (2 if dim % 2 == 0 else 1) if LONG else (4 if dim % 4 == 0 else 1)
+    VEC = (2 if dim % 2 == 0 else 1) if LONG else (WARP_VEC if dim % WARP_VEC == 0 else 1)
     LANE_CH = 32 * VEC
     CHUNKS = -(-dim // LANE_CH)
     # Whether a long window's block slots cover its positions and its lanes a chunk's
@@ -438,9 +443,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
             # CHUNKS.
             with T.Kernel((n_req + n_units) * CHUNKS, threads=BLOCK_WARPS * 32) as bx:
                 if not LONG:
-                    # 16 warps an SM, 128 registers a thread: fewer warps starve the loads a
-                    # prefill keeps in flight.
-                    T.annotate_min_blocks_per_sm(max(1, 16 // BLOCK_WARPS))
+                    T.annotate_min_blocks_per_sm(max(1, SM_WARPS // BLOCK_WARPS))
                 if LONG and N_BATCH == 1:
                     # Two blocks an SM: 16 warps' threads each fit 64 registers with a single
                     # batch live.
