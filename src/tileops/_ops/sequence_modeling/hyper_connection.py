@@ -233,7 +233,7 @@ class HyperConnectionHeadFwdOp(Op):
     }
 
     def __init__(self, rms_norm_eps: float, hc_eps: float, *, target: Target = None):
-        """Build the op. Shapes are taken from the first call.
+        """Build the op. Shapes are taken from each call.
 
         Args:
             rms_norm_eps: Added to the mean square of a token's streams before the root.
