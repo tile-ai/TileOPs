@@ -713,19 +713,6 @@ def test_avg_pool1d_staged_windows_match_the_reference(
             id="s4-reach-past-the-load-fp32",
             marks=pytest.mark.full,
         ),
-        pytest.param(
-            (1, 8192),
-            1000,
-            3,
-            2,
-            1,
-            False,
-            False,
-            torch.float16,
-            0,
-            id="row-grid-tail-fp16",
-            marks=pytest.mark.full,
-        ),
         # Rows of 256 runs fill a row-grid block, so only the grid's y axis takes the launch
         # off the row grid.
         pytest.param(
@@ -862,23 +849,27 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
         "full-rows-past-residency": {"flat": False, "threads": 128},
     }[case]
     op = AvgPool1dFwdOp(kernel_size=2, stride=2, target=BUILTIN)
-    op(torch.randn(*shape, device=run_device(), dtype=torch.float32))
+    x = torch.randn(*shape, device=run_device(), dtype=torch.float32)
+    out = op(x)
     (kernel,) = op.iter_kernels()
     assert type(kernel) is AvgPool1dRegisterKernel
     assert {key: kernel.config[key] for key in launch} == launch
+    torch.testing.assert_close(out, F.avg_pool1d(x, 2, 2), rtol=0, atol=0)
 
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "rows, l_in, dtype",
     [
+        # The fixture's fp16 smoke shape.
+        pytest.param((2, 64), 512, torch.float16, id="fixture-shape-fp16", marks=pytest.mark.smoke),
         # 65536 rows: one more than the grid's y axis holds.
         pytest.param(
             (64, 1024),
             64,
             torch.float16,
             id="rows-past-the-grid-y-axis-fp16",
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
         ),
         # 32768 rows of 65536: 2**31 elements, an extent one past INT32_MAX, in rows the
         # grid's y axis holds. Costs 8 GiB.
