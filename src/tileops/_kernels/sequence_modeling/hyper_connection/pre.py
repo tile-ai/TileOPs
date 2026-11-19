@@ -430,7 +430,8 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         A resident launch takes the barriers' aligned slot, its slice of the terms and the
         token ring, within the device's shared-memory budget.
         """
-        # A call within one WGMMA's rows would leave a second warpgroup idle.
+        # A call within one WGMMA's rows would leave a second warpgroup idle; its splits run a
+        # few steps, which four slots cover, and six cover a 128-token tile's load latency.
         small = tokens <= WGMMA_ROWS
         block_m, num_stages = (WGMMA_ROWS, 4) if small else (2 * WGMMA_ROWS, 6)
         # More splits fill more SMs but add partial sums the mix launch reads.

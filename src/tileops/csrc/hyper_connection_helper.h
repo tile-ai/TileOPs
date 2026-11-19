@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include "bf16_widen.h"
+
 namespace tileops {
 
 // Byte offset of 16-byte chunk ``chunk`` of row ``row`` in a tile of 64-element
@@ -16,11 +18,6 @@ __device__ __forceinline__ int hc_swizzled(int row, int chunk) {
 __device__ __forceinline__ uint32_t hc_pack_bf16(float lo, float hi) {
   return uint32_t(__bfloat16_as_ushort(__float2bfloat16_rn(lo))) |
          (uint32_t(__bfloat16_as_ushort(__float2bfloat16_rn(hi))) << 16);
-}
-
-// Half ``half`` of a packed bfloat16 pair, widened exactly to float32.
-__device__ __forceinline__ float hc_widen(uint32_t pair, int half) {
-  return __uint_as_float(half ? pair & 0xffff0000u : pair << 16);
 }
 
 // The three bfloat16 terms of the eight float32 values at ``src``, whose sum is
@@ -38,8 +35,8 @@ __device__ __forceinline__ void hc_split8(const float* src, uint4 (&out)[3]) {
     for (int t = 0; t < 3; ++t) {
       uint32_t packed = hc_pack_bf16(r0, r1);
       w[t][p] = packed;
-      r0 -= hc_widen(packed, 0);
-      r1 -= hc_widen(packed, 1);
+      r0 -= widen_bf16_lo(&packed);
+      r1 -= widen_bf16_hi(&packed);
     }
   }
 #pragma unroll
@@ -118,8 +115,8 @@ __device__ __forceinline__ float hc_square_sum(const void* tile, int tid) {
     uint32_t w[4] = {c.x, c.y, c.z, c.w};
 #pragma unroll
     for (int e = 0; e < 4; ++e) {
-      float lo = hc_widen(w[e], 0);
-      float hi = hc_widen(w[e], 1);
+      float lo = widen_bf16_lo(&w[e]);
+      float hi = widen_bf16_hi(&w[e]);
       s = fmaf(lo, lo, s);
       s = fmaf(hi, hi, s);
     }
