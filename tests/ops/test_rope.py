@@ -279,6 +279,62 @@ def test_rope_rotates_several_units_a_thread_where_heads_copy_columns(
     compare_outputs(got_k, ref_k, rope_verification())
 
 
+def _call_with_offsets(name, op, positions, query, key):
+    """*op*'s outputs, LongRoPE's at offsets of 4096, and the positions they read."""
+    if name != "LongRoPEFwdOp":
+        return op(positions, query, key), positions
+    offsets = torch.full_like(positions, 4096)
+    return op(positions, query, key, offsets), positions + offsets
+
+
+@pytest.mark.parametrize(
+    ("name", "neox", "dtype"),
+    [
+        pytest.param("RoPEFwdOp", False, torch.float32, marks=pytest.mark.smoke, id="gptj-float32"),
+        pytest.param(
+            "LongRoPEFwdOp", True, torch.float16, marks=pytest.mark.smoke, id="longrope-offsets"
+        ),
+    ],
+)
+def test_rope_rotates_one_unit_a_thread_where_heads_copy_columns(name, neox, dtype) -> None:
+    """A small call whose heads copy columns: one unit a thread, its columns loaded before the
+    token's position.
+
+    5 tokens of 64 query heads and one key head, 64 columns a head and 24 rotating. In float32
+    a token has more units than the 1024-thread block limit, so its second block is partly
+    empty. Positions outside the cache read its nearest row; LongRoPE's offsets move each row.
+    """
+    changes = {"head_size": 64, "rotary_dim": 24, "is_neox_style": neox}
+    if name == "LongRoPEFwdOp":
+        changes["rescale_factors"] = [1.0 + i / 16 for i in range(12)]
+    op, params = _op(name, dtype, **changes)
+    _, query, key = _inputs(name, params, 5, 64, 1, dtype)
+    rows = rope_tables(name, params, query)[0].shape[0]
+    positions = torch.tensor([-1, rows, 3, rows - 1, 1000], device=run_device())
+    (got_q, got_k), read = _call_with_offsets(name, op, positions, query, key)
+    ref_q, ref_k = _reference(name, params, read.clamp(0, rows - 1), query, key)
+    compare_outputs(got_q, ref_q, rope_verification())
+    compare_outputs(got_k, ref_k, rope_verification())
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("RoPEFwdOp", marks=pytest.mark.smoke, id="rope"),
+        pytest.param("LongRoPEFwdOp", marks=pytest.mark.full, id="longrope-offsets"),
+    ],
+)
+def test_rope_takes_a_key_of_no_heads(name) -> None:
+    """A 0-column key failed to reshape; it comes back empty, shaped as the key, and the query
+    rotates."""
+    dtype = torch.float16
+    op, params = _op(name, dtype)
+    positions, query, key = _inputs(name, params, 5, 3, 0, dtype)
+    (got_q, got_k), read = _call_with_offsets(name, op, positions, query, key)
+    assert got_k.shape == key.shape
+    compare_outputs(got_q, _reference(name, params, read, query, None)[0], rope_verification())
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
 def test_rope_query_off_a_vector_boundary(neox) -> None:
