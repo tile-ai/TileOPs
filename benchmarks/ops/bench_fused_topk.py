@@ -4,13 +4,15 @@ vLLM is required, not optional: this file exists to compare against its routers,
 torch reference is not a comparison worth recording. `fused_topk` takes no correction
 bias, so a biased row goes to `fused_topk_bias` instead. A grouped row
 (`num_expert_group > 1`) goes to vLLM's fused CUDA `grouped_topk`, which takes only a
-biased sigmoid, so a grouped row without a bias has no vLLM comparator.
+biased sigmoid, so a grouped row without a bias has no vLLM comparator. A row with given
+experts goes to `fused_topk_bias`'s hash-table lookup.
 
 Real model configurations:
-  Model              E    K  scoring   renorm  groups  kept  scale
-  Kimi K2          384   8  sigmoid   True         1     1   1.0
-  Qwen3-235B-A22B  128   8  softmax   True         1     1   1.0
-  DeepSeek-V3      256   8  sigmoid   True         8     4   2.5
+  Model                E    K  scoring       renorm  groups  kept  scale
+  Kimi K2            384   8  sigmoid       True         1     1   1.0
+  Qwen3-235B-A22B    128   8  softmax       True         1     1   1.0
+  DeepSeek-V3        256   8  sigmoid       True         8     4   2.5
+  DeepSeek-V4-Flash  256   6  sqrtsoftplus  True         1     1   1.5
 """
 
 import pytest
