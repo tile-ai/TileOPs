@@ -5,6 +5,7 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.attention import DSADecodeBasicKernel, DSADecodeKernel, DSADecodeWSKernel
 from tileops._utils import get_sm_version
 from tileops.attention import DSADenseFwdOp
+from tileops.backend import OpNotAvailableError
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
 from workloads.attention.dsa import DSADecodeWorkload
@@ -290,3 +291,16 @@ def test_dsa_decode_index_only(batch, seq_len, topk, with_sink) -> None:
         inputs.append(sink.to(q.device))
     test.check(DSADenseFwdOp(0, 1, 0, is_causal=False), *inputs)
 
+
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_dsa_decode_refuses_index_only_selection_off_dim_512() -> None:
+    """Only the SM90 kernel for value dim 512 serves is_causal false; the others need the
+    causal mask, so the op refuses a dim-256 call before anything is built."""
+    test = DSADecodeTest(1, 64, 1, 256, 256, 64, 128, 1, 1, 0, is_causal=False)
+    op = DSADenseFwdOp(64, 1, 0, is_causal=False)
+    with pytest.raises(OpNotAvailableError, match="requires dim 512.*requires the causal mask"):
+        op(*test.gen_inputs())
+    for interface in DSADenseFwdOp.interfaces:
+        assert not op._entries_built(interface)
