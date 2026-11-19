@@ -835,9 +835,10 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
     shape = {
         # 128 rows of 128 runs.
         "fixture": (2, 64, 512),
-        # Rows of 64 runs, four a SM, eight warps an SM's share; one block an SM covers both
-        # launches, so the row grid's fill does not decide them.
-        "sub-wave": (1, sm_count * 4, 256),
+        # Rows of 64 runs; one block an SM covers both launches, so the row grid's fill does
+        # not decide them. Four rows an SM and one more: an SM's share is 8 warps and part of
+        # a ninth, which takes a whole warp.
+        "sub-wave": (1, sm_count * 4 + 1, 256),
         "widest": (1, sm_count * 16, 256),
         # Rows of 128 runs fill a row-grid block, so the blocks an SM holds fill it on every
         # supported architecture.
@@ -852,7 +853,7 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
     }[case]
     launch = {
         "fixture": {},
-        "sub-wave": {"flat": True, "threads": 256},
+        "sub-wave": {"flat": True, "threads": 288},
         "widest": {"flat": True, "threads": 1024},
         "past-one-block-an-sm": {"flat": False, "threads": 128},
         "row-grid-in-one-wave": {"flat": False, "threads": 128},
