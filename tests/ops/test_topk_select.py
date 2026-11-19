@@ -229,6 +229,7 @@ def _registers_case(case: str):
         ),
     ],
 )
+@pytest.mark.in_tree_kernels
 def test_topk_select_few_rows_in_registers(case: str) -> None:
     """A call of few short rows selects each row from its keys held in registers, at every
     block size tuning may pick."""

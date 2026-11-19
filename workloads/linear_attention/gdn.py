@@ -2,6 +2,7 @@ import torch
 
 from workloads.device import run_device
 from workloads.linear_attention.input_values import _log_gates, _small, _step_sizes
+from workloads.linear_attention.state_pool import read_states, write_states
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = ["GDNFwdCall", "GDNFwdWorkload"]
@@ -226,7 +227,7 @@ class GDNFwdCall(CallWorkload):
             v,
             g,
             beta,
-            initial_state if slots is None else initial_state[slots],
+            initial_state if slots is None else read_states(initial_state, slots),
             cu_seqlens,
             cu_seqlens_cpu,
             a_log,
@@ -236,9 +237,9 @@ class GDNFwdCall(CallWorkload):
         if slots is None:
             return o, final_state
         # The pool is updated in place: each sequence's slot takes its final state, and every
-        # other slot keeps the state it held.
+        # other slot keeps the state it held. A slot of -1 is never written.
         pool = initial_state.clone()
-        pool[slots] = final_state
+        write_states(pool, slots, final_state)
         return o, pool
 
     def verification(self, *inputs):
@@ -381,7 +382,8 @@ def gdn_rollback_ref(
 ):
     """The verification of drafts on a state pool: sequence ``n`` starts from slot
     ``state_indices[n, num_accepted_tokens[n] - 1]`` and the state after its token ``t`` goes
-    to slot ``state_indices[n, t]``; every other slot keeps its state.
+    to slot ``state_indices[n, t]``; every other slot keeps its state. A slot of -1 is never
+    written, and a sequence starting from one writes none of its slots.
 
     Each token is one FP32 step of :func:`gdn_ref`, all sequences still running stepping
     together, so a sequence's tokens see the state exactly as one-token decode calls leave it.
@@ -395,7 +397,9 @@ def gdn_rollback_ref(
         lengths = [end - start for start, end in zip(bounds[:-1], bounds[1:], strict=True)]
     slots = state_indices.long()
     sequences = torch.arange(len(lengths), device=q.device)
-    state = pool[slots[sequences, num_accepted_tokens.long() - 1]]
+    first = slots[sequences, num_accepted_tokens.long() - 1]
+    state = read_states(pool, first)
+    slots = slots.masked_fill((first < 0)[:, None], -1)
     pool = pool.clone()
     output = torch.empty_like(v)
     for t in range(max(lengths, default=0)):
@@ -408,7 +412,7 @@ def gdn_rollback_ref(
             **flags,
         )  # fmt: skip
         output[r, c] = out[:, 0]
-        pool[slots[n, t]] = state[n]
+        write_states(pool, slots[n, t], state[n])
     return output, pool
 
 

@@ -1044,7 +1044,8 @@ def causal_conv1d_ref(
     A sequence on tokens ``[a, e)`` is preceded by its state, ``conv_state[cache_indices[s]]``
     or ``conv_state[s]``, where ``has_initial_state`` is set and by zeros otherwise; the first
     ``(W - 1) * dilation`` columns of its state become its last tokens of that history and
-    ``x[a:e]``. An empty sequence keeps its state.
+    ``x[a:e]``. An empty sequence keeps its state. A slot of -1 is never written; its
+    sequence's outputs are unspecified and left zero.
     """
     span = (weight.shape[1] - 1) * dilation
     if conv_state.shape[2] < span or weight.shape[0] != x.shape[1]:
@@ -1053,6 +1054,9 @@ def causal_conv1d_ref(
     bounds = cu_seqlens.tolist()
     for s, (a, e) in enumerate(zip(bounds, bounds[1:], strict=False)):
         slot = int(cache_indices[s]) if cache_indices is not None else s
+        if slot < 0:
+            out[a:e] = 0
+            continue
         history = conv_state[slot, :, :span]
         zeros = torch.zeros_like(history)
         history = (
@@ -1079,7 +1083,8 @@ def causal_conv1d_update_ref(
     dilation: int = 1,
 ) -> torch.Tensor:
     """Float32 reference of CausalConv1dUpdateFwdOp (vLLM causal_conv1d_update with
-    num_accepted_tokens); advances *conv_state* as the op does."""
+    num_accepted_tokens); advances *conv_state* as the op does. A slot of -1 is never
+    written; its sequence's outputs are unspecified and left zero."""
     span = (weight.shape[1] - 1) * dilation
     if weight.shape[0] != x.shape[1]:
         raise ValueError("weight must have x's channels")
@@ -1090,6 +1095,9 @@ def causal_conv1d_update_ref(
     out = torch.empty_like(x)
     for s, (a, e) in enumerate(zip(bounds, bounds[1:], strict=False)):
         slot = int(conv_state_indices[s]) if conv_state_indices is not None else s
+        if slot < 0:
+            out[a:e] = 0
+            continue
         first = int(num_accepted_tokens[s]) - 1 if num_accepted_tokens is not None else 0
         history = conv_state[slot, :, first : first + span]
         acc, xp = _dilated_taps(history, x[a:e], weight, bias, dilation, silu)
