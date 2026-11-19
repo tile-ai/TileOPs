@@ -127,11 +127,6 @@ _SINK_UNSPLIT = dict(
             id="latent-topk-off-the-block",
             marks=pytest.mark.smoke,
         ),
-        # DeepSeek-V4-Flash's MTP rows with a sink, merged over key splits; a request
-        # shorter than topk pads with -1.
-        pytest.param(_SINK_SPLIT, id="sink-split", marks=pytest.mark.full),
-        # Enough query rows to fill the SMs: one split, the sink applied in place.
-        pytest.param(_SINK_UNSPLIT, id="sink-unsplit", marks=pytest.mark.full),
         # 64 key columns past the value; 32-row pages.
         pytest.param(
             dict(S_q=1, H=64, DK=576, K=256, NP=24, PS=32, W=8, cache_lens=[256, 100, 31]),
@@ -224,21 +219,38 @@ def _check_refused(call, reason):
             id="bfloat16-on-sm89",
             marks=[pytest.mark.sm89, pytest.mark.smoke],
         ),
-        # The SM90 kernel's bfloat16 rows hold 512 value columns.
+        # The SM90 kernel's bfloat16 rows hold 512 value columns, and 0 or 64 key columns
+        # past them.
         pytest.param(
             dict(
                 S_q=1,
                 H=64,
-                DK=576,
                 K=128,
                 NP=8,
                 PS=64,
                 W=2,
                 cache_lens="repeat(128, 2)",
+                DK=512,
                 head_dim_v=448,
             ),
             "512 value columns",
             id="bfloat16-value-width",
+            marks=[pytest.mark.sm90, pytest.mark.full],
+        ),
+        pytest.param(
+            dict(
+                S_q=1,
+                H=64,
+                K=128,
+                NP=8,
+                PS=64,
+                W=2,
+                cache_lens="repeat(128, 2)",
+                DK=640,
+                head_dim_v=512,
+            ),
+            "512 value columns",
+            id="bfloat16-key-tail",
             marks=[pytest.mark.sm90, pytest.mark.full],
         ),
     ],

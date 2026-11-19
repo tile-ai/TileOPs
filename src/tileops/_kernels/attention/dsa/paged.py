@@ -79,8 +79,8 @@ def _dsa_paged_kernel(
     rope_col = dim if bf16 else (dim + 4 * groups) // 2  # in bfloat16 elements
     row_bytes = 2 * (dim + rope) if bf16 else dim + 4 * groups + 2 * rope
     dq = dim + rope
-    # A block's weights stage in the rope tile, so it keeps 64 columns without a rope.
-    tile = 64
+    # A block's weights stage in the rope tile, so it keeps block_k columns without a rope.
+    tile = block_k
     atom = 64  # bf16 columns one 128-byte swizzle atom holds
     vec = 8  # bf16 elements one 16-byte copy moves
     rows_mine = block_k // cluster  # the rows of a block this CTA gathers and dequantizes
@@ -631,11 +631,9 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
             call.page_size,
             split,
             call.sm_scale,
-            bf16,
-            call.dim_tail,
-            call.has_attn_sink,
         )
-        return (*args, index), lambda: cls(*args, device_index=index)
+        rows = {"bf16": bf16, "tail": call.dim_tail, "sink": call.has_attn_sink}
+        return (*args, *rows.values(), index), lambda: cls(*args, device_index=index, **rows)
 
     @staticmethod
     def split_for(ctas: int, topk: int, sms: int) -> int:
@@ -658,8 +656,8 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         return split
 
     def __init__(
-        self, batch, seq_len, heads, topk, page_size, split, sm_scale, bf16, tail, sink,
-        device_index=None,
+        self, batch, seq_len, heads, topk, page_size, split, sm_scale, device_index=None, *,
+        bf16=False, tail=64, sink=False,
     ):  # fmt: skip
         super().__init__(device_index=device_index)
         self.batch, self.seq_len, self.heads = batch, seq_len, heads
