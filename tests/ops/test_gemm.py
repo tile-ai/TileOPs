@@ -2497,12 +2497,15 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "n, dtype, out_dtype, bias, tile",
+    "m, n, k, dtype, out_dtype, bias, tile",
     [
+        # At M = 8150 the last of the 64 row tiles holds 86 rows: both 64-row consumers have rows.
         # 64 row tiles take three 128-wide column tiles, 192 CTAs, or two 144 wide, 128. A
         # float32 tile 144 wide leaves the helper's WGMMA staged whole in one chunk.
         pytest.param(
+            8150,
             280,
+            1032,
             torch.bfloat16,
             torch.float32,
             True,
@@ -2511,7 +2514,9 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             id="f32-144-bias-n-tail",
         ),
         pytest.param(
+            8150,
             288,
+            1032,
             torch.float16,
             torch.float32,
             False,
@@ -2521,7 +2526,9 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
         ),
         # Rows of 281 float32 values are no whole number of 16-byte units: no TMA store.
         pytest.param(
+            8150,
             281,
+            1032,
             torch.bfloat16,
             torch.float32,
             False,
@@ -2530,14 +2537,24 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             id="f32-144-unaligned-rows",
         ),
         pytest.param(
-            288, torch.bfloat16, None, False, (144, 144), marks=pytest.mark.full, id="bf16-144"
+            8150,
+            288,
+            1032,
+            torch.bfloat16,
+            None,
+            False,
+            (144, 144),
+            marks=pytest.mark.full,
+            id="bf16-144",
         ),
         # The other widths the helper issues, each the narrowest whose two column tiles fit
-        # one wave: 160 staged whole, 224 and 240 in chunks of 56 and 120 columns. Each case
-        # names the columns its float32 or 16-bit tile is staged in, so the one-chunk copy stays
-        # reached.
+        # one wave: 160 staged whole, 176 in chunks of 88 past an N tail, 224 and 240 in chunks
+        # of 56 and 120 columns. Each case names the columns its float32 or 16-bit tile is staged
+        # in, so the one-chunk copy stays reached. Rows of 330 values take no ping-pong tile.
         pytest.param(
+            8150,
             320,
+            1032,
             torch.bfloat16,
             torch.float32,
             False,
@@ -2546,7 +2563,20 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             id="f32-160",
         ),
         pytest.param(
+            8150,
+            330,
+            1032,
+            torch.bfloat16,
+            torch.float32,
+            False,
+            (176, 88),
+            marks=pytest.mark.full,
+            id="f32-176-n-tail",
+        ),
+        pytest.param(
+            8150,
             440,
+            1032,
             torch.bfloat16,
             torch.float32,
             False,
@@ -2555,7 +2585,9 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             id="f32-224",
         ),
         pytest.param(
+            8150,
             472,
+            1032,
             torch.bfloat16,
             torch.float32,
             False,
@@ -2565,7 +2597,9 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
         ),
         # Two 256-wide column tiles, 128 CTAs, where 128-wide ones take 256.
         pytest.param(
+            8150,
             500,
+            1032,
             torch.bfloat16,
             torch.float32,
             False,
@@ -2573,16 +2607,61 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             marks=pytest.mark.full,
             id="f32-256-n-tail",
         ),
+        # The second of two row tiles holds 64 rows: one coop2 consumer would compute none.
+        pytest.param(
+            192,
+            10240,
+            1032,
+            torch.bfloat16,
+            None,
+            False,
+            None,
+            marks=pytest.mark.full,
+            id="half-empty-last-row-tile",
+        ),
+        # The narrowest one-wave grid, 48 row tiles by two 256-wide column tiles, fills 96 SMs.
+        pytest.param(
+            6144,
+            512,
+            1032,
+            torch.bfloat16,
+            torch.float32,
+            False,
+            None,
+            marks=pytest.mark.full,
+            id="under-15-16-of-a-wave",
+        ),
+        # One row tile of 65 K steps: 128 columns of 224 fit one wave, and the 128 x 128 basic
+        # tile scores best of the others.
+        pytest.param(
+            96,
+            28672,
+            4160,
+            torch.bfloat16,
+            None,
+            False,
+            None,
+            marks=pytest.mark.full,
+            id="one-row-tile-past-64-k-steps",
+        ),
     ],
 )
 def test_gemm_one_wave_grid_runs_the_narrowest_coop2_tile(
-    n: int, dtype: torch.dtype, out_dtype: torch.dtype | None, bias: bool, tile: tuple
+    m: int,
+    n: int,
+    k: int,
+    dtype: torch.dtype,
+    out_dtype: torch.dtype | None,
+    bias: bool,
+    tile: tuple | None,
 ) -> None:
     """A call whose 128-row tiles fit one wave at a coop2 width runs coop2 at the narrowest such
-    width, staged in the columns *tile* names, past M, N and K tails. The cases count tiles against
-    the 132 SMs of an H200."""
-    # The last of the 64 row tiles holds 86 rows: both 64-row consumers have rows.
-    m, k = 8150, 1032
+    width, staged in the columns *tile* names, past M, N and K tails. With *tile* ``None`` the
+    call runs a tile other than coop2: the one-wave tile is not offered where its last row tile
+    leaves a 64-row consumer without rows, or where its grid fills less than 15/16 of the wave,
+    and in one row tile past 64 K steps the 128 x 128 basic tile, which streams B at the DRAM
+    rate as the one-wave tile does, keeps the call where it scores best of the others. The
+    cases count tiles against the 132 SMs of an H200."""
     call = GEMMCall(
         m=m,
         n=n,
@@ -2598,47 +2677,11 @@ def test_gemm_one_wave_grid_runs_the_narrowest_coop2_tile(
     test = GEMMTest(m, n, k, dtype, False, True, bias=bias, out_dtype=out_dtype)
     op = GEMMFwdOp(trans_b=True, out_dtype=out_dtype, target=BUILTIN)
     config = op.kernel_for("gemm", lambda: call).config
-    assert config.get("coop2")
-    assert (config["block_n"], config.get("stage_n") or config["block_n"]) == tile
-    test.check(op, *test.gen_inputs())
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.sm90
-@pytest.mark.parametrize(
-    "m, n, k, out_dtype",
-    [
-        # The second of two row tiles holds 64 rows: one coop2 consumer would compute none.
-        pytest.param(
-            192, 10240, 1032, None, marks=pytest.mark.smoke, id="half-empty-last-row-tile"
-        ),
-        # The narrowest one-wave grid, 48 row tiles by two 256-wide column tiles, fills 96 SMs.
-        pytest.param(
-            6144, 512, 1032, torch.float32, marks=pytest.mark.full, id="under-15-16-of-a-wave"
-        ),
-        # One row tile of 65 K steps: 128 columns of 224 fit one wave, and the 128 x 128 basic
-        # tile scores best of the others.
-        pytest.param(
-            96, 28672, 4160, None, marks=pytest.mark.full, id="one-row-tile-past-64-k-steps"
-        ),
-    ],
-)
-def test_gemm_one_wave_coop2_needs_both_consumers_and_a_full_wave(
-    m: int, n: int, k: int, out_dtype: torch.dtype | None
-) -> None:
-    """The one-wave coop2 tile is not offered where its last row tile leaves a 64-row consumer
-    without rows, or where its grid fills less than 15/16 of the wave; the call runs a tile other
-    than coop2. In one row tile past 64 K steps the 128 x 128 basic tile, which streams B at the
-    DRAM rate as the one-wave tile does, keeps the call where it scores best of the others. The
-    cases count tiles against the 132 SMs of an H200."""
-    call = GEMMCall(
-        m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=True, out_dtype=out_dtype, device=run_device()
-    )
-    if call.calibration != "h200" or call.sm_count != 132:
-        pytest.skip("the one-wave grids above are counted on a 132-SM H200")
-    test = GEMMTest(m, n, k, torch.bfloat16, False, True, out_dtype=out_dtype)
-    op = GEMMFwdOp(trans_b=True, out_dtype=out_dtype, target=BUILTIN)
-    assert not op.kernel_for("gemm", lambda: call).config.get("coop2")
+    if tile is None:
+        assert not config.get("coop2")
+    else:
+        assert config.get("coop2")
+        assert (config["block_n"], config.get("stage_n") or config["block_n"]) == tile
     test.check(op, *test.gen_inputs())
 
 
