@@ -5,7 +5,11 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS, STATIC_SHARED_BYTES
+from tileops._kernels.constants import (
+    MAX_GRID_X_BLOCKS,
+    MAX_GRID_YZ_BLOCKS,
+    STATIC_SHARED_BYTES,
+)
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool1dFwdInterface, AvgPoolCall
 from tileops._kernels.pool.common import (
@@ -117,7 +121,8 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
     # The outputs whose window lies inside the row, and so divides by the kernel width.
     clean_lo = -(-pad_l // stride_l)
     clean_hi = min((l_in + pad_l - kernel_l) // stride_l, out_l - 1)
-    # Rows past the 65535 blocks of the grid's y axis share one axis with the row's tiles.
+    # Rows past the 65535 blocks of the grid's y axis share grid x with the row's tiles, in
+    # chunks of rows whose tiles grid x holds; grid y counts the chunks.
     flat = rows > MAX_GRID_YZ_BLOCKS
     # An input of 2**31 elements or more takes int64 extents and an int64 block index, so
     # that every element offset is computed in int64; a smaller one keeps int32.
@@ -214,6 +219,8 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
 
         x_shape = (T.int64(rows), T.int64(l_in)) if wide else (rows, l_in)
         out_shape = (T.int64(rows), T.int64(out_l)) if wide else (rows, out_l)
+        chunk = min(rows, MAX_GRID_X_BLOCKS // blocks_per_row)
+        chunks = -(-rows // chunk)
         if flat:
 
             @T.prim_func
@@ -221,9 +228,14 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
                 x: T.Tensor(x_shape, dtype),  # type: ignore
                 out: T.Tensor(out_shape, dtype),  # type: ignore
             ):
-                with T.Kernel(blocks_per_row * rows, threads=threads) as b:
+                with T.Kernel(blocks_per_row * chunk, chunks, threads=threads) as (b, c):
                     block = T.cast(b, "int64") if wide else b
-                    _pool_tile(x, out, block % blocks_per_row, block // blocks_per_row)
+                    row = (T.cast(c, "int64") if wide else c) * chunk + block // blocks_per_row
+                    if rows % chunk:
+                        if row < rows:
+                            _pool_tile(x, out, block % blocks_per_row, row)
+                    else:
+                        _pool_tile(x, out, block % blocks_per_row, row)
 
         else:
 

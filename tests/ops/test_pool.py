@@ -816,10 +816,12 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
     facts = device_facts(run_device().index)
     sm_count = facts.sm_count
     # fp32, kernel 2, stride 2: a thread holds 4 elements, a row of l_in has l_in // 4 runs.
+    # A row of 128 runs fills a row-grid block, so the blocks an SM holds fill it on every
+    # supported architecture.
     rows, l_in, launch = {
         "sub-wave": (512, 256, {"flat": True, "threads": -(-512 * 64 // 32 // sm_count) * 32}),
         "widest": (sm_count * 16, 256, {"flat": True, "threads": 1024}),
-        "past-one-block-an-sm": (sm_count * 16 + 1, 256, {"flat": False, "threads": 128}),
+        "past-one-block-an-sm": (sm_count * 8 + 1, 512, {"flat": False, "threads": 128}),
         "no-fewer-blocks": (sm_count, 512, {"flat": False, "threads": 128}),
         "short-rows": (60000, 32, {"flat": True, "threads": 128}),
         "rows-past-grid-y": (65536, 256, {"flat": True, "threads": 128}),
@@ -852,18 +854,28 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
             id="int32-max-plus-one-elements-fp16",
             marks=pytest.mark.full,
         ),
+        # 2**31 rows of one element: one block a row, one more than grid x holds. Costs 9 GiB.
+        pytest.param(
+            (2, 2**30),
+            1,
+            torch.float16,
+            id="blocks-past-the-grid-x-axis-fp16",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_avg_pool1d_staged_kernel_launch_limits(
     rows: tuple[int, int], l_in: int, dtype: torch.dtype
 ) -> None:
     """A window reaching two elements past a load is staged in shared memory; more rows than
-    the grid's y axis holds, and an input of 2**31 elements, pool like torch."""
+    the grid's y axis holds, more tiles than grid x holds, and an input of 2**31 elements,
+    pool like torch. Torch is run a batch entry at a time, under its own int32 limit."""
     x = torch.randn(*rows, l_in, device=run_device(), dtype=dtype)
     op = AvgPool1dFwdOp(kernel_size=5, stride=2, padding=2, target=BUILTIN)
     out = op(x)
     assert [type(k) for k in op.iter_kernels()] == [AvgPool1dKernel]
-    torch.testing.assert_close(out, F.avg_pool1d(x, 5, 2, 2), rtol=0, atol=0)
+    for n in range(x.shape[0]):
+        torch.testing.assert_close(out[n], F.avg_pool1d(x[n], 5, 2, 2), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize(
