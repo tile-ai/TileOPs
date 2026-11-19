@@ -2606,21 +2606,31 @@ def test_gemm_one_wave_grid_runs_the_narrowest_coop2_tile(
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "m, n, out_dtype",
+    "m, n, k, out_dtype",
     [
         # The second of two row tiles holds 64 rows: one coop2 consumer would compute none.
-        pytest.param(192, 10240, None, marks=pytest.mark.smoke, id="half-empty-last-row-tile"),
+        pytest.param(
+            192, 10240, 1032, None, marks=pytest.mark.smoke, id="half-empty-last-row-tile"
+        ),
         # The narrowest one-wave grid, 48 row tiles by two 256-wide column tiles, fills 96 SMs.
-        pytest.param(6144, 512, torch.float32, marks=pytest.mark.smoke, id="under-15-16-of-a-wave"),
+        pytest.param(
+            6144, 512, 1032, torch.float32, marks=pytest.mark.full, id="under-15-16-of-a-wave"
+        ),
+        # One row tile of 65 K steps: 128 columns of 224 fit one wave, and the 128 x 128 basic
+        # tile scores best of the others.
+        pytest.param(
+            96, 28672, 4160, None, marks=pytest.mark.full, id="one-row-tile-past-64-k-steps"
+        ),
     ],
 )
 def test_gemm_one_wave_coop2_needs_both_consumers_and_a_full_wave(
-    m: int, n: int, out_dtype: torch.dtype | None
+    m: int, n: int, k: int, out_dtype: torch.dtype | None
 ) -> None:
     """The one-wave coop2 tile is not offered where its last row tile leaves a 64-row consumer
     without rows, or where its grid fills less than 15/16 of the wave; the call runs a tile other
-    than coop2. The cases count tiles against the 132 SMs of an H200."""
-    k = 1032
+    than coop2. In one row tile past 64 K steps the 128 x 128 basic tile, which streams B at the
+    DRAM rate as the one-wave tile does, keeps the call where it scores best of the others. The
+    cases count tiles against the 132 SMs of an H200."""
     call = GEMMCall(
         m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=True, out_dtype=out_dtype, device=run_device()
     )

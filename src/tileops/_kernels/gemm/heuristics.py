@@ -202,6 +202,8 @@ class _Cand:
     panel_size: int = 16
     cluster_m: int = 1
     blocks: int = 1
+    # A coop2 tile offered only as the one-wave tile; see ``_enumerate``.
+    one_wave: bool = False
 
     def to_config(self) -> dict:
         if self.structure == "fill":
@@ -404,8 +406,9 @@ def _enumerate(
         for bk in (32, 64, 128):
             # 176 fills the waves of some N that 192 and 256 leave a partial last
             # wave. Only as whole tiles: with an N tail its extra tiles each pay an
-            # epilogue the score does not count. It is one WGMMA only over 64-wide K steps.
-            if bn == 176 and (n % bn or bk != 64):
+            # epilogue the score does not count. The one-wave tile takes the N tail as the other
+            # one-wave widths do. It is one WGMMA only over 64-wide K steps.
+            if bn == 176 and (bk != 64 or (n % bn and bn != one_wave)):
                 continue
             d = _coop2_ns_sn(bn, bk)
             if d is None:
@@ -418,8 +421,9 @@ def _enumerate(
             # At 128 or narrower a coop2 tile scores as the basic tile of its width listed above,
             # which a tie keeps. A width 256 does not divide is one WGMMA only over 64-wide K steps.
             one_wave_ok = bn == one_wave and bn > 128 and (bk == 64 or 256 % bn == 0)
-            if (coop2_ok and mn_tiles >= sm_count) or one_wave_ok:
-                out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
+            full_wave_ok = coop2_ok and mn_tiles >= sm_count
+            if full_wave_ok or one_wave_ok:
+                out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn, one_wave=not full_wave_ok))
             if nt:
                 k_iters = math.ceil(k / bk)
                 ns_sk = min(ns, ns_cap["coop2_splitk"])
@@ -811,7 +815,19 @@ def _best_config_cached(
             f"no config candidate for {m}x{n}x{k} (trans_a={trans_a}, "
             f"trans_b={trans_b}, sm_count={sm_count})"
         )
-    best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count, cal, out_bytes), -c.block_k))
+
+    def score(c: _Cand) -> tuple:
+        return _score_us(c, m, n, k, sm_count, cal, out_bytes), -c.block_k
+
+    best = min(cands, key=score)
+    # In one row tile past 64 K steps, a 128 x 128 basic grid streams B at the DRAM rate
+    # whatever share of its last wave it fills, which the score does not model: it reads B
+    # once, as the one-wave coop2 tile does, and keeps the call where it scores best of the
+    # others. A 64-wide basic tile streams B slower than the one-wave tile.
+    if best.one_wave and m <= 128 and math.ceil(k / 64) > 64:
+        other = min((c for c in cands if not c.one_wave), key=score, default=best)
+        if (other.structure, other.block_m, other.block_n) == ("basic", 128, 128):
+            best = other
     if best.structure == "coop2":
         nt = not trans_a and trans_b
         cfg = (nt and _pingpong_config(m, n, k, best.block_n, sm_count)) or best.to_config()
