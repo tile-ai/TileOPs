@@ -895,41 +895,36 @@ _UNEVEN = [100, 0, 37, 64]
 _EVEN = [100, 70, 120, 66]
 
 
-_HOST = ("cu_seqlens", "cu_seqlens_cpu")
-
-
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("state_v_first", [False, True], ids=["key-major", "value-major"])
 @pytest.mark.parametrize(
-    ("offsets", "seq_lens", "dtype", "chunked"),
+    ("dtype", "chunked"),
     [
         pytest.param(
-            _HOST, _UNEVEN, torch.bfloat16, False,
+            torch.bfloat16, False,
             marks=[pytest.mark.sm89, pytest.mark.smoke], id="uneven-chunks-sm89",
         ),
         pytest.param(
-            _HOST, _UNEVEN, torch.bfloat16, True,
+            torch.bfloat16, True,
             marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-sm90",
         ),
         # fp16 chunks take the split preparation on SM90, which the one-CTA walk outruns.
         pytest.param(
-            _HOST, _UNEVEN, torch.float16, False,
+            torch.float16, False,
             marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-fp16-sm90",
         ),
     ],
 )  # fmt: skip
 def test_kda_prefill_updates_its_slots_of_a_state_pool(
     state_v_first: bool,
-    offsets: tuple,
-    seq_lens: list,
     dtype: torch.dtype,
     chunked: bool,
     monkeypatch,
 ) -> None:
     """Packed sequences start from and end in their slots, in either state layout; an empty
     sequence leaves its slot as it was. Enough (sequence, value head) pairs for the one-CTA
-    walk of each sequence; on SM90 the chunk-parallel prefill serves bf16 given gates
-    whatever their lengths, and the one-CTA walk serves fp16 ones and every SM89 call."""
+    walk of each sequence; on SM90 the chunk-parallel prefill serves bf16 given gates, and the
+    one-CTA walk serves fp16 ones and every SM89 call."""
     torch.manual_seed(42)
     runs = []
 
@@ -940,8 +935,8 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
     monkeypatch.setattr(kda_prefill, "run_chunk_prefill", counted)
     flags = {"state_v_first": state_v_first, "use_qk_l2norm_in_kernel": True}
     test = _pooled(
-        dtype, some=offsets, B=1, S=sum(seq_lens), seq_lens=seq_lens, H=4, HV=_FUSED_HEADS,
-        K=128, V=128, P=12, **flags,
+        dtype, some=("cu_seqlens", "cu_seqlens_cpu"), B=1, S=sum(_UNEVEN), seq_lens=_UNEVEN, H=4,
+        HV=_FUSED_HEADS, K=128, V=128, P=12, **flags,
     )  # fmt: skip
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
     assert bool(runs) == chunked
