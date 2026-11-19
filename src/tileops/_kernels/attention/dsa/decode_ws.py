@@ -15,6 +15,7 @@ from tileops._kernels.attention.dsa.decode import DSADecodeKernelBase
 from tileops._kernels.attention.online_softmax import make_sink_scale
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
+from tileops._kernels.kernel_base import Entry
 
 __all__ = ["DSADecodeWSKernel"]
 
@@ -83,7 +84,7 @@ _register_uniform_role_branches()
 )
 def _dsa_decode_ws_kernel(
     batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride, q_start, kv_group,
-    sm_scale, is_causal, has_sink, dtype,
+    sm_scale, dtype, is_causal, has_sink,
 ):  # fmt: skip
     """One CTA per (token, 64-head block); the selected keys are taken in block pairs.
 
@@ -528,8 +529,12 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         return super().refusal(call)
 
     @classmethod
-    def constructor_args(cls, call: DSADecodeCall) -> tuple:
-        return (*super().constructor_args(call), call.has_attn_sink)
+    def entry_for(cls, call: DSADecodeCall) -> Entry:
+        return call, lambda: cls(
+            *cls.constructor_args(call),
+            device_index=call.device.index if call.device is not None else None,
+            has_attn_sink=call.has_attn_sink,
+        )
 
     def __init__(
         self,
@@ -546,8 +551,9 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         kv_group: int = 1,
         sm_scale: float | None = None,
         is_causal: bool = True,
-        has_attn_sink: bool = False,
         device_index: int | None = None,
+        *,
+        has_attn_sink: bool = False,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch = batch
@@ -571,7 +577,7 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         self.kernel = kernel = _dsa_decode_ws_kernel(
             self.batch, self.seq_len, self.seq_len_kv, self.heads, self.dim, self.tail_dim,
             self.topk, self.kv_stride, self.q_start_index_s, self.kv_group, self.sm_scale,
-            self.is_causal, self.has_attn_sink, self.dtype_str,
+            self.dtype_str, self.is_causal, self.has_attn_sink,
         )  # fmt: skip
         return kernel
 
