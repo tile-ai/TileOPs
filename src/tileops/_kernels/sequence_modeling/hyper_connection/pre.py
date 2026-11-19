@@ -98,7 +98,7 @@ def _prenorm_gemm_kernel(
     split_slice = f"tileops::hc_split_slice<{q}, {steps}, {workers}, 4>"
     weight_shape = (q, k_total) if resident else (rows, k_total)
     weight_dtype = "float32" if resident else "bfloat16"
-    tokens = T.dynamic("tokens")
+    tokens = T.dynamic("tokens", "int64")
 
     @tilelang.jit(
         out_idx=[2, 3],
@@ -230,7 +230,7 @@ def _pre_mix_kernel(
     q = n * n + 2 * n
     parts = math.gcd(4, splits)
     block = math.gcd(512, c)
-    tokens = T.dynamic("tokens")
+    tokens = T.dynamic("tokens", "int64")
 
     @tilelang.jit(
         out_idx=[5, 6, 7],
@@ -253,14 +253,18 @@ def _pre_mix_kernel(
         ):
             with T.Kernel(tokens, threads=3 * WARP_LANES) as t:
                 part_s = T.alloc_shared((parts, q + 1), "float32")
-                for pj in T.Parallel(parts * (q + 1)):
+                for p, j in T.Parallel(parts, q):
                     acc = T.alloc_var("float32")
                     acc = 0.0
                     for sp in T.unroll(splits // parts):
-                        s = (pj // (q + 1)) * (splits // parts) + sp
-                        j = pj % (q + 1)
-                        acc += T.if_then_else(j < q, partial[s, t, T.min(j, q - 1)], sqr[s, t])
-                    part_s[pj // (q + 1), pj % (q + 1)] = acc
+                        acc += partial[p * (splits // parts) + sp, t, j]
+                    part_s[p, j] = acc
+                for p in T.Parallel(parts):
+                    acc = T.alloc_var("float32")
+                    acc = 0.0
+                    for sp in T.unroll(splits // parts):
+                        acc += sqr[p * (splits // parts) + sp, t]
+                    part_s[p, q] = acc
                 total = T.alloc_shared((q + 1,), "float32")
                 for j in T.Parallel(q + 1):
                     whole = T.alloc_var("float32")
