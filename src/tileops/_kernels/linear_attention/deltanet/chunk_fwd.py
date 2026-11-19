@@ -694,6 +694,8 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         v: torch.Tensor,
         beta: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # The compiled programs use packed BHSD buffers.
+        q, k, v, beta = (tensor.contiguous() for tensor in (q, k, v, beta))
         fused_fn, state_fn, o_fn = self.program(self._programs)
         if self._walk:
             Aw, Au, w, u, neg_kw, ku = fused_fn(k, v, beta)
