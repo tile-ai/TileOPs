@@ -637,11 +637,11 @@ def test_varlen_ws_serves_head_dims_off_the_contraction_step_on_sm90(
 @pytest.mark.parametrize(
     "q_lens, kv_lens, heads, heads_kv, dim, dtype, options",
     [
-        # Requests that fill whole 192-row tiles and partial ones, q_len > kv_len, and an empty
-        # request, on a 64-channel block and a 16-channel edge (8 channels and 8 zeros).
+        # Requests that fill whole 192-row tiles and partial ones on a 64-channel block and a
+        # 16-channel edge (8 channels and 8 zeros).
         pytest.param(
-            [700, 65, 0, 450],
-            [500, 900, 0, 450],
+            [256, 512],
+            [256, 512],
             4,
             4,
             72,
@@ -653,8 +653,8 @@ def test_varlen_ws_serves_head_dims_off_the_contraction_step_on_sm90(
         # The causal ranking claims items of 192 rows; a group of 2 still leaves the call to
         # the one-head program, as its head has an edge.
         pytest.param(
-            [700, 300],
-            [900, 300],
+            [256, 512],
+            [256, 512],
             4,
             2,
             72,
@@ -662,6 +662,30 @@ def test_varlen_ws_serves_head_dims_off_the_contraction_step_on_sm90(
             {"is_causal": True},
             marks=pytest.mark.smoke,
             id="d72-causal",
+        ),
+        # q_len > kv_len, a request shorter than a tile and an empty request in a wide call.
+        pytest.param(
+            [700, 65, 0, 450],
+            [500, 900, 0, 450],
+            4,
+            4,
+            72,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="d72-ragged",
+        ),
+        # Causal masks aligned to the end of keys longer than the queries.
+        pytest.param(
+            [700, 300],
+            [900, 300],
+            4,
+            2,
+            72,
+            torch.float16,
+            {"is_causal": True},
+            marks=pytest.mark.full,
+            id="d72-causal-offset",
         ),
         # Windows long enough that a row's maximum rises after its first key tiles, which the
         # running partial sums must take as a correction.
