@@ -19,7 +19,7 @@ class HyperConnectionPreCall(CallSpec):
 
     ``broadcast`` states that the residual's stream axis has stride 0, as a residual expanded
     from one stream has. The token axes ``*S`` are not part of the call: one kernel serves
-    any token count.
+    any nonzero token count.
     """
 
     n: int = 0
@@ -50,9 +50,9 @@ class HyperConnectionPreFwdInterface(KernelInterface):
         Every tensor is on ``call.device``.
 
         Args:
-            residual: bfloat16 ``[*S, call.n, call.c]`` of any strides; with
-                ``call.broadcast`` its stream axis has stride 0 and only the first stream is
-                read.
+            residual: bfloat16 ``[*S, call.n, call.c]`` of any strides and at least one
+                token; with ``call.broadcast`` its stream axis has stride 0 and only the first
+                stream is read.
             fn: float32 ``(call.n * call.n + 2 * call.n, call.n * call.c)``, contiguous.
             hc_scale: float32 ``(3,)``, contiguous.
             hc_base: float32 ``(call.n * call.n + 2 * call.n,)``, contiguous.

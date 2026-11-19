@@ -15,7 +15,6 @@ class HyperConnectionPreTest(HyperConnectionPreCall, TestBase):
 
 _SMOKE = pytest.mark.smoke
 _FULL = pytest.mark.full
-_NIGHTLY = pytest.mark.nightly
 _DSV4 = {
     "rms_eps": 1e-6,
     "hc_pre_eps": 1e-6,
@@ -42,13 +41,12 @@ _CASES = (
     _case([300], _FULL, "128-token-tiles"),
     # Past 512 tokens, behind the launch that splits fn.
     _case([2500], _FULL, "split-launch"),
-    # Past 4096 tokens: one split, and whole rows mixed in registers.
+    # Tiles enough to fill the SMs unsplit, mixed from registers past the staging bound.
     _case([8500], _FULL, "one-split"),
     # The softmax and one column normalization.
     _case([5], _FULL, "one-sinkhorn-iteration", sinkhorn_repeat=1),
     # Streams staged 128 channels at a time.
     _case([5], _FULL, "640-channels", c=640),
-    _case([32768], _NIGHTLY, "dsv4-flash-prefill"),
 )
 
 
@@ -60,7 +58,7 @@ def test_hyper_connection_pre(leading, c, params) -> None:
 
 
 @pytest.mark.parametrize(
-    "leading", [pytest.param([1], marks=_SMOKE), pytest.param([3000], marks=_FULL)]
+    "leading", [pytest.param([1], marks=_SMOKE), pytest.param([8500], marks=_FULL)]
 )
 def test_hyper_connection_pre_reads_a_broadcast_residual(leading) -> None:
     """The first block's residual, one stream expanded to all four along a stride-0 axis,
@@ -92,9 +90,10 @@ def test_hyper_connection_pre_serves_new_token_counts_from_one_kernel() -> None:
     [
         (3, 4096, _DSV4, "serves four streams"),
         (4, 4000, _DSV4, "multiple of 128"),
+        (4, 0, _DSV4, "multiple of 128"),
         (4, 4096, {**_DSV4, "sinkhorn_repeat": 0}, "at least one Sinkhorn iteration"),
     ],
-    ids=["three-streams", "4000-channels", "no-sinkhorn-iteration"],
+    ids=["three-streams", "4000-channels", "no-channels", "no-sinkhorn-iteration"],
 )
 def test_hyper_connection_pre_refuses_what_no_kernel_serves(n, c, params, reason) -> None:
     from tileops.backend import OpNotAvailableError

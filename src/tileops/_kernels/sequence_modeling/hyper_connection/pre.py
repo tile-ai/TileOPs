@@ -34,6 +34,12 @@ __all__ = ["HyperConnectionPreKernel"]
 _STEP = 64
 
 
+def _shared_shapes(slots: int, q: int, block_m: int, num_stages: int):
+    """The projection's bfloat16 shared buffers: ``slots`` 64-channel slots of the three terms
+    of ``q`` rows, and a ring of ``num_stages`` slots of ``block_m`` tokens."""
+    return (slots, 3 * q, _STEP), (num_stages, block_m, _STEP)
+
+
 @target_cache(maxsize=8)
 def _split_fn_kernel(rows: int, cols: int):
     """``fn`` ``(rows, cols)`` float32 to its three bfloat16 terms stacked ``(3 * rows, cols)``,
@@ -90,7 +96,7 @@ def _prenorm_gemm_kernel(
     rows = 3 * q
     k_split = k_total // splits
     steps = k_split // _STEP
-    workers = block_m // 64 * WARPGROUP_THREADS
+    workers = block_m // WGMMA_ROWS * WARPGROUP_THREADS
     threads = workers + WARP_LANES
     regs = rows // 2
     terms_barrier = 8
@@ -118,8 +124,11 @@ def _prenorm_gemm_kernel(
             sqr: T.Tensor((splits, tokens), "float32"),
         ):
             with T.Kernel(T.ceildiv(tokens, block_m), splits, threads=threads) as (bm, bs):
-                x_s = T.alloc_shared((num_stages, block_m, _STEP), "bfloat16")
-                w_s = T.alloc_shared((steps if resident else num_stages, rows, _STEP), "bfloat16")
+                w_shape, x_shape = _shared_shapes(
+                    steps if resident else num_stages, q, block_m, num_stages
+                )
+                x_s = T.alloc_shared(x_shape, "bfloat16")
+                w_s = T.alloc_shared(w_shape, "bfloat16")
                 T.annotate_layout(
                     {
                         x_s: tilelang.layout.make_swizzled_layout(x_s),
@@ -176,14 +185,14 @@ def _prenorm_gemm_kernel(
                             "handle",
                             wgmma,
                             tile.data,
-                            T.address_of(x_s[slot, wg * 64, 0]),
+                            T.address_of(x_s[slot, wg * WGMMA_ROWS, 0]),
                             T.address_of(w_s[g if resident else slot, 0, 0]),
                             0,
                         )
                         sq[0] += T.call_extern(
                             "float32",
                             "tileops::hc_square_sum",
-                            T.address_of(x_s[slot, wg * 64, 0]),
+                            T.address_of(x_s[slot, wg * WGMMA_ROWS, 0]),
                             wt,
                         )
                         T.wait_wgmma(0)
@@ -192,9 +201,10 @@ def _prenorm_gemm_kernel(
                         for r in T.unroll(regs):
                             total[r] += tile[r]
                     whole = T.call_extern("float32", "tileops::hc_pair_sum", sq[0])
-                    if wt % 2 == 0 and m0 + wg * 64 + wt // 2 < tokens:
-                        sqr[bs, m0 + wg * 64 + wt // 2] = whole
-                    row = m0 + wg * 64 + wt // WARP_LANES * 16 + wt % WARP_LANES // 4
+                    first = m0 + wg * WGMMA_ROWS
+                    if wt % 2 == 0 and first + wt // 2 < tokens:
+                        sqr[bs, first + wt // 2] = whole
+                    row = first + wt // WARP_LANES * 16 + wt % WARP_LANES // 4
                     for cg in T.unroll(q // 8):
                         for h in T.unroll(2):
                             for e in T.unroll(2):
@@ -366,8 +376,8 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
     def refusal(cls, call: HyperConnectionPreCall) -> str | None:
         if call.n != 4:
             return f"serves four streams, got {call.n}"
-        if call.c % 128:
-            return f"requires the stream width to be a multiple of 128, got {call.c}"
+        if not call.c or call.c % 128:
+            return f"requires the stream width to be a positive multiple of 128, got {call.c}"
         if call.sinkhorn_repeat < 1:
             return f"requires at least one Sinkhorn iteration, got {call.sinkhorn_repeat}"
         return super().refusal(call)
@@ -412,37 +422,35 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         self.sinkhorn_repeat = sinkhorn_repeat
         self.sm_count = sm_count
         self.smem_budget = smem_budget
-        self.init_config()
 
     def _launch(self, tokens: int) -> tuple[int, int, int, bool, bool]:
         """The ``block_m``, ``num_stages``, ``splits``, ``resident`` and ``staged_mix`` a call
-        of *tokens* tokens launches with."""
-        # Two warpgroups a tile share each slot's terms; a call one WGMMA's rows hold would
-        # leave the second idle.
+        of *tokens* tokens launches with; *tokens* is positive.
+
+        A resident launch takes the barriers' aligned slot, its slice of the terms and the
+        token ring, within the device's shared-memory budget.
+        """
+        # A call within one WGMMA's rows would leave a second warpgroup idle.
         small = tokens <= WGMMA_ROWS
         block_m, num_stages = (WGMMA_ROWS, 4) if small else (2 * WGMMA_ROWS, 6)
-        # More splits fill more SMs but add partial sums for the mix launch to read, more of
-        # them a split the larger the tile.
+        # More splits fill more SMs but add partial sums the mix launch reads.
         max_splits = 128 if small else 64
         steps = self.n * self.c // _STEP
         splits = max(1, min(max_splits, self.sm_count // -(-tokens // block_m)))
         while steps % splits:
             splits -= 1
         q = self.n * self.n + 2 * self.n
-        terms = steps // splits * 3 * q * _STEP * 2
-        ring = num_stages * block_m * _STEP * 2
-        # The barriers take one aligned slot ahead of the slice and the ring.
-        fits = SHARED_BUFFER_ALIGN_BYTES + terms + ring <= self.smem_budget
+        shapes = _shared_shapes(steps // splits, q, block_m, num_stages)
+        shared = SHARED_BUFFER_ALIGN_BYTES + 2 * sum(math.prod(shape) for shape in shapes)
         # Every token tile splits the fn slice itself, work that outgrows the launch it saves.
         resident_max = 512
-        # Staging overlaps a block's loads with its sums while few blocks share an SM; more
-        # tokens fill the SMs, and whole rows in registers skip the copy.
+        # Staging overlaps loads with sums while few blocks share an SM.
         staged_mix_max = 4096
         return (
             block_m,
             num_stages,
             splits,
-            fits and tokens <= resident_max,
+            shared <= self.smem_budget and tokens <= resident_max,
             tokens <= staged_mix_max,
         )
 
