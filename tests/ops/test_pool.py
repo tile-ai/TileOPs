@@ -843,10 +843,11 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
             id="rows-past-the-grid-y-axis-fp16",
             marks=pytest.mark.smoke,
         ),
-        # 2**19 rows of 4096: 2**31 elements, an extent one past INT32_MAX. Costs 12 GiB.
+        # 32768 rows of 65536: 2**31 elements, an extent one past INT32_MAX, in rows the
+        # grid's y axis holds. Costs 8 GiB.
         pytest.param(
-            (1, 2**19),
-            4096,
+            (1, 32768),
+            65536,
             torch.float16,
             id="int32-max-plus-one-elements-fp16",
             marks=pytest.mark.full,
