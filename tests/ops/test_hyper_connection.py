@@ -1,6 +1,5 @@
 """Public HyperConnectionPreFwdOp semantics: each token count's path, leading shapes, a
-broadcast residual, the DeepSeek-V4-Flash and GLM-5.3-Flash constants, and one kernel serving
-every token count."""
+broadcast residual, one kernel serving every token count, and the calls no kernel serves."""
 
 import pytest
 
@@ -30,8 +29,8 @@ def _case(leading, mark, case_id, c=4096, **params):
     return pytest.param(leading, c, {**_DSV4, **params}, marks=mark, id=case_id)
 
 
-def _call(leading, params, c=4096):
-    return manifest_call("HyperConnectionPreFwdOp", S=leading, n=4, C=c, **params)
+def _call(leading, params, c=4096, n=4):
+    return manifest_call("HyperConnectionPreFwdOp", S=leading, n=n, C=c, **params)
 
 
 _CASES = (
@@ -43,7 +42,8 @@ _CASES = (
     _case([300], _FULL, "128-token-tiles"),
     # Past 512 tokens, behind the launch that splits fn.
     _case([2500], _FULL, "split-launch"),
-    _case([3000], _FULL, "glm-5.3-flash", rms_eps=1e-5),
+    # Past 4096 tokens: one split, and whole rows mixed in registers.
+    _case([8500], _FULL, "one-split"),
     # The softmax and one column normalization.
     _case([5], _FULL, "one-sinkhorn-iteration", sinkhorn_repeat=1),
     # Streams staged 128 channels at a time.
@@ -60,7 +60,7 @@ def test_hyper_connection_pre(leading, c, params) -> None:
 
 
 @pytest.mark.parametrize(
-    "leading", [pytest.param([9], marks=_SMOKE), pytest.param([3000], marks=_FULL)]
+    "leading", [pytest.param([1], marks=_SMOKE), pytest.param([3000], marks=_FULL)]
 )
 def test_hyper_connection_pre_reads_a_broadcast_residual(leading) -> None:
     """The first block's residual, one stream expanded to all four along a stride-0 axis,
@@ -83,3 +83,24 @@ def test_hyper_connection_pre_serves_new_token_counts_from_one_kernel() -> None:
         test.check(op, *test.gen_inputs())
     (kernel,) = op.iter_kernels()
     assert len(kernel._generation.programs) == 2
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "n, c, params, reason",
+    [
+        (3, 4096, _DSV4, "serves four streams"),
+        (4, 4000, _DSV4, "multiple of 128"),
+        (4, 4096, {**_DSV4, "sinkhorn_repeat": 0}, "at least one Sinkhorn iteration"),
+    ],
+    ids=["three-streams", "4000-channels", "no-sinkhorn-iteration"],
+)
+def test_hyper_connection_pre_refuses_what_no_kernel_serves(n, c, params, reason) -> None:
+    from tileops.backend import OpNotAvailableError
+
+    call = _call([2], params, c, n)
+    op = HyperConnectionPreFwdOp(**call.arguments())
+    with pytest.raises(OpNotAvailableError, match=reason):
+        op(*HyperConnectionPreTest(call).gen_inputs())
+    assert not op._entries_built("hyper_connection_pre")
