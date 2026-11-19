@@ -8,7 +8,7 @@ from tileops._kernels.linear_attention.call_spec import (
     KDAFwdInterface,
 )
 from tileops._kernels.linear_attention.chunk_plan import CHUNK_SIZE, packed_offsets
-from tileops._kernels.linear_attention.chunk_prefill import split_prepare_enabled
+from tileops._kernels.linear_attention.chunk_prefill import referenced_form
 from tileops._kernels.linear_attention.kda.fused_program import fused_chunk_program
 from tileops._kernels.linear_attention.kda.prefill import KDAChunkPrefillFwdKernel
 
@@ -38,11 +38,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             return "raw gates use chunk-parallel preparation"
         # On SM90 the chunk-parallel path prepares every chunk at once in the joint launch and
         # walks only the states, while this CTA walks its sequence's chunks whole.
-        if (
-            call.arch == 90
-            and not split_prepare_enabled(call)
-            and KDAChunkPrefillFwdKernel.refusal(call) is None
-        ):
+        if referenced_form(call) and KDAChunkPrefillFwdKernel.refusal(call) is None:
             return "SM90 prepares given gates of FP32's exponent range on the chunk-parallel path"
         # A CTA per (sequence, value head) pays off only while those cover most SMs; a
         # compact 128-wide SM89 CTA fills one SM's shared memory.
