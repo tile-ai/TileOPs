@@ -2996,6 +2996,42 @@ def test_gemm_w4a16_pinned_tile_matches_the_reference(m: int, n: int, k: int, co
     _check_w4a16_config(m, n, k, config)
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k, program",
+    [
+        # One K tile, so the output is staged in the stage it used; M pads to the tile.
+        pytest.param(300, 8192, 128, "drained_main", id="one-k-tile", marks=pytest.mark.smoke),
+        # Three stages, the output staged in the second; the last N tile is half outside N.
+        pytest.param(
+            2048, 1088, 384, "drained_main", id="three-stages-n-tail", marks=pytest.mark.full
+        ),
+        # A two-stage ring refilled 30 times.
+        pytest.param(300, 8192, 4096, "drained_main", id="refilled-ring", marks=pytest.mark.full),
+        # The same 256-row tile split four ways keeps the split mainloop.
+        pytest.param(129, 4096, 4096, "sliced", id="split-kept", marks=pytest.mark.full),
+        # N off a multiple of 8 cannot take the ring's TMA store and keeps the pipelined tile.
+        pytest.param(2048, 1090, 384, "main", id="unaligned-n-kept", marks=pytest.mark.full),
+    ],
+)
+def test_gemm_w4a16_drained_ring_serves_whole_k_two_warpgroup_tiles(
+    m: int, n: int, k: int, program: str
+) -> None:
+    """On 132 SMs a two-warpgroup tile of 128-wide K tiles over whole K builds the drained
+    ring; split, or with N off a multiple of 8, it keeps its program; all match the
+    reference."""
+    if get_sm_count(torch.device(run_device()).index) != 132:
+        pytest.skip("the op selects on the device's SMs, and the programs checked count 132")
+    test = GEMMW4A16Test(m, n, k, torch.float16)
+    op = GEMMW4A16FwdOp(target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = [kern for kern in op.iter_kernels() if type(kern).__name__ == "GEMMW4A16Kernel"]
+    cfg = kernel.config
+    source = kernel._builder(kernel._padded_m(cfg))(**cfg).get_kernel_source()
+    assert f"void {program}_kernel(" in source
+
+
 @pytest.mark.smoke
 def test_gemm_w4a16_selector_moves_128_row_tiles_onto_the_cross_tile_ring() -> None:
     """A 128-row tile split at most two ways takes 128-wide K tiles on a four-stage ring; one
