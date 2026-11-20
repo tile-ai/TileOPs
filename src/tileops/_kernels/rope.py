@@ -649,11 +649,11 @@ class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
     """The rotation where heads copy columns, each token's query row and key row staged in
     shared memory.
 
-    A block writes its row back only after the whole row has arrived and rotated. When every
-    block of a call is resident at once, the blocks reach that point together and the call's
-    stores trail its loads; when blocks wait for a second wave, the stores of one wave overlap
-    the loads of the next. So a call takes the staged program only where its rows outnumber
-    the blocks the device holds at once, by shared memory and by threads; any other call
+    A block writes its row back only after the whole row has arrived and rotated, so the
+    stores of a call overlap its loads only where some blocks wait to start while others
+    store. A call takes the staged program only where its rows outnumber the staged blocks
+    the device could hold at once by shared memory and by threads, an upper bound on the
+    resident blocks (registers can hold fewer), so that blocks must wait; any other call
     takes the positions kernel's programs.
 
     A block takes one thread for each share of its row, the share being the SM's shared
