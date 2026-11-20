@@ -35,6 +35,12 @@ _COMPILE_FLAGS = [
 ]
 
 
+def _pair(bf16: bool, split: int) -> bool:
+    """Whether a CTA pair merges the key splits in the kernel: two splits of bfloat16 rows. The
+    kernel and its host agree on it; more splits, and FP8 rows, store partials for the combine."""
+    return bf16 and split == 2
+
+
 @target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
@@ -45,7 +51,10 @@ _COMPILE_FLAGS = [
         # Buffers of different warp roles are live at once.
         tilelang.PassConfigKey.TL_DISABLE_SHARED_MEMORY_REUSE: True,
     },
-    compile_flags=[*_COMPILE_FLAGS, *csrc_include("warp_uniform.h", "row_gather.h")],
+    compile_flags=[
+        *_COMPILE_FLAGS,
+        *csrc_include("warp_uniform.h", "row_gather.h", "cluster_partials.h", "pair_merge.h"),
+    ],
 )
 def _dsa_paged_kernel(
     batch, seq_len, heads, topk, page_size, split, sm_scale, cluster, bf16, tail, sink
@@ -60,6 +69,11 @@ def _dsa_paged_kernel(
     gather lands them where the consumers read them, and the producer only publishes each
     landed block. Slots past ``topk`` in its last block are dead. With ``sink`` and no key
     split, ``Sink`` joins each head's softmax denominator.
+
+    Two key splits of bfloat16 rows run as a CTA pair: each CTA streams its half of the
+    blocks, the pair trades each row's max and sum, and each CTA adds the peer's half of the
+    value dims it stores to its own, then stores them; ``Sink`` joins the merged
+    denominator. More key splits store float32 partials for the combine.
     """
     if bf16 and (cluster != 1 or tail not in (0, 64)):
         # A cluster shares dequantized rows, which bfloat16 rows never are; the rope tile
@@ -67,6 +81,7 @@ def _dsa_paged_kernel(
         raise ValueError(f"bfloat16 rows need cluster 1 and tail 0 or 64, got {cluster}, {tail}")
     if not bf16 and tail != 64:
         raise ValueError(f"the FP8 row has a 64-column rope tail, got {tail}")
+    pair = _pair(bf16, split)
     block_h = 64  # query heads per CTA: one m64 WGMMA row block
     block_k = 64  # selected slots per block
     stages = 2  # key-block buffers: one read while the other is filled
@@ -104,6 +119,7 @@ def _dsa_paged_kernel(
     sums_ready = 2  # warpgroup 0 wrote each row's normalizer
     staged_ready = 3  # + w: consumer w staged its output half
     rows_ready = 5  # warpgroup 1 published a block's rows
+    stats_ready = 6  # a pair's warpgroup 0 wrote each row's (max, sum)
 
     tokens = batch * seq_len
     head_blocks = heads // block_h
@@ -113,7 +129,8 @@ def _dsa_paged_kernel(
     scale = (dq**-0.5 if sm_scale is None else sm_scale) * LOG2E
     dtype = "bfloat16"
     accum = "float"
-    out_dtype = dtype if split == 1 else accum
+    out_dtype = dtype if split == 1 or pair else accum
+    parts = 1 if pair else split  # outputs O and LSE hold
     num_pages = T.dynamic("num_pages")
     table_width = T.dynamic("table_width")
     cache_rows = num_pages * page_size
@@ -310,7 +327,64 @@ def _dsa_paged_kernel(
             T.copy(rO, O[sp, t, h0 : h0 + block_h, w * half : (w + 1) * half])
 
     @T.macro
-    def scorer(O, LSE, Sink, QL, QR, QT, KL, KR, KT, Rows, sScale, sInv, q_full, k_ready, k_remote, k_free, sp, t, h0, count, tx, peer):  # fmt: skip
+    def merge(w, rO, out, mx, mine, theirs, staged, O, LSE, Sink, R, sOwn, sPeer, sWeight, s_full, x_free, x_full, t, h0, x, rank, peer):  # fmt: skip
+        """Consumer `w` of a pair after its last block: send value dims
+        [256 w, 256 w + 256) to the peer when it stores them (rank 1 - w), or weigh them and
+        the peer's by each CTA's share of the merged softmax, add and store them (rank w).
+        `R` is the stage ring of those dims, free after the loop, where the peer's land."""
+        if w == 0 and x == 0:
+            T.call_extern(
+                "handle", "tileops::expect_bytes", T.address_of(s_full[0]), block_h * 2 * 4
+            )
+            T.call_extern(
+                "handle", "tileops::expect_bytes", T.address_of(x_full[0]), block_h * half * 4
+            )
+        if w == rank and x == 0:
+            # This consumer reads the ring the peer sends into last; its last block is done.
+            T.call_extern("handle", "tileops::arrive_peer", T.address_of(x_free[0]), peer)
+        if w == 0 and x < block_h:
+            T.call_extern(
+                "handle", "tileops::send_partial2", T.address_of(sPeer[x, 0]),
+                T.address_of(s_full[0]), peer, sOwn[0, x], sOwn[1, x],
+            )  # fmt: skip
+        if w != rank:
+            T.mbarrier_wait_parity(x_free[0], 0)
+            T.call_extern(
+                "handle", "tileops::send_frag128", rO.data, T.address_of(R[0, 0, 0]), x,
+                T.address_of(x_full[0]), peer,
+            )  # fmt: skip
+        else:
+            T.mbarrier_wait_parity(s_full[0], 0)
+            for i in T.Parallel(block_h):
+                mx[i] = T.max(sOwn[0, i], sPeer[i, 0])
+                mine[i] = T.exp2(sOwn[0, i] - mx[i])
+                theirs[i] = T.exp2(sPeer[i, 0] - mx[i])
+            # A row without a live key in either CTA has sum 0: output 0, lse -inf.
+            for i in T.Parallel(block_h):
+                total = sOwn[1, i] * mine[i] + sPeer[i, 1] * theirs[i]
+                if w == 0:
+                    LSE[0, t // seq_len, h0 + i, t % seq_len] = (mx[i] + T.log2(total)) / LOG2E
+                # The sink joins the denominator only: e^sink against the pair's max.
+                inverse = 1 / T.max(
+                    total + (T.exp2(Sink[h0 + i] * LOG2E - mx[i]) if sink else 0.0), 1.0
+                )
+                sWeight[0, i] = mine[i] * inverse
+                sWeight[1, i] = theirs[i] * inverse
+            T.sync_threads(staged_ready + w, warpgroup)
+            T.mbarrier_wait_parity(x_full[0], 0)
+            T.call_extern(
+                "handle", "tileops::merge_frag128", rO.data, T.address_of(R[0, 0, 0]), x,
+                T.address_of(sWeight[0, 0]), T.address_of(sWeight[1, 0]),
+            )  # fmt: skip
+            for i, k in T.Parallel(block_h, half):
+                out[i, k] = rO[i, k]
+            T.copy(out, staged)
+            T.fence_proxy_async()
+            T.sync_threads(staged_ready + w, warpgroup)
+            T.copy(staged, O[0, t, h0 : h0 + block_h, w * half : (w + 1) * half])
+
+    @T.macro
+    def scorer(O, LSE, Sink, QL, QR, QT, KL, KR, KT, Rows, sScale, sInv, q_full, k_ready, k_remote, k_free, sp, t, h0, count, tx, peer, sOwn, sPeer, sWeight, s_full, x_free, x_full):  # fmt: skip
         """Warpgroup 0: scores, softmax and value dims [0, 256)."""
         T.set_max_nreg(scorer_regs, 1)
         rP = T.alloc_fragment([block_h, block_k], accum)
@@ -363,16 +437,25 @@ def _dsa_paged_kernel(
                     rO[i, k] *= keep[i]
                 T.wgmma_gemm(rS, KL[stage, :, :], rO)
         T.wait_wgmma(0)
-        # A row without a live key has rL = 0: output 0, lse -inf.
-        for i in T.Parallel(block_h):
-            LSE[sp, t // seq_len, h0 + i, t % seq_len] = (rM[i] + T.log2(rL[i])) / LOG2E
-            if sink and split == 1:
-                # The sink joins the denominator only: e^sink against the row's max.
-                sInv[i] = 1 / T.max(rL[i] + T.exp2(Sink[h0 + i] * LOG2E - rM[i]), 1.0)
-            else:
-                sInv[i] = 1 / T.max(rL[i], 1.0)
-        T.named_barrier_arrive(sums_ready, consumer_threads)
-        finish(0, rO, sInv, out, QL, O, sp, t, h0)
+        if pair:
+            for i in T.Parallel(block_h):
+                sOwn[0, i] = rM[i]
+                sOwn[1, i] = rL[i]
+            T.named_barrier_arrive(sums_ready, consumer_threads)
+            # Every row of sOwn is written before warpgroup 0 sends them.
+            T.sync_threads(stats_ready, warpgroup)
+            merge(0, rO, out, rM, cur, keep, QL, O, LSE, Sink, KL, sOwn, sPeer, sWeight, s_full, x_free, x_full, t, h0, tx, sp, peer)  # fmt: skip
+        else:
+            # A row without a live key has rL = 0: output 0, lse -inf.
+            for i in T.Parallel(block_h):
+                LSE[sp, t // seq_len, h0 + i, t % seq_len] = (rM[i] + T.log2(rL[i])) / LOG2E
+                if sink and split == 1:
+                    # The sink joins the denominator only: e^sink against the row's max.
+                    sInv[i] = 1 / T.max(rL[i] + T.exp2(Sink[h0 + i] * LOG2E - rM[i]), 1.0)
+                else:
+                    sInv[i] = 1 / T.max(rL[i], 1.0)
+            T.named_barrier_arrive(sums_ready, consumer_threads)
+            finish(0, rO, sInv, out, QL, O, sp, t, h0)
 
     @T.macro
     def gather(Rows16, Scales, Indices, Table, KL, KR, KT, sScales, Rows, k_landed, src, pos, length, t, b, k0, j, base, x):  # fmt: skip
@@ -390,7 +473,7 @@ def _dsa_paged_kernel(
         pos[0] = position(Indices, t, k0 + (j + 2) * block_k + slot)
 
     @T.macro
-    def mixer(O, QR, KL, KR, KT, Rows16, Scales, Indices, Table, Lens, sScales, Rows, sScale, sInv, k_landed, k_free, sp, t, b, h0, k0, count, base, peer, x):  # fmt: skip
+    def mixer(O, QR, KL, KR, KT, Rows16, Scales, Indices, Table, Lens, sScales, Rows, sScale, sInv, k_landed, k_free, sp, t, b, h0, k0, count, base, peer, x, LSE, Sink, sOwn, sPeer, sWeight, s_full, x_free, x_full):  # fmt: skip
         """Warpgroup 1: gathers a block ahead and accumulates value dims [256, 512)."""
         # Equals the launch allocation, but still sets this role's register budget.
         T.set_max_nreg(mixer_regs, 0)
@@ -426,7 +509,13 @@ def _dsa_paged_kernel(
                 T.wait_wgmma(0)
                 release(k_free, stage, lane, peer)
         T.sync_threads(sums_ready, consumer_threads)
-        finish(1, rO, sInv, out, QR, O, sp, t, h0)
+        if pair:
+            mx = T.alloc_fragment([block_h], accum)
+            mine = T.alloc_fragment([block_h], accum)
+            theirs = T.alloc_fragment([block_h], accum)
+            merge(1, rO, out, mx, mine, theirs, QR, O, LSE, Sink, KR, sOwn, sPeer, sWeight, s_full, x_free, x_full, t, h0, x, sp, peer)  # fmt: skip
+        else:
+            finish(1, rO, sInv, out, QR, O, sp, t, h0)
 
     @T.prim_func
     def main(
@@ -437,15 +526,16 @@ def _dsa_paged_kernel(
         Lens: T.Tensor([batch], "int32"),
         Indices: T.Tensor([tokens, topk], "int32"),
         Sink: T.Tensor([heads], accum),
-        O: T.Tensor([split, tokens, heads, dim], out_dtype),
-        LSE: T.Tensor([split, batch, heads, seq_len], accum),
+        O: T.Tensor([parts, tokens, heads, dim], out_dtype),
+        LSE: T.Tensor([parts, batch, heads, seq_len], accum),
     ):
         with T.ClusterKernel(
-            head_blocks * split, tokens, cluster_dims=(cluster, 1, 1),
+            head_blocks * split, tokens, cluster_dims=(2 if pair else cluster, 1, 1),
             threads=consumer_threads + producer_threads,
         ) as (bx, t):  # fmt: skip
-            hb = bx % head_blocks
-            sp = bx // head_blocks
+            # A pair's two CTAs are adjacent in x, as a cluster's are.
+            hb = bx // split if pair else bx % head_blocks
+            sp = bx % split if pair else bx // head_blocks
             b = t // seq_len
             h0 = hb * block_h
             # Splits share the blocks up to the row's last live slot; the rest are skipped.
@@ -467,7 +557,7 @@ def _dsa_paged_kernel(
             count = T.max(T.min(per_split, live_blocks - sp * per_split), 0)
             k0 = sp * per_split * block_k
             rank = bx % cluster
-            peer = rank ^ 1
+            peer = (sp if pair else rank) ^ 1
             base = rank * rows_mine
             QL = T.alloc_shared([block_h, half], dtype)
             QR = T.alloc_shared([block_h, half], dtype)
@@ -485,14 +575,23 @@ def _dsa_paged_kernel(
             sScales = T.alloc_shared([stages, block_k, groups], accum) if not bf16 else None
             Rows = T.alloc_shared([stages, block_k], "int32")
             sScale = T.alloc_shared([stages, block_h], accum)
-            sInv = T.alloc_shared([block_h], accum)
+            sInv = T.alloc_shared([block_h], accum) if not pair else None
             q_full = T.alloc_barrier([producer_threads])
             k_landed = T.alloc_barrier([producer_threads] * stages)
             k_ready = T.alloc_barrier([producer_threads] * stages)
             k_remote = T.alloc_barrier([1] * stages)
             # One arrival a consumer warp, here and from the peer.
             k_free = T.alloc_barrier([8 * cluster] * stages)
-            if cluster == 2:
+            # A pair's merge: this CTA's and the peer's (max, sum) of each row, each CTA's
+            # weight of a row, the peer's rows landed, the peer done with the ring this CTA
+            # sends into, its half landed.
+            sOwn = T.alloc_shared([2, block_h], accum) if pair else None
+            sPeer = T.alloc_shared([block_h, 2], accum) if pair else None
+            sWeight = T.alloc_shared([2, block_h], accum) if pair else None
+            s_full = T.alloc_barrier([1]) if pair else None
+            x_free = T.alloc_barrier([1]) if pair else None
+            x_full = T.alloc_barrier([1]) if pair else None
+            if cluster == 2 or pair:
                 # Both CTAs' barriers are initialized before either touches the other's.
                 T.cluster_arrive()
                 T.cluster_wait()
@@ -509,15 +608,16 @@ def _dsa_paged_kernel(
             with T.ws(0):
                 scorer(
                     O, LSE, Sink, QL, QR, QT, KL, KR, KT, Rows, sScale, sInv, q_full, k_ready,
-                    k_remote, k_free, sp, t, h0, count, tx, peer,
+                    k_remote, k_free, sp, t, h0, count, tx, peer, sOwn, sPeer, sWeight, s_full,
+                    x_free, x_full,
                 )  # fmt: skip
             with T.ws(1):
                 mixer(
                     O, QR, KL, KR, KT, Rows16, Scales, Indices, Table, Lens, sScales, Rows,
                     sScale, sInv, k_landed, k_free, sp, t, b, h0, k0, count, base, peer,
-                    tx - warpgroup,
+                    tx - warpgroup, LSE, Sink, sOwn, sPeer, sWeight, s_full, x_free, x_full,
                 )  # fmt: skip
-            if cluster == 2:
+            if cluster == 2 or pair:
                 # Neither CTA exits while the peer may still write into it.
                 T.cluster_arrive()
                 T.cluster_wait()
@@ -645,12 +745,18 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
 
     @staticmethod
     def split_blocks_for(ctas: int, topk: int, sms: int) -> int:
-        """The most key splits whose CTAs still fit one wave, each over at least four 64-slot
-        blocks of topk: a shorter split spends more on its own start and the merge than its
-        CTA saves. Splits divide the row's live blocks at run time, so trailing ones may be
-        empty."""
+        """The most key splits whose CTAs still fit one wave.
+
+        Two splits run as a CTA pair, which trades 64 KiB of float32 output a CTA, the bytes
+        of one 64-slot block: the pair needs at least four blocks, so each CTA streams two
+        fewer than one CTA would. More splits each read at least four blocks: a shorter
+        split spends more on its own start and the combine than its CTA saves. Splits divide
+        the row's live blocks at run time, so trailing ones may be empty.
+        """
         blocks = -(-topk // 64)
-        split = 1
+        if ctas * 2 > sms or blocks < 4:
+            return 1
+        split = 2
         while ctas * split * 2 <= sms and blocks >= split * 2 * 4:
             split *= 2
         return split
@@ -662,20 +768,23 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         super().__init__(device_index=device_index)
         self.batch, self.seq_len, self.heads = batch, seq_len, heads
         self.split = split
+        # The partial outputs the kernel stores: one when the pair merges in the kernel.
+        self.parts = 1 if _pair(bf16, split) else split
         self._args = (batch, seq_len, heads, topk, page_size, split, sm_scale)
         self._rows = (bf16, tail, sink)
         self._sinkless = None
         self.program(self._compile)
 
     def _compile(self, cfg: dict):
-        """The attention program and, over several key splits, the merge; no configuration."""
+        """The attention program and, over key splits a pair does not merge, the combine; no
+        configuration."""
         batch, seq_len, heads, _, _, split, _ = self._args
         self.kernel = kernel = _dsa_paged_kernel(*self._args, self.cluster, *self._rows)
         combine = (
             CompiledProgram(
                 _dsa_paged_combine_kernel(batch, seq_len, heads, split, sink=self._rows[2])
             )
-            if split > 1
+            if self.parts > 1
             else None
         )
         return CompiledProgram(kernel), combine
@@ -694,10 +803,10 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         tokens = self.batch * self.seq_len
         dim = 512  # value dims
         rows = kv_cache.view(-1, kv_cache.shape[-1])
-        part_dtype = torch.bfloat16 if self.split == 1 else torch.float32
-        out = torch.empty((self.split, tokens, self.heads, dim), dtype=part_dtype, device=q.device)
+        part_dtype = torch.bfloat16 if self.parts == 1 else torch.float32
+        out = torch.empty((self.parts, tokens, self.heads, dim), dtype=part_dtype, device=q.device)
         lse = torch.empty(
-            (self.split, self.batch, self.heads, self.seq_len), dtype=torch.float32, device=q.device
+            (self.parts, self.batch, self.heads, self.seq_len), dtype=torch.float32, device=q.device
         )
         if attn_sink is None and self._sinkless is None:
             self._sinkless = _no_sink(self.heads, q.device)
@@ -714,7 +823,7 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
             out,
             lse,
         )
-        if self.split == 1:
+        if self.parts == 1:
             o, row_lse = out[0], lse[0]
         else:
             o = torch.empty((tokens, self.heads, dim), dtype=q.dtype, device=q.device)
