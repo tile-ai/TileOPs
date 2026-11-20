@@ -10,10 +10,11 @@ from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import (
     KDACall,
+    chunk_prefill,
 )
 from tileops._kernels.linear_attention.chunk_prefill import run_chunk_prefill
+from tileops._kernels.linear_attention.kda import chunk_programs, prepare_split
 from tileops._kernels.linear_attention.kda import prefill as kda_prefill
-from tileops._kernels.linear_attention.kda import prepare_split
 from tileops._kernels.linear_attention.kda.prepare_split import split_prepare_program
 from tileops._utils.utils import get_sm_count
 from tileops.backend import OpNotAvailableError
@@ -108,6 +109,31 @@ def test_kda_prefill_packs_two_token_sequences(sequences: int) -> None:
     the call."""
     torch.manual_seed(42)
     _check(1, 0, 1, 128, torch.bfloat16, sequence_lengths=(2,) * sequences)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+def test_kda_sm90_given_gate_lean_preparation_matches_reference(monkeypatch) -> None:
+    """The referenced SM90 preparation in its lean form, which the plan picks only for tens of
+    thousands of packed sequences, forced here on whole chunks and partial ones."""
+    plan = chunk_prefill.launch_plan
+    prepare = chunk_programs.chunk_prepare_program
+    built = []
+
+    def lean_plan(*args, **kwargs):
+        found = plan(*args, **kwargs)
+        return None if found is None else (True, found[1])
+
+    def counted(*args, **kwargs):
+        built.append((kwargs["lean"], kwargs.get("referenced")))
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(chunk_prefill, "launch_plan", lean_plan)
+    monkeypatch.setattr(chunk_programs, "chunk_prepare_program", counted)
+    torch.manual_seed(42)
+    _check(1, 0, 2, 128, torch.bfloat16, sequence_lengths=(128, 70, 100))
+    assert built == [(True, True)]
 
 
 @pytest.mark.smoke
