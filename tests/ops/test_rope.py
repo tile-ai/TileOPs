@@ -22,6 +22,8 @@ from workloads.rope import (
 )
 from workloads.workload_base import manifest_call
 
+_SMOKE, _FULL = pytest.mark.smoke, pytest.mark.full
+
 # Each op's parameters for a small cache, and its class name.
 _PARAMS = {
     "RoPEFwdOp": {
@@ -250,29 +252,92 @@ def test_rope_graph_replay(neox) -> None:
 
 
 @pytest.mark.parametrize(
-    ("neox", "head_size", "rotary_dim"),
+    ("name", "neox", "dtype", "head_size", "rotary_dim", "heads", "tokens"),
     [
-        pytest.param(False, 64, 24, marks=pytest.mark.smoke, id="vector-gptj"),
-        pytest.param(True, 64, 24, marks=pytest.mark.full, id="vector-neox"),
-        pytest.param(False, 65, 32, marks=pytest.mark.full, id="scalar-gptj"),
+        pytest.param(
+            "RoPEFwdOp", False, torch.float16, 64, 24, (32, 8), 16384, marks=_SMOKE, id="gptj"
+        ),
+        pytest.param(
+            "LongRoPEFwdOp",
+            True,
+            torch.float32,
+            64,
+            24,
+            (8, 8),
+            16384,
+            marks=_SMOKE,
+            id="longrope-offsets-float32",
+        ),
+        pytest.param(
+            "RoPEFwdOp", False, torch.float16, 65, 32, (3, 1), 16384, marks=_FULL, id="scalar-gptj"
+        ),
+        pytest.param(
+            "RoPEFwdOp", True, torch.float16, 64, 24, (1100, 8), 512, marks=_FULL, id="block-limit"
+        ),
     ],
 )
-def test_rope_rotates_several_units_a_thread_where_heads_copy_columns(
-    neox, head_size, rotary_dim
+def test_rope_stages_each_row_where_heads_copy_columns(
+    name, neox, dtype, head_size, rotary_dim, heads, tokens
 ) -> None:
-    """Heads with copied columns, each thread loading all its units before it stores any.
+    """Heads with copied columns, each token's query row and key row staged in shared memory.
 
-    2048 tokens of 32 query and 8 key heads fill more than half of any device's resident
-    threads, so each thread rotates several units: query units, then key units, then units
-    past the token's last. A NeoX head of 64 columns rotating 24 copies 8-column runs past
-    4-column rotating units, so a copied run is wider than a rotating unit.
+    Each call's rows outnumber the staged blocks any supported device holds at once, so the
+    rows are staged: rotated in shared memory and written back whole. A 65-column head moves
+    single columns, and its 3-head query row of 390 bytes is no whole number of 16-byte
+    vectors; its key row is shorter than its query row. LongRoPE's offsets move each token's
+    table row. A 140800-byte query row takes more threads than a block has, so its block holds
+    1024.
     """
+    changes = {"head_size": head_size, "rotary_dim": rotary_dim, "is_neox_style": neox}
+    if name == "LongRoPEFwdOp":
+        changes["rescale_factors"] = [1.0 + i / 16 for i in range(rotary_dim // 2)]
+    op, params = _op(name, dtype, **changes)
+    positions, query, key = _inputs(name, params, tokens, *heads, dtype)
+    positions = positions.flip(0) % 4096
+    (got_q, got_k), read = _call_with_offsets(name, op, positions, query, key)
+    ref_q, ref_k = _reference(name, params, read, query, key)
+    compare_outputs(got_q, ref_q, rope_verification())
+    compare_outputs(got_k, ref_k, rope_verification())
+
+
+@pytest.mark.smoke
+def test_rope_stages_a_query_alone() -> None:
+    """A NeoX query of 80-column heads rotating 32, alone, at int32 positions: one staged block
+    a token."""
+    dtype = torch.bfloat16
+    op, params = _op("RoPEFwdOp", dtype, head_size=80, rotary_dim=32)
+    positions, query, _ = _inputs("RoPEFwdOp", params, 16384, 32, None, dtype)
+    positions = positions.int() % params["max_position_embeddings"]
+    got_q, got_k = op(positions.flip(0), query)
+    assert got_k is None
+    compare_outputs(
+        got_q,
+        _reference("RoPEFwdOp", params, positions.flip(0), query, None)[0],
+        rope_verification(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("neox", "head_size", "rotary_dim", "heads"),
+    [
+        pytest.param(False, 64, 24, 1824, marks=_SMOKE, id="vector-gptj"),
+        pytest.param(True, 64, 24, 1824, marks=_FULL, id="vector-neox"),
+        pytest.param(False, 65, 32, 1800, marks=_FULL, id="scalar-gptj"),
+    ],
+)
+def test_rope_rotates_several_units_a_thread_where_a_row_passes_shared_memory(
+    neox, head_size, rotary_dim, heads
+) -> None:
+    """A query row past a block's shared memory on any supported device (233472 and 234000
+    bytes), so each thread loads several units of it before it stores any, though its 256
+    tokens outnumber one wave of such rows. A NeoX head of 64 columns rotating 24 copies
+    8-column runs past 4-column rotating units, so a copied run is wider than a rotating unit;
+    a 65-column head moves single columns."""
     dtype = torch.float16
     op, params = _op(
         "RoPEFwdOp", dtype, head_size=head_size, rotary_dim=rotary_dim, is_neox_style=neox
     )
-    positions, query, key = _inputs("RoPEFwdOp", params, 2048, 32, 8, dtype)
-    positions = positions.flip(0)
+    positions, query, key = _inputs("RoPEFwdOp", params, 256, heads, 8, dtype)
     got_q, got_k = op(positions, query, key)
     ref_q, ref_k = _reference("RoPEFwdOp", params, positions, query, key)
     compare_outputs(got_q, ref_q, rope_verification())
@@ -318,18 +383,26 @@ def test_rope_rotates_one_unit_a_thread_where_heads_copy_columns(name, neox, dty
 
 
 @pytest.mark.parametrize(
-    "name",
+    ("name", "changes", "tokens"),
     [
-        pytest.param("RoPEFwdOp", marks=pytest.mark.smoke, id="rope"),
-        pytest.param("LongRoPEFwdOp", marks=pytest.mark.full, id="longrope-offsets"),
+        pytest.param("RoPEFwdOp", {}, 5, marks=_SMOKE, id="rope"),
+        pytest.param("LongRoPEFwdOp", {}, 5, marks=_FULL, id="longrope-offsets"),
+        pytest.param(
+            "LongRoPEFwdOp",
+            {"head_size": 64, "rotary_dim": 24, "rescale_factors": [1.0] * 12},
+            16384,
+            marks=_FULL,
+            id="longrope-offsets-staged",
+        ),
     ],
 )
-def test_rope_takes_a_key_of_no_heads(name) -> None:
+def test_rope_takes_a_key_of_no_heads(name, changes, tokens) -> None:
     """A 0-column key failed to reshape; it comes back empty, shaped as the key, and the query
-    rotates."""
+    rotates. 16384 tokens of heads with copied columns take the staged program."""
     dtype = torch.float16
-    op, params = _op(name, dtype)
-    positions, query, key = _inputs(name, params, 5, 3, 0, dtype)
+    op, params = _op(name, dtype, **changes)
+    positions, query, key = _inputs(name, params, tokens, 3, 0, dtype)
+    positions = positions % 4096
     (got_q, got_k), read = _call_with_offsets(name, op, positions, query, key)
     assert got_k.shape == key.shape
     compare_outputs(got_q, _reference(name, params, read, query, None)[0], rope_verification())
@@ -479,7 +552,6 @@ class RoPECosSinViewTest(RoPECosSinViewCall, TestBase):
 
 
 _F32_TABLES = {"C": "float32", "Cs": "float32"}
-_SMOKE, _FULL = pytest.mark.smoke, pytest.mark.full
 
 
 def _dense(B, S, H, D, Rh, P=None, **row):
