@@ -590,6 +590,10 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         w: torch.Tensor,
         u: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # The compiled programs use packed buffers, including the saved forward inputs.
+        do, q, k, v, beta, S, Aw, Au, w, u = (
+            tensor.contiguous() for tensor in (do, q, k, v, beta, S, Aw, Au, w, u)
+        )
         bwd_parallel_fn, dh_walk_fn, wu_bwd_fn = self.program(self._programs)
         dq, dk_partial, du_partial, v_new, dh_local, neg_wk = bwd_parallel_fn(do, q, k, w, u, S)
         dh = dh_walk_fn(neg_wk, dh_local)

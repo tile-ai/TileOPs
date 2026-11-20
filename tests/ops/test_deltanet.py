@@ -162,6 +162,33 @@ def test_deltanet_fwd(
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
+def test_deltanet_chunk_accepts_strided_inputs() -> None:
+    """Chunk kernels accept transpose-backed inputs and saved forward tensors."""
+    torch.manual_seed(42)
+    workload = DeltaNetChunkwiseTest(2, 2, 64, 64, 64, 32, torch.float16)
+    inputs = workload.gen_inputs()
+    fwd = DeltaNetChunkFwdOp(chunk_size=32, target=BUILTIN)
+    bwd = DeltaNetChunkBwdOp(chunk_size=32, target=BUILTIN)
+
+    def as_view(tensor: torch.Tensor) -> torch.Tensor:
+        view = tensor.transpose(1, 2).contiguous().transpose(1, 2)
+        assert not view.is_contiguous()
+        return view
+
+    outputs = fwd(*inputs)
+    torch.testing.assert_close(
+        fwd(*(as_view(tensor) for tensor in inputs)), outputs, atol=0, rtol=0
+    )
+
+    grad_inputs = (outputs[0], *inputs, *outputs[1:])
+    gradients = bwd(*grad_inputs)
+    torch.testing.assert_close(
+        bwd(*(as_view(tensor) for tensor in grad_inputs)), gradients, atol=0, rtol=0
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_deltanet_fwd_serves_chunk_128_in_sm89_shared_memory() -> None:
     """Dispatch on SM89's device facts serves dim_k 128 at chunk 128: where the state walk
     does not fit a block's shared memory, the recurrence does."""
