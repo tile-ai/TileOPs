@@ -353,12 +353,13 @@ def _smem_bytes(
     block_k: int,
     num_stages: int,
     threads: int,
-    n: int,
     k: int,
     group_size: int,
-    split_k: int,
+    split_k: int = 1,
+    *,
+    n: int,
 ) -> int:
-    """Return dynamic shared memory required by one CTA."""
+    """Return dynamic shared memory required by one CTA; *n* picks the drained ring."""
     if _cross_tile_wgmma(
         block_m, block_n, block_k, num_stages, threads, k, group_size, split_k
     ) or _drained_ring(block_m, block_n, block_k, num_stages, threads, n, k, group_size, split_k):
@@ -417,10 +418,10 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: int | None = No
                                 block_k,
                                 num_stages,
                                 threads,
-                                n,
                                 k,
                                 group_size,
                                 split_k,
+                                n=n,
                             )
                             if smem > _CONFIG_SPACE.smem_bytes:
                                 continue
