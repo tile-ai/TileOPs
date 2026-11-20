@@ -329,14 +329,15 @@ def test_rope_rotates_several_units_a_thread_where_a_row_passes_shared_memory(
     neox, head_size, rotary_dim, heads
 ) -> None:
     """A query row past a block's shared memory on any supported device (233472 and 234000
-    bytes), so each thread loads several units of it before it stores any. A NeoX head of 64
-    columns rotating 24 copies 8-column runs past 4-column rotating units, so a copied run is
-    wider than a rotating unit; a 65-column head moves single columns."""
+    bytes), so each thread loads several units of it before it stores any, though its 256
+    tokens outnumber one wave of such rows. A NeoX head of 64 columns rotating 24 copies
+    8-column runs past 4-column rotating units, so a copied run is wider than a rotating unit;
+    a 65-column head moves single columns."""
     dtype = torch.float16
     op, params = _op(
         "RoPEFwdOp", dtype, head_size=head_size, rotary_dim=rotary_dim, is_neox_style=neox
     )
-    positions, query, key = _inputs("RoPEFwdOp", params, 16, heads, 8, dtype)
+    positions, query, key = _inputs("RoPEFwdOp", params, 256, heads, 8, dtype)
     got_q, got_k = op(positions, query, key)
     ref_q, ref_k = _reference("RoPEFwdOp", params, positions, query, key)
     compare_outputs(got_q, ref_q, rope_verification())
