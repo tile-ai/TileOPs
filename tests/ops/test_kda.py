@@ -78,37 +78,28 @@ def test_kda_prefill_serves_more_value_heads_than_query_heads() -> None:
     _check(1, 256, 2, 128, torch.bfloat16, value_heads=4)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
-    "sequence_lengths",
-    [pytest.param((100, 130), id="two"), pytest.param((100, 130, 70, 64), id="four")],
+    ("heads", "sequence_lengths"),
+    [
+        pytest.param(16, (100, 130), marks=pytest.mark.smoke, id="two"),
+        pytest.param(16, (100, 130, 70, 64), marks=pytest.mark.smoke, id="four"),
+        pytest.param(
+            1, (2,) * 28000, marks=[pytest.mark.full, pytest.mark.sm90], id="past-state-walk"
+        ),
+    ],
 )
-def test_kda_prefill_packs_sequences_of_16_heads(sequence_lengths) -> None:
-    """Packed sequences of 16 value heads, most ending in a partial chunk."""
+def test_kda_prefill_packs_sequences(heads: int, sequence_lengths) -> None:
+    """Packed sequences, most ending in a partial chunk. At 28,000 two-token sequences of
+    width 128 their offsets beside the state walk's tiles pass the 227 KB of shared memory an
+    SM90 block can opt into, so another kernel serves the call."""
     torch.manual_seed(42)
-    _check(1, 0, 16, 128, torch.bfloat16, sequence_lengths=sequence_lengths)
+    _check(1, 0, heads, 128, torch.bfloat16, sequence_lengths=sequence_lengths)
 
 
 @pytest.mark.smoke
 def test_kda_prefill_serves_a_64_wide_state() -> None:
     torch.manual_seed(42)
     _check(1, 256, 4, 64, torch.bfloat16)
-
-
-@pytest.mark.sm90
-@pytest.mark.parametrize(
-    "sequences",
-    [
-        pytest.param(64, marks=pytest.mark.smoke, id="64"),
-        pytest.param(28000, marks=pytest.mark.full, id="past-state-walk"),
-    ],
-)
-def test_kda_prefill_packs_two_token_sequences(sequences: int) -> None:
-    """Two-token sequences at width 128. At 28,000 their offsets beside the state walk's tiles
-    pass the 227 KB of shared memory an SM90 block can opt into, so another kernel serves
-    the call."""
-    torch.manual_seed(42)
-    _check(1, 0, 1, 128, torch.bfloat16, sequence_lengths=(2,) * sequences)
 
 
 @pytest.mark.smoke
