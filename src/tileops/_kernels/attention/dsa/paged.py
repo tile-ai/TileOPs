@@ -747,11 +747,13 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
     def split_blocks_for(ctas: int, topk: int, sms: int) -> int:
         """The most key splits whose CTAs still fit one wave.
 
-        Two splits run as a CTA pair, which trades 64 KiB of float32 output a CTA, the bytes
-        of one 64-slot block: the pair needs at least four blocks, so each CTA streams two
-        fewer than one CTA would. More splits each read at least four blocks: a shorter
-        split spends more on its own start and the combine than its CTA saves. Splits divide
-        the row's live blocks at run time, so trailing ones may be empty.
+        Two splits run as a CTA pair: each CTA streams ceil(n / 2) of the row's n 64-slot
+        blocks, then trades 64 KiB of float32 output, the bytes of one block, taking time t.
+        The pair beats one CTA when ceil(n / 2) + t < n: at n = 4 that needs t under two
+        blocks' time, and at n = 3 under one, a tie at best. The pair starts at four blocks,
+        a margin of one block over the trade's bytes. More splits each read at least four
+        blocks: a shorter split spends more on its own start and the combine than its CTA
+        saves. Splits divide the row's live blocks at run time, so trailing ones may be empty.
         """
         blocks = -(-topk // 64)
         if ctas * 2 > sms or blocks < 4:
