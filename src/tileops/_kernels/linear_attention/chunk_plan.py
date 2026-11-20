@@ -49,11 +49,8 @@ def scan_value_tile(value_tile, arch, *, total, num_seqs, value_heads, dim):
     return value_tile
 
 
-def _prepare_bytes(dim, element, sequences, lean, staged_norms):
-    tiles = 4 * CHUNK_SIZE * dim * element + 4 * CHUNK_SIZE * dim + 4 * CHUNK_SIZE
-    if staged_norms:
-        # The FP32 inverse norms of the chunk's query and key rows.
-        tiles += 2 * CHUNK_SIZE * 4
+def _prepare_bytes(dim, element, sequences, lean, staged_bytes):
+    tiles = 4 * CHUNK_SIZE * dim * element + 4 * CHUNK_SIZE * dim + 4 * CHUNK_SIZE + staged_bytes
     inverse = 2 * CHUNK_SIZE * CHUNK_SIZE * element
     if lean:
         inverse = max(0, inverse - CHUNK_SIZE * dim * element)
@@ -65,15 +62,32 @@ def _scan_bytes(dim, value_tile, element, sequences):
     return tiles * element + align_up(4 * (sequences + 1), 16)
 
 
-def launch_plan(dim, element, sequences, budget, arch, *, staged_norms=False):
-    """The chunk programs' (lean, value tile), or ``None`` past *budget*; *staged_norms* counts
-    the inverse norms the referenced SM90 preparation stages in shared memory."""
+def _walk_bytes(dim, element, sequences, arch):
+    """The state walk's shared memory at its widest value tile, which it takes once its CTAs
+    outnumber the SMs: the state, the chunk's ``w``, ``kg``, ``u`` and new values, on SM90 the
+    gated query and attention its outputs read, the decay and the sequences' offsets. On SM90,
+    where TileLang rounds the dynamic pool up to 1 KB, 1 KB more holds the static words the
+    device's opt-in limit counts beside it."""
+    tiles = dim * dim + 4 * CHUNK_SIZE * dim
+    static = 0
+    if arch == 90:
+        tiles += CHUNK_SIZE * dim + CHUNK_SIZE * CHUNK_SIZE
+        static = 1024
+    return tiles * element + 4 * dim + align_up(4 * (sequences + 1), 16) + static
+
+
+def launch_plan(dim, element, sequences, budget, arch, *, staged_bytes=0, walk=False):
+    """The chunk programs' (lean, value tile), or ``None`` past *budget*; *staged_bytes* counts
+    what the referenced SM90 preparation stages in shared memory beside its tiles, and *walk*
+    that the scan is the state walk, whose tiles the plan must also fit."""
 
     def fits(size):
         return (align_up(size, 1024) if arch == 90 else size) <= budget
 
-    lean = not fits(_prepare_bytes(dim, element, sequences, False, staged_norms))
-    if lean and not fits(_prepare_bytes(dim, element, sequences, True, staged_norms)):
+    if walk and not fits(_walk_bytes(dim, element, sequences, arch)):
+        return None
+    lean = not fits(_prepare_bytes(dim, element, sequences, False, staged_bytes))
+    if lean and not fits(_prepare_bytes(dim, element, sequences, True, staged_bytes)):
         return None
     for value_tile in (dim, dim // 2):
         if fits(_scan_bytes(dim, value_tile, element, sequences)):

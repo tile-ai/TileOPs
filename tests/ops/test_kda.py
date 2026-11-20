@@ -10,10 +10,11 @@ from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import (
     KDACall,
+    chunk_prefill,
 )
 from tileops._kernels.linear_attention.chunk_prefill import run_chunk_prefill
+from tileops._kernels.linear_attention.kda import chunk_programs, prepare_split
 from tileops._kernels.linear_attention.kda import prefill as kda_prefill
-from tileops._kernels.linear_attention.kda import prepare_split
 from tileops._kernels.linear_attention.kda.prepare_split import split_prepare_program
 from tileops._utils.utils import get_sm_count
 from tileops.backend import OpNotAvailableError
@@ -77,21 +78,53 @@ def test_kda_prefill_serves_more_value_heads_than_query_heads() -> None:
     _check(1, 256, 2, 128, torch.bfloat16, value_heads=4)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
-    "sequence_lengths",
-    [pytest.param((100, 130), id="two"), pytest.param((100, 130, 70, 64), id="four")],
+    ("heads", "sequence_lengths"),
+    [
+        pytest.param(16, (100, 130), marks=pytest.mark.smoke, id="two"),
+        pytest.param(16, (100, 130, 70, 64), marks=pytest.mark.smoke, id="four"),
+        pytest.param(
+            1, (2,) * 28000, marks=[pytest.mark.full, pytest.mark.sm90], id="past-state-walk"
+        ),
+    ],
 )
-def test_kda_prefill_packs_sequences_of_16_heads(sequence_lengths) -> None:
-    """Packed sequences of 16 value heads, most ending in a partial chunk."""
+def test_kda_prefill_packs_sequences(heads: int, sequence_lengths) -> None:
+    """Packed sequences, most ending in a partial chunk. At 28,000 two-token sequences of
+    width 128 their offsets beside the state walk's tiles pass the 227 KB of shared memory an
+    SM90 block can opt into, so another kernel serves the call."""
     torch.manual_seed(42)
-    _check(1, 0, 16, 128, torch.bfloat16, sequence_lengths=sequence_lengths)
+    _check(1, 0, heads, 128, torch.bfloat16, sequence_lengths=sequence_lengths)
 
 
 @pytest.mark.smoke
 def test_kda_prefill_serves_a_64_wide_state() -> None:
     torch.manual_seed(42)
     _check(1, 256, 4, 64, torch.bfloat16)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+def test_kda_sm90_given_gate_lean_preparation_matches_reference(monkeypatch) -> None:
+    """The referenced SM90 preparation in its lean form, which the plan picks only for tens of
+    thousands of packed sequences, forced here on whole chunks and partial ones."""
+    plan = chunk_prefill.launch_plan
+    prepare = chunk_programs.chunk_prepare_program
+    built = []
+
+    def lean_plan(*args, **kwargs):
+        found = plan(*args, **kwargs)
+        return None if found is None else (True, found[1])
+
+    def counted(*args, **kwargs):
+        built.append((kwargs["lean"], kwargs.get("referenced")))
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(chunk_prefill, "launch_plan", lean_plan)
+    monkeypatch.setattr(chunk_programs, "chunk_prepare_program", counted)
+    torch.manual_seed(42)
+    _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(50, 120, 130))
+    assert built == [(True, True)]
 
 
 @pytest.mark.smoke
@@ -245,6 +278,32 @@ def test_kda_raw_gate_prefill_uses_chunk_path(arch: int, budget: int, dim: int) 
         device=torch.device(in_tree),
     )
     assert KDAFwdOp().key_for("kda", call) == "kda_chunk_prefill"
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_kda_raw_gate_prefill_refuses_more_sequences_than_its_state_walk_holds() -> None:
+    """28,000 two-token sequences of a raw gate at width 128 on SM90: the chunk kernel's
+    state walk does not fit and the one-CTA prefill takes no raw gate."""
+    (in_tree,) = Kernel.devices
+    call = KDACall(
+        batch=1,
+        seq_len=56000,
+        sequences=28000,
+        heads=1,
+        value_heads=1,
+        dim_k=128,
+        dim_v=128,
+        dtype=torch.bfloat16,
+        scale=128**-0.5,
+        gate_in_kernel=True,
+        sm_count=132,
+        arch=90,
+        smem_budget=232448,
+        device=torch.device(in_tree),
+    )
+    with pytest.raises(OpNotAvailableError):
+        KDAFwdOp().key_for("kda", call)
 
 
 @pytest.mark.smoke
@@ -743,24 +802,28 @@ def _strong_decays(dtype):
 def test_kda_prefill_given_gate_mixes_ordinary_and_strong_chunks(
     dtype, batch, heads, value_heads, dim, l2norm, boundary_decay
 ):
-    """Ordinary, strong and boundary-concentrated decays in one call all stay accurate.
+    """Ordinary, strong, boundary-concentrated and steady decays in one call all stay accurate.
 
     The 64-token chunks rotate between the workload's decays, strong decays (also in the
-    one-row tail), and *boundary_decay* (log2) per token on every row of each 16-row block
-    but its first and ninth, which puts the blocks' reference rows far apart. One sequence
-    reaches the chunk program, 256 (sequence, head) pairs the fused program.
+    one-row tail), *boundary_decay* (log2) per token on every row of each 16-row block but its
+    first and ninth, which puts the blocks' reference rows far apart, and a steady 6 (log2) per
+    token, which bf16 rows centre within a 16-row block and which overflows them centred on a
+    whole chunk. One sequence reaches the chunk program; 256 (sequence, head) pairs reach the
+    fused program wherever it serves the call's dtype and architecture, the chunk program
+    elsewhere.
     """
     torch.manual_seed(42)
     workload = KDAFwdTest(
-        batch, 4 * 64 + 1, heads, dim, dtype, l2norm=l2norm, value_heads=value_heads
+        batch, 5 * 64 + 1, heads, dim, dtype, l2norm=l2norm, value_heads=value_heads
     )
     q, k, v, g, beta, state = workload.gen_inputs()
-    chunk = torch.arange(g.shape[1], device=g.device) // 64 % 3
+    chunk = torch.arange(g.shape[1], device=g.device) // 64 % 4
     row = torch.arange(g.shape[1], device=g.device) % 16
     concentrated = torch.where((row == 0) | (row == 8), 0.0, -boundary_decay * math.log(2))
     g = g.float()
     g[:, chunk == 1] = torch.empty_like(g[:, chunk == 1]).uniform_(*_strong_decays(dtype))
     g[:, chunk == 2] = concentrated[chunk == 2][None, :, None, None].expand_as(g[:, chunk == 2])
+    g[:, chunk == 3] = -6.0 * math.log(2)
     g = g.to(dtype)
     if not l2norm:
         # Unit keys keep the delta rule contractive without the in-kernel normalization.
@@ -768,28 +831,52 @@ def test_kda_prefill_given_gate_mixes_ordinary_and_strong_chunks(
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=l2norm), q, k, v, g, beta, state)
 
 
+@pytest.mark.smoke
+@pytest.mark.sm90
+def test_kda_prefill_given_gate_centres_a_steady_decay_by_block() -> None:
+    """A bf16 decay of 2.5 (log2) per token on half the key channels centres within each 16-row
+    block and not within a whole chunk, while the other channels carry a large initial state
+    through every row: the outputs and final states of its whole chunks, its 50-row sequence
+    and its 56-row tail depend on ``w`` and on the step sizes it carries."""
+    torch.manual_seed(42)
+    workload = KDAFwdTest(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(50, 120, 130))
+    q, k, v, g, beta, state, offsets, host_offsets = workload.gen_inputs()
+    channel = torch.arange(g.shape[-1], device=g.device)
+    g = torch.where(channel % 2 == 0, -2.5 * math.log(2), 0.0).expand_as(g).to(g.dtype)
+    state = state * 50.0
+    workload.check(
+        KDAFwdOp(use_qk_l2norm_in_kernel=True), q, k, v, g, beta, state, offsets, host_offsets
+    )
+
+
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("dim", "l2norm", "heads"),
+    ("dim", "l2norm", "heads", "period", "drop"),
     [
-        pytest.param(128, True, 4, marks=pytest.mark.smoke, id="normalized-128"),
-        pytest.param(64, True, 4, marks=pytest.mark.full, id="normalized-64"),
-        pytest.param(128, False, 2, marks=pytest.mark.full, id="unnormalized-grouped-128"),
+        pytest.param(128, True, 4, 16, 100.0, marks=pytest.mark.smoke, id="normalized-128"),
+        pytest.param(
+            128, True, 4, 64, 70.0 * math.log(2), marks=pytest.mark.smoke, id="once-a-chunk-128"
+        ),
+        pytest.param(64, True, 4, 16, 100.0, marks=pytest.mark.full, id="normalized-64"),
+        pytest.param(
+            128, False, 2, 16, 100.0, marks=pytest.mark.full, id="unnormalized-grouped-128"
+        ),
     ],
 )
-def test_kda_prefill_given_gate_drops_inside_its_blocks(dim, l2norm, heads):
-    """A bf16 chunk whose decay drops 100 nats on the fifth row of every 16-row block, and
-    nowhere else, lies past the bounds while the entries inside each block stay of order one,
-    so its per-pair diagonal blocks decide the output: at both supported widths, and with
-    unnormalized rows of key heads shared by two value heads."""
+def test_kda_prefill_given_gate_drops_inside_its_blocks(dim, l2norm, heads, period, drop):
+    """A bf16 chunk whose decay drops *drop* nats on the fifth row of every *period* rows, and
+    nowhere else, lies past the block bound while the entries inside each block stay of order
+    one, so its per-pair diagonal blocks decide the output: at both supported widths, with
+    unnormalized rows of key heads shared by two value heads, and with one drop a chunk, which
+    passes the chunk-wide bound and still takes the per-pair diagonal blocks of normalized rows."""
     torch.manual_seed(42)
     workload = KDAFwdTest(1, 128, heads, dim, torch.bfloat16, l2norm=l2norm, value_heads=4)
     q, k, v, g, beta, state = workload.gen_inputs()
     if not l2norm:
         # Unit keys keep the delta rule contractive without the in-kernel normalization.
         q, k = (x / x.norm(dim=-1, keepdim=True) for x in (q, k))
-    row = torch.arange(g.shape[1], device=g.device) % 16
-    g = torch.where(row == 4, -100.0, 0.0)[None, :, None, None].expand_as(g).to(g.dtype)
+    row = torch.arange(g.shape[1], device=g.device) % period
+    g = torch.where(row == 4, -drop, 0.0)[None, :, None, None].expand_as(g).to(g.dtype)
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=l2norm), q, k, v, g, beta, state)
 
 

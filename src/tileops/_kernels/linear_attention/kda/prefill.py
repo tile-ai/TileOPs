@@ -8,7 +8,7 @@ from tileops._kernels.linear_attention.call_spec import (
     KDAFwdInterface,
 )
 from tileops._kernels.linear_attention.chunk_plan import launch_plan
-from tileops._kernels.linear_attention.chunk_prefill import run_chunk_prefill, staged_norms
+from tileops._kernels.linear_attention.chunk_prefill import run_chunk_prefill, staged_bytes
 
 __all__ = ["KDAChunkPrefillFwdKernel"]
 
@@ -40,7 +40,8 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.sequences,
             call.smem_budget,
             call.arch,
-            staged_norms=staged_norms(call),
+            staged_bytes=staged_bytes(call),
+            walk=True,
         )
         if plan is None:
             return (
