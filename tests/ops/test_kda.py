@@ -94,14 +94,20 @@ def test_kda_prefill_serves_a_64_wide_state() -> None:
     _check(1, 256, 4, 64, torch.bfloat16)
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
-def test_kda_prefill_packs_more_sequences_than_its_state_walk_holds() -> None:
-    """28,000 two-token sequences at width 128: their offsets beside the state walk's tiles
+@pytest.mark.parametrize(
+    "sequences",
+    [
+        pytest.param(64, marks=pytest.mark.smoke, id="64"),
+        pytest.param(28000, marks=pytest.mark.full, id="past-state-walk"),
+    ],
+)
+def test_kda_prefill_packs_two_token_sequences(sequences: int) -> None:
+    """Two-token sequences at width 128. At 28,000 their offsets beside the state walk's tiles
     pass the 227 KB of shared memory an SM90 block can opt into, so another kernel serves
     the call."""
     torch.manual_seed(42)
-    _check(1, 0, 1, 128, torch.bfloat16, sequence_lengths=(2,) * 28000)
+    _check(1, 0, 1, 128, torch.bfloat16, sequence_lengths=(2,) * sequences)
 
 
 @pytest.mark.smoke
@@ -255,6 +261,32 @@ def test_kda_raw_gate_prefill_uses_chunk_path(arch: int, budget: int, dim: int) 
         device=torch.device(in_tree),
     )
     assert KDAFwdOp().key_for("kda", call) == "kda_chunk_prefill"
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_kda_raw_gate_prefill_refuses_more_sequences_than_its_state_walk_holds() -> None:
+    """28,000 two-token sequences of a raw gate at width 128 on SM90: the chunk kernel's
+    state walk does not fit and the one-CTA prefill takes no raw gate."""
+    (in_tree,) = Kernel.devices
+    call = KDACall(
+        batch=1,
+        seq_len=56000,
+        sequences=28000,
+        heads=1,
+        value_heads=1,
+        dim_k=128,
+        dim_v=128,
+        dtype=torch.bfloat16,
+        scale=128**-0.5,
+        gate_in_kernel=True,
+        sm_count=132,
+        arch=90,
+        smem_budget=232448,
+        device=torch.device(in_tree),
+    )
+    with pytest.raises(OpNotAvailableError):
+        KDAFwdOp().key_for("kda", call)
 
 
 @pytest.mark.smoke
