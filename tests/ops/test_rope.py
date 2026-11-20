@@ -255,7 +255,7 @@ def test_rope_graph_replay(neox) -> None:
     ("name", "neox", "dtype", "head_size", "rotary_dim", "heads", "tokens"),
     [
         pytest.param(
-            "RoPEFwdOp", False, torch.float16, 64, 24, (32, 8), 4096, marks=_SMOKE, id="gptj"
+            "RoPEFwdOp", False, torch.float16, 64, 24, (32, 8), 16384, marks=_SMOKE, id="gptj"
         ),
         pytest.param(
             "LongRoPEFwdOp",
@@ -264,15 +264,15 @@ def test_rope_graph_replay(neox) -> None:
             64,
             24,
             (8, 8),
-            4096,
+            16384,
             marks=_SMOKE,
             id="longrope-offsets-float32",
         ),
         pytest.param(
-            "RoPEFwdOp", False, torch.float16, 65, 32, (3, 1), 4096, marks=_FULL, id="scalar-gptj"
+            "RoPEFwdOp", False, torch.float16, 65, 32, (3, 1), 16384, marks=_FULL, id="scalar-gptj"
         ),
         pytest.param(
-            "RoPEFwdOp", True, torch.float16, 64, 24, (1100, 8), 32, marks=_FULL, id="block-limit"
+            "RoPEFwdOp", True, torch.float16, 64, 24, (1100, 8), 512, marks=_FULL, id="block-limit"
         ),
     ],
 )
@@ -281,18 +281,19 @@ def test_rope_stages_each_row_where_heads_copy_columns(
 ) -> None:
     """Heads with copied columns, each token's query row and key row staged in shared memory.
 
-    The calls fill more than half of any device's resident threads, so the rows are staged:
-    rotated in shared memory and written back whole. A 65-column head moves single columns,
-    and its 3-head query row of 390 bytes is no whole number of 16-byte vectors; its key row
-    is shorter than its query row. LongRoPE's offsets move each token's table row. A
-    140800-byte query row takes more threads than a block has, so its block holds 1024.
+    Each call's rows outnumber the staged blocks any supported device holds at once, so the
+    rows are staged: rotated in shared memory and written back whole. A 65-column head moves
+    single columns, and its 3-head query row of 390 bytes is no whole number of 16-byte
+    vectors; its key row is shorter than its query row. LongRoPE's offsets move each token's
+    table row. A 140800-byte query row takes more threads than a block has, so its block holds
+    1024.
     """
     changes = {"head_size": head_size, "rotary_dim": rotary_dim, "is_neox_style": neox}
     if name == "LongRoPEFwdOp":
         changes["rescale_factors"] = [1.0 + i / 16 for i in range(rotary_dim // 2)]
     op, params = _op(name, dtype, **changes)
     positions, query, key = _inputs(name, params, tokens, *heads, dtype)
-    positions = positions.flip(0)
+    positions = positions.flip(0) % 4096
     (got_q, got_k), read = _call_with_offsets(name, op, positions, query, key)
     ref_q, ref_k = _reference(name, params, read, query, key)
     compare_outputs(got_q, ref_q, rope_verification())
@@ -301,10 +302,12 @@ def test_rope_stages_each_row_where_heads_copy_columns(
 
 @pytest.mark.smoke
 def test_rope_stages_a_query_alone() -> None:
-    """A NeoX query of 80-column heads rotating 32, alone: one staged block a token."""
+    """A NeoX query of 80-column heads rotating 32, alone, at int32 positions: one staged block
+    a token."""
     dtype = torch.bfloat16
     op, params = _op("RoPEFwdOp", dtype, head_size=80, rotary_dim=32)
-    positions, query, _ = _inputs("RoPEFwdOp", params, 4096, 32, None, dtype)
+    positions, query, _ = _inputs("RoPEFwdOp", params, 16384, 32, None, dtype)
+    positions = positions.int() % params["max_position_embeddings"]
     got_q, got_k = op(positions.flip(0), query)
     assert got_k is None
     compare_outputs(

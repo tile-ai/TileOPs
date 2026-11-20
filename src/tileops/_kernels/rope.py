@@ -600,12 +600,8 @@ class _RoPEPositionsKernel(Kernel):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if positions.numel() == 0:
             return torch.empty_like(query), None if key is None else torch.empty_like(key)
-        # A call whose units fill at most half the device's resident threads is bound by the
-        # latency of one unit, so each thread takes one; a larger one keeps several in
-        # flight a thread.
         rows = positions.view(-1)
-        wide = 2 * rows.numel() * self._token_units <= self._resident_threads
-        program = self.program(self._compile, wide)
+        program = self.program(self._compile, self._shape(rows.numel()))
         query_rows = query.view(rows.numel(), query.shape[-1])
         if not self.key_heads and offsets is None:
             # A key of no heads is built into the query-only program.
@@ -616,6 +612,15 @@ class _RoPEPositionsKernel(Kernel):
             tensors += (offsets.view(-1),)
         query_out, key_out = program(*tensors, cos, sin)
         return query_out.view(query.shape), key_out.view(key.shape)
+
+    def _shape(self, tokens: int) -> bool:
+        """Whether a call of *tokens* tokens is wide.
+
+        A call whose units fill at most half the device's resident threads is bound by the
+        latency of one unit, so each thread takes one; a larger one keeps several in flight a
+        thread.
+        """
+        return 2 * tokens * self._token_units <= self._resident_threads
 
     def _compile(self, cfg: dict, wide: bool):
         """The program ``forward`` launches, compiled from *cfg*; *wide* gives a block a thread
@@ -644,11 +649,17 @@ class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
     """The rotation where heads copy columns, each token's query row and key row staged in
     shared memory.
 
-    A call that is not wide takes the staged program; a wide one takes the one-unit program
-    of the positions kernel. A block takes one thread for each share of its row, the share
-    being the SM's shared memory over its resident threads rounded up to whole 16-byte
-    vectors, so a SM's resident threads can fill its shared memory; the thread count rounds
-    up to whole warps, at most 1024.
+    A block writes its row back only after the whole row has arrived and rotated. When every
+    block of a call is resident at once, the blocks reach that point together and the call's
+    stores trail its loads; when blocks wait for a second wave, the stores of one wave overlap
+    the loads of the next. So a call takes the staged program only where its rows outnumber
+    the blocks the device holds at once, by shared memory and by threads; any other call
+    takes the positions kernel's programs.
+
+    A block takes one thread for each share of its row, the share being the SM's shared
+    memory over its resident threads rounded up to whole 16-byte vectors; the thread count
+    rounds up to whole warps, at most 1024. The staged program takes no config: the config's
+    ``threads`` and ``units`` shape only the positions kernel's programs.
     """
 
     @staticmethod
@@ -668,19 +679,33 @@ class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
 
     @classmethod
     def _device_terms(cls, call: RoPECall) -> dict:
+        row = cls._row_bytes(call)
         share = -(-call.smem_per_sm // call.threads_per_sm // VECTOR_ACCESS_BYTES)
-        threads = -(-cls._row_bytes(call) // (share * VECTOR_ACCESS_BYTES * 32)) * 32
-        return {**super()._device_terms(call), "staged_threads": min(1024, threads)}
+        threads = min(1024, -(-row // (share * VECTOR_ACCESS_BYTES * 32)) * 32)
+        per_sm = min(call.threads_per_sm // threads, call.smem_per_sm // row)
+        return {
+            **super()._device_terms(call),
+            "staged_threads": threads,
+            "wave_rows": call.sm_count * per_sm,
+        }
 
-    def __init__(self, *args, staged_threads: int, **kwargs):
+    def __init__(self, *args, staged_threads: int, wave_rows: int, **kwargs):
         super().__init__(*args, **kwargs)
         self._staged_threads = staged_threads
+        self._wave_rows = wave_rows
 
-    def _compile(self, cfg: dict, wide: bool):
-        """The staged program, or the positions kernel's for a wide call."""
-        if wide:
-            return super()._compile(cfg, wide)
-        return self.kernel(self._staged_threads, 1, True)
+    def _shape(self, tokens: int) -> bool | None:
+        """``None`` for a call whose rows (a query row and a key row a token) outnumber one
+        wave of staged blocks, else whether it is wide."""
+        if tokens * (2 if self.key_heads else 1) > self._wave_rows:
+            return None
+        return super()._shape(tokens)
+
+    def _compile(self, cfg: dict, wide: bool | None):
+        """The staged program for a *wide* of ``None``, else the positions kernel's."""
+        if wide is None:
+            return self.kernel(self._staged_threads, 1, True)
+        return super()._compile(cfg, wide)
 
 
 class RoPENeoxStagedRowsKernel(_RoPEStagedRowsKernel, RoPENeoxPositionIdsFwdInterface):
