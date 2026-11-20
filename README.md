@@ -70,6 +70,19 @@ after warmup, for the calls in the [graph test group](https://github.com/tile-ai
 Every op whose manifest entry has a call-time tensor input and no composition supports
 `torch.compile(fullgraph=True)`.
 
+### Models
+
+`tileops.models` composes whole models from the ops. DeepSeek-V4-Flash reads its Hugging Face
+checkpoint as published (with `safetensors` installed) and spreads its layers over the GPUs it is
+given; two H200s hold it:
+
+```python
+from tileops.models import DeepseekV4ForCausalLM
+
+model = DeepseekV4ForCausalLM.from_pretrained("DeepSeek-V4-Flash", devices=[0, 1])
+completion_ids = model.generate(prompt_ids, max_new_tokens=128)  # greedy
+```
+
 ### Release Docker image
 
 The release image contains TileOPs 0.1.0, [TileFoundry](https://github.com/tile-ai/TileFoundry)
