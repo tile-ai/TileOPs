@@ -191,7 +191,9 @@ def chunk_prepare_program(
     def build():
         prefix = raw_gate_prefix(BT, K, has_dt_bias, lower_bound) if gate_in_kernel else None
         gram = raw_gate_gram(BT, K) if gate_mode == "channel" else None
-        invert = inverse_program(chunk_size=BT, block_size=BC, threads=threads, dtype=dtype)
+        invert = inverse_program(
+            chunk_size=BT, block_size=BC, threads=threads, dtype=dtype, seeded=referenced
+        )
         if referenced:
             # A lane group per two rows of the chunk.
             assert threads == BT // 2 * DIAGONAL_LANES, "the diagonal pass's lane groups"

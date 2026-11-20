@@ -32,11 +32,18 @@ def _diagonal_program(*, chunk_size, block_size, dtype, output_offset, idle):
     return diagonal
 
 
-def inverse_program(*, chunk_size, block_size, threads, dtype, output_offset=0, idle=None):
+def inverse_program(
+    *, chunk_size, block_size, threads, dtype, output_offset=0, idle=None, seeded=False
+):
     """Reuse the caller's coefficient, inverse and FP32 GEMM scratch buffers.
 
     *idle*, if given, is a macro the threads past the diagonal solves' columns run meanwhile,
     called with their index from zero and the caller's *idle_args*.
+
+    Each doubling level forms ``inverse (I + coeff)``. By default it adds the identity to the
+    coefficient tile and masks it off again, both in place; *seeded* instead starts the
+    product's accumulator from the inverse, so neither rewrite of the coefficient tile and
+    none of their barriers run.
     """
     assert threads >= chunk_size, "inverse requires at least one thread per column"
     assert chunk_size % block_size == 0, "inverse requires complete diagonal blocks"
@@ -70,12 +77,22 @@ def inverse_program(*, chunk_size, block_size, threads, dtype, output_offset=0, 
             coeff[i, j] = T.cast(scratch[i, j], dtype)
         T.sync_threads()
         for level in T.serial(levels):
-            # inverse (I + coeff) = inverse + inverse coeff; coeff stays strictly block-lower.
-            T.copy(matrix(inverse, output_offset), scratch)
+            if seeded:
+                # coeff stays strictly block-lower, so seeding with the inverse adds its I.
+                T.copy(matrix(inverse, output_offset), scratch)
+            else:
+                for i, j in T.Parallel(chunk_size, chunk_size):
+                    coeff[i, j] = coeff[i, j] + T.cast(T.if_then_else(i == j, 1.0, 0.0), dtype)
+                T.sync_threads()
+                T.clear(scratch)
             T.gemm(matrix(inverse, output_offset), matrix(coeff, 0), scratch)
             T.sync_threads()
             for i, j in T.Parallel(chunk_size, chunk_size):
                 inverse[i, j + output_offset] = T.cast(scratch[i, j], dtype)
+                if not seeded:
+                    coeff[i, j] = T.if_then_else(
+                        i // block_size > j // block_size, coeff[i, j], T.cast(0, dtype)
+                    )
             T.sync_threads()
             if level < levels - 1:
                 T.clear(scratch)
