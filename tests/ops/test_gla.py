@@ -14,7 +14,7 @@ from tileops._kernels.linear_attention.gla.dense_prefill_partitioned import (
 from tileops._kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
-from tileops.backend import TensorSpec
+from tileops.backend import BUILTIN, TensorSpec
 from tileops.backend import _registry as registry
 from tileops.linear_attention import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
 from workloads.device import run_device, run_device_is_cuda
@@ -324,6 +324,37 @@ def test_gla_chunk_fwd_feeds_bwd(dtype: torch.dtype) -> None:
         do, q, k, v, g, BC, initial_state=initial_state, dht=dfinal_state, initial_grad=True
     )
     compare_outputs(grads, ref_grads, chunkwise_verification(dtype, backward=True))
+
+
+def _transpose_view(tensor: torch.Tensor) -> torch.Tensor:
+    view = tensor.transpose(0, 1).contiguous().transpose(0, 1)
+    assert not view.is_contiguous()
+    return view
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(("dtype", "seeded"), [(torch.float16, True), (torch.bfloat16, False)])
+def test_gla_chunk_accepts_strided_inputs(dtype: torch.dtype, seeded: bool) -> None:
+    torch.manual_seed(42)
+    shape = (2, 128, 2, 64)
+    state_shape = (2, 2, 64, 64)
+    device = run_device()
+    q, k, v, do = (torch.randn(shape, device=device, dtype=dtype) * 0.1 for _ in range(4))
+    g = -torch.rand(shape, device=device, dtype=dtype)
+    initial = torch.randn(state_shape, device=device) * 0.1 if seeded else None
+    dfinal = torch.randn(state_shape, device=device) * 0.1
+
+    fwd = GLAChunkFwdOp(target=BUILTIN)
+    bwd = GLAChunkBwdOp(has_initial_state=seeded, target=BUILTIN)
+    packed = fwd(q, k, v, g, initial)
+    views = tuple(_transpose_view(tensor) for tensor in (q, k, v, g))
+    initial_view = _transpose_view(initial) if initial is not None else None
+    torch.testing.assert_close(fwd(*views, initial_view), packed, atol=0, rtol=0)
+
+    backward = (do, dfinal, q, k, v, g, packed[2])
+    views = tuple(_transpose_view(tensor) for tensor in backward)
+    torch.testing.assert_close(bwd(*views), bwd(*backward), atol=0, rtol=0)
 
 
 @pytest.mark.in_tree_kernels
@@ -739,6 +770,17 @@ def test_gla_decode(
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_gla_decode_accepts_strided_inputs(dtype: torch.dtype) -> None:
+    torch.manual_seed(42)
+    inputs = GLADecodeTest(2, 2, 64, 64, dtype).gen_inputs()
+    views = tuple(_transpose_view(tensor) for tensor in inputs)
+    op = GLARecurrentFwdOp(target=BUILTIN)
+    torch.testing.assert_close(op(*views), op(*inputs), atol=0, rtol=0)
 
 
 @GLADecodeSliceFixture

@@ -25,6 +25,7 @@ class GLAChunkFwdOp(Op):
     GLAChunkBwdOp reads, so a forward call's outputs feed the backward directly.
 
     Layout: BTHD (batch, seq_len, heads, dim).
+    The read-only tensor inputs may be non-contiguous.
 
     """
 
@@ -111,6 +112,7 @@ class GLAChunkBwdOp(Op):
     Uses the ``h`` GLAChunkFwdOp returns (no recomputation needed).
 
     Layout: BTHD (batch, seq_len, heads, dim).
+    The read-only tensor inputs may be non-contiguous.
 
     """
 

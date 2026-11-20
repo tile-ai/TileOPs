@@ -27,6 +27,7 @@ class DeltaNetRecurrentFwdOp(Op):
 
     Layout: BHD (batch, head, dim).
     Supports float32, float16, and bfloat16 with fp32 accumulation.
+    The read-only tensor inputs may be non-contiguous.
 
     For fp32 dtype, dispatches to a dedicated FP32 kernel that uses
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
