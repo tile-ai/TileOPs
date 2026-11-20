@@ -98,10 +98,12 @@ def _embedding_kernel(dim, dtype, index_dtype):
                 first_col = tile % col_tiles * block_vectors
                 # Each vector's output row and column, -1 for a slot past the tile, and its
                 # table row; the in-tile split is 32-bit, which the 64-bit tile arithmetic
-                # would widen.
+                # would widen. The table row stays in the id dtype until the address is
+                # formed: a widening beside its load makes the thread wait for that id
+                # before it issues the next.
                 row_of = T.alloc_local((passes,), "int64")
                 col_of = T.alloc_local((passes,), "int64")
-                src_of = T.alloc_local((passes,), "int64")
+                src_of = T.alloc_local((passes,), index_dtype)
                 # Every id load of the thread is in flight before its first copy: a copy's
                 # memory clobber keeps a later load from moving above it.
                 for p in T.unroll(passes):
