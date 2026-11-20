@@ -46,7 +46,7 @@ _CASES = (
     pytest.param([2, 9], 40, 3, "int32", "int32", {}, marks=_SMOKE, id="int32-table"),
     # 24-byte rows: 8-byte vectors.
     pytest.param([5, 7], 90, 3, "int32", "int64", {}, marks=_FULL, id="eight-byte-vectors"),
-    # An odd row of 2-byte elements: 2-byte vectors, which the evict-last load does not move.
+    # An odd row of 2-byte elements: 2-byte vectors, which cp.async does not move.
     pytest.param([7], 50, 1001, "int64", "bfloat16", {}, marks=_FULL, id="two-byte-vectors"),
     # 1021 vectors, a prime: no thread count divides them, so the last pass is guarded.
     pytest.param([2], 1, 8168, "int64", "bfloat16", {}, marks=_FULL, id="guarded-pass"),

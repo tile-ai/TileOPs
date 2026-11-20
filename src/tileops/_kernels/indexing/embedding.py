@@ -48,8 +48,13 @@ class EmbeddingFwdInterface(KernelInterface):
 
 @target_cache(maxsize=32)
 def _embedding_kernel(dim, dtype, index_dtype):
-    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("gather_copy.h"))
-    def _func(block_rows, block_vectors, vec, threads):
+    # A thread reads back only the shared memory it landed itself, so no barrier orders it.
+    @tilelang.jit(
+        out_idx=[2],
+        compile_flags=csrc_include("gather_copy.h"),
+        pass_configs={tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True},
+    )
+    def _func(block_rows, block_vectors, vec, threads, blocks_per_sm):
         total = T.dynamic("total", "int64")
         # Row offsets reach past 2**31 elements in a large table.
         rows = T.dynamic("rows", "int64")
@@ -63,13 +68,13 @@ def _embedding_kernel(dim, dtype, index_dtype):
         width = vec * T.DataType(dtype).bits // 8
         # Table rows land evict-last in L2 and the output streams past it: a table that fits
         # in L2 is read from DRAM once however many lookups name its rows.
-        land = f"tileops::load_evict_last<{width}>"
+        land = f"tileops::cp_async_evict_last<{width}>"
         store = f"tileops::store_streaming<{width}>"
 
         @T.macro
         def move(fn, dst, dst_row, dst_col, src, src_row, src_col):
-            # The evict-last load and the streaming store move 4, 8 or 16 bytes; a 2-byte
-            # vector is copied element by element.
+            # cp.async and the streaming store move 4, 8 or 16 bytes; a 2-byte vector is
+            # copied element by element.
             if width >= 4:
                 T.call_extern(  # lint: extern-target allow: fn is land or store, bound above
                     "handle", fn, T.access_ptr(dst[dst_row, dst_col], "w", vec),
@@ -86,8 +91,10 @@ def _embedding_kernel(dim, dtype, index_dtype):
             Out: T.Tensor((total, dim), dtype),
         ):
             with T.Kernel(grid_x, T.ceildiv(tiles, grid_x), threads=threads) as (bx, by):
+                if blocks_per_sm:
+                    T.annotate_min_blocks_per_sm(blocks_per_sm)
                 tx = T.get_thread_binding()
-                held = T.alloc_local((passes, vec), dtype)
+                stage = T.alloc_shared((passes * threads, vec), dtype)
                 tile = T.cast(by, "int64") * grid_x + bx
                 first_row = tile // col_tiles * block_rows
                 first_col = tile % col_tiles * block_vectors
@@ -99,8 +106,8 @@ def _embedding_kernel(dim, dtype, index_dtype):
                 row_of = T.alloc_local((passes,), "int64")
                 col_of = T.alloc_local((passes,), "int64")
                 src_of = T.alloc_local((passes,), index_dtype)
-                # Every id load of the thread is in flight before its first row load, and
-                # every row load before its first store.
+                # Every id load of the thread is in flight before its first copy: a copy's
+                # memory clobber keeps a later load from moving above it.
                 for p in T.unroll(passes):
                     s = p * threads + tx
                     in_row = T.alloc_var("int32")
@@ -113,12 +120,15 @@ def _embedding_kernel(dim, dtype, index_dtype):
                         row_of[p] = -1
                     if row_of[p] >= 0:
                         src_of[p] = Index[row_of[p]]
+                # Every copy of the thread is in flight before its one wait.
                 for p in T.unroll(passes):
                     if row_of[p] >= 0:
-                        move(land, held, p, 0, Weight, src_of[p], col_of[p])
+                        move(land, stage, p * threads + tx, 0, Weight, src_of[p], col_of[p])
+                T.ptx_commit_group()
+                T.ptx_wait_group(0)
                 for p in T.unroll(passes):
                     if row_of[p] >= 0:
-                        move(store, Out, row_of[p], col_of[p], held, p, 0)
+                        move(store, Out, row_of[p], col_of[p], stage, p * threads + tx, 0)
 
         return embedding
 
@@ -126,11 +136,11 @@ def _embedding_kernel(dim, dtype, index_dtype):
 
 
 class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
-    """Each thread loads its own vectors of a tile of rows into registers and stores them."""
+    """Each thread copies its own vectors of a tile of rows through shared memory."""
 
     # 256 threads divide every architecture's per-SM thread limit, so whole CTAs fill an SM.
     _MAX_THREADS = 256
-    # A thread holds at most four vectors, so its per-vector data, row, column and id stay in
+    # A thread holds at most four vectors, so its per-vector row, column and id arrays stay in
     # registers; a wider row takes column tiles.
     _MAX_PASSES = 4
 
@@ -200,7 +210,8 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         return found
 
     def tile(self, cfg: dict, passes: int) -> dict:
-        """The launch tile of *cfg* at *passes* vectors a thread: rows, vectors, width, threads."""
+        """The launch tile of *cfg* at *passes* vectors a thread: rows, vectors, width, threads,
+        and the CTAs an SM must hold at once."""
         block_vectors = cfg["block_vectors"]
         # As many whole rows, a power of two, as that many vectors a thread hold; a row of more
         # vectors than half of them takes a tile of its own.
@@ -218,11 +229,14 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         ]
         warps = -(-slots // (self._MAX_PASSES * WARP_LANES))
         threads = max(divisors) if divisors else min(WARP_LANES * warps, self._MAX_THREADS)
+        # A count above one is taken where the tile's CTAs fit the device's resident threads,
+        # so the program is held to the registers that let that many CTAs reside on an SM.
         return {
             "block_rows": block_rows,
             "block_vectors": block_vectors,
             "vec": cfg["vec"],
             "threads": threads,
+            "blocks_per_sm": self._threads_per_sm // threads if passes > 1 else 0,
         }
 
     def forward(self, input, weight):
