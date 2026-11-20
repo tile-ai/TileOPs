@@ -6,10 +6,11 @@ namespace tileops {
 
 // Loads B bytes (4, 8 or 16) from global src into dst, evict-last in L2: a
 // gathered table row that later lookups may read again stays ahead of streamed
-// output. A warp's 16-byte vectors cover whole lines of a row once, so they
-// bypass L1 (.cg); 4- and 8-byte vectors belong to rows narrower than a line,
-// whose other sectors later lookups in the block may read, so they cache in L1
-// (.ca). Volatile, so every load a thread issues stays ahead of its stores.
+// output. The L1 policy follows the vector width B, not the row width: 16-byte
+// vectors bypass L1 (.cg), and 4- and 8-byte vectors, which rows whose bytes
+// 16 does not divide take, cache in L1 (.ca), so the other sectors of a line a
+// short row shares can serve later lookups in the block. Volatile, so every
+// load a thread issues stays ahead of its stores.
 template <int B>
 __device__ __forceinline__ void load_evict_last(void* dst, const void* src) {
   static_assert(B == 4 || B == 8 || B == 16, "a load moves 4, 8 or 16 bytes");

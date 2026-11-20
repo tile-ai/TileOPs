@@ -151,12 +151,13 @@ def test_embedding_refuses_max_norm() -> None:
         pytest.param(2304, 4, 4, marks=_FULL, id="four-waves-wide-rows"),
     ],
 )
-def test_embedding_wave_tiles(dim, waves, most) -> None:
+def test_embedding_wave_tiles(dim, waves, most, request) -> None:
     """A call of *waves* waves of resident threads at one vector a thread.
 
     bf16 rows of 16-byte vectors: up to four waves take more than one vector a thread and no
-    more than *most*, on row tiles whose last one is partial; past four, one. The call is
-    checked against the reference on the tile it launches.
+    more than *most*, on row tiles whose last one is partial; past four, one. The smoke cell
+    checks only the tile the call picks, since `bf16-two-passes` is the bf16 smoke shape; the
+    full cells also check the call against the reference on that tile.
     """
     call = EmbeddingCall(
         dim=dim, dtype=torch.bfloat16, index_dtype=torch.int32, device=torch.device(run_device())
@@ -169,4 +170,5 @@ def test_embedding_wave_tiles(dim, waves, most) -> None:
     vectors = cfg["block_rows"] * cfg["block_vectors"] / cfg["threads"]
     assert 1 <= vectors <= most and (vectors > 1) == (most > 1), cfg
     assert ids % cfg["block_rows"] != 0, cfg
-    test.check(op, *test.gen_inputs())
+    if request.node.get_closest_marker("smoke") is None:
+        test.check(op, *test.gen_inputs())
