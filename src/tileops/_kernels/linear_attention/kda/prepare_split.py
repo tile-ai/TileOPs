@@ -2,7 +2,7 @@
 
 Off-diagonal products are exactly rounded FP32 fused multiply-add chains of the
 boundary-referenced factors, which preserve cancellation residuals. The stable inverse
-uses the arithmetic of kda/inverse.py and is multiplied into the WY vectors in one launch.
+uses the blockwise scheme of kda/inverse.py and is multiplied into the WY vectors in one launch.
 """
 
 import tilelang
@@ -803,9 +803,10 @@ def _inverse_wy_program(
     """The stable inverse, the stored intra-chunk attention and the WY vectors of every chunk.
 
     It reads both FP32 Gram matrices and forms the inverse in shared memory with the
-    arithmetic of the blockwise program in kda/inverse.py, bitwise: forward substitution
-    of the four diagonal blocks, then two doubling levels of BF16 products, each
-    elementwise pass folded into the store of the product before it. The inverse never
+    blockwise scheme of kda/inverse.py: forward substitution of the four diagonal blocks,
+    then two doubling levels of BF16 products, each elementwise pass folded into the store
+    of the product before it. Its levels add the identity to the coefficient tile, where
+    kda/inverse.py seeds each product with the inverse, so the two round differently. The inverse never
     leaves the CTA: it multiplies, in the activation dtype, into the step-scaled gated keys
     and values, and the gated query and key and the chunk decay come from the same reads
     of the gate prefix.

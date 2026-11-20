@@ -41,6 +41,7 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.smem_budget,
             call.arch,
             staged_bytes=staged_bytes(call),
+            walk=True,
         )
         if plan is None:
             return (

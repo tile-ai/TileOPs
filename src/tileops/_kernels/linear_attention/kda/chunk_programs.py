@@ -681,14 +681,16 @@ def chunk_prepare_program(
                             flag[0] = 1
                 if referenced:
                     # The same bound for the chunk's midpoint: half its first-to-last range.
+                    # Like the block bound, it takes a monotone prefix (gates of one sign),
+                    # whose end rows hold its extremes, now over 64 rows instead of 16.
                     for j in T.Parallel(K):
-                        first = gc_s[0, j]
-                        last = gc_s[BT - 1, j]
-                        centre = (first + last) * 0.5
+                        first_row = gc_s[0, j]
+                        last_row = gc_s[BT - 1, j]
+                        centre = (first_row + last_row) * 0.5
                         centre_s[0, j] = centre
                         centre_s[1, j] = T.exp2(centre)
-                        centre_s[2, j] = T.exp2(last - centre)
-                        if T.abs(first - last) * 0.5 > (
+                        centre_s[2, j] = T.exp2(last_row - centre)
+                        if T.abs(first_row - last_row) * 0.5 > (
                             bounds.normalized_limit if l2norm else bounds.flush_limit
                         ):
                             spread[0] = 1

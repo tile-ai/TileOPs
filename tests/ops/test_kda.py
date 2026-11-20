@@ -95,6 +95,16 @@ def test_kda_prefill_serves_a_64_wide_state() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
+def test_kda_prefill_packs_more_sequences_than_its_state_walk_holds() -> None:
+    """28,000 two-token sequences at width 128: their offsets beside the state walk's tiles
+    pass the 227 KB of shared memory an SM90 block can opt into, so another kernel serves
+    the call."""
+    torch.manual_seed(42)
+    _check(1, 0, 1, 128, torch.bfloat16, sequence_lengths=(2,) * 28000)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("batch", [1, 8], ids=["b1", "b8"])
 def test_kda_decode_matches_reference(batch: int) -> None:
     torch.manual_seed(42)

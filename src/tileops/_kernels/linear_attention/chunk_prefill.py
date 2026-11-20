@@ -148,6 +148,7 @@ def build_programs(
         call.smem_budget,
         call.arch,
         staged_bytes=staged_bytes(call) if gate_mode == "channel" else 0,
+        walk=gate_mode == "channel" or split_output,
     )
     if plan is None:
         raise ValueError(f"{num_sequences} sequences need more shared memory than the device has")
