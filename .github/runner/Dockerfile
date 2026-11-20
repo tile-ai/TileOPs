@@ -172,6 +172,14 @@ RUN uv pip install --no-deps cupti-python
 # Deps resolved, unlike cupti-python: all four are already pinned in the lock. Fatal, unlike the
 # bench baselines: the GEMM benchmark imports it with no fallback, so its absence fails rows.
 RUN uv pip install nvmath-python
+# DeepSeek-V4-Flash's official inference/model.py at a pinned revision, without weights:
+# workloads/models runs it, with torch in place of its TileLang kernels, as the reference of
+# models/deepseek_v4.
+ARG DEEPSEEK_V4_FLASH_REVISION=60d8d70770c6776ff598c94bb586a859a38244f1
+ENV DEEPSEEK_V4_INFERENCE_DIR=/opt/deepseek-v4-flash/inference
+RUN mkdir -p "$DEEPSEEK_V4_INFERENCE_DIR" \
+    && curl -fsSL -o "$DEEPSEEK_V4_INFERENCE_DIR/model.py" \
+        "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/resolve/${DEEPSEEK_V4_FLASH_REVISION}/inference/model.py"
 COPY scripts/ci/verify_runtime_stack.py /tmp/verify_runtime_stack.py
 RUN python /tmp/verify_runtime_stack.py
 # The image names itself, so a run can report which image produced it. Asking the registry which
