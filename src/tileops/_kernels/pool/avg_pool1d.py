@@ -23,6 +23,21 @@ from tileops._kernels.pool.common import (
 __all__ = ["AvgPool1dKernel"]
 
 
+def _out_length(call: AvgPoolCall) -> int:
+    """The output length of *call*'s 1-d window."""
+    (out_l,) = AvgPoolWindow(
+        rows=call.n * call.c_in,
+        size=call.size,
+        kernel=call.window,
+        stride=call.stride,
+        pad=call.pad,
+        ceil_mode=call.ceil_mode,
+        count_include_pad=call.count_include_pad,
+        divisor_override=call.divisor_override,
+    ).out
+    return out_l
+
+
 class _WindowStaging:
     """What one block stages, and the launch shapes worth offering for it.
 
@@ -266,6 +281,17 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+
+    @classmethod
+    def refusal(cls, call: AvgPoolCall) -> "str | None":
+        if len(call.size) == 1:
+            (l_in,) = call.size
+            out_l = _out_length(call)
+            # TileLang lowers a row of fewer than 2**31 inputs with int32 literals, so an
+            # output row of 2**31 or more, which padding gives such a row, does not compile.
+            if l_in < 2**31 <= out_l:
+                return "serves no output row of 2**31 elements or more from a shorter input row"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: AvgPoolCall) -> Entry:

@@ -872,6 +872,17 @@ def test_avg_pool1d_divides_each_end_of_the_row(
 
 
 @pytest.mark.smoke
+def test_avg_pool1d_refuses_an_output_row_of_2_31_from_a_shorter_input_row() -> None:
+    """Stride 1 and padding make a row of 2**31 - 1 inputs pool to 2**31 outputs, which
+    TileLang's int32 literals for the shorter input row cannot lower; no kernel serves it."""
+    call = AvgPoolCall(
+        n=1, c_in=1, size=(2**31 - 1,), window=(2,), stride=(1,), pad=(1,), dtype=torch.float16
+    )
+    assert "2**31" in AvgPool1dKernel.refusal(call)
+    assert AvgPool1dRegisterKernel.refusal(call) is not None
+
+
+@pytest.mark.smoke
 def test_avg_pool1d_register_refuses_groups_past_its_int32_thread_index() -> None:
     """The register kernel's one-axis grid indexes a thread a group of outputs in int32, so
     a call of more rows than grid y holds whose groups and one more block pass 2**31 - 1
