@@ -68,7 +68,8 @@ class RMSNormFixture(FixtureBase):
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
                 # A short unaligned row: several share a block, with a tail block.
                 pytest.param(17, 96, torch.bfloat16, False, marks=pytest.mark.full),
-                # Rows a group of a warp's lanes holds, with a tail; and a row read twice.
+                # Rows a group of a warp's lanes holds, with a tail; 64 rows of 2048, which a
+                # block a row holds on a device of at least 64 SMs; and a row read twice.
                 pytest.param(33, 256, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(64, 2048, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(4, 32768, torch.float16, False, marks=pytest.mark.full),
@@ -227,12 +228,13 @@ def test_no_weight_and_no_eps_match_torch() -> None:
 @pytest.mark.parametrize(
     "n,many_rows",
     [
-        # Warp rows: four rows a warp at 256, three vectors a lane at 768, and the bound 2048;
-        # the widest held row; a row of 12288 read twice past four rows an SM, weighted, and
-        # held in registers below them; a row of 32768 read twice.
+        # Warp rows: four rows a warp at 256, three vectors a lane at 768, and the bound 2048
+        # past one row an SM, weighted; the widest held row; a row of 12288 read twice past
+        # four rows an SM, weighted, and held in registers below them; a row of 32768 read
+        # twice.
         pytest.param(256, False, marks=pytest.mark.smoke),
         pytest.param(768, False, marks=pytest.mark.smoke),
-        pytest.param(2048, False, marks=pytest.mark.smoke),
+        pytest.param(2048, True, marks=pytest.mark.smoke),
         pytest.param(8192, False, marks=pytest.mark.smoke),
         pytest.param(12288, True, marks=[pytest.mark.smoke, pytest.mark.in_tree_kernels]),
         pytest.param(12288, False, marks=pytest.mark.smoke),
@@ -313,16 +315,18 @@ def test_rms_norm_refuses_runs_shorter_than_the_row() -> None:
 
 
 def _check_without_weight(test: RMSNormTest, op: RMSNormFwdOp) -> None:
-    """*op* scaling by one matches *test*'s reference at a weight of ones."""
-    x, weight = test.gen_inputs()
-    compare_outputs(op(x), test.ref_program(x, torch.ones_like(weight)), test.verification(x))
+    """*op* scaling by one matches *test*'s reference without a weight."""
+    x, _ = test.gen_inputs()
+    compare_outputs(op(x), test.ref_program(x, None), test.verification(x))
 
 
-def _check_served_by(rows: int, n: int, dtype: torch.dtype, kernel: str) -> Kernel:
+def _check_served_by(
+    rows: int, n: int, dtype: torch.dtype, kernel: str, zero_centered: bool = False
+) -> Kernel:
     """*rows* rows of *n* are right with and without a weight, and *kernel* alone serves them;
     returns that kernel."""
-    test = RMSNormTest(rows, n, dtype)
-    op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)
+    test = RMSNormTest(rows, n, dtype, zero_centered=zero_centered)
+    op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6, zero_centered=zero_centered)
     test.check(op, *test.gen_inputs())
     _check_without_weight(test, op)
     (served,) = op._entries_built("rms_norm").values()
@@ -370,6 +374,66 @@ def test_rms_norm_many_waves_of_held_rows(n: int) -> None:
     cap = RESIDENT_CTAS[props.major * 10 + props.minor]
     bound = f"{threads}, {cap if per_sm >= cap else 1}"
     assert {b for s in sources for b in re.findall(r"__launch_bounds__\(([\d, ]+)\)", s)} == {bound}
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "n,dtype,zero_centered,served",
+    [
+        pytest.param(
+            2048,
+            torch.bfloat16,
+            True,
+            "RMSNormPairedKernel",
+            id="block-row-zero-centered",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            2048,
+            torch.float16,
+            True,
+            "RMSNormPairedKernel",
+            id="block-row-zero-centered-fp16",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            4096,
+            torch.bfloat16,
+            False,
+            "RMSNormPairedKernel",
+            id="block-row",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            1024, torch.bfloat16, False, "RMSNormKernel", id="warp-held", marks=pytest.mark.full
+        ),
+    ],
+)
+def test_rms_norm_one_row_an_sm(
+    n: int, dtype: torch.dtype, zero_centered: bool, served: str
+) -> None:
+    """A launch of one row an SM is right with and without a weight. The paired kernel takes
+    it where a warp row's lane group cannot hold the row within the vectors it packs; one row
+    more, or a row a warp holds, stays with ``RMSNormKernel``."""
+    sm_count = torch.cuda.get_device_properties(run_device()).multi_processor_count
+    for rows, kernel in ((sm_count, served), (sm_count + 1, "RMSNormKernel")):
+        _check_served_by(rows, n, dtype, kernel, zero_centered)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_rms_norm_zero_centered_many_waves_of_held_rows_stay_with_the_row_kernel() -> None:
+    """A zero-centered launch of the paired kernel's many waves stays with ``RMSNormKernel``,
+    with and without a weight: only a launch of at most one row an SM takes a zero-centered
+    call to the paired kernel."""
+    props = torch.cuda.get_device_properties(run_device())
+    threads = _paired_width(2048, torch.bfloat16.itemsize)
+    per_sm = min(
+        props.max_threads_per_multi_processor // threads,
+        RESIDENT_CTAS[props.major * 10 + props.minor],
+    )
+    rows = RMSNormPairedKernel._MIN_WAVES * per_sm * props.multi_processor_count
+    _check_served_by(rows, 2048, torch.bfloat16, "RMSNormKernel", zero_centered=True)
 
 
 @pytest.mark.smoke
