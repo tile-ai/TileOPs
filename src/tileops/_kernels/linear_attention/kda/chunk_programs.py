@@ -296,6 +296,25 @@ def chunk_prepare_program(
             store_decay(dec, gc_s, rows, ic, ihv)
 
         @T.macro
+        def store_tail_values(u, v, aqk, dec, aq, gc_s, bt_s, b_s, p_s, acc, rows, bos, ic, ihv):
+            """Store a partial chunk's attention and decay, then its WY values ``p_s`` times
+            the step-scaled values."""
+            if not lean:
+                store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
+            T.sync_threads()
+            for i, j in T.Parallel(BT, V):
+                b_s[i, j] = T.cast(
+                    T.if_then_else(i < rows, T.cast(v[0, bos + i, ihv, j], accum), 0.0) * bt_s[i],
+                    dtype,
+                )
+            T.sync_threads()
+            T.clear(acc)
+            T.gemm(p_s, b_s, acc)
+            for i, j in T.Parallel(BT, V):
+                if i < rows:
+                    u[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
+
+        @T.macro
         def finish(
             kind,
             qg,
@@ -814,21 +833,9 @@ def chunk_prepare_program(
                                 w[0, bos + i, ihv, j] = T.cast(
                                     acc[i, j] * T.if_then_else(chunked, centre_s[1, j], 1.0), dtype
                                 )
-                        if not lean:
-                            store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
-                        T.sync_threads()
-                        for i, j in T.Parallel(BT, V):
-                            b_s[i, j] = T.cast(
-                                T.if_then_else(i < rows, T.cast(v[0, bos + i, ihv, j], accum), 0.0)
-                                * bt_s[i],
-                                dtype,
-                            )
-                        T.sync_threads()
-                        T.clear(acc)
-                        T.gemm(p_s, b_s, acc)
-                        for i, j in T.Parallel(BT, V):
-                            if i < rows:
-                                u[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
+                        store_tail_values(
+                            u, v, aqk, dec, aq, gc_s, bt_s, b_s, p_s, acc, rows, bos, ic, ihv
+                        )
                 else:
                     if not centred:
                         scale_keys(b_s, ka_s, gc_s, bt_s, True)
@@ -836,21 +843,9 @@ def chunk_prepare_program(
                     T.clear(acc)
                     T.gemm(p_s, b_s, acc)
                     store_outputs(w, qg, kg, acc, qa_s, ka_s, gc_s, rows, bos, ihv)
-                    if not lean:
-                        store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
-                    T.sync_threads()
-                    for i, j in T.Parallel(BT, V):
-                        b_s[i, j] = T.cast(
-                            T.if_then_else(i < rows, T.cast(v[0, bos + i, ihv, j], accum), 0.0)
-                            * bt_s[i],
-                            dtype,
-                        )
-                    T.sync_threads()
-                    T.clear(acc)
-                    T.gemm(p_s, b_s, acc)
-                    for i, j in T.Parallel(BT, V):
-                        if i < rows:
-                            u[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
+                    store_tail_values(
+                        u, v, aqk, dec, aq, gc_s, bt_s, b_s, p_s, acc, rows, bos, ic, ihv
+                    )
 
         if gate_mode == "channel" and gate_in_kernel:
 
