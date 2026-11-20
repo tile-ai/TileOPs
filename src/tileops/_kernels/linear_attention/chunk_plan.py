@@ -62,13 +62,18 @@ def _scan_bytes(dim, value_tile, element, sequences):
     return tiles * element + align_up(4 * (sequences + 1), 16)
 
 
-def _walk_bytes(dim, element, sequences):
+def _walk_bytes(dim, element, sequences, arch):
     """The state walk's shared memory at its widest value tile, which it takes once its CTAs
-    outnumber the SMs: the state, the chunk's ``w``, ``kg``, ``qg``, ``u`` and new values, its
-    attention and decay, and the sequences' offsets, plus 1 KB for the static words the
-    device's opt-in limit counts beside the dynamic pool, which TileLang rounds up to 1 KB."""
-    tiles = dim * dim + 3 * CHUNK_SIZE * dim + 2 * CHUNK_SIZE * dim + CHUNK_SIZE * CHUNK_SIZE
-    return tiles * element + 4 * dim + align_up(4 * (sequences + 1), 16) + 1024
+    outnumber the SMs: the state, the chunk's ``w``, ``kg``, ``u`` and new values, on SM90 the
+    gated query and attention its outputs read, the decay and the sequences' offsets. On SM90,
+    where TileLang rounds the dynamic pool up to 1 KB, 1 KB more holds the static words the
+    device's opt-in limit counts beside it."""
+    tiles = dim * dim + 4 * CHUNK_SIZE * dim
+    static = 0
+    if arch == 90:
+        tiles += CHUNK_SIZE * dim + CHUNK_SIZE * CHUNK_SIZE
+        static = 1024
+    return tiles * element + 4 * dim + align_up(4 * (sequences + 1), 16) + static
 
 
 def launch_plan(dim, element, sequences, budget, arch, *, staged_bytes=0, walk=False):
@@ -79,7 +84,7 @@ def launch_plan(dim, element, sequences, budget, arch, *, staged_bytes=0, walk=F
     def fits(size):
         return (align_up(size, 1024) if arch == 90 else size) <= budget
 
-    if walk and not fits(_walk_bytes(dim, element, sequences)):
+    if walk and not fits(_walk_bytes(dim, element, sequences, arch)):
         return None
     lean = not fits(_prepare_bytes(dim, element, sequences, False, staged_bytes))
     if lean and not fits(_prepare_bytes(dim, element, sequences, True, staged_bytes)):
