@@ -56,6 +56,11 @@ _CASES = (
     pytest.param([3], 10, 0, "int64", "bfloat16", {}, marks=_FULL, id="zero-width"),
     # A table of more rows than an int32 extent holds.
     pytest.param([3], 2**31 + 1, 1, "int64", "bfloat16", {}, marks=_FULL, id="rows-past-int32"),
+    # int32 ids whose last row starts at element 2**31: the id stays int32 until the table
+    # offset is formed, which must widen it before multiplying by the row width.
+    pytest.param(
+        [3], 2**20 + 1, 2048, "int32", "bfloat16", {}, marks=_FULL, id="int32-ids-past-int32-offset"
+    ),
     # Column offsets past 2**31 elements in one row, on 16-byte vectors; the last column
     # tile holds one vector.
     pytest.param([2], 1, 2**31 + 8, "int64", "float16", {}, marks=_FULL, id="widest-row"),
