@@ -2,8 +2,8 @@
 
 y = x * rsqrt(mean(x^2) + eps) * weight
 
-A zero-centered call scales by ``1 + weight`` instead, formed in f32; ``RMSNormKernel`` alone
-serves it.
+A zero-centered call scales by ``1 + weight`` instead, formed in f32; ``RMSNormKernel`` and
+``RMSNormPairedKernel`` serve it.
 
 ``RMSNormKernel`` runs one of three bodies, chosen by ``_row_body`` from the row's width and
 dtype alone: a group of a warp's lanes a row for rows of 256 to 2048 elements, a row held in
@@ -12,7 +12,7 @@ and never switches bodies. ``RMSNormTwoPassKernel`` reads a row of two or more w
 chunks twice; it leaves to the held body a launch of rows of two vectors a thread shorter
 than its ``_MIN_WAVES`` waves, and a launch of at most four rows an SM of rows up to 16384.
 ``RMSNormPairedKernel`` holds a row at two 16-byte vectors a thread for launches of many
-waves.
+waves, and for launches of at most one row an SM of rows wider than a warp row holds.
 
 In the fragment body the normalized row goes from the register fragment straight to
 global memory. Only the partial reduction reads shared memory, because a thread walking a
@@ -47,6 +47,11 @@ from tileops._utils import (
 )
 
 __all__ = ["RMSNormKernel", "RMSNormPairedKernel", "RMSNormTwoPassKernel"]
+
+# The most 16-byte vectors a lane of a warp row holds before its lane group stops adding rows.
+# `_warp_row_shape` packs rows by it and `RMSNormPairedKernel.refusal` reads it, so the rows the
+# paired kernel leaves to the warp row are the ones a lane group holds within it.
+_WARP_ROW_VECTORS = 4
 
 
 def _widen(buf, pair: int, half: int, dtype: str):
@@ -99,12 +104,12 @@ def _warp_row_shape(n: int, elem_bytes: int) -> tuple:
     """``(lanes, vectors a lane holds of a row, rows a lane group holds)`` of a warp row of *n*.
 
     A lane takes a 16-byte vector of the row up to a warp a row, then more vectors. A lane
-    group takes as many rows as fit four vectors a lane, its loads in flight, and at least
-    one.
+    group takes as many rows as fit ``_WARP_ROW_VECTORS`` vectors a lane, its loads in
+    flight, and at least one.
     """
     vectors = n * elem_bytes // VECTOR_ACCESS_BYTES
     per_lane = max(1, vectors // WARP_LANES)
-    return vectors // per_lane, per_lane, max(1, 4 // per_lane)
+    return vectors // per_lane, per_lane, max(1, _WARP_ROW_VECTORS // per_lane)
 
 
 def _paired_width(n: int, elem_bytes: int) -> int | None:
@@ -644,27 +649,42 @@ class _RMSNormRowsKernel(Kernel, RMSNormFwdInterface):
 
     A subclass names its builder ``_builder(M, N, eps, dtype, has_weight)``, whose program
     takes the launch config as keyword arguments; a builder that also takes a device fact
-    overrides ``_compile`` to pass it.
+    overrides ``_compile`` to pass it. A subclass that sets ``serves_zero_centered`` builds a
+    body scaling by ``1 + weight`` and overrides ``_compile`` to pass ``zero_centered``.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
     preferred_over = frozenset({"rms_norm"})
+    # Whether the builder scales by ``1 + weight`` where the call is zero-centered; a body
+    # that scales by the weight itself refuses such a call.
+    serves_zero_centered = False
 
     @classmethod
     def refusal(cls, call: RMSNormCall) -> str | None:
-        return whole_row_scale_refusal(call) or super().refusal(call)
+        rule = whole_row_refusal if cls.serves_zero_centered else whole_row_scale_refusal
+        return rule(call) or super().refusal(call)
 
     @classmethod
-    def entry_for(cls, call: LayerNormCall) -> Entry:
-        identity = (call.n, call.eps, call.dtype)
-        return identity, lambda: cls(*identity)
+    def entry_for(cls, call: RMSNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype, call.zero_centered)
+        return identity, lambda: cls(call.n, call.eps, call.dtype, zero_centered=call.zero_centered)
 
-    def __init__(self, N: int, eps: float, dtype: torch.dtype, config: dict | None = None):
-        """Build for a hidden size and dtype; ``forward`` resolves the program per row count."""
+    def __init__(
+        self,
+        N: int,
+        eps: float,
+        dtype: torch.dtype,
+        config: dict | None = None,
+        *,
+        zero_centered: bool = False,
+    ):
+        """Build for a hidden size and dtype, scaling by ``1 + weight`` where *zero_centered*;
+        ``forward`` resolves the program per row count."""
         super().__init__()
         self.N = N
         self.eps = eps
         self.dtype = dtype
+        self.zero_centered = zero_centered
         self.init_config(config)
 
     @property
@@ -704,7 +724,9 @@ class _RMSNormRowsKernel(Kernel, RMSNormFwdInterface):
 
 
 @target_cache(maxsize=32)
-def _rms_norm_paired_kernel(M, N, eps, dtype, has_weight, threads_per_sm, resident_ctas):
+def _rms_norm_paired_kernel(
+    M, N, eps, dtype, has_weight, threads_per_sm, resident_ctas, zero_centered
+):
     elem_bytes = DataType(dtype).bits // 8
     threads = _paired_width(N, elem_bytes)
     # Where the resident-block cap, not the SM's threads, bounds the blocks, the block asks
@@ -715,32 +737,54 @@ def _rms_norm_paired_kernel(M, N, eps, dtype, has_weight, threads_per_sm, reside
     @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h", "bf16_widen.h"))
     def build():
         return _held_row(
-            M, N, eps, dtype, has_weight, threads, VECTOR_ACCESS_BYTES // elem_bytes, blocks
+            M,
+            N,
+            eps,
+            dtype,
+            has_weight,
+            threads,
+            VECTOR_ACCESS_BYTES // elem_bytes,
+            blocks,
+            zero_centered=zero_centered,
         )
 
     return build
 
 
 class RMSNormPairedKernel(_RMSNormRowsKernel):
-    """RMS normalization holding a row in registers at two 16-byte vectors a thread.
+    """RMS normalization holding a row in registers at two 16-byte vectors a thread, scaling
+    by the weight or, where zero-centered, by one plus it.
 
-    Serves rows a 64-, 128- or 256-thread block holds that way, in sustained multi-wave
-    launches: at least ``_MIN_WAVES`` waves of those blocks, as many as the SM's threads and
-    resident-block cap hold, a conservative performance cutoff.
+    Serves rows a 64-, 128- or 256-thread block holds that way, in two kinds of launch.
+
+    - A launch of at most one row an SM, of rows wider than a warp holds at
+      ``_WARP_ROW_VECTORS`` vectors a lane. Each SM runs its row once, so the time is one
+      row's path from load to store. A block a row cuts that path to two vectors a thread
+      at the cost of a barrier; a row a warp holds within those vectors pays no barrier.
+    - A sustained launch of at least ``_MIN_WAVES`` waves of those blocks, as many as the
+      SM's threads and resident-block cap hold, a conservative performance cutoff.
     """
 
     _builder = staticmethod(_rms_norm_paired_kernel)
+    serves_zero_centered = True
     _MIN_WAVES = 6
 
     @classmethod
-    def refusal(cls, call: LayerNormCall) -> str | None:
+    def refusal(cls, call: RMSNormCall) -> str | None:
         threads = _paired_width(call.n, call.dtype.itemsize)
         if threads is None:
             return f"a row of {call.n} is not two vectors a thread of 64 to 256 threads"
         per_sm = min(call.threads_per_sm // threads, RESIDENT_CTAS[call.arch])
         wave = per_sm * call.sm_count
-        if call.rows < cls._MIN_WAVES * wave:
-            return f"{call.rows} rows are fewer than {cls._MIN_WAVES} waves of {wave}"
+        warp_held = call.n * call.dtype.itemsize <= (
+            _WARP_ROW_VECTORS * WARP_LANES * VECTOR_ACCESS_BYTES
+        )
+        one_row_an_sm = call.rows <= call.sm_count and not warp_held
+        if not one_row_an_sm and call.rows < cls._MIN_WAVES * wave:
+            return (
+                f"{call.rows} rows of {call.n} are fewer than {cls._MIN_WAVES} waves of {wave}, "
+                f"and not at most one an SM of rows wider than a warp holds"
+            )
         return super().refusal(call)
 
     def _compile(self, cfg: dict, m: int, has_weight: bool):
@@ -754,6 +798,7 @@ class RMSNormPairedKernel(_RMSNormRowsKernel):
             has_weight,
             target.threads_per_sm,
             RESIDENT_CTAS[target.arch],
+            self.zero_centered,
         )
         return kernel(**cfg)
 
