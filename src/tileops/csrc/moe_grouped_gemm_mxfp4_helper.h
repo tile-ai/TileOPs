@@ -613,9 +613,8 @@ __device__ __forceinline__ void mxfp4_decode_luts(void const* table,
 // of 64 bytes, which the calling warp releases on ``packed_release`` once it
 // has read them; ``luts`` from mxfp4_decode_luts. Each thread takes the same
 // number of whole units and the units left over go out as 16-value halves to
-// threads [0, kHalves). With 512 units on 224 threads, warps 0-3 still take
-// 2.5 units a lane and warps 4-6 take 2: only the imbalance of a whole extra
-// unit is gone.
+// threads [0, kHalves). With 512 units on 224 threads, warps 0-3 take 2.5
+// units a lane and warps 4-6 take 2.
 template <int BlockN, int Threads>
 __device__ __forceinline__ void mxfp4_decode_shared(void const* packed_stage,
                                                     void* decoded_stage,
@@ -755,10 +754,9 @@ __device__ __forceinline__ void mxfp4_publish_stage(void* barrier) {
 
 // The two token scales of a math thread's accumulator rows for K step ``kk``.
 // Under a folded task, whose codes are 0 or in [64, 190], ``code << 23`` as a
-// float: 2 ** (code - 127), and 0.0 at code 0 instead of mxfp4_e8m0_value's
-// 2 ** -127. That matches the previous results only because the kernel builds
-// with --use_fast_math, whose flush to zero makes the promotion's product with
-// 2 ** -127 zero. mxfp4_e8m0_value otherwise.
+// float: 2 ** (code - 127), and 0.0 at code 0, which the promotion treats like
+// mxfp4_e8m0_value's 2 ** -127 because --use_fast_math flushes that subnormal
+// to zero. mxfp4_e8m0_value otherwise.
 __device__ __forceinline__ void mxfp4_token_scales(uint8_t const* tokens,
                                                    int row0, int steps, int kk,
                                                    bool fold, float* out) {
