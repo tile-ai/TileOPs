@@ -146,29 +146,35 @@ def test_embedding_refuses_max_norm() -> None:
     [
         pytest.param(64, 4, 4, marks=_SMOKE, id="four-waves"),
         pytest.param(64, 2, 2, marks=_FULL, id="two-waves"),
+        pytest.param(64, 3, 4, marks=_FULL, id="three-waves"),
         pytest.param(64, 5, 1, marks=_FULL, id="five-waves"),
         # Rows of 288 vectors: a tile of two rows, so a thread's vectors span both.
-        pytest.param(2304, 4, 4, marks=_FULL, id="four-waves-wide-rows"),
+        pytest.param(2304, 2, 4, marks=_FULL, id="two-waves-wide-rows"),
     ],
 )
 def test_embedding_wave_tiles(dim, waves, most, request) -> None:
     """A call of *waves* waves of resident threads at one vector a thread.
 
     bf16 rows of 16-byte vectors: up to four waves take more than one vector a thread and no
-    more than *most*, on row tiles whose last one is partial; past four, one. The smoke cell
+    more than *most*, on row tiles whose last one is partial, where the tile's CTAs fit one
+    wave of resident CTAs; otherwise one. The smoke cell
     checks only the tile the call picks, since `bf16-two-passes` is the bf16 smoke shape; the
     full cells also check the call against the reference on that tile.
     """
     call = EmbeddingCall(
         dim=dim, dtype=torch.bfloat16, index_dtype=torch.int32, device=torch.device(run_device())
     )
-    ids = waves * call.sm_count * call.threads_per_sm // (dim // 8) - 3
+    # Odd, so no tile of a power-of-two count of rows above one divides it.
+    ids = (waves * call.sm_count * call.threads_per_sm // (dim // 8) - 3) | 1
     test = _test([ids], 1000, dim, "int32", "bfloat16")
     op = EmbeddingFwdOp(**test.arguments())
     kernel = op.kernel_for("embedding", lambda: call)
     cfg = kernel.tile(kernel.config, kernel.vectors_per_thread(ids))
     vectors = cfg["block_rows"] * cfg["block_vectors"] / cfg["threads"]
     assert 1 <= vectors <= most and (vectors > 1) == (most > 1), cfg
-    assert ids % cfg["block_rows"] != 0, cfg
+    assert cfg["block_rows"] == 1 or ids % cfg["block_rows"] != 0, cfg
+    if vectors > 1:
+        ctas = -(-ids // cfg["block_rows"]) * -(-(dim // cfg["vec"]) // cfg["block_vectors"])
+        assert ctas <= call.sm_count * (call.threads_per_sm // cfg["threads"]), cfg
     if request.node.get_closest_marker("smoke") is None:
         test.check(op, *test.gen_inputs())

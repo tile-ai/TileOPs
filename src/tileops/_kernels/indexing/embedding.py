@@ -147,14 +147,16 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
             call.dim,
             call.dtype,
             call.index_dtype,
-            resident_threads=call.sm_count * call.threads_per_sm,
+            sm_count=call.sm_count,
+            threads_per_sm=call.threads_per_sm,
             device_index=index,
         )
 
-    def __init__(self, dim, dtype, index_dtype, *, resident_threads, device_index=None):
+    def __init__(self, dim, dtype, index_dtype, *, sm_count, threads_per_sm, device_index=None):
         super().__init__(device_index=device_index)
         self.dim, self.dtype = dim, dtype
-        self._resident_threads = resident_threads
+        self._sm_count, self._threads_per_sm = sm_count, threads_per_sm
+        self._resident_threads = sm_count * threads_per_sm
         self.kernel = _embedding_kernel(dim, self.dtype_str, self.dtype_to_str(index_dtype))
         self.init_config()
 
@@ -173,8 +175,24 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         # waiting one id-then-row round trip. When up to four vectors a thread fit the call in
         # one wave, a thread takes that many; otherwise the call runs in waves either way, and
         # like a smaller call it gives each thread one vector.
+        # The tile rounds its rows to a power of two and its threads to a divisor, so a count
+        # is taken only where its tile's CTAs fit the resident ones.
         passes = max(1, -(-ids * (self.dim // self.config["vec"]) // self._resident_threads))
-        return passes if passes <= self._MAX_PASSES else 1
+        if passes == 1:
+            return 1
+        for count in range(passes, self._MAX_PASSES + 1):
+            if self._ctas(ids, self.tile(self.config, count)) <= self._resident_ctas(count):
+                return count
+        return 1
+
+    def _ctas(self, ids: int, tile: dict) -> int:
+        """The CTAs a call of *ids* indices launches on *tile*."""
+        col_tiles = -(-(self.dim // tile["vec"]) // tile["block_vectors"])
+        return -(-ids // tile["block_rows"]) * col_tiles
+
+    def _resident_ctas(self, passes: int) -> int:
+        """The CTAs of the tile at *passes* vectors a thread the device holds at once."""
+        return self._sm_count * (self._threads_per_sm // self.tile(self.config, passes)["threads"])
 
     def tile(self, cfg: dict, passes: int) -> dict:
         """The launch tile of *cfg* at *passes* vectors a thread: rows, vectors, width, threads."""
