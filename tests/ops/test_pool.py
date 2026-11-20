@@ -826,6 +826,17 @@ def test_avg_pool1d_windows_read_into_registers(
             id="row-of-2-31-elements-staged",
             marks=pytest.mark.full,
         ),
+        # Stride 1 and padding give each row one output more than its input: 2**31 outputs
+        # from fewer than 2**31 inputs, so the output alone takes int64 extents. Costs 8 GiB.
+        pytest.param(
+            (1, 2, 2**30 - 1),
+            2,
+            1,
+            1,
+            AvgPool1dKernel,
+            id="output-of-2-31-elements-staged",
+            marks=pytest.mark.full,
+        ),
         # Stride 1 past 2**31 elements: output indices pass INT32_MAX. Costs 12 GiB.
         pytest.param(
             (1, 1, 2**31 + 8),
