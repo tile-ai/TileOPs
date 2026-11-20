@@ -157,6 +157,7 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         self.dim, self.dtype = dim, dtype
         self._sm_count, self._threads_per_sm = sm_count, threads_per_sm
         self._resident_threads = sm_count * threads_per_sm
+        self._wave_tiles: dict[tuple[int, int, int], tuple[int, int, int]] = {}
         self.kernel = _embedding_kernel(dim, self.dtype_str, self.dtype_to_str(index_dtype))
         self.init_config()
 
@@ -181,18 +182,22 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         if passes == 1:
             return 1
         for count in range(passes, self._MAX_PASSES + 1):
-            if self._ctas(ids, self.tile(self.config, count)) <= self._resident_ctas(count):
+            block_rows, col_tiles, resident = self._wave_tile(count)
+            if -(-ids // block_rows) * col_tiles <= resident:
                 return count
         return 1
 
-    def _ctas(self, ids: int, tile: dict) -> int:
-        """The CTAs a call of *ids* indices launches on *tile*."""
-        col_tiles = -(-(self.dim // tile["vec"]) // tile["block_vectors"])
-        return -(-ids // tile["block_rows"]) * col_tiles
-
-    def _resident_ctas(self, passes: int) -> int:
-        """The CTAs of the tile at *passes* vectors a thread the device holds at once."""
-        return self._sm_count * (self._threads_per_sm // self.tile(self.config, passes)["threads"])
+    def _wave_tile(self, passes: int) -> tuple[int, int, int]:
+        """The rows and column tiles of the tile at *passes* vectors a thread, and the CTAs of
+        it the device holds at once; computed once per config."""
+        key = (self.config["vec"], self.config["block_vectors"], passes)
+        found = self._wave_tiles.get(key)
+        if found is None:
+            tile = self.tile(self.config, passes)
+            col_tiles = -(-(self.dim // tile["vec"]) // tile["block_vectors"])
+            resident = self._sm_count * (self._threads_per_sm // tile["threads"])
+            found = self._wave_tiles[key] = (tile["block_rows"], col_tiles, resident)
+        return found
 
     def tile(self, cfg: dict, passes: int) -> dict:
         """The launch tile of *cfg* at *passes* vectors a thread: rows, vectors, width, threads."""
