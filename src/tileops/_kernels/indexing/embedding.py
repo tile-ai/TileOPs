@@ -187,13 +187,16 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         # one wave, a thread takes that many; otherwise the call runs in waves either way, and
         # like a smaller call it gives each thread one vector.
         # The tile rounds its rows to a power of two and its threads to a divisor, so a count
-        # is taken only where its tile's CTAs fit the resident ones.
+        # is taken only where its tile's CTAs fit the resident ones, and only where it gives
+        # the tile more rows than one vector a thread does: a row too wide to share a tile
+        # already holds its vectors a thread, and keeps the one-vector program.
         passes = max(1, -(-ids * (self.dim // self.config["vec"]) // self._resident_threads))
         if passes == 1:
             return 1
+        single_rows = self._wave_tile(1)[0]
         for count in range(passes, self._MAX_PASSES + 1):
             block_rows, col_tiles, resident = self._wave_tile(count)
-            if -(-ids // block_rows) * col_tiles <= resident:
+            if block_rows > single_rows and -(-ids // block_rows) * col_tiles <= resident:
                 return count
         return 1
 
