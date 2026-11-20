@@ -639,12 +639,14 @@ def ref_group_scores(select: torch.Tensor, num_groups: int, biased: bool) -> tor
 
 
 def ref_router_scores(gating_output: torch.Tensor, scoring_func: str) -> torch.Tensor:
-    """The float32 scores of router logits: softmax, sigmoid or ``sqrt(softplus(x))``."""
+    """The float32 scores of router logits: softmax, sigmoid or ``sqrt(softplus(x))``. A
+    sigmoid score below the normal float32 range is 0, as FusedTopKFwdOp declares."""
     logits = gating_output.float()
     if scoring_func == "softmax":
         return logits.softmax(-1)
     if scoring_func == "sigmoid":
-        return logits.sigmoid()
+        scores = logits.sigmoid()
+        return scores.masked_fill(scores < torch.finfo(torch.float32).tiny, 0.0)
     return torch.nn.functional.softplus(logits).sqrt()
 
 

@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase, smoke_first
-from tileops._utils import get_sm_count
+from tileops.backend._dispatch import device_facts_of
 from tileops.sequence_modeling import (
     HyperConnectionHeadFwdOp,
     HyperConnectionPostFwdOp,
@@ -223,7 +223,7 @@ def test_hyper_connection_post_refuses_streams_past_the_register_budget() -> Non
 def _head_tokens(program: str) -> int:
     """A token count reaching *program* on the run device, whose SM count picks it: tokens a
     CTA held in registers, or streamed. Above one token, the last CTA holds one token."""
-    sms = get_sm_count()
+    sms = device_facts_of(torch.device(run_device())).sm_count
     return {
         "resident-1": 1,
         "resident-2": 2 * sms - 1,
