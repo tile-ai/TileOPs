@@ -298,26 +298,6 @@ def _enumerate(
         ring = (bm + bn) * bk * 2
         return _ring_budget(bm * bn * out_bytes, bn) // ring
 
-    def _coop2_ns_sn(bn: int, bk: int):
-        """Deepest ring under ``ns_cap`` the SMEM budget allows; shrink the epilogue
-        staging chunk (stage_n) when that buys another pipeline stage."""
-        ring = (128 + bn) * bk * 2
-        best = None
-        for sn in (bn, bn // 2, bn // 4):
-            # The coop2 epilogue stores whole chunks of 8 columns.
-            if sn < 32 or bn % sn or sn % 8:
-                continue
-            staging = 2 * 64 * sn * out_bytes
-            ns = min(ns_cap["coop2"], (BLOCK_SHARED_BYTES_OPT_IN[90] - staging) // ring)
-            if ns < 3:
-                continue
-            if best is None or (ns, sn) > best[:2]:
-                best = (ns, sn)
-        if best is None:
-            return None
-        ns, sn = best
-        return ns, (0 if sn == bn else sn)
-
     def _stage_rule_ok(bm: int, bn: int, ns: int) -> bool:
         if ns < 3:
             return False
@@ -410,14 +390,39 @@ def _enumerate(
             # one-wave widths do. It is one WGMMA only over 64-wide K steps.
             if bn == 176 and (bk != 64 or (n % bn and bn != one_wave)):
                 continue
-            d = _coop2_ns_sn(bn, bk)
-            if d is None:
+            mn_tiles = rows * math.ceil(n / bn)
+            # The deepest ring under ``ns_cap`` the SMEM budget allows, and the epilogue staging
+            # chunk (stage_n) beside it. A CTA that runs several tiles hides each epilogue under
+            # the next mainloop: the widest chunk wins, shrunk only to buy a stage. With one tile
+            # per CTA nothing hides it, and a float32 tile writes twice a 16-bit one's bytes;
+            # where its rows are whole 16-byte units the TMA store writes it in boxes one
+            # swizzle wide (the widest of 128, 64 or 32 B dividing the chunk's row bytes), so it
+            # takes the chunk of the widest swizzle, in two chunks or more so one chunk's store
+            # overlaps the next one's copy.
+            exposed = mn_tiles <= sm_count and out_bytes == 4 and n * out_bytes % 16 == 0
+            ring = (128 + bn) * bk * 2
+            best = None
+            for sn in range(8, bn + 1, 8) if exposed else (bn, bn // 2, bn // 4):
+                # The coop2 epilogue stores whole chunks of 8 columns.
+                if bn % sn or sn % 8 or (sn < 32 and not exposed):
+                    continue
+                staging = 2 * 64 * sn * out_bytes
+                ns = min(ns_cap["coop2"], (BLOCK_SHARED_BYTES_OPT_IN[90] - staging) // ring)
+                if ns < 3:
+                    continue
+                if exposed:
+                    swizzle = next(w for w in (128, 64, 32) if sn * out_bytes % w == 0)
+                    key = (ns, swizzle, sn < bn, sn)
+                else:
+                    key = (ns, sn)
+                if best is None or key > best:
+                    best = key
+            if best is None:
                 continue
-            ns, sn = d
+            ns, sn = best[0], 0 if best[-1] == bn else best[-1]
             if not _stage_rule_ok(128, bn, ns):
                 continue
             coop2_ok = bn == 256 or (nt and bn in (176, 192))
-            mn_tiles = rows * math.ceil(n / bn)
             # At 128 or narrower a coop2 tile scores as the basic tile of its width listed above,
             # which a tie keeps. A width 256 does not divide is one WGMMA only over 64-wide K steps.
             one_wave_ok = bn == one_wave and bn > 128 and (bk == 64 or 256 % bn == 0)
