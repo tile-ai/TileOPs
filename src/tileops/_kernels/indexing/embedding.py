@@ -54,7 +54,7 @@ def _embedding_kernel(dim, dtype, index_dtype):
         compile_flags=csrc_include("gather_copy.h"),
         pass_configs={tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True},
     )
-    def _func(block_rows, block_vectors, vec, threads, blocks_per_sm):
+    def _func(block_rows, block_vectors, vec, threads):
         total = T.dynamic("total", "int64")
         # Row offsets reach past 2**31 elements in a large table.
         rows = T.dynamic("rows", "int64")
@@ -91,8 +91,6 @@ def _embedding_kernel(dim, dtype, index_dtype):
             Out: T.Tensor((total, dim), dtype),
         ):
             with T.Kernel(grid_x, T.ceildiv(tiles, grid_x), threads=threads) as (bx, by):
-                if blocks_per_sm:
-                    T.annotate_min_blocks_per_sm(blocks_per_sm)
                 tx = T.get_thread_binding()
                 stage = T.alloc_shared((passes * threads, vec), dtype)
                 tile = T.cast(by, "int64") * grid_x + bx
@@ -138,12 +136,6 @@ def _embedding_kernel(dim, dtype, index_dtype):
 class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
     """Each thread copies its own vectors of a tile of rows through shared memory."""
 
-    # 256 threads divide every architecture's per-SM thread limit, so whole CTAs fill an SM.
-    _MAX_THREADS = 256
-    # A thread holds at most four vectors, so its per-vector row, column and id arrays stay in
-    # registers; a wider row takes column tiles.
-    _MAX_PASSES = 4
-
     @classmethod
     def refusal(cls, call: EmbeddingCall) -> str | None:
         if call.renorm:
@@ -154,20 +146,12 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
     def entry_for(cls, call: EmbeddingCall) -> Entry:
         index = call.device.index
         return (call.dim, call.dtype, call.index_dtype, index), lambda: cls(
-            call.dim,
-            call.dtype,
-            call.index_dtype,
-            sm_count=call.sm_count,
-            threads_per_sm=call.threads_per_sm,
-            device_index=index,
+            call.dim, call.dtype, call.index_dtype, device_index=index
         )
 
-    def __init__(self, dim, dtype, index_dtype, *, sm_count, threads_per_sm, device_index=None):
+    def __init__(self, dim, dtype, index_dtype, device_index=None):
         super().__init__(device_index=device_index)
         self.dim, self.dtype = dim, dtype
-        self._sm_count, self._threads_per_sm = sm_count, threads_per_sm
-        self._resident_threads = sm_count * threads_per_sm
-        self._wave_tiles: dict[tuple[int, int, int], tuple[int, int, int]] = {}
         self.kernel = _embedding_kernel(dim, self.dtype_str, self.dtype_to_str(index_dtype))
         self.init_config()
 
@@ -175,51 +159,16 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
     def default_config(self):
         # A thread copies vectors of up to 16 bytes, as wide as the row width allows.
         vec = math.gcd(self.dim, VECTOR_ACCESS_BYTES // self.dtype.itemsize)
-        return {
-            "vec": vec,
-            "block_vectors": min(self.dim // vec, self._MAX_PASSES * self._MAX_THREADS),
-        }
-
-    def vectors_per_thread(self, ids: int) -> int:
-        """The vectors a thread takes in a call of *ids* indices."""
-        # A call of more vectors than the device holds resident threads runs in waves, each
-        # waiting one id-then-row round trip. When up to four vectors a thread fit the call in
-        # one wave, a thread takes that many; otherwise the call runs in waves either way, and
-        # like a smaller call it gives each thread one vector.
-        # The tile rounds its rows to a power of two and its threads to a divisor, so a count
-        # is taken only where its tile's CTAs fit the resident ones, and only where it gives
-        # the tile more rows than one vector a thread does: a row too wide to share a tile
-        # already holds its vectors a thread, and keeps the one-vector program.
-        passes = max(1, -(-ids * (self.dim // self.config["vec"]) // self._resident_threads))
-        if passes == 1:
-            return 1
-        single_rows = self._wave_tile(1)[0]
-        for count in range(passes, self._MAX_PASSES + 1):
-            block_rows, col_tiles, resident = self._wave_tile(count)
-            if block_rows > single_rows and -(-ids // block_rows) * col_tiles <= resident:
-                return count
-        return 1
-
-    def _wave_tile(self, passes: int) -> tuple[int, int, int]:
-        """The rows and column tiles of the tile at *passes* vectors a thread, and the CTAs of
-        it the device holds at once; computed once per config."""
-        key = (self.config["vec"], self.config["block_vectors"], passes)
-        found = self._wave_tiles.get(key)
-        if found is None:
-            tile = self.tile(self.config, passes)
-            col_tiles = -(-(self.dim // tile["vec"]) // tile["block_vectors"])
-            resident = self._sm_count * (self._threads_per_sm // tile["threads"])
-            found = self._wave_tiles[key] = (tile["block_rows"], col_tiles, resident)
-        return found
-
-    def tile(self, cfg: dict, passes: int) -> dict:
-        """The launch tile of *cfg* at *passes* vectors a thread: rows, vectors, width, threads,
-        and the CTAs an SM must hold at once."""
-        block_vectors = cfg["block_vectors"]
-        # As many whole rows, a power of two, as that many vectors a thread hold; a row of more
-        # vectors than half of them takes a tile of its own.
+        # 256 threads divide every architecture's per-SM thread limit, so whole CTAs fill an SM.
+        max_threads = 256
+        # A thread holds at most four vectors, so its per-vector row, column and id arrays stay
+        # in registers; a wider row takes column tiles.
+        max_passes = 4
+        block_vectors = min(self.dim // vec, max_passes * max_threads)
+        # Narrow rows: as many whole rows, a power of two, as leave a thread at most one vector.
+        # Such a tile is bound by the id-then-row latency, which more threads hide.
         block_rows = 1
-        while 2 * block_rows * block_vectors <= passes * self._MAX_THREADS:
+        while 2 * block_rows * block_vectors <= max_threads:
             block_rows *= 2
         # Threads divide the tile's vectors when a count of at least a warp does within the
         # pass bound, so no thread idles in the last pass; otherwise whole warps cover the tile
@@ -227,26 +176,21 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         slots = block_rows * block_vectors
         divisors = [
             t
-            for t in range(WARP_LANES, self._MAX_THREADS + 1)
-            if slots % t == 0 and slots <= self._MAX_PASSES * t
+            for t in range(WARP_LANES, max_threads + 1)
+            if slots % t == 0 and slots <= max_passes * t
         ]
-        warps = -(-slots // (self._MAX_PASSES * WARP_LANES))
-        threads = max(divisors) if divisors else min(WARP_LANES * warps, self._MAX_THREADS)
-        # A count above one is taken where the tile's CTAs fit the device's resident threads,
-        # so the program is held to the registers that let that many CTAs reside on an SM.
+        warps = -(-slots // (max_passes * WARP_LANES))
+        threads = max(divisors) if divisors else min(WARP_LANES * warps, max_threads)
         return {
             "block_rows": block_rows,
             "block_vectors": block_vectors,
-            "vec": cfg["vec"],
+            "vec": vec,
             "threads": threads,
-            "blocks_per_sm": self._threads_per_sm // threads if passes > 1 else 0,
         }
 
     def forward(self, input, weight):
-        ids = input.view(-1)
-        program = self.program(self._compile, self.vectors_per_thread(ids.numel()))
-        return program(ids, weight).view(*input.shape, self.dim)
+        return self.program(self._compile)(input.view(-1), weight).view(*input.shape, self.dim)
 
-    def _compile(self, cfg: dict, passes: int):
-        """The program ``forward`` launches for *passes* vectors a thread."""
-        return self.kernel(**self.tile(cfg, passes))
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
