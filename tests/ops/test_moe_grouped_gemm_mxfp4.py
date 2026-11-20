@@ -480,6 +480,28 @@ def test_mxfp4_grouped_gemm_shared_decode_folds_a_row_spanning_eleven_binades() 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_rows_of_distinct_references() -> None:
+    """Weight row r's codes are all 120 + r % 5, so neighbouring rows fold to different
+    references and a sub-block decoded under another row's reference lands binades off. Every
+    product is 0.5 * 2 ** (code - 127) under unit token scales, and each column's exact sum over
+    K = 2048 is 2 ** (code - 117)."""
+    workload = _aligned_workload(256, 2048)
+    a, a_scale, b, b_scale, ids = workload.gen_inputs()
+    a = torch.ones_like(a.float()).to(a.dtype)
+    b = torch.full_like(b, 0x11)
+    a_codes = torch.full_like(a_scale.view(torch.uint8), 127)
+    rows = torch.arange(b.shape[1], device=b.device)
+    codes = (120 + rows % 5).to(torch.uint8)
+    b_codes = codes[None, :, None].expand_as(b_scale.view(torch.uint8)).contiguous()
+    inputs = (a, a_codes.view(a_scale.dtype), b, b_codes.view(b_scale.dtype), ids)
+    out = _shared_decode_op(workload, inputs)(*inputs)[ids < len(SIZES)]
+    expected = torch.exp2(codes.float() - 117).to(out.dtype)
+    assert bool((out == expected[None, :]).all())
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
 def test_mxfp4_grouped_gemm_shared_decode_weight_scales_past_the_fold() -> None:
     """Whole weight rows under e8m0 codes the fold does not take, each on the sub-block
     contraction with the other rows of its tile: code 255 (NaN) makes its column NaN, and

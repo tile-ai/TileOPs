@@ -1155,7 +1155,8 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
         math_regs = 168
         layout_args = f"{scale_k}, {table_box}, {block_n}"
         decode_threads = decode_warps * 32
-        # Decode units (a sub-block of a weight row) a decode thread takes each step.
+        # Decode units (a sub-block of a weight row) a decode thread covers each step: its whole
+        # units and, when the threads do not divide the units, the unit of its half.
         unit_slots = -(-_SUB_BLOCKS * block_n // decode_threads)
         producer_threads = producer_groups * WARPGROUP_THREADS
         producer_regs = (
@@ -1225,9 +1226,15 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             slot, phase = position(step_index, num_stages)
             stage, stage_phase = position(step_index, decoded_stages)
             # The token scales of the thread's two accumulator rows.
-            tokens[0] = _e8m0_value(T.cast(token_codes[buf, acc_row0 * scale_k + kk], "uint32"))
-            tokens[1] = _e8m0_value(
-                T.cast(token_codes[buf, (acc_row0 + 8) * scale_k + kk], "uint32")
+            T.call_extern(
+                "handle",
+                "tileops::mxfp4_token_scales",
+                T.address_of(token_codes[buf, 0]),
+                acc_row0,
+                scale_k,
+                kk,
+                fold != 0,
+                tokens.data,
             )
             T.barrier_wait(full[slot], phase)
             T.barrier_wait(decoded_full[stage], stage_phase)
@@ -1313,6 +1320,8 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                 final = T.alloc_local((fragment_regs,), "float32")
                 tokens = T.alloc_local((2,), "float32")
                 unit_refs = T.alloc_local((unit_slots,), "int32")
+                # Two magnitude byte-row words a unit (mxfp4_decode_luts).
+                luts = T.alloc_local((2 * unit_slots,), "uint32")
                 # A token-row stage is full once its TMA bytes land; the math warps release it.
                 full = T.alloc_barrier([1] * num_stages)
                 empty = T.alloc_barrier([math_warps] * num_stages)
@@ -1497,19 +1506,26 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                 for kk in T.serial(scale_k):
                                     packed_slot, packed_phase = position(step_index, packed_stages)
                                     stage, stage_phase = position(step_index, decoded_stages)
+                                    T.call_extern(
+                                        "handle",
+                                        f"tileops::mxfp4_decode_luts<{layout_args}, "
+                                        f"{decode_threads}>",
+                                        T.address_of(codes[buf, 0]),
+                                        unit_refs.data,
+                                        fold != 0,
+                                        kk,
+                                        decode_tx,
+                                        luts.data,
+                                    )
                                     T.barrier_wait(packed_full[packed_slot], packed_phase)
                                     T.barrier_wait(decoded_empty[stage], stage_phase ^ 1)
                                     T.call_extern(
                                         "handle",
-                                        f"tileops::mxfp4_decode_shared<{layout_args}, "
-                                        f"{decode_threads}>",
+                                        f"tileops::mxfp4_decode_shared<{block_n}, {decode_threads}>",
                                         T.address_of(b_packed[packed_slot, 0, 0]),
-                                        T.address_of(codes[buf, 0]),
                                         T.address_of(b_decoded[stage, 0, 0]),
                                         T.address_of(packed_empty[packed_slot]),
-                                        unit_refs.data,
-                                        fold != 0,
-                                        kk,
+                                        luts.data,
                                         decode_tx,
                                     )
                                     # C++: the WGMMA reads the stage through the async proxy, so

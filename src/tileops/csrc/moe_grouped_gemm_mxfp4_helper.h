@@ -548,14 +548,21 @@ __device__ __forceinline__ bool mxfp4_scan_task(void const* table,
 }
 
 // Decode thread ``thread``'s references: those of the weight rows its units
-// (sub-block ``unit % 4`` of row ``unit / 4``, units ``thread + Threads j``)
-// cover.
+// cover (a unit is sub-block ``unit % 4`` of row ``unit / 4``): whole units
+// ``thread + Threads j``, then the unit of its half, mxfp4_decode_shared's.
+// Threads at or past kHalves take no half; they store a clamped reference in
+// slot kWhole that they never read.
 template <int BlockN, int Threads>
 __device__ __forceinline__ void mxfp4_unit_refs(int const* refs, int* unit_refs,
                                                 int thread) {
+  constexpr int kWhole = 4 * BlockN / Threads;
 #pragma unroll
-  for (int j = 0; j < (4 * BlockN + Threads - 1) / Threads; ++j) {
-    unit_refs[j] = refs[min((thread + Threads * j) / 4, BlockN - 1)];
+  for (int j = 0; j < kWhole; ++j) {
+    unit_refs[j] = refs[(thread + Threads * j) / 4];
+  }
+  if (4 * BlockN % Threads != 0) {
+    unit_refs[kWhole] =
+        refs[min((kWhole * Threads + thread / 2) / 4, BlockN - 1)];
   }
 }
 
@@ -570,63 +577,110 @@ __device__ __forceinline__ void mxfp4_warp_arrive(void* barrier) {
   }
 }
 
-// K step ``kk`` of a task's weights, decoded by thread ``thread`` into the
-// stage's fp8 tile: rows of 128 bytes under the 128B swizzle an SS WGMMA
-// descriptor reads (16-byte chunk c of row r at chunk c ^ (r % 8)), from the
-// packed stage's rows of 64 bytes, which the calling warp releases on
-// ``packed_release`` once it has read them. Under ``fold`` each sub-block
-// carries 2 ** (code - ref) of its row's reference (``unit_refs``); otherwise
-// none. The codes come from mxfp4_table_word's table.
+// The magnitude byte rows (mxfp4_e2m1x4_e4m3's ``row``) of decode thread
+// ``thread``'s units for K step ``kk``, two words a unit in
+// mxfp4_decode_shared's order: under ``fold`` each sub-block's rows carry
+// 2 ** (code - ref) of its row's reference (``unit_refs``); otherwise none. The
+// codes come from mxfp4_table_word's table, resident for the whole task, so
+// the rows are built before the step's stages are waited for.
 template <int Steps, int BoxBytes, int BlockN, int Threads>
-__device__ __forceinline__ void mxfp4_decode_shared(
-    void const* packed_stage, void const* table, void* decoded_stage,
-    void* packed_release, int const* unit_refs, bool fold, int kk, int thread) {
+__device__ __forceinline__ void mxfp4_decode_luts(void const* table,
+                                                  int const* unit_refs,
+                                                  bool fold, int kk, int thread,
+                                                  uint32_t* luts) {
   constexpr int kUnits = 4 * BlockN;
-  constexpr int kSlots = (kUnits + Threads - 1) / Threads;
-  uint4 packed[kSlots];
+  constexpr int kWhole = kUnits / Threads;
+  constexpr int kHalves = 2 * (kUnits - kWhole * Threads);
 #pragma unroll
-  for (int j = 0; j < kSlots; ++j) {
-    int const unit = thread + Threads * j;
-    if (kUnits % Threads == 0 || unit < kUnits) {
-      packed[j] = *reinterpret_cast<uint4 const*>(
-          static_cast<uint8_t const*>(packed_stage) + unit * 16);
-    }
-  }
-  mxfp4_warp_arrive(packed_release);
-  // 0x80808080, held in a register: NVCC otherwise rebuilds the constant before
-  // every prmt that reads it.
-  uint32_t fill;
-  asm volatile("mov.b32 %0, 0x80808080;" : "=r"(fill));
-#pragma unroll
-  for (int j = 0; j < kSlots; ++j) {
-    int const unit = thread + Threads * j;
-    if (kUnits % Threads == 0 || unit < kUnits) {
-      int const row = unit >> 2;
-      int const sub_block = unit & 3;
-      uint32_t const code =
-          __byte_perm(mxfp4_table_word<Steps, BoxBytes, BlockN>(table, row, kk),
-                      0, 0x4440u + sub_block);
+  for (int j = 0; j <= kWhole; ++j) {
+    if (j < kWhole || (kHalves > 0 && thread < kHalves)) {
+      int const unit =
+          j < kWhole ? thread + Threads * j : kWhole * Threads + thread / 2;
+      uint32_t const code = __byte_perm(
+          mxfp4_table_word<Steps, BoxBytes, BlockN>(table, unit >> 2, kk), 0,
+          0x4440u + (unit & 3));
       uint32_t const shift =
           fold ? code - static_cast<uint32_t>(unit_refs[j]) : 0u;
-      uint2 const lut = make_uint2(kMxfp4MagnitudesLo + shift * kMxfp4BinadeLo,
-                                   kMxfp4MagnitudesHi + shift * kMxfp4BinadeHi);
-      // The sub-block's 32 e2m1 codes (byte i holding k = 2i in its low nibble
-      // and 2i + 1 in its high one) as 32 e4m3 bytes in k order.
-      uint32_t const words[4] = {packed[j].x, packed[j].y, packed[j].z,
-                                 packed[j].w};
-      uint32_t out[8];
-#pragma unroll
-      for (int i = 0; i < 4; ++i) {
-        out[2 * i] = mxfp4_e2m1x4_e4m3(words[i], lut, fill);
-        out[2 * i + 1] = mxfp4_e2m1x4_e4m3(words[i] >> 16, lut, fill);
-      }
-      uint8_t* dst = static_cast<uint8_t*>(decoded_stage) + row * 128;
-      int const swizzle = row & 7;
-      *reinterpret_cast<uint4*>(dst + (((2 * sub_block) ^ swizzle) << 4)) =
-          make_uint4(out[0], out[1], out[2], out[3]);
-      *reinterpret_cast<uint4*>(dst + (((2 * sub_block + 1) ^ swizzle) << 4)) =
-          make_uint4(out[4], out[5], out[6], out[7]);
+      luts[2 * j] = kMxfp4MagnitudesLo + shift * kMxfp4BinadeLo;
+      luts[2 * j + 1] = kMxfp4MagnitudesHi + shift * kMxfp4BinadeHi;
     }
+  }
+}
+
+// A K step's weights, decoded by thread ``thread`` into the stage's fp8 tile:
+// rows of 128 bytes under the 128B swizzle an SS WGMMA descriptor reads
+// (16-byte chunk c of row r at chunk c ^ (r % 8)), from the packed stage's rows
+// of 64 bytes, which the calling warp releases on ``packed_release`` once it
+// has read them; ``luts`` from mxfp4_decode_luts. Each thread takes the same
+// number of whole units and the units left over go out as 16-value halves to
+// threads [0, kHalves). With 512 units on 224 threads, warps 0-3 take 2.5
+// units a lane and warps 4-6 take 2.
+template <int BlockN, int Threads>
+__device__ __forceinline__ void mxfp4_decode_shared(void const* packed_stage,
+                                                    void* decoded_stage,
+                                                    void* packed_release,
+                                                    uint32_t const* luts,
+                                                    int thread) {
+  constexpr int kUnits = 4 * BlockN;
+  constexpr int kWhole = kUnits / Threads;
+  constexpr int kHalves = 2 * (kUnits - kWhole * Threads);
+  static_assert(kHalves <= Threads, "a thread takes at most one half unit");
+  uint4 packed[kWhole];
+  uint2 half_packed;
+#pragma unroll
+  for (int j = 0; j < kWhole; ++j) {
+    packed[j] = *reinterpret_cast<uint4 const*>(
+        static_cast<uint8_t const*>(packed_stage) +
+        (thread + Threads * j) * 16);
+  }
+  bool const takes_half = kHalves > 0 && thread < kHalves;
+  if (takes_half) {
+    half_packed = *reinterpret_cast<uint2 const*>(
+        static_cast<uint8_t const*>(packed_stage) + kWhole * Threads * 16 +
+        thread * 8);
+  }
+  mxfp4_warp_arrive(packed_release);
+  // 0x80808080 (``thread`` < 2 ** 31) held in a per-thread register: as a
+  // uniform constant, NVCC rebuilds it with a copy before each of the eight
+  // prmts that read it a unit. This depends on the compiler (seen in the SASS
+  // of this toolchain), not a guarantee.
+  uint32_t const fill = 0x80808080u | (static_cast<uint32_t>(thread) >> 31);
+#pragma unroll
+  for (int j = 0; j < kWhole; ++j) {
+    int const unit = thread + Threads * j;
+    int const row = unit >> 2;
+    int const sub_block = unit & 3;
+    uint2 const lut = make_uint2(luts[2 * j], luts[2 * j + 1]);
+    // The sub-block's 32 e2m1 codes (byte i holding k = 2i in its low nibble
+    // and 2i + 1 in its high one) as 32 e4m3 bytes in k order.
+    uint32_t const words[4] = {packed[j].x, packed[j].y, packed[j].z,
+                               packed[j].w};
+    uint32_t out[8];
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      out[2 * i] = mxfp4_e2m1x4_e4m3(words[i], lut, fill);
+      out[2 * i + 1] = mxfp4_e2m1x4_e4m3(words[i] >> 16, lut, fill);
+    }
+    uint8_t* dst = static_cast<uint8_t*>(decoded_stage) + row * 128;
+    int const swizzle = row & 7;
+    *reinterpret_cast<uint4*>(dst + (((2 * sub_block) ^ swizzle) << 4)) =
+        make_uint4(out[0], out[1], out[2], out[3]);
+    *reinterpret_cast<uint4*>(dst + (((2 * sub_block + 1) ^ swizzle) << 4)) =
+        make_uint4(out[4], out[5], out[6], out[7]);
+  }
+  if (takes_half) {
+    int const unit = kWhole * Threads + thread / 2;
+    int const half = thread & 1;
+    int const row = unit >> 2;
+    uint2 const lut = make_uint2(luts[2 * kWhole], luts[2 * kWhole + 1]);
+    uint32_t const out[4] = {mxfp4_e2m1x4_e4m3(half_packed.x, lut, fill),
+                             mxfp4_e2m1x4_e4m3(half_packed.x >> 16, lut, fill),
+                             mxfp4_e2m1x4_e4m3(half_packed.y, lut, fill),
+                             mxfp4_e2m1x4_e4m3(half_packed.y >> 16, lut, fill)};
+    uint8_t* dst = static_cast<uint8_t*>(decoded_stage) + row * 128;
+    *reinterpret_cast<uint4*>(dst +
+                              (((2 * (unit & 3) + half) ^ (row & 7)) << 4)) =
+        make_uint4(out[0], out[1], out[2], out[3]);
   }
 }
 
@@ -696,6 +750,25 @@ __device__ __forceinline__ void mxfp4_scale_columns(
 __device__ __forceinline__ void mxfp4_publish_stage(void* barrier) {
   asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
   mxfp4_warp_arrive(barrier);
+}
+
+// The two token scales of a math thread's accumulator rows for K step ``kk``.
+// Under a folded task, whose codes are 0 or in [64, 190], ``code << 23`` as a
+// float: 2 ** (code - 127), and 0.0 at code 0, which the promotion treats like
+// mxfp4_e8m0_value's 2 ** -127 because --use_fast_math flushes that subnormal
+// to zero. mxfp4_e8m0_value otherwise.
+__device__ __forceinline__ void mxfp4_token_scales(uint8_t const* tokens,
+                                                   int row0, int steps, int kk,
+                                                   bool fold, float* out) {
+  uint32_t const c0 = tokens[row0 * steps + kk];
+  uint32_t const c1 = tokens[(row0 + 8) * steps + kk];
+  if (fold) {
+    out[0] = __uint_as_float(c0 << 23);
+    out[1] = __uint_as_float(c1 << 23);
+  } else {
+    out[0] = mxfp4_e8m0_value(c0);
+    out[1] = mxfp4_e8m0_value(c1);
+  }
 }
 
 // A task's fold flag, which the math warp-groups read once the task's first
