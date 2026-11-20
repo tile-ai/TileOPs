@@ -743,24 +743,28 @@ def _strong_decays(dtype):
 def test_kda_prefill_given_gate_mixes_ordinary_and_strong_chunks(
     dtype, batch, heads, value_heads, dim, l2norm, boundary_decay
 ):
-    """Ordinary, strong and boundary-concentrated decays in one call all stay accurate.
+    """Ordinary, strong, boundary-concentrated and steady decays in one call all stay accurate.
 
     The 64-token chunks rotate between the workload's decays, strong decays (also in the
-    one-row tail), and *boundary_decay* (log2) per token on every row of each 16-row block
-    but its first and ninth, which puts the blocks' reference rows far apart. One sequence
-    reaches the chunk program, 256 (sequence, head) pairs the fused program.
+    one-row tail), *boundary_decay* (log2) per token on every row of each 16-row block but its
+    first and ninth, which puts the blocks' reference rows far apart, and a steady 6 (log2) per
+    token, which bf16 rows centre within a 16-row block and which overflows them centred on a
+    whole chunk. One sequence reaches the chunk program; 256 (sequence, head) pairs reach the
+    fused program wherever it serves the call's dtype and architecture, the chunk program
+    elsewhere.
     """
     torch.manual_seed(42)
     workload = KDAFwdTest(
-        batch, 4 * 64 + 1, heads, dim, dtype, l2norm=l2norm, value_heads=value_heads
+        batch, 5 * 64 + 1, heads, dim, dtype, l2norm=l2norm, value_heads=value_heads
     )
     q, k, v, g, beta, state = workload.gen_inputs()
-    chunk = torch.arange(g.shape[1], device=g.device) // 64 % 3
+    chunk = torch.arange(g.shape[1], device=g.device) // 64 % 4
     row = torch.arange(g.shape[1], device=g.device) % 16
     concentrated = torch.where((row == 0) | (row == 8), 0.0, -boundary_decay * math.log(2))
     g = g.float()
     g[:, chunk == 1] = torch.empty_like(g[:, chunk == 1]).uniform_(*_strong_decays(dtype))
     g[:, chunk == 2] = concentrated[chunk == 2][None, :, None, None].expand_as(g[:, chunk == 2])
+    g[:, chunk == 3] = -6.0 * math.log(2)
     g = g.to(dtype)
     if not l2norm:
         # Unit keys keep the delta rule contractive without the in-kernel normalization.
@@ -768,28 +772,52 @@ def test_kda_prefill_given_gate_mixes_ordinary_and_strong_chunks(
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=l2norm), q, k, v, g, beta, state)
 
 
+@pytest.mark.smoke
+@pytest.mark.sm90
+def test_kda_prefill_given_gate_centres_a_steady_decay_by_block() -> None:
+    """A bf16 decay of 2.5 (log2) per token on half the key channels centres within each 16-row
+    block and not within a whole chunk, while the other channels carry a large initial state
+    through every row: the outputs and final states of its whole chunks, its 50-row sequence
+    and its 56-row tail depend on ``w`` and on the step sizes it carries."""
+    torch.manual_seed(42)
+    workload = KDAFwdTest(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(50, 120, 130))
+    q, k, v, g, beta, state, offsets, host_offsets = workload.gen_inputs()
+    channel = torch.arange(g.shape[-1], device=g.device)
+    g = torch.where(channel % 2 == 0, -2.5 * math.log(2), 0.0).expand_as(g).to(g.dtype)
+    state = state * 50.0
+    workload.check(
+        KDAFwdOp(use_qk_l2norm_in_kernel=True), q, k, v, g, beta, state, offsets, host_offsets
+    )
+
+
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("dim", "l2norm", "heads"),
+    ("dim", "l2norm", "heads", "period", "drop"),
     [
-        pytest.param(128, True, 4, marks=pytest.mark.smoke, id="normalized-128"),
-        pytest.param(64, True, 4, marks=pytest.mark.full, id="normalized-64"),
-        pytest.param(128, False, 2, marks=pytest.mark.full, id="unnormalized-grouped-128"),
+        pytest.param(128, True, 4, 16, 100.0, marks=pytest.mark.smoke, id="normalized-128"),
+        pytest.param(
+            128, True, 4, 64, 70.0 * math.log(2), marks=pytest.mark.smoke, id="once-a-chunk-128"
+        ),
+        pytest.param(64, True, 4, 16, 100.0, marks=pytest.mark.full, id="normalized-64"),
+        pytest.param(
+            128, False, 2, 16, 100.0, marks=pytest.mark.full, id="unnormalized-grouped-128"
+        ),
     ],
 )
-def test_kda_prefill_given_gate_drops_inside_its_blocks(dim, l2norm, heads):
-    """A bf16 chunk whose decay drops 100 nats on the fifth row of every 16-row block, and
-    nowhere else, lies past the bounds while the entries inside each block stay of order one,
-    so its per-pair diagonal blocks decide the output: at both supported widths, and with
-    unnormalized rows of key heads shared by two value heads."""
+def test_kda_prefill_given_gate_drops_inside_its_blocks(dim, l2norm, heads, period, drop):
+    """A bf16 chunk whose decay drops *drop* nats on the fifth row of every *period* rows, and
+    nowhere else, lies past the block bound while the entries inside each block stay of order
+    one, so its per-pair diagonal blocks decide the output: at both supported widths, with
+    unnormalized rows of key heads shared by two value heads, and with one drop a chunk, which
+    passes the chunk-wide bound and still takes the per-pair diagonal blocks of normalized rows."""
     torch.manual_seed(42)
     workload = KDAFwdTest(1, 128, heads, dim, torch.bfloat16, l2norm=l2norm, value_heads=4)
     q, k, v, g, beta, state = workload.gen_inputs()
     if not l2norm:
         # Unit keys keep the delta rule contractive without the in-kernel normalization.
         q, k = (x / x.norm(dim=-1, keepdim=True) for x in (q, k))
-    row = torch.arange(g.shape[1], device=g.device) % 16
-    g = torch.where(row == 4, -100.0, 0.0)[None, :, None, None].expand_as(g).to(g.dtype)
+    row = torch.arange(g.shape[1], device=g.device) % period
+    g = torch.where(row == 4, -drop, 0.0)[None, :, None, None].expand_as(g).to(g.dtype)
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=l2norm), q, k, v, g, beta, state)
 
 

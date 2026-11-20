@@ -70,17 +70,12 @@ def inverse_program(*, chunk_size, block_size, threads, dtype, output_offset=0, 
             coeff[i, j] = T.cast(scratch[i, j], dtype)
         T.sync_threads()
         for level in T.serial(levels):
-            for i, j in T.Parallel(chunk_size, chunk_size):
-                coeff[i, j] = coeff[i, j] + T.cast(T.if_then_else(i == j, 1.0, 0.0), dtype)
-            T.sync_threads()
-            T.clear(scratch)
+            # inverse (I + coeff) = inverse + inverse coeff; coeff stays strictly block-lower.
+            T.copy(matrix(inverse, output_offset), scratch)
             T.gemm(matrix(inverse, output_offset), matrix(coeff, 0), scratch)
             T.sync_threads()
             for i, j in T.Parallel(chunk_size, chunk_size):
                 inverse[i, j + output_offset] = T.cast(scratch[i, j], dtype)
-                coeff[i, j] = T.if_then_else(
-                    i // block_size > j // block_size, coeff[i, j], T.cast(0, dtype)
-                )
             T.sync_threads()
             if level < levels - 1:
                 T.clear(scratch)

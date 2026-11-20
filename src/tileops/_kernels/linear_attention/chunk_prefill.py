@@ -34,9 +34,14 @@ def referenced_form(call):
     return call.arch == 90 and not split_prepare_enabled(call)
 
 
-def staged_norms(call):
-    """Whether the referenced form stages the call's inverse norms in shared memory."""
-    return referenced_form(call) and call.l2norm
+def staged_bytes(call):
+    """The shared memory the referenced form stages beside its tiles: each channel's FP32
+    centre, its exponential and the last row's, one 16-byte aligned slot for the chunk's spread
+    word and load barrier, and the FP32 inverse norms of the query and key rows when the call
+    normalizes them."""
+    if not referenced_form(call):
+        return 0
+    return 3 * call.dim_k * 4 + 16 + (2 * CHUNK_SIZE * 4 if call.l2norm else 0)
 
 
 def chunk_plan(call):
@@ -142,7 +147,7 @@ def build_programs(
         num_sequences,
         call.smem_budget,
         call.arch,
-        staged_norms=gate_mode == "channel" and staged_norms(call),
+        staged_bytes=staged_bytes(call) if gate_mode == "channel" else 0,
     )
     if plan is None:
         raise ValueError(f"{num_sequences} sequences need more shared memory than the device has")

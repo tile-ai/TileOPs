@@ -146,10 +146,12 @@ def chunk_prepare_program(
 
     Precomputed channel gates form a chunk's Gram matrices on tensor cores from rows
     rescaled against their block's reference row while the chunk stays within
-    `centred_bounds`. With *referenced*, in a dtype of FP32's exponent range, another chunk
-    forms its diagonal blocks from each pair's decay and the blocks below them on tensor cores
-    from rows referenced to their block's first row; otherwise each entry from its pair's
-    decay, as raw gates do.
+    `centred_bounds`. With *referenced*, in a dtype of FP32's exponent range, a chunk whose
+    half range from its first to its last prefix row also stays within them centres every row
+    on that midpoint instead, in one product per Gram matrix; a chunk past the bounds forms its
+    diagonal blocks from each pair's decay and the blocks below them on tensor cores from rows
+    referenced to their block's first row. Otherwise such a chunk forms each entry from its
+    pair's decay, as raw gates do.
     """
     BT = chunk_size
     tiling = GroupTiling(num_seqs, chunk_size)
@@ -275,10 +277,7 @@ def chunk_prepare_program(
                 mask[i, j] = T.cast(T.if_then_else(i >= j, 1.0, 0.0), dtype)
 
         @T.macro
-        def store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv):
-            for i, j in T.Parallel(BT, BT):
-                if i < rows:
-                    aqk[0, bos + i, ihv, j] = T.cast(T.if_then_else(i >= j, aq[i, j], 0.0), dtype)
+        def store_decay(dec, gc_s, rows, ic, ihv):
             last = T.max(rows - 1, 0)
             for j in T.Parallel(K):
                 dec[ic, ihv, j] = T.exp2(gc_s[last, j])
@@ -288,17 +287,72 @@ def chunk_prepare_program(
                     dec[num_chunks - 1, ihv, j] = 1.0
 
         @T.macro
+        def store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv):
+            for i, j in T.Parallel(BT, BT):
+                if i < rows:
+                    aqk[0, bos + i, ihv, j] = T.cast(T.if_then_else(i >= j, aq[i, j], 0.0), dtype)
+            store_decay(dec, gc_s, rows, ic, ihv)
+
+        @T.macro
         def finish(
-            kind, qg, kg, qa_s, ka_s, b_s, gc_s, bt_s, akk, aq, tkk, rows, bos, ihv, kb_s, tqk
+            kind,
+            qg,
+            kg,
+            qa_s,
+            ka_s,
+            b_s,
+            gc_s,
+            bt_s,
+            akk,
+            aq,
+            tkk,
+            rows,
+            bos,
+            ihv,
+            kb_s,
+            tqk,
+            centre_s=None,
+            inverse_norms=None,
         ):
             """Form the Gram matrices of a *kind* of chunk, and what depends on its form.
 
-            ``"centred"`` forms them from centred tiles, ``"referenced"`` below the diagonal
-            blocks from first-row-referenced tiles, ``"pairwise"`` each entry from its pair's
-            decay. A centred program also stores the gated rows and scales the keys here, so
-            the code after the branch is the same for every kind of chunk.
+            ``"chunk"`` forms them from tiles centred on the chunk's midpoint, ``"centred"``
+            from tiles centred on each block's reference row, ``"referenced"`` below the
+            diagonal blocks from first-row-referenced tiles, ``"pairwise"`` each entry from its
+            pair's decay. A centred program also stores the gated rows and scales the keys here,
+            so the code after the branch is the same for every kind of chunk but the step size
+            and the ``2^centre`` a ``"chunk"`` leaves to the tail.
             """
-            if kind == "centred":
+            if kind == "chunk":
+                # One reference for the whole chunk: each channel's midpoint between its first
+                # and last prefix rows, so both factors stay within half the chunk's decay. The
+                # rows arrive unnormalized and each pass writes tiles it does not read, so no
+                # barrier separates its iterations. The keys scaled up carry the step size,
+                # which makes ``akk`` the inverse's operand and ``b_s`` the key operand of
+                # ``w`` up to each channel's ``2^centre``.
+                for i, j in T.Parallel(BT, K):
+                    key = T.cast(ka_s[i, j], accum) * (inverse_norms[BT + i] if l2norm else 1.0)
+                    up = T.exp2(gc_s[i, j] - centre_s[0, j])
+                    down = T.exp2(centre_s[0, j] - gc_s[i, j])
+                    kb_s[i, j] = T.cast(key * down, dtype)
+                    b_s[i, j] = T.cast(key * up * bt_s[i], dtype)
+                    if i < rows:
+                        kg[0, bos + i, ihv, j] = T.cast(key * down * centre_s[2, j], dtype)
+                T.sync_threads()
+                for i, j in T.Parallel(BT, K):
+                    query = T.cast(qa_s[i, j], accum) * (
+                        inverse_norms[i] * scale if l2norm else 1.0
+                    )
+                    up = T.exp2(gc_s[i, j] - centre_s[0, j])
+                    ka_s[i, j] = T.cast(query * up, dtype)
+                    if i < rows:
+                        qg[0, bos + i, ihv, j] = T.cast(query * up * centre_s[1, j], dtype)
+                T.sync_threads()
+                T.clear(akk)
+                T.clear(aq)
+                T.gemm(b_s, kb_s, akk, transpose_B=True)
+                T.gemm(ka_s, kb_s, aq, transpose_B=True)
+            elif kind == "centred":
                 # Three exponentials serve both Gram matrices and all four
                 # reference blocks: every later factor is a rescale of these.
                 # Entries above the diagonal grow with the decay and may overflow;
@@ -474,6 +528,14 @@ def chunk_prepare_program(
                 rowsum = T.alloc_fragment([BT], accum)
                 if referenced and l2norm:
                     inverse_norms = T.alloc_shared([2 * BT], accum)
+                if referenced:
+                    # Per channel: the chunk's centre, its exponential, and the last row's
+                    # exponential relative to it.
+                    centre_s = T.alloc_shared([3, K], accum)
+                    spread = T.alloc_shared([1], "int32")
+                    wide = T.alloc_local([1], "int32")
+                    if not fixed_bound:
+                        loaded = T.alloc_barrier(threads)
 
                 if single:
                     bos = ic * BT
@@ -494,6 +556,8 @@ def chunk_prepare_program(
 
                 if centred:
                     flag[0] = 0
+                if referenced:
+                    spread[0] = 0
                 if fixed_bound:
                     for i, j in T.Parallel(BT, K):
                         raw_q = T.cast(
@@ -502,9 +566,11 @@ def chunk_prepare_program(
                         acc[i, j] = raw_q * raw_q
                         qa_s[i, j] = T.cast(raw_q * scale, dtype)
                 if referenced and not fixed_bound and rows == BT:
-                    T.copy(q[0, bos : bos + BT, ih, :], qa_s)
-                    T.copy(k[0, bos : bos + BT, ih, :], ka_s)
-                    T.copy(g[0, bos : bos + BT, ihv, :], b_s)
+                    # In flight together while the mask and the step sizes are formed.
+                    T.tma_copy(q[0, bos : bos + BT, ih, :], qa_s, barrier=loaded)
+                    T.tma_copy(k[0, bos : bos + BT, ih, :], ka_s, barrier=loaded)
+                    T.tma_copy(g[0, bos : bos + BT, ihv, :], b_s, barrier=loaded)
+                    T.mbarrier_arrive(loaded)
                 else:
                     for i, j in T.Parallel(BT, K):
                         if not fixed_bound:
@@ -529,6 +595,8 @@ def chunk_prepare_program(
                         ),
                         T.cast(0, accum),
                     )
+                if referenced and not fixed_bound and rows == BT:
+                    T.mbarrier_wait_parity(loaded, 0)
                 T.sync_threads()
                 if fixed_bound:
                     flag_magnitude(rowsum, flag, bounds.query_scale_log2)
@@ -583,18 +651,12 @@ def chunk_prepare_program(
                     for i in T.Parallel(BT):
                         limit[i] = centred_row_bound(bounds, query_limit[i], rowsum[i], 0.0)
                 if referenced and l2norm:
-                    # Through shared memory, every thread scales the rows: a loop reading the
-                    # reduced fragment takes its replicated layout, and one thread in eight.
+                    # The inverse norms stay in shared memory for the later scalings of each
+                    # kind of chunk: a loop reading the reduced fragment takes its replicated
+                    # layout, and one thread in eight. The barrier after the bound tests
+                    # publishes them.
                     for i in T.Parallel(BT):
                         inverse_norms[BT + i] = T.rsqrt(rowsum[i] + L2_EPS)
-                    T.sync_threads()
-                    for i, j in T.Parallel(BT, K):
-                        qa_s[i, j] = T.cast(
-                            T.cast(qa_s[i, j], accum) * inverse_norms[i] * scale, dtype
-                        )
-                        ka_s[i, j] = T.cast(
-                            T.cast(ka_s[i, j], accum) * inverse_norms[BT + i], dtype
-                        )
                 elif l2norm or not centred:
                     for i, j in T.Parallel(BT, K):
                         ka_s[i, j] = T.cast(
@@ -617,14 +679,39 @@ def chunk_prepare_program(
                             T.abs(gc_s[b * BC + REF, j] - gc_s[b * BC + BC - 1, j]) > block_bound
                         ):
                             flag[0] = 1
+                if referenced:
+                    # The same bound for the chunk's midpoint: half its first-to-last range.
+                    for j in T.Parallel(K):
+                        first = gc_s[0, j]
+                        last = gc_s[BT - 1, j]
+                        centre = (first + last) * 0.5
+                        centre_s[0, j] = centre
+                        centre_s[1, j] = T.exp2(centre)
+                        centre_s[2, j] = T.exp2(last - centre)
+                        if T.abs(first - last) * 0.5 > (
+                            bounds.normalized_limit if l2norm else bounds.flush_limit
+                        ):
+                            spread[0] = 1
                 T.sync_threads()
 
                 operands = (qg, kg, qa_s, ka_s, b_s, gc_s, bt_s, akk, aq, tkk, rows, bos, ihv)
                 if centred:
                     # One flag per chunk keeps the branch uniform across the CTA. Each kind
                     # of chunk runs its own straight-line copy up to the inverse; the tiles
-                    # the inverse reuses must not stay live across both copies.
+                    # the inverse reuses must not stay live across the copies.
                     per_pair[0] = flag[0]
+                    if referenced:
+                        wide[0] = spread[0]
+                    if referenced and l2norm and per_pair[0] + wide[0] != 0:
+                        # Every kind but the chunk-centred one reads normalized rows.
+                        for i, j in T.Parallel(BT, K):
+                            qa_s[i, j] = T.cast(
+                                T.cast(qa_s[i, j], accum) * inverse_norms[i] * scale, dtype
+                            )
+                            ka_s[i, j] = T.cast(
+                                T.cast(ka_s[i, j], accum) * inverse_norms[BT + i], dtype
+                            )
+                        T.sync_threads()
                     if referenced and per_pair[0] != 0:
                         # A chunk past the bound takes per-pair FP32 entries in its diagonal
                         # blocks, staged in a tile whose memory the key tiles reuse after it.
@@ -648,7 +735,16 @@ def chunk_prepare_program(
                             akk[i, j] = T.if_then_else(same, dg[i, j % BC], 0.0)
                             aq[i, j] = T.if_then_else(same, dg[i, BC + j % BC], 0.0)
                     if per_pair[0] == 0:
-                        finish("centred", *operands, kb_s, tqk)
+                        if referenced:
+                            if wide[0] == 0:
+                                if l2norm:
+                                    finish("chunk", *operands, kb_s, tqk, centre_s, inverse_norms)
+                                else:
+                                    finish("chunk", *operands, kb_s, tqk, centre_s)
+                            else:
+                                finish("centred", *operands, kb_s, tqk)
+                        else:
+                            finish("centred", *operands, kb_s, tqk)
                     else:
                         finish("referenced" if referenced else "pairwise", *operands, kb_s, tqk)
                 else:
@@ -656,7 +752,20 @@ def chunk_prepare_program(
                 if lean:
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
 
-                if gate_mode == "channel":
+                if referenced:
+                    # A chunk-centred ``akk`` carries the step size already, and its key
+                    # operand of ``w`` lacks each channel's ``2^centre``.
+                    chunked = per_pair[0] + wide[0] == 0
+                    for i, j in T.Parallel(BT, BT):
+                        m_s[i, j] = T.cast(
+                            T.if_then_else(
+                                i > j, -akk[i, j] * T.if_then_else(chunked, 1.0, bt_s[i]), 0.0
+                            ),
+                            dtype,
+                        )
+                    T.sync_threads()
+                    invert(m_s, p_s, tkk)
+                elif gate_mode == "channel":
                     for i, j in T.Parallel(BT, BT):
                         m_s[i, j] = T.cast(T.if_then_else(i > j, -akk[i, j] * bt_s[i], 0.0), dtype)
                     T.sync_threads()
@@ -668,27 +777,76 @@ def chunk_prepare_program(
                         )
                     T.sync_threads()
 
-                if not centred:
-                    scale_keys(b_s, ka_s, gc_s, bt_s, True)
-                T.sync_threads()
-                T.clear(acc)
-                T.gemm(p_s, b_s, acc)
-                store_outputs(w, qg, kg, acc, qa_s, ka_s, gc_s, rows, bos, ihv)
-                if not lean:
-                    store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
-                T.sync_threads()
-                for i, j in T.Parallel(BT, V):
-                    b_s[i, j] = T.cast(
-                        T.if_then_else(i < rows, T.cast(v[0, bos + i, ihv, j], accum), 0.0)
-                        * bt_s[i],
-                        dtype,
-                    )
-                T.sync_threads()
-                T.clear(acc)
-                T.gemm(p_s, b_s, acc)
-                for i, j in T.Parallel(BT, V):
-                    if i < rows:
-                        u[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
+                if referenced:
+                    T.sync_threads()
+                    T.clear(acc)
+                    T.gemm(p_s, b_s, acc)
+                    if not lean and rows == BT:
+                        # A whole chunk leaves through tiles the Gram matrices no longer read,
+                        # in whole-tile stores.
+                        for i, j in T.Parallel(BT, K):
+                            ka_s[i, j] = T.cast(
+                                acc[i, j] * T.if_then_else(chunked, centre_s[1, j], 1.0), dtype
+                            )
+                        for i, j in T.Parallel(BT, BT):
+                            m_s[i, j] = T.cast(T.if_then_else(i >= j, aq[i, j], 0.0), dtype)
+                        for i, j in T.Parallel(BT, V):
+                            qa_s[i, j] = T.cast(
+                                T.cast(v[0, bos + i, ihv, j], accum) * bt_s[i], dtype
+                            )
+                        T.sync_threads()
+                        T.copy(ka_s, w[0, bos : bos + BT, ihv, :])
+                        T.copy(m_s, aqk[0, bos : bos + BT, ihv, :])
+                        store_decay(dec, gc_s, rows, ic, ihv)
+                        T.clear(acc)
+                        T.gemm(p_s, qa_s, acc)
+                        for i, j in T.Parallel(BT, V):
+                            b_s[i, j] = T.cast(acc[i, j], dtype)
+                        T.sync_threads()
+                        T.copy(b_s, u[0, bos : bos + BT, ihv, :])
+                    else:
+                        for i, j in T.Parallel(BT, K):
+                            if i < rows:
+                                w[0, bos + i, ihv, j] = T.cast(
+                                    acc[i, j] * T.if_then_else(chunked, centre_s[1, j], 1.0), dtype
+                                )
+                        if not lean:
+                            store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
+                        T.sync_threads()
+                        for i, j in T.Parallel(BT, V):
+                            b_s[i, j] = T.cast(
+                                T.if_then_else(i < rows, T.cast(v[0, bos + i, ihv, j], accum), 0.0)
+                                * bt_s[i],
+                                dtype,
+                            )
+                        T.sync_threads()
+                        T.clear(acc)
+                        T.gemm(p_s, b_s, acc)
+                        for i, j in T.Parallel(BT, V):
+                            if i < rows:
+                                u[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
+                else:
+                    if not centred:
+                        scale_keys(b_s, ka_s, gc_s, bt_s, True)
+                    T.sync_threads()
+                    T.clear(acc)
+                    T.gemm(p_s, b_s, acc)
+                    store_outputs(w, qg, kg, acc, qa_s, ka_s, gc_s, rows, bos, ihv)
+                    if not lean:
+                        store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
+                    T.sync_threads()
+                    for i, j in T.Parallel(BT, V):
+                        b_s[i, j] = T.cast(
+                            T.if_then_else(i < rows, T.cast(v[0, bos + i, ihv, j], accum), 0.0)
+                            * bt_s[i],
+                            dtype,
+                        )
+                    T.sync_threads()
+                    T.clear(acc)
+                    T.gemm(p_s, b_s, acc)
+                    for i, j in T.Parallel(BT, V):
+                        if i < rows:
+                            u[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
 
         if gate_mode == "channel" and gate_in_kernel:
 

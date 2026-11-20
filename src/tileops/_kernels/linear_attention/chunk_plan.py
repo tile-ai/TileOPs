@@ -49,11 +49,8 @@ def scan_value_tile(value_tile, arch, *, total, num_seqs, value_heads, dim):
     return value_tile
 
 
-def _prepare_bytes(dim, element, sequences, lean, staged_norms):
-    tiles = 4 * CHUNK_SIZE * dim * element + 4 * CHUNK_SIZE * dim + 4 * CHUNK_SIZE
-    if staged_norms:
-        # The FP32 inverse norms of the chunk's query and key rows.
-        tiles += 2 * CHUNK_SIZE * 4
+def _prepare_bytes(dim, element, sequences, lean, staged_bytes):
+    tiles = 4 * CHUNK_SIZE * dim * element + 4 * CHUNK_SIZE * dim + 4 * CHUNK_SIZE + staged_bytes
     inverse = 2 * CHUNK_SIZE * CHUNK_SIZE * element
     if lean:
         inverse = max(0, inverse - CHUNK_SIZE * dim * element)
@@ -65,15 +62,15 @@ def _scan_bytes(dim, value_tile, element, sequences):
     return tiles * element + align_up(4 * (sequences + 1), 16)
 
 
-def launch_plan(dim, element, sequences, budget, arch, *, staged_norms=False):
-    """The chunk programs' (lean, value tile), or ``None`` past *budget*; *staged_norms* counts
-    the inverse norms the referenced SM90 preparation stages in shared memory."""
+def launch_plan(dim, element, sequences, budget, arch, *, staged_bytes=0):
+    """The chunk programs' (lean, value tile), or ``None`` past *budget*; *staged_bytes* counts
+    what the referenced SM90 preparation stages in shared memory beside its tiles."""
 
     def fits(size):
         return (align_up(size, 1024) if arch == 90 else size) <= budget
 
-    lean = not fits(_prepare_bytes(dim, element, sequences, False, staged_norms))
-    if lean and not fits(_prepare_bytes(dim, element, sequences, True, staged_norms)):
+    lean = not fits(_prepare_bytes(dim, element, sequences, False, staged_bytes))
+    if lean and not fits(_prepare_bytes(dim, element, sequences, True, staged_bytes)):
         return None
     for value_tile in (dim, dim // 2):
         if fits(_scan_bytes(dim, value_tile, element, sequences)):
