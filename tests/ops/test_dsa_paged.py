@@ -102,6 +102,20 @@ def test_dsa_paged(row, arch) -> None:
 # GLM-5.3-Flash's latent rows: a topk off the 64-slot block, its last block's slots past topk
 # dead; key splits.
 _LATENT = dict(S_q=1, H=64, DK=512, K=2051, NP=80, PS=64, W=40, cache_lens=[2100, 300])
+# DeepSeek-V4-Flash sink rows whose two key splits a CTA pair merges: request 0's five live
+# blocks split 3 and 2, request 1's four 2 and 2, and request 2's one leaves the peer's half
+# empty.
+_PAIR = dict(
+    S_q=1,
+    H=64,
+    DK=512,
+    K=320,
+    NP=45,
+    PS=64,
+    W=15,
+    cache_lens=[900, 200, 40],
+    some=["attn_sink"],
+)
 # A DeepSeek-V4-Flash sink row with a single split over two 64-head blocks.
 _SINK_UNSPLIT = dict(
     S_q=1,
@@ -121,7 +135,13 @@ _SINK_UNSPLIT = dict(
     "row",
     [
         pytest.param(_LATENT, id="latent-topk-off-the-block", marks=pytest.mark.smoke),
-        # 64 key columns past the value; 32-row pages.
+        # A pair per 64-head block of two, its last key block past topk.
+        pytest.param(
+            dict(_PAIR, H=128, K=300, NP=33, W=11, cache_lens=[700, 200, 40]),
+            id="pair-two-head-blocks-topk-off-the-block",
+            marks=pytest.mark.full,
+        ),
+        # 64 key columns past the value, merged by a CTA pair; 32-row pages.
         pytest.param(
             dict(S_q=1, H=64, DK=576, K=256, NP=24, PS=32, W=8, cache_lens=[256, 100, 31]),
             id="key-tail",
@@ -146,6 +166,7 @@ def test_dsa_paged_bfloat16_rows(row) -> None:
     [
         pytest.param(dict(_LATENT, some=["attn_sink"]), id="split", marks=pytest.mark.smoke),
         pytest.param(_SINK_UNSPLIT, id="unsplit", marks=pytest.mark.full),
+        pytest.param(_PAIR, id="pair", marks=pytest.mark.full),
     ],
 )
 def test_dsa_paged_sink_on_a_request_without_live_slots(row) -> None:
