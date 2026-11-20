@@ -36,8 +36,10 @@ __all__ = [
     "RoPECosSinKernel",
     "RoPENeoxPositionIdsFwdInterface",
     "RoPENeoxPositionIdsKernel",
+    "RoPENeoxStagedRowsKernel",
     "RoPENonNeoxFwdInterface",
     "RoPENonNeoxKernel",
+    "RoPENonNeoxStagedRowsKernel",
 ]
 
 
@@ -155,6 +157,7 @@ def _rope_positions_kernel(
     neox: bool,
     rot_vec: int,
     tail_vec: int,
+    row_vec: int,
 ) -> object:
     """The rotation of a query and a key of ``tokens`` rows, ``tokens`` dynamic.
 
@@ -169,6 +172,12 @@ def _rope_positions_kernel(
     ``tail_vec`` divide every column offset they start at, so each unit moves as vectors.
     Each block clamps the token's position into the table once, before its table loads, so a
     position outside the table reads the nearest row. The arithmetic is f32 and rounds once.
+
+    The staged program instead gives a block one token's query row or key row, the two
+    alternating: its threads load the row into shared memory in ``row_vec``-column vectors,
+    rotate its rotating units there, and a block copy writes the row back (one bulk store on
+    sm90 where the row is whole 16-byte vectors), so no copied column's load waits on the
+    position or the table.
     """
     half = rotary_dim // 2
     width, rot_units, tail_units = _head_units(neox, head_size, rotary_dim, rot_vec, tail_vec)
@@ -180,13 +189,38 @@ def _rope_positions_kernel(
     query_units = query_heads * head_units
     token_units = (query_heads + key_heads) * head_units
 
+    # The staged program's blocks alternate a token's query row and key row.
+    sides = 2 if key_heads else 1
+
     @tilelang.jit(out_idx=[6, 7] if offset_dtype else [5, 6] if key_heads else [4])
-    def kernel(threads, units):
+    def kernel(threads, units, staged):
         num_tokens = T.dynamic("num_tokens")
         query_shape = (num_tokens, query_heads * head_size)
         key_shape = (num_tokens, key_heads * head_size)
         table_shape = (max_position, half)
-        parts = -(-token_units // (threads * units))
+        parts = sides if staged else -(-token_units // (threads * units))
+
+        @T.macro
+        def table_slots(cos_table, sin_table, row, first, cs, sn, at):
+            # The cos and sin of a unit's pairs from table row row into cs and sn at index at.
+            for j in T.vectorized(table_width):
+                cs[at + j] = cos_table[row, first + j]
+            for j in T.vectorized(table_width):
+                sn[at + j] = sin_table[row, first + j]
+
+        @T.macro
+        def rotate_unit(lo, lo_at, hi, hi_at, cs, sn, at):
+            # Rotate a unit held at lo[lo_at:] (and hi[hi_at:] for NeoX) by cs and sn at index at.
+            if neox:
+                for j in T.unroll(width):
+                    c = T.Cast("float32", cs[at + j])
+                    s = T.Cast("float32", sn[at + j])
+                    _rotate_pair(lo, lo_at + j, hi, hi_at + j, c, s)
+            else:
+                for p in T.unroll(table_width):
+                    c = T.Cast("float32", cs[at + p])
+                    s = T.Cast("float32", sn[at + p])
+                    _rotate_pair(lo, lo_at + 2 * p, lo, lo_at + 2 * p + 1, c, s)
 
         @T.macro
         def move_unit(r, row, x, y, token, head, slot, cos_table, sin_table, regs, load, store):
@@ -221,23 +255,12 @@ def _rope_positions_kernel(
                         for j in T.vectorized(width):
                             hi[r * width + j] = x[token, low + half + j]
                 if row is not None:
-                    for j in T.vectorized(table_width):
-                        cs[r * table_width + j] = cos_table[row, first + j]
-                    for j in T.vectorized(table_width):
-                        sn[r * table_width + j] = sin_table[row, first + j]
+                    table_slots(cos_table, sin_table, row, first, cs, sn, r * table_width)
                 if store:
+                    rotate_unit(lo, r * run, hi, r * width, cs, sn, r * table_width)
                     if neox:
-                        for j in T.unroll(width):
-                            c = T.Cast("float32", cs[r * table_width + j])
-                            s = T.Cast("float32", sn[r * table_width + j])
-                            _rotate_pair(lo, r * run + j, hi, r * width + j, c, s)
                         for j in T.vectorized(width):
                             y[token, low + half + j] = hi[r * width + j]
-                    else:
-                        for p in T.unroll(table_width):
-                            c = T.Cast("float32", cs[r * table_width + p])
-                            s = T.Cast("float32", sn[r * table_width + p])
-                            _rotate_pair(lo, r * run + 2 * p, lo, r * run + 2 * p + 1, c, s)
                     if vector_pairs:
                         for j in T.vectorized(width):
                             y[token, low + j] = lo[r * run + j]
@@ -305,12 +328,68 @@ def _rope_positions_kernel(
                 row[0] = T.max(0, T.min(positions[token], max_position - 1))
 
         @T.macro
+        def stage_row(x, y, heads, positions, offsets, token, row, cos_table, sin_table, buf):
+            # Row token of x, heads heads, into buf; its rotating units rotate there and the row
+            # goes to y. Thread t takes vectors and units t, t + threads, ...
+            tid = T.get_thread_binding()
+            row_vecs = heads * head_size // row_vec
+            rotating = heads * rot_units
+            units = -(-rotating // threads)
+            lo = T.alloc_local([units * width], dtype)
+            hi = T.alloc_local([units * width], dtype)
+            cs = T.alloc_local([units * table_width], dtype)
+            sn = T.alloc_local([units * table_width], dtype)
+            for i in T.unroll(-(-row_vecs // threads)):
+                if i * threads + tid < row_vecs:
+                    for j in T.vectorized(row_vec):
+                        buf[(i * threads + tid) * row_vec + j] = x[
+                            token, (i * threads + tid) * row_vec + j
+                        ]
+            table_row(positions, offsets, token, row)
+            for k in T.unroll(units):
+                if k * threads + tid < rotating:
+                    slot = (k * threads + tid) % rot_units
+                    first = slot * width if neox else slot * width // 2
+                    table_slots(cos_table, sin_table, row[0], first, cs, sn, k * table_width)
+            T.sync_threads()
+            # Every unit is read before any is written back: TileLang places the barrier a
+            # loop of both needs inside the per-unit branch, which not every thread enters.
+            for k in T.unroll(units):
+                unit = k * threads + tid
+                if unit < rotating:
+                    low = (unit // rot_units) * head_size + (unit % rot_units) * width
+                    for j in T.vectorized(width):
+                        lo[k * width + j] = buf[low + j]
+                    if neox:
+                        for j in T.vectorized(width):
+                            hi[k * width + j] = buf[low + half + j]
+            for k in T.unroll(units):
+                unit = k * threads + tid
+                if unit < rotating:
+                    low = (unit // rot_units) * head_size + (unit % rot_units) * width
+                    rotate_unit(lo, k * width, hi, k * width, cs, sn, k * table_width)
+                    if neox:
+                        for j in T.vectorized(width):
+                            buf[low + half + j] = hi[k * width + j]
+                    for j in T.vectorized(width):
+                        buf[low + j] = lo[k * width + j]
+            T.sync_threads()
+            T.copy(buf[0 : heads * head_size], y[token, 0 : heads * head_size])
+
+        @T.macro
         def rotate_token(
             positions, offsets, query, key, cos_table, sin_table, query_out, key_out, token, part
         ):
             row = T.alloc_local([1], "int64" if offset_dtype else position_dtype)
             tensors = (query, key, cos_table, sin_table, query_out, key_out, token, part)
-            if tail_units == 0:
+            if staged:
+                buf = T.alloc_shared([max(query_heads, key_heads) * head_size], dtype)
+                rows = (positions, offsets, token, row, cos_table, sin_table, buf)
+                if part == 0:
+                    stage_row(query, query_out, query_heads, *rows)
+                else:
+                    stage_row(key, key_out, key_heads, *rows)
+            elif tail_units == 0:
                 table_row(positions, offsets, token, row)
                 each_unit(row, None, True, True, *tensors)
             else:
@@ -437,8 +516,13 @@ class _RoPEPositionsKernel(Kernel):
             call.dtype,
             position_dtype=call.position_dtype,
             offset_dtype=call.offset_dtype,
-            resident_threads=call.sm_count * call.threads_per_sm,
+            **cls._device_terms(call),
         )
+
+    @classmethod
+    def _device_terms(cls, call: RoPECall) -> dict:
+        """The constructor's keyword arguments that come from *call*'s device facts."""
+        return {"resident_threads": call.sm_count * call.threads_per_sm}
 
     def __init__(
         self,
@@ -495,6 +579,7 @@ class _RoPEPositionsKernel(Kernel):
             self._NEOX,
             rot_vec,
             tail_vec,
+            math.gcd(lanes, head_size),
         )
         self.init_config(config)
 
@@ -536,8 +621,8 @@ class _RoPEPositionsKernel(Kernel):
         """The program ``forward`` launches, compiled from *cfg*; *wide* gives a block a thread
         per unit of its token, whole warps, up to the block limit."""
         if wide:
-            return self.kernel(min(1024, -(-self._token_units // 32) * 32), 1)
-        return self.kernel(cfg["threads"], cfg["units"])
+            return self.kernel(min(1024, -(-self._token_units // 32) * 32), 1, False)
+        return self.kernel(cfg["threads"], cfg["units"], False)
 
 
 class RoPENeoxPositionIdsKernel(_RoPEPositionsKernel, RoPENeoxPositionIdsFwdInterface):
@@ -553,6 +638,63 @@ class RoPENonNeoxKernel(_RoPEPositionsKernel, RoPENonNeoxFwdInterface):
     """
 
     _NEOX = False
+
+
+class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
+    """The rotation where heads copy columns, each token's query row and key row staged in
+    shared memory.
+
+    A call that is not wide takes the staged program; a wide one takes the one-unit program
+    of the positions kernel. A block takes one thread for each share of its row, the share
+    being the SM's shared memory over its resident threads rounded up to whole 16-byte
+    vectors, so a SM's resident threads can fill its shared memory; the thread count rounds
+    up to whole warps, at most 1024.
+    """
+
+    @staticmethod
+    def _row_bytes(call: RoPECall) -> int:
+        """The bytes of the longer of a token's query row and key row."""
+        return max(call.query_heads, call.key_heads) * call.head_size * call.dtype.itemsize
+
+    @classmethod
+    def refusal(cls, call: RoPECall) -> str | None:
+        if call.rotary_dim == call.head_size:
+            return "the heads copy no columns"
+        if cls._row_bytes(call) > call.smem_budget:
+            return (
+                f"a row takes {cls._row_bytes(call)} bytes, past the {call.smem_budget} a block has"
+            )
+        return super().refusal(call)
+
+    @classmethod
+    def _device_terms(cls, call: RoPECall) -> dict:
+        share = -(-call.smem_per_sm // call.threads_per_sm // VECTOR_ACCESS_BYTES)
+        threads = -(-cls._row_bytes(call) // (share * VECTOR_ACCESS_BYTES * 32)) * 32
+        return {**super()._device_terms(call), "staged_threads": min(1024, threads)}
+
+    def __init__(self, *args, staged_threads: int, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._staged_threads = staged_threads
+
+    def _compile(self, cfg: dict, wide: bool):
+        """The staged program, or the positions kernel's for a wide call."""
+        if wide:
+            return super()._compile(cfg, wide)
+        return self.kernel(self._staged_threads, 1, True)
+
+
+class RoPENeoxStagedRowsKernel(_RoPEStagedRowsKernel, RoPENeoxPositionIdsFwdInterface):
+    """GPT-NeoX rotation of each token's heads, rows staged where heads copy columns."""
+
+    _NEOX = True
+    preferred_over = frozenset({"rope_neox_positions"})
+
+
+class RoPENonNeoxStagedRowsKernel(_RoPEStagedRowsKernel, RoPENonNeoxFwdInterface):
+    """RoFormer (GPT-J) rotation of each token's heads, rows staged where heads copy columns."""
+
+    _NEOX = False
+    preferred_over = frozenset({"rope_gptj"})
 
 
 @dataclasses.dataclass(frozen=True)

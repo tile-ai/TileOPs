@@ -101,7 +101,9 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from tileops._kernels.quantization.fp8_quant import FP8QuantKernel
     from tileops._kernels.rope import (
         RoPENeoxPositionIdsKernel,
+        RoPENeoxStagedRowsKernel,
         RoPENonNeoxKernel,
+        RoPENonNeoxStagedRowsKernel,
     )
     from tileops._kernels.sequence_modeling.engram import (
         EngramDecodeKernel,
@@ -219,7 +221,9 @@ _LAZY = {
     "NSATopKVarlenKernel": ".attention",
     "RMSNormKernel": ".norm",
     "RoPENeoxPositionIdsKernel": ".rope",
+    "RoPENeoxStagedRowsKernel": ".rope",
     "RoPENonNeoxKernel": ".rope",
+    "RoPENonNeoxStagedRowsKernel": ".rope",
     "DSADecodeBasicKernel": ".attention",
     "DSADecodeKernel": ".attention",
     "TopKSelectKernel": ".attention.topk_select",

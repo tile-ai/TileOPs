@@ -31,8 +31,10 @@ from tileops._kernels.rope import (
     RoPECosSinKernel,
     RoPENeoxPositionIdsFwdInterface,
     RoPENeoxPositionIdsKernel,
+    RoPENeoxStagedRowsKernel,
     RoPENonNeoxFwdInterface,
     RoPENonNeoxKernel,
+    RoPENonNeoxStagedRowsKernel,
 )
 from tileops._ops._signature_codegen import param_state
 from tileops._ops.op_base import Op
@@ -86,6 +88,8 @@ class _RotaryEmbeddingOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "rope_neox_positions": RoPENeoxPositionIdsKernel,
         "rope_gptj": RoPENonNeoxKernel,
+        "rope_neox_staged_rows": RoPENeoxStagedRowsKernel,
+        "rope_gptj_staged_rows": RoPENonNeoxStagedRowsKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         _NEOX: RoPENeoxPositionIdsFwdInterface,
