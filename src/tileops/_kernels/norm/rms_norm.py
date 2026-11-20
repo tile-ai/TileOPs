@@ -758,11 +758,13 @@ class RMSNormPairedKernel(_RMSNormRowsKernel):
     Serves rows a 64-, 128- or 256-thread block holds that way, in two kinds of launch.
 
     - A launch of at most one row an SM, of rows wider than a warp holds at
-      ``_WARP_ROW_VECTORS`` vectors a lane. Each SM runs its row once, so the time is one
-      row's path from load to store. A block a row cuts that path to two vectors a thread
-      at the cost of a barrier; a row a warp holds within those vectors pays no barrier.
+      ``_WARP_ROW_VECTORS`` vectors a lane, zero-centered or not. Each SM runs its row once,
+      so the time is one row's path from load to store. A block a row cuts that path to two
+      vectors a thread at the cost of a barrier; a row a warp holds within those vectors pays
+      no barrier.
     - A sustained launch of at least ``_MIN_WAVES`` waves of those blocks, as many as the
-      SM's threads and resident-block cap hold, a conservative performance cutoff.
+      SM's threads and resident-block cap hold, of a call that is not zero-centered: a
+      conservative performance cutoff, measured on calls that scale by the weight itself.
     """
 
     _builder = staticmethod(_rms_norm_paired_kernel)
@@ -780,10 +782,12 @@ class RMSNormPairedKernel(_RMSNormRowsKernel):
             _WARP_ROW_VECTORS * WARP_LANES * VECTOR_ACCESS_BYTES
         )
         one_row_an_sm = call.rows <= call.sm_count and not warp_held
-        if not one_row_an_sm and call.rows < cls._MIN_WAVES * wave:
+        many_waves = call.rows >= cls._MIN_WAVES * wave and not call.zero_centered
+        if not (one_row_an_sm or many_waves):
             return (
-                f"{call.rows} rows of {call.n} are fewer than {cls._MIN_WAVES} waves of {wave}, "
-                f"and not at most one an SM of rows wider than a warp holds"
+                f"{call.rows} rows of {call.n} are neither at most one an SM of rows wider than a "
+                f"warp holds, nor {cls._MIN_WAVES} waves of {wave} of a call that is not "
+                f"zero-centered"
             )
         return super().refusal(call)
 

@@ -422,6 +422,22 @@ def test_rms_norm_one_row_an_sm(
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
+def test_rms_norm_zero_centered_many_waves_of_held_rows_stay_with_the_row_kernel() -> None:
+    """A zero-centered launch of the paired kernel's many waves stays with ``RMSNormKernel``,
+    with and without a weight: only a launch of at most one row an SM takes a zero-centered
+    call to the paired kernel."""
+    props = torch.cuda.get_device_properties(run_device())
+    threads = _paired_width(2048, torch.bfloat16.itemsize)
+    per_sm = min(
+        props.max_threads_per_multi_processor // threads,
+        RESIDENT_CTAS[props.major * 10 + props.minor],
+    )
+    rows = RMSNormPairedKernel._MIN_WAVES * per_sm * props.multi_processor_count
+    _check_served_by(rows, 2048, torch.bfloat16, "RMSNormKernel", zero_centered=True)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_rms_norm_untuned_warp_rows_take_the_fewest_threads_that_fill_the_sm() -> None:
     """Untuned warp rows run on the fewest threads a block whose resident-block cap still fills
     the SM's threads, and are right with and without a weight past the last full block."""
