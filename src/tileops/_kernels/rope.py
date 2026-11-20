@@ -122,6 +122,11 @@ class RoPENonNeoxFwdInterface(RoPEPositionsFwdInterface):
     """
 
 
+def _staged_sides(key_heads: int) -> int:
+    """The staged blocks a token takes: one for its query row, one for its key row if any."""
+    return 2 if key_heads else 1
+
+
 def _head_units(
     neox: bool, head_size: int, rotary_dim: int, rot_vec: int, tail_vec: int
 ) -> tuple[int, int, int]:
@@ -189,8 +194,7 @@ def _rope_positions_kernel(
     query_units = query_heads * head_units
     token_units = (query_heads + key_heads) * head_units
 
-    # The staged program's blocks alternate a token's query row and key row.
-    sides = 2 if key_heads else 1
+    sides = _staged_sides(key_heads)
 
     @tilelang.jit(out_idx=[6, 7] if offset_dtype else [5, 6] if key_heads else [4])
     def kernel(threads, units, staged):
@@ -697,7 +701,7 @@ class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
     def _shape(self, tokens: int) -> bool | None:
         """``None`` for a call whose rows (a query row and a key row a token) outnumber one
         wave of staged blocks, else whether it is wide."""
-        if tokens * (2 if self.key_heads else 1) > self._wave_rows:
+        if tokens * _staged_sides(self.key_heads) > self._wave_rows:
             return None
         return super()._shape(tokens)
 
