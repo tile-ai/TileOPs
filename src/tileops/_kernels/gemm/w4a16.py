@@ -296,6 +296,34 @@ def _cross_tile_wgmma(
     )
 
 
+def _drained_ring(
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    n: int,
+    k: int,
+    group_size: int,
+    split_k: int,
+) -> bool:
+    """Whether the tile runs the hand-written ring that drains each K tile's WGMMA before it
+    releases the stage: two consumer warpgroups of 64 weight rows, one group per 128-wide K
+    tile, whole K in one slice with its metadata staged once. Each warpgroup stores its rows
+    from a drained stage, which holds the output tile because a K tile is as wide as the weight
+    rows, with a TMA store, whose global rows must be 16-byte aligned: N a multiple of 8."""
+    return (
+        threads == 256
+        and n % 8 == 0
+        and block_n == 128
+        and block_k == group_size == W4A16_LAYOUT.mma_step_k
+        and split_k == 1
+        and not _stage_meta_per_tile(threads, block_m, block_k, block_n, k // group_size)
+        and _cross_tile_smem_bytes(block_m, block_n, block_k, num_stages, k, split_k)
+        <= _CONFIG_SPACE.smem_bytes
+    )
+
+
 def _pipelined_smem_bytes(
     block_m: int,
     block_n: int,
@@ -328,9 +356,13 @@ def _smem_bytes(
     k: int,
     group_size: int,
     split_k: int = 1,
+    *,
+    n: int,
 ) -> int:
-    """Return dynamic shared memory required by one CTA."""
-    if _cross_tile_wgmma(block_m, block_n, block_k, num_stages, threads, k, group_size, split_k):
+    """Return dynamic shared memory required by one CTA; *n* picks the drained ring."""
+    if _cross_tile_wgmma(
+        block_m, block_n, block_k, num_stages, threads, k, group_size, split_k
+    ) or _drained_ring(block_m, block_n, block_k, num_stages, threads, n, k, group_size, split_k):
         return _cross_tile_smem_bytes(block_m, block_n, block_k, num_stages, k, split_k)
     total = _pipelined_smem_bytes(
         block_m, block_n, block_k, num_stages, threads, k, group_size, split_k
@@ -389,6 +421,7 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: int | None = No
                                 k,
                                 group_size,
                                 split_k,
+                                n=n,
                             )
                             if smem > _CONFIG_SPACE.smem_bytes:
                                 continue
@@ -575,7 +608,7 @@ def _gemm_w4a16_kernel(
         compile_flags=[
             "-O3",
             "-DENABLE_BF16",
-            *csrc_include("cluster_partials.h", "w4a16_decode_helper.h"),
+            *csrc_include("cluster_partials.h", "w4a16_decode_helper.h", "dense_wgmma_helper.h"),
         ],
     )
     def build(
@@ -1249,6 +1282,32 @@ def _gemm_w4a16_kernel(
         consumer_warps = threads // 32
         meta_cols = _cross_tile_meta_cols(k, block_k, split_k)
 
+        def ring_buffers():
+            """The ring stages and the slice's metadata a hand-written ring holds in shared memory,
+            with the activation and packed-weight stages swizzled for TMA and WGMMA."""
+            act_s = T.alloc_shared((num_stages, block_m, block_k), dtype)
+            packed_s = T.alloc_shared((num_stages, block_n, block_k // 8), "uint32")
+            scale_s = T.alloc_shared((block_n, meta_cols), dtype)
+            zero_s = T.alloc_shared((block_n, meta_cols), "uint8")
+            T.annotate_layout(
+                {
+                    act_s: tilelang.layout.make_swizzled_layout(act_s),
+                    packed_s: tilelang.layout.make_half_bank_swizzled_layout(packed_s),
+                }
+            )
+            return act_s, packed_s, scale_s, zero_s
+
+        @T.macro
+        def stage_meta(kk_first, n_start, weight_scale, weight_zero, scale_s, zero_s):
+            """The consumers stage the slice's scale and zero point from K tile ``kk_first`` on,
+            then meet at barrier 5, which only the consumer threads reach."""
+            T.inc_max_nreg(consumer_reg)
+            for i, g in T.Parallel(block_n, meta_cols):
+                g_src = T.min(kk_first + g, all_groups - 1)
+                scale_s[i, g] = weight_scale[n_start + i, g_src]
+                zero_s[i, g] = weight_zero[n_start + i, g_src]
+            T.sync_threads(barrier_id=5, arrive_count=threads)
+
         @T.macro
         def ring_decode(slot, r0, weight_frag, packed_s, scale_s, zero_s, run_local, scale, group):
             """Decode warpgroup rows ``r0 .. r0 + wg_rows`` of ring stage ``slot``."""
@@ -1367,10 +1426,7 @@ def _gemm_w4a16_kernel(
                 if pair
                 else T.Kernel(tiles_m, tiles_n, split_k, threads=threads + 128)
             ) as (bx, by, bz):
-                act_s = T.alloc_shared((num_stages, block_m, block_k), dtype)
-                packed_s = T.alloc_shared((num_stages, block_n, block_k // 8), "uint32")
-                scale_s = T.alloc_shared((block_n, meta_cols), dtype)
-                zero_s = T.alloc_shared((block_n, meta_cols), "uint8")
+                act_s, packed_s, scale_s, zero_s = ring_buffers()
                 frag_a0 = T.alloc_fragment((wg_rows, block_k), dtype)
                 frag_b0 = T.alloc_fragment((wg_rows, block_k), dtype)
                 acc0 = T.alloc_fragment((wg_rows, block_m), "float")
@@ -1382,12 +1438,6 @@ def _gemm_w4a16_kernel(
                 prev_slot = T.alloc_local((1,), "int32")
                 full = T.alloc_barrier([32] * num_stages)
                 empty = T.alloc_barrier([consumer_warps] * num_stages)
-                T.annotate_layout(
-                    {
-                        act_s: tilelang.layout.make_swizzled_layout(act_s),
-                        packed_s: tilelang.layout.make_half_bank_swizzled_layout(packed_s),
-                    }
-                )
                 landing = T.alloc_shared((wg_regs // 4, 128, 4) if pair else (1, 1, 1), "float32")
                 received = T.alloc_shared((1,), "uint64")
                 ring = (act_s, packed_s, scale_s, zero_s, full, empty)
@@ -1410,12 +1460,7 @@ def _gemm_w4a16_kernel(
                         kk_first, kk_count, m_start, n_start, activation, packed_weight, ring
                     )
                 else:
-                    T.inc_max_nreg(consumer_reg)
-                    for i, g in T.Parallel(block_n, meta_cols):
-                        g_src = T.min(kk_first + g, all_groups - 1)
-                        scale_s[i, g] = weight_scale[n_start + i, g_src]
-                        zero_s[i, g] = weight_zero[n_start + i, g_src]
-                    T.sync_threads(barrier_id=5, arrive_count=threads)
+                    stage_meta(kk_first, n_start, weight_scale, weight_zero, scale_s, zero_s)
                     if tx < 256:
                         ring_consumer(
                             kk_count, 0, ring, frag_a0, frag_b0, acc0, run_local, scale, prev_slot
@@ -1456,6 +1501,128 @@ def _gemm_w4a16_kernel(
                             act_s[0, :, 0:block_n],
                             output[m_start : m_start + block_m, n_start : n_start + block_n],
                         )
+
+        drained = _drained_ring(
+            block_m, block_n, block_k, num_stages, threads, n, k, group_size, split_k
+        )
+        # The stage the next-to-last K tile used: once both warpgroups release it, the other
+        # one reads at most the last K tile's stage.
+        out_tile = max(k_iters - 2, 0)
+        out_slot = out_tile % num_stages
+
+        @T.macro
+        def drained_step(kk, r0, frag, ring, acc, run_local, scale, lane):
+            """Decode K tile ``kk`` and free its weight, then run its WGMMA to completion and free
+            its activation, so the producer refills each while the consumer runs the next K
+            tile."""
+            act_s, packed_s, scale_s, zero_s, full_w, empty_w, full_a, empty_a = ring
+            slot = kk % num_stages
+            phase = (kk // num_stages) & 1
+            T.barrier_wait(full_w[slot], phase)
+            ring_decode(slot, r0, frag, packed_s, scale_s, zero_s, run_local, scale, kk)
+            if lane == 0:
+                T.mbarrier_arrive(empty_w[slot])
+            T.barrier_wait(full_a[slot], phase)
+            T.wgmma_gemm(
+                frag, act_s[slot, :, :], acc, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+            )
+            T.wait_wgmma(0)
+            if lane == 0:
+                T.mbarrier_arrive(empty_a[slot])
+
+        @T.macro
+        def drained_store(wg, ring, acc, output, m_start, n_start):
+            """Stage warpgroup ``wg``'s rows, transposed, in its half of ``out_slot`` once both
+            warpgroups have released that stage, and store them."""
+            act_s, _, _, _, _, _, _, empty_a = ring
+            T.barrier_wait(empty_a[out_slot], (out_tile // num_stages) & 1)
+            T.call_extern(
+                "handle",
+                f"tileops::dense_store_trans_64<{block_m}, half_t>",
+                acc.data,
+                T.address_of(act_s[out_slot, 0, wg * wg_rows]),
+                0,
+            )
+            T.fence_proxy_async()
+            # Barrier 6 + wg holds only warpgroup wg's 128 threads, apart from barrier 5's
+            # consumer meeting, so neither warpgroup waits for the other before its store.
+            T.sync_threads(barrier_id=6 + wg, arrive_count=128)
+            T.tma_copy(
+                act_s[out_slot, :, wg * wg_rows : (wg + 1) * wg_rows],
+                output[
+                    m_start : m_start + block_m,
+                    n_start + wg * wg_rows : n_start + (wg + 1) * wg_rows,
+                ],
+                leader_scope_threads=128,
+            )
+            T.tma_store_wait(0)
+
+        @T.prim_func
+        def drained_main(
+            activation: T.Tensor((m, k), dtype),  # type: ignore
+            packed_weight: T.Tensor((n, k // 8), "uint32"),  # type: ignore
+            weight_scale: T.Tensor((n, all_groups), dtype),  # type: ignore
+            weight_zero: T.Tensor((n, all_groups), "uint8"),  # type: ignore
+            output: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            """A producer warp issues the ring's loads from the kernel's start while two
+            consumer warpgroups, 64 weight rows each, stage the metadata, then drain one K tile
+            at a time; each stores its rows as soon as its own last WGMMA retires."""
+            with T.Kernel(tiles_m, tiles_n, threads=threads + 128) as (bx, by):
+                act_s, packed_s, scale_s, zero_s = ring_buffers()
+                frag0 = T.alloc_fragment((wg_rows, block_k), dtype)
+                acc0 = T.alloc_fragment((wg_rows, block_m), "float")
+                frag1 = T.alloc_fragment((wg_rows, block_k), dtype)
+                acc1 = T.alloc_fragment((wg_rows, block_m), "float")
+                run_local = T.alloc_local((run // 4,), "uint32")
+                scale = T.alloc_local((1,), dtype)
+                full_w = T.alloc_barrier([32] * num_stages)
+                empty_w = T.alloc_barrier([consumer_warps] * num_stages)
+                full_a = T.alloc_barrier([32] * num_stages)
+                empty_a = T.alloc_barrier([consumer_warps] * num_stages)
+                ring = (act_s, packed_s, scale_s, zero_s, full_w, empty_w, full_a, empty_a)
+                tx = T.get_thread_binding()
+                m_start = bx * block_m
+                n_start = by * block_n
+                if tx < 128:
+                    T.dec_max_nreg(producer_reg)
+                    if tx < 32:
+                        for kk in T.serial(k_iters):
+                            slot = kk % num_stages
+                            phase = ((kk // num_stages) & 1) ^ 1
+                            k_start = kk * block_k
+                            T.barrier_wait(empty_w[slot], phase)
+                            T.tma_copy(
+                                packed_weight[
+                                    n_start : n_start + block_n,
+                                    k_start // 8 : k_start // 8 + block_k // 8,
+                                ],
+                                packed_s[slot, :, :],
+                                barrier=full_w[slot],
+                            )
+                            T.barrier_arrive(full_w[slot])
+                            T.barrier_wait(empty_a[slot], phase)
+                            T.tma_copy(
+                                activation[
+                                    m_start : m_start + block_m, k_start : k_start + block_k
+                                ],
+                                act_s[slot, :, :],
+                                barrier=full_a[slot],
+                            )
+                            T.barrier_arrive(full_a[slot])
+                else:
+                    stage_meta(0, n_start, weight_scale, weight_zero, scale_s, zero_s)
+                    lane = tx % 32
+                    if tx < 256:
+                        T.clear(acc0)
+                        for kk in T.serial(k_iters):
+                            drained_step(kk, 0, frag0, ring, acc0, run_local, scale, lane)
+                        drained_store(0, ring, acc0, output, m_start, n_start)
+                    else:
+                        T.clear(acc1)
+                        for kk in T.serial(k_iters):
+                            drained_step(kk, wg_rows, frag1, ring, acc1, run_local, scale, lane)
+                        drained_store(1, ring, acc1, output, m_start, n_start)
 
         if stream_k:
 
@@ -1524,6 +1691,8 @@ def _gemm_w4a16_kernel(
 
         if cross_tile:
             return cross_tile_main
+        if drained:
+            return drained_main
         if split_k > 1:
             return sliced_pair if pair else sliced
         return main
