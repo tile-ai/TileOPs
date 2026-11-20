@@ -164,19 +164,6 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     preferred_over = frozenset({"avg_pool1d_kernel"})
 
-    @staticmethod
-    def _window(call: AvgPoolCall) -> AvgPoolWindow:
-        return AvgPoolWindow(
-            rows=call.n * call.c_in,
-            size=call.size,
-            kernel=call.window,
-            stride=call.stride,
-            pad=call.pad,
-            ceil_mode=call.ceil_mode,
-            count_include_pad=call.count_include_pad,
-            divisor_override=call.divisor_override,
-        )
-
     @classmethod
     def refusal(cls, call: AvgPoolCall) -> "str | None":
         if call.dtype not in (torch.float16, torch.bfloat16, torch.float32):
@@ -189,7 +176,7 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         run, outputs = _run(call.dtype.itemsize, stride_l)
         if run % stride_l:
             return f"requires a stride dividing the {run}-element load, got {stride_l}"
-        (out_l,) = cls._window(call).out
+        (out_l,) = AvgPoolWindow.of(call).out
         # Each element past the load is a load of its own; at two, AvgPool1dKernel's
         # shared-memory stage is faster.
         max_reach = 1
@@ -209,7 +196,7 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
 
     @classmethod
     def entry_for(cls, call: AvgPoolCall) -> Entry:
-        window = cls._window(call)
+        window = AvgPoolWindow.of(call)
         (l_in,), (kernel_l,), (stride_l,), (pad_l,), (out_l,) = (
             window.size,
             window.kernel,
