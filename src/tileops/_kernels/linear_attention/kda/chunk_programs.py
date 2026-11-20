@@ -296,9 +296,9 @@ def chunk_prepare_program(
             store_decay(dec, gc_s, rows, ic, ihv)
 
         @T.macro
-        def store_tail_values(u, v, aqk, dec, aq, gc_s, bt_s, b_s, p_s, acc, rows, bos, ic, ihv):
-            """Store a partial chunk's attention and decay, then its WY values ``p_s`` times
-            the step-scaled values."""
+        def store_values(u, v, aqk, dec, aq, gc_s, bt_s, b_s, p_s, acc, rows, bos, ic, ihv):
+            """Store the chunk's attention and decay, then its WY values ``p_s`` times the
+            step-scaled values, each row guarded by the chunk's row count."""
             if not lean:
                 store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
             T.sync_threads()
@@ -833,7 +833,7 @@ def chunk_prepare_program(
                                 w[0, bos + i, ihv, j] = T.cast(
                                     acc[i, j] * T.if_then_else(chunked, centre_s[1, j], 1.0), dtype
                                 )
-                        store_tail_values(
+                        store_values(
                             u, v, aqk, dec, aq, gc_s, bt_s, b_s, p_s, acc, rows, bos, ic, ihv
                         )
                 else:
@@ -843,9 +843,7 @@ def chunk_prepare_program(
                     T.clear(acc)
                     T.gemm(p_s, b_s, acc)
                     store_outputs(w, qg, kg, acc, qa_s, ka_s, gc_s, rows, bos, ihv)
-                    store_tail_values(
-                        u, v, aqk, dec, aq, gc_s, bt_s, b_s, p_s, acc, rows, bos, ic, ihv
-                    )
+                    store_values(u, v, aqk, dec, aq, gc_s, bt_s, b_s, p_s, acc, rows, bos, ic, ihv)
 
         if gate_mode == "channel" and gate_in_kernel:
 

@@ -123,7 +123,7 @@ def test_kda_sm90_given_gate_lean_preparation_matches_reference(monkeypatch) -> 
     monkeypatch.setattr(chunk_prefill, "launch_plan", lean_plan)
     monkeypatch.setattr(chunk_programs, "chunk_prepare_program", counted)
     torch.manual_seed(42)
-    _check(1, 0, 2, 128, torch.bfloat16, sequence_lengths=(128, 70, 100))
+    _check(1, 0, 4, 128, torch.bfloat16, sequence_lengths=(50, 120, 130))
     assert built == [(True, True)]
 
 
