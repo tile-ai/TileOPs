@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 
@@ -44,7 +46,7 @@ _CASES = (
     pytest.param([2, 9], 40, 3, "int32", "int32", {}, marks=_SMOKE, id="int32-table"),
     # 24-byte rows: 8-byte vectors.
     pytest.param([5, 7], 90, 3, "int32", "int64", {}, marks=_FULL, id="eight-byte-vectors"),
-    # An odd row of 2-byte elements: 2-byte vectors, which cp.async does not move.
+    # An odd row of 2-byte elements: 2-byte vectors, which the evict-last load does not move.
     pytest.param([7], 50, 1001, "int64", "bfloat16", {}, marks=_FULL, id="two-byte-vectors"),
     # 1021 vectors, a prime: no thread count divides them, so the last pass is guarded.
     pytest.param([2], 1, 8168, "int64", "bfloat16", {}, marks=_FULL, id="guarded-pass"),
@@ -70,7 +72,7 @@ def _column_tiles(cfg: dict, S: list, D: int) -> bool:
     return col_tiles == 2 and vectors % cfg["block_vectors"] == 1 and tiles > 2**20
 
 
-# The kernel config each path-named case relies on, so a retune fails the case instead of
+# The launch tile each path-named case relies on, so a retune fails the case instead of
 # moving it off its path.
 _ON_PATH = {
     "guarded-pass": lambda cfg, S, D: cfg["block_rows"] * cfg["block_vectors"] % cfg["threads"]
@@ -91,7 +93,8 @@ def test_embedding(S, V, D, index_dtype, dtype, params, request) -> None:
             index_dtype=getattr(torch, index_dtype),
             device=torch.device(run_device()),
         )
-        cfg = op.kernel_for("embedding", lambda: call).config
+        kernel = op.kernel_for("embedding", lambda: call)
+        cfg = kernel.tile(kernel.config, kernel.vectors_per_thread(math.prod(S)))
         assert on_path(cfg, S, D), cfg
     test.check(op, *test.gen_inputs())
 
@@ -135,3 +138,35 @@ def test_embedding_refuses_max_norm() -> None:
         op(input, weight)
     assert not op._entries_built("embedding")
     assert torch.equal(weight, before)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "dim, waves, most",
+    [
+        pytest.param(64, 4, 4, marks=_SMOKE, id="four-waves"),
+        pytest.param(64, 2, 2, marks=_FULL, id="two-waves"),
+        pytest.param(64, 5, 1, marks=_FULL, id="five-waves"),
+        # Rows of 288 vectors: a tile of two rows, so a thread's vectors span both.
+        pytest.param(2304, 4, 4, marks=_FULL, id="four-waves-wide-rows"),
+    ],
+)
+def test_embedding_wave_tiles(dim, waves, most) -> None:
+    """A call of *waves* waves of resident threads at one vector a thread.
+
+    bf16 rows of 16-byte vectors: up to four waves take more than one vector a thread and no
+    more than *most*, on row tiles whose last one is partial; past four, one. The call is
+    checked against the reference on the tile it launches.
+    """
+    call = EmbeddingCall(
+        dim=dim, dtype=torch.bfloat16, index_dtype=torch.int32, device=torch.device(run_device())
+    )
+    ids = waves * call.sm_count * call.threads_per_sm // (dim // 8) - 3
+    test = _test([ids], 1000, dim, "int32", "bfloat16")
+    op = EmbeddingFwdOp(**test.arguments())
+    kernel = op.kernel_for("embedding", lambda: call)
+    cfg = kernel.tile(kernel.config, kernel.vectors_per_thread(ids))
+    vectors = cfg["block_rows"] * cfg["block_vectors"] / cfg["threads"]
+    assert 1 <= vectors <= most and (vectors > 1) == (most > 1), cfg
+    assert ids % cfg["block_rows"] != 0, cfg
+    test.check(op, *test.gen_inputs())
