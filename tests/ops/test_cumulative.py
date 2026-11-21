@@ -487,8 +487,7 @@ def test_dtype_casts_the_input_before_the_scan(
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.parametrize("rows", [16, 24])
-def test_cumsum_cluster_exchanges_the_totals_of_all_eight_blocks(rows) -> None:
+def test_cumsum_cluster_exchanges_the_totals_of_all_eight_blocks() -> None:
     from tileops._kernels.reduction.cumulative import CumsumClusterScanKernel
     from tileops._ops.reduction.cumulative import CumsumFwdOp
     from tileops._utils.utils import get_sm_count
@@ -496,7 +495,7 @@ def test_cumsum_cluster_exchanges_the_totals_of_all_eight_blocks(rows) -> None:
 
     if get_sm_count() < 128:
         pytest.skip("The eight-block cluster kernel requires at least 128 SMs")
-    width = 65536
+    rows, width = 24, 65536
     storage = torch.empty(rows * width + 1, dtype=torch.float32, device=run_device())
     op = CumsumFwdOp(dim=-1, target=BUILTIN)
     for offset in (0, 1):

@@ -755,8 +755,8 @@ class GEMMW4A16Fixture(FixtureBase):
                     256,
                     256,
                     torch.float16,
-                    marks=pytest.mark.smoke,
-                    id="two-group-rect",
+                    marks=pytest.mark.full,
+                    id="full-w4a16-rect",
                 ),
                 pytest.param(
                     1,

@@ -400,7 +400,7 @@ def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
             64, 1024, 128, _int4_special_groups, id="special-groups", marks=pytest.mark.smoke
         ),
         # A partial last CTA on the group-size-64 path.
-        pytest.param(37, 1024, 64, lambda w: w, id="group-64", marks=pytest.mark.smoke),
+        pytest.param(37, 1024, 64, lambda w: w, id="group-64", marks=pytest.mark.full),
         # One CTA of two warps to a row, whose 68 chunks leave most slots of the second empty.
         pytest.param(
             19,

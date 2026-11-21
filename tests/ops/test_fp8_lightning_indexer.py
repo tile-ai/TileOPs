@@ -148,9 +148,15 @@ def test_indexer_empty_and_inverted_windows() -> None:
     test.check(FP8LightningIndexerFwdOp(), index_q, index_k, weights, ks, ke)
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
-@pytest.mark.parametrize("queries, keys, groups", [(8, 128, 1), (8, 128, 2), (532, 32768, 1)])
+@pytest.mark.parametrize(
+    "queries, keys, groups",
+    [
+        pytest.param(8, 128, 1, marks=pytest.mark.smoke, id="warp-specialized"),
+        pytest.param(8, 128, 2, marks=pytest.mark.full, id="two-groups"),
+        pytest.param(532, 32768, 1, marks=pytest.mark.full, id="partial-wave"),
+    ],
+)
 def test_indexer_signed_external_key_scales(queries, keys, groups) -> None:
     test = FP8LightningIndexerTest(1, queries, 64, 128, keys, groups)
     q, k, weights, starts, ends, scales = test.gen_weight_boundary_inputs()
@@ -162,10 +168,15 @@ def test_indexer_signed_external_key_scales(queries, keys, groups) -> None:
     test.check(FP8LightningIndexerFwdOp(), q, k, weights, starts, ends, scales)
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.parametrize("groups", [1, 2], ids=["single-group", "two-groups"])
+@pytest.mark.parametrize(
+    "groups",
+    [
+        pytest.param(1, marks=pytest.mark.smoke, id="single-group"),
+        pytest.param(2, marks=pytest.mark.full, id="two-groups"),
+    ],
+)
 def test_indexer_assumes_nonnegative_external_scales(groups) -> None:
     from tileops.backend import BUILTIN
 

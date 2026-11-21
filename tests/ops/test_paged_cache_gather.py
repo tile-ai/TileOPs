@@ -89,13 +89,15 @@ def test_paged_kv_cache_gather(lengths, shape, page, dtype, out_dtype, starts, t
     TestBase.check(workload, op, *inputs)
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "lengths,dtype",
-    [([15, 16], torch.float16), ([0, 32], torch.bfloat16), ([63, 65], torch.float16)],
-    ids=["one-page", "empty-first", "cross-page"],
+    [
+        pytest.param([15, 16], torch.float16, marks=pytest.mark.smoke, id="one-page"),
+        pytest.param([0, 32], torch.bfloat16, marks=pytest.mark.smoke, id="empty-first"),
+        pytest.param([63, 65], torch.float16, marks=pytest.mark.full, id="cross-page"),
+    ],
 )
 def test_short_gather_packed_requests(lengths, dtype):
     from tileops._kernels.attention import PagedKVCacheGatherShortKernel
@@ -106,6 +108,23 @@ def test_short_gather_packed_requests(lengths, dtype):
     op = PagedKVCacheGatherFwdOp(target=BUILTIN)
     TestBase.check(workload, op, *inputs)
     assert [type(k) for k in op.iter_kernels()] == [PagedKVCacheGatherShortKernel]
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+def test_gather_two_requests_wide_rows():
+    """Two requests of 1024-element rows past two pages take the general kernel's 4x256 tile."""
+    from tileops._kernels.attention import PagedKVCacheGatherKernel
+    from tileops.backend import BUILTIN
+
+    workload = PagedKVCacheGatherWorkload([17, 16], (1024,), 16, torch.bfloat16)
+    inputs = workload.gen_inputs()
+    op = PagedKVCacheGatherFwdOp(target=BUILTIN)
+    TestBase.check(workload, op, *inputs)
+    (kernel,) = op.iter_kernels()
+    assert type(kernel) is PagedKVCacheGatherKernel
+    assert kernel.config == {"block_rows": 4, "block_cols": 256, "threads": 128}
 
 
 @pytest.mark.smoke

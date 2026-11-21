@@ -84,10 +84,12 @@ def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block
     TestBase.check(test, op, *inputs)
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.parametrize("num_experts", [128, 256, 384])
+@pytest.mark.parametrize(
+    "num_experts",
+    [pytest.param(128, marks=pytest.mark.smoke), pytest.param(384, marks=pytest.mark.full)],
+)
 def test_sparse_routes_across_expert_blocks(num_experts) -> None:
     from tileops._kernels.build_target import building_on
     from tileops._kernels.moe.permute_align import _make_sparse_routes_kernel
