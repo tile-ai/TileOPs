@@ -1190,6 +1190,10 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
         launch_tokens = x.shape[0] if packed else x.shape[1]
         # The offsets are a tensor argument, or an int scalar after the tensors.
         offsets_tensor = isinstance(seqlen_offsets, torch.Tensor)
+        if not offsets_tensor:
+            # Clamped on the host, an int offset reaches the same rows and its sum with a
+            # position cannot wrap in the kernel.
+            seqlen_offsets = max(-launch_tokens, min(seqlen_offsets, cos.shape[0] - 1))
         index, contiguous, tail = "int64", False, True
         if wide:
             # Such a call's time is mostly one thread's chain of dependent instructions: 32-bit

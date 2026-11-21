@@ -771,6 +771,24 @@ def test_rope_cos_sin_int64_offset_at_its_maximum_reads_the_last_row(row) -> Non
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("extreme", [2**63 - 1, -(2**63)], ids=["max", "min"])
+def test_rope_cos_sin_kernel_int_offset_at_its_extremes_reads_the_end_rows(extreme) -> None:
+    """The op takes an int offset in [0, P - S]; the kernel clamps any other to the rows it
+    reaches, so an int64 extreme reads the rows P - 1 or -S read, without a wrapping sum."""
+    row = _dense(1, 37, 4, 72, 36)
+    call = manifest_call("RoPECosSinFwdOp", {"T": "float16", **_F32_TABLES}, **row)
+    test = RoPECosSinTest(call)
+    x, cos, sin, cu_seqlens, seqlen_offsets = test.gen_inputs()
+    op = RoPECosSinFwdOp(**test.arguments())
+    op(x, cos, sin, cu_seqlens, seqlen_offsets)
+    (kernel,) = op.iter_kernels()
+    nearest = cos.shape[0] - 1 if extreme > 0 else -x.shape[1]
+    want = kernel.forward(x, cos, sin, cu_seqlens, nearest)
+    got = kernel.forward(x, cos, sin, cu_seqlens, extreme)
+    torch.testing.assert_close(got, want, rtol=0, atol=0)
+
+
+@pytest.mark.smoke
 def test_rope_cos_sin_in_place_leaves_the_memory_past_x_untouched() -> None:
     """The 1332 units of 37 tokens fill 52 threads of the last block; its other threads touch
     nothing, here the part of the buffer past x."""
