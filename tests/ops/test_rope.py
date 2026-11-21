@@ -671,6 +671,8 @@ _VIEWS = pytest.mark.parametrize(
         pytest.param(True, slice(64, 136), marks=_FULL, id="interleaved-tail"),
         pytest.param(False, slice(8, 136, 2), marks=_FULL, id="neox-every-2nd"),
         pytest.param(True, slice(8, 136, 2), marks=_FULL, id="interleaved-every-2nd"),
+        # The whole head: a contiguous x, whose strides the program takes from the call.
+        pytest.param(False, slice(0, 136), marks=_FULL, id="neox-whole-head"),
     ],
 )
 
@@ -709,9 +711,6 @@ def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(columns) -> None:
 
 
 _OFFSETS = _dense(2, 19, 3, 128, 64, P=32, some=["seqlen_offsets"])
-# A token fills two whole blocks of 128 threads, where TileLang keeps the 32-bit program's row
-# arithmetic in 32 bits; where a block splits tokens it widens the arithmetic to 64 bits.
-_WHOLE_BLOCKS = _dense(2, 4, 32, 128, 64, P=32, some=["seqlen_offsets"])
 
 
 @pytest.mark.parametrize(
@@ -720,7 +719,7 @@ _WHOLE_BLOCKS = _dense(2, 4, 32, 128, 64, P=32, some=["seqlen_offsets"])
         pytest.param(_OFFSETS, {"O": "int64"}, [20, -3], marks=_SMOKE, id="int64"),
         # Added to a position, the int32 extremes would wrap past the table in 32 bits.
         pytest.param(
-            _WHOLE_BLOCKS,
+            _OFFSETS,
             {"O": "int32"},
             [2**31 - 1, -(2**31)],
             marks=_SMOKE,
@@ -748,14 +747,12 @@ def test_rope_cos_sin_unchecked_row_outside_the_tables_reads_its_nearest_row(
 @pytest.mark.parametrize(
     "row",
     [
-        pytest.param(_OFFSETS, marks=_SMOKE, id="64-bit-row"),
-        # The offset must stay 64-bit until its clamp, here in 32-bit row arithmetic.
-        pytest.param(_WHOLE_BLOCKS, marks=_FULL, id="32-bit-row"),
-        # Units past half the resident threads: the 64-bit-index program, two heads a thread.
+        pytest.param(_OFFSETS, marks=_SMOKE, id="one-head"),
+        # Units past half the resident threads: two heads a thread.
         pytest.param(
             _dense(2, 2048, 8, 128, 64, P=4096, some=["seqlen_offsets"]),
             marks=_FULL,
-            id="64-bit-index",
+            id="two-heads",
         ),
     ],
 )

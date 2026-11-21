@@ -807,7 +807,6 @@ def _rope_cos_sin_kernel(
     offset_dtype: str | None,
     vec: int,
     unit_columns: bool,
-    index: str,
     contiguous: bool,
 ) -> object:
     """The rotation of ``x`` into ``y``, both flat views addressed at runtime strides.
@@ -818,9 +817,7 @@ def _rope_cos_sin_kernel(
     start vector-aligned. Where ``unit_columns`` the column strides are 1; otherwise ``vec``
     is 1 and they are runtime scalars. Where ``contiguous`` the strides follow from ``heads``,
     ``head_dim`` and the token count instead. In place, ``y`` is ``x`` and the copied columns
-    are not touched. Every size, stride, offset and index is an ``index`` integer, ``int32``
-    or ``int64``. The program's ``tail`` says whether its last block holds threads past the
-    call's units, which then touch nothing.
+    are not touched.
 
     A unit is two ``vec``-column vectors of one head: ``vec`` columns of the rotary low half
     and the ``vec`` facing them in the high half, whose pairs are NeoX's ``(x[k], x[k + Rh])``
@@ -835,15 +832,14 @@ def _rope_cos_sin_kernel(
     # One column a vector holds no pair: the unit is then one adjacent pair.
     adjacent = interleaved and vec == 1
     head_units = rot_units + (0 if inplace else (head_dim - rotary) // vec)
-    Index = T.int32 if index == "int32" else T.int64
 
     # The flat index proves no access in bounds; the bound check would split every vector.
     @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True})
-    def kernel(threads, per_thread, tail):
-        # A flat view, a table or the sequences may number 2^31 or more where index is int64.
-        rows = T.dynamic("rows", index)
-        span = T.dynamic("span", index)
-        out_span = T.dynamic("out_span", index)
+    def kernel(threads, per_thread):
+        # A flat view, a table or the sequences may number 2^31 or more.
+        rows = T.dynamic("rows", "int64")
+        span = T.dynamic("span", "int64")
+        out_span = T.dynamic("out_span", "int64")
         table_shape = (rows, rotary_half)
         # Thread g of a token takes heads g, g + groups, ...: one warp access covers
         # neighbouring heads.
@@ -857,36 +853,30 @@ def _rope_cos_sin_kernel(
             # Dense, tokens is S and extent B: grid row by is sequence b, so no thread divides
             # by a runtime extent. Packed, tokens is Tt and extent the steps of the search for
             # a token's sequence. cu_seqlens and offsets are read only where the call has them.
+            if contiguous:
+                head = head_dim // vec
+                q = (tokens * heads * head, heads * head, head, 1) * 2
             qb, qs, qh, qc, pb, ps, ph, pc = q
             if unit_columns:
                 qc = 1
                 pc = 1
-            if contiguous:
-                qh = head_dim // vec
-                ph = qh
-                qs = heads * qh
-                ps = qs
-                qb = tokens * qs
-                pb = qb
-            found = T.alloc_local([2], index)
+            found = T.alloc_local([2], "int64")
             v = T.alloc_local([2 * vec * per_thread], dtype)
             cs = T.alloc_local([vec], cos_dtype)
             sn = T.alloc_local([vec], sin_dtype)
             units = tokens * token_items
-            item = T.Cast(index, bx) * threads + T.get_thread_binding()
+            item = T.Cast("int64", bx) * threads + T.get_thread_binding()
             token = item // token_items
             group = T.Cast("int32", item % token_items) // head_units
             slot = T.Cast("int32", item % token_items) % head_units
-            # Compared in 64 bits: TileLang drops a 32-bit check against the grid's ceildiv
-            # extent even where the last block holds threads past the units.
-            if not tail or T.Cast("int64", item) < T.Cast("int64", units):
+            if item < units:
                 # Packed x has no sequence stride, so its address needs no search.
                 if seqlens_dtype is not None:
                     x_token = token * qs
                     y_token = token * ps
                 else:
-                    x_token = T.Cast(index, by) * qb + token * qs
-                    y_token = T.Cast(index, by) * pb + token * ps
+                    x_token = T.Cast("int64", by) * qb + token * qs
+                    y_token = T.Cast("int64", by) * pb + token * ps
                 if slot < rot_units:
                     low = slot * (2 if adjacent else vec)
                     high = low + (1 if adjacent else rotary_half)
@@ -912,19 +902,19 @@ def _rope_cos_sin_kernel(
                                 else:
                                     found[1] = mid - 1
                         b = found[0]
-                        s = token - T.Cast(index, cu_seqlens[b])
+                        s = token - T.Cast("int64", cu_seqlens[b])
                     else:
                         b = by
                         s = token
-                    if offset_dtype == "int64" or (index == "int32" and offset_dtype == "int32"):
-                        # An offset past the table first drops to its last row, so the sum in
-                        # the offset's width cannot wrap: it stays below tokens + rows.
-                        seen = s + T.min(offsets[b], T.Cast(offset_dtype, rows) - 1)
+                    if offset_dtype == "int64":
+                        # An offset past the table first drops to its last row, so the sum
+                        # cannot wrap.
+                        seen = s + T.min(offsets[b], T.Cast("int64", rows) - 1)
                     elif offset_dtype is not None:
                         seen = s + T.Cast("int64", offsets[b])
                     else:
                         seen = s + offset
-                    row = T.max(0, T.min(seen, T.Cast(seen.dtype, rows) - 1))
+                    row = T.max(0, T.min(seen, T.Cast("int64", rows) - 1))
                     if interleaved and not adjacent:
                         # Pairs slot * vec / 2 on, then rotary_half / 2 past them.
                         for half in T.unroll(2):
@@ -976,16 +966,16 @@ def _rope_cos_sin_kernel(
                 cu_seqlens: T.Tensor((T.dynamic("bounds", "int64"),), seqlens_dtype),
                 offsets: T.Tensor((T.dynamic("batch", "int64"),), offset_dtype),
                 y: T.Tensor((out_span,), dtype),
-                tokens: Index,
-                extent: Index,
-                qb: Index,
-                qs: Index,
-                qh: Index,
-                qc: Index,
-                pb: Index,
-                ps: Index,
-                ph: Index,
-                pc: Index,
+                tokens: T.int64,
+                extent: T.int64,
+                qb: T.int64,
+                qs: T.int64,
+                qh: T.int64,
+                qc: T.int64,
+                pb: T.int64,
+                ps: T.int64,
+                ph: T.int64,
+                pc: T.int64,
             ):
                 q = (qb, qs, qh, qc, pb, ps, ph, pc)
                 with T.Kernel(
@@ -1017,17 +1007,17 @@ def _rope_cos_sin_kernel(
                 sin_table: T.Tensor(table_shape, sin_dtype),
                 cu_seqlens: T.Tensor((T.dynamic("bounds", "int64"),), seqlens_dtype),
                 y: T.Tensor((out_span,), dtype),
-                offset: Index,
-                tokens: Index,
-                extent: Index,
-                qb: Index,
-                qs: Index,
-                qh: Index,
-                qc: Index,
-                pb: Index,
-                ps: Index,
-                ph: Index,
-                pc: Index,
+                offset: T.int64,
+                tokens: T.int64,
+                extent: T.int64,
+                qb: T.int64,
+                qs: T.int64,
+                qh: T.int64,
+                qc: T.int64,
+                pb: T.int64,
+                ps: T.int64,
+                ph: T.int64,
+                pc: T.int64,
             ):
                 q = (qb, qs, qh, qc, pb, ps, ph, pc)
                 with T.Kernel(
@@ -1048,16 +1038,16 @@ def _rope_cos_sin_kernel(
                 sin_table: T.Tensor(table_shape, sin_dtype),
                 offsets: T.Tensor((T.dynamic("batch", "int64"),), offset_dtype),
                 y: T.Tensor((out_span,), dtype),
-                tokens: Index,
-                extent: Index,
-                qb: Index,
-                qs: Index,
-                qh: Index,
-                qc: Index,
-                pb: Index,
-                ps: Index,
-                ph: Index,
-                pc: Index,
+                tokens: T.int64,
+                extent: T.int64,
+                qb: T.int64,
+                qs: T.int64,
+                qh: T.int64,
+                qc: T.int64,
+                pb: T.int64,
+                ps: T.int64,
+                ph: T.int64,
+                pc: T.int64,
             ):
                 q = (qb, qs, qh, qc, pb, ps, ph, pc)
                 with T.Kernel(
@@ -1075,17 +1065,17 @@ def _rope_cos_sin_kernel(
                 cos_table: T.Tensor(table_shape, cos_dtype),
                 sin_table: T.Tensor(table_shape, sin_dtype),
                 y: T.Tensor((out_span,), dtype),
-                offset: Index,
-                tokens: Index,
-                extent: Index,
-                qb: Index,
-                qs: Index,
-                qh: Index,
-                qc: Index,
-                pb: Index,
-                ps: Index,
-                ph: Index,
-                pc: Index,
+                offset: T.int64,
+                tokens: T.int64,
+                extent: T.int64,
+                qb: T.int64,
+                qs: T.int64,
+                qh: T.int64,
+                qc: T.int64,
+                pb: T.int64,
+                ps: T.int64,
+                ph: T.int64,
+                pc: T.int64,
             ):
                 q = (qb, qs, qh, qc, pb, ps, ph, pc)
                 with T.Kernel(
@@ -1192,6 +1182,10 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
         head_units = self.rotary_half // vec + copied // vec
         tokens = x.shape[0] if packed else x.shape[0] * x.shape[1]
         wide = 2 * tokens * self.heads * head_units <= self._resident_threads
+        # Such a call's time is mostly one thread's chain of dependent instructions, which strides
+        # known at compile time shorten.
+        contiguous = wide and x.is_contiguous()
+        program = self.program(self._compile, vec, unit_columns, wide, contiguous)
         launch_tokens = x.shape[0] if packed else x.shape[1]
         # The offsets are a tensor argument, or an int scalar after the tensors.
         offsets_tensor = isinstance(seqlen_offsets, torch.Tensor)
@@ -1199,27 +1193,6 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
             # Clamped on the host, an int offset reaches the same rows and its sum with a
             # position cannot wrap in the kernel.
             seqlen_offsets = max(-launch_tokens, min(seqlen_offsets, cos.shape[0] - 1))
-        index, contiguous, tail = "int64", False, True
-        if wide:
-            # Such a call's time is mostly one thread's chain of dependent instructions: 32-bit
-            # indexes, strides known at compile time and no bound check before the loads
-            # shorten it. Every integer the program takes or forms stays below the largest
-            # view, stride, table, sequence count or thread count, and a token's table row
-            # before its clamp below tokens + rows, or tokens + |offset| for an int offset.
-            reach = max(
-                _flat(x).numel(),
-                _flat(y).numel(),
-                *(abs(stride) for stride in (*x_strides, *y_strides)),
-                cos.numel(),
-                cu_seqlens.shape[0] if packed else 0,
-                tokens * self.heads * head_units + self.config["threads"],
-                launch_tokens + cos.shape[0],
-                0 if offsets_tensor else launch_tokens + abs(seqlen_offsets),
-            )
-            index = "int32" if reach < 2**31 else "int64"
-            contiguous = x.is_contiguous()
-            tail = launch_tokens * self.heads * head_units % self.config["threads"] != 0
-        program = self.program(self._compile, vec, unit_columns, wide, index, contiguous, tail)
         strides = [stride // vec for stride in x_strides[:3]] + [x_strides[3]]
         strides += [stride // vec for stride in y_strides[:3]] + [y_strides[3]]
         if packed:
@@ -1249,19 +1222,9 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
             program(*tensors, *scalars, *sizes, *strides)
         return y
 
-    def _compile(
-        self,
-        cfg: dict,
-        vec: int,
-        unit_columns: bool,
-        wide: bool,
-        index: str,
-        contiguous: bool,
-        tail: bool,
-    ):
+    def _compile(self, cfg: dict, vec: int, unit_columns: bool, wide: bool, contiguous: bool):
         """The program ``forward`` launches for *vec*-wide vectors, compiled from *cfg*;
-        *wide* gives each thread one head, *index* is its integer type, *contiguous* derives
-        its strides from the call and *tail* bounds-checks its last block."""
+        *wide* gives each thread one head and *contiguous* derives its strides from the call."""
         kernel = _rope_cos_sin_kernel(
             self.heads,
             self.head_dim,
@@ -1275,7 +1238,6 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
             None if self.offset_dtype is None else self.dtype_to_str(self.offset_dtype),
             vec,
             unit_columns,
-            index,
             contiguous,
         )
-        return kernel(cfg["threads"], 1 if wide else cfg["heads"], tail)
+        return kernel(cfg["threads"], 1 if wide else cfg["heads"])
