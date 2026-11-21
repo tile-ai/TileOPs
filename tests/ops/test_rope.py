@@ -751,6 +751,12 @@ def test_rope_cos_sin_unchecked_row_outside_the_tables_reads_its_nearest_row(
         pytest.param(_OFFSETS, marks=_SMOKE, id="64-bit-row"),
         # The offset must stay 64-bit until its clamp, here in 32-bit row arithmetic.
         pytest.param(_WHOLE_BLOCKS, marks=_FULL, id="32-bit-row"),
+        # Units past half the resident threads: the 64-bit-index program, two heads a thread.
+        pytest.param(
+            _dense(2, 2048, 8, 128, 64, P=4096, some=["seqlen_offsets"]),
+            marks=_FULL,
+            id="64-bit-index",
+        ),
     ],
 )
 def test_rope_cos_sin_int64_offset_at_its_maximum_reads_the_last_row(row) -> None:
