@@ -171,14 +171,13 @@ def _rope_positions_kernel(
     pairs; or ``tail_vec`` columns past ``rotary_dim``, copied. A token's query units come
     before its key units, so one launch serves both. A block holds ``threads * units`` units
     of one token, ``units`` a thread, and reads the token's position once; consecutive
-    blocks walk a token's parts, then the next token's. Where a head has copied columns, a
-    thread loads all its units before it stores any, and a thread of one unit loads it before
-    the token's position; in the ``wide`` program every thread loads its unit before the
-    position. Otherwise a thread loads and stores one unit at a time after the position.
-    ``rot_vec`` and ``tail_vec`` divide every column offset they start at, so each unit moves
-    as vectors. Each block clamps the token's position into the table once, before its table
-    loads, so a position outside the table reads the nearest row. The arithmetic is f32 and
-    rounds once.
+    blocks walk a token's parts, then the next token's. A thread of one unit loads it before
+    the token's position where heads copy columns or the program is ``wide``; any other thread
+    reads the position first, then, where heads copy columns, loads all its units before it
+    stores any, and otherwise loads and stores one unit at a time. ``rot_vec`` and
+    ``tail_vec`` divide every column offset they start at, so each unit moves as vectors.
+    Each block clamps the token's position into the table once, before its table loads, so a
+    position outside the table reads the nearest row. The arithmetic is f32 and rounds once.
 
     The staged program instead gives a block one token's query row or key row, the two
     alternating: its threads load the row into shared memory in ``row_vec``-column vectors,
