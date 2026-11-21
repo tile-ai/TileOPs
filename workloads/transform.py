@@ -19,17 +19,21 @@ class HadamardTransformWorkload(WorkloadBase):
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        """``x @ kron(B, H_m) / sqrt(n)`` in float32, B the op's base matrix, H_m by butterflies."""
-        base, m = self.base_order, self.n // self.base_order
-        v = x.float().reshape(-1, base, m)
-        h = 1
-        while h < m:
-            pairs = v.reshape(-1, base, m // (2 * h), 2, h)
-            a, b = pairs[..., 0, :], pairs[..., 1, :]
-            v = torch.stack([a + b, a - b], dim=-2).reshape(-1, base, m)
-            h *= 2
-        if base > 1:
-            v = torch.einsum(
-                "rak,ac->rck", v, HadamardTransformFwdOp.base_matrix(base).to(v.device)
-            )
-        return (v / math.sqrt(self.n)).reshape(x.shape).to(x.dtype)
+        return hadamard_transform(x, self.base_order)
+
+
+def hadamard_transform(x: torch.Tensor, base_order: int = 1) -> torch.Tensor:
+    """``x @ kron(B, H_m) / sqrt(n)`` over the last axis in float32, rounded to ``x``'s dtype;
+    B the op's base matrix of ``base_order``, H_m the Sylvester matrix by butterflies."""
+    n = x.shape[-1]
+    base, m = base_order, n // base_order
+    v = x.float().reshape(-1, base, m)
+    h = 1
+    while h < m:
+        pairs = v.reshape(-1, base, m // (2 * h), 2, h)
+        a, b = pairs[..., 0, :], pairs[..., 1, :]
+        v = torch.stack([a + b, a - b], dim=-2).reshape(-1, base, m)
+        h *= 2
+    if base > 1:
+        v = torch.einsum("rak,ac->rck", v, HadamardTransformFwdOp.base_matrix(base).to(v.device))
+    return (v / math.sqrt(n)).reshape(x.shape).to(x.dtype)

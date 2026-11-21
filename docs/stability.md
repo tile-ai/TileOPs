@@ -11,6 +11,7 @@ This page defines what TileOPs supports as public API and what a release may cha
 | `tileops.backend`   | Target selection and registration of out-of-tree kernels.                                                                         |
 | `tileops.authoring` | `Op`, `Kernel`, `KernelInterface`, `CallSpec`, `Entry`, `SignatureCall`: the classes code outside TileOPs uses to write a new op. |
 | `tileops.manifest`  | The names in its `__all__`, the `tileops.manifest.primitives` module, and the spec format.                                        |
+| `tileops.models`    | Models composed from the ops, loading their published checkpoints: `DeepseekV4ForCausalLM` and `DeepseekV4Config`.                |
 | `tileops.trace`     | The in-kernel timeline tracer.                                                                                                    |
 
 A name is public when it is listed in the `__all__` of a public module.

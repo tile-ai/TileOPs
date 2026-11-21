@@ -17,6 +17,7 @@ _PUBLIC_MODULES = (
     "tileops.backend",
     "tileops.manifest",
     "tileops.manifest.primitives",
+    "tileops.models",
     "tileops.trace",
 )
 

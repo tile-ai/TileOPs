@@ -32,7 +32,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALLOWLIST = Path(__file__).resolve().with_name("api_compat_allow.txt")
 # Public modules besides the op families, which `tileops._FAMILIES` lists.
-MODULES = ("tileops.authoring", "tileops.backend", "tileops.manifest", "tileops.trace")
+MODULES = (
+    "tileops.authoring",
+    "tileops.backend",
+    "tileops.manifest",
+    "tileops.models",
+    "tileops.trace",
+)
 _POSITIONAL = ("POSITIONAL_ONLY", "POSITIONAL_OR_KEYWORD")
 _VARIADIC = ("VAR_POSITIONAL", "VAR_KEYWORD")
 

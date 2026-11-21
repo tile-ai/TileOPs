@@ -17,6 +17,7 @@ it state what one layer owns and what it must not reach into.
 | Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `roof_key()`)              |
 | Roofline tool                                               | benchmark output and the GPU profile; it never instantiates an op                                                          |
 | Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
+| Models                                                      | the public op interface, never `tileops._ops`                                                                              |
 
 ## Manifest
 
@@ -56,6 +57,20 @@ tensor primitives replaces; its call site names the blocking limitation. A
 helper such as `x.float().mean(...)` is a tensor primitive, not a fallback.
 
 → Rules: [ops-design.md](ops-design.md), [code-style.md](../code-style.md)
+
+## Models
+
+[`tileops.models`](../../src/tileops/models/) composes published models from the
+public ops and ships with the package. Every computation is an op call; what is
+left between calls is tensor primitives: views, copies, concatenation, index
+metadata and the constant RoPE tables. A model loads its Hugging Face checkpoint
+as published; its loader may convert those weights with torch, once, at load
+time, into the layouts its ops read.
+
+The reference a model is tested against is its authors' code, never copied into
+`src/`: the dev image carries it, and
+[`workloads/models/`](../../workloads/models/) runs it with torch in place of any
+custom kernels it calls.
 
 ## Benchmark
 
