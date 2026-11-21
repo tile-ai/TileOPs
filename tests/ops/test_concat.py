@@ -48,8 +48,8 @@ _CASES = (
     pytest.param(
         [[16, 1200], [16, 1032], [16, 8]], -1, [_BF16, _FP16, _BF16], marks=_FULL, id="promote"
     ),
-    # float16 and float32 promote to float32: the float16 input reads two vectors a thread
-    # and the float32 input one, so each input's tiles take its own count.
+    # float16 and float32 promote to float32: the float16 input takes twice the float32
+    # input's vectors a thread, so each input's tiles take its own count.
     pytest.param(
         [[16, 4096], [16, 4096]], -1, [_FP16, _FP32], marks=_FULL, id="mixed-reads-per-thread"
     ),
