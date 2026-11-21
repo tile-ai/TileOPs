@@ -157,6 +157,66 @@ def _ssd_chunk_state_fwd_kernel(
     return kernel_func
 
 
+@target_cache(maxsize=32)
+@tilelang.jit(out_idx=[5], pass_configs={"tl.enable_aggressive_shared_memory_merge": True})
+def _ssd_chunk_state_tma(batch, chunks, heads, groups, has_seq_idx):
+    """Use 128-token TMA panels and a contiguous FP32 state write on Hopper."""
+    chunk, d_head, d_state, panel = 256, 64, 128, 128
+    seq = chunks * chunk
+
+    @T.prim_func
+    def main(
+        x: T.Tensor((batch, seq, heads, d_head), "bfloat16"),
+        b: T.Tensor((batch, seq, groups, d_state), "bfloat16"),
+        dt: T.Tensor((batch, heads, chunks, chunk), "float32"),
+        da: T.Tensor((batch, heads, chunks, chunk), "float32"),
+        seq_idx: T.Tensor((batch, seq), "int32"),
+        out: T.Tensor((batch, chunks, heads, d_head, d_state), "float32"),
+    ):
+        with T.Kernel(heads, chunks, batch, threads=128) as (h, c, z):
+            b_tile = T.alloc_shared((panel, d_state), "bfloat16")
+            x_tile = T.alloc_shared((panel, d_head), "bfloat16")
+            weights = T.alloc_shared((chunk,), "float32")
+            acc = T.alloc_fragment((d_head, d_state), "float32")
+            ready = T.alloc_barrier([128, 128])
+            group = h // (heads // groups)
+            start = c * chunk
+            T.tma_copy(b[z, start : start + panel, group, :], b_tile, barrier=ready[0])
+            T.tma_copy(x[z, start : start + panel, h, :], x_tile, barrier=ready[0])
+            T.barrier_arrive(ready[0])
+            for k in T.Parallel(chunk):
+                weight = T.exp(T.min(da[z, h, c, chunk - 1] - da[z, h, c, k], 0.0)) * dt[z, h, c, k]
+                if has_seq_idx:
+                    last = seq_idx[z, start + chunk - 1]
+                    weights[k] = T.if_then_else(
+                        last >= 0 and seq_idx[z, start + k] == last, weight, 0.0
+                    )
+                else:
+                    weights[k] = weight
+            T.sync_threads()
+            for tile in T.unroll(2):
+                if tile == 1:
+                    T.tma_copy(
+                        b[z, start + panel : start + chunk, group, :], b_tile, barrier=ready[1]
+                    )
+                    T.tma_copy(x[z, start + panel : start + chunk, h, :], x_tile, barrier=ready[1])
+                    T.barrier_arrive(ready[1])
+                T.barrier_wait(ready[tile], 0)
+                for k, p in T.Parallel(panel, d_head):
+                    x_tile[k, p] = T.cast(
+                        weights[tile * panel + k] * T.cast(x_tile[k, p], "float32"), "bfloat16"
+                    )
+                T.gemm(x_tile, b_tile, acc, transpose_A=True, clear_accum=tile == 0)
+                T.sync_threads()
+            staging = T.alloc_shared((d_head, d_state), "float32")
+            T.annotate_layout({staging: tilelang.layout.make_swizzled_layout(staging)})
+            T.copy(acc, staging)
+            T.tma_copy(staging, out[z, c, h, :, :])
+            T.tma_store_wait()
+
+    return main
+
+
 class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
     """Mamba-2 SSD chunk state forward kernel.
 
@@ -230,6 +290,15 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
             self.dtype_to_str(self.dt_dtype),
         )
         self.init_config(config)
+
+    def _uses_tma_panels(self) -> bool:
+        return (
+            self.build_target.arch == 90
+            and (self.chunk_len, self.d_head, self.d_state) == (256, 64, 128)
+            and self.dtype == torch.bfloat16
+            and self.dt_dtype == torch.float32
+            and (self.batch, self.num_chunks, self.n_heads, self.n_groups) == (1, 16, 48, 1)
+        )
 
     @property
     def default_config(self) -> dict:
@@ -305,6 +374,10 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
+        if self._uses_tma_panels() and cfg == self.default_config:
+            return _ssd_chunk_state_tma(
+                self.batch, self.num_chunks, self.n_heads, self.n_groups, self.has_seq_idx
+            )
         return self.kernel(
             cfg["block_n"],
             cfg["block_p"],
