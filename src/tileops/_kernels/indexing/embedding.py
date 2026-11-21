@@ -181,6 +181,12 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         ]
         warps = -(-slots // (max_passes * WARP_LANES))
         threads = max(divisors) if divisors else min(WARP_LANES * warps, max_threads)
+        # A one-row tile has one id, which every thread waits on before its row loads: the
+        # fewest whole warps that divide the row let each id round trip cover up to
+        # max_passes row loads a thread, and fit more of the call's CTAs on an SM at once.
+        whole_warps = [t for t in divisors if t % WARP_LANES == 0]
+        if block_rows == 1 and whole_warps:
+            threads = min(whole_warps)
         return {
             "block_rows": block_rows,
             "block_vectors": block_vectors,
