@@ -80,8 +80,31 @@ _CASES = (
     pytest.param(
         [[4, 8], [4, 0], [4, 8], [4, 8], [4, 0]], 1, [_BF16] * 5, marks=_FULL, id="empty-element"
     ),
-    # More rows than the grid's y extent holds: a second launch takes the last row.
-    pytest.param([[65536, 8], [65536, 8]], 1, [_BF16] * 2, marks=_FULL, id="rows-past-grid-y"),
+    # More rows than the grid's y extent holds, each a whole number of lines: a second launch
+    # of column tiles takes the last row.
+    pytest.param([[65536, 64], [65536, 64]], 1, [_BF16] * 2, marks=_FULL, id="rows-past-grid-y"),
+    # Rows of whole 16-byte vectors that end inside a line, past one resident wave, copied by
+    # CTAs over the flat output. A CTA holds at least one warp and each row takes one, so 16385
+    # rows pass one wave on any device of up to 256 SMs holding 64 warps each.
+    # Rows of one vector: a vector's row is its position.
+    pytest.param([[16385, 8]], 1, [_FP16], marks=_FULL, id="flat-one-vector-rows"),
+    # Runs that cross rows and all four inputs, the last run partial.
+    pytest.param(
+        [[16385, 4], [16385, 12], [16385, 8], [16385, 4]],
+        1,
+        [_FP32] * 4,
+        marks=_FULL,
+        id="flat-four-inputs",
+    ),
+    # Rows that end inside a line, with more output elements than a 32-bit offset reaches: the
+    # flat program's element addresses.
+    pytest.param(
+        [[262144, 4104], [262144, 4096]],
+        1,
+        [_BF16] * 2,
+        marks=pytest.mark.nightly,
+        id="flat-past-32-bit-offsets",
+    ),
 )
 
 
