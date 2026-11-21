@@ -157,11 +157,9 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
 
     Viewed as ``[rows, total]``, the output takes input ``j`` at the columns after the
     previous inputs'. A vector is the most elements, up to 16 bytes of the widest dtype, that
-    divide every input's row width, so a vector never crosses a row or an input. A CTA copies
-    one column tile of one input row; its threads copy the vectors ``per_thread`` decides. A
-    program is built for the vector, the dtypes of the inputs it copies and their vectors per
-    thread; one program serves every row count and row width. Inputs share a launch
-    ``_SLOTS`` at a time.
+    divide every input's row width. A CTA copies one column tile of one input row. A program
+    is built per vector, input dtypes and vectors per thread, and serves every row count and
+    width. Inputs share a launch ``_SLOTS`` at a time.
     """
 
     @classmethod
@@ -220,10 +218,8 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
                         for j, p in zip(group, per, strict=True)
                     )
 
-                # A launch whose CTAs are all resident at once waits on their start and one
-                # DRAM round trip, not on bandwidth: each thread takes more vectors, doubling,
-                # until there are at most as many CTAs as SMs. Eight 16-byte vectors hold 32
-                # registers of data, so a thread takes at most eight.
+                # A launch that fits resident is latency-bound: double the vectors a thread
+                # until the CTAs fit the SMs, up to eight (32 registers of data).
                 most = 8
                 scale = 1
                 if ctas(1) <= self.sm_count * self.resident_ctas:
