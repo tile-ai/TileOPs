@@ -265,14 +265,11 @@ def _fused_topk_kernel(
 
         @T.macro
         def select_top_k(sel, lane_id, ids, picked):
-            """Select ``top_k`` experts from ``sel``, best first, ties to the lower expert.
-
-            The selection runs on the order keys of ``sel``, where a NaN the arithmetic produced,
-            which is positive, ranks above every number, as ``torch.topk`` ranks it. A padded or
-            selected slot holds the least int32; every expert's key is raised above it, so each
-            round selects another expert of the row. Each round takes the row max as one
-            ``redux`` over the lanes' maxima, then the lowest expert holding it as a second.
-            Lane ``k % 32`` keeps round ``k``'s expert in ``ids`` and its value in ``picked``.
+            """Select ``top_k`` experts from ``sel`` by order key, best first, ties to the
+            lower expert; a NaN ranks first, as in ``torch.topk``. Padded and selected slots
+            hold the least int32, below every expert. Each round is two warp reductions: the
+            row max, then the lowest expert holding it. Lane ``k % 32`` keeps round ``k``'s
+            expert in ``ids`` and its value in ``picked``.
             """
             key = T.alloc_local([ELEMS_PER_THREAD], "int32")
             for j in T.unroll(ELEMS_PER_THREAD):
