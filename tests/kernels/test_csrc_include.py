@@ -42,25 +42,16 @@ def test_unrelated_header_edit_keeps_flags(tmp_path: Path, monkeypatch: pytest.M
 def test_transitively_included_header_edit_changes_flags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A header reached through a quoted include is part of the kernel's source."""
+    """A header reached through a quoted include is part of the kernel's source, and two
+    headers that include each other are each hashed once."""
     (tmp_path / "helper.h").write_text('#pragma once\n#include "base.h"\n')
     base = tmp_path / "base.h"
-    base.write_text("constexpr int kBase = 1;\n")
+    base.write_text('#pragma once\n#include "helper.h"\nconstexpr int kBase = 1;\n')
     monkeypatch.setattr(_csrc, "_CSRC", tmp_path)
     before = _csrc.csrc_include("helper.h")
 
-    base.write_text("constexpr int kBase = 2;\n")
+    base.write_text('#pragma once\n#include "helper.h"\nconstexpr int kBase = 2;\n')
     after = _csrc.csrc_include("helper.h")
 
     assert before[:-1] == after[:-1]
     assert before[-1] != after[-1]
-
-
-@pytest.mark.smoke
-def test_include_cycle_terminates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Two headers that include each other are each hashed once."""
-    (tmp_path / "a.h").write_text('#pragma once\n#include "b.h"\n')
-    (tmp_path / "b.h").write_text('#pragma once\n#include "a.h"\n')
-    monkeypatch.setattr(_csrc, "_CSRC", tmp_path)
-
-    assert _csrc.csrc_include("a.h")[-1] == _csrc.csrc_include("a.h")[-1]

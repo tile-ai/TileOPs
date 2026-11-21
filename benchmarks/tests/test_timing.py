@@ -636,23 +636,27 @@ def test_another_device_prepares_every_call_by_reset_then_a_read_with_no_drain(m
     }
 
 
-def test_a_block_the_queue_cannot_hold_is_measured_again_in_what_it_took(monkeypatch):
+@pytest.mark.parametrize("start_block", [None, 2])
+def test_a_block_the_queue_cannot_hold_is_measured_again_in_what_it_took(monkeypatch, start_block):
     """A blocker released by its timeout leaves samples run while the host was still
     queueing, so the block is discarded and its samples measured in blocks of what the queue
-    took."""
+    took. A given start block is where the reading starts, not a size it keeps."""
     from benchmarks import timing
 
-    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, fits=1, repeats=3)
+    order, samples = _time_on_fakes(
+        monkeypatch, "cuda", {}, fits=1, repeats=3, start_block=start_block
+    )
+    discarded = start_block or 3
 
     assert len(samples) == 3
     assert all(s.sm_clock_hz == 1.5e9 for s in samples)
     recorded = timing._capture_bench_meta()
     assert recorded["block_samples"] == 1 and recorded["l2_flush"] == timing._L2_FLUSH_CUDA
     calls = [i for i, step in enumerate(order) if step == "run"]
-    # 4 calls before warm-up, 3 warm-up calls, the discarded block of 3, then the retaken 3,
-    # one per block.
-    assert len(calls) == 4 + 3 + 3 + 3
-    retaken = calls[10:]
+    # 4 calls before warm-up, 3 warm-up calls, the discarded block, then the retaken 3, one
+    # per block.
+    assert len(calls) == 4 + 3 + discarded + 3
+    retaken = calls[7 + discarded :]
     spans = _held_spans(order)
     held = [[c for c in retaken if b < c < u] for b, u in spans]
     assert [h for h in held if h] == [[c] for c in retaken]
@@ -744,21 +748,7 @@ def test_a_reading_given_no_block_drains_every_sample_unheld(monkeypatch):
     assert not any(b < c < u for b, u in _held_spans(order) for c in calls)
 
 
-def test_a_block_given_too_large_a_start_is_still_retaken_smaller(monkeypatch):
-    """The given size is where the reading starts, not a size it keeps: a block of 2 the
-    queue holds 1 of is discarded and retaken in blocks of 1."""
-    from benchmarks import timing
-
-    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, fits=1, repeats=3, start_block=2)
-
-    assert len(samples) == 3
-    assert timing._capture_bench_meta()["block_samples"] == 1
-    calls = [i for i, step in enumerate(order) if step == "run"]
-    # 4 calls before warm-up, 3 warm-up calls, the discarded block of 2, then 3 blocks of 1.
-    assert len(calls) == 4 + 3 + 2 + 3
-
-
-@pytest.mark.parametrize("start_block", [None, 3, 5])
+@pytest.mark.parametrize("start_block", [3, 5])
 def test_a_start_of_every_sample_reads_as_no_start(monkeypatch, start_block):
     """A start at or above the sample count holds every sample in one block and records no
     block size, as a reading given none does."""
