@@ -204,28 +204,38 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         # An input of width 0 holds no element, so no launch carries it and no grid is empty.
         present = [j for j, w in enumerate(widths) if w]
         groups = [present[first : first + _SLOTS] for first in range(0, len(present), _SLOTS)]
+        # One resident wave: the CTAs the device's thread limit keeps on its SMs at once.
+        wave = self.sm_count * self.resident_ctas
+        # The vectors of each input that hold 16 bytes.
+        most = [VECTOR_ACCESS_BYTES // (self.vec * d.itemsize) for d in self.dtypes]
         # A launch covers at most MAX_GRID_YZ_BLOCKS rows, the grid's y extent.
         for first in range(0, rows, MAX_GRID_YZ_BLOCKS):
             last = min(first + MAX_GRID_YZ_BLOCKS, rows)
             for group in groups:
                 kinds = tuple(self.dtype_to_str(self.dtypes[j]) for j in group)
-                # A thread keeps 16 bytes of each input in flight.
-                per = [VECTOR_ACCESS_BYTES // (self.vec * self.dtypes[j].itemsize) for j in group]
 
-                def ctas(scale: int, per=per, group=group, rows=last - first) -> int:
+                def ctas(per: list[int], group=group, rows: int = last - first) -> int:
                     return sum(
-                        rows * -(-widths[j] // (_THREADS * p * scale))
+                        rows * -(-widths[j] // (_THREADS * p))
                         for j, p in zip(group, per, strict=True)
                     )
 
-                # A launch that fits resident is latency-bound: double the vectors a thread
-                # until the CTAs fit the SMs, up to eight (32 registers of data).
-                most = 8
-                scale = 1
-                if ctas(1) <= self.sm_count * self.resident_ctas:
-                    while ctas(scale) > self.sm_count and max(per) * scale < most:
-                        scale *= 2
-                per_thread = tuple(p * scale for p in per)
+                # Each thread takes more vectors of every input, doubling them together, while
+                # the launch has more CTAs than SMs and the doubling removes CTAs. Beyond one
+                # resident wave the launch waits on bandwidth, and an input stops at 16 bytes in
+                # flight, the widest read a thread issues. Within one wave it waits on CTA starts
+                # and one DRAM round trip, and an input stops at eight vectors (eight 16-byte
+                # vectors hold 32 registers of data).
+                per = [1] * len(group)
+                while (now := ctas(per)) > self.sm_count:
+                    grown = [
+                        min(2 * p, most[j] if now > wave else 8)
+                        for j, p in zip(group, per, strict=True)
+                    ]
+                    if ctas(grown) >= now:
+                        break
+                    per = grown
+                per_thread = tuple(per)
                 self.program(self._compile, kinds, per_thread)(
                     flat[first:last],
                     sum(widths[: group[0]]),

@@ -29,29 +29,44 @@ _CASES = (
     # Each input's row ends inside a column tile.
     pytest.param([[3, 40], [3, 24]], 1, [_FP16] * 2, marks=_SMOKE, id="fp16-tails"),
     pytest.param([[2, 3, 8], [2, 5, 8]], 1, [_FP32] * 2, marks=_SMOKE, id="fp32-middle-dim"),
-    # Rows whose one-vector CTAs are all resident at once: each thread takes more vectors
-    # until there are at most as many CTAs as SMs.
+    # Rows whose one-vector CTAs are all resident and outnumber the SMs: 16-byte vectors,
+    # doubled to four per thread, where the launch fits the SMs.
+    pytest.param([[32, 5120], [32, 5120]], -1, [_BF16] * 2, marks=_FULL, id="bf16-resident-rows"),
+    # A resident launch of 1-element 2-byte vectors: four per thread, each an element store.
+    pytest.param([[8, 4097], [8, 3]], 1, [_BF16] * 2, marks=_FULL, id="bf16-2-byte-resident"),
+    # Rows whose one-vector CTAs are all resident and outnumber the SMs at two vectors, where
+    # the next doubling removes no CTA: two vectors per thread.
     pytest.param(
-        [[32, 5120], [32, 5120]], -1, [_BF16] * 2, marks=_FULL, id="bf16-resident-32-rows"
+        [[80, 1032], [80, 1032]], -1, [_BF16] * 2, marks=_FULL, id="bf16-resident-no-removal"
+    ),
+    # A launch just beyond one resident wave: the float32 input keeps one 16-byte vector and
+    # the bfloat16 input doubles to two, which brings the launch within the wave; there both
+    # double to the cap of eight, with more CTAs than SMs left.
+    pytest.param(
+        [[136, 4096], [136, 4096]], -1, [_FP32, _BF16], marks=_FULL, id="wave-then-cap-eight"
     ),
     # The MTP draft row: its CTAs are all resident at once, so each thread copies eight
     # vectors, the last ones past the input's row end.
     pytest.param(
         [[64, 5120], [64, 5120]], -1, [_BF16] * 2, marks=_FULL, id="bf16-eight-per-thread"
     ),
-    # Widths that make a vector 8 bytes: two per thread, each an 8-byte store, the second
-    # one past the row end in the last tile.
-    pytest.param([[4, 1036], [4, 1044]], 1, [_BF16] * 2, marks=_FULL, id="bf16-8-byte-vectors"),
+    # Widths that make a vector 8 bytes, on more one-vector CTAs than SMs: two per thread, each
+    # an 8-byte store, the second one past the row end in the last tile.
+    pytest.param([[32, 1036], [32, 1044]], 1, [_BF16] * 2, marks=_FULL, id="bf16-8-byte-vectors"),
     # Widths that make a vector 4 bytes: four per thread, each a 4-byte store of two elements.
-    pytest.param([[4, 1034], [4, 1030]], 1, [_BF16] * 2, marks=_FULL, id="bf16-4-byte-vectors"),
+    pytest.param([[32, 1034], [32, 1030]], 1, [_BF16] * 2, marks=_FULL, id="bf16-4-byte-vectors"),
     # bfloat16 and float16 promote to a float32 output: 8-byte reads, two per thread, converted.
     pytest.param(
-        [[16, 1200], [16, 1032], [16, 8]], -1, [_BF16, _FP16, _BF16], marks=_FULL, id="promote"
+        [[20, 1200], [20, 1032], [20, 8]], -1, [_BF16, _FP16, _BF16], marks=_FULL, id="promote"
     ),
     # float16 and float32 promote to float32: the float16 input takes twice the float32
     # input's vectors a thread, so each input's tiles take its own count.
     pytest.param(
-        [[16, 4096], [16, 4096]], -1, [_FP16, _FP32], marks=_FULL, id="mixed-reads-per-thread"
+        [[256, 4096], [256, 4096]],
+        -1,
+        [_FP16, _FP32],
+        marks=_FULL,
+        id="mixed-reads-per-thread",
     ),
     # Along dim 0 the output is one row.
     pytest.param([[5], [7]], 0, [_FP32] * 2, marks=_FULL, id="rank-1"),
