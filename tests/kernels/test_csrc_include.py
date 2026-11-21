@@ -21,3 +21,37 @@ def test_header_edit_changes_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert str(header) in before
     assert before[:-1] == after[:-1]
     assert before[-1] != after[-1]
+
+
+@pytest.mark.smoke
+def test_unrelated_header_edit_keeps_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A header the kernel does not include must not change its flags, or every nightly
+    recompiles and re-autotunes kernels whose source did not change."""
+    (tmp_path / "helper.h").write_text("constexpr int kHelper = 1;\n")
+    other = tmp_path / "other.h"
+    other.write_text("constexpr int kOther = 1;\n")
+    monkeypatch.setattr(_csrc, "_CSRC", tmp_path)
+    before = _csrc.csrc_include("helper.h")
+
+    other.write_text("constexpr int kOther = 2;\n")
+
+    assert _csrc.csrc_include("helper.h") == before
+
+
+@pytest.mark.smoke
+def test_transitively_included_header_edit_changes_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A header reached through a quoted include is part of the kernel's source, and two
+    headers that include each other are each hashed once."""
+    (tmp_path / "helper.h").write_text('#pragma once\n#include "base.h"\n')
+    base = tmp_path / "base.h"
+    base.write_text('#pragma once\n#include "helper.h"\nconstexpr int kBase = 1;\n')
+    monkeypatch.setattr(_csrc, "_CSRC", tmp_path)
+    before = _csrc.csrc_include("helper.h")
+
+    base.write_text('#pragma once\n#include "helper.h"\nconstexpr int kBase = 2;\n')
+    after = _csrc.csrc_include("helper.h")
+
+    assert before[:-1] == after[:-1]
+    assert before[-1] != after[-1]

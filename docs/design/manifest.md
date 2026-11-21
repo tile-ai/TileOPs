@@ -64,7 +64,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
     let: {<name>: "<expr>"}
     shape_rules: ["<refinement>"]
     dtype_combos: [{<DType index>: <dtype>}]
-  workloads: [{<params and indices>, some, dtype_cases, label}]
+  workloads: [{<params and indices>, some, dtype_cases, nightly, label}]
   roofline: {flops, bytes} | {func}
   composition: {kind: composite, stages}      # optional
 ```
@@ -285,7 +285,7 @@ Workloads prioritize representative LLM scenarios within the CI runtime budget. 
 
 ### Rows
 
-A workload row determines one call. Its keys are construction parameter names, call-time argument names, relevant index names, `some`, `dtype_cases` and `label` ([table 16](#t-rows)).
+A workload row determines one call. Its keys are construction parameter names, call-time argument names, relevant index names, `some`, `dtype_cases`, `nightly` and `label` ([table 16](#t-rows)).
 
 - A row gives exactly the relevant indices that no generator determines.
 - A `Seq[Int]` index is written as an integer list or as a call of a value primitive ([table 15](#t-prims)) over integer literals, evaluated once at instantiation.
@@ -301,6 +301,7 @@ A workload row determines one call. Its keys are construction parameter names, c
 - A `Seq[DType]` index is written in `dtype_cases` as a list of dtypes, and its value in the case id joins them with `.`.
 - **Instantiation.** A row fixes shapes, dtypes, parameters, the member of each argument, call-time scalar values and metadata values. Devices follow [Call Semantics](#call-semantics); strides are contiguous, tensors do not alias, and other data is random.
 - The validator infers the call back from the instantiated inputs and requires agreement.
+- **Nightly sweep.** Of a float16 call and its bfloat16 sibling, the nightly benchmark sweep runs only the bfloat16 one, unless the row is marked `nightly: every-dtype`. A row marked `nightly: skip` is left out of the sweep.
 
 ### Generators
 
@@ -544,7 +545,8 @@ The checks:
 | 3   | call-time argument name           | its scalar value or `null`, for an argument with several members not in `some`; required when it has no default                                                                                    |
 | 4   | `forall` index other than `DType` | exactly the branch's relevant indices no generator solves                                                                                                                                          |
 | 5   | `dtype_cases`                     | non-empty list of assignments, each a mapping `{<DType index>: <dtype>}` over the relevant `forall` `DType` indices; only when there are such indices; a dtype parameter is written as a parameter |
-| 6   | `label`                           | the row's name                                                                                                                                                                                     |
+| 6   | `nightly`                         | `skip` or `every-dtype` ([Rows](#rows))                                                                                                                                                            |
+| 7   | `label`                           | the row's name                                                                                                                                                                                     |
 
 **<a id="t-generators"></a>Table 17** Generator classes
 

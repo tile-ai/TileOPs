@@ -90,8 +90,12 @@ def timed(monkeypatch):
     """Record every bench_kernel call, answered with one sample, and every recorded row."""
     runs, rows = [], []
 
-    def bench_kernel(run, args=(), reset=None, count_copies=False, **_):
-        runs.append(SimpleNamespace(run=run, args=args, reset=reset, count_copies=count_copies))
+    def bench_kernel(run, args=(), reset=None, count_copies=False, start_block=None, **_):
+        runs.append(
+            SimpleNamespace(
+                run=run, args=args, reset=reset, count_copies=count_copies, start_block=start_block
+            )
+        )
         return [Sample(device_busy_ms=1.0, latency_ms=1.0, n_kernels=1)]
 
     monkeypatch.setattr(bench, "bench_kernel", bench_kernel)
@@ -326,6 +330,37 @@ def test_a_row_counts_the_retries_of_both_passes(timed, monkeypatch, retries, po
     monkeypatch.setattr(bench, "_capture_bench_meta", lambda: next(metas))
     results = bench.Runner(SumFwdOp(), _case()).compare({})
     assert results["tileops"]["attribution_retries"] == pooled
+
+
+@pytest.mark.parametrize("first, second", [(3, 3), (None, None), (0, 0)])
+def test_the_second_pass_starts_from_the_block_the_first_settled_on(
+    timed, monkeypatch, first, second
+):
+    """The same call on the same inputs fills the launch queue at the same sample, so the
+    second pass does not find the block size again through a block that times out."""
+    _passes_reporting(monkeypatch, [first, first])
+    bench.Runner(SumFwdOp(), _case()).compare({})
+    assert [run.start_block for run in timed.runs] == [None, second]
+
+
+@pytest.mark.parametrize("reference_ms, passes", [(10.0, 1), (9.0, 2)])
+def test_the_nightly_sweep_times_a_reference_ten_times_the_fastest_baseline_once(
+    timed, monkeypatch, reference_ms, passes
+):
+    """A baseline reads 1 ms: a 10 ms reference gets one pass, a 9 ms one two."""
+    monkeypatch.setattr(bench, "_nightly", True)
+    case = _case()
+    stub = bench.bench_kernel
+
+    def bench_kernel(run, **kwargs):
+        stub(run, **kwargs)
+        busy = reference_ms if run is case.reference else 1.0
+        return [Sample(device_busy_ms=busy, latency_ms=busy, n_kernels=1)]
+
+    monkeypatch.setattr(bench, "bench_kernel", bench_kernel)
+    bench.Runner(SumFwdOp(), case).compare({"torch-ref": case.reference, "fast": lambda x: x * 2})
+    assert sum(run.run is case.reference for run in timed.runs) == passes
+    assert {row["tag"] for row in timed.rows} == {"tileops", "torch-ref", "fast"}
 
 
 def test_samples_no_blocker_held_are_not_pooled_with_held_ones(timed, monkeypatch):

@@ -525,7 +525,9 @@ class _Clocks:
         return [1.5e9] * n
 
 
-def _time_on_fakes(monkeypatch, device, spoil, fits=None, call=None, repeats=2, late=None):
+def _time_on_fakes(
+    monkeypatch, device, spoil, fits=None, call=None, repeats=2, late=None, start_block=None
+):
     """Run ``_bench_kernel`` on stand-ins for every device-facing piece, timing *call* (by
     default one that only launches) *repeats* times; returns the steps it took in order, and
     its samples."""
@@ -566,6 +568,7 @@ def _time_on_fakes(monkeypatch, device, spoil, fits=None, call=None, repeats=2, 
         min_iters=repeats,
         allow_events_fallback=True,
         reset=lambda: order.append("reset"),
+        start_block=start_block,
     )
     return order, samples
 
@@ -633,23 +636,27 @@ def test_another_device_prepares_every_call_by_reset_then_a_read_with_no_drain(m
     }
 
 
-def test_a_block_the_queue_cannot_hold_is_measured_again_in_what_it_took(monkeypatch):
+@pytest.mark.parametrize("start_block", [None, 2])
+def test_a_block_the_queue_cannot_hold_is_measured_again_in_what_it_took(monkeypatch, start_block):
     """A blocker released by its timeout leaves samples run while the host was still
     queueing, so the block is discarded and its samples measured in blocks of what the queue
-    took."""
+    took. A given start block is where the reading starts, not a size it keeps."""
     from benchmarks import timing
 
-    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, fits=1, repeats=3)
+    order, samples = _time_on_fakes(
+        monkeypatch, "cuda", {}, fits=1, repeats=3, start_block=start_block
+    )
+    discarded = start_block or 3
 
     assert len(samples) == 3
     assert all(s.sm_clock_hz == 1.5e9 for s in samples)
     recorded = timing._capture_bench_meta()
     assert recorded["block_samples"] == 1 and recorded["l2_flush"] == timing._L2_FLUSH_CUDA
     calls = [i for i, step in enumerate(order) if step == "run"]
-    # 4 calls before warm-up, 3 warm-up calls, the discarded block of 3, then the retaken 3,
-    # one per block.
-    assert len(calls) == 4 + 3 + 3 + 3
-    retaken = calls[10:]
+    # 4 calls before warm-up, 3 warm-up calls, the discarded block, then the retaken 3, one
+    # per block.
+    assert len(calls) == 4 + 3 + discarded + 3
+    retaken = calls[7 + discarded :]
     spans = _held_spans(order)
     held = [[c for c in retaken if b < c < u] for b, u in spans]
     assert [h for h in held if h] == [[c] for c in retaken]
@@ -704,6 +711,55 @@ def test_a_queue_that_takes_no_sample_discards_the_held_ones(monkeypatch):
     # Without the blocker a sample is drained before and after, as nvbench's timer does.
     assert all(order[c - 1] == order[c + 1] == "sync" for c in calls[-2:])
     assert not any(b < c < u for b, u in _held_spans(order) for c in calls[-2:])
+
+
+def test_a_reading_given_its_block_size_queues_no_block_that_times_out(monkeypatch):
+    """A queue that takes one sample, given a start of one: no block is discarded, and the
+    row records the block size it was read in."""
+    from benchmarks import timing
+
+    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, fits=1, repeats=3, start_block=1)
+
+    assert len(samples) == 3
+    recorded = timing._capture_bench_meta()
+    assert recorded["block_samples"] == 1 and recorded["l2_flush"] == timing._L2_FLUSH_CUDA
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    # 4 calls before warm-up, 3 warm-up calls, then 3 blocks of 1 and no discarded block.
+    assert len(calls) == 4 + 3 + 3
+    held = [[c for c in calls[7:] if b < c < u] for b, u in _held_spans(order)]
+    assert [h for h in held if h] == [[c] for c in calls[7:]]
+
+
+def test_a_reading_given_no_block_drains_every_sample_unheld(monkeypatch):
+    """A start of 0 is a call the queue held no sample of: every sample is drained before
+    and after, and none is queued behind the blocker first."""
+    from benchmarks import timing
+
+    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, fits=0, start_block=0)
+
+    assert len(samples) == 2
+    recorded = timing._capture_bench_meta()
+    assert recorded["block_samples"] == 0
+    assert recorded["l2_flush"] == timing._L2_FLUSH_CUDA_DRAINED
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    # 4 calls before warm-up, 2 warm-up calls, then 2 unheld.
+    assert len(calls) == 4 + 2 + 2
+    assert all(order[c - 1] == order[c + 1] == "sync" for c in calls[-2:])
+    assert not any(b < c < u for b, u in _held_spans(order) for c in calls)
+
+
+def test_a_start_of_every_sample_reads_as_no_start(monkeypatch):
+    """A start at the sample count, the boundary, holds every sample in one block and records
+    no block size, as a reading given none does."""
+    from benchmarks import timing
+
+    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, repeats=3, start_block=3)
+
+    assert len(samples) == 3
+    assert "block_samples" not in timing._capture_bench_meta()
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    held = [[c for c in calls[7:] if b < c < u] for b, u in _held_spans(order)]
+    assert [h for h in held if h] == [calls[7:]]
 
 
 def test_an_events_fallback_reports_only_its_own_blocks(monkeypatch):

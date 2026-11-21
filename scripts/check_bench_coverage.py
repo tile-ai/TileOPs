@@ -38,7 +38,7 @@ for _path in (REPO_ROOT, REPO_ROOT / "src"):
 from benchmarks.outcomes import UNAVAILABLE_PROPERTY  # noqa: E402
 from tileops.manifest import load_adts, load_manifest  # noqa: E402
 from tileops.manifest._plan import entry_plan  # noqa: E402
-from tileops.manifest._workload import instantiate  # noqa: E402
+from tileops.manifest._workload import instantiate, nightly_calls  # noqa: E402
 
 EXIT_OK = 0
 EXIT_GAP = 1
@@ -103,22 +103,26 @@ def _case_id(name: str) -> str:
     return name
 
 
-def _declared(op_name: str, entry: dict) -> set[str]:
-    """The case ids the entry's workload rows produce."""
+def _declared(op_name: str, entry: dict, nightly: bool = False) -> set[str]:
+    """The case ids the entry's workload rows produce, or those the nightly sweep runs."""
     plan = entry_plan(op_name, entry, load_adts(), resolve=False)
-    return {
-        instantiate(plan, row, case).case_id
-        for row in entry.get("workloads") or ()
-        for case in row.get("dtype_cases") or [{}]
-    }
+    rows = entry.get("workloads") or []
+    calls = (
+        nightly_calls(plan, rows)
+        if nightly
+        else [(row, case) for row in rows for case in row.get("dtype_cases") or [{}]]
+    )
+    return {instantiate(plan, row, case).case_id for row, case in calls}
 
 
 def verdicts(
     recorded: dict[str, list[str]],
     manifest: dict,
     unavailable: dict[str, list[str]],
+    nightly: bool = False,
 ) -> list[tuple[str, str, str]]:
-    """One ``(op, verdict, detail)`` row per implemented entry."""
+    """One ``(op, verdict, detail)`` row per implemented entry; *nightly* expects only the
+    cases the nightly sweep runs."""
     rows = []
     for op_name, entry in sorted(manifest.items()):
         if entry.get("status") != "implemented":
@@ -126,7 +130,7 @@ def verdicts(
         skipped = unavailable.get(op_name, [])
         cases = recorded.get(op_name, []) + skipped
         repeated = sorted({c for c in cases if cases.count(c) > 1})
-        declared = _declared(op_name, entry)
+        declared = _declared(op_name, entry, nightly)
         missing = sorted(declared - set(cases))
         if repeated:
             rows.append((op_name, FAIL, f"case ids recorded twice: {repeated}"))
@@ -167,6 +171,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bench-xml", required=True, help="benchmark run's JUnit report")
     parser.add_argument("--output", help="write the markdown summary here as well")
+    parser.add_argument(
+        "--nightly",
+        action="store_true",
+        help="expect the cases a run with --tileops-nightly benchmarks",
+    )
     args = parser.parse_args(argv)
 
     xml_path = Path(args.bench_xml)
@@ -179,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[coverage] benchmark report {xml_path} is unusable: {exc}", file=sys.stderr)
         return EXIT_NO_REPORT
 
-    rows = verdicts(recorded, load_manifest(), unavailable)
+    rows = verdicts(recorded, load_manifest(), unavailable, args.nightly)
     summary = render(rows)
     print(summary)
     if args.output:

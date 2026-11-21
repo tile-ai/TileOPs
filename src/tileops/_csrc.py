@@ -1,11 +1,15 @@
 """Locate the C++/CUDA sources under ``tileops/csrc`` that kernels compile in."""
 
 import hashlib
+import re
 from pathlib import Path
 
 __all__ = ["csrc_include", "csrc_path"]
 
 _CSRC = Path(__file__).resolve().parent / "csrc"
+
+# A quoted include, the form one csrc header uses to pull in another.
+_QUOTED_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
 
 
 def csrc_path(name: str) -> str:
@@ -13,11 +17,31 @@ def csrc_path(name: str) -> str:
     return str(_CSRC / name)
 
 
-def _csrc_digest() -> str:
-    """Hash the name and content of every file under ``tileops/csrc``."""
+def _included_files(names: tuple[str, ...]) -> list[Path]:
+    """Return ``names`` and every csrc file they reach through quoted includes, sorted.
+
+    A quoted include resolves against the including file's directory.
+    Files outside ``tileops/csrc`` and system headers are not followed.
+    """
+    root = _CSRC.resolve()
+    seen: set[Path] = set()
+    pending = [_CSRC / name for name in names]
+    while pending:
+        path = pending.pop().resolve()
+        if path in seen or not path.is_file() or not path.is_relative_to(root):
+            continue
+        seen.add(path)
+        for target in _QUOTED_INCLUDE.findall(path.read_text(errors="replace")):
+            pending.append(path.parent / target)
+    return sorted(seen)
+
+
+def _csrc_digest(names: tuple[str, ...]) -> str:
+    """Hash the name and content of ``names`` and of the csrc files they include."""
+    root = _CSRC.resolve()
     digest = hashlib.sha256()
-    for path in sorted(p for p in _CSRC.rglob("*") if p.is_file()):
-        digest.update(path.relative_to(_CSRC).as_posix().encode())
+    for path in _included_files(names):
+        digest.update(path.relative_to(root).as_posix().encode())
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
@@ -29,8 +53,10 @@ def csrc_include(*names: str) -> list[str]:
 
     TileLang keys its kernel and binary caches on the flag strings, not on the
     files they name, so an edited header would otherwise reuse a binary built
-    from the old one. The trailing ``-D`` define carries a hash of every csrc
-    file; no source reads it, but it changes the flags whenever a header does.
+    from the old one. The trailing ``-D`` define carries a hash of ``names`` and
+    of every csrc header they include; no source reads it, but it changes the
+    flags whenever one of those headers does. An edit to a header the kernel
+    does not include leaves the flags, and so the cached binary, unchanged.
     An edit takes effect in the next process: kernel builders keep the flags
     they were built with for the life of one.
 
@@ -41,4 +67,4 @@ def csrc_include(*names: str) -> list[str]:
         ``["-include", <path>, ..., "-DTILEOPS_CSRC_SHA256=<hash>"]``.
     """
     flags = [flag for name in names for flag in ("-include", csrc_path(name))]
-    return [*flags, f"-DTILEOPS_CSRC_SHA256={_csrc_digest()}"]
+    return [*flags, f"-DTILEOPS_CSRC_SHA256={_csrc_digest(names)}"]
