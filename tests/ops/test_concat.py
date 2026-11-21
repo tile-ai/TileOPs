@@ -80,14 +80,48 @@ _CASES = (
     pytest.param(
         [[4, 8], [4, 0], [4, 8], [4, 8], [4, 0]], 1, [_BF16] * 5, marks=_FULL, id="empty-element"
     ),
-    # More rows than the grid's y extent holds: a second launch takes the last row.
-    pytest.param([[65536, 8], [65536, 8]], 1, [_BF16] * 2, marks=_FULL, id="rows-past-grid-y"),
+    # More rows than the grid's y extent holds, each a whole number of lines: a second launch
+    # of column tiles takes the last row.
+    pytest.param([[65536, 64], [65536, 64]], 1, [_BF16] * 2, marks=_FULL, id="rows-past-grid-y"),
+    # Rows that end inside a line, with more output elements than a 32-bit offset reaches: the
+    # flat program's element addresses.
+    pytest.param(
+        [[262144, 4104], [262144, 4096]],
+        1,
+        [_BF16] * 2,
+        marks=pytest.mark.nightly,
+        id="flat-past-32-bit-offsets",
+    ),
 )
 
 
 @pytest.mark.parametrize("S, dim, D", _CASES)
 def test_concat(S, dim, D) -> None:
     call = manifest_call("ConcatFwdOp", {"D": D}, S=S, dim=dim)
+    test = ConcatTest(call)
+    test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "widths, D",
+    [
+        # Rows of one vector: a vector's row is its position.
+        pytest.param([8], [_FP16], marks=_SMOKE, id="one-vector-rows"),
+        # Runs that cross rows and all four inputs, the last run partial.
+        pytest.param([4, 12, 8, 4], [_FP32] * 4, marks=_FULL, id="four-inputs"),
+    ],
+)
+def test_concat_flat_rows(widths, D) -> None:
+    """Rows of whole 16-byte vectors that end inside a line, past one resident wave, copied by
+    CTAs over the flat output.
+
+    A CTA holds at least one warp, and each row takes at least one CTA. One row more than the
+    warps all SMs hold at once therefore gives more CTAs than one resident wave, whatever the
+    CTA size.
+    """
+    props = torch.cuda.get_device_properties(run_device())
+    rows = props.multi_processor_count * props.max_threads_per_multi_processor // 32 + 1
+    call = manifest_call("ConcatFwdOp", {"D": D}, S=[[rows, w] for w in widths], dim=1)
     test = ConcatTest(call)
     test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
 
