@@ -75,7 +75,9 @@ class ModelOps:
             is_causal=False,
         )
         self.pools = {
-            r: GatedPoolCompressFwdOp(r, overlap=r == 4) for r in set(cfg.compress_ratios) if r
+            r: GatedPoolCompressFwdOp(r, overlap=cfg.indexed(r))
+            for r in set(cfg.compress_ratios)
+            if r
         }
         self.index_topk = TopKSelectFwdOp(cfg.index_topk, fill_value=-1)
         self.hc_pre = HyperConnectionPreFwdOp(
@@ -90,7 +92,7 @@ class ModelOps:
         self.route = FusedTopKFwdOp(
             cfg.n_activated_experts,
             scoring_func=cfg.score_func,
-            renormalize=True,
+            renormalize=cfg.score_func != "softmax",
             routed_scaling_factor=cfg.route_scale,
         )
         self.swiglu = SiLUAndMulFwdOp(swiglu_limit=cfg.swiglu_limit)
@@ -101,13 +103,6 @@ class ModelOps:
     def norm(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
         """RMS-normalize the last axis of ``x``, scaled by ``weight`` when given."""
         return self.norms[x.shape[-1]](x, weight)
-
-    def fp8_linear(
-        self, x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor
-    ) -> torch.Tensor:
-        """``x @ weight^T`` for 2-D ``x``, quantized per 1x128 to FP8 with power-of-two scales."""
-        q, s, _ = self.act_quant(x)
-        return self.gemm_fp8(q, weight, s, scale)
 
 
 class RoPETable:

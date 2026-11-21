@@ -22,20 +22,22 @@ class FP8Linear:
         self.scale = scale
 
     def __call__(self, ops: ModelOps, x: torch.Tensor) -> torch.Tensor:
-        """Return ``x @ weight^T`` in bfloat16 for 2-D bfloat16 ``x``."""
-        return ops.fp8_linear(x, self.weight, self.scale)
+        """Return ``x @ weight^T`` in bfloat16 for 2-D bfloat16 ``x``, which is quantized per
+        1x128 to FP8 with power-of-two scales."""
+        q, s, _ = ops.act_quant(x)
+        return ops.gemm_fp8(q, self.weight, s, self.scale)
 
 
 class Compressor:
     """Pools every ``ratio`` tokens of a request's KV into one compressed entry.
 
-    Ratio 4 pools overlapping windows of 8 tokens. ``rotate`` marks the indexer's
+    An indexed ratio pools overlapping windows of twice the ratio. ``rotate`` marks the indexer's
     compressor, whose entries are Hadamard-rotated and FP4 fake-quantized; the attention
     compressor's entries are FP8 fake-quantized outside their trailing RoPE dimensions.
     """
 
     def __init__(self, cfg: DeepseekV4Config, ratio: int, head_dim: int, rotate: bool) -> None:
-        windows = 2 if ratio == 4 else 1
+        windows = 2 if cfg.indexed(ratio) else 1
         self.ratio = ratio
         self.rotate = rotate
         self.rope_dim = cfg.rope_head_dim
@@ -67,8 +69,8 @@ class Compressor:
         starts = torch.full((batch,), start_pos, dtype=torch.int32, device=device)
         slots = torch.arange(batch, dtype=torch.int32, device=device)
         entries, _ = ops.pools[self.ratio](
-            kv.contiguous(),
-            score.contiguous(),
+            kv,
+            score,
             self.ape,
             self.kv_state,
             self.score_state,
@@ -93,8 +95,8 @@ class Compressor:
         closed = ops.norm(closed.contiguous(), self.norm)
         ops.rope(
             closed.unsqueeze(2)[..., -self.rope_dim :],
-            cos.contiguous(),
-            sin.contiguous(),
+            cos,
+            sin,
             seqlen_offsets=first,
         )
         if self.rotate:
@@ -106,14 +108,14 @@ class Compressor:
 
 
 class Indexer:
-    """The lightning indexer: selects each query's top compressed entries of a ratio-4 layer."""
+    """The lightning indexer: selects each query's top compressed entries of an indexed layer."""
 
-    def __init__(self, cfg: DeepseekV4Config, max_seq_len: int) -> None:
+    def __init__(self, cfg: DeepseekV4Config, ratio: int, max_entries: int) -> None:
         self.n_heads = cfg.index_n_heads
         self.head_dim = cfg.index_head_dim
         self.rope_dim = cfg.rope_head_dim
-        self.ratio = 4
-        self.max_entries = max_seq_len // self.ratio
+        self.ratio = ratio
+        self.max_entries = max_entries
         self.weight_scale: torch.Tensor
         self.compressor = Compressor(cfg, self.ratio, self.head_dim, rotate=True)
         self.wq_b: FP8Linear
@@ -152,7 +154,7 @@ class Indexer:
         entries = self.compressor(ops, rope, x, batch, start_pos)
         if entries is not None:
             first = start_pos // self.ratio
-            self.cache[:batch, first : first + entries.shape[1]] = entries
+            self.cache[:, first : first + entries.shape[1]] = entries
         n_keys = end_pos // self.ratio
         device = x.device
         if n_keys == 0:
@@ -162,27 +164,27 @@ class Indexer:
         weights = ops.mul(ops.gemm(x, self.weights_proj).float(), self.weight_scale)
         weights = weights.to(torch.bfloat16)
         width = n_keys if start_pos == 0 else self.max_entries
-        keys = self.cache[:batch, :width].transpose(1, 2).contiguous()
+        keys = self.cache[:, :width].transpose(1, 2).contiguous()
         scores = ops.bmm(q.view(batch, seqlen * self.n_heads, self.head_dim), keys)
         scores = ops.relu(scores).view(batch * seqlen, self.n_heads, width)
         logits = ops.bmm(weights.view(batch * seqlen, 1, self.n_heads), scores)
         logits = logits.float().view(batch, seqlen, width, 1)
         if start_pos == 0:
             visible = torch.arange(1, seqlen + 1, dtype=torch.int32, device=device) // self.ratio
-            ends = visible.expand(batch, seqlen).contiguous()
+            ends = visible.expand(batch, seqlen)
         else:
             ends = torch.full((batch, seqlen), n_keys, dtype=torch.int32, device=device)
         starts = torch.zeros_like(ends)
-        idx = ops.index_topk(logits.contiguous(), starts, ends).squeeze(2)
+        idx = ops.index_topk(logits, starts, ends).squeeze(2)
         return torch.where(idx >= 0, idx + offset, idx)
 
 
 class Attention:
-    """MQA over a 128-token sliding window plus, on compressed layers, pooled KV entries.
+    """MQA over a sliding window plus, on compressed layers, pooled KV entries.
 
-    Queries come from a low-rank projection; keys and values share one 512-wide row whose
-    trailing 64 dimensions carry interleaved RoPE. The output is rotated back, projected per
-    group by ``wo_a`` and mixed by ``wo_b``.
+    Queries come from a low-rank projection; keys and values share one ``head_dim``-wide row
+    whose trailing ``rope_head_dim`` dimensions carry interleaved RoPE. The output is rotated
+    back, projected per group by ``wo_a`` and mixed by ``wo_b``.
     """
 
     def __init__(self, cfg: DeepseekV4Config, layer_id: int, max_seq_len: int) -> None:
@@ -197,7 +199,9 @@ class Attention:
         self.compressor = (
             Compressor(cfg, self.ratio, self.head_dim, rotate=False) if self.ratio else None
         )
-        self.indexer = Indexer(cfg, max_seq_len) if self.ratio == 4 else None
+        self.indexer = (
+            Indexer(cfg, self.ratio, self.max_entries) if cfg.indexed(self.ratio) else None
+        )
         self.wq_a: FP8Linear
         self.q_norm: torch.Tensor
         self.wq_b: FP8Linear
@@ -229,12 +233,8 @@ class Attention:
             pos = torch.arange(seqlen, device=device).unsqueeze(1)
             idx = (pos - win + 1).clamp(min=0) + torch.arange(min(seqlen, win), device=device)
             return torch.where(idx > pos, -1, idx)
-        if start_pos >= win - 1:
-            idx = (torch.arange(win, device=device) + start_pos + 1) % win
-        else:
-            idx = torch.arange(win, device=device)
-            idx = torch.where(idx > start_pos, -1, idx)
-        return idx.unsqueeze(0)
+        idx = torch.arange(win, device=device)
+        return torch.where(idx > start_pos, -1, idx).unsqueeze(0)
 
     def _entry_indices(
         self, seqlen: int, start_pos: int, offset: int, device: torch.device
@@ -283,22 +283,21 @@ class Attention:
                 self._entry_indices(seqlen, start_pos, offset, device).expand(batch, seqlen, -1)
             )
 
+        entries = (
+            self.compressor(ops, rope, x, batch, start_pos) if self.compressor is not None else None
+        )
         if start_pos == 0:
             kept = torch.arange(max(0, seqlen - win), seqlen, device=device)
-            self.kv_cache[:batch, kept % win] = kv[:, kept]
+            self.kv_cache[:, kept % win] = kv[:, kept]
             keys = kv
-            if self.compressor is not None:
-                entries = self.compressor(ops, rope, x, batch, start_pos)
-                if entries is not None:
-                    self.kv_cache[:batch, win : win + entries.shape[1]] = entries
-                    keys = torch.cat([kv, entries], dim=1)
+            if entries is not None:
+                self.kv_cache[:, win : win + entries.shape[1]] = entries
+                keys = torch.cat([kv, entries], dim=1)
         else:
-            self.kv_cache[:batch, start_pos % win] = kv[:, 0]
-            if self.compressor is not None:
-                entries = self.compressor(ops, rope, x, batch, start_pos)
-                if entries is not None:
-                    self.kv_cache[:batch, win + start_pos // self.ratio] = entries[:, 0]
-            keys = self.kv_cache[:batch]
+            self.kv_cache[:, start_pos % win] = kv[:, 0]
+            if entries is not None:
+                self.kv_cache[:, win + start_pos // self.ratio] = entries[:, 0]
+            keys = self.kv_cache
 
         idx = torch.cat(indices, dim=-1).to(torch.int32).unsqueeze(2).contiguous()
         o = ops.attention(q, keys.unsqueeze(2).contiguous(), idx, attn_sink=self.attn_sink)
@@ -310,11 +309,11 @@ class Attention:
 
 
 class MoE:
-    """256 routed MXFP4 experts (top 6) plus one FP8 shared expert, with clamped SwiGLU.
+    """Routed MXFP4 experts plus one FP8 shared expert, with clamped SwiGLU.
 
-    The first ``n_hash_layers`` route by a token-id table; the rest by ``sqrt(softplus)``
-    scores, a selection bias and a 1.5 scale. Routing weights multiply the SwiGLU output
-    before the down projection, and the shared expert joins the float32 combine.
+    The first ``n_hash_layers`` route by a token-id table; the rest by ``score_func`` scores
+    and a selection bias. The routing weights, times ``route_scale``, multiply the SwiGLU
+    output before the down projection, and the shared expert joins the float32 combine.
     """
 
     def __init__(self, cfg: DeepseekV4Config, layer_id: int) -> None:

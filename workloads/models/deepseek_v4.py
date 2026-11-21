@@ -17,11 +17,7 @@ from pathlib import Path
 import torch
 
 from workloads.quantization.fp8_quant import fp8_quant_per_group
-from workloads.quantization.quantize import (
-    fp4_quant_per_group,
-    round_up_to_power_of_two,
-    unpack_e2m1,
-)
+from workloads.quantization.quantize import fp4_quant_per_group, fp8_quant_per_block, unpack_e2m1
 from workloads.sequence_modeling.hyper_connection import hc_split_mixes
 from workloads.transform import hadamard_transform
 
@@ -30,17 +26,16 @@ __all__ = [
     "INFERENCE_DIR_ENV",
     "check_decode_state",
     "check_index_selection",
+    "check_selection_agreement",
     "check_within_rounding",
     "load_official",
     "official_args",
     "official_state_dict",
     "random_checkpoint",
     "sparse_attn",
-    "torch_kernel_module",
 ]
 
 INFERENCE_DIR_ENV = "DEEPSEEK_V4_INFERENCE_DIR"
-_FP8_MAX = 448.0
 
 
 def act_quant(
@@ -71,16 +66,18 @@ def _dequant_rows(codes: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return (codes.float().unflatten(-1, (-1, block)) * scale.float().unsqueeze(-1)).flatten(-2)
 
 
+def _dequant_blocks(w: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    """Float32 values of FP8 ``w`` (``[N, K]``) under 128x128 block ``scale``."""
+    return _dequant_rows(w, scale.float().repeat_interleave(128, 0)[: w.shape[0]])
+
+
 def fp8_gemm(a, a_s, b, b_s, scale_dtype=torch.float32):
     """``kernel.fp8_gemm``: ``a @ b^T`` in float32 over dequantized FP8 operands, ``b`` under
     128x128 block scales, returned in the default dtype."""
     k = a.shape[-1]
     a32 = _dequant_rows(a.reshape(-1, k), a_s.reshape(-1, a_s.shape[-1]))
-    n = b.shape[0]
-    b_scale = b_s.float().repeat_interleave(128, 0)[:n]
-    b32 = _dequant_rows(b, b_scale)
-    out = a32 @ b32.T
-    return out.to(torch.get_default_dtype()).view(*a.shape[:-1], n)
+    out = a32 @ _dequant_blocks(b, b_s).T
+    return out.to(torch.get_default_dtype()).view(*a.shape[:-1], b.shape[0])
 
 
 def fp4_gemm(a, a_s, b, b_s, scale_dtype=torch.float32):
@@ -129,7 +126,7 @@ def hc_split_sinkhorn(mixes, hc_scale, hc_base, hc_mult=4, sinkhorn_iters=20, ep
     return pre, 2 * post, comb
 
 
-def torch_kernel_module() -> types.ModuleType:
+def _torch_kernel_module() -> types.ModuleType:
     """A module with ``kernel.py``'s six functions implemented in torch."""
     module = types.ModuleType("kernel")
     for fn in (act_quant, fp4_act_quant, fp8_gemm, fp4_gemm, sparse_attn, hc_split_sinkhorn):
@@ -139,11 +136,11 @@ def torch_kernel_module() -> types.ModuleType:
 
 def load_official(inference_dir: str | os.PathLike) -> types.ModuleType:
     """Import the official ``inference/model.py`` in ``inference_dir`` against
-    :func:`torch_kernel_module`. ``rotate_activation`` is replaced too, so
+    :func:`_torch_kernel_module`. ``rotate_activation`` is replaced too, so
     ``fast_hadamard_transform`` is not needed."""
     path = Path(inference_dir) / "model.py"
     saved = sys.modules.get("kernel")
-    sys.modules["kernel"] = torch_kernel_module()
+    sys.modules["kernel"] = _torch_kernel_module()
     try:
         spec = importlib.util.spec_from_file_location("deepseek_v4_official_model", path)
         module = importlib.util.module_from_spec(spec)
@@ -251,8 +248,7 @@ def _official_tensor(name: str, tensor: torch.Tensor, scale: torch.Tensor | None
     it: ``wo_a`` dequantized to bfloat16 (``scale`` is its block scale), routed-expert bytes as
     ``float4_e2m1fn_x2``."""
     if name.endswith("wo_a.weight"):
-        blocks = tensor.unflatten(0, (-1, 128)).unflatten(-1, (-1, 128)).float()
-        return (blocks * scale[:, None, :, None].float()).flatten(2, 3).flatten(0, 1).bfloat16()
+        return _dequant_blocks(tensor, scale).bfloat16()
     if ".experts." in name and tensor.dtype == torch.int8:
         return tensor.view(torch.float4_e2m1fn_x2)
     return tensor
@@ -270,16 +266,6 @@ def official_state_dict(tensors: dict[str, torch.Tensor]) -> dict[str, torch.Ten
         )
         out[name] = _official_tensor(name, tensor, scale)
     return out
-
-
-def _fp8_block_quant(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """``w`` as FP8 e4m3 codes under power-of-two 128x128 block scales."""
-    n, k = w.shape
-    blocks = w.float().view(n // 128, 128, k // 128, 128)
-    amax = blocks.abs().amax(dim=(1, 3), keepdim=True).clamp(min=1e-12)
-    scale = round_up_to_power_of_two(amax / _FP8_MAX)
-    codes = (blocks / scale).clamp(-_FP8_MAX, _FP8_MAX).to(torch.float8_e4m3fn).view(n, k)
-    return codes, scale.view(n // 128, k // 128).to(torch.float8_e8m0fnu)
 
 
 def random_checkpoint(config: dict, seed: int = 0) -> dict[str, torch.Tensor]:
@@ -306,7 +292,8 @@ def random_checkpoint(config: dict, seed: int = 0) -> dict[str, torch.Tensor]:
     t: dict[str, torch.Tensor] = {}
 
     def fp8_linear(name, n, k):
-        t[f"{name}.weight"], t[f"{name}.scale"] = _fp8_block_quant(normal(n, k, std=k**-0.5))
+        codes, scale = fp8_quant_per_block(normal(n, k, std=k**-0.5), ue8m0=True)
+        t[f"{name}.weight"], t[f"{name}.scale"] = codes, scale.to(torch.float8_e8m0fnu)
 
     def norm(name, d, mean=1.0):
         t[f"{name}.weight"] = normal(d, std=0.1, mean=mean).bfloat16()
@@ -397,19 +384,15 @@ def check_within_rounding(
     )
 
 
-_FP8_STATE_REL_TOL = 1e-2
-_FP4_STATE_REL_TOL = 2e-2
-
-
 def check_decode_state(block, official_block, positions: int) -> None:
     """Assert a TileOPs layer's decoding state matches the official block's after both took the
     same inputs over ``positions`` tokens.
 
-    The window ring and the compressed entries hold FP8 fake-quantized rows, the indexer's
-    entries FP4 fake-quantized ones; their distance, relative L2, comes only from codes the two
-    round across a boundary, 1e-2 for FP8 and 2e-2 for FP4 at most. Entries are compared once
-    a window has closed.
+    The window ring and the compressed entries hold FP8 fake-quantized rows and may differ by
+    1e-2 in relative L2, the indexer's entries FP4 fake-quantized ones and may differ by 2e-2;
+    entries are compared once a window has closed.
     """
+    fp8_tol, fp4_tol = 1e-2, 2e-2
     attn, official = block.attn, official_block.attn
     window = attn.window
     pairs = [
@@ -417,7 +400,7 @@ def check_decode_state(block, official_block, positions: int) -> None:
             "window ring",
             attn.kv_cache[:, :window],
             official.kv_cache[:, :window],
-            _FP8_STATE_REL_TOL,
+            fp8_tol,
         )
     ]
     if attn.ratio and positions >= attn.ratio:
@@ -428,7 +411,7 @@ def check_decode_state(block, official_block, positions: int) -> None:
                 "entries",
                 attn.kv_cache[:, entries],
                 official.kv_cache[:, entries],
-                _FP8_STATE_REL_TOL,
+                fp8_tol,
             )
         )
     if attn.indexer is not None and positions >= attn.indexer.ratio:
@@ -438,7 +421,7 @@ def check_decode_state(block, official_block, positions: int) -> None:
                 "indexer entries",
                 attn.indexer.cache[:, :n],
                 official.indexer.kv_cache[:, :n],
-                _FP4_STATE_REL_TOL,
+                fp4_tol,
             )
         )
     for name, actual, expected, tol in pairs:
@@ -465,4 +448,31 @@ def check_index_selection(
     ordered = entries.sort(-1).values
     assert bool(((ordered[..., 1:] != ordered[..., :-1]) | (ordered[..., 1:] < 0)).all()), (
         "a query selects an entry twice"
+    )
+
+
+def check_selection_agreement(selections: list, official: list, ratio: int, top_k: int) -> None:
+    """Assert the indexer's selections agree with the official indexer's on the same inputs.
+
+    ``selections`` holds each call's ``(indices, start_pos, offset)`` and ``official`` the
+    official indexer's output for the same call. Over the queries that see more than ``top_k``
+    closed entries, and so choose, on average at most ``top_k / 256`` of the entries kept may be
+    missing from the official selection: FP4 rounding ties move a few entries across the cut,
+    a scoring fault moves many.
+    """
+    differing = choosing = 0
+    for (indices, start_pos, _), theirs in zip(selections, official, strict=True):
+        pos = torch.arange(start_pos, start_pos + indices.shape[1], device=indices.device)
+        chooses = (pos + 1) // ratio > top_k
+        if not chooses.any():
+            continue
+        width = int(max(indices.max(), theirs.max())) + 2
+        kept = torch.zeros(*theirs.shape[:2], width, dtype=torch.bool, device=indices.device)
+        kept.scatter_(-1, theirs.long() + 1, True)
+        ours_only = (indices >= 0) & ~kept.gather(-1, indices.long() + 1)
+        differing += int(ours_only.sum(-1)[:, chooses].sum())
+        choosing += int(chooses.sum()) * indices.shape[0]
+    assert differing <= choosing * top_k / 256, (
+        f"{differing} selected entries over {choosing} choosing queries differ from the official "
+        f"indexer's, bound {top_k / 256:.3g} per query"
     )
