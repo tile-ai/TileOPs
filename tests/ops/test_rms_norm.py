@@ -22,6 +22,7 @@ from tileops._ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
 from tileops._utils import RESIDENT_CTAS, get_shared_memory_optin, get_sm_count
 from tileops.backend import OpNotAvailableError
+from tileops.backend._dispatch import device_facts_of
 from workloads.device import run_device
 from workloads.norm import (
     FusedAddRMSNormWorkload,
@@ -250,7 +251,7 @@ def test_no_weight_and_no_eps_match_torch() -> None:
 def test_tuned_rms_norm_in_each_row_body(n: int, many_rows: bool) -> None:
     """Each body a row width and row count select is right tuned; the launches of more than
     four rows an SM carry a weight, the others scale by one."""
-    rows = 4 * get_sm_count() + 1 if many_rows else 5
+    rows = 4 * device_facts_of(torch.device(run_device())).sm_count + 1 if many_rows else 5
     x = torch.randn(rows, n, dtype=torch.bfloat16, device=run_device())
     weight = torch.randn(n, dtype=torch.bfloat16, device=run_device()) if many_rows else None
     op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)

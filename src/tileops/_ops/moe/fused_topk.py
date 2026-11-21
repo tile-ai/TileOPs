@@ -26,7 +26,8 @@ class FusedTopKFwdOp(Op):
     torch's float32 score by a few ulp: an expert, or a group, whose selection
     score is within 1e-5 relative plus 1e-6 absolute of the last one kept may be
     kept in its place; a selection that is not that close matches the float32
-    reference, ties to the lower index. The weights are
+    reference, ties to the lower index. A NaN score ranks above every number, as in
+    ``torch.topk``, and every row returns ``top_k`` distinct experts. The weights are
     within 1e-4 (relative) of the float32 scores of the experts returned.
 
     With ``num_expert_group > 1`` it is DeepSeek grouped routing, as vLLM's
@@ -34,7 +35,8 @@ class FusedTopKFwdOp(Op):
     ``E / num_expert_group`` consecutive experts, each group is scored by the sum of
     its two best biased scores when ``correction_bias`` is passed and by its best
     score otherwise, the ``topk_group`` best groups are kept (ties to the lower
-    group index), and the top-k experts are selected inside them. The returned
+    group index), and the top-k experts are selected inside them; an expert of a dropped
+    group scores -inf there, so it ties with a kept expert scoring -inf. The returned
     weights are the unbiased scores of the selected experts, renormalized when
     ``renormalize``, times ``routed_scaling_factor``. ``num_expert_group=1`` selects
     over all experts.

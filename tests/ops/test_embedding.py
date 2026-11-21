@@ -24,8 +24,17 @@ _SMOKE = pytest.mark.smoke
 _FULL = pytest.mark.full
 # One case per dtype and per tiling path. Every case reads the table's last row.
 _CASES = (
-    # A row of more vectors than a CTA has threads: two passes.
-    pytest.param([4, 33], 1000, 2304, "int64", "bfloat16", {}, marks=_SMOKE, id="bf16-two-passes"),
+    # A one-row tile of 256 vectors on two warps: four passes.
+    pytest.param(
+        [4, 33],
+        1000,
+        2048,
+        "int64",
+        "bfloat16",
+        {},
+        marks=[_SMOKE, pytest.mark.in_tree_kernels],
+        id="bf16-four-passes",
+    ),
     pytest.param([129], 300, 1152, "int64", "float32", {}, marks=_SMOKE, id="fp32"),
     # Fewer ids than a tile of narrow rows holds: a partial row tile. The gradient-only
     # params ride on it.
@@ -78,6 +87,8 @@ def _column_tiles(cfg: dict, S: list, D: int) -> bool:
 # The kernel config each path-named case relies on, so a retune fails the case instead of
 # moving it off its path.
 _ON_PATH = {
+    "bf16-four-passes": lambda cfg, S, D: cfg["block_rows"] == 1
+    and cfg["block_vectors"] == 4 * cfg["threads"],
     "guarded-pass": lambda cfg, S, D: cfg["block_rows"] * cfg["block_vectors"] % cfg["threads"]
     != 0,
     "column-tiles": _column_tiles,
@@ -104,11 +115,11 @@ def test_embedding(S, V, D, index_dtype, dtype, params, request) -> None:
 @pytest.mark.smoke
 def test_embedding_strided_inputs() -> None:
     """Every second element of a wider id tensor and of a wider table."""
-    test = _test([4, 33], 1000, 2304, "int64", "bfloat16")
+    test = _test([4, 33], 1000, 2048, "int64", "bfloat16")
     input, weight = test.gen_inputs()
     wide_input = torch.zeros(4, 66, dtype=input.dtype, device=run_device())
     wide_input[:, ::2] = input
-    wide_weight = torch.zeros(1000, 4608, dtype=weight.dtype, device=run_device())
+    wide_weight = torch.zeros(1000, 4096, dtype=weight.dtype, device=run_device())
     wide_weight[:, ::2] = weight
     test.check(EmbeddingFwdOp(), wide_input[:, ::2], wide_weight[:, ::2])
 
@@ -116,7 +127,7 @@ def test_embedding_strided_inputs() -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("bad", [-1, 1000], ids=["negative", "past-end"])
 def test_embedding_validate_inputs_rejects_out_of_range_ids(bad: int) -> None:
-    input, weight = _test([4, 33], 1000, 2304, "int64", "bfloat16").gen_inputs()
+    input, weight = _test([4, 33], 1000, 2048, "int64", "bfloat16").gen_inputs()
     input[1, 3] = bad
     with pytest.raises(ValueError, match="input"):
         EmbeddingFwdOp(validate_inputs=True)(input, weight)
@@ -124,7 +135,7 @@ def test_embedding_validate_inputs_rejects_out_of_range_ids(bad: int) -> None:
 
 @pytest.mark.smoke
 def test_embedding_rejects_float_ids() -> None:
-    input, weight = _test([4, 33], 1000, 2304, "int64", "bfloat16").gen_inputs()
+    input, weight = _test([4, 33], 1000, 2048, "int64", "bfloat16").gen_inputs()
     with pytest.raises(ValueError, match="dtype is outside"):
         EmbeddingFwdOp()(input.float(), weight)
 

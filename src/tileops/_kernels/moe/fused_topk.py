@@ -35,7 +35,6 @@ def _fused_topk_kernel(
     topk_group=1,
     routed_scaling_factor=1.0,
     with_expert_ids=False,
-    warp_select=False,
 ):
     """Build a fused TileLang kernel: scoring + top-k, zero __syncthreads().
 
@@ -82,7 +81,6 @@ def _fused_topk_kernel(
         HALF_WARP = WARP_SIZE // 2
         num_blocks = -(-num_tokens // TOKENS_PER_BLOCK)
         grouped = num_expert_group > 1
-        scaled = routed_scaling_factor != 1.0
         GROUP_SIZE = num_experts // num_expert_group
 
         @T.macro
@@ -130,6 +128,13 @@ def _fused_topk_kernel(
         TRANSPOSE = num_expert_group == 1 << LOG_GROUPS and num_expert_group <= WARP_SIZE
 
         @T.macro
+        def order_key(value):
+            """The int32 whose signed order is the float32 order of ``value``: negative floats
+            flip their magnitude bits. The map is its own inverse."""
+            bits = T.reinterpret(value, "int32")
+            return bits ^ ((bits >> 31) & T.int32(0x7FFFFFFF))
+
+        @T.macro
         def merge_partials(best1, best2, dst, keep1, keep2, other1, other2):
             """Merge the partner's biased partial into slot ``dst``: the two best of two
             sorted pairs."""
@@ -142,12 +147,12 @@ def _fused_topk_kernel(
             the lower; either way the kept partial lands in the lower slots."""
             for g in T.unroll(half):
                 upper = (lane_id & mask) != 0
-                keep1 = T.alloc_var(T.float32)
+                keep1 = T.alloc_var(T.int32)
                 keep1 = T.if_then_else(upper, best1[g + half], best1[g])
                 other1 = T.shfl_xor(T.if_then_else(upper, best1[g], best1[g + half]), mask)
                 if with_correction_bias:
-                    keep2 = T.alloc_var(T.float32)
-                    other2 = T.alloc_var(T.float32)
+                    keep2 = T.alloc_var(T.int32)
+                    other2 = T.alloc_var(T.int32)
                     keep2 = T.if_then_else(upper, best2[g + half], best2[g])
                     other2 = T.shfl_xor(T.if_then_else(upper, best2[g], best2[g + half]), mask)
                     merge_partials(best1, best2, g, keep1, keep2, other1, other2)
@@ -155,20 +160,35 @@ def _fused_topk_kernel(
                     best1[g] = T.max(keep1, other1)
 
         @T.macro
+        def group_score(best1, best2, g):
+            """The order key of group ``g``'s score: its best selection score, plus the second
+            best with a bias."""
+            if with_correction_bias:
+                best1[g] = order_key(
+                    T.reinterpret(order_key(best1[g]), "float32")
+                    + T.reinterpret(order_key(best2[g]), "float32")
+                )
+
+        @T.macro
         def keep_top_groups(sel, lane_id):
-            """Set ``sel`` to -inf outside the ``topk_group`` best groups."""
-            # Per group: the best and, with a bias, second-best selection score.
-            best1 = T.alloc_local([num_expert_group], "float32")
-            best2 = T.alloc_local([num_expert_group], "float32")
+            """Set ``sel`` to -inf outside the ``topk_group`` best groups.
+
+            Groups rank on the order keys of their scores, as the selection does: a NaN score
+            ranks above every number, as in ``torch.topk``, and ties go to the lower group.
+            """
+            # Per group: the order keys of the best and, with a bias, second-best scores.
+            best1 = T.alloc_local([num_expert_group], "int32")
+            best2 = T.alloc_local([num_expert_group], "int32")
             for g in T.unroll(num_expert_group):
-                best1[g] = -T.infinity("float32")
-                best2[g] = -T.infinity("float32")
+                best1[g] = order_key(-T.infinity("float32"))
+                best2[g] = order_key(-T.infinity("float32"))
             for j in T.unroll(ELEMS_PER_THREAD):
+                key = order_key(sel[j])
                 for g in T.unroll(num_expert_group):
                     if group_of(j, lane_id) == g:
                         if with_correction_bias:
-                            best2[g] = T.max(best2[g], T.min(best1[g], sel[j]))
-                        best1[g] = T.max(best1[g], sel[j])
+                            best2[g] = T.max(best2[g], T.min(best1[g], key))
+                        best1[g] = T.max(best1[g], key)
             if TRANSPOSE:
                 # After the transpose lane l holds group l >> (5 - LOG_GROUPS) in slot 0.
                 if LOG_GROUPS >= 1:
@@ -182,16 +202,15 @@ def _fused_topk_kernel(
                 if LOG_GROUPS >= 5:
                     transpose_step(best1, best2, lane_id, num_expert_group // 32, HALF_WARP // 16)
                 for i in T.unroll(LOG_WARP - LOG_GROUPS):
-                    other1 = T.alloc_var(T.float32)
+                    other1 = T.alloc_var(T.int32)
                     other1 = T.shfl_xor(best1[0], T.int32(HALF_WARP >> LOG_GROUPS) >> i)
                     if with_correction_bias:
-                        other2 = T.alloc_var(T.float32)
+                        other2 = T.alloc_var(T.int32)
                         other2 = T.shfl_xor(best2[0], T.int32(HALF_WARP >> LOG_GROUPS) >> i)
                         merge_partials(best1, best2, 0, best1[0], best2[0], other1, other2)
                     else:
                         best1[0] = T.max(best1[0], other1)
-                if with_correction_bias:
-                    best1[0] = best1[0] + best2[0]
+                group_score(best1, best2, 0)
                 # A group ranks below every group scoring higher, or equal with a lower index.
                 for g in T.unroll(num_expert_group):
                     best2[g] = T.shfl_sync(best1[0], g << (LOG_WARP - LOG_GROUPS))
@@ -217,22 +236,22 @@ def _fused_topk_kernel(
                             # Merge two sorted pairs; reads best1 before it is updated.
                             best2[g] = T.max(T.min(best1[g], other1), T.max(best2[g], other2))
                         best1[g] = T.max(best1[g], other1)
-                if with_correction_bias:
-                    for g in T.unroll(num_expert_group):
-                        best1[g] = best1[g] + best2[g]
-                # No lane owns a group here, so a serial argmax picks the kept groups.
+                for g in T.unroll(num_expert_group):
+                    group_score(best1, best2, g)
+                # No lane owns a group here, so a serial argmax picks the kept groups; the first
+                # group not yet kept is taken when no other beats it.
                 kept = T.alloc_local([num_expert_group], "int32")
                 for g in T.unroll(num_expert_group):
                     kept[g] = 0
                 pick = T.alloc_var(T.int32)
-                pick_val = T.alloc_var(T.float32)
+                pick_key = T.alloc_var(T.int32)
                 for _ in T.unroll(topk_group):
                     pick = T.int32(-1)
-                    pick_val = -T.infinity("float32")
+                    pick_key = T.min_value("int32")
                     for g in T.unroll(num_expert_group):
-                        if kept[g] == 0 and best1[g] > pick_val:
+                        if kept[g] == 0 and (pick < 0 or best1[g] > pick_key):
                             pick = g
-                            pick_val = best1[g]
+                            pick_key = best1[g]
                     for g in T.unroll(num_expert_group):
                         if g == pick:
                             kept[g] = 1
@@ -241,79 +260,73 @@ def _fused_topk_kernel(
                         if group_of(j, lane_id) == g and kept[g] == 0:
                             sel[j] = -T.infinity("float32")
 
-        if (
-            warp_select
-            and scoring_func == "softmax"
-            and renormalize
-            and not grouped
-            and not with_expert_ids
-            and not with_correction_bias
-            and input_dtype == "bfloat16"
-            and num_experts == 128
-            and top_k == 8
-        ):
+        # Lane l holds the selected or given experts k = c * 32 + l, c < SLOTS.
+        SLOTS = -(-top_k // WARP_SIZE)
 
-            @T.prim_func
-            def select_eight(
-                logits: T.Tensor((num_tokens, num_experts), input_dtype),
-                weights: T.Tensor((num_tokens, top_k), "float32"),
-                ids: T.Tensor((num_tokens, top_k), "int32"),
-            ):
-                with T.Kernel(num_blocks, threads=TOKENS_PER_BLOCK * WARP_SIZE) as block:
-                    thread = T.get_thread_binding()
-                    lane = thread % WARP_SIZE
-                    token = block * TOKENS_PER_BLOCK + thread // WARP_SIZE
-                    if token < num_tokens:
-                        scores = T.alloc_local((4,), "float32")
-                        keys = T.alloc_local((4,), "int32")
-                        for j in T.unroll(4):
-                            scores[j] = T.cast(logits[token, j * WARP_SIZE + lane], "float32")
-                        peak = T.warp_reduce_max(
-                            T.max(T.max(scores[0], scores[1]), T.max(scores[2], scores[3]))
-                        )
-                        # Nonnegative FP32 scores have the same order as their integer bits.
-                        # Compare scores after exp so underflow ties still choose the lowest ID.
-                        for j in T.unroll(4):
-                            value = T.exp(scores[j] - peak)
-                            keys[j] = T.if_then_else(value >= 0, T.reinterpret(value, "int32"), -1)
-                        selected = T.alloc_var("float32", init=0)
-                        expert = T.alloc_var("int32", init=-1)
-                        for rank in T.unroll(top_k):
-                            best = T.warp_reduce_max(
-                                T.max(T.max(keys[0], keys[1]), T.max(keys[2], keys[3]))
-                            )
-                            first = T.alloc_var("int32", init=num_experts)
-                            for j in T.unroll(4):
-                                first = T.min(
-                                    first,
-                                    T.if_then_else(
-                                        keys[j] == best, j * WARP_SIZE + lane, num_experts
-                                    ),
-                                )
-                            winner = -T.warp_reduce_max(-first)
-                            if lane == rank:
-                                selected = T.if_then_else(
-                                    best >= 0,
-                                    T.reinterpret(best, "float32"),
-                                    -T.infinity("float32"),
-                                )
-                                expert = T.if_then_else(best >= 0, winner, -1)
-                            for j in T.unroll(4):
-                                if j * WARP_SIZE + lane == winner:
-                                    keys[j] = -1
-                        total = T.warp_reduce_sum(selected)
-                        if lane < top_k:
-                            ids[token, lane] = expert
-                            weights[token, lane] = selected * (
-                                T.float32(routed_scaling_factor) / total
-                            )
+        @T.macro
+        def select_top_k(sel, lane_id, ids, picked):
+            """Select ``top_k`` experts from ``sel`` by order key, best first, ties to the
+            lower expert; a NaN ranks first, as in ``torch.topk``. Padded and selected slots
+            hold the least int32, below every expert. Each round is two warp reductions: the
+            row max, then the lowest expert holding it. Lane ``k % 32`` keeps round ``k``'s
+            expert in ``ids`` and its value in ``picked``.
+            """
+            key = T.alloc_local([ELEMS_PER_THREAD], "int32")
+            for j in T.unroll(ELEMS_PER_THREAD):
+                key[j] = T.if_then_else(
+                    j * WARP_SIZE + lane_id < num_experts,
+                    T.max(order_key(sel[j]), T.min_value("int32") + 1),
+                    T.min_value("int32"),
+                )
+            for c in T.unroll(SLOTS):
+                for kk in T.serial(T.min(WARP_SIZE, top_k - c * WARP_SIZE)):
+                    lane_max = T.alloc_var(T.int32)
+                    lane_max = key[0]
+                    for j in T.unroll(1, ELEMS_PER_THREAD):
+                        lane_max = T.max(lane_max, key[j])
+                    best = T.alloc_var(T.int32)
+                    best = T.warp_reduce_max(lane_max)
+                    first = T.alloc_var(T.int32)
+                    first = T.int32(ELEMS_PER_THREAD)
+                    for j in T.unroll(ELEMS_PER_THREAD):
+                        jj = ELEMS_PER_THREAD - 1 - j
+                        first = T.if_then_else(key[jj] == best, jj, first)
+                    expert = T.alloc_var(T.int32)
+                    expert = T.warp_reduce_min(first * WARP_SIZE + lane_id)
+                    cleared = T.alloc_var(T.int32)
+                    cleared = T.if_then_else(
+                        (expert & (WARP_SIZE - 1)) == lane_id, expert >> LOG_WARP, ELEMS_PER_THREAD
+                    )
+                    for j in T.unroll(ELEMS_PER_THREAD):
+                        key[j] = T.if_then_else(cleared == j, T.min_value("int32"), key[j])
+                    if lane_id == kk:
+                        ids[c] = expert
+                        picked[c] = T.reinterpret(order_key(best), "float32")
 
-            return select_eight
+        @T.macro
+        def write_weights(topk_weights, topk_ids, token_id, lane_id, ids, weights, scale):
+            """Renormalize when asked, scale, and store each lane's experts and weights."""
+            factor = T.alloc_var(T.float32)
+            factor = scale
+            if renormalize:
+                total = T.alloc_var(T.float32)
+                total = T.float32(0)
+                for c in T.unroll(SLOTS):
+                    if c * WARP_SIZE + lane_id < top_k:
+                        total = total + weights[c]
+                # Lanes from top_k on hold no weight, so the butterfly stops at the first power
+                # of two covering the lanes that do.
+                for i in T.unroll(int(math.ceil(math.log2(min(top_k, WARP_SIZE))))):
+                    total = total + T.shfl_xor(total, T.int32(1) << i)
+                factor = factor / total
+            for c in T.unroll(SLOTS):
+                k = c * WARP_SIZE + lane_id
+                if k < top_k:
+                    topk_weights[token_id, k] = weights[c] * factor
+                    topk_ids[token_id, k] = ids[c]
 
         if with_expert_ids:
-            # Lane l holds the given experts k = c * 32 + l; a slot past top_k holds -inf, which
-            # every score maps to 0.
-            SLOTS = -(-top_k // WARP_SIZE)
+            # A given-expert slot past top_k holds -inf, which every score maps to 0.
 
             @T.prim_func
             def main(
@@ -402,108 +415,43 @@ def _fused_topk_kernel(
                     lane_id = tx % WARP_SIZE
                     token_id = block_id * TOKENS_PER_BLOCK + warp_id
 
-                    # my_biased only decides selection; my_scores is what gets written.
-                    my_scores = T.alloc_local([ELEMS_PER_THREAD], "float32")
+                    # The biased scores only decide the selection; the weights score the selected
+                    # logits again, so the unbiased scores are not kept.
                     my_biased = T.alloc_local([ELEMS_PER_THREAD], "float32")
+                    ids = T.alloc_local([SLOTS], "int32")
+                    weights = T.alloc_local([SLOTS], "float32")
 
                     if token_id < num_tokens:
                         for j in T.serial(ELEMS_PER_THREAD):
                             expert_idx = j * WARP_SIZE + lane_id
                             if expert_idx < num_experts:
-                                my_scores[j] = gating_output[token_id, expert_idx]
+                                my_biased[j] = gating_output[token_id, expert_idx]
                             else:
-                                my_scores[j] = -T.infinity("float32")
+                                my_biased[j] = -T.infinity("float32")
 
                         for j in T.serial(ELEMS_PER_THREAD):
                             expert_idx = j * WARP_SIZE + lane_id
                             if expert_idx < num_experts:
-                                score_in_place(my_scores, j)
-                                my_biased[j] = my_scores[j] + correction_bias[expert_idx]
-                            else:
-                                my_scores[j] = -T.infinity("float32")
-                                my_biased[j] = -T.infinity("float32")
+                                score_in_place(my_biased, j)
+                                my_biased[j] = my_biased[j] + correction_bias[expert_idx]
 
                         if grouped:
                             keep_top_groups(my_biased, lane_id)
 
-                        l_best_val = T.alloc_var(T.float32)  # biased (for selection)
-                        l_best_orig = T.alloc_var(T.float32)  # unbiased score (for output)
-                        l_best_idx = T.alloc_var(T.int32)
-
-                        if renormalize:
-                            sel_vals = T.alloc_local([top_k], "float32")
-                            sel_sum = T.alloc_var(T.float32)
-                            sel_sum = T.float32(0)
-
-                        for k in T.serial(top_k):
-                            l_best_val = -T.infinity("float32")
-                            l_best_orig = T.float32(0)
-                            l_best_idx = T.int32(-1)
-                            for j in T.serial(ELEMS_PER_THREAD):
-                                if my_biased[j] > l_best_val:
-                                    l_best_val = my_biased[j]
-                                    l_best_orig = my_scores[j]
-                                    l_best_idx = j * T.int32(WARP_SIZE) + lane_id
-
-                            for i in T.serial(LOG_WARP):
-                                mask = T.int32(HALF_WARP) >> i
-                                other_val = T.shfl_xor(l_best_val, mask)
-                                other_orig = T.shfl_xor(l_best_orig, mask)
-                                other_idx = T.shfl_xor(l_best_idx, mask)
-                                # Must precede l_best_val/l_best_idx: it reads the old pair.
-                                l_best_orig = T.if_then_else(
-                                    other_val > l_best_val,
-                                    other_orig,
-                                    T.if_then_else(
-                                        other_val == l_best_val,
-                                        T.if_then_else(
-                                            other_idx < l_best_idx, other_orig, l_best_orig
-                                        ),
-                                        l_best_orig,
-                                    ),
-                                )
-                                l_best_idx = T.if_then_else(
-                                    other_val > l_best_val,
-                                    other_idx,
-                                    T.if_then_else(
-                                        other_val == l_best_val,
-                                        T.if_then_else(
-                                            other_idx < l_best_idx, other_idx, l_best_idx
-                                        ),
-                                        l_best_idx,
-                                    ),
-                                )
-                                l_best_val = T.max(l_best_val, other_val)
-
-                            if renormalize:
-                                sel_vals[k] = l_best_orig
-                                sel_sum = sel_sum + l_best_orig
-                                if lane_id == 0:
-                                    topk_ids[token_id, k] = l_best_idx
-                            else:
-                                if lane_id == 0:
-                                    if scaled:
-                                        topk_weights[token_id, k] = l_best_orig * T.float32(
-                                            routed_scaling_factor
-                                        )
-                                    else:
-                                        topk_weights[token_id, k] = l_best_orig
-                                    topk_ids[token_id, k] = l_best_idx
-
-                            for j in T.serial(ELEMS_PER_THREAD):
-                                if j * T.int32(WARP_SIZE) + lane_id == l_best_idx:
-                                    my_scores[j] = -T.infinity("float32")
-                                    my_biased[j] = -T.infinity("float32")
-
-                        if renormalize:
-                            inv_sel_sum = T.alloc_var(T.float32)
-                            if scaled:
-                                inv_sel_sum = T.float32(routed_scaling_factor) / sel_sum
-                            else:
-                                inv_sel_sum = T.float32(1) / sel_sum
-                            if lane_id == 0:
-                                for k in T.serial(top_k):
-                                    topk_weights[token_id, k] = sel_vals[k] * inv_sel_sum
+                        select_top_k(my_biased, lane_id, ids, weights)
+                        for c in T.unroll(SLOTS):
+                            if c * WARP_SIZE + lane_id < top_k:
+                                weights[c] = gating_output[token_id, ids[c]]
+                                score_in_place(weights, c)
+                        write_weights(
+                            topk_weights,
+                            topk_ids,
+                            token_id,
+                            lane_id,
+                            ids,
+                            weights,
+                            T.float32(routed_scaling_factor),
+                        )
 
         else:
 
@@ -519,6 +467,8 @@ def _fused_topk_kernel(
                     lane_id = tx % WARP_SIZE
                     token_id = block_id * TOKENS_PER_BLOCK + warp_id
                     my_scores = T.alloc_local([ELEMS_PER_THREAD], "float32")
+                    ids = T.alloc_local([SLOTS], "int32")
+                    weights = T.alloc_local([SLOTS], "float32")
                     if token_id < num_tokens:
                         for j in T.serial(ELEMS_PER_THREAD):
                             expert_idx = j * WARP_SIZE + lane_id
@@ -527,16 +477,10 @@ def _fused_topk_kernel(
                             else:
                                 my_scores[j] = -T.infinity("float32")
 
-                        if not renormalize:
-                            inv_row_sum = T.alloc_var(T.float32)
-                            if scaled:
-                                inv_row_sum = T.float32(routed_scaling_factor)
-                            else:
-                                inv_row_sum = T.float32(1)  # default (sigmoid / no renorm)
-
+                        scale = T.alloc_var(T.float32)
+                        scale = T.float32(routed_scaling_factor)
                         if scoring_func == "softmax":
                             l_max = T.alloc_var(T.float32)
-
                             l_max = -T.infinity("float32")
                             for j in T.serial(ELEMS_PER_THREAD):
                                 l_max = T.max(l_max, my_scores[j])
@@ -549,7 +493,6 @@ def _fused_topk_kernel(
                                     my_scores[j] = T.exp(my_scores[j] - l_max)
                             else:
                                 l_sum = T.alloc_var(T.float32)
-
                                 l_sum = T.float32(0)
                                 for j in T.serial(ELEMS_PER_THREAD):
                                     val = T.exp(my_scores[j] - l_max)
@@ -557,78 +500,40 @@ def _fused_topk_kernel(
                                     l_sum = l_sum + val
                                 for i in T.serial(LOG_WARP):
                                     l_sum = l_sum + T.shfl_xor(l_sum, T.int32(HALF_WARP) >> i)
-                                if scaled:
-                                    inv_row_sum = T.float32(routed_scaling_factor) / l_sum
-                                else:
-                                    inv_row_sum = T.float32(1) / l_sum
+                                scale = scale / l_sum
+                            # A NaN or +inf logit, or a row of -inf, leaves a NaN here and makes
+                            # the whole softmax row NaN: every expert then ties, as in the
+                            # reference, and the lowest are selected.
+                            nan_row = T.alloc_var(T.int32)
+                            nan_row = T.int32(0)
+                            for j in T.serial(ELEMS_PER_THREAD):
+                                magnitude = T.reinterpret(my_scores[j], "int32") & T.int32(
+                                    0x7FFFFFFF
+                                )
+                                nan_row = nan_row | T.if_then_else(
+                                    magnitude > T.int32(0x7F800000), 1, 0
+                                )
+                            nan_row = T.warp_reduce_max(nan_row)
+                            if nan_row != 0:
+                                for j in T.serial(ELEMS_PER_THREAD):
+                                    my_scores[j] = T.reinterpret(T.int32(0x7FFFFFFF), "float32")
 
                         else:  # sigmoid or sqrt-softplus: element-wise, no row reduction
                             for j in T.serial(ELEMS_PER_THREAD):
                                 expert_idx = j * WARP_SIZE + lane_id
                                 if expert_idx < num_experts:
                                     score_in_place(my_scores, j)
-                                # Padding stays -inf, below every score, for the argmax.
+                                # Padding stays -inf, below every score, for the selection.
 
                         if grouped:
                             # After the row sum: softmax normalizes over every expert.
                             keep_top_groups(my_scores, lane_id)
 
-                        l_best_val = T.alloc_var(T.float32)
-                        l_best_idx = T.alloc_var(T.int32)
-
-                        if renormalize:
-                            sel_vals = T.alloc_local([top_k], "float32")
-                            sel_sum = T.alloc_var(T.float32)
-                            sel_sum = T.float32(0)
-
-                        for k in T.serial(top_k):
-                            l_best_val = -T.infinity("float32")
-                            l_best_idx = T.int32(-1)
-                            for j in T.serial(ELEMS_PER_THREAD):
-                                if my_scores[j] > l_best_val:
-                                    l_best_val = my_scores[j]
-                                    l_best_idx = j * T.int32(WARP_SIZE) + lane_id
-
-                            for i in T.serial(LOG_WARP):
-                                mask = T.int32(HALF_WARP) >> i
-                                other_val = T.shfl_xor(l_best_val, mask)
-                                other_idx = T.shfl_xor(l_best_idx, mask)
-                                l_best_idx = T.if_then_else(
-                                    other_val > l_best_val,
-                                    other_idx,
-                                    T.if_then_else(
-                                        other_val == l_best_val,
-                                        T.if_then_else(
-                                            other_idx < l_best_idx, other_idx, l_best_idx
-                                        ),
-                                        l_best_idx,
-                                    ),
-                                )
-                                l_best_val = T.max(l_best_val, other_val)
-
-                            if renormalize:
-                                sel_vals[k] = l_best_val
-                                sel_sum = sel_sum + l_best_val
-                                if lane_id == 0:
-                                    topk_ids[token_id, k] = l_best_idx
-                            else:
-                                if lane_id == 0:
-                                    topk_weights[token_id, k] = l_best_val * inv_row_sum
-                                    topk_ids[token_id, k] = l_best_idx
-
-                            for j in T.serial(ELEMS_PER_THREAD):
-                                if j * T.int32(WARP_SIZE) + lane_id == l_best_idx:
-                                    my_scores[j] = -T.infinity("float32")
-
-                        if renormalize:
-                            inv_sel_sum = T.alloc_var(T.float32)
-                            if scaled:
-                                inv_sel_sum = T.float32(routed_scaling_factor) / sel_sum
-                            else:
-                                inv_sel_sum = T.float32(1) / sel_sum
-                            if lane_id == 0:
-                                for k in T.serial(top_k):
-                                    topk_weights[token_id, k] = sel_vals[k] * inv_sel_sum
+                        # Unbiased, the selected value is the weight.
+                        select_top_k(my_scores, lane_id, ids, weights)
+                        write_weights(
+                            topk_weights, topk_ids, token_id, lane_id, ids, weights, scale
+                        )
 
         return main
 
@@ -765,7 +670,6 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             topk_group,
             self.routed_scaling_factor,
             with_expert_ids,
-            warp_select=self.build_target.arch == 90,
         )
         self.sm_count = self.build_target.sm_count
         self.init_config(config)

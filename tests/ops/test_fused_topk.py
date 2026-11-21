@@ -16,8 +16,12 @@ Test cases cover:
   - routed_scaling_factor with and without grouping
   - caller-given experts (DeepSeek-V4-Flash hash routing) under each scoring function
   - sigmoid logits below the float32 normal range: zero scores, NaN renormalized weights
+  - ties at the cut on negative biased scores, and rows tied on NaN or -inf scores
+  - a kept group whose selection reaches its -inf biased scores, and groups scoring -inf or NaN
+  - softmax rows made NaN by a NaN or +inf logit or by a row of -inf
 """
 
+import math
 import re
 
 import pytest
@@ -435,6 +439,21 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="ds-v3-t4096",
                 ),
+                # More selected experts than warp lanes, the second lane slot partly filled.
+                pytest.param(
+                    32,
+                    40,
+                    36,
+                    1,
+                    1,
+                    "sigmoid",
+                    True,
+                    True,
+                    1.0,
+                    torch.float32,
+                    marks=pytest.mark.full,
+                    id="biased-top-k-over-warp",
+                ),
             ],
         ),
     ]
@@ -688,6 +707,123 @@ def test_spelling_out_the_ungrouped_defaults_changes_nothing() -> None:
     TestBase.check(workload, default, gating, bias)
     for got, want in zip(spelled(gating, bias), default(gating, bias), strict=True):
         assert torch.equal(got, want)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "tied, kept",
+    [
+        pytest.param((200, 69, 37, 5), (5, 37), id="slots-of-one-lane"),
+        pytest.param((200, 40, 9), (9, 40), id="across-lanes"),
+    ],
+)
+def test_negative_tied_selection_scores_keep_the_lower_experts(tied, kept) -> None:
+    """Experts tied on a negative biased score at the cut: the lower ones are kept."""
+    device = run_device()
+    gating = torch.zeros(3, 256, device=device)
+    bias = torch.full((256,), -2.0, device=device)
+    bias[list(tied)] = -1.0
+    weights, ids = FusedTopKFwdOp(2, "sigmoid", renormalize=True)(gating, bias)
+    assert ids.sort(dim=-1).values.tolist() == [list(kept)] * 3
+    torch.testing.assert_close(weights, torch.full_like(weights, 0.5), rtol=0, atol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_rows_of_tied_minus_inf_scores_select_distinct_experts() -> None:
+    """A row whose biased scores all tie at -inf still selects top_k distinct experts of the
+    row, the lowest ones, and never the padding past E."""
+    device = run_device()
+    gating = torch.zeros(2, 33, device=device)
+    _, ids = FusedTopKFwdOp(2, "sigmoid")(gating, torch.full((33,), -math.inf, device=device))
+    assert ids.sort(dim=-1).values.tolist() == [[0, 1]] * 2
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_grouped_selection_past_the_kept_group_ties_at_minus_inf() -> None:
+    """The kept group holds 2 finite biased scores and top_k is 3: the third expert ties at
+    -inf with every expert of the dropped group, and the lowest, expert 0, is selected."""
+    device = run_device()
+    gating = torch.zeros(2, 64, device=device)
+    bias = torch.full((64,), -1.0, device=device)
+    bias[32:64] = float("-inf")
+    bias[32:34] = 0.0
+    op = FusedTopKFwdOp(3, "sigmoid", num_expert_group=2, topk_group=1)
+    weights, ids = op(gating, bias)
+    assert ids.sort(dim=-1).values.tolist() == [[0, 32, 33]] * 2
+    torch.testing.assert_close(weights, torch.full_like(weights, 0.5), rtol=0, atol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "num_expert_group, topk_group, top_k, bias, kept",
+    [
+        # Group scores [-inf, -inf, 1]: the second kept group is group 0, tied at -inf.
+        pytest.param(
+            3,
+            2,
+            1,
+            [100.0] + [-math.inf] * 31 + [90.0] + [-math.inf] * 31 + [0.0, 0.0] + [-math.inf] * 30,
+            [0],
+            id="minus-inf-group-picked-serially",
+        ),
+        # Group scores [inf - inf = NaN, 21]: only the NaN group is kept, so its -inf expert 1
+        # is selected, tied at -inf with the dropped group's experts and lower.
+        pytest.param(
+            2, 1, 2, [math.inf, -math.inf, 10.0, 10.0], [0, 1], id="nan-group-across-lanes"
+        ),
+        # Group scores [NaN, 21, 1].
+        pytest.param(
+            3,
+            1,
+            2,
+            [math.inf, -math.inf, 10.0, 10.0, 0.0, 0.0],
+            [0, 1],
+            id="nan-group-picked-serially",
+        ),
+    ],
+)
+def test_groups_rank_non_finite_scores_as_torch_topk(
+    num_expert_group, topk_group, top_k, bias, kept
+) -> None:
+    """Group scores of -inf or NaN rank as ``torch.topk`` ranks them: NaN first, ties to the
+    lower group, and a -inf group is kept when no other group is left."""
+    device = run_device()
+    correction_bias = torch.tensor(bias, device=device)
+    gating = torch.zeros(2, correction_bias.numel(), device=device)
+    op = FusedTopKFwdOp(top_k, "sigmoid", num_expert_group=num_expert_group, topk_group=topk_group)
+    weights, ids = op(gating, correction_bias)
+    assert ids.sort(dim=-1).values.tolist() == [kept] * 2
+    torch.testing.assert_close(weights, torch.full_like(weights, 0.5), rtol=0, atol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "logit, renormalize, num_expert_group",
+    [
+        pytest.param(math.inf, False, 2, id="plus-inf-grouped"),
+        pytest.param(math.nan, True, 1, id="nan-renormalized"),
+        pytest.param(-math.inf, False, 1, id="row-of-minus-inf"),
+    ],
+)
+def test_softmax_rows_with_non_finite_logits_tie_as_the_reference(
+    logit, renormalize, num_expert_group
+) -> None:
+    """A NaN or +inf logit, or a row of -inf, makes the whole softmax row NaN: every expert
+    ties, the lowest are selected and their weights are NaN."""
+    device = run_device()
+    gating = torch.full((2, 64), logit if logit == -math.inf else 0.0, device=device)
+    gating[:, 40] = logit
+    op = FusedTopKFwdOp(
+        2, "softmax", renormalize=renormalize, num_expert_group=num_expert_group, topk_group=1
+    )
+    weights, ids = op(gating)
+    assert ids.sort(dim=-1).values.tolist() == [[0, 1]] * 2
+    assert weights.isnan().all()
 
 
 @pytest.mark.smoke
