@@ -194,6 +194,23 @@ def test_gelu(n_total: int, dtype: torch.dtype, approximate: str) -> None:
     )
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("approximate", ["none", "tanh"])
+def test_gelu_keeps_an_sm_of_threads_resident(approximate: str) -> None:
+    """Both GELU forms ask for an SM's full thread count at 32 registers a thread."""
+    from tileops._ops.elementwise import GELUFwdOp
+
+    op = GELUFwdOp(approximate=approximate)
+    op(_randn(1_048_576, torch.float16))
+    (kernel,) = op._entries_built("elementwise").values()
+    threads = kernel.config["threads"]
+    resident = torch.cuda.get_device_properties(run_device()).regs_per_multiprocessor // 32
+    source = kernel.program(kernel._compile).get_kernel_source()
+    bounds = re.findall(r"__launch_bounds__\((\d+), (\d+)\)", source)
+    assert bounds == [(str(threads), str(resident // threads))]
+
+
 @ActivationFixture
 def test_silu(n_total: int, dtype: torch.dtype) -> None:
     from tileops._ops.elementwise import SiLUFwdOp
