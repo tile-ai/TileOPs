@@ -101,6 +101,20 @@ def test_embedding(S, V, D, index_dtype, dtype, params, request) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
+def test_embedding_wave_limit_counts_whole_warps() -> None:
+    """A 1152-wide float32 row takes 144 threads, five warps, of which an SM holds 12 CTAs by
+    its warp limit, not the 14 its thread limit alone would give."""
+    call = EmbeddingCall(
+        dim=1152, dtype=torch.float32, index_dtype=torch.int64, device=torch.device(run_device())
+    )
+    kernel = EmbeddingFwdOp().kernel_for("embedding", lambda: call)
+    cfg = kernel.config
+    assert cfg["threads"] == 144, cfg
+    assert kernel._spread_above(cfg) == call.sm_count * (call.threads_per_sm // 32 // 5)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_embedding_spreads_past_one_wave(monkeypatch) -> None:
     """A one-row tile of one vector a thread takes the fewest whole warps, four vectors a
     thread on a 256-vector row, only for a call of more CTAs than the device holds at once."""

@@ -211,9 +211,10 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
             return math.inf
         # A config that spreads has one-row tiles of the whole row, one CTA an id, so a call
         # runs in waves above the CTAs of the ``threads`` program the device holds at once,
-        # which the SM's thread limit bounds.
+        # which the SM's thread limit bounds; an SM holds a CTA in whole warps.
         target = self.build_target
-        return target.sm_count * (target.threads_per_sm // cfg["threads"])
+        warps = -(-cfg["threads"] // WARP_LANES)
+        return target.sm_count * (target.threads_per_sm // WARP_LANES // warps)
 
     def _compile(self, cfg: dict, spread: bool) -> CompiledProgram:
         """The program ``forward`` launches, compiled from *cfg*, with ``spread_threads`` for
