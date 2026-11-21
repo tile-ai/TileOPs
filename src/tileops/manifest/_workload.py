@@ -83,8 +83,6 @@ __all__ = [
 ]
 
 _ROW_KEYS = frozenset({"some", "dtype_cases", "label", "nightly"})
-# How the nightly benchmark sweep treats a row: `skip` leaves it out; `every-dtype` keeps its
-# float16 calls, which the sweep otherwise drops where the same label has a bfloat16 sibling.
 _NIGHTLY = ("skip", "every-dtype")
 _LABEL = re.compile(r"[A-Za-z0-9._-]+")
 # The integer dtypes generated metadata may take, with their ranges.
@@ -1053,11 +1051,7 @@ def _as_bfloat16(value: Any) -> Any:
 
 
 def _plain(value: Any) -> Any:
-    """*value* as plain data that compares by value and by type.
-
-    An ADT value compares by its kind and fields; ``True`` and ``1``, or a mapping and a list
-    of pairs, stay apart.
-    """
+    """*value* as plain data that compares by value and type, an ADT value by its fields."""
     if isinstance(value, ADTValue):
         return "adt", value.adt, value.kind, _plain(value.fields)
     if isinstance(value, dict):
@@ -1077,10 +1071,8 @@ def _shapes(tensor: tuple | Elements) -> tuple:
 def nightly_calls(plan: EntryPlan, rows: list[dict]) -> list[tuple[dict, dict]]:
     """The ``(row, dtype_case)`` pairs of an entry's rows that the nightly benchmark sweep runs.
 
-    A row marked ``nightly: skip`` is left out. A float16 call is left out where the call with
-    the same label and every float16 dtype bfloat16 is run, unless its row is marked
-    ``nightly: every-dtype``: the two time the same kernels, so one guards the other. Calls
-    are compared as instantiated, so a default written out or left implicit is one call.
+    It leaves out ``nightly: skip`` rows, and a float16 call whose instantiated bfloat16 sibling
+    of the same label runs, unless its row is ``nightly: every-dtype``.
     """
     sig = plan.sig
     dtypes = {n for n in sig.forall if _dtype_index(sig, n)} | {

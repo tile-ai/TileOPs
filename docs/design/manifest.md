@@ -301,7 +301,7 @@ A workload row determines one call. Its keys are construction parameter names, c
 - A `Seq[DType]` index is written in `dtype_cases` as a list of dtypes, and its value in the case id joins them with `.`.
 - **Instantiation.** A row fixes shapes, dtypes, parameters, the member of each argument, call-time scalar values and metadata values. Devices follow [Call Semantics](#call-semantics); strides are contiguous, tensors do not alias, and other data is random.
 - The validator infers the call back from the instantiated inputs and requires agreement.
-- **Nightly sweep.** The nightly benchmark sweep runs every call of a row except two. A row marked `nightly: skip` is left out; it suits a compile check that makes no performance claim. A float16 call is left out where its bfloat16 sibling (the same call with every float16 bfloat16) is run, unless its row is marked `nightly: every-dtype`, which a row whose two dtypes perform differently carries. An entry keeps at least one row not marked `skip`.
+- **Nightly sweep.** Of a float16 call and its bfloat16 sibling, the nightly benchmark sweep runs only the bfloat16 one, unless the row is marked `nightly: every-dtype`. A row marked `nightly: skip` is left out of the sweep.
 
 ### Generators
 
@@ -545,7 +545,7 @@ The checks:
 | 3   | call-time argument name           | its scalar value or `null`, for an argument with several members not in `some`; required when it has no default                                                                                    |
 | 4   | `forall` index other than `DType` | exactly the branch's relevant indices no generator solves                                                                                                                                          |
 | 5   | `dtype_cases`                     | non-empty list of assignments, each a mapping `{<DType index>: <dtype>}` over the relevant `forall` `DType` indices; only when there are such indices; a dtype parameter is written as a parameter |
-| 6   | `nightly`                         | `skip` or `every-dtype`; how the nightly benchmark sweep treats the row ([Rows](#rows))                                                                                                            |
+| 6   | `nightly`                         | `skip` or `every-dtype` ([Rows](#rows))                                                                                                                                                            |
 | 7   | `label`                           | the row's name                                                                                                                                                                                     |
 
 **<a id="t-generators"></a>Table 17** Generator classes

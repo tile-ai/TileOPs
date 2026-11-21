@@ -175,7 +175,6 @@ No performance exploration, autotune sweep or duplicate code path.
 - A benchmark asserts what it needs to trust a measurement, not the op's behavioral contract.
 - A torch-compile row uses `compiled_reference`, which requires one graph with no break.
 - `--tileops-verify` is a diagnostic mode, not a second nightly sweep.
-- `--tileops-nightly` runs the nightly sweep: `bench.cases` yields only the calls the manifest's nightly rule keeps ([manifest Rows](manifest.md#rows)), and a reference whose first-pass device time is ten times that of a baseline timed by the same method gets no second pass: both passes time the same call on the same inputs, so a second pass would have to move the reading tenfold to change the row's fastest comparator.
 - A row with no applicable reference carries an explicit verification gap and no ratio.
 
 ### Metrics

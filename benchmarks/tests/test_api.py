@@ -347,8 +347,7 @@ def test_the_second_pass_starts_from_the_block_the_first_settled_on(
 def test_the_nightly_sweep_times_a_reference_ten_times_the_fastest_baseline_once(
     timed, monkeypatch, reference_ms, passes
 ):
-    """The baseline's first pass reads 1 ms, so a reference reading 10 ms cannot be the row's
-    fastest comparator and gets no second pass, while one reading 9 ms does."""
+    """A baseline reads 1 ms: a 10 ms reference gets one pass, a 9 ms one two."""
     monkeypatch.setattr(bench, "_nightly", True)
     case = _case()
     stub = bench.bench_kernel

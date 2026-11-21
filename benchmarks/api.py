@@ -67,7 +67,7 @@ def set_verifying(value: bool) -> None:
     _verifying = value
 
 
-# --tileops-nightly runs the nightly sweep's cases and times a slow reference in one pass.
+# --tileops-nightly runs the nightly sweep's cases.
 _nightly = False
 # A reference whose first-pass device time is this many times a baseline's gets no second pass.
 _SLOW_REFERENCE_RATIO = 10.0
@@ -357,12 +357,9 @@ class Runner:
         passes = 2
         samples: dict[str, list[Sample]] = {name: [] for name in names}
         meta: dict[str, dict] = {}
-        # Each implementation's first-pass device time and timing method.
         first_pass: dict[str, tuple[float, str]] = {}
         for name in names + names[::-1]:
             impl = plan[name]
-            # The second pass reverses the first, so every baseline has a first-pass reading
-            # by the time the reference comes round again.
             if _nightly and name in meta and self._slow_reference(name, impl, first_pass):
                 continue
             # The second pass starts from the block size the first settled on: the same
@@ -412,11 +409,7 @@ class Runner:
         self, name: str, impl: Implementation, first_pass: dict[str, tuple[float, str]]
     ) -> bool:
         """Whether *impl* is the case's reference and its first-pass device time is ten times
-        that of a baseline timed by the same method.
-
-        Both passes time the same call on the same inputs, so a second pass that moved the
-        reference past that baseline would be a tenfold change between two readings.
-        """
+        that of a baseline timed by the same method."""
         if impl.run is not self.case.reference or impl.args is not None or impl.reset is not None:
             return False
         busy, method = first_pass[name]
