@@ -848,6 +848,7 @@ def test_sigmoid_bias_cancellation_keeps_the_absolute_routing_tolerance() -> Non
     TestBase.check(FusedTopKWorkload(call), FusedTopKFwdOp(1, "sigmoid"), gating, bias)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_underflowed_softmax_experts_tie_on_the_transformed_score() -> None:
     gating = torch.full((16, 128), -500.0, device=run_device(), dtype=torch.bfloat16)

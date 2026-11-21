@@ -171,6 +171,14 @@ def rope_cos_sin_reference(
         b = torch.searchsorted(cu_seqlens[1:], tokens, right=True)
         s = tokens - cu_seqlens[b]
     offset = seqlen_offsets[b] if isinstance(seqlen_offsets, torch.Tensor) else seqlen_offsets
+    # Clamped first so that `s + offset` cannot overflow int64; past these bounds every
+    # position reads the same end row.
+    low = -(x.shape[1] if cu_seqlens is None else x.shape[0])
+    high = cos.shape[0]
+    if isinstance(offset, torch.Tensor):
+        offset = offset.clamp(low, high)
+    else:
+        offset = max(low, min(high, offset))
     rows = (s + offset).clamp(0, cos.shape[0] - 1)
     c, s = cos[rows][..., None, :].float(), sin[rows][..., None, :].float()
     rotated = _rotate_pairs(x[..., :r].float(), c, s, not interleaved)
