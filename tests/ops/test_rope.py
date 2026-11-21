@@ -764,7 +764,6 @@ def test_rope_cos_sin_unchecked_row_outside_the_tables_reads_its_nearest_row(
     test.check(RoPECosSinFwdOp(**test.arguments()), x, cos, sin, cu_seqlens, seqlen_offsets)
 
 
-@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "row",
     [
