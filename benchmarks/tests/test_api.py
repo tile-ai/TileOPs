@@ -343,6 +343,27 @@ def test_the_second_pass_starts_from_the_block_the_first_settled_on(
     assert [run.start_block for run in timed.runs] == [None, second]
 
 
+@pytest.mark.parametrize("reference_ms, passes", [(10.0, 1), (9.0, 2)])
+def test_the_nightly_sweep_times_a_reference_ten_times_the_fastest_baseline_once(
+    timed, monkeypatch, reference_ms, passes
+):
+    """The baseline's first pass reads 1 ms, so a reference reading 10 ms cannot be the row's
+    fastest comparator and gets no second pass, while one reading 9 ms does."""
+    monkeypatch.setattr(bench, "_nightly", True)
+    case = _case()
+    stub = bench.bench_kernel
+
+    def bench_kernel(run, **kwargs):
+        stub(run, **kwargs)
+        busy = reference_ms if run is case.reference else 1.0
+        return [Sample(device_busy_ms=busy, latency_ms=busy, n_kernels=1)]
+
+    monkeypatch.setattr(bench, "bench_kernel", bench_kernel)
+    bench.Runner(SumFwdOp(), case).compare({"torch-ref": case.reference, "fast": lambda x: x * 2})
+    assert sum(run.run is case.reference for run in timed.runs) == passes
+    assert {row["tag"] for row in timed.rows} == {"tileops", "torch-ref", "fast"}
+
+
 def test_samples_no_blocker_held_are_not_pooled_with_held_ones(timed, monkeypatch):
     """A pass without the blocker drained its samples, which is another method than a held
     pass's."""

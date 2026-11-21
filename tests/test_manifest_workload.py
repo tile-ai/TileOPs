@@ -17,6 +17,7 @@ from tileops.manifest._workload import (
     call_from_tensors,
     check_workloads,
     instantiate,
+    nightly_calls,
 )
 from tileops.manifest.primitives import GENERATOR_SHAPES, GENERATORS, PREDICATES
 
@@ -582,6 +583,8 @@ _ENTRY_ERRORS = [
         _varlen_with(values="prefix_sum(L)", requires=["prefix_offsets(5)", "max_segment(1)"]),
         "requires max_segment(1) fails",
     ),
+    ("Varlen", _varlen(nightly="never"), "`nightly` must be one of"),
+    ("Varlen", _varlen(nightly="skip"), "every row is `nightly: skip`"),
 ]
 
 
@@ -594,6 +597,61 @@ def test_check_workloads(name, entry, message):
         assert errors == []
     else:
         assert any(message in e for e in errors), errors
+
+
+def test_the_nightly_sweep_keeps_one_dtype_where_a_bfloat16_sibling_times_the_same_kernels():
+    signature = {
+        "forall": {"M": "Dim", "L": "Seq[Int]", "T": "DType[float16 | bfloat16 | float32]"},
+        "params": {
+            "out": {"type": "float16 | bfloat16 | None", "default": None},
+            "mode": {"type": "'float16' | 'other'", "default": "other"},
+        },
+        "inputs": {
+            "x": {"dtype": "T", "shape": "[M]"},
+            "o": {"dtype": "int32", "shape": "[B]", "values": "prefix_sum(L)"},
+        },
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    both = [{"T": "float16"}, {"T": "bfloat16"}]
+    rows = [
+        {"M": 1, "L": [1], "dtype_cases": both, "label": "pair"},
+        {"M": 2, "L": [1], "dtype_cases": [{"T": "float16"}], "label": "alone"},
+        {"M": 1, "L": [1], "dtype_cases": both, "label": "kept", "nightly": "every-dtype"},
+        {"M": 1, "L": [1], "dtype_cases": both, "label": "skipped", "nightly": "skip"},
+        # One row per dtype, a default and a sequence spelled differently: still siblings.
+        {
+            "M": 3,
+            "L": "repeat(2, 2)",
+            "mode": "other",
+            "dtype_cases": [{"T": "float16"}],
+            "label": "split",
+        },
+        {"M": 3, "L": [2, 2], "dtype_cases": [{"T": "bfloat16"}], "label": "split"},
+        # Siblings by a dtype parameter.
+        *(
+            {"M": 4, "L": [1], "out": t, "dtype_cases": [{"T": "float32"}], "label": "param"}
+            for t in ("float16", "bfloat16")
+        ),
+        # A string parameter and a label that read float16 are no dtypes.
+        {"M": 5, "L": [1], "mode": "float16", "dtype_cases": both, "label": "mode"},
+        *(
+            {"M": 6, "L": [1], "dtype_cases": [{"T": "float32"}], "label": t}
+            for t in ("float16", "bfloat16")
+        ),
+    ]
+    plan = entry_plan("Probe", {"signature": signature, "workloads": rows}, _ADTS)
+    kept = [(row["label"], case["T"], row.get("out")) for row, case in nightly_calls(plan, rows)]
+    assert kept == [
+        ("pair", "bfloat16", None),
+        ("alone", "float16", None),
+        ("kept", "float16", None),
+        ("kept", "bfloat16", None),
+        ("split", "bfloat16", None),
+        ("param", "float32", "bfloat16"),
+        ("mode", "bfloat16", None),
+        ("float16", "float32", None),
+        ("bfloat16", "float32", None),
+    ]
 
 
 def _gemm_from(a: tuple, b: tuple):

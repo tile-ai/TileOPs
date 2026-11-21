@@ -31,7 +31,7 @@ from tileops.backend import OpNotAvailableError
 from tileops.manifest import _manifest_key, load_adts, load_manifest, load_workloads
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
-from tileops.manifest._workload import Call, Elements, instantiate
+from tileops.manifest._workload import Call, Elements, instantiate, nightly_calls
 from workloads.calls import call_workload
 from workloads.device import torch_compile_unavailable
 from workloads.numerics import CheckResult, Request, check_inputs_preserved, verify
@@ -65,6 +65,28 @@ def set_verifying(value: bool) -> None:
     """Put the run into verification mode. The benchmark conftest owns this."""
     global _verifying
     _verifying = value
+
+
+# --tileops-nightly runs the nightly sweep's cases and times a slow reference in one pass.
+_nightly = False
+# A reference whose first-pass device time is this many times a baseline's gets no second pass.
+_SLOW_REFERENCE_RATIO = 10.0
+
+
+def _method(meta: dict) -> str:
+    """The timing method a reading's metadata records: the timer and the cache preparation."""
+    return " ".join(meta[key] for key in ("timing", "l2_flush") if key in meta)
+
+
+def nightly() -> bool:
+    """Whether this run is the nightly sweep."""
+    return _nightly
+
+
+def set_nightly(value: bool) -> None:
+    """Put the run into nightly mode. The benchmark conftest owns this."""
+    global _nightly
+    _nightly = value
 
 
 @dataclasses.dataclass(frozen=True)
@@ -175,8 +197,9 @@ class Case:
 def cases(op: "str | type") -> list[Case]:
     """One :class:`Case` per manifest call of *op*, an Op class or its manifest key.
 
-    Each workload row is instantiated once per dtype case. An op with no call workload in
-    ``workloads.calls`` fails here, at collection.
+    Each workload row is instantiated once per dtype case; in nightly mode, only the calls
+    ``nightly_calls`` selects. An op with no call workload in ``workloads.calls`` fails here,
+    at collection.
     """
     from benchmarks._cases import entry
 
@@ -184,13 +207,15 @@ def cases(op: "str | type") -> list[Case]:
     workload = call_workload(name)
     calling = entry(name)
     plan = entry_plan(name, load_manifest()[name], load_adts(), resolve=False)
+    rows = load_workloads(name)
+    selected = (
+        nightly_calls(plan, rows)
+        if _nightly
+        else [(row, case) for row in rows for case in row.get("dtype_cases") or [{}]]
+    )
     return [
         Case(call.case_id, call, workload, calling)
-        for call in (
-            instantiate(plan, row, dtype_case)
-            for row in load_workloads(name)
-            for dtype_case in row.get("dtype_cases") or [{}]
-        )
+        for call in (instantiate(plan, row, dtype_case) for row, dtype_case in selected)
     ]
 
 
@@ -332,8 +357,14 @@ class Runner:
         passes = 2
         samples: dict[str, list[Sample]] = {name: [] for name in names}
         meta: dict[str, dict] = {}
+        # Each implementation's first-pass device time and timing method.
+        first_pass: dict[str, tuple[float, str]] = {}
         for name in names + names[::-1]:
             impl = plan[name]
+            # The second pass reverses the first, so every baseline has a first-pass reading
+            # by the time the reference comes round again.
+            if _nightly and name in meta and self._slow_reference(name, impl, first_pass):
+                continue
             # The second pass starts from the block size the first settled on: the same
             # call on the same inputs fills the launch queue at the same sample, so probing
             # again only costs a block that times out.
@@ -357,11 +388,9 @@ class Runner:
             previous = meta.get(name)
             # The cache preparation is part of the method: samples drained without the
             # blocker are another measurement than held ones.
-            methods = [
-                " ".join(m[key] for key in ("timing", "l2_flush") if key in m)
-                for m in (previous, pass_meta)
-                if m is not None
-            ]
+            methods = [_method(m) for m in (previous, pass_meta) if m is not None]
+            if previous is None:
+                first_pass[name] = (median_busy_ms(samples[name]), methods[0])
             if len(set(methods)) > 1:
                 raise RuntimeError(
                     f"{name}: the two passes timed with different methods "
@@ -378,6 +407,25 @@ class Runner:
                 pass_meta["attribution_retries"] = retries
             meta[name] = pass_meta
         return {name: self._result(samples[name], meta[name]) for name in names}
+
+    def _slow_reference(
+        self, name: str, impl: Implementation, first_pass: dict[str, tuple[float, str]]
+    ) -> bool:
+        """Whether *impl* is the case's reference and its first-pass device time is ten times
+        that of a baseline timed by the same method.
+
+        Both passes time the same call on the same inputs, so a second pass that moved the
+        reference past that baseline would be a tenfold change between two readings.
+        """
+        if impl.run is not self.case.reference or impl.args is not None or impl.reset is not None:
+            return False
+        busy, method = first_pass[name]
+        baselines = [
+            other_busy
+            for other, (other_busy, other_method) in first_pass.items()
+            if other not in (TILEOPS, name) and other_method == method
+        ]
+        return bool(baselines) and busy >= _SLOW_REFERENCE_RATIO * min(baselines)
 
     def _roofline_counts(self) -> tuple[float, float]:
         """The op's own count of the work, read once.

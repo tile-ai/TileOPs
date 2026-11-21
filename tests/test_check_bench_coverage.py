@@ -102,6 +102,17 @@ class TestVerdicts:
         )
         assert _verdicts(path) == {"FooFwdOp": coverage.FAIL, "BarFwdOp": coverage.OK}
 
+    def test_a_nightly_run_expects_only_the_calls_the_nightly_sweep_runs(self, tmp_path):
+        """The float16 sibling of a recorded bfloat16 case is not run nightly."""
+        recorded, unavailable, _ = coverage.parse_run(
+            _report(tmp_path, _passed(f"test_foo[{CASE}]", "FooFwdOp"))
+        )
+        verdict = {
+            nightly: coverage.verdicts(recorded, TWO_CASES, unavailable, nightly)[0][1]
+            for nightly in (False, True)
+        }
+        assert verdict == {False: coverage.NOT_RUN, True: coverage.OK}
+
 
 class TestExitCodes:
     """An audit that reached no conclusion must not read as a passed one."""

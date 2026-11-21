@@ -190,8 +190,8 @@ GEMMW4A16FwdOp:
   workloads:
   # Decode-oriented coverage. The small non-decode shapes are compile/smoke checks only; they are
   # not intended to claim full GEMM performance coverage.
-  - {M: 64, N: 64, K: 128, dtype_cases: [{T: float16}], label: single-tile}
-  - {M: 128, N: 256, K: 256, dtype_cases: [{T: float16}], label: multi-tile}
+  - {M: 64, N: 64, K: 128, dtype_cases: [{T: float16}], nightly: skip, label: single-tile}
+  - {M: 128, N: 256, K: 256, dtype_cases: [{T: float16}], nightly: skip, label: multi-tile}
   - {M: 1, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-l2-resident}
   - {M: 1, N: 8192, K: 16384, dtype_cases: [{T: float16}], label: decode-hbm-streaming}
   - {M: 1, N: 7168, K: 20480, dtype_cases: [{T: float16}], label: decode-non-pow2}

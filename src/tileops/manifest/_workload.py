@@ -79,9 +79,13 @@ __all__ = [
     "call_from_tensors",
     "check_workloads",
     "instantiate",
+    "nightly_calls",
 ]
 
-_ROW_KEYS = frozenset({"some", "dtype_cases", "label"})
+_ROW_KEYS = frozenset({"some", "dtype_cases", "label", "nightly"})
+# How the nightly benchmark sweep treats a row: `skip` leaves it out; `every-dtype` keeps its
+# float16 calls, which the sweep otherwise drops where the same label has a bfloat16 sibling.
+_NIGHTLY = ("skip", "every-dtype")
 _LABEL = re.compile(r"[A-Za-z0-9._-]+")
 # The integer dtypes generated metadata may take, with their ranges.
 _METADATA_RANGES = {"int32": 2**31, "int64": 2**63}
@@ -1036,7 +1040,85 @@ def _row_errors(sig: Signature, row: object) -> list[str]:
         isinstance(cases, list) and cases and all(isinstance(c, dict) and c for c in cases)
     ):
         errors.append("`dtype_cases` must be a non-empty list of non-empty mappings")
+    if "nightly" in row and row["nightly"] not in _NIGHTLY:
+        errors.append(f"`nightly` must be one of {list(_NIGHTLY)}")
     return errors
+
+
+def _as_bfloat16(value: Any) -> Any:
+    """*value* with every float16 in it, a `Seq[DType]` element included, read as bfloat16."""
+    if isinstance(value, (list, tuple)):
+        return type(value)(_as_bfloat16(v) for v in value)
+    return "bfloat16" if value == "float16" else value
+
+
+def _plain(value: Any) -> Any:
+    """*value* as plain data that compares by value and by type.
+
+    An ADT value compares by its kind and fields; ``True`` and ``1``, or a mapping and a list
+    of pairs, stay apart.
+    """
+    if isinstance(value, ADTValue):
+        return "adt", value.adt, value.kind, _plain(value.fields)
+    if isinstance(value, dict):
+        return "dict", tuple(sorted((k, _plain(v)) for k, v in value.items()))
+    if isinstance(value, (list, tuple)):
+        return "seq", tuple(_plain(v) for v in value)
+    return type(value).__name__, value
+
+
+def _shapes(tensor: tuple | Elements) -> tuple:
+    """A tensor's shape, or each element's shape of a tensor sequence; its dtypes left out."""
+    if isinstance(tensor, Elements):
+        return tuple(shape for shape, _ in tensor.items)
+    return tensor[0]
+
+
+def nightly_calls(plan: EntryPlan, rows: list[dict]) -> list[tuple[dict, dict]]:
+    """The ``(row, dtype_case)`` pairs of an entry's rows that the nightly benchmark sweep runs.
+
+    A row marked ``nightly: skip`` is left out. A float16 call is left out where the call with
+    the same label and every float16 dtype bfloat16 is run, unless its row is marked
+    ``nightly: every-dtype``: the two time the same kernels, so one guards the other. Calls
+    are compared as instantiated, so a default written out or left implicit is one call.
+    """
+    sig = plan.sig
+    dtypes = {n for n in sig.forall if _dtype_index(sig, n)} | {
+        p
+        for p, decl in sig.params.items()
+        if param_kind(decl.get("type"), sig.adts).payload().tag == "DType"
+    }
+    # Generator value sequences shape the metadata, not the indices a call holds.
+    sequences = [n for n, kind in sig.forall.items() if kind == "Seq[Int]"]
+
+    def key(row: dict, case: dict) -> tuple[bool, tuple]:
+        """Whether the call holds a float16 dtype, and the call with every one bfloat16."""
+        call = instantiate(plan, row, case, metadata=False)
+        held = {n: v for n, v in call.indices.items() if n in dtypes}
+        as_bfloat16 = _plain(
+            (
+                row.get("label"),
+                {n: _as_bfloat16(v) if n in dtypes else v for n, v in call.indices.items()},
+                {n: _shapes(t) for n, t in call.tensors.items()},
+                call.members,
+                call.scalars,
+                [_convert(sig, n, row[n]) if n in row else None for n in sequences],
+            )
+        )
+        return any(_as_bfloat16(v) != v for v in held.values()), as_bfloat16
+
+    calls = [
+        (row, case, *key(row, case))
+        for row in rows
+        if row.get("nightly") != "skip"
+        for case in row.get("dtype_cases") or [{}]
+    ]
+    bfloat16_calls = {called for _, _, float16, called in calls if not float16}
+    return [
+        (row, case)
+        for row, case, float16, called in calls
+        if not float16 or row.get("nightly") == "every-dtype" or called not in bfloat16_calls
+    ]
 
 
 def check_workloads(name: str, entry: dict, adts: dict) -> list[str]:
@@ -1052,6 +1134,8 @@ def check_workloads(name: str, entry: dict, adts: dict) -> list[str]:
     rows = entry.get("workloads")
     if not isinstance(rows, list) or not rows:
         return [f"{name}: `workloads` must be a non-empty list"]
+    if all(isinstance(row, dict) and row.get("nightly") == "skip" for row in rows):
+        errors.append("every row is `nightly: skip`, so the nightly sweep benchmarks none")
     seen = set()
     gated = {t.name: t.members for t in sig.inputs.values() if len(t.members) > 1}
     covered: dict = {t: set() for t in gated}

@@ -239,7 +239,8 @@ jobs:
             --stall-timeout 900 \
             --warn-after "${BENCH_WARN_SECONDS}" \
             --total-budget 36000 \
-            --dump-dir bench_stack_dumps | tee tileops_benchmarks.log
+            --dump-dir bench_stack_dumps \
+            --pytest-arg=--tileops-nightly | tee tileops_benchmarks.log
 
           if [ -f profile_run.log ]; then
             { echo; echo "===== profile_run.log summary ====="; cat profile_run.log; } >> tileops_benchmarks.log
@@ -259,6 +260,7 @@ jobs:
           # entry declares is a coverage gap no static check can see.
           python3 scripts/check_bench_coverage.py \
             --bench-xml bench_results.xml \
+            --nightly \
             --output bench_coverage.md
         shell: bash
 

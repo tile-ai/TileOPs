@@ -376,7 +376,7 @@ TanhFwdOp:
 
   workloads:
   - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], nightly: every-dtype, label: "256M"}
 
   roofline:
     # FLOPs: tanh is one transcendental call; per roofline.md §1.3

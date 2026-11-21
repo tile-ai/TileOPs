@@ -97,11 +97,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Run correctness warmup only, omitting timing. Normal benchmarks also verify "
         "before sampling.",
     )
+    parser.addoption(
+        "--tileops-nightly",
+        action="store_true",
+        help="Run the nightly sweep's cases, the manifest calls tileops.manifest's "
+        "nightly_calls selects, and time a reference ten times slower than a baseline once.",
+    )
 
 
 # The settings in force before configure, put back at unconfigure.
 _OUTER_EVENTS_FALLBACK = pytest.StashKey[bool]()
 _OUTER_VERIFYING = pytest.StashKey[bool]()
+_OUTER_NIGHTLY = pytest.StashKey[bool]()
 
 
 def pytest_configure(config):
@@ -120,6 +127,8 @@ def pytest_configure(config):
     config.stash[_OUTER_EVENTS_FALLBACK] = events_fallback_allowed()
     config.stash[_OUTER_VERIFYING] = api.verifying()
     api.set_verifying(config.getoption("--tileops-verify"))
+    config.stash[_OUTER_NIGHTLY] = api.nightly()
+    api.set_nightly(config.getoption("--tileops-nightly"))
     set_events_fallback_allowed(config.getoption("--tileops-allow-events-fallback"))
 
 
@@ -129,6 +138,8 @@ def pytest_unconfigure(config):
         set_events_fallback_allowed(config.stash[_OUTER_EVENTS_FALLBACK])
     if _OUTER_VERIFYING in config.stash:
         api.set_verifying(config.stash[_OUTER_VERIFYING])
+    if _OUTER_NIGHTLY in config.stash:
+        api.set_nightly(config.stash[_OUTER_NIGHTLY])
 
 
 @pytest.hookimpl(hookwrapper=True)
