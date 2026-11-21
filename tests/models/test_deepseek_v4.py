@@ -53,26 +53,60 @@ def test_config_reads_the_published_flash_config():
 
 
 @pytest.mark.smoke
-def test_config_rejects_a_ratio_list_of_the_wrong_length():
-    with pytest.raises(ValueError, match="compress_ratios"):
-        DeepseekV4Config.from_hf({**DEEPSEEK_V4_FLASH_CONFIG, "compress_ratios": [0] * 43})
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        pytest.param({"compress_ratios": [0] * 43}, "compress_ratios", id="ratio-list-length"),
+        pytest.param({"model_type": "llama"}, "model_type", id="model-type"),
+        pytest.param({"n_shared_experts": 2}, "shared expert", id="shared-experts"),
+    ],
+)
+def test_config_rejects_an_invalid_config(change, match):
+    with pytest.raises(ValueError, match=match):
+        DeepseekV4Config.from_hf({**DEEPSEEK_V4_FLASH_CONFIG, **change})
 
 
-@pytest.fixture(scope="module")
-def checkpoint(tmp_path_factory):
-    """The small model as a Hugging Face checkpoint whose tensors alternate between two shards,
-    so every layer spans both, and its tensors."""
+def _write_checkpoint(path, config, tensors):
+    """Write ``tensors`` and ``config`` as a Hugging Face checkpoint whose tensors alternate
+    between two shards, so every layer spans both."""
     from safetensors.torch import save_file
 
-    path = tmp_path_factory.mktemp("dsv4-small")
-    tensors = random_checkpoint(_SMALL, seed=0)
     names = sorted(tensors)
     weight_map = {n: f"model-0000{1 + i % 2}-of-00002.safetensors" for i, n in enumerate(names)}
     for shard in set(weight_map.values()):
         save_file({n: tensors[n] for n in names if weight_map[n] == shard}, str(path / shard))
     (path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
-    (path / "config.json").write_text(json.dumps(_SMALL))
+    (path / "config.json").write_text(json.dumps(config))
+
+
+@pytest.fixture(scope="module")
+def checkpoint(tmp_path_factory):
+    """The small model's checkpoint directory and its tensors."""
+    path = tmp_path_factory.mktemp("dsv4-small")
+    tensors = random_checkpoint(_SMALL, seed=0)
+    _write_checkpoint(path, _SMALL, tensors)
     return path, tensors
+
+
+@pytest.mark.full
+@pytest.mark.parametrize(
+    ("change", "extra", "match"),
+    [
+        pytest.param({}, "head.bias", "unused checkpoint tensors", id="unused-tensor"),
+        pytest.param({}, "layers.0.attn.bias", "layer 0: unused tensors", id="unused-layer-tensor"),
+        pytest.param({"moe_intermediate_size": 64}, None, "128-row blocks", id="partial-block"),
+    ],
+)
+def test_from_pretrained_refuses_a_checkpoint_it_cannot_read_whole(tmp_path, change, extra, match):
+    """A tensor the model has no place for, and a stacked FP8 weight whose first part ends
+    inside a scale block, are refused rather than dropped or misaligned."""
+    config = {**_SMALL, "num_hidden_layers": 1, "compress_ratios": [0, 0], **change}
+    tensors = random_checkpoint(config, seed=0)
+    if extra is not None:
+        tensors[extra] = torch.zeros(1)
+    _write_checkpoint(tmp_path, config, tensors)
+    with pytest.raises(ValueError, match=match):
+        DeepseekV4ForCausalLM.from_pretrained(tmp_path, devices=[run_device()])
 
 
 class _Recorded:
