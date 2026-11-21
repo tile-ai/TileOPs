@@ -20,7 +20,7 @@ def csrc_path(name: str) -> str:
 def _included_files(names: tuple[str, ...]) -> list[Path]:
     """Return ``names`` and every csrc file they reach through quoted includes, sorted.
 
-    A quoted include resolves against the including file's directory, then the csrc root.
+    A quoted include resolves against the including file's directory.
     Files outside ``tileops/csrc`` and system headers are not followed.
     """
     root = _CSRC.resolve()
@@ -32,8 +32,7 @@ def _included_files(names: tuple[str, ...]) -> list[Path]:
             continue
         seen.add(path)
         for target in _QUOTED_INCLUDE.findall(path.read_text(errors="replace")):
-            local = path.parent / target
-            pending.append(local if local.is_file() else _CSRC / target)
+            pending.append(path.parent / target)
     return sorted(seen)
 
 
