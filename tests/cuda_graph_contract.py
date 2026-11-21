@@ -2,6 +2,8 @@
 
 QUALIFIED_OPS = frozenset(
     {
+        "CausalConv1dFwdOp",
+        "CausalConv1dUpdateFwdOp",
         "Conv1dFwdOp",
         "FusedMoEExpertsFwdOp",
         "GQAPagedFwdOp",
