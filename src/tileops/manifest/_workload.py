@@ -1058,9 +1058,7 @@ def nightly_calls(plan: EntryPlan, rows: list[dict]) -> list[tuple[dict, dict]]:
     """
     sig = plan.sig
     dtypes = {n for n in sig.forall if _dtype_index(sig, n)} | {
-        p
-        for p, decl in sig.params.items()
-        if param_kind(decl.get("type"), sig.adts).payload().tag == "DType"
+        p for p in sig.params if sig.kind(p).payload().tag == "DType"
     }
     # Generator value sequences shape the metadata, not the indices a call holds.
     sequences = [n for n, kind in sig.forall.items() if kind == "Seq[Int]"]
