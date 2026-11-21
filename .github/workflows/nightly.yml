@@ -111,6 +111,11 @@ jobs:
     runs-on: [self-hosted, tile-ops, bench]
     env:
       BENCH_WARN_SECONDS: ${{ vars.NIGHTLY_BENCH_WARN_SECONDS || '7200' }}
+      # Baseline libraries JIT-compile into $HOME by default, which the ephemeral runner
+      # drops. Only this job may share these caches: FlashInfer writes generated sources
+      # outside its build lock, so concurrent cold builds of one module can corrupt it.
+      FLASHINFER_WORKSPACE_BASE: /ci-cache/flashinfer
+      DG_JIT_CACHE_DIR: /ci-cache/deep_gemm
       # Keep the long benchmark suite from fragmenting CUDA allocator segments
       # before late large MoE input tensors allocate 14-21 GiB weight blocks.
       PYTORCH_ALLOC_CONF: expandable_segments:True
