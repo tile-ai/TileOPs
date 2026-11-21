@@ -5,19 +5,16 @@
 # by zero. A scale is the dequantization multiplier: x ~= q * scale.
 
 FP8QuantPerTokenGroupFwdOp:
-  # Each group of group_size adjacent columns of the last axis is scaled by its absolute
-  # maximum, floored at eps, over the float8_e4m3fn maximum. With out_q the codes are written
-  # there and q is out_q. dtype None is the platform's fp8, float8_e4m3fn on CUDA. use_ue8m0
-  # None resolves, as vLLM resolves it where DeepGEMM's UE8M0 scales are not in use, to
-  # float32 scales; tma_aligned_scales is read only with column_major_scales.
-  # scale_dtype float8_e8m0fnu stores the power-of-two scales use_ue8m0 makes. With inplace,
-  # x is overwritten with q * scale in its own dtype and returned as output, and neither q nor
-  # scale is produced; x may be a strided view, such as the leading columns of a wider row.
-  # scale_dtype and inplace follow DeepSeek-V4-Flash inference/kernel.py act_quant.
+  # Each group of group_size adjacent last-axis columns is scaled by its absolute maximum,
+  # floored at eps, over the float8_e4m3fn maximum. With out_q the codes are written there and
+  # q is out_q. dtype None is float8_e4m3fn on CUDA;
+  # use_ue8m0 None means float32 scales, as in vLLM without DeepGEMM; tma_aligned_scales is
+  # read only with column_major_scales. As in DeepSeek-V4-Flash act_quant, scale_dtype
+  # float8_e8m0fnu stores use_ue8m0's power-of-two scales, and inplace overwrites x (possibly a
+  # strided view) with q * scale and returns it, producing neither q nor scale.
   family: quantization
   status: implemented
   ref_api: vllm.model_executor.layers.quantization.utils.fp8_utils.per_token_group_quant_fp8
-
   signature:
     forall: {S: Shape, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
@@ -42,7 +39,6 @@ FP8QuantPerTokenGroupFwdOp:
     # the power-of-two scale makes q * scale exact.
     - "scale_dtype == 'float32' or (present(use_ue8m0) and use_ue8m0)"
     - "not inplace or (present(use_ue8m0) and use_ue8m0 and not present(out_q))"
-
   workloads:
   - {S: [8192], K: 64, group_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: kv-index-flat-8k}
   - {S: [4096], K: 128, group_size: 128, dtype_cases: [{T: float32}], label: kv-index-flat-4k}
@@ -63,7 +59,6 @@ FP8QuantPerTokenGroupFwdOp:
   # in place, per 64.
   - {S: [1], K: 448, group_size: 64, eps: 1.0e-4, use_ue8m0: true, inplace: true, dtype_cases: [{T: bfloat16}], label: dsv4-flash-kv-fq-m1}
   - {S: [4096], K: 448, group_size: 64, eps: 1.0e-4, use_ue8m0: true, inplace: true, dtype_cases: [{T: bfloat16}], label: dsv4-flash-kv-fq-m4k}
-
   roofline:
     # Per element: abs, the group-max comparison, the scaling and the clamp, and the multiply
     # back in place; per group: the amax floor and the scale.
@@ -74,7 +69,7 @@ FP4QuantPerGroupFwdOp:
   # and q = e2m1(clamp(x / scale, -6, 6)), rounded to nearest even; q holds two codes per byte,
   # the even element in the low nibble; its logical dtype is float4_e2m1fn_x2. With inplace,
   # x is overwritten with q * scale and returned as output, and neither q nor scale is
-  # produced. DeepSeek-V4-Flash inference/kernel.py fp4_act_quant.
+  # produced. As DeepSeek-V4-Flash fp4_act_quant.
   family: quantization
   status: implemented
   ref_api: workloads.quantization.quantize.fp4_quant_per_group
@@ -95,7 +90,7 @@ FP4QuantPerGroupFwdOp:
     # q packs two codes per byte.
     - "inplace or N % 2 == 0"
   workloads:
-    # DeepSeek-V4-Flash indexer: 64 query heads of 128 and the compressed keys, fake-quantized.
+  # DeepSeek-V4-Flash indexer: 64 query heads of 128 and the compressed keys, fake-quantized.
   - {S: [1, 64], N: 128, inplace: true, label: dsv4-flash-idx-q-t1}
   - {S: [4096, 64], N: 128, inplace: true, label: dsv4-flash-idx-q-4k}
   - {S: [32768, 64], N: 128, inplace: true, label: dsv4-flash-idx-q-32k}

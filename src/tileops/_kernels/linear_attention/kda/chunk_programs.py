@@ -203,9 +203,9 @@ def chunk_prepare_program(
             )
             diagonal_buffers, diagonal_row = diagonal_row_gram(K, dtype, unroll_columns=False)
 
-        @T.macro
-        def store_diagonal(column, part, value, staged, base, row):
-            staged[base + row, (part % 2) * BC + column] = value
+            @T.macro
+            def store_diagonal(column, part, value, staged, base, row):
+                staged[base + row, (part % 2) * BC + column] = value
 
         def reference_row(own, i):
             """The row whose prefix the stored query and key of row *i* still lack: the row
@@ -547,6 +547,7 @@ def chunk_prepare_program(
                     flag = T.alloc_shared([1], "int32")
                 acc = T.alloc_fragment([BT, K], accum)
                 rowsum = T.alloc_fragment([BT], accum)
+                inverse_norms = None
                 if referenced and l2norm:
                     inverse_norms = T.alloc_shared([2 * BT], accum)
                 if referenced:
@@ -703,7 +704,7 @@ def chunk_prepare_program(
                 if referenced:
                     # The same bound for the chunk's midpoint: half its first-to-last range.
                     # Like the block bound, it takes a monotone prefix (gates of one sign),
-                    # whose end rows hold its extremes, now over 64 rows instead of 16.
+                    # whose end rows hold its extremes, over the chunk's rows instead of a block's.
                     for j in T.Parallel(K):
                         first_row = gc_s[0, j]
                         last_row = gc_s[BT - 1, j]
@@ -760,10 +761,7 @@ def chunk_prepare_program(
                     if per_pair[0] == 0:
                         if referenced:
                             if wide[0] == 0:
-                                if l2norm:
-                                    finish("chunk", *operands, kb_s, tqk, centre_s, inverse_norms)
-                                else:
-                                    finish("chunk", *operands, kb_s, tqk, centre_s)
+                                finish("chunk", *operands, kb_s, tqk, centre_s, inverse_norms)
                             else:
                                 finish("centred", *operands, kb_s, tqk)
                         else:

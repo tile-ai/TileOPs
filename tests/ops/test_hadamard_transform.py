@@ -17,7 +17,14 @@ class HadamardTransformTest(HadamardTransformWorkload, TestBase):
 _SMOKE = pytest.mark.smoke
 _FULL = pytest.mark.full
 _CASES = (
-    pytest.param((37,), 32, torch.bfloat16, 1, marks=_SMOKE, id="warp-rows-lower-tail"),
+    pytest.param(
+        (37,),
+        32,
+        torch.bfloat16,
+        1,
+        marks=[_SMOKE, pytest.mark.packaging(family="transform")],
+        id="warp-rows-lower-tail",
+    ),
     pytest.param((3, 5), 128, torch.float16, 1, marks=_SMOKE, id="warp-rows-fp16"),
     pytest.param((3,), 1024, torch.bfloat16, 1, marks=_SMOKE, id="exchange-lower"),
     pytest.param((300,), 4096, torch.float16, 1, marks=_SMOKE, id="exchange-four-warps"),

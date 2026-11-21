@@ -81,8 +81,8 @@ def test_kda_prefill_serves_more_value_heads_than_query_heads() -> None:
 @pytest.mark.parametrize(
     ("heads", "sequence_lengths"),
     [
-        pytest.param(16, (100, 130), marks=pytest.mark.smoke, id="two"),
         pytest.param(16, (100, 130, 70, 64), marks=pytest.mark.smoke, id="four"),
+        pytest.param(16, (100, 130), marks=pytest.mark.full, id="two"),
         pytest.param(
             1, (2,) * 28000, marks=[pytest.mark.full, pytest.mark.sm90], id="past-state-walk"
         ),
@@ -306,11 +306,15 @@ def test_kda_raw_gate_prefill_refuses_more_sequences_than_its_state_walk_holds()
         KDAFwdOp().key_for("kda", call)
 
 
-@pytest.mark.smoke
 @pytest.mark.sm89
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-@pytest.mark.parametrize("dim", [64, 128])
-def test_kda_fused_prefill_in_sm89_shared_memory(dtype, dim):
+@pytest.mark.parametrize(
+    ("dim", "dtype"),
+    [
+        pytest.param(64, torch.float16, marks=pytest.mark.smoke, id="64-fp16"),
+        pytest.param(128, torch.bfloat16, marks=pytest.mark.smoke, id="128-bf16"),
+    ],
+)
+def test_kda_fused_prefill_in_sm89_shared_memory(dim, dtype):
     """256 sequences over 16 value heads: enough blocks to cover an SM89 device, with
     output and carried state checked at each width."""
     torch.manual_seed(42)
@@ -855,7 +859,7 @@ def test_kda_prefill_given_gate_centres_a_steady_decay_by_block() -> None:
     [
         pytest.param(128, True, 4, 16, 100.0, marks=pytest.mark.smoke, id="normalized-128"),
         pytest.param(
-            128, True, 4, 64, 70.0 * math.log(2), marks=pytest.mark.smoke, id="once-a-chunk-128"
+            128, True, 4, 64, 70.0 * math.log(2), marks=pytest.mark.full, id="once-a-chunk-128"
         ),
         pytest.param(64, True, 4, 16, 100.0, marks=pytest.mark.full, id="normalized-64"),
         pytest.param(

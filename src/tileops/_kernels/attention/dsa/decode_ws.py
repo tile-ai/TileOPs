@@ -15,7 +15,6 @@ from tileops._kernels.attention.dsa.decode import DSADecodeKernelBase
 from tileops._kernels.attention.online_softmax import make_sink_scale
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
-from tileops._kernels.kernel_base import Entry
 
 __all__ = ["DSADecodeWSKernel"]
 
@@ -25,7 +24,7 @@ ROLE_INDEX_CALL = "tileops::canonical_warp_group_idx"
 
 
 def _uniform_role_branches(code: str) -> str:
-    """Make the seesaw kernel's role branches test the warpgroup index from lane 0.
+    """Make a warp-specialized kernel's role branches test the warpgroup index from lane 0.
 
     TileLang emits each role branch as a test of threadIdx.x, which ptxas cannot prove
     uniform across a warp, so inside it the WGMMA descriptors stay in ordinary registers
@@ -511,8 +510,8 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
     or without the causal mask and the attention sink."""
 
     supported_archs: list[int] = [90]
-    # Both consumers score and both accumulate, where the older warp-specialized kernel
-    # leaves the scores, the softmax and half the sums to one of them.
+    # Both consumers score and both accumulate, where DSADecodeKernel leaves the scores, the
+    # softmax and half the sums to one of them.
     preferred_over: ClassVar[frozenset[str]] = frozenset({"dsa_decode_kernel"})
     serves_attn_sink: ClassVar[bool] = True
 
@@ -527,14 +526,6 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         if call.dim != 512 or call.tail_dim not in (0, 64):
             return "requires dim 512 and tail_dim 0 or 64"
         return super().refusal(call)
-
-    @classmethod
-    def entry_for(cls, call: DSADecodeCall) -> Entry:
-        return call, lambda: cls(
-            *cls.constructor_args(call),
-            device_index=call.device.index if call.device is not None else None,
-            has_attn_sink=call.has_attn_sink,
-        )
 
     def __init__(
         self,

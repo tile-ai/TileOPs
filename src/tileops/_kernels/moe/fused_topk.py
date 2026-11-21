@@ -326,7 +326,7 @@ def _fused_topk_kernel(
                     topk_ids[token_id, k] = ids[c]
 
         if with_expert_ids:
-            # A given-expert slot past top_k holds -inf, which every score maps to 0.
+            # A slot past top_k holds -inf, which leaves the softmax shift unchanged.
 
             @T.prim_func
             def main(
@@ -340,14 +340,14 @@ def _fused_topk_kernel(
                     warp_id = tx // WARP_SIZE
                     lane_id = tx % WARP_SIZE
                     token_id = block_id * TOKENS_PER_BLOCK + warp_id
+                    ids = T.alloc_local([SLOTS], "int32")
                     my_weights = T.alloc_local([SLOTS], "float32")
                     if token_id < num_tokens:
                         for c in T.unroll(SLOTS):
                             k = c * WARP_SIZE + lane_id
                             if k < top_k:
-                                expert = expert_ids[token_id, k]
-                                topk_ids[token_id, k] = expert
-                                my_weights[c] = gating_output[token_id, expert]
+                                ids[c] = expert_ids[token_id, k]
+                                my_weights[c] = gating_output[token_id, ids[c]]
                             else:
                                 my_weights[c] = -T.infinity("float32")
 
@@ -386,19 +386,9 @@ def _fused_topk_kernel(
                         else:
                             for c in T.unroll(SLOTS):
                                 score_in_place(my_weights, c)
-
-                        if renormalize:
-                            sel_sum = T.alloc_var(T.float32)
-                            sel_sum = T.float32(0)
-                            for c in T.unroll(SLOTS):
-                                sel_sum = sel_sum + my_weights[c]
-                            for i in T.serial(LOG_WARP):
-                                sel_sum = sel_sum + T.shfl_xor(sel_sum, T.int32(HALF_WARP) >> i)
-                            scale = scale / sel_sum
-                        for c in T.unroll(SLOTS):
-                            k = c * WARP_SIZE + lane_id
-                            if k < top_k:
-                                topk_weights[token_id, k] = my_weights[c] * scale
+                        write_weights(
+                            topk_weights, topk_ids, token_id, lane_id, ids, my_weights, scale
+                        )
 
         elif with_correction_bias:
 

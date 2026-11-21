@@ -17,9 +17,8 @@ GEMMFwdOp:
     params:
       trans_a: {type: bool, default: false}
       trans_b: {type: bool, default: true}
-      # nvmath's MatmulOptions.result_type: float32 keeps the float32 sum of 16-bit operands,
-      # F.linear(a.float(), b.float()) as DeepSeek-V4-Flash inference/model.py Gate.forward
-      # computes its router logits.
+      # nvmath's MatmulOptions.result_type: float32 keeps the float32 sum of 16-bit operands, as
+      # DeepSeek-V4-Flash Gate.forward computes router logits with F.linear(a.float(), b.float()).
       out_dtype: {type: "float32 | None", default: null, kw_only: true}
     inputs:
       a: {dtype: T, shape: "Mat[trans_a, M, K]"}
@@ -46,10 +45,8 @@ GEMMFwdOp:
   - {M: 32, N: 4096, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m32-mlp-up}
   - {M: 64, N: 7168, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m64-down}
   - {M: 96, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m96-qkv-a}
-  # Single- and two-token decode. These are the only workloads whose M reaches the bandwidth
-  # kernel modes, one per mode, on the same projection as the decode rows above. The two-token
-  # shape keeps N narrow on purpose: on a grid wide enough for the operand-swapped generic kernel
-  # that one serves M = 2 instead.
+  # M = 1 and M = 2 are the only rows that reach the bandwidth kernel modes, one per mode. N stays
+  # narrow at M = 2 because a wider grid sends M = 2 to the operand-swapped generic kernel.
   - {M: 1, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m1-qkv-a}
   - {M: 2, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m2-qkv-a}
   - {M: 1, N: 24576, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-gate-up-decode}
@@ -145,9 +142,8 @@ GEMMFP8FwdOp:
   - {M: 4096, N: 576, K: 7168, SA: [4096, 56], SB: [5, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-a-m4096-s128}
   - {M: 4096, N: 32768, K: 512, SA: [4096, 4], SB: [32768, 4], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-b-m4096-s1}
   - {M: 4096, N: 32768, K: 512, SA: [4096, 4], SB: [256, 4], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-b-m4096-s128}
-  # Pilot-model projections at decode batches, each reaching a decode dispatch region no row
-  # above reaches, in the scales their FP8 checkpoints carry (Llama-3 per tensor; Qwen3 and
-  # DeepSeek-V3 128x128 weight blocks).
+  # Model projections at decode batches, each in a decode dispatch region no row above reaches,
+  # with the scales their FP8 checkpoints carry (Llama-3 per tensor; Qwen3, DeepSeek-V3 128x128).
   - {M: 16, N: 6144, K: 4096, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-qkv-b16}
   - {M: 16, N: 10240, K: 8192, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: llama-70b-qkv-b16}
   - {M: 16, N: 1280, K: 8192, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: llama-70b-qkv-tp8-b16}
@@ -188,8 +184,7 @@ GEMMW4A16FwdOp:
     - "K % 128 == 0 and K % group_size == 0"
 
   workloads:
-  # Decode-oriented coverage. The small non-decode shapes are compile/smoke checks only; they are
-  # not intended to claim full GEMM performance coverage.
+  # Decode shapes; the small non-decode shapes only check that the kernel compiles and runs.
   - {M: 64, N: 64, K: 128, dtype_cases: [{T: float16}], nightly: skip, label: single-tile}
   - {M: 128, N: 256, K: 256, dtype_cases: [{T: float16}], nightly: skip, label: multi-tile}
   - {M: 1, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-l2-resident}
@@ -212,8 +207,7 @@ GEMMW4A16FwdOp:
   # A tensor-parallel shard: N is a fraction of the layer's, so the grid is far smaller than the
   # machine and the per-CTA work dominates.
   - {M: 1, N: 1024, K: 8192, dtype_cases: [{T: float16}], label: decode-tp8-attn-out}
-  # Pilot-model projections at decode batches, each reaching a decode dispatch region no row
-  # above reaches.
+  # Model projections at decode batches, each in a decode dispatch region no row above reaches.
   - {M: 1, N: 24576, K: 1536, dtype_cases: [{T: float16}], label: ds-v3-q-b-b1}
   - {M: 1, N: 768, K: 4096, dtype_cases: [{T: float16}], label: llama-8b-qkv-tp8-b1}
   - {M: 1, N: 28672, K: 4096, dtype_cases: [{T: float16}], label: llama-8b-gate-up-b1}
@@ -260,7 +254,6 @@ GEMMW4A16FwdOp:
   roofline:
     # The contraction, and one subtract and one multiply dequantizing each weight once.
     flops: "2 * M * N * K + 2 * N * K"
-
 
 GroupedGEMMFwdOp:
   family: gemm
@@ -317,27 +310,22 @@ GroupedGEMMFwdOp:
   - {M: 8, N: 1536, K: 2048, sizes: 'balanced_sizes(8, 16)', trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-empty}
   - {M: 1024, N: 1536, K: 2048, sizes: 'balanced_sizes(1024, 16)', trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-routed1k}
   - {M: 257, N: 1536, K: 2048, sizes: 'balanced_sizes(257, 16)', trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-ragged}
-    # Measured routing: Qwen3-Omni-30B-A3B's thinker (Qwen3-30B-A3B's 128 experts, top 8) on
-    # wikitext-2 test, layer 44 (median skew of the 48), the 16 experts of the EP8 rank given the
-    # most rows. Prefill routes sequences 0-1 (4096 tokens), decode the last token of 128
-    # sequences of 2048.
+  # Measured routing of Qwen3-Omni-30B-A3B's thinker (128 experts, top 8) on wikitext-2, layer 44
+  # (median skew), on the busiest EP8 rank: prefill of 4096 tokens, decode of 128 sequences.
   - {M: 6843, N: 1536, K: 2048, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-skew-up}
   - {M: 6843, N: 2048, K: 768, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-skew-down}
   - {M: 172, N: 1536, K: 2048, sizes: [11, 12, 3, 26, 1, 3, 28, 0, 8, 21, 1, 36, 4, 15, 1, 2], trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-skew-dec}
 
   roofline:
     func: "tileops._perf.formulas.grouped_gemm_roofline"
+
 GEMMINT8W8A8FwdOp:
   family: gemm
   status: implemented
   ref_api: vllm._custom_ops.cutlass_scaled_mm
+
   signature:
-    forall:
-      M: Dim
-      N: Dim
-      K: Dim
-      SA: Shape
-      SB: Shape
+    forall: {M: Dim, N: Dim, K: Dim, SA: Shape, SB: Shape}
     params:
       out_dtype: {type: "bfloat16 | float16", default: bfloat16}
     inputs:
@@ -349,60 +337,60 @@ GEMMINT8W8A8FwdOp:
     outputs:
       d: {dtype: out_dtype, shape: "[M, N]"}
     shape_rules:
-      # The two sides choose their granularity independently: either operand may carry one
-      # scale for the whole tensor or one per row of the output.
-      - "SA == (1, 1) or SA == (M, 1)"
-      - "SB == (1, 1) or SB == (1, N)"
+    # The two sides choose their granularity independently: either operand may carry one
+    # scale for the whole tensor or one per row of the output.
+    - "SA == (1, 1) or SA == (M, 1)"
+    - "SB == (1, 1) or SB == (1, N)"
+
+  workloads:
+  # Llama-3 8B under SmoothQuant W8A8: hidden 4096, MLP intermediate 14336, QKV 4096 + 2 x 1024.
+  # Per-token activation and per-channel weight scales, at decode batch 1 and 64, a 128-token
+  # chunk and a 4k prefill.
+  - {M: 1, N: 6144, K: 4096, SA: [1, 1], SB: [1, 6144], label: llama-8b-qkv-b1}
+  - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 6144], label: llama-8b-qkv-b64}
+  - {M: 128, N: 6144, K: 4096, SA: [128, 1], SB: [1, 6144], label: llama-8b-decode-qkv}
+  - {M: 4096, N: 6144, K: 4096, SA: [4096, 1], SB: [1, 6144], label: llama-8b-prefill-qkv}
+  - {M: 1, N: 4096, K: 14336, SA: [1, 1], SB: [1, 4096], label: llama-8b-down-b1}
+  - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], label: llama-8b-down-b64}
+  - {M: 128, N: 4096, K: 14336, SA: [128, 1], SB: [1, 4096], label: llama-8b-decode-down}
+  - {M: 4096, N: 4096, K: 14336, SA: [4096, 1], SB: [1, 4096], label: llama-8b-prefill-down}
+  - {M: 64, N: 28672, K: 4096, SA: [64, 1], SB: [1, 28672], label: llama-8b-gate-up-b64}
+  - {M: 4096, N: 28672, K: 4096, SA: [4096, 1], SB: [1, 28672], label: llama-8b-prefill-gateup}
+  # Llama-3 70B: hidden 8192, MLP intermediate 28672, QKV 8192 + 2 x 1024.
+  - {M: 1, N: 10240, K: 8192, SA: [1, 1], SB: [1, 10240], label: llama-70b-qkv-b1}
+  - {M: 64, N: 10240, K: 8192, SA: [64, 1], SB: [1, 10240], label: llama-70b-qkv-b64}
+  - {M: 128, N: 10240, K: 8192, SA: [1, 1], SB: [1, 1], label: llama-70b-dec-qkv-tsr}
+  - {M: 4096, N: 10240, K: 8192, SA: [4096, 1], SB: [1, 10240], label: llama-70b-prefill-qkv}
+  - {M: 1, N: 8192, K: 28672, SA: [1, 1], SB: [1, 8192], label: llama-70b-down-b1}
+  - {M: 64, N: 8192, K: 28672, SA: [64, 1], SB: [1, 8192], label: llama-70b-down-b64}
+  - {M: 4096, N: 8192, K: 28672, SA: [4096, 1], SB: [1, 8192], label: llama-70b-prefill-down}
+  # Qwen2.5-7B compressed-tensors W8A8: hidden 3584, MLP intermediate 18944, QKV 3584 + 2 x 512.
+  # Its QKV projection carries a bias.
+  - {M: 1, N: 4608, K: 3584, SA: [1, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-qkv-b1}
+  - {M: 64, N: 4608, K: 3584, SA: [64, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-qkv-b64}
+  - {M: 4096, N: 4608, K: 3584, SA: [4096, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-prefill-qkv}
+  - {M: 1, N: 3584, K: 18944, SA: [1, 1], SB: [1, 3584], label: qwen2.5-7b-down-b1}
+  - {M: 64, N: 3584, K: 18944, SA: [64, 1], SB: [1, 3584], label: qwen2.5-7b-down-b64}
+  - {M: 4096, N: 3584, K: 18944, SA: [4096, 1], SB: [1, 3584], label: qwen2.5-7b-prefill-down}
+  # Qwen2.5-72B: hidden 8192, MLP intermediate 29568.
+  - {M: 1, N: 8192, K: 29568, SA: [1, 1], SB: [1, 8192], label: qwen2.5-72b-down-b1}
+  - {M: 64, N: 8192, K: 29568, SA: [64, 1], SB: [1, 8192], label: qwen2.5-72b-down-b64}
+  - {M: 4096, N: 8192, K: 29568, SA: [4096, 1], SB: [1, 8192], label: qwen2.5-72b-prefill-down}
+  # The other scale granularities and output dtype: a static per-tensor activation scale with
+  # per-channel weights, per-token activations with one weight scale, and a float16 output.
+  - {M: 64, N: 6144, K: 4096, SA: [1, 1], SB: [1, 6144], label: llama-8b-qkv-static-a}
+  - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 1], label: llama-8b-qkv-tensor-w}
+  - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], out_dtype: float16, label: llama-8b-down-b64}
+
   roofline:
     # The contraction, the epilogue's two multiplies of each result by its token and channel
     # scales, and the bias add where a bias is passed.
     flops: "2 * M * N * K + (3 if present(bias) else 2) * M * N"
-  workloads:
-    # Llama-3 8B under SmoothQuant W8A8: hidden 4096, MLP intermediate 14336, QKV 4096 + 2 x 1024.
-    # Per-token activation and per-channel weight scales, at decode batch 1 and 64, a 128-token
-    # chunk and a 4k prefill.
-    - {M: 1, N: 6144, K: 4096, SA: [1, 1], SB: [1, 6144], label: llama-8b-qkv-b1}
-    - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 6144], label: llama-8b-qkv-b64}
-    - {M: 128, N: 6144, K: 4096, SA: [128, 1], SB: [1, 6144], label: llama-8b-decode-qkv}
-    - {M: 4096, N: 6144, K: 4096, SA: [4096, 1], SB: [1, 6144], label: llama-8b-prefill-qkv}
-    - {M: 1, N: 4096, K: 14336, SA: [1, 1], SB: [1, 4096], label: llama-8b-down-b1}
-    - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], label: llama-8b-down-b64}
-    - {M: 128, N: 4096, K: 14336, SA: [128, 1], SB: [1, 4096], label: llama-8b-decode-down}
-    - {M: 4096, N: 4096, K: 14336, SA: [4096, 1], SB: [1, 4096], label: llama-8b-prefill-down}
-    - {M: 64, N: 28672, K: 4096, SA: [64, 1], SB: [1, 28672], label: llama-8b-gate-up-b64}
-    - {M: 4096, N: 28672, K: 4096, SA: [4096, 1], SB: [1, 28672], label: llama-8b-prefill-gateup}
-    # Llama-3 70B: hidden 8192, MLP intermediate 28672, QKV 8192 + 2 x 1024.
-    - {M: 1, N: 10240, K: 8192, SA: [1, 1], SB: [1, 10240], label: llama-70b-qkv-b1}
-    - {M: 64, N: 10240, K: 8192, SA: [64, 1], SB: [1, 10240], label: llama-70b-qkv-b64}
-    - {M: 128, N: 10240, K: 8192, SA: [1, 1], SB: [1, 1], label: llama-70b-dec-qkv-tsr}
-    - {M: 4096, N: 10240, K: 8192, SA: [4096, 1], SB: [1, 10240], label: llama-70b-prefill-qkv}
-    - {M: 1, N: 8192, K: 28672, SA: [1, 1], SB: [1, 8192], label: llama-70b-down-b1}
-    - {M: 64, N: 8192, K: 28672, SA: [64, 1], SB: [1, 8192], label: llama-70b-down-b64}
-    - {M: 4096, N: 8192, K: 28672, SA: [4096, 1], SB: [1, 8192], label: llama-70b-prefill-down}
-    # Qwen2.5-7B compressed-tensors W8A8: hidden 3584, MLP intermediate 18944, QKV 3584 + 2 x 512.
-    # Its QKV projection carries a bias.
-    - {M: 1, N: 4608, K: 3584, SA: [1, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-qkv-b1}
-    - {M: 64, N: 4608, K: 3584, SA: [64, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-qkv-b64}
-    - {M: 4096, N: 4608, K: 3584, SA: [4096, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-prefill-qkv}
-    - {M: 1, N: 3584, K: 18944, SA: [1, 1], SB: [1, 3584], label: qwen2.5-7b-down-b1}
-    - {M: 64, N: 3584, K: 18944, SA: [64, 1], SB: [1, 3584], label: qwen2.5-7b-down-b64}
-    - {M: 4096, N: 3584, K: 18944, SA: [4096, 1], SB: [1, 3584], label: qwen2.5-7b-prefill-down}
-    # Qwen2.5-72B: hidden 8192, MLP intermediate 29568.
-    - {M: 1, N: 8192, K: 29568, SA: [1, 1], SB: [1, 8192], label: qwen2.5-72b-down-b1}
-    - {M: 64, N: 8192, K: 29568, SA: [64, 1], SB: [1, 8192], label: qwen2.5-72b-down-b64}
-    - {M: 4096, N: 8192, K: 29568, SA: [4096, 1], SB: [1, 8192], label: qwen2.5-72b-prefill-down}
-    # The other scale granularities and output dtype: a static per-tensor activation scale with
-    # per-channel weights, per-token activations with one weight scale, and a float16 output.
-    - {M: 64, N: 6144, K: 4096, SA: [1, 1], SB: [1, 6144], label: llama-8b-qkv-static-a}
-    - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 1], label: llama-8b-qkv-tensor-w}
-    - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], out_dtype: float16, label: llama-8b-down-b64}
 
 GEMMW4A8FwdOp:
-  # The weight (n, k) is q[n, k] * weight_group_scale[n, k // group_size], q its INT4 value,
-  # rounded to float8_e4m3fn (nearest even) before the contraction with activation[m, k];
-  # the contraction is then scaled by activation_scale[m] and weight_channel_scale[n].
-  # The packing order is the implementation's, held between its `repack` and its GEMM,
-  # so it is not in the signature.
+  # Weight (n, k) is q[n, k] * weight_group_scale[n, k // group_size], rounded to float8_e4m3fn
+  # before the contraction; the result is scaled by activation_scale[m] and weight_channel_scale[n].
+  # The packing order belongs to the implementation's `repack`, so the signature omits it.
   family: gemm
   status: implemented
   ref_api: workloads.gemm.gemm_w4a8_reference
@@ -461,8 +449,7 @@ GEMMW4A8FwdOp:
   - {M: 4096, N: 7168, K: 2304, label: ds-r1-down-tp8-4k}
   - {M: 1, N: 3584, K: 8192, label: llama-70b-up-tp8-b1}
   - {M: 1, N: 8192, K: 3584, label: llama-70b-down-tp8-b1}
-
-  # Model up/down projection pairs at the decode/prefill boundary and batched TP8 decode.
+  # Up/down projection pairs at the decode/prefill boundary, and batched TP8 decode.
   - {M: 33, N: 7168, K: 18432, label: ds-r1-down-b33}
   - {M: 48, N: 7168, K: 18432, label: ds-r1-down-b48}
   - {M: 32, N: 18432, K: 7168, label: ds-r1-up-b32}
@@ -498,8 +485,7 @@ GEMMW4A8FwdOp:
   - {M: 33, N: 8192, K: 3584, label: llama-70b-down-tp8-b33}
   - {M: 48, N: 8192, K: 3584, label: llama-70b-down-tp8-b48}
   - {M: 64, N: 8192, K: 3584, label: llama-70b-down-tp8-b64}
-
-  # Additional token counts for model down/up projections.
+  # More token counts for the down and up projections.
   - {M: 65, N: 7168, K: 18432, label: ds-r1-down-b65}
   - {M: 80, N: 7168, K: 18432, label: ds-r1-down-b80}
   - {M: 81, N: 7168, K: 18432, label: ds-r1-down-b81}
@@ -541,8 +527,7 @@ GEMMW4A8FwdOp:
   # one wave on an H200.
   - {M: 33, N: 14336, K: 4096, label: llama-8b-up-b33}
   - {M: 128, N: 14336, K: 4096, label: llama-8b-up-b128}
-  # Pilot-model projections at decode batches, each reaching a decode dispatch region no row
-  # above reaches.
+  # Model projections at decode batches, each in a decode dispatch region no row above reaches.
   - {M: 1, N: 4096, K: 1792, label: llama-8b-down-tp8-b1}
   - {M: 1, N: 5120, K: 25600, label: qwen3-32b-down-b1}
   - {M: 1, N: 10240, K: 5120, label: qwen3-32b-qkv-b1}

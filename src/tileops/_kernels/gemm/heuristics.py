@@ -27,9 +27,6 @@ __all__ = [
     "two_row_gemv_wins",
 ]
 
-# The grid-fill test, stage choice, and emitted swap-AB config share this N tile.
-_SWAP_AB_BLOCK_NN = 64
-
 SWAP_AB_MPAD = 8
 
 # Shortest K slice, in 128-wide K tiles, an FP8 split-K launch pays for: a slice ends in an
@@ -54,7 +51,7 @@ _STATIC_SMEM_BYTES = 1024
 def stream_width(m: int) -> tuple[int, bool]:
     """The stream tile's width and whether it runs the helper's own-width WGMMA.
 
-    The width is A's rows rounded up to the 8-row WGMMA N. A width 256 does not divide runs
+    The width is A's rows rounded up to the 8-row WGMMA N. A width that does not divide 256 runs
     the helper's WGMMA over K steps of whole 64-element chunks, and its accumulator reaches
     the transposed output through a second, untransposed shared tile.
     """
@@ -425,7 +422,8 @@ def _enumerate(
                 continue
             coop2_ok = bn == 256 or (nt and bn in (176, 192))
             # At 128 or narrower a coop2 tile scores as the basic tile of its width listed above,
-            # which a tie keeps. A width 256 does not divide is one WGMMA only over 64-wide K steps.
+            # which a tie keeps. A width that does not divide 256 is one WGMMA only over 64-wide
+            # K steps.
             one_wave_ok = bn == one_wave and bn > 128 and (bk == 64 or 256 % bn == 0)
             full_wave_ok = coop2_ok and mn_tiles >= sm_count
             if full_wave_ok or one_wave_ok:
@@ -694,10 +692,7 @@ def _tiny_m_candidates(k: int, gemv: bool) -> list[dict]:
     The operand-swapped kernel at each ring depth, the 64 x 128 tile at each split
     dividing the K-tile count, and with *gemv* the ``GemvKernel`` stand-in ``_GEMV``.
     """
-    out = [
-        {"swap_ab": True, "block_nn": _SWAP_AB_BLOCK_NN, "block_k": 128, "num_stages": ns}
-        for ns in (6, 8, 10)
-    ]
+    out = [{"swap_ab": True, "block_nn": 64, "block_k": 128, "num_stages": ns} for ns in (6, 8, 10)]
     out += [
         {
             "block_m": 64,
@@ -789,8 +784,8 @@ def _score_us(
     if sk > 1:
         red_bytes = sk * m * n * 4 + m * n * elem_out
         us += red_bytes / (cal.reduce_tbps * 1e6)
-    # A 3-stage swap ring takes its own factor: per FLOP its wider tile measures no
-    # faster than a 4-stage one, though it scores fewer bytes and K steps.
+    # A 3-stage swap ring takes its own factor: it scores fewer bytes and K steps than a
+    # 4-stage one but runs no faster per FLOP.
     if cd.structure == "coop2_swap" and cd.num_stages < _COOP2_SWAP_FULL_RING:
         return us * cal.factor("coop2_swap_3stage")
     # A one-M-tile fill grid has no cluster and the whole of each SM's B stream; see

@@ -23,12 +23,11 @@ from tileops._kernels.elementwise._op_body import (
 )
 from tileops._kernels.streaming_load import load16_evict_last
 
-# Threads a 64K-register SM holds at 32 registers each. A guarded body's fast loop
-# keeps every element of a thread in flight, and nvcc left to itself gives it, or a
-# long body whose kernel declares ``FULL_OCCUPANCY``, more than 32 registers, which
-# leaves fewer threads resident; asking for blocks enough to fill this many threads
-# holds it at 32. The row-broadcast and register-copy builders both set this
-# occupancy floor, so they must agree on it.
+# Threads a 64K-register SM holds at 32 registers each. nvcc gives a guarded body's fast
+# loop, which keeps every element of a thread in flight, and a long body whose kernel sets
+# ``FULL_OCCUPANCY`` more than 32 registers, which leaves fewer threads resident; asking for
+# blocks enough to fill this many threads holds it at 32. The row-broadcast and register-copy
+# builders both set this occupancy floor, so they must agree on it.
 _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
 
 
@@ -92,9 +91,9 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, headers=(), full_oc
     """Strategy 3: fragment load -> compute -> fragment store.
 
     A ``GuardedOpFunc`` body runs its fast form over a fragment-copy thread's
-    elements, and the full body only in a thread where the guard fails. A staged
-    program holds the occupancy floor for a guarded body, and for any body whose
-    kernel declares *full_occupancy*.
+    elements, and the full body only in a thread where the guard fails. The fragment
+    program holds the occupancy floor for a guarded body, and for any body whose kernel
+    sets *full_occupancy*.
     """
     out_dtype = output_dtype or dtype
     vec = 16 // (DataType(dtype).bits // 8)

@@ -31,6 +31,8 @@ from tileops._utils import WARP_LANES
 
 __all__ = ["HyperConnectionPreKernel"]
 
+# Channels of one projection slot, the k extent of ``dense_wgmma_64xN_k64``; the shared
+# buffers, the projection and the launch's shared-memory count agree on it.
 _STEP = 64
 
 
@@ -101,7 +103,7 @@ def _prenorm_gemm_kernel(
     regs = rows // 2
     terms_barrier = 8
     wgmma = f"tileops::dense_wgmma_64xN_k64<tl::DataType::kBFloat16, {rows}>"
-    split_slice = f"tileops::hc_split_slice<{q}, {steps}, {workers}, 4>"
+    split_slice = f"tileops::hc_split_slice<{q}, {steps}, {workers}>"
     weight_shape = (q, k_total) if resident else (rows, k_total)
     weight_dtype = "float32" if resident else "bfloat16"
     tokens = T.dynamic("tokens", "int64")

@@ -653,10 +653,12 @@ def test_nsa_compressed_lse_is_head_major_float32_and_minus_inf_without_a_chunk(
 
 @pytest.mark.smoke
 def test_nsa_single_selected_block_respects_changed_request_lengths() -> None:
+    """One op serves two calls of different request lengths, one selected block a token and
+    every fifth token selecting none."""
     scale = 0.2
     op = NSAVarlenFwdOp(sm_scale=scale, block_size=_WIDE["block_size"])
     for q_lengths, kv_lengths in (([11, 21], [17, 44]), ([3, 29], [24, 37])):
         test = _wide_test(q_lengths, kv_lengths, scale, 1)
-        args = list(test.gen_inputs())
-        args[4][::5] = 0
-        test.check(op, *args)
+        q, k, v, block_indices, block_counts, *rest = test.gen_inputs()
+        block_counts[::5] = 0
+        test.check(op, q, k, v, block_indices, block_counts, *rest)

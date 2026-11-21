@@ -1,5 +1,7 @@
 """Workloads for GEMM, batched matmul and grouped GEMM."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,28 +13,29 @@ from workloads.workload_base import WorkloadBase
 W4A16_GROUP_SIZE = 128
 
 
+@contextmanager
+def fp32_matmul_reduction() -> Iterator[None]:
+    """cuBLAS reduces fp16 and bf16 GEMM partials in fp32 inside the block, as ``GEMMFwdOp``
+    accumulates; the prior settings, the split-K flags included, are restored after."""
+    flags = torch.backends.cuda.matmul
+    names = ("allow_fp16_reduced_precision_reduction", "allow_bf16_reduced_precision_reduction")
+    # Assigning a bool resets the split-K flag, so the pair is restored together.
+    saved = [(getattr(flags, n), getattr(flags, f"{n}_split_k", None)) for n in names]
+    for name in names:
+        setattr(flags, name, False)
+    try:
+        yield
+    finally:
+        for name, (allow, split_k) in zip(names, saved, strict=True):
+            setattr(flags, name, allow if split_k is None else (allow, split_k))
+
+
 def matmul_fp32_reduction(
     a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
 ) -> torch.Tensor:
-    """``torch.matmul``, or ``torch.addmm`` with a bias, with any split-K partials reduced
-    in fp32, as ``GEMMFwdOp`` accumulates.
-
-    FP32 split-K reduction avoids additional rounding in the input dtype.
-    """
-    flags = torch.backends.cuda.matmul
-    saved = (
-        flags.allow_fp16_reduced_precision_reduction,
-        flags.allow_bf16_reduced_precision_reduction,
-    )
-    flags.allow_fp16_reduced_precision_reduction = False
-    flags.allow_bf16_reduced_precision_reduction = False
-    try:
+    """``torch.matmul``, or ``torch.addmm`` with a bias, under :func:`fp32_matmul_reduction`."""
+    with fp32_matmul_reduction():
         return torch.matmul(a, b) if bias is None else torch.addmm(bias, a, b)
-    finally:
-        (
-            flags.allow_fp16_reduced_precision_reduction,
-            flags.allow_bf16_reduced_precision_reduction,
-        ) = saved
 
 
 def _summation_order_verification(dtype: torch.dtype, length: int):

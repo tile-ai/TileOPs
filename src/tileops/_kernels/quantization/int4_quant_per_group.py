@@ -18,14 +18,15 @@ __all__ = ["INT4QuantPerGroupFwdKernel", "INT4QuantPerGroupRowFwdKernel"]
 
 @target_cache(maxsize=32)
 def _int4_quant_per_group_kernel(
-    n: int, k: int, group_size: int, chunk: int, per_cta: bool, pack_intrinsic: bool = False
+    n: int, k: int, group_size: int, chunk: int, per_cta: bool, pack_intrinsic: bool
 ):
     """Build the quantization of ``n`` rows of ``k`` float16 elements in groups of ``group_size``.
 
     A thread holds whole chunks of ``chunk`` elements in registers. With ``per_cta`` a CTA
     owns one group, thread ``tx`` holding its chunks ``u * threads + tx``, and reduces the
     range across the CTA; otherwise thread ``tx`` of CTA ``bx`` holds chunk
-    ``bx * threads + tx`` and the lanes of a group reduce its range by shuffles.
+    ``bx * threads + tx`` and the lanes of a group reduce its range by shuffles. With
+    ``pack_intrinsic`` each word of codes is packed by ``tileops::pack_int4_group_word``.
     """
     vec = VECTOR_ACCESS_BYTES // 2
     vpc = chunk // vec
@@ -230,7 +231,8 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
 
     Serves a ``group_size`` of 32 to ``32 * WARP_LANES`` elements, a power of two. A lane
     holds 32 contiguous elements in registers, the lanes of a group reduce its range by
-    shuffles, and each lane packs its codes into the four words they fill.
+    shuffles, and each lane packs its codes into the four words they fill. On SM90 a group
+    of 64 in an input of at most 64 MiB takes 16 elements a lane, four lanes a group.
 
     Args:
         call: The call's shape, dtype, group size and device facts.

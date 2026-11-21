@@ -1,9 +1,4 @@
-# elementwise_multi_input.yaml -- manifest entries for elementwise ops with
-# 3+ input tensors.
-#
-# Source of truth for op interfaces in this family. Loaded and merged with
-# other family files by tileops.manifest at runtime. See docs/design/manifest.md
-# for the full schema.
+# Elementwise ops with three or more input tensors.
 
 WhereFwdOp:
   ref_api: "torch.where"
@@ -11,8 +6,6 @@ WhereFwdOp:
   status: implemented
 
   signature:
-    # PyTorch's torch.where broadcasts condition/input/other together;
-    # the output shape is the broadcast of all three.
     forall: {C: Shape, A: Shape, B: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
       condition: {dtype: bool, shape: "[*C]"}
@@ -30,9 +23,8 @@ WhereFwdOp:
     flops: "prod(broadcast(C, A, B))"
 
 LerpFwdOp:
-  # PyTorch's torch.lerp(input, end, weight): weight is a Number, or a Tensor broadcast
-  # together with input and end. An operand that broadcasts is read where it lies, at
-  # stride 0, not expanded first.
+  # weight is a Number, or a Tensor broadcast with input and end. A broadcast operand is read
+  # at stride 0, not expanded first.
   ref_api: "torch.lerp"
   family: elementwise
   status: implemented

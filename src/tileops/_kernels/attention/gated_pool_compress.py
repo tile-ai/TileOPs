@@ -133,6 +133,27 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
         def rounded(x):
             return T.Cast(T.float32, T.Cast(in_dtype, x)) if ROUND else x
 
+        def head_of(w):
+            # The channel half window slot w pools: the previous window's slots take the
+            # first, the window's own the last.
+            return T.if_then_else(w < SPAN - ratio, 0, C - 1)
+
+        @T.macro
+        def load_rows(l_wkv, l_wsc, k, kv, score, ape, base, first, count, w0, warp, col):
+            # Pass k of the ring rows a thread carries from the call's tokens to the states.
+            for r in T.unroll(WRITE_ROWS):
+                q = w0 + (k * WRITE_ROWS + r) * BLOCK_WARPS + warp
+                if q < first + count and col < dim:
+                    for h in T.unroll(C):
+                        for e in T.vectorized(VEC):
+                            l_wkv[(r * C + h) * VEC + e] = T.Cast(
+                                T.float32, kv[base + q - first, h * dim + col + e]
+                            )
+                        for e in T.vectorized(VEC):
+                            l_wsc[(r * C + h) * VEC + e] = T.Cast(
+                                T.float32, score[base + q - first, h * dim + col + e]
+                            ) + T.Cast(T.float32, ape[q % ratio, h * dim + col + e])
+
         @T.macro
         def load_slot(
             l_sc, l_kv, u, q, h, col, base, first, slot, kv, score, ape, kv_state, score_state, ring
@@ -192,7 +213,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
                     l_kv,
                     u,
                     p - SPAN + 1 + w,
-                    T.if_then_else(w < SPAN - ratio, 0, C - 1),
+                    head_of(w),
                     col,
                     base,
                     first,
@@ -250,7 +271,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
                         u,
                         u,
                         p - SPAN + 1 + u,
-                        T.if_then_else(u < SPAN - ratio, 0, C - 1),
+                        head_of(u),
                         col,
                         base,
                         first,
@@ -270,7 +291,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
                         l_kv,
                         u,
                         p - SPAN + 1 + u,
-                        T.if_then_else(u < SPAN - ratio, 0, C - 1),
+                        head_of(u),
                         col,
                         base,
                         first,
@@ -344,9 +365,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
                             u,
                             (warp * N_BATCH + b) * BATCH + u,
                             p - SPAN + 1 + (warp * N_BATCH + b) * BATCH + u,
-                            T.if_then_else(
-                                (warp * N_BATCH + b) * BATCH + u < SPAN - ratio, 0, C - 1
-                            ),
+                            head_of((warp * N_BATCH + b) * BATCH + u),
                             col,
                             base,
                             first,
@@ -489,18 +508,9 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
                     l_w0 = T.max(l_first, l_first + l_count - SPAN)
                     # The first WRITE_ROWS rows a thread writes, loaded now so their loads wait
                     # out the global latency with the windows'.
-                    for r in T.unroll(WRITE_ROWS):
-                        q = l_w0 + r * BLOCK_WARPS + warp
-                        if q < l_first + l_count and col < dim:
-                            for h in T.unroll(C):
-                                for e in T.vectorized(VEC):
-                                    l_wkv[(r * C + h) * VEC + e] = T.Cast(
-                                        T.float32, kv[l_base + q - l_first, h * dim + col + e]
-                                    )
-                                for e in T.vectorized(VEC):
-                                    l_wsc[(r * C + h) * VEC + e] = T.Cast(
-                                        T.float32, score[l_base + q - l_first, h * dim + col + e]
-                                    ) + T.Cast(T.float32, ape[q % ratio, h * dim + col + e])
+                    load_rows(
+                        l_wkv, l_wsc, 0, kv, score, ape, l_base, l_first, l_count, l_w0, warp, col
+                    )
                     # The request's windows that read its ring close before position
                     # first + SPAN - 1: at most C of them.
                     if LONG:
@@ -560,20 +570,10 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
                         T.sync_threads()
                     for k in T.serial(N_WRITE):
                         if k > 0:
-                            for r in T.unroll(WRITE_ROWS):
-                                q = l_w0 + (k * WRITE_ROWS + r) * BLOCK_WARPS + warp
-                                if q < l_first + l_count and col < dim:
-                                    for h in T.unroll(C):
-                                        for e in T.vectorized(VEC):
-                                            l_wkv[(r * C + h) * VEC + e] = T.Cast(
-                                                T.float32,
-                                                kv[l_base + q - l_first, h * dim + col + e],
-                                            )
-                                        for e in T.vectorized(VEC):
-                                            l_wsc[(r * C + h) * VEC + e] = T.Cast(
-                                                T.float32,
-                                                score[l_base + q - l_first, h * dim + col + e],
-                                            ) + T.Cast(T.float32, ape[q % ratio, h * dim + col + e])
+                            load_rows(
+                                l_wkv, l_wsc, k, kv, score, ape, l_base, l_first, l_count, l_w0,
+                                warp, col,
+                            )  # fmt: skip
                         for r in T.unroll(WRITE_ROWS):
                             q = l_w0 + (k * WRITE_ROWS + r) * BLOCK_WARPS + warp
                             if q < l_first + l_count and col < dim:

@@ -327,18 +327,21 @@ class _MaxPool2dKernelBase(Kernel):
         raise NotImplementedError
 
 
+@T.macro
+def _nan_max(a, b):
+    """*b* where it is NaN or larger than *a*, so a NaN tap wins as in the generic kernel."""
+    return T.if_then_else(T.isnan(b) or b > a, b, a)
+
+
 @target_cache(maxsize=32)
 def _max_pool2d_warp_kernel(planes: int, h_in: int, w_in: int, dtype: str):
     out_h, out_w = (h_in - 1) // 2, (w_in - 1) // 2
+    # Three warps split the output rows; a lane takes one of at most 31 output columns.
     rows_per_warp = (out_h + 2) // 3
     band_h = 2 * rows_per_warp + 1
 
     @tilelang.jit(out_idx=[1])
     def build():
-        @T.macro
-        def maximum(a, b):
-            return T.if_then_else(T.isnan(b) or b > a, b, a)
-
         @T.prim_func
         def main(
             x: T.Tensor[(planes, h_in, w_in), dtype],
@@ -356,11 +359,13 @@ def _max_pool2d_warp_kernel(planes: int, h_in: int, w_in: int, dtype: str):
                     left = T.cast(x[plane, ih, T.min(column * 2, w_in - 1)], "float32")
                     middle = T.cast(x[plane, ih, T.min(column * 2 + 1, w_in - 1)], "float32")
                     right = T.shfl_down(left, 1)
-                    across[i] = maximum(maximum(left, middle), right)
+                    across[i] = _nan_max(_nan_max(left, middle), right)
                 for j in T.unroll(rows_per_warp):
                     if row + j < out_h and column < out_w:
-                        upper = maximum(across[j * 2], across[j * 2 + 1])
-                        y[plane, row + j, column] = T.cast(maximum(upper, across[j * 2 + 2]), dtype)
+                        upper = _nan_max(across[j * 2], across[j * 2 + 1])
+                        y[plane, row + j, column] = T.cast(
+                            _nan_max(upper, across[j * 2 + 2]), dtype
+                        )
 
         return main
 
@@ -375,10 +380,6 @@ def _max_pool2d_half_warp_kernel(planes: int):
 
     @tilelang.jit(out_idx=[1])
     def build():
-        @T.macro
-        def maximum(a, b):
-            return T.if_then_else(T.isnan(b) or b > a, b, a)
-
         @T.prim_func
         def main(
             x: T.Tensor[(planes, 33, 33), dtype],
@@ -395,10 +396,10 @@ def _max_pool2d_half_warp_kernel(planes: int):
                     right = T.alloc_var("float32", init=T.shfl_down(left, 1, width=16))
                     if column == 15:
                         right = T.cast(x[plane, 4 * band + r, 32], "float32")
-                    rows[r] = maximum(maximum(left, middle), right)
+                    rows[r] = _nan_max(_nan_max(left, middle), right)
                 for r in T.unroll(2):
-                    y[plane, 2 * band + r, column] = maximum(
-                        maximum(rows[2 * r], rows[2 * r + 1]), rows[2 * r + 2]
+                    y[plane, 2 * band + r, column] = _nan_max(
+                        _nan_max(rows[2 * r], rows[2 * r + 1]), rows[2 * r + 2]
                     )
 
         return main
@@ -407,7 +408,7 @@ def _max_pool2d_half_warp_kernel(planes: int):
 
 
 class MaxPool2dWarpKernel(Kernel, MaxPool2dFwdInterface):
-    """Share adjacent, unpadded 3-by-3 BF16 pooling windows within a warp."""
+    """Share adjacent, unpadded 3-by-3 FP16 or BF16 pooling windows within a warp."""
 
     supported_archs = [90]
     preferred_over = frozenset({"max_pool2d_kernel"})

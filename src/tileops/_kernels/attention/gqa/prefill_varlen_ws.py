@@ -855,18 +855,10 @@ def _gqa_prefill_varlen_ws_kernel(
     @T.macro
     def load_q(Q, Qs, slot, q_bar, q_start, head, edges=None):
         """TMA block_m positions of one head, 64 rows a warpgroup."""
-        T.tma_copy(
-            Q[q_start : q_start + half, head, 0:width], Qs[slot, 0, :, :], barrier=q_bar[slot]
-        )
-        T.tma_copy(
-            Q[q_start + half : q_start + 2 * half, head, 0:width],
-            Qs[slot, 1, :, :],
-            barrier=q_bar[slot],
-        )
-        if wgs == 3:
+        for wg in T.unroll(wgs):
             T.tma_copy(
-                Q[q_start + 2 * half : q_start + 3 * half, head, 0:width],
-                Qs[slot, 2, :, :],
+                Q[q_start + wg * half : q_start + (wg + 1) * half, head, 0:width],
+                Qs[slot, wg, :, :],
                 barrier=q_bar[slot],
             )
         if edges is not None:
@@ -1057,7 +1049,7 @@ def _gqa_prefill_varlen_ws_kernel(
         """Consumer warpgroup *wg*: rows ``q0 + wg*64`` onward of each claimed query tile."""
         T.set_max_nreg(consumer_regs, 1)
         my_bar = 1 + wg
-        nxt_bar = 2 - wg if wgs == 2 else 1 + (wg + 1) % wgs
+        nxt_bar = 1 + (wg + 1) % wgs
         acc_s = T.alloc_fragment([half, block_n], accum)
         # P: a register fragment, or the warpgroup's tile of the shared P.
         if shared_p:

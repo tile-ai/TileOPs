@@ -207,7 +207,7 @@ def test_mla_kv_cache_write_copies_the_named_rows(
             FP16,
             [9, 2, -1],
             False,
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="neox-fp8",
         ),
         # Half of a 6-wide k_pe is odd: a neox thread holds one element of each half.

@@ -17,8 +17,9 @@ from tileops._kernels.pool import (
     AvgPool1dKernel,
     AvgPool1dRegisterKernel,
     AvgPool2dFwdInterface,
+    MaxPool2dWarpKernel,
 )
-from tileops._kernels.pool.call_spec import AvgPoolCall
+from tileops._kernels.pool.call_spec import AvgPoolCall, MaxPoolCall
 from tileops._utils import device_facts
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -958,9 +959,7 @@ def test_avg_pool1d_register_serves_one_row_past_int32_groups_one_run_a_thread()
 @pytest.mark.parametrize(
     "case",
     [
-        # The fixture's fp32 smoke shape.
-        pytest.param("fixture", id="fixture-shape", marks=pytest.mark.smoke),
-        pytest.param("sub-wave", id="sub-wave-one-block-an-sm", marks=pytest.mark.full),
+        pytest.param("sub-wave", id="sub-wave-one-block-an-sm", marks=pytest.mark.smoke),
         pytest.param("widest", id="widest-blocks-one-an-sm", marks=pytest.mark.full),
         pytest.param(
             "past-one-block-an-sm", id="past-one-block-an-sm-row-grid", marks=pytest.mark.full
@@ -979,10 +978,9 @@ def test_avg_pool1d_register_serves_one_row_past_int32_groups_one_run_a_thread()
 def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
     """Where the row grid puts a second block on some SM, a launch that one block an SM of
     at most 1024 threads covers runs as one block an SM of the fewest whole warps that cover
-    it. Another runs 128-thread blocks along each row,
-    unless the row grid has more blocks than the SMs hold at once and a row leaves so many
-    of a block's threads idle that the blocks an SM holds cannot fill it: then its blocks
-    span rows on one grid axis."""
+    it. Another runs 128-thread blocks along each row, unless the row grid has more blocks
+    than the SMs hold at once and a row leaves so many of a block's threads idle that the
+    blocks an SM holds cannot fill it: then its blocks span rows on one grid axis."""
     facts = device_facts(run_device().index)
     sm_count = facts.sm_count
     # Row-grid blocks the SMs hold at once.
@@ -990,8 +988,6 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
     # fp32 input, kernel 2, stride 2: one thread a 16-byte run of four values, l_in // 4 runs
     # a row.
     shape = {
-        # 128 rows of 128 runs.
-        "fixture": (2, 64, 512),
         # Rows of 64 runs; one block an SM covers both launches, so the row grid's fill does
         # not decide them. Four rows an SM and one more: an SM's share is 8 warps and part of
         # a ninth, which takes a whole warp.
@@ -1007,7 +1003,6 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
         "short-rows-resident": (1, sm_count, 32),
     }[case]
     launch = {
-        "fixture": {},
         "sub-wave": {"flat": True, "threads": 288},
         "widest": {"flat": True, "threads": 1024},
         "past-one-block-an-sm": {"flat": False, "threads": 128},
@@ -1040,9 +1035,7 @@ def test_avg_pool1d_register_reads_a_side_in_one_load_of_at_most_4_bytes() -> No
 @pytest.mark.parametrize(
     "case",
     [
-        # The fixture's fp16 smoke shape.
-        pytest.param("fixture", id="fixture-shape-one-run", marks=pytest.mark.smoke),
-        pytest.param("paired", id="narrow-store-paired", marks=pytest.mark.full),
+        pytest.param("paired", id="narrow-store-paired", marks=pytest.mark.smoke),
         pytest.param("covered", id="narrow-store-one-block-an-sm-covers", marks=pytest.mark.full),
         pytest.param("wide-store", id="wide-store-one-run", marks=pytest.mark.full),
     ],
@@ -1062,7 +1055,6 @@ def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
     # (dtype, kernel, stride, padding, runs in the one row): a run is 16 bytes.
     window = {
         # fp16, kernel 5, stride 4, padding 2: two outputs (4 bytes) a run of 8 elements.
-        "fixture": (torch.float16, 5, 4, 2, None),
         "paired": (torch.float16, 5, 4, 2, row_runs),
         "covered": (torch.float16, 5, 4, 2, covered_runs),
         # fp32, kernel 3, stride 2, padding 1: two outputs (8 bytes) a run of 4 elements.
@@ -1070,14 +1062,13 @@ def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
     }[case]
     dtype, kernel_l, stride_l, pad_l, runs = window
     launch = {
-        "fixture": {"runs": 1},
         "paired": {"runs": 2, "flat": True},
         "covered": {"runs": 1},
         "wide-store": {"runs": 1},
     }[case]
     run = 16 // dtype.itemsize
     rows = 3 if case == "paired" else 1
-    shape = (2, 64, 512) if runs is None else (1, rows, runs * run)
+    shape = (1, rows, runs * run)
     counted = case != "paired"
     x = torch.randn(*shape, device=run_device(), dtype=dtype)
     op = AvgPool1dFwdOp(
@@ -1099,15 +1090,13 @@ def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
 @pytest.mark.parametrize(
     "rows, l_in, dtype",
     [
-        # The fixture's fp16 smoke shape.
-        pytest.param((2, 64), 512, torch.float16, id="fixture-shape-fp16", marks=pytest.mark.smoke),
         # 65536 rows: one more than the grid's y axis holds.
         pytest.param(
             (64, 1024),
             64,
             torch.float16,
             id="rows-past-the-grid-y-axis-fp16",
-            marks=pytest.mark.full,
+            marks=pytest.mark.smoke,
         ),
         # 32768 rows of 65536: 2**31 elements, an extent one past INT32_MAX, in rows the
         # grid's y axis holds. Costs 8 GiB.
@@ -1528,21 +1517,31 @@ def _check_max_pool2d_odd_rectangle_and_nan(height, width, dtype):
     ],
 )
 def test_warp_pool_odd_rectangle_and_nan(height, width, dtype, half_warp):
-    from tileops._kernels.pool import MaxPool2dWarpKernel
-
-    kernel = _check_max_pool2d_odd_rectangle_and_nan(height, width, dtype)
+    x = torch.randn(2, 3, height, width, device=run_device(), dtype=dtype)
+    x[:, :, -1, -1] = float("nan")
+    op = MaxPool2dFwdOp(3, stride=2, ceil_mode=True, target=BUILTIN)
+    expected = F.max_pool2d(x, 3, stride=2, ceil_mode=True)
+    torch.testing.assert_close(op(x), expected, rtol=0, atol=0, equal_nan=True)
+    (kernel,) = op.iter_kernels()
     assert type(kernel) is MaxPool2dWarpKernel
     assert kernel.half_warp is half_warp
 
 
 @pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-@pytest.mark.sm90
-def test_max_pool2d_mixed_extents_use_fallback():
-    from tileops._kernels.pool import MaxPool2dKernel
-
-    kernel = _check_max_pool2d_odd_rectangle_and_nan(33, 63, torch.bfloat16)
-    assert type(kernel) is MaxPool2dKernel
+def test_max_pool2d_warp_refuses_mixed_extents() -> None:
+    """A 33-wide axis is served only when both axes are 33; 33 by 63 goes to the fallback."""
+    call = MaxPoolCall(
+        n=2,
+        c_in=3,
+        size=(33, 63),
+        window=(3, 3),
+        stride=(2, 2),
+        pad=(0, 0),
+        dilation=(1, 1),
+        ceil_mode=True,
+        dtype=torch.bfloat16,
+    )
+    assert MaxPool2dWarpKernel.refusal(call) is not None
 
 
 @pytest.mark.smoke

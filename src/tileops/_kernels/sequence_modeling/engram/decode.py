@@ -22,6 +22,12 @@ from tileops._kernels.tiling import ALIGNMENT, align_up
 __all__ = ["EngramDecodeKernel", "EngramDecodeSplitKernel"]
 
 
+def _left_pad_history(conv_state: torch.Tensor, max_conv_len: int) -> torch.Tensor:
+    """*conv_state* with zero steps prepended up to the compiled cache length."""
+    padding = max_conv_len - conv_state.shape[1]
+    return F.pad(conv_state, (0, 0, padding, 0)) if padding > 0 else conv_state
+
+
 @target_cache(maxsize=32)
 def _engram_project_kernel(batch, d_mem, d_padded, max_conv_len, dtype):
     """Both projections of one decode step, plus the cache shift they do not depend on.
@@ -385,9 +391,7 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
     ) -> tuple[torch.Tensor, ...]:
         """Run one fused decode step, applying and trimming the alignment padding the
         prim_func requires."""
-        state_pad = self.max_conv_len - conv_state.shape[1]
-        if state_pad > 0:
-            conv_state = F.pad(conv_state, (0, 0, state_pad, 0))
+        conv_state = _left_pad_history(conv_state, self.max_conv_len)
         pad = self.d_padded - self.d
         if pad:
             h_t = F.pad(h_t, (0, pad))
@@ -419,7 +423,7 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
 
 @target_cache(maxsize=32)
 @tilelang.jit(out_idx=[3])
-def _engram_project_parts():
+def _engram_split_project_kernel():
     """Reduce both 512-wide GEMVs over eight independent 64-row panels."""
 
     @T.prim_func
@@ -453,7 +457,7 @@ def _engram_project_parts():
 
 @target_cache(maxsize=32)
 @tilelang.jit(out_idx=[6, 7])
-def _engram_finish_parts(history, taps, dilation, eps):
+def _engram_split_step_kernel(history, taps, dilation, eps):
     """Reduce the partial projections while independent CTAs shift the history."""
 
     @T.prim_func
@@ -496,6 +500,7 @@ def _engram_finish_parts(history, taps, dilation, eps):
                 T.reduce_sum(kk, kk_sum, dim=0)
                 T.reduce_sum(hk, hk_sum, dim=0)
                 T.reduce_sum(vv, vv_sum, dim=0)
+                # The gate is sigmoid(<norm(h), norm(k)> / sqrt(256)); 0.0625 is 1 / sqrt(256).
                 alpha = 1.0 / (
                     1.0
                     + T.exp(
@@ -534,7 +539,7 @@ class EngramDecodeSplitKernel(Kernel, EngramDecodeFwdInterface):
             return "requires one FP16 token, memory width 512 and hidden width 256"
         if call.max_conv_len < max(1, call.dilation * (call.conv_kernel_size - 1)):
             return "the convolution must have enough history for every tap"
-        return None
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: EngramDecodeCall) -> Entry:
@@ -547,17 +552,15 @@ class EngramDecodeSplitKernel(Kernel, EngramDecodeFwdInterface):
     def _compile(self, cfg):
         call = self.call
         return (
-            CompiledProgram(_engram_project_parts()),
+            CompiledProgram(_engram_split_project_kernel()),
             CompiledProgram(
-                _engram_finish_parts(
+                _engram_split_step_kernel(
                     call.max_conv_len, call.conv_kernel_size, call.dilation, call.eps
                 )
             ),
         )
 
     def forward(self, e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
-        padding = self.call.max_conv_len - conv_state.shape[1]
-        if padding > 0:
-            conv_state = F.pad(conv_state, (0, 0, padding, 0))
+        conv_state = _left_pad_history(conv_state, self.call.max_conv_len)
         project, step = self.program(self._compile)
         return step(project(e_t, W_K, W_V), h_t, conv_state, rms_w_h, rms_w_v, conv_w)

@@ -35,13 +35,13 @@ def _gqa_paged_rope_prepare_kernel(
     rotary_dim,
     layout,
     dtype,
-    q_dtype=None,
-    kv_dtype=None,
-    per_request_kv_scale=False,
-    key_cols=None,
-    values=True,
-    window_left=-1,
-    key_tile=1,
+    q_dtype,
+    kv_dtype,
+    per_request_kv_scale,
+    key_cols,
+    values,
+    window_left,
+    key_tile,
 ):
     """Rotate Q into QR and live keys into KR's ``key_cols`` leading channels; with *values*,
     copy V into VR, else VR is a one-row placeholder. With *window_left*, keys start at the
@@ -49,8 +49,6 @@ def _gqa_paged_rope_prepare_kernel(
 
     A thread owns one unit of a row: ``vec`` rotation pairs, read and written as two
     ``vec``-element vectors, or ``2 * vec`` copied channels past the rotated width."""
-    q_dtype = q_dtype or dtype
-    kv_dtype = kv_dtype or dtype
     q_fp8 = q_dtype != dtype
     kv_fp8 = kv_dtype != dtype
     group = heads // heads_kv
@@ -58,7 +56,6 @@ def _gqa_paged_rope_prepare_kernel(
     total_q = T.dynamic("total_q")
     pool_rows = T.dynamic("pool_rows")
     half = rotary_dim // 2
-    key_cols = key_cols or dim
     capacity = page * output_width
     # Rotation pairs a thread takes: at most one 16-byte vector of the 16-bit output, and a
     # divisor of each rotated half and each copied tail, so every access is a whole vector.
@@ -225,10 +222,10 @@ def _gqa_paged_rope_prepare_kernel(
                             dst = request * capacity + key
                             if key < Lengths[request]:
                                 src = Table[request, key // page] * page + key % page
-                                k = kv_scale(KS, request, kv_head)
-                                v = kv_scale(VS, request, kv_head)
-                                move(KR, dst, K, src, kv_head, kv_unit, key, k, raw_kv, regs, True)
+                                ks = kv_scale(KS, request, kv_head)
+                                move(KR, dst, K, src, kv_head, kv_unit, key, ks, raw_kv, regs, True)
                                 if values:
+                                    vs = kv_scale(VS, request, kv_head)
                                     move(
                                         VR,
                                         dst,
@@ -237,7 +234,7 @@ def _gqa_paged_rope_prepare_kernel(
                                         kv_head,
                                         kv_unit,
                                         key,
-                                        v,
+                                        vs,
                                         raw_kv,
                                         regs,
                                         False,

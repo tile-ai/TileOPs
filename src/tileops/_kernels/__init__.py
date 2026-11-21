@@ -98,6 +98,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         MaxPool3dWithIndicesKernel,
         MeanPoolingFwdKernel,
     )
+    from tileops._kernels.quantization.fp4_quant import FP4QuantKernel
     from tileops._kernels.quantization.fp8_quant import FP8QuantKernel
     from tileops._kernels.rope import (
         RoPENeoxPositionIdsKernel,
@@ -163,6 +164,7 @@ _LAZY = {
     "FFTC2COneCTAKernel": ".fft",
     "FP8LightningIndexerKernel": ".attention.fp8_lightning_indexer",
     "FP8LightningIndexerWSKernel": ".attention.fp8_lightning_indexer",
+    "FP4QuantKernel": ".quantization.fp4_quant",
     "FP8QuantKernel": ".quantization.fp8_quant",
     "GQABwdPreprocessKernel": ".attention",
     "FusedGatedKernel": ".elementwise",

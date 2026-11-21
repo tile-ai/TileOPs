@@ -737,8 +737,10 @@ class CumulativeParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cu
 
 @target_cache(maxsize=32)
 def _cumsum_cluster_scan_kernel(rows: int, width: int, aligned: bool):
+    # A row spreads over a cluster of eight blocks, the largest portable cluster size.
     blocks = 8
     warps = 8
+    # One 16-byte load of float32 a lane per stripe.
     elements = 4
     warp_items = WARP_LANES * elements
     chunk = width // blocks

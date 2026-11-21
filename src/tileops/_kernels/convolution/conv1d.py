@@ -318,7 +318,7 @@ def _conv1d_unit_stride_kernel(
 
 
 @target_cache(maxsize=32)
-def _conv1d_direct_kernel(
+def _conv1d_depthwise_kernel(
     n: int,
     c_in: int,
     l_in: int,
@@ -338,14 +338,14 @@ def _conv1d_direct_kernel(
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _conv1d_direct_func(
+    def _conv1d_depthwise_func(
         block_m: int,
         block_n: int,
         threads: int,
         enable_rasterization: bool,
     ):
         @T.macro
-        def _conv1d_direct_body(x, weight, out, bias):
+        def _conv1d_depthwise_body(x, weight, out, bias):
             with T.Kernel(
                 T.ceildiv(out_l, block_n),
                 T.ceildiv(c_out, block_m),
@@ -384,27 +384,27 @@ def _conv1d_direct_kernel(
         if has_bias:
 
             @T.prim_func
-            def _conv1d_direct_bias_main(
+            def _conv1d_depthwise_bias_main(
                 x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
                 weight: T.Tensor((c_out, 1, kernel_l), dtype),  # type: ignore
                 out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
                 bias: T.Tensor((c_out,), dtype),  # type: ignore
             ):
-                _conv1d_direct_body(x, weight, out, bias)
+                _conv1d_depthwise_body(x, weight, out, bias)
 
-            return _conv1d_direct_bias_main
+            return _conv1d_depthwise_bias_main
 
         @T.prim_func
-        def _conv1d_direct_main(
+        def _conv1d_depthwise_main(
             x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
             weight: T.Tensor((c_out, 1, kernel_l), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
         ):
-            _conv1d_direct_body(x, weight, out, None)
+            _conv1d_depthwise_body(x, weight, out, None)
 
-        return _conv1d_direct_main
+        return _conv1d_depthwise_main
 
-    return _conv1d_direct_func
+    return _conv1d_depthwise_func
 
 
 @target_cache(maxsize=64)
@@ -762,6 +762,8 @@ def _conv1d_short_filter_kernel(
     has_bias: bool,
 ):
     out_l = l_in - kernel_l + 1
+    # A thread holds positions + kernel_l - 1 samples in registers and computes
+    # `positions` outputs from them for each of its block's two channels.
     positions, threads = 6, 64
 
     @tilelang.jit(out_idx=[2])
@@ -1243,7 +1245,7 @@ class DepthwiseConv1dKernel(GroupConv1dKernel):
         return call.n
 
     def _build_program(self) -> None:
-        self.kernel = _conv1d_direct_kernel(
+        self.kernel = _conv1d_depthwise_kernel(
             self.n,
             self.c_in,
             self.l_in,

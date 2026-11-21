@@ -6,11 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.attention.dsa.paged import (
-    DSAPagedKernelBase,
-    _dsa_paged_combine_kernel,
-    _no_sink,
-)
+from tileops._kernels.attention.dsa.paged import DSAPagedKernelBase, _dsa_paged_combine_kernel
 from tileops._kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
@@ -204,9 +200,7 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
             final = torch.empty(
                 (call.batch, call.heads, call.seq_len), dtype=torch.float32, device=q.device
             )
-            if self._sinkless is None:
-                self._sinkless = _no_sink(call.heads, q.device)
-            combine(out, lse, self._sinkless, output, final)
+            combine(out, lse, self._sink(None, call.heads, q.device), output, final)
             out, lse = output, final
         else:
             lse = lse[0]

@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.gemm import BMMCall
 from tileops.gemm import BMMFP8FwdOp, BMMFwdOp
@@ -446,3 +447,17 @@ def test_bmm_fp8_under_tuning(tune: bool) -> None:
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("shifted", [0, 1], ids=["a", "b"])
+def test_bmm_offset_operand_runs_as_an_aligned_one(shifted: int) -> None:
+    """An operand whose storage starts off a 16-byte boundary gives the aligned result."""
+    inputs = [
+        torch.randn(4, 256, 512, device=run_device()).bfloat16(),
+        torch.randn(4, 512, 384, device=run_device()).bfloat16(),
+    ]
+    op = BMMFwdOp()
+    expected = op(*inputs)
+    inputs[shifted] = misaligned(inputs[shifted])
+    torch.testing.assert_close(op(*inputs), expected, rtol=0, atol=0)

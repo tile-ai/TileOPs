@@ -16,21 +16,14 @@ from workloads.device import (
     run_device_is_cuda,
     torch_compile_unavailable,
 )
+from workloads.gemm import fp32_matmul_reduction
 
 
 @pytest.fixture
 def fp32_gemm_reduction():
     """Use full FP32 reduction in the cuBLAS reference and restore its prior settings."""
-    matmul = torch.backends.cuda.matmul
-    original = matmul.allow_fp16_reduced_precision_reduction
-    split_k = getattr(matmul, "allow_fp16_reduced_precision_reduction_split_k", None)
-    matmul.allow_fp16_reduced_precision_reduction = False
-    try:
+    with fp32_matmul_reduction():
         yield
-    finally:
-        matmul.allow_fp16_reduced_precision_reduction = (
-            original if split_k is None else (original, split_k)
-        )
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:

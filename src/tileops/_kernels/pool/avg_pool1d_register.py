@@ -48,7 +48,7 @@ def _runs_a_thread(itemsize: int, stride_l: int, units: int, sm_count: int) -> i
     # index math, which a second run shares; two runs a thread also double the loads each
     # thread keeps in flight and halve the threads the launch dispatches.
     paired_store_bytes = 4
-    if units > 2**31 - 1 - MAX_BLOCK_THREADS:
+    if units > AvgPool1dRegisterKernel._FLAT_UNITS_MAX:
         return 1
     _, outputs = _run(itemsize, stride_l)
     covered = _one_block_an_sm_covers(-(-units // (2 * WARP_LANES)), sm_count)
@@ -208,6 +208,9 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     preferred_over = frozenset({"avg_pool1d_kernel"})
+    # The most runs the one-axis grid indexes: its int32 thread index must hold the last
+    # run's thread and the rest of its block.
+    _FLAT_UNITS_MAX: ClassVar[int] = 2**31 - 1 - MAX_BLOCK_THREADS
 
     @classmethod
     def refusal(cls, call: AvgPoolCall) -> "str | None":
@@ -237,13 +240,12 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
             out_l > 0 and out_l % outputs == 0 and out_l * stride_l <= l_in and l_in % run == 0
         ):
             return f"requires whole {run}-element loads along the row"
-        # The one-axis grid's int32 thread index must hold the last group's thread and the
-        # rest of its block. Only rows past grid y put this many groups on that grid; the row
-        # grid indexes groups within a row.
+        # Only rows past grid y put this many groups on the one-axis grid; the row grid
+        # indexes groups within a row.
         rows = call.n * call.c_in
         units = rows * (out_l // outputs)
-        if rows > MAX_GRID_YZ_BLOCKS and units > 2**31 - 1 - MAX_BLOCK_THREADS:
-            return f"serves at most 2**31 - 1 - {MAX_BLOCK_THREADS} groups of outputs"
+        if rows > MAX_GRID_YZ_BLOCKS and units > cls._FLAT_UNITS_MAX:
+            return f"serves at most {cls._FLAT_UNITS_MAX} groups of outputs"
         return super().refusal(call)
 
     @classmethod

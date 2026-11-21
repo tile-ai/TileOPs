@@ -1,5 +1,3 @@
-# indexing.yaml -- manifest entries for the 'indexing' family.
-#
 # Ops that gather, scatter or join tensor elements by index or mask.
 
 EmbeddingFwdOp:

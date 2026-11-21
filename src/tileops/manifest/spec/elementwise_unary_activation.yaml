@@ -1,11 +1,4 @@
-# elementwise_unary_activation.yaml -- manifest entries for unary activation ops.
-#
-# Single-input single-output elementwise activation and range-transform ops:
-# ReLU family (relu, gelu, silu, hardswish, hardsigmoid, mish, selu,
-# leaky_relu, elu, hardtanh, softplus), and value-range transforms (clamp,
-# nan_to_num). Source of truth for op interfaces in this family. Loaded
-# and merged with other family files by tileops.manifest at runtime.
-# See docs/design/manifest.md for the full schema.
+# Unary activations and value-range transforms (clamp, nan_to_num).
 
 ReLUFwdOp:
   ref_api: "torch.nn.functional.relu"
@@ -24,12 +17,10 @@ ReLUFwdOp:
   workloads:
   # Hidden-state activation (Llama-3.1-8B prefill)
   - {S: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}], label: "hidden-state-prefill"}
-  # Decode (single token)
   - {S: [1, 4096], dtype_cases: [{T: bfloat16}], label: "hidden-state-decode"}
 
   roofline:
-    # FLOPs: relu(x) = max(0, x). Per roofline.md §1.3 convention,
-    # one compare-and-select = 1 per elem.
+    # One compare-and-select per element.
     flops: "prod(S)"
 
 GELUFwdOp:
@@ -75,8 +66,7 @@ SiLUFwdOp:
   - {S: [1, 14336], dtype_cases: [{T: bfloat16}], label: "llama-8b-ffn-decode"}
 
   roofline:
-    # FLOPs: silu(x) = x * sigmoid(x); sigmoid = neg + exp + add + recip = 4.
-    # silu adds one mul = 5 per elem.
+    # sigmoid (neg, exp, add, recip) and one mul per element.
     flops: "5 * prod(S)"
 
 HardswishFwdOp:
@@ -94,13 +84,12 @@ HardswishFwdOp:
       output: {dtype: T, shape: "[*S]", alias: input}
 
   workloads:
-  # Mobile-style activation map (NHW C, e.g. MobileNetV3 stage)
+  # MobileNetV3 stage activation map.
   - {S: [32, 96, 56, 56], dtype_cases: [{T: float16}, {T: bfloat16}], label: "mbv3-stage2"}
   - {S: [32, 240, 28, 28], dtype_cases: [{T: float16}, {T: bfloat16}], label: "mbv3-stage3"}
 
   roofline:
-    # FLOPs: hardswish(x) = x * relu6(x + 3) / 6.
-    # add(1) + two-sided-clamp(1, per convention) + mul(1) + div(1) = 4 per elem.
+    # x * relu6(x + 3) / 6: add, clamp, mul, div per element.
     flops: "4 * prod(S)"
 
 HardsigmoidFwdOp:
@@ -123,8 +112,7 @@ HardsigmoidFwdOp:
   - {S: [32, 960, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}], label: "mbv3-se-gate-deep"}
 
   roofline:
-    # FLOPs: hardsigmoid(x) = relu6(x + 3) / 6.
-    # add(1) + two-sided-clamp(1, per convention) + div(1) = 3 per elem.
+    # relu6(x + 3) / 6: add, clamp, div per element.
     flops: "3 * prod(S)"
 
 MishFwdOp:
@@ -147,8 +135,7 @@ MishFwdOp:
   - {S: [16, 512, 40, 40], dtype_cases: [{T: float16}, {T: bfloat16}], label: "yolo-p4"}
 
   roofline:
-    # FLOPs: mish(x) = x * tanh(softplus(x)); softplus = exp + log1p = 2,
-    # tanh(1, transcendental) + final mul(1) = 4 per elem.
+    # x * tanh(softplus(x)): exp, log1p, tanh, mul per element.
     flops: "4 * prod(S)"
 
 SELUFwdOp:
@@ -171,8 +158,7 @@ SELUFwdOp:
   - {S: [2048, 8192], dtype_cases: [{T: float16}, {T: bfloat16}], label: "snn-fc-wide"}
 
   roofline:
-    # FLOPs: selu(x) = lambda * (x if x>0 else alpha*(exp(x)-1)).
-    # compare-and-select(1) + exp(1) + sub(1) + mul-alpha(1) + mul-lambda(1) = 5 per elem.
+    # Select, exp, sub, mul by alpha, mul by lambda per element.
     flops: "5 * prod(S)"
 
 LeakyReLUFwdOp:
@@ -196,8 +182,7 @@ LeakyReLUFwdOp:
   - {S: [16, 512, 32, 32], dtype_cases: [{T: float16}, {T: bfloat16}], label: "gan-feat-deep"}
 
   roofline:
-    # FLOPs: leaky_relu(x) = x if x>0 else negative_slope*x. Per
-    # roofline.md §1.3, compare-and-select(1) + mul(1) = 2 per elem.
+    # Compare-and-select and mul per element.
     flops: "2 * prod(S)"
 
 ELUFwdOp:
@@ -221,8 +206,7 @@ ELUFwdOp:
   - {S: [2048, 8192], dtype_cases: [{T: float16}, {T: bfloat16}], label: "mlp-hidden-wide"}
 
   roofline:
-    # FLOPs: elu(x) = x if x>0 else alpha*(exp(x)-1).
-    # compare-and-select(1) + exp(1) + sub(1) + mul(1) = 4 per elem.
+    # Select, exp, sub, mul per element.
     flops: "4 * prod(S)"
 
 HardtanhFwdOp:
@@ -251,9 +235,7 @@ HardtanhFwdOp:
   - {S: [16, 256, 56, 56], dtype_cases: [{T: float16}, {T: bfloat16}], label: "bounded-conv-feat"}
 
   roofline:
-    # FLOPs: hardtanh = clamp(x, min_val, max_val).
-    # Two-sided clamp = 1 compare-and-select per output element under the
-    # roofline.md §1.3 convention. = 1 per elem.
+    # A two-sided clamp counts as one compare-and-select per element.
     flops: "prod(S)"
 
 SoftplusFwdOp:
@@ -277,15 +259,12 @@ SoftplusFwdOp:
   - {S: [2048, 8192], dtype_cases: [{T: float16}, {T: bfloat16}], label: "mlp-hidden-wide"}
 
   roofline:
-    # FLOPs: softplus(x) = (1/beta) * log(1 + exp(beta*x)) with threshold guard.
-    # mul-beta(1) + threshold compare-and-select(1) + exp(1) + log1p(1) + div-by-beta(1) = 5 per elem.
+    # mul by beta, threshold select, exp, log1p, div by beta per element.
     flops: "5 * prod(S)"
 
 ClampFwdOp:
-  # PyTorch's torch.clamp(input, min=None, max=None): each bound is a Number, a Tensor
-  # broadcast with input, or absent. At least one bound is passed, and a Number bound is
-  # never paired with a Tensor one, as in torch.clamp's two overloads. min-only is
-  # torch.clamp_min and max-only is torch.clamp_max.
+  # Each bound is a Number, a Tensor broadcast with input, or absent. At least one is passed,
+  # and a Number bound never pairs with a Tensor one, as in torch.clamp's two overloads.
   ref_api: "torch.clamp"
   family: elementwise
   status: implemented

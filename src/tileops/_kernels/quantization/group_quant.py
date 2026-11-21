@@ -21,18 +21,13 @@ __all__ = [
     "launch_shape",
     "pow2_ceil_exponent",
     "register_refusal",
+    "store_groups",
     "write_in_place",
 ]
 
-# The threads and 16-byte vectors a thread of the lane layout runs and loads, below and at
-# least _WIDE_BYTES of input.
+# The threads and 16-byte vectors a thread of the lane layout runs and loads in each
+# launch_regime; the kernels' default config and register_refusal read it.
 LAUNCH_CONFIG = {"narrow_threads": 256, "narrow_vectors": 1, "wide_threads": 128, "wide_vectors": 2}
-# An input of at least this many bytes is bound by DRAM throughput, which two vectors a
-# thread bring closer to peak; a smaller one is bound by one load-reduce-store chain, which
-# one vector a thread over 256-thread blocks shortens.
-_WIDE_BYTES = 8 << 20
-# A block reducing a group inside one thread runs this many threads, one group each.
-_ROW_THREADS = 64
 
 
 def _pow2_floor(n: int) -> int:
@@ -56,7 +51,9 @@ def _group_launch(group_size: int, itemsize: int, threads: int, vectors: int) ->
     while odd % 2 == 0:
         odd //= 2
     if odd > 1:
-        return _ROW_THREADS, _ROW_THREADS
+        # A block reducing a group inside one thread runs this many threads, one group each.
+        row_threads = 64
+        return row_threads, row_threads
     widest = vectors * threads * VECTOR_ACCESS_BYTES // (group_size * itemsize)
     return threads, _pow2_floor(widest)
 
@@ -93,7 +90,11 @@ def exponent_scale(biased):
 
 def launch_regime(x: torch.Tensor) -> str:
     """The ``LAUNCH_CONFIG`` regime of a launch over *x*: ``"wide"`` or ``"narrow"``."""
-    return "wide" if x.numel() * x.element_size() >= _WIDE_BYTES else "narrow"
+    # An input of at least this many bytes is bound by DRAM throughput, which two vectors a
+    # thread bring closer to peak; a smaller one is bound by one load-reduce-store chain,
+    # which one vector a thread over 256-thread blocks shortens.
+    wide_bytes = 8 << 20
+    return "wide" if x.numel() * x.element_size() >= wide_bytes else "narrow"
 
 
 def launch_shape(cfg: dict, regime: str, group_size: int, itemsize: int) -> tuple[int, int]:
@@ -116,6 +117,32 @@ def register_refusal(name: str, group_size: int, itemsize: int) -> str | None:
             "register budget of 128"
         )
     return None
+
+
+def store_groups(block_m: int, width: int, scale_value: Callable):
+    """A macro storing the ``block_m`` groups from row ``first``: ``scale_value(scale_local,
+    i)`` to ``scale_tensor[first + i]`` and the ``width`` codes of ``output_local[i]`` to
+    ``output_tensor[first + i]``.
+
+    Only a block reaching past ``rows`` bounds its stores, dropping the rows past it.
+    """
+
+    @T.macro
+    def store(scale_tensor, output_tensor, first, rows, scale_local, output_local):
+        if first + block_m <= rows:
+            for i in T.Parallel(block_m):
+                scale_tensor[first + i] = scale_value(scale_local, i)
+            for i, j in T.Parallel(block_m, width):
+                output_tensor[first + i, j] = output_local[i, j]
+        else:
+            for i in T.Parallel(block_m):
+                if first + i < rows:
+                    scale_tensor[first + i] = scale_value(scale_local, i)
+            for i, j in T.Parallel(block_m, width):
+                if first + i < rows:
+                    output_tensor[first + i, j] = output_local[i, j]
+
+    return store
 
 
 def write_in_place(

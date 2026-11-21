@@ -41,7 +41,7 @@ def _k_tile_refusal(dim_k: int, k_tile: int) -> str | None:
 
 @target_cache(maxsize=32)
 @tilelang.jit(out_idx=[5, 6])
-def _decode_columns(heads: int):
+def _deltanet_decode_column_kernel(heads: int):
     """Four warps share a 16-column stripe of one 128-row BF16 decode state."""
     width, columns = 128, 16
 
@@ -122,7 +122,7 @@ class DeltaNetDecodeColumnKernel(Kernel, DeltaNetDecodeFwdInterface):
             or (call.dim_k, call.dim_v) != (128, 128)
         ):
             return "requires one BF16 decode request with 128-dimensional keys and values"
-        return head_count_refusal(call.heads)
+        return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
@@ -133,7 +133,7 @@ class DeltaNetDecodeColumnKernel(Kernel, DeltaNetDecodeFwdInterface):
         self.heads = call.heads
 
     def _compile(self, cfg):
-        return _decode_columns(self.heads)
+        return _deltanet_decode_column_kernel(self.heads)
 
     def forward(self, q, k, v, beta, state):
         return self.program(self._compile)(*(t.contiguous() for t in (q, k, v, beta, state)))

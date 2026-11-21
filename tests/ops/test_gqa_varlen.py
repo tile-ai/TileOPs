@@ -63,19 +63,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                 ),  # causal bf16
                 pytest.param(
-                    2,
-                    [256, 512],
-                    [256, 512],
-                    8,
-                    2,
-                    64,
-                    True,
-                    128,
-                    -1,
-                    torch.float16,
-                    marks=pytest.mark.smoke,
-                ),  # causal + wl
-                pytest.param(
                     1,
                     [128],
                     [128],
@@ -101,6 +88,19 @@ class GQAVarlenFwdFixture(FixtureBase):
                     torch.float16,
                     marks=pytest.mark.smoke,
                 ),  # leading queries have no visible key
+                pytest.param(
+                    2,
+                    [256, 512],
+                    [256, 512],
+                    8,
+                    2,
+                    64,
+                    True,
+                    128,
+                    -1,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                ),  # causal + wl
                 pytest.param(
                     2,
                     [256, 512],
@@ -777,31 +777,15 @@ def test_varlen_ws_runs_three_consumer_warpgroups_on_long_requests_on_sm90(
 
 
 @pytest.mark.sm90
+@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "q_lens, kv_lens, dim, rows",
-    [
-        # Short requests keep 128-row tiles, which pad them less: the d72 bf16 smoke shape.
-        pytest.param(
-            [129, 65, 6, 0, 300],
-            [33, 131, 2, 0, 400],
-            72,
-            128,
-            marks=pytest.mark.smoke,
-            id="d72-narrow",
-        ),
-    ],
-)
-def test_varlen_ws_keeps_two_consumers_for_short_requests_on_sm90(
-    q_lens: list[int], kv_lens: list[int], dim: int, rows: int
-) -> None:
+def test_varlen_ws_keeps_two_consumers_for_short_requests_on_sm90() -> None:
     """Tiles of three 64-row consumer warpgroups pad short requests more than tiles of two, so a
-    call of short requests keeps two."""
-    test = GQAVarlenFwdTest(len(q_lens), q_lens, kv_lens, 4, 4, dim, False, -1, -1, torch.bfloat16)
-    op = GQAVarlenFwdOp()
-    inputs = test.gen_inputs()
-    test.check(op, *inputs)
-    assert _launched_rows(op, inputs) == rows
+    call of short requests keeps two. The d72-bidirectional case of
+    test_varlen_ws_serves_head_dims_off_the_contraction_step_on_sm90 checks its output."""
+    q_lens, kv_lens = [129, 65, 6, 0, 300], [33, 131, 2, 0, 400]
+    test = GQAVarlenFwdTest(len(q_lens), q_lens, kv_lens, 4, 4, 72, False, -1, -1, torch.bfloat16)
+    assert _launched_rows(GQAVarlenFwdOp(), test.gen_inputs()) == 128
 
 
 @pytest.mark.sm90

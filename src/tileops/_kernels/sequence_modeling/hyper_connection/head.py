@@ -1,17 +1,19 @@
 """The manifold hyper-connection head: a token's ``n`` residual streams collapsed into one under
 weights computed from them, before the LM head."""
 
+import math
+
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops._kernels.build_target import target_cache
+from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.sequence_modeling.hyper_connection.call_spec import (
     HyperConnectionHeadCall,
     HyperConnectionHeadFwdInterface,
 )
-from tileops._kernels.sequence_modeling.hyper_connection.post import stream_vector
 from tileops._utils import WARP_LANES
 
 __all__ = ["HyperConnectionHeadKernel"]
@@ -307,7 +309,9 @@ class HyperConnectionHeadKernel(Kernel, HyperConnectionHeadFwdInterface):
         self.rms_norm_eps = rms_norm_eps
         self.hc_eps = hc_eps
         self.sm_count = sm_count
-        self.vector = stream_vector(c)
+        # Elements of the 16-byte bfloat16 vector a thread loads, or the widest power of two
+        # dividing c.
+        self.vector = math.gcd(c, VECTOR_ACCESS_BYTES // 2)
         self.init_config(config)
 
     @property

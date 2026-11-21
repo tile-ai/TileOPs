@@ -7,12 +7,13 @@ from abc import abstractmethod
 import tilelang
 import tilelang.language as T
 import torch
+from tvm import DataType
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
+from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 from tileops._utils import WARP_LANES
 
 __all__ = ["EmbeddingCall", "EmbeddingFwdInterface", "EmbeddingKernel"]
@@ -65,7 +66,7 @@ def _embedding_kernel(dim, dtype, index_dtype):
         grid_x = T.min(tiles, 1 << 20)
         slots = block_rows * block_vectors
         passes = T.ceildiv(slots, threads)
-        width = vec * T.DataType(dtype).bits // 8
+        width = vec * DataType(dtype).bits // 8
         # Table rows land evict-last in L2 and the output streams past it: a table that fits
         # in L2 is read from DRAM once however many lookups name its rows.
         land = f"tileops::cp_async_evict_last<{width}>"
@@ -182,10 +183,10 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         warps = -(-slots // (max_passes * WARP_LANES))
         threads = max(divisors) if divisors else min(WARP_LANES * warps, max_threads)
         # Every thread of a one-row tile waits on the tile's one id before its row loads.
-        # spread_threads, the fewest whole warps that divide the row, put up to max_passes row
-        # loads a thread behind that id: in a call of more CTAs than the device holds at once
-        # an SM holds more of their smaller CTAs, while in a one-wave call the extra loads
-        # lengthen its single round trip, so such a call keeps threads.
+        # spread_threads, the fewest whole warps that divide the row, put up to max_passes
+        # loads a thread behind that id. Past one wave of CTAs an SM holds more of these
+        # smaller CTAs; within one wave the extra loads lengthen the call's single round
+        # trip, so ``forward`` launches spread_threads only past one wave.
         whole_warps = [t for t in divisors if t % WARP_LANES == 0]
         spread_threads = threads
         if block_rows == 1 and whole_warps:
@@ -216,9 +217,8 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         warps = -(-cfg["threads"] // WARP_LANES)
         return target.sm_count * (target.threads_per_sm // WARP_LANES // warps)
 
-    def _compile(self, cfg: dict, spread: bool) -> CompiledProgram:
+    def _compile(self, cfg: dict, spread: bool):
         """The program ``forward`` launches, compiled from *cfg*, with ``spread_threads`` for
         ``threads`` when *spread* holds."""
         threads = cfg["spread_threads"] if spread else cfg["threads"]
-        block_rows, block_vectors, vec = cfg["block_rows"], cfg["block_vectors"], cfg["vec"]
-        return CompiledProgram(self.kernel(block_rows, block_vectors, vec, threads))
+        return self.kernel(cfg["block_rows"], cfg["block_vectors"], cfg["vec"], threads)

@@ -59,11 +59,13 @@ __device__ __forceinline__ void hc_split_global(const float* src, void* dst,
 
 // Splits a Q x (64 * Steps) float32 slice of ``fn`` (rows ``ld`` elements
 // apart) into Steps tiles of 3Q x 64 bfloat16 terms at ``terms`` (swizzled as
-// above), thread ``tid`` of ``NT`` taking every NT-th 8-value chunk, Batch at a
-// time.
-template <int Q, int Steps, int NT, int Batch>
+// above), thread ``tid`` of ``NT`` taking every NT-th 8-value chunk.
+template <int Q, int Steps, int NT>
 __device__ __forceinline__ void hc_split_slice(const float* fn, int ld,
                                                void* terms, int tid) {
+  // A thread issues four chunks' loads before splitting any: each chunk holds
+  // 8 floats in registers until it is split, so a larger batch costs registers.
+  constexpr int Batch = 4;
   constexpr int kChunks = Q * Steps * 8;
   constexpr int kPer = (kChunks + NT - 1) / NT;
   char* base = reinterpret_cast<char*>(terms);

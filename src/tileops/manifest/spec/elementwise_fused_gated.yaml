@@ -1,14 +1,10 @@
-# elementwise_fused_gated.yaml -- manifest entries for fused gated activation
-# ops: y = activation(gate) * value, with gate/value packed as the two halves
-# of a single (M, 2*N) input tensor.
+# Fused gated activations y = activation(gate) * value, with gate and value the two halves of
+# one (M, 2*N) input.
 
 SiLUAndMulFwdOp:
-  # Composite expression: F.silu(gate) * value where input = [gate, value]
-  # along the last dim, input.shape == (M, 2*N). No single torch.* symbol.
-  # A positive swiglu_limit clamps gate to at most it and value to within plus or minus it
-  # first (vLLM SiluAndMulWithClamp's swiglu_limit; a non-positive one clamps nothing, as in
-  # vLLM's swiglu_limit_func). scale multiplies each row before the one rounding to T, as
-  # DeepSeek-V4-Flash inference/model.py Expert.forward applies its routing weights.
+  # A positive swiglu_limit first clamps gate to <= limit and value to [-limit, limit], as vLLM
+  # SiluAndMulWithClamp does; scale multiplies each row before the one rounding to T, as
+  # DeepSeek-V4-Flash Expert.forward applies its routing weights.
   family: elementwise
   status: implemented
   ref_api: flashinfer.activation.silu_and_mul
@@ -36,16 +32,10 @@ SiLUAndMulFwdOp:
   - {M: 4096, N: 2048, swiglu_limit: 10.0, dtype_cases: [{T: bfloat16}], label: dsv4-flash-shared-4k}
 
   roofline:
-    # FLOPs: silu(gate) = gate * sigmoid(gate); sigmoid = neg + exp + add +
-    # recip = 4. silu adds one mul (= 5). Final mul-by-value = 1. Total 6
-    # per output element, plus the two clamps under a limit and the row scale.
-    # N output elements per row, M rows.
+    # Per element: sigmoid (4) and two muls (2), plus the two clamps under a limit and the row scale.
     flops: "(6 + (2 if swiglu_limit > 0 else 0) + (1 if present(scale) else 0)) * M * N"
 
 GELUAndMulFwdOp:
-  # Composite expression: F.gelu(gate, approximate=approximate) * value where
-  # input = [gate, value] along the last dim, input.shape == (M, 2*N).
-  # No single torch.* symbol.
   family: elementwise
   status: implemented
   ref_api: vllm.model_executor.layers.activation.GeluAndMul
@@ -66,8 +56,5 @@ GELUAndMulFwdOp:
   - {M: 1, N: 14336, approximate: tanh, dtype_cases: [{T: bfloat16}], label: "llama-8b-decode-tanh"}
 
   roofline:
-    # FLOPs per output element, the final mul-by-value (1) included. Exact form
-    # gate * 0.5 * (1 + erf(gate / sqrt(2))): div, erf, add, mul-by-half, mul-by-gate
-    # (5), total 6. Tanh form 0.5 * g * (1 + tanh(sqrt(2/pi) * (g + 0.044715 * g^3))):
-    # cube (2), mul-coeff, add, mul-sqrt, tanh, add, mul-half, mul-by-gate (9), total 10.
+    # Per element, the mul by value included: the erf form costs 6, the tanh form 10.
     flops: "(10 if approximate == 'tanh' else 6) * M * N"

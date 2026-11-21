@@ -745,6 +745,7 @@ class BMMKernel(Kernel, BMMFwdInterface):
             and (self.m, self.n, self.k) == (128, 128, 128)
             and self.batch <= 8
         ):
+            # Builds the two-panel program: both 64-wide K panels load before the first MMA.
             return {"block_m": 16, "block_n": 64, "block_k": 64, "num_stages": 2, "threads": 64}
         # 64x64x64, stages=2, one warpgroup: the tile the manifest shapes share.
         block_k = 64 if self.k % 64 == 0 else (32 if self.k % 32 == 0 else 16)
@@ -768,8 +769,10 @@ class BMMKernel(Kernel, BMMFwdInterface):
             for bk in block_k_options
             for ns in [2, 3, 4]
         ]
-        if self.default_config["threads"] == 64:
-            configs.append(self.default_config)
+        default = self.default_config
+        if default["threads"] == 64:
+            # The two-panel program, which the grid above does not reach.
+            configs.append(default)
         return [c for c in configs if self.k % c["block_k"] == 0]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

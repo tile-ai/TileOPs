@@ -285,7 +285,7 @@ class _MaxPool2dRegisterKernelBase(Kernel):
         super().__init__()
         self.planes, self.h_in, self.w_in, self.dtype = planes, h_in, w_in, dtype
         input_bytes = planes * h_in * w_in * dtype.itemsize
-        self.load_policy = type(self)._load_policy(input_bytes)
+        load_policy = type(self)._load_policy(input_bytes)
         if (
             self.build_target.arch == 90
             and dtype == torch.bfloat16
@@ -293,7 +293,7 @@ class _MaxPool2dRegisterKernelBase(Kernel):
             and pad_h == pad_w == 0
             and 8 << 20 <= input_bytes <= 16 << 20
         ):
-            self.load_policy = "evict_last"
+            load_policy = "evict_last"
         self.kernel = _max_pool2d_register_kernel(
             planes,
             h_in,
@@ -307,7 +307,7 @@ class _MaxPool2dRegisterKernelBase(Kernel):
             self.dtype_str,
             type(self)._with_indices,
             threads=128,
-            load_policy=self.load_policy,
+            load_policy=load_policy,
         )
         self.init_config()
 

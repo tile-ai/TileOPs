@@ -209,8 +209,8 @@ def test_rope_validate_inputs_rejects_a_position_outside_the_cache(neox, dtype, 
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
-def test_partial_neox_query_clamps_both_table_edges():
+def test_rope_partial_neox_query_reads_both_table_edges() -> None:
+    """Positions -1 and P on heads that copy columns read rows 0 and P - 1; no key comes back."""
     op, params = _op(
         "RoPEFwdOp", torch.bfloat16, head_size=80, rotary_dim=32, max_position_embeddings=64
     )
@@ -411,8 +411,8 @@ def test_rope_rotates_one_unit_a_thread_where_heads_copy_columns(name, neox, dty
     ],
 )
 def test_rope_takes_a_key_of_no_heads(name, changes, tokens) -> None:
-    """A 0-column key failed to reshape; it comes back empty, shaped as the key, and the query
-    rotates. 16384 tokens of heads with copied columns take the staged program."""
+    """A key of no heads comes back empty, shaped as the key, and the query rotates. 16384
+    tokens of heads with copied columns take the staged program."""
     dtype = torch.float16
     op, params = _op(name, dtype, **changes)
     positions, query, key = _inputs(name, params, tokens, 3, 0, dtype)
@@ -794,8 +794,13 @@ def test_rope_cos_sin_int64_offset_at_its_maximum_reads_the_last_row(row) -> Non
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-@pytest.mark.parametrize("extreme", [2**63 - 1, -(2**63)], ids=["max", "min"])
+@pytest.mark.parametrize(
+    "extreme",
+    [
+        pytest.param(2**63 - 1, marks=_SMOKE, id="max"),
+        pytest.param(-(2**63), marks=_FULL, id="min"),
+    ],
+)
 def test_rope_cos_sin_kernel_int_offset_at_its_extremes_reads_the_end_rows(extreme) -> None:
     """The op takes an int offset in [0, P - S]; the kernel clamps any other to the rows it
     reaches, so an int64 extreme reads the rows P - 1 or -S read, without a wrapping sum."""

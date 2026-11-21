@@ -186,10 +186,10 @@ class UnaryKernel(_StrategyKernel):
     SUPPORTED_DTYPES = None
     # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
     CSRC_HEADERS: tuple[str, ...] = ()
-    # Whether a staged program asks nvcc for registers enough that an SM holds as many
-    # threads as its register file holds at 32 registers each. A kernel sets it for a
-    # body nvcc otherwise compiles past that budget, where fewer resident threads keep
-    # fewer loads in flight.
+    # Whether the fragment-copy program holds nvcc to 32 registers a thread, so an SM keeps
+    # every thread its register file allows resident. A kernel sets it for a body nvcc
+    # otherwise compiles past that budget, where fewer resident threads keep fewer loads in
+    # flight.
     FULL_OCCUPANCY: bool = False
 
     @staticmethod

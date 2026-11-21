@@ -842,12 +842,12 @@ def _sequence_modeling_cases():
 
     def hyper_connection_post():
         streams = 4
-        mix = dict(dtype=torch.float32)
+        f32 = dict(dtype=torch.float32)
         return HyperConnectionPostFwdOp(), (
             _x(_M, _SEQ_LEN, _D),
             _x(_M, _SEQ_LEN, streams, _D),
-            _x(_M, _SEQ_LEN, streams, 1, **mix),
-            _x(_M, _SEQ_LEN, streams, streams, **mix),
+            _x(_M, _SEQ_LEN, streams, 1, **f32),
+            _x(_M, _SEQ_LEN, streams, streams, **f32),
         )
 
     def hyper_connection_head():

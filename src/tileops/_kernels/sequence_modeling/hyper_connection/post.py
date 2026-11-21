@@ -1,6 +1,8 @@
 """The manifold hyper-connection post mix: the block output and the residual streams mixed into
 ``n`` new streams, in registers."""
 
+import math
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -13,22 +15,7 @@ from tileops._kernels.sequence_modeling.hyper_connection.call_spec import (
     HyperConnectionPostFwdInterface,
 )
 
-__all__ = ["HyperConnectionPostKernel", "stream_vector"]
-
-
-def stream_vector(c: int) -> int:
-    """Elements of the 16-byte bfloat16 vector a run spans, or the largest power of two
-    dividing *c* below it."""
-    vector = VECTOR_ACCESS_BYTES // 2
-    while c % vector:
-        vector //= 2
-    return vector
-
-
-def _load_run(run, column_runs: int, bounded: bool):
-    """The run a thread loads for *run*: the row's last run in place of one past it, when
-    *bounded*."""
-    return T.min(run, column_runs - 1) if bounded else run
+__all__ = ["HyperConnectionPostKernel"]
 
 
 @target_cache(maxsize=32)
@@ -61,7 +48,8 @@ def _hyper_connection_post_kernel(n: int, c: int, mix_dtype: str, vector: int):
             res_local = T.alloc_local((runs, n, vector), "bfloat16")
             out_local = T.alloc_local((runs, n, vector), "bfloat16")
             for m in T.unroll(runs):
-                run = _load_run(first + m * lanes + lane, column_runs, bounded)
+                run = first + m * lanes + lane
+                run = T.min(run, column_runs - 1) if bounded else run
                 for v in T.vectorized(vector):
                     x_local[m, v] = x[token, run * vector + v]
                 for i in T.unroll(n):
@@ -164,7 +152,9 @@ class HyperConnectionPostKernel(Kernel, HyperConnectionPostFwdInterface):
         self.n = n
         self.c = c
         self.mix_dtype = mix_dtype
-        self.vector = stream_vector(c)
+        # Elements of the 16-byte bfloat16 vector a run spans, or the widest power of two
+        # dividing c.
+        self.vector = math.gcd(c, VECTOR_ACCESS_BYTES // 2)
         self.init_config(config)
 
     @property
@@ -182,8 +172,8 @@ class HyperConnectionPostKernel(Kernel, HyperConnectionPostFwdInterface):
         post_layer_mix: torch.Tensor,
         comb_res_mix: torch.Tensor,
     ) -> torch.Tensor:
-        # The bytes of x, residual and output from which four runs a thread are faster:
-        # between 256 and 512 DeepSeek-V4-Flash tokens.
+        # The bytes of x, residual and output past which a launch is bound by DRAM
+        # throughput, which four runs a thread bring closer to peak.
         wide_bytes = 32 << 20
         moved = (x.numel() + 2 * residual.numel()) * residual.element_size()
         regime = "wide" if moved >= wide_bytes else "narrow"

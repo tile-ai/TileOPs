@@ -1,5 +1,3 @@
-# attention.yaml -- manifest entries for the 'attention' family.
-#
 # Index names shared across this family:
 #   B  batch         S, S_q, S_kv  sequence lengths    H, H_kv  query and KV heads
 #   D  head dim      T_q, T_kv, T_k  packed token totals  N_kv  KV pool rows
@@ -454,12 +452,10 @@ MLADenseDecodeFwdOp:
     flops: "B * H * (N_kv * (2 * (D + PE) + 2 * D + 5) + D)"
 
 DSADenseFwdOp:
-  # Each query row attends to the kv rows its indices name; the first D columns of a row
-  # are its value. is_causal also drops an index j whose last position
-  # (j + 1) * stride_kv - 1 is past the query's q_start_index_s + s; with is_causal false
-  # only the indices select keys, as in flash_mla_sparse_fwd and DeepSeek-V4-Flash
-  # inference/kernel.py sparse_attn, whose indices address [window | compressed] rows.
-  # attn_sink adds exp(attn_sink[h]) to the softmax denominator of head h.
+  # Each query row attends to the kv rows its indices name; the first D columns of a row are
+  # its value. is_causal also drops an index j whose last position (j + 1) * stride_kv - 1 is
+  # past q_start_index_s + s; with is_causal false only the indices select keys, as in
+  # DeepSeek-V4-Flash sparse_attn. attn_sink adds exp(attn_sink[h]) to head h's denominator.
   family: attention
   status: implemented
   ref_api: vllm.v1.attention.ops.flashmla.flash_mla_sparse_fwd
@@ -505,10 +501,9 @@ DSADenseFwdOp:
   - {B: 1, S: 4096, S_kv: 32768, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 28672, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv32k}
   - {B: 1, S: 4096, S_kv: 49152, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 45056, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv48k}
   - {B: 1, S: 4096, S_kv: 65536, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 61440, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv64k}
-  # DeepSeek-V4-Flash prefill: kv holds the S window rows, then the compressed entries.
-  # CSA layers attend to 128 window and 512 indexer-selected entries of ratio 4, HCA layers
-  # to 128 window and every entry of ratio 128. q_start_index_s puts every kv row in the
-  # generator's reach; with is_causal false the op does not read it.
+  # DeepSeek-V4-Flash prefill: kv holds the S window rows, then the compressed entries. CSA
+  # layers attend to 128 window and 512 selected entries of ratio 4, HCA layers to 128 window
+  # and every entry of ratio 128. q_start_index_s only lets the index generator reach every row.
   - {B: 1, S: 4096, S_kv: 5120, H: 64, H_kv: 1, D: 512, K: 640, dim_tail: 0, stride_kv: 1, q_start_index_s: 5120, is_causal: false, some: [attn_sink], dtype_cases: [{T: bfloat16}], label: dsv4-flash-csa-4k}
   - {B: 1, S: 32768, S_kv: 40960, H: 64, H_kv: 1, D: 512, K: 640, dim_tail: 0, stride_kv: 1, q_start_index_s: 40960, is_causal: false, some: [attn_sink], dtype_cases: [{T: bfloat16}], label: dsv4-flash-csa-32k}
   - {B: 1, S: 4096, S_kv: 4128, H: 64, H_kv: 1, D: 512, K: 160, dim_tail: 0, stride_kv: 1, q_start_index_s: 4128, is_causal: false, some: [attn_sink], dtype_cases: [{T: bfloat16}], label: dsv4-flash-hca-4k}
@@ -937,18 +932,13 @@ MergeAttentionStatesFwdOp:
     flops: "T_q * H * (3 * D + 10)"
 
 DSAPagedFwdOp:
-  # DeepSeek Sparse Attention: MLA decode over the key positions indices names, read from
-  # a paged cache. A uint8 cache holds the FlashMLA DeepSeek-V3.2 FP8 row: 656 bytes of 512
-  # float8_e4m3fn latent values, 4 float32 scales (one per 128 of them) and 64 bfloat16
-  # rope values; the key is the dequantized latent and the rope, the value the dequantized
-  # latent. A bfloat16 cache holds DK values; the key is the row, the value its first
-  # head_dim_v columns. -1 pads indices; every other entry below cache_seqlens[b] is the
-  # caller's obligation. attn_sink adds exp(attn_sink[h]) to head h's softmax denominator
-  # and leaves lse unchanged. sm_scale defaults to DK ** -0.5.
-  # The bfloat16 cache departs from ref_api, whose sparse path takes only the FP8 row; it
-  # serves GLM-5.3-Flash's NoPE latent and DeepSeek-V4-Flash's window and compressed
-  # entries, which vLLM reads through flashinfer trtllm_batch_decode_sparse_mla_dsv4 as two
-  # separate pools on SM100 and SM120 only.
+  # MLA decode over the key positions `indices` names, read from a paged cache. A uint8 cache
+  # holds the FlashMLA DeepSeek-V3.2 FP8 row (512 float8_e4m3fn latent values, 4 float32 scales,
+  # 64 bfloat16 rope values; 656 bytes); a bfloat16 cache holds DK values. The key is the whole
+  # dequantized row, the value its first head_dim_v columns. -1 pads indices; other entries below
+  # cache_seqlens[b] are the caller's obligation. attn_sink adds exp(attn_sink[h]) to head h's
+  # denominator, not to lse. sm_scale defaults to DK ** -0.5. The bfloat16 cache, which ref_api
+  # lacks, serves GLM-5.3-Flash and DeepSeek-V4-Flash.
   family: attention
   status: implemented
   ref_api: vllm.v1.attention.ops.flashmla.flash_mla_with_kvcache

@@ -844,20 +844,23 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
                     "threads": 128,
                     "enable_rasterization": True,
                 }
+            # The wide tile for large channel counts.
+            wide_m, wide_n, wide_k, wide_stages = 128, 256, 64, 3
             if (
                 self.c_out >= 256
                 and self.c_in >= 256
                 and self.out_h * self.out_w >= 8192
-                and 128 in self.block_m_candidates
-                and self.tile_stays_in_one_image(self.n, self.out_h * self.out_w, 128)
-                and self.c_in % 64 == 0
-                and self.build_target.smem_budget >= 147456
+                and wide_m in self.block_m_candidates
+                and self.tile_stays_in_one_image(self.n, self.out_h * self.out_w, wide_m)
+                and self.c_in % wide_k == 0
+                and wide_stages * (wide_m + wide_n) * wide_k * self.dtype.itemsize
+                <= self.build_target.smem_budget
             ):
                 return {
-                    "block_m": 128,
-                    "block_n": 256,
-                    "block_k": 64,
-                    "num_stages": 3,
+                    "block_m": wide_m,
+                    "block_n": wide_n,
+                    "block_k": wide_k,
+                    "num_stages": wide_stages,
                     "threads": 256,
                     "enable_rasterization": False,
                 }
@@ -1294,6 +1297,7 @@ def _conv2d_depthwise_warp_kernel(
     def build():
         @T.macro
         def convolve(x, weight, y, bias):
+            # Four warps of two output rows cover an eight-row band; a lane takes two columns.
             with T.Kernel(h // 8, channels, n, threads=128) as (band, channel, image):
                 thread = T.get_thread_binding()
                 column = thread % 32 * 2
@@ -1409,7 +1413,12 @@ class DepthwiseConv2dWarpKernel(Kernel, Conv2dFwdInterface):
         self.kernel = _conv2d_depthwise_warp_kernel(n, channels, h, w, self.dtype_str, has_bias)
         self.init_config()
 
-    def forward(self, x, weight, bias=None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         return launch(self, x, weight, bias=bias)
 
 

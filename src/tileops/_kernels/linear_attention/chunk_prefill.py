@@ -380,6 +380,7 @@ def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False, sl
         gate_mode=gate_mode,
         gate_params=gate_params,
     )
+    # Only the state walk reads a pool; the other scans take no slots.
     scan = programs[3]
     output, final_state = (
         scan(*prepared, state, offsets, slots) if call.pooled else scan(*prepared, state, offsets)

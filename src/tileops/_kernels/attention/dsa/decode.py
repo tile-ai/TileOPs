@@ -33,9 +33,10 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
         return super().refusal(call)
 
     @classmethod
-    def constructor_args(cls, call: DSADecodeCall) -> tuple:
-        """The constructor's positional arguments for *call*."""
-        return (
+    def entry_for(cls, call: DSADecodeCall) -> Entry:
+        """The call spec is the identity; the kernel is built on its device."""
+        sink = {"has_attn_sink": call.has_attn_sink} if cls.serves_attn_sink else {}
+        return call, lambda: cls(
             call.batch,
             call.seq_len,
             call.seq_len_kv,
@@ -49,22 +50,16 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
             call.kv_group,
             call.sm_scale,
             call.is_causal,
-        )
-
-    @classmethod
-    def entry_for(cls, call: DSADecodeCall) -> Entry:
-        """The call spec is the identity; the kernel is built on its device."""
-        return call, lambda: cls(
-            *cls.constructor_args(call),
             device_index=call.device.index if call.device is not None else None,
+            **sink,
         )
 
     @staticmethod
     def shape_refusal(
         dim: int, tail_dim: int, heads: int, kv_group: int, is_causal: bool
     ) -> str | None:
-        """Why neither the basic nor the older warp-specialized implementation serves this
-        shape, or ``None``; their builders ask too."""
+        """Why neither DSADecodeBasicKernel nor DSADecodeKernel serves this shape, or ``None``;
+        their builders ask too."""
         if not is_causal:
             return "requires the causal mask"
         pow2 = tilelang.math.next_power_of_2

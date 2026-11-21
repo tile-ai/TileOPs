@@ -5,7 +5,9 @@ import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import TestBase
+from tileops._kernels.attention import PagedKVCacheGatherShortKernel
 from tileops.attention import PagedKVCacheGatherFwdOp
+from tileops.backend import BUILTIN
 from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
 
 
@@ -100,9 +102,6 @@ def test_paged_kv_cache_gather(lengths, shape, page, dtype, out_dtype, starts, t
     ],
 )
 def test_short_gather_packed_requests(lengths, dtype):
-    from tileops._kernels.attention import PagedKVCacheGatherShortKernel
-    from tileops.backend import BUILTIN
-
     workload = PagedKVCacheGatherWorkload(lengths, (576,), 64, dtype, num_pages=8, table_width=4)
     inputs = workload.gen_inputs()
     op = PagedKVCacheGatherFwdOp(target=BUILTIN)

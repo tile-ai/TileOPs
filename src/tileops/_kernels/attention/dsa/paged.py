@@ -94,8 +94,6 @@ def _dsa_paged_kernel(
     rope_col = dim if bf16 else (dim + 4 * groups) // 2  # in bfloat16 elements
     row_bytes = 2 * (dim + rope) if bf16 else dim + 4 * groups + 2 * rope
     dq = dim + rope
-    # A block's weights stage in the rope tile, so it keeps block_k columns without a rope.
-    tile = block_k
     atom = 64  # bf16 columns one 128-byte swizzle atom holds
     vec = 8  # bf16 elements one 16-byte copy moves
     rows_mine = block_k // cluster  # the rows of a block this CTA gathers and dequantizes
@@ -564,7 +562,8 @@ def _dsa_paged_kernel(
             QT = T.alloc_shared([block_h, rope], dtype) if rope > 0 else None
             KL = T.alloc_shared([stages, block_k, half], dtype)
             KR = T.alloc_shared([stages, block_k, half], dtype)
-            KT = T.alloc_shared([stages, block_k, tile], dtype)
+            # The rope tile also stages a block's weights: block_k columns even without a rope.
+            KT = T.alloc_shared([stages, block_k, block_k], dtype)
             T.annotate_layout(
                 {
                     buf: make_swizzled_layout(buf)
@@ -623,12 +622,6 @@ def _dsa_paged_kernel(
                 T.cluster_wait()
 
     return main
-
-
-def _no_sink(heads: int, device: torch.device) -> torch.Tensor:
-    """The sink parameter of a call without one: zeros the kernels do not read. A kernel
-    allocates it once and keeps it."""
-    return torch.zeros(heads, dtype=torch.float32, device=device)
 
 
 @target_cache(maxsize=32)
@@ -704,11 +697,13 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
                 return "reads bfloat16 rows in the single-CTA kernel only"
             if call.dim != 512 or call.dim_tail not in (0, 64):
                 return "reads bfloat16 rows of 512 value columns and 0 or 64 more only"
-        else:
+        elif call.cache_dtype == torch.uint8:
             if call.has_attn_sink:
                 return "does not serve attn_sink on the FP8 row"
             if call.topk % 64 != 0:
                 return "requires topk a multiple of 64 on the FP8 row"
+        else:
+            return "reads uint8 FP8 rows or bfloat16 rows only"
         if call.heads % (64 * cls.cluster) != 0:
             return f"requires a multiple of {64 * cls.cluster} heads"
         return super().refusal(call)
@@ -777,6 +772,15 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         self._sinkless = None
         self.program(self._compile)
 
+    def _sink(self, attn_sink, heads, device):
+        """*attn_sink*, or for a call without one zeros the programs do not read, allocated
+        once."""
+        if attn_sink is not None:
+            return attn_sink
+        if self._sinkless is None:
+            self._sinkless = torch.zeros(heads, dtype=torch.float32, device=device)
+        return self._sinkless
+
     def _compile(self, cfg: dict):
         """The attention program and, over key splits a pair does not merge, the combine; no
         configuration."""
@@ -794,13 +798,12 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
     def forward(self, q, kv_cache, block_table, cache_seqlens, indices, attn_sink=None):
         self._require_devices(
             q=q, kv_cache=kv_cache, block_table=block_table, cache_seqlens=cache_seqlens,
-            indices=indices,
+            indices=indices, attn_sink=attn_sink,
         )  # fmt: skip
         # The kernel addresses the cache's bfloat16 view with int32 offsets.
-        if kv_cache.numel() * kv_cache.element_size() // 2 >= 2**31:
+        if kv_cache.nbytes // 2 >= 2**31:
             raise ValueError(
-                f"kv_cache holds {kv_cache.numel() * kv_cache.element_size()} bytes; this "
-                "kernel addresses below 2^32"
+                f"kv_cache holds {kv_cache.nbytes} bytes; this kernel addresses below 2^32"
             )
         tokens = self.batch * self.seq_len
         dim = 512  # value dims
@@ -810,9 +813,7 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         lse = torch.empty(
             (self.parts, self.batch, self.heads, self.seq_len), dtype=torch.float32, device=q.device
         )
-        if attn_sink is None and self._sinkless is None:
-            self._sinkless = _no_sink(self.heads, q.device)
-        sink = attn_sink if attn_sink is not None else self._sinkless
+        sink = self._sink(attn_sink, self.heads, q.device)
         main, combine = self.program(self._compile)
         main(
             q.view(tokens, self.heads, -1),

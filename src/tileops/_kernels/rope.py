@@ -24,8 +24,13 @@ import torch
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
-from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS, VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import (
+    MAX_BLOCK_THREADS,
+    MAX_GRID_YZ_BLOCKS,
+    VECTOR_ACCESS_BYTES,
+)
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops._utils import WARP_LANES
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
@@ -690,7 +695,8 @@ class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
     def _device_terms(cls, call: RoPECall) -> dict:
         row = cls._row_bytes(call)
         share = -(-call.smem_per_sm // call.threads_per_sm // VECTOR_ACCESS_BYTES)
-        threads = min(1024, -(-row // (share * VECTOR_ACCESS_BYTES * 32)) * 32)
+        warp_bytes = share * VECTOR_ACCESS_BYTES * WARP_LANES
+        threads = min(MAX_BLOCK_THREADS, -(-row // warp_bytes) * WARP_LANES)
         per_sm = min(call.threads_per_sm // threads, call.smem_per_sm // row)
         return {
             **super()._device_terms(call),
@@ -833,7 +839,8 @@ def _rope_cos_sin_kernel(
     adjacent = interleaved and vec == 1
     head_units = rot_units + (0 if inplace else (head_dim - rotary) // vec)
 
-    # The flat index proves no access in bounds; the bound check would split every vector.
+    # TileLang proves no flat-index access in bounds, and its inserted check would split every
+    # vector; `item < units` guards each thread instead.
     @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True})
     def kernel(threads, per_thread):
         # A flat view, a table or the sequences may number 2^31 or more.

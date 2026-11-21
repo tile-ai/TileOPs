@@ -63,9 +63,9 @@ GatedPoolCompressFwdOp:
   # token at position p, kv in kv_state and score + ape in score_state. A call writes the
   # rows of its tokens among the request's last C * ratio positions and reads the earlier
   # positions its windows need.
-  # start_pos[i] 0 starts a request afresh; otherwise start_pos[i] is the end of the
-  # request's last call or one position before it, so the caller may roll back at most the
-  # last token it passed. Distinct state_slots are the caller's obligation.
+  # start_pos[i] 0 starts a request afresh; otherwise it is the end of the request's last
+  # call or one position before it: a call rolls back at most the last token passed.
+  # Distinct state_slots are the caller's obligation.
   family: attention
   status: implemented
   ref_api: workloads.attention.gated_pool_compress.gated_pool_compress
@@ -116,7 +116,7 @@ GatedPoolCompressFwdOp:
 TopKSelectFwdOp:
   # Unordered along the top_k axis: a row selects the same positions every call and may
   # place them in different slots. A window holding fewer than top_k positions selects all
-  # of them and fills the rest with fill_value; flashinfer.top_k takes no such window,
+  # of them and fills the rest with fill_value. flashinfer.top_k takes no such window;
   # DeepSeek-V4-Flash inference/model.py Indexer.forward selects topk(min(k, n)) and fills
   # with -1, the index its sparse attention skips.
   family: attention

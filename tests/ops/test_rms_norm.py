@@ -657,3 +657,13 @@ def test_fused_add_rms_norm_reads_inputs_off_the_vector_boundary() -> None:
     """A contiguous input, residual and weight may start anywhere in their storage."""
     test = FusedAddRMSNormTest(4, 1024, torch.float16)
     test.check(FusedAddRMSNormFwdOp(), *(misaligned(t) for t in test.gen_inputs()))
+
+
+@pytest.mark.smoke
+def test_rms_norm_reduces_over_a_multi_axis_normalized_shape() -> None:
+    """``eps=None`` takes the default, and ``weight`` matches ``normalized_shape``."""
+    op = RMSNormFwdOp(normalized_shape=(2, 3), eps=None)
+    assert tuple(op.normalized_shape) == (2, 3)
+    x = torch.randn(4, 2, 3, dtype=torch.float16, device=run_device())
+    w = torch.randn(2, 3, dtype=torch.float16, device=run_device())
+    assert op(x, w).shape == x.shape

@@ -113,7 +113,7 @@ class GQADecodeNarrowGroupKernel(Kernel, GQADenseFwdInterface):
             or call.sm_scale not in (None, 128**-0.5)
         ):
             return "serves plain attention at the default scale"
-        parts, tail = divmod(call.seqlen_kv, 128 if call.seqlen_kv >= 2048 else 32)
+        parts, tail = divmod(call.seqlen_kv, cls._keys_per_part(call.seqlen_kv))
         if (
             tail
             or parts not in (16, 32)
@@ -122,10 +122,15 @@ class GQADecodeNarrowGroupKernel(Kernel, GQADenseFwdInterface):
             return "requires a half to one wave of whole short context tiles"
         return super().refusal(call)
 
+    @staticmethod
+    def _keys_per_part(seqlen_kv: int) -> int:
+        """Keys a CTA of one KV head attends to: 128 from 2048 keys, 32 below."""
+        return 128 if seqlen_kv >= 2048 else 32
+
     def __init__(self, call: AttentionCall) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.groups = call.heads_kv
-        self.keys_per_part = 128 if call.seqlen_kv >= 2048 else 32
+        self.keys_per_part = self._keys_per_part(call.seqlen_kv)
         self.parts = call.seqlen_kv // self.keys_per_part
         self.scale = call.dim**-0.5 * LOG2E
 
@@ -553,7 +558,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
             sinks,
         ):
             with T.Kernel(heads, batch, threads=128) as (by, bz):
-                #
                 glse_vec = T.alloc_fragment([num_split], accum_dtype)
                 for k in T.Parallel(num_split):
                     glse_vec[k] = glse[bz, by, k]
@@ -561,7 +565,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
                 T.fill(lse_max, -T.infinity(accum_dtype))
                 T.reduce_max(glse_vec, lse_max, dim=0, clear=False)
 
-                #
                 lse_logsum = T.alloc_local([1], accum_dtype)
                 lse_logsum[0] = 0
                 if has_sinks:
@@ -571,7 +574,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
                 if not has_sinks:
                     lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
 
-                #
                 o_accum = T.alloc_fragment([dim], accum_dtype)
                 T.clear(o_accum)
                 for k in T.serial(num_split):

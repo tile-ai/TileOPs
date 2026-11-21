@@ -42,9 +42,9 @@ class DSADenseFwdOp(Op):
     dimension and a zero or power-of-two tail dimension, subject to shared-memory limits.
     """
 
-    # The WGMMA warp-specialized kernels serve SM90 -- the seesaw kernel value dim 512,
-    # the older one the other widths it covers; the architecture-agnostic basic kernel
-    # serves everywhere else. Selection reads the device when a call arrives.
+    # On SM90 DSADecodeWSKernel serves value dim 512 and DSADecodeKernel the other widths it
+    # covers; DSADecodeBasicKernel serves every other architecture. Selection reads the
+    # device when a call arrives.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "dsa_decode_ws_kernel": DSADecodeWSKernel,
         "dsa_decode_kernel": DSADecodeKernel,

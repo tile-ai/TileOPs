@@ -51,11 +51,7 @@ RoPEFwdOp:
     func: "tileops._perf.formulas.rope_positions_roofline"
 
 RoPELlama31FwdOp:
-  # positions names each token's cos/sin cache row; query and key hold each token's heads
-  # flattened, head_size columns a head, whose first rotary_dim columns rotate and the rest
-  # are copied, as RotaryEmbedding.forward_native does. The cache is computed in float32,
-  # rounded to `dtype`, then to the query's dtype.
-  # Frequencies are Llama 3.1's piecewise scaling of the standard ones.
+  # As RoPEFwdOp, with Llama 3.1's piecewise scaling of the frequencies.
   family: rope
   status: implemented
   ref_api: vllm.model_executor.layers.rotary_embedding.llama3_rope.Llama3RotaryEmbedding
@@ -101,12 +97,8 @@ RoPELlama31FwdOp:
     func: "tileops._perf.formulas.rope_positions_roofline"
 
 YaRNFwdOp:
-  # positions names each token's cos/sin cache row; query and key hold each token's heads
-  # flattened, head_size columns a head, whose first rotary_dim columns rotate and the rest
-  # are copied, as RotaryEmbedding.forward_native does. The cache is computed in float32,
-  # rounded to `dtype`, then to the query's dtype.
-  # Frequencies blend interpolation into extrapolation between YaRN's correction
-  # dimensions, and cos and sin carry YaRN's magnitude; the cache holds
+  # As RoPEFwdOp, with YaRN frequencies (interpolation blended into extrapolation between the
+  # correction dimensions) and magnitude; the cache holds
   # ceil(max_position_embeddings * scaling_factor) rows.
   family: rope
   status: implemented
@@ -155,19 +147,12 @@ YaRNFwdOp:
     func: "tileops._perf.formulas.rope_positions_roofline"
 
 LongRoPEFwdOp:
-  # The computation of vLLM's Phi3LongRoPEScaledRotaryEmbedding once one set of factors is
-  # chosen. Phi-3 chooses at construction its long factors and long magnitude when the
-  # serving context exceeds original_max_position_embeddings, else its short ones; the
-  # caller passes the chosen factors as rescale_factors (None: every factor 1) and the
-  # chosen magnitude as mscale (None: sqrt(1 + log(scale) / log(original)) with
-  # scale = max_position_embeddings / original_max_position_embeddings, 1 where scale <= 1).
-  # Token n reads cache row positions[n] + offsets[n] (positions[n] without offsets): a row
-  # in [0, max_position_embeddings), and in [0, original_max_position_embeddings) with the
-  # short factors. The bound on the sum is the caller's obligation, which `requires` cannot
-  # state; positions' own bound is its `requires`, which validate_inputs checks. query and
-  # key hold each token's heads flattened, head_size columns a head; the first rotary_dim
-  # columns rotate (NeoX) and the rest are copied. The cache dtype is the query's, so the
-  # output keeps it.
+  # vLLM's Phi3LongRoPEScaledRotaryEmbedding once its long or short factor set is chosen: the
+  # caller passes the chosen factors as rescale_factors (None: all 1) and magnitude as mscale
+  # (None: sqrt(1 + log(scale) / log(original)), scale = max / original positions, 1 if <= 1).
+  # Token n reads cache row positions[n] + offsets[n], below max_position_embeddings (below the
+  # original with the short factors); that bound on the sum is the caller's obligation. The
+  # first rotary_dim columns of each head rotate (NeoX); the cache dtype is the query's.
   family: rope
   status: implemented
   ref_api: vllm.model_executor.layers.rotary_embedding.phi3_long_rope_scaled_rope.Phi3LongRoPEScaledRotaryEmbedding
@@ -219,17 +204,15 @@ LongRoPEFwdOp:
 
 RoPECosSinFwdOp:
   # Rotates the first R = 2 * Rh columns of each head by caller-given angles; the rest are
-  # copied. Token s of sequence b reads row s + seqlen_offsets of cos and sin. Dense input
-  # is [B, S, H, D]; with cu_seqlens it is packed [Tt, H, D], s counting from each
-  # sequence's start. interleaved rotates pairs (x[2i], x[2i + 1]), otherwise
-  # (x[i], x[i + Rh]). With inplace the rotation is written into x, which is returned.
-  # seqlen_offsets is one offset for every sequence, or one per sequence.
-  # Angles per packed token are the dense form with B = 1, S = Tt and a cos/sin row per token.
-  # x may be a strided view, such as the trailing columns of a wider head rotated in place;
-  # passing -sin applies the inverse rotation.
+  # copied. Token s of sequence b reads cos/sin row s + seqlen_offsets (one offset, or one per
+  # sequence); packed input [Tt, H, D] counts s from each sequence's start. interleaved rotates
+  # (x[2i], x[2i + 1]), otherwise (x[i], x[i + Rh]). inplace writes into x, which may be a
+  # strided view; passing -sin applies the inverse rotation. Per-token angles in packed form
+  # are the dense form with B = 1, S = Tt.
   family: rope
   status: implemented
   ref_api: flash_attn.layers.rotary.apply_rotary_emb
+
   signature:
     forall: {B: Dim, S: Dim, Tt: Dim, H: Dim, D: Dim, P: Dim, Rh: Dim, T: "DType[float16 | bfloat16 | float32]", C: "DType[float16 | bfloat16 | float32]", Cs: "DType[float16 | bfloat16 | float32]", I: "DType[int32 | int64]", O: "DType[int32 | int64]", seq_lens: "Seq[Int]"}
     params:
@@ -261,6 +244,7 @@ RoPECosSinFwdOp:
     - "not present(cu_seqlens) or present(max_seqlen)"
     - "L <= P"
     - "member(seqlen_offsets) != 'int' or 0 <= seqlen_offsets <= P - L"
+
   workloads:
   # Qwen3.6 vision encoder: 2D RoPE over the full 72-wide head, one cos/sin row per patch.
   - {B: 1, S: 4096, H: 16, D: 72, P: 4096, Rh: 36, dtype_cases: [{T: bfloat16, C: float32, Cs: float32}], label: qwen3.6-vision-4k}
@@ -278,6 +262,7 @@ RoPECosSinFwdOp:
   # Llama-3-8B decode: one new token per sequence, each at its own position.
   - {B: 64, S: 1, H: 32, D: 128, P: 8192, Rh: 64, some: [seqlen_offsets], dtype_cases: [{T: bfloat16, C: float32, Cs: float32, O: int32}, {T: bfloat16, C: float32, Cs: float32, O: int64}], label: llama3-8b-decode}
   - {Tt: 5120, H: 32, D: 128, P: 8192, Rh: 64, seq_lens: [1000, 3000, 1120], max_seqlen: 3000, some: [cu_seqlens, seqlen_offsets], dtype_cases: [{T: bfloat16, C: bfloat16, Cs: bfloat16, I: int32, O: int32}], label: varlen-offsets}
+
   roofline:
     # Only the cos/sin rows the sequences reach are read; in place, only the rotated columns.
     func: "tileops._perf.formulas.rope_cos_sin_roofline"

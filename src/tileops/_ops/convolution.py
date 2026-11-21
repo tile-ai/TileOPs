@@ -35,6 +35,7 @@ from tileops._kernels.convolution import (
     GroupConv3dKernel,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops._spatial import per_axis_values
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -44,11 +45,6 @@ __all__ = [
     "Conv2dFwdOp",
     "Conv3dFwdOp",
 ]
-
-
-def _axes(value: int | tuple[int, ...], dims: int) -> tuple[int, ...]:
-    """A per-axis parameter as one value per spatial axis."""
-    return (value,) * dims if isinstance(value, int) else tuple(value)
 
 
 def _padding(
@@ -67,7 +63,7 @@ def _padding(
         total = tuple(d * (k - 1) for k, d in zip(kernel, dilation, strict=True))
         before = tuple(t // 2 for t in total)
         return before, tuple(t - b for t, b in zip(total, before, strict=True))
-    before = _axes(padding, len(kernel))
+    before = per_axis_values(padding, len(kernel))
     return before, before
 
 
@@ -131,13 +127,13 @@ class Conv1dFwdOp(Op):
         """
         n, c_in, l_in = input.shape
         c_out, c_in_g, kernel_l = weight.shape
-        (stride,) = _axes(self.stride, 1)
-        (dilation,) = _axes(self.dilation, 1)
+        (stride,) = per_axis_values(self.stride, 1)
+        (dilation,) = per_axis_values(self.dilation, 1)
         if self.padding == "same":
             total = dilation * (kernel_l - 1)
             pad_left, pad_right, out_l = total // 2, total - total // 2, l_in
         else:
-            (pad,) = (0,) if self.padding == "valid" else _axes(self.padding, 1)
+            (pad,) = (0,) if self.padding == "valid" else per_axis_values(self.padding, 1)
             pad_left = pad_right = pad
             out_l = _out_dim(l_in, kernel_l, stride, pad, pad, dilation)
         # A kernel is handed contiguous tensors, in the manifest's ``signature.inputs`` order;
@@ -232,8 +228,8 @@ class Conv2dFwdOp(Op):
         """
         n, c_in, h, w = input.shape
         c_out, c_in_g, kernel_h, kernel_w = weight.shape
-        stride = _axes(self.stride, 2)
-        dilation = _axes(self.dilation, 2)
+        stride = per_axis_values(self.stride, 2)
+        dilation = per_axis_values(self.dilation, 2)
         padding, padding_end = _padding(self.padding, (kernel_h, kernel_w), dilation)
         input = input.contiguous()
         weight = weight.contiguous()
@@ -328,8 +324,8 @@ class Conv3dFwdOp(Op):
         n, c_in, d, h, w = input.shape
         c_out, c_in_g, kernel_d, kernel_h, kernel_w = weight.shape
         kernel = (kernel_d, kernel_h, kernel_w)
-        stride = _axes(self.stride, 3)
-        dilation = _axes(self.dilation, 3)
+        stride = per_axis_values(self.stride, 3)
+        dilation = per_axis_values(self.dilation, 3)
         padding, padding_end = _padding(self.padding, kernel, dilation)
         out_d, out_h, out_w = (
             _out_dim(*axis)

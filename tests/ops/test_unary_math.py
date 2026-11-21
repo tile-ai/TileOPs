@@ -4,11 +4,10 @@ Covers L1 correctness across supported float dtypes and
 L4 edge cases for numerically sensitive ops.
 """
 
-import re
-
 import pytest
 import torch
 
+from tests.launch_bounds import elementwise_launch_bounds, full_occupancy_bounds
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.elementwise import (
     AbsFwdOp,
@@ -213,6 +212,17 @@ def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(n_total, dtype, _randn, Expm1FwdOp)
 
 
+def _non_float_input(n_total: int, dtype: torch.dtype) -> torch.Tensor:
+    """*n_total* random values of an integer or bool *dtype*, signed where it is."""
+    if dtype == torch.bool:
+        low, high = 0, 2
+    elif dtype == torch.uint8:
+        low, high = 0, 100
+    else:
+        low, high = -50, 50
+    return torch.randint(low, high, (n_total,), device=run_device(), dtype=dtype)
+
+
 # Integer-dtype identity short-circuit for floor / ceil / round / trunc.
 #
 # The manifest declares these ops over both integer and float dtypes; the
@@ -231,12 +241,8 @@ def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
 )
 def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
-    n_total = 1024
     op = op_cls()
-    if int_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=int_dtype)
-    else:
-        x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=int_dtype)
+    x = _non_float_input(1024, int_dtype)
     y = op(x)
     assert y.dtype == int_dtype
     assert y.shape == x.shape
@@ -279,12 +285,8 @@ _INT_DTYPES = [
 )
 @pytest.mark.parametrize("int_dtype", _INT_DTYPES)
 def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
-    n_total = 1024
     op = op_cls()
-    if int_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=int_dtype)
-    else:
-        x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=int_dtype)
+    x = _non_float_input(1024, int_dtype)
     y = op(x)
     assert y.dtype == int_dtype
     compare_outputs(
@@ -305,14 +307,8 @@ def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
 def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None:
     """Predicate ops return constant bool on every non-float dtype the
     manifest declares (integer dtypes plus ``torch.bool``)."""
-    n_total = 256
     op = op_cls()
-    if non_float_dtype == torch.bool:
-        x = torch.randint(0, 2, (n_total,), device=run_device(), dtype=torch.bool)
-    elif non_float_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=non_float_dtype)
-    else:
-        x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=non_float_dtype)
+    x = _non_float_input(256, non_float_dtype)
     y = op(x)
     assert y.dtype == torch.bool
     assert y.shape == x.shape
@@ -420,10 +416,7 @@ def _erf_launch_bounds(n_total: int, dtype: torch.dtype) -> tuple[int, list]:
     test = UnaryMathTest(n_total, dtype, "ErfFwdOp", gen_fn=_randn)
     op = ErfFwdOp()
     test.check(op, *test.gen_inputs())
-    (kernel,) = op._entries_built("elementwise").values()
-    source = kernel.program(kernel._compile).get_kernel_source()
-    bounds = re.findall(r"__launch_bounds__\((\d+), (\d+)\)", source)
-    return kernel.config["threads"], bounds
+    return elementwise_launch_bounds(op)
 
 
 @pytest.mark.in_tree_kernels
@@ -439,8 +432,7 @@ def test_erf_float32_keeps_an_sm_of_threads_resident(n_total: int) -> None:
     """float32 erf is right, and asks for as many blocks an SM as the register file holds
     threads at 32 registers each."""
     threads, bounds = _erf_launch_bounds(n_total, torch.float32)
-    resident = torch.cuda.get_device_properties(run_device()).regs_per_multiprocessor // 32
-    assert bounds == [(str(threads), str(resident // threads))]
+    assert bounds == full_occupancy_bounds(threads)
 
 
 @pytest.mark.smoke

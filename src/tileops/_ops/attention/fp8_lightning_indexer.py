@@ -22,8 +22,9 @@ class FP8LightningIndexerFwdOp(Op):
 
     For query ``s`` and key ``t`` of group ``g``, the logit sums ``weights[s, h]`` times
     ``relu(q[s, h] . k[t, g])`` over the heads of group ``g``, for keys inside the query's
-    window ``[starts[s], ends[s])``. A bf16 call is quantized to FP8 by the
-    op. For FP8 calls, ``k`` includes the signed per-key scale from ``index_k_scale``.
+    window ``[starts[s], ends[s])``. A bf16 call is quantized to FP8 by the op. An FP8 call
+    passes per-key scales in ``index_k_scale``; ``k[t, g]`` is then the FP8 key times its
+    scale, which may be negative.
 
     On SM90, a one-batch-row call with one key group and 512 or more 64-key tiles whose query
     blocks leave a partial last wave sums ``(x + |x|) * weight``, twice the relu term, and

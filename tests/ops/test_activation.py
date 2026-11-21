@@ -3,12 +3,11 @@
 Covers L1 smoke correctness, multi-dtype coverage, and L4 edge cases.
 """
 
-import re
-
 import pytest
 import torch
 import torch.nn.functional as F
 
+from tests.launch_bounds import elementwise_launch_bounds, full_occupancy_bounds
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.elementwise import UnaryKernel
 from tileops._ops.elementwise import ReLUFwdOp
@@ -194,6 +193,12 @@ def test_gelu(n_total: int, dtype: torch.dtype, approximate: str) -> None:
     )
 
 
+def _launch_bounds(op, dtype: torch.dtype) -> tuple[int, list[tuple[str, str]]]:
+    """*op* run on 1M elements of *dtype*, and its program's threads and launch bounds."""
+    op(_randn(1_048_576, dtype))
+    return elementwise_launch_bounds(op)
+
+
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("approximate", ["none", "tanh"])
@@ -201,14 +206,8 @@ def test_gelu_keeps_an_sm_of_threads_resident(approximate: str) -> None:
     """Both GELU forms ask for an SM's full thread count at 32 registers a thread."""
     from tileops._ops.elementwise import GELUFwdOp
 
-    op = GELUFwdOp(approximate=approximate)
-    op(_randn(1_048_576, torch.float16))
-    (kernel,) = op._entries_built("elementwise").values()
-    threads = kernel.config["threads"]
-    resident = torch.cuda.get_device_properties(run_device()).regs_per_multiprocessor // 32
-    source = kernel.program(kernel._compile).get_kernel_source()
-    bounds = re.findall(r"__launch_bounds__\((\d+), (\d+)\)", source)
-    assert bounds == [(str(threads), str(resident // threads))]
+    threads, bounds = _launch_bounds(GELUFwdOp(approximate=approximate), torch.float16)
+    assert bounds == full_occupancy_bounds(threads)
 
 
 @ActivationFixture
@@ -241,17 +240,6 @@ def test_tanh(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _randn, TanhFwdOp)
 
 
-def _tanh_launch_bounds(dtype: torch.dtype) -> tuple[int, list[tuple[str, str]]]:
-    """The threads of a 1M-element ``TanhFwdOp`` program and its ``__launch_bounds__`` pairs."""
-    from tileops._ops.elementwise import TanhFwdOp
-
-    op = TanhFwdOp()
-    op(_randn(1_048_576, dtype))
-    (kernel,) = op._entries_built("elementwise").values()
-    source = kernel.program(kernel._compile).get_kernel_source()
-    return kernel.config["threads"], re.findall(r"__launch_bounds__\((\d+), (\d+)\)", source)
-
-
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -259,16 +247,19 @@ def test_tanh_keeps_an_sm_of_threads_resident_for_16bit_inputs(dtype: torch.dtyp
     """A 16-bit input asks the compiler to fit as many blocks on an SM as the register file
     holds threads at 32 registers each; nvcc left alone gives that body more, and fewer
     resident threads keep fewer loads in flight. ``test_tanh`` checks the values."""
-    threads, bounds = _tanh_launch_bounds(dtype)
-    resident = torch.cuda.get_device_properties(run_device()).regs_per_multiprocessor // 32
-    assert bounds == [(str(threads), str(resident // threads))]
+    from tileops._ops.elementwise import TanhFwdOp
+
+    threads, bounds = _launch_bounds(TanhFwdOp(), dtype)
+    assert bounds == full_occupancy_bounds(threads)
 
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_float32_tanh_leaves_the_register_budget_to_nvcc() -> None:
     """A float32 input asks for one resident block, nvcc's default budget."""
-    threads, bounds = _tanh_launch_bounds(torch.float32)
+    from tileops._ops.elementwise import TanhFwdOp
+
+    threads, bounds = _launch_bounds(TanhFwdOp(), torch.float32)
     assert bounds == [(str(threads), "1")]
 
 

@@ -92,17 +92,6 @@ class FusedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-e33-pad",
                 ),
-                # sqrt-softplus without a bias.
-                pytest.param(
-                    32,
-                    64,
-                    4,
-                    "sqrtsoftplus",
-                    False,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-sqrtsoftplus",
-                ),
                 # top_k = E: every expert is selected, the weights renormalize to one.
                 pytest.param(
                     32,
@@ -113,6 +102,17 @@ class FusedTopKFixture(FixtureBase):
                     torch.bfloat16,
                     marks=pytest.mark.smoke,
                     id="top-k-equals-e",
+                ),
+                # sqrt-softplus without a bias.
+                pytest.param(
+                    32,
+                    64,
+                    4,
+                    "sqrtsoftplus",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="sqrtsoftplus",
                 ),
                 # softmax, no renorm (Qwen3-MoE style)
                 pytest.param(
@@ -526,17 +526,6 @@ class GivenExpertsFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-softmax-row-sum-e100-fp16",
                 ),
-                # Unrenormalized sigmoid.
-                pytest.param(
-                    32,
-                    64,
-                    8,
-                    "sigmoid",
-                    False,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-sigmoid",
-                ),
                 # More given experts than warp lanes: a lane holds two.
                 pytest.param(
                     32,
@@ -547,6 +536,17 @@ class GivenExpertsFixture(FixtureBase):
                     torch.bfloat16,
                     marks=pytest.mark.smoke,
                     id="smoke-top-k-over-warp",
+                ),
+                # Unrenormalized sigmoid.
+                pytest.param(
+                    32,
+                    64,
+                    8,
+                    "sigmoid",
+                    False,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="sigmoid",
                 ),
             ],
         ),

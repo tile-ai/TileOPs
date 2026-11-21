@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.workload_test_base import TestBase
+from tests.workload_test_base import TestBase, check_strided_in_place
 from tileops.quantization import FP4QuantPerGroupFwdOp
 from workloads.device import run_device
 from workloads.quantization.quantize import (
@@ -86,18 +86,9 @@ def test_fp4_quant_rounds_ties_to_even_and_keeps_signed_zeros(inplace) -> None:
     ],
 )
 def test_fp4_quant_fake_quantizes_a_strided_view_in_place(wide_shape, index) -> None:
-    """Only the view's elements change, and the call returns the view itself."""
     x_shape = torch.empty(wide_shape, device="meta")[index].shape
     test = FP4QuantViewTest(wide_shape, index, x_shape, 32, True)
-    op = FP4QuantPerGroupFwdOp(32, inplace=True)
-    test.check(op, *test.gen_inputs())
-    (x,) = test.gen_inputs()
-    wide = x._base
-    before = wide.clone()
-    assert op(x)[2] is x
-    kept = torch.ones_like(wide, dtype=torch.bool)
-    kept[index] = False
-    assert torch.equal(wide[kept], before[kept])
+    check_strided_in_place(test, FP4QuantPerGroupFwdOp(32, inplace=True))
 
 
 @pytest.mark.smoke
