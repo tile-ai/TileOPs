@@ -24,10 +24,11 @@ from tileops._kernels.elementwise._op_body import (
 from tileops._kernels.streaming_load import load16_evict_last
 
 # Threads a 64K-register SM holds at 32 registers each. A guarded body's fast loop
-# keeps every element of a thread in flight, and nvcc left to itself gives it more
-# than 32 registers, which leaves fewer threads resident; asking for blocks enough
-# to fill this many threads holds it at 32. The row-broadcast and register-copy
-# builders both set this occupancy floor, so they must agree on it.
+# keeps every element of a thread in flight, and nvcc left to itself gives it, or a
+# long body whose kernel declares ``FULL_OCCUPANCY``, more than 32 registers, which
+# leaves fewer threads resident; asking for blocks enough to fill this many threads
+# holds it at 32. The row-broadcast and register-copy builders both set this
+# occupancy floor, so they must agree on it.
 _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
 
 
@@ -87,11 +88,13 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None):
 
 
 @target_cache(maxsize=32)
-def make_unary_regcopy(N, dtype, op_name, output_dtype=None, headers=()):
+def make_unary_regcopy(N, dtype, op_name, output_dtype=None, headers=(), full_occupancy=False):
     """Strategy 3: fragment load -> compute -> fragment store.
 
     A ``GuardedOpFunc`` body runs its fast form over a fragment-copy thread's
-    elements, and the full body only in a thread where the guard fails.
+    elements, and the full body only in a thread where the guard fails. A staged
+    program holds the occupancy floor for a guarded body, and for any body whose
+    kernel declares *full_occupancy*.
     """
     out_dtype = output_dtype or dtype
     vec = 16 // (DataType(dtype).bits // 8)
@@ -126,7 +129,7 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, headers=()):
                     for v in T.vectorized(npt_arg):
                         y[base + v] = y_run[v]
                 else:
-                    if fast is not None:
+                    if fast is not None or full_occupancy:
                         T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads_arg)
                     x_reg = T.alloc_fragment((block_size,), dtype)
                     y_reg = T.alloc_fragment((block_size,), out_dtype)

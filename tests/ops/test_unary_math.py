@@ -4,6 +4,8 @@ Covers L1 correctness across supported float dtypes and
 L4 edge cases for numerically sensitive ops.
 """
 
+import re
+
 import pytest
 import torch
 
@@ -411,6 +413,42 @@ def test_erf_saturates_at_infinity_and_propagates_nan(dtype: torch.dtype) -> Non
     out = ErfFwdOp()(x)
     workload = ErfRoundingWorkload(dtype)
     compare_outputs(out, workload.ref_program(x), workload.verification(x))
+
+
+def _erf_launch_bounds(n_total: int, dtype: torch.dtype) -> tuple[int, list]:
+    """Check erf on *n_total* elements of *dtype*; return its program's threads and launch bounds."""
+    test = UnaryMathTest(n_total, dtype, "ErfFwdOp", gen_fn=_randn)
+    op = ErfFwdOp()
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op._entries_built("elementwise").values()
+    source = kernel.program(kernel._compile).get_kernel_source()
+    bounds = re.findall(r"__launch_bounds__\((\d+), (\d+)\)", source)
+    return kernel.config["threads"], bounds
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "n_total",
+    [
+        pytest.param(1_048_576, marks=pytest.mark.smoke),
+        # A ragged last block, which ends in a partial vector.
+        pytest.param(1_048_576 + 3, marks=pytest.mark.full),
+    ],
+)
+def test_erf_float32_keeps_an_sm_of_threads_resident(n_total: int) -> None:
+    """float32 erf is right, and asks for as many blocks an SM as the register file holds
+    threads at 32 registers each."""
+    threads, bounds = _erf_launch_bounds(n_total, torch.float32)
+    resident = torch.cuda.get_device_properties(run_device()).regs_per_multiprocessor // 32
+    assert bounds == [(str(threads), str(resident // threads))]
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_erf_16bit_leaves_the_register_budget_to_nvcc() -> None:
+    """float16 erf is right, and asks for no blocks an SM beyond one."""
+    threads, bounds = _erf_launch_bounds(1_048_576, torch.float16)
+    assert bounds == [(str(threads), "1")]
 
 
 @MathEdgeFixture
