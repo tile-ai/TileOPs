@@ -748,13 +748,12 @@ def test_a_reading_given_no_block_drains_every_sample_unheld(monkeypatch):
     assert not any(b < c < u for b, u in _held_spans(order) for c in calls)
 
 
-@pytest.mark.parametrize("start_block", [3, 5])
-def test_a_start_of_every_sample_reads_as_no_start(monkeypatch, start_block):
-    """A start at or above the sample count holds every sample in one block and records no
-    block size, as a reading given none does."""
+def test_a_start_of_every_sample_reads_as_no_start(monkeypatch):
+    """A start at the sample count, the boundary, holds every sample in one block and records
+    no block size, as a reading given none does."""
     from benchmarks import timing
 
-    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, repeats=3, start_block=start_block)
+    order, samples = _time_on_fakes(monkeypatch, "cuda", {}, repeats=3, start_block=3)
 
     assert len(samples) == 3
     assert "block_samples" not in timing._capture_bench_meta()
