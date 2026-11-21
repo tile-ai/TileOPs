@@ -546,7 +546,7 @@ class EngramDecodeSplitKernel(Kernel, EngramDecodeFwdInterface):
         return call, lambda: cls(call)
 
     def __init__(self, call: EngramDecodeCall):
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.call = call
 
     def _compile(self, cfg):

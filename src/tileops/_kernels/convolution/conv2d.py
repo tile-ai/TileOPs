@@ -15,6 +15,7 @@ from tileops._kernels.convolution._common import (
 )
 from tileops._kernels.convolution.call_spec import Conv2dCall, Conv2dFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._utils import WARP_LANES
 
 __all__ = [
     "Conv2d1x1Kernel",
@@ -1099,6 +1100,8 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
         self.c_out_g = c_out_g
         self.dtype = dtype
         self.has_bias = has_bias
+        self.out_h = (h + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+        self.out_w = (w + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
         if self.groups <= 1:
             raise ValueError(f"{type(self).__name__} requires groups > 1")
         if self.c_in % self.groups or self.c_out % self.groups:
@@ -1223,8 +1226,8 @@ def _conv2d_depthwise_warp_kernel(
             # Four warps of two output rows cover an eight-row band; a lane takes two columns.
             with T.Kernel(h // 8, channels, n, threads=128) as (band, channel, image):
                 thread = T.get_thread_binding()
-                column = thread % 32 * 2
-                row = band * 8 + thread // 32 * 2
+                column = thread % WARP_LANES * 2
+                row = band * 8 + thread // WARP_LANES * 2
                 even = T.alloc_local((4,), "float32")
                 odd = T.alloc_local((4,), "float32")
                 left = T.alloc_local((4,), "float32")
@@ -1326,7 +1329,7 @@ class DepthwiseConv2dWarpKernel(Kernel, Conv2dFwdInterface):
 
     @classmethod
     def entry_for(cls, call: Conv2dCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = (call.n, call.c_in, call.h, call.w, call.dtype, call.has_bias)
         return (*args, index), lambda: cls(*args, device_index=index)
 

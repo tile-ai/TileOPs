@@ -203,7 +203,7 @@ class DeltaNetDecodeColumnKernel(Kernel, DeltaNetDecodeFwdInterface):
         return call, lambda: cls(call)
 
     def __init__(self, call: DeltaNetDecodeCall):
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.heads = call.heads
 
     def _compile(self, cfg):

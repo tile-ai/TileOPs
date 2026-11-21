@@ -830,7 +830,7 @@ class Conv1dDirectKernel(Kernel, Conv1dFwdInterface):
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = (call.l_in, call.c_out, call.kernel_l, call.dtype, call.has_bias)
         return (*args, index), lambda: cls(*args, device_index=index)
 
@@ -896,6 +896,7 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
         device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
+        self.c_in = c_in
         self.l_in = l_in
         self.c_out = c_out
         self.kernel_l = kernel_l

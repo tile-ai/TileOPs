@@ -1747,7 +1747,7 @@ class GEMMW4A16TwoGroupKernel(Kernel, GEMMW4A16FwdInterface):
 
     @classmethod
     def entry_for(cls, call: GEMMW4A16Call) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (call.m, call.n, call.k, index), lambda: cls(call.m, call.n, call.k // 128, index)
 
     def __init__(self, m, n, groups, device_index):

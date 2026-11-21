@@ -20,6 +20,7 @@ from tileops._kernels.pool.common import (
     axis_inside,
     pool_output_dim,
 )
+from tileops._utils import WARP_LANES
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWarpKernel", "MaxPool2dWithIndicesKernel"]
 
@@ -262,6 +263,8 @@ class _MaxPool2dKernelBase(MaxPoolKernelBase):
         self.kernel_w = kernel_w
         self.stride_h = stride_h
         self.stride_w = stride_w
+        self.pad_h = pad_h
+        self.pad_w = pad_w
         self.dilation_h = dilation_h
         self.dilation_w = dilation_w
         self.dtype = dtype
@@ -308,15 +311,15 @@ def _max_pool2d_warp_kernel(planes: int, h_in: int, w_in: int, dtype: str):
         ):
             with T.Kernel(planes, threads=96) as plane:
                 thread = T.get_thread_binding()
-                column = thread % 32
-                row = thread // 32 * rows_per_warp
-                across = T.alloc_local((band_h,), "float32")
+                column = thread % WARP_LANES
+                row = thread // WARP_LANES * rows_per_warp
+                across = T.alloc_local((band_h,), ACCUM_DTYPE)
                 # A lane reads two columns and gets the rightmost tap from its neighbour.
                 # Reducing across each row first preserves the generic kernel's tie order.
                 for i in T.unroll(band_h):
                     ih = T.min(row * 2 + i, h_in - 1)
-                    left = T.cast(x[plane, ih, T.min(column * 2, w_in - 1)], "float32")
-                    middle = T.cast(x[plane, ih, T.min(column * 2 + 1, w_in - 1)], "float32")
+                    left = T.cast(x[plane, ih, T.min(column * 2, w_in - 1)], ACCUM_DTYPE)
+                    middle = T.cast(x[plane, ih, T.min(column * 2 + 1, w_in - 1)], ACCUM_DTYPE)
                     right = T.shfl_down(left, 1)
                     across[i] = _nan_max(_nan_max(left, middle), right)
                 for j in T.unroll(rows_per_warp):
@@ -348,13 +351,13 @@ def _max_pool2d_half_warp_kernel(planes: int):
                 thread = T.get_thread_binding()
                 column = thread % 16
                 band = thread // 16
-                rows = T.alloc_local((5,), "float32")
+                rows = T.alloc_local((5,), ACCUM_DTYPE)
                 for r in T.unroll(5):
-                    left = T.cast(x[plane, 4 * band + r, 2 * column], "float32")
-                    middle = T.cast(x[plane, 4 * band + r, 2 * column + 1], "float32")
-                    right = T.alloc_var("float32", init=T.shfl_down(left, 1, width=16))
+                    left = T.cast(x[plane, 4 * band + r, 2 * column], ACCUM_DTYPE)
+                    middle = T.cast(x[plane, 4 * band + r, 2 * column + 1], ACCUM_DTYPE)
+                    right = T.alloc_var(ACCUM_DTYPE, init=T.shfl_down(left, 1, width=16))
                     if column == 15:
-                        right = T.cast(x[plane, 4 * band + r, 32], "float32")
+                        right = T.cast(x[plane, 4 * band + r, 32], ACCUM_DTYPE)
                     rows[r] = _nan_max(_nan_max(left, middle), right)
                 for r in T.unroll(2):
                     y[plane, 2 * band + r, column] = _nan_max(
@@ -393,7 +396,7 @@ class MaxPool2dWarpKernel(Kernel, MaxPool2dFwdInterface):
 
     @classmethod
     def entry_for(cls, call: MaxPoolCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = (call.n * call.c_in, *call.size, call.dtype)
         return (*args, index), lambda: cls(*args, device_index=index)
 

@@ -133,7 +133,7 @@ class GQADecodeNarrowGroupKernel(Kernel, GQADenseFwdInterface):
         return 128 if seqlen_kv >= 2048 else 32
 
     def __init__(self, call: AttentionCall) -> None:
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.groups = call.heads_kv
         self.keys_per_part = self._keys_per_part(call.seqlen_kv)
         self.parts = call.seqlen_kv // self.keys_per_part

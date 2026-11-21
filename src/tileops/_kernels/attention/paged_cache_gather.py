@@ -172,7 +172,7 @@ class PagedKVCacheGatherShortKernel(Kernel, PagedKVCacheGatherFwdInterface):
 
     @classmethod
     def entry_for(cls, call: PagedKVCacheGatherCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = (call.page_size, call.row_width, call.dtype, call.total_tokens <= call.page_size)
         return (*args, index), lambda: cls(*args, device_index=index)
 
