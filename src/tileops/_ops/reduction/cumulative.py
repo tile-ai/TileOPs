@@ -12,6 +12,7 @@ from tileops._kernels.reduction.call_spec import (
     CumulativeCall,
 )
 from tileops._kernels.reduction.cumulative import (
+    CumsumClusterScanKernel,
     CumulativeKernel,
     CumulativeParallelScanKernel,
     CumulativeRowScanKernel,
@@ -107,6 +108,7 @@ class CumsumFwdOp(CumulativeOp):
 
     _op_kind = "sum"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "cumsum_cluster_scan": CumsumClusterScanKernel,
         "cumulative_row_scan": CumulativeRowScanKernel,
         "cumulative_parallel_scan": CumulativeParallelScanKernel,
         "cumulative_fwd": CumulativeKernel,

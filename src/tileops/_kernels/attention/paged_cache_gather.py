@@ -11,7 +11,12 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 
-__all__ = ["PagedKVCacheGatherCall", "PagedKVCacheGatherFwdInterface", "PagedKVCacheGatherKernel"]
+__all__ = [
+    "PagedKVCacheGatherCall",
+    "PagedKVCacheGatherFwdInterface",
+    "PagedKVCacheGatherKernel",
+    "PagedKVCacheGatherShortKernel",
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -26,6 +31,7 @@ class PagedKVCacheGatherCall(CallSpec):
     dtype: torch.dtype | None = None
     out_dtype: torch.dtype | None = None
     has_starts: bool = False
+    total_tokens: int = 0
 
 
 class PagedKVCacheGatherFwdInterface(KernelInterface):
@@ -106,8 +112,83 @@ def _paged_cache_gather_kernel(page_size, row_width, dtype, out_dtype, has_start
     return _func
 
 
+@target_cache(maxsize=32)
+def _paged_cache_gather_short_kernel(page_size: int, row_width: int, dtype: str):
+    threads = ((row_width + 255) // 256) * 32
+    index_dtype = "int32"
+
+    @tilelang.jit
+    def build():
+        total = T.dynamic("total")
+        num_pages = T.dynamic("num_pages", "int64")
+        table_width = T.dynamic("table_width")
+
+        @T.prim_func
+        def gather(
+            dst: T.Tensor[(total, row_width), dtype],
+            cache: T.Tensor[(num_pages * page_size, row_width), dtype],
+            table: T.Tensor[(2, table_width), index_dtype],
+            offsets: T.Tensor[(3,), index_dtype],
+        ):
+            with T.Kernel(total, threads=threads) as row:
+                # At most a page of rows across both requests, each starting at zero.
+                # Only the first packed boundary and the first page of either request matter.
+                boundary = offsets[1]
+                request = T.cast(row >= boundary, "int32")
+                start = T.if_then_else(row >= boundary, boundary, 0)
+                slot = T.cast(table[request, 0], "int64") * page_size + row - start
+                lane = T.get_thread_binding()
+                if lane < row_width // 8:
+                    for i in T.vectorized(8):
+                        column = lane * 8 + i
+                        dst[row, column] = cache[slot, column]
+
+        return gather
+
+    return build
+
+
+class PagedKVCacheGatherShortKernel(Kernel, PagedKVCacheGatherFwdInterface):
+    """Gather two short requests by assigning one block and only one page lookup per row."""
+
+    supported_archs = [90]
+
+    @classmethod
+    def refusal(cls, call: PagedKVCacheGatherCall) -> str | None:
+        if call.batch != 2 or call.has_starts or not (0 < call.total_tokens <= call.page_size):
+            return "requires two zero-start requests packing at most a page of rows"
+        if call.dtype not in (torch.float16, torch.bfloat16) or call.out_dtype != call.dtype:
+            return "serves same-dtype fp16 or bf16 copies"
+        if not (128 <= call.row_width <= 1024 and call.row_width % 8 == 0):
+            return "requires a row width of 128–1024 divisible by eight elements"
+        return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: PagedKVCacheGatherCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = (call.page_size, call.row_width, call.dtype)
+        return (*args, index), lambda: cls(*args, device_index=index)
+
+    def __init__(self, page_size, row_width, dtype, *, device_index=None):
+        super().__init__(device_index=device_index)
+        self.row_width = row_width
+        self.dtype = dtype
+        self.kernel = _paged_cache_gather_short_kernel(page_size, row_width, self.dtype_str)
+        self.init_config()
+
+    def forward(self, dst, cache, block_table, cu_seq_lens, seq_starts=None, scale=None) -> None:
+        self.program(lambda config: self.kernel(**config))(
+            dst.view(dst.shape[0], self.row_width),
+            cache.view(cache.shape[0] * cache.shape[1], self.row_width),
+            block_table,
+            cu_seq_lens,
+        )
+
+
 class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
     """One gather and optional dequantization stage, tiled over packed output rows."""
+
+    general = True
 
     @classmethod
     def entry_for(cls, call: PagedKVCacheGatherCall) -> Entry:

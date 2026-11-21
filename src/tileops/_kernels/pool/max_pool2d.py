@@ -16,7 +16,7 @@ from tileops._kernels.pool.call_spec import (
 )
 from tileops._kernels.pool.common import axis_inside, dtype_itemsize, pool_output_dim
 
-__all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
+__all__ = ["MaxPool2dKernel", "MaxPool2dWarpKernel", "MaxPool2dWithIndicesKernel"]
 
 
 @target_cache(maxsize=32)
@@ -325,6 +325,86 @@ class _MaxPool2dKernelBase(Kernel):
     def _launch(self, program, x: torch.Tensor) -> Any:
         """Run *program* on ``x`` and shape its outputs as the interface publishes them."""
         raise NotImplementedError
+
+
+@target_cache(maxsize=32)
+def _max_pool2d_warp_kernel(planes: int, h_in: int, w_in: int):
+    dtype = "bfloat16"
+    out_h, out_w = (h_in - 1) // 2, (w_in - 1) // 2
+    rows_per_warp = (out_h + 2) // 3
+    band_h = 2 * rows_per_warp + 1
+
+    @tilelang.jit(out_idx=[1])
+    def build():
+        @T.macro
+        def maximum(a, b):
+            return T.if_then_else(T.isnan(b) or b > a, b, a)
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(planes, h_in, w_in), dtype],
+            y: T.Tensor[(planes, out_h, out_w), dtype],
+        ):
+            with T.Kernel(planes, threads=96) as plane:
+                thread = T.get_thread_binding()
+                column = thread % 32
+                row = thread // 32 * rows_per_warp
+                across = T.alloc_local((band_h,), "float32")
+                # A lane reads two columns and gets the rightmost tap from its neighbour.
+                # Reducing across each row first preserves the generic kernel's tie order.
+                for i in T.unroll(band_h):
+                    ih = T.min(row * 2 + i, h_in - 1)
+                    left = T.cast(x[plane, ih, T.min(column * 2, w_in - 1)], "float32")
+                    middle = T.cast(x[plane, ih, T.min(column * 2 + 1, w_in - 1)], "float32")
+                    right = T.shfl_down(left, 1)
+                    across[i] = maximum(maximum(left, middle), right)
+                for j in T.unroll(rows_per_warp):
+                    if row + j < out_h and column < out_w:
+                        upper = maximum(across[j * 2], across[j * 2 + 1])
+                        y[plane, row + j, column] = T.cast(maximum(upper, across[j * 2 + 2]), dtype)
+
+        return main
+
+    return build
+
+
+class MaxPool2dWarpKernel(Kernel, MaxPool2dFwdInterface):
+    """Share adjacent, unpadded 3-by-3 BF16 pooling windows within a warp."""
+
+    supported_archs = [90]
+    preferred_over = frozenset({"max_pool2d_kernel"})
+
+    @classmethod
+    def refusal(cls, call: MaxPoolCall) -> str | None:
+        if call.window != (3, 3) or call.stride != (2, 2):
+            return "requires a 3-by-3 window with stride two"
+        if call.pad != (0, 0) or call.dilation != (1, 1) or call.dtype != torch.bfloat16:
+            return "requires BF16, no padding, and unit dilation"
+        h_in, w_in = call.size
+        if not all(33 <= extent <= 63 and extent % 2 for extent in (h_in, w_in)):
+            return "requires odd spatial extents from 33 to 63 with full windows"
+        if call.n * call.c_in * h_in * w_in >= 2**31:
+            return "requires fewer than 2**31 input elements for 32-bit indexing"
+        return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: MaxPoolCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = (call.n * call.c_in, *call.size)
+        return (*args, index), lambda: cls(*args, device_index=index)
+
+    def __init__(self, planes, h_in, w_in, *, device_index=None):
+        super().__init__(device_index=device_index)
+        self.planes, self.h_in, self.w_in = planes, h_in, w_in
+        self.dtype = torch.bfloat16
+        self.kernel = _max_pool2d_warp_kernel(planes, h_in, w_in)
+        self.init_config()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.program(lambda config: self.kernel(**config))(
+            x.reshape(self.planes, self.h_in, self.w_in)
+        )
+        return y.view(x.shape[0], x.shape[1], (self.h_in - 1) // 2, (self.w_in - 1) // 2)
 
 
 class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):

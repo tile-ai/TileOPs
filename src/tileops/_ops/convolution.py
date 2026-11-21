@@ -13,6 +13,7 @@ import torch
 
 from tileops._kernels.convolution import (
     Conv1dCall,
+    Conv1dDirectKernel,
     Conv1dFwdInterface,
     Conv1dKernel,
     Conv1dPointwiseKernel,
@@ -28,6 +29,7 @@ from tileops._kernels.convolution import (
     Conv3dNdhwcKernel,
     DepthwiseConv1dKernel,
     DepthwiseConv2dKernel,
+    DepthwiseConv2dWarpKernel,
     GroupConv1dKernel,
     GroupConv2dKernel,
     GroupConv3dKernel,
@@ -78,6 +80,7 @@ class Conv1dFwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "conv1d_pointwise": Conv1dPointwiseKernel,
+        "conv1d_direct": Conv1dDirectKernel,
         "conv1d": Conv1dKernel,
         "conv1d_unit_stride": Conv1dUnitStrideKernel,
         "depthwise_conv1d": DepthwiseConv1dKernel,
@@ -181,6 +184,7 @@ class Conv2dFwdOp(Op):
         "conv2d_symmetric": Conv2dSymmetricKernel,
         "conv2d": Conv2dKernel,
         "depthwise_conv2d": DepthwiseConv2dKernel,
+        "depthwise_conv2d_warp": DepthwiseConv2dWarpKernel,
         "group_conv2d": GroupConv2dKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"conv2d": Conv2dFwdInterface}

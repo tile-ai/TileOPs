@@ -1,8 +1,9 @@
 """MoE token-to-expert alignment kernel.
 
-The kernel picks its path when it is built: a call with fewer than 1024 routes and at most one
-warp of experts takes one fused small-batch kernel; any other call takes the align kernel and,
-when it has routes, the scatter kernel after it. Both paths return:
+Calls with fewer than 1024 routes and at most one warp of experts use a fused small-batch
+kernel. Compact SM90 batches with more experts use a fused per-warp scatter. Other calls
+use an align kernel and launch a follow-up scatter when there are routes. Every path returns
+the same three tensors.
 
   sorted_token_ids  [max_num_tokens_padded]  - route indices grouped by expert, each expert's
                                                routes first in its range, numel elsewhere
@@ -336,6 +337,108 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     return _small
 
 
+@target_cache(maxsize=32)
+def _make_sparse_routes_kernel(numel: int, num_experts: int):
+    """One block of four warps owns four experts and fills part of the output tail."""
+    threads = 128
+    warps = threads // WARP_LANES
+    block_size = 64
+    route_rounds = math.ceil(numel / WARP_LANES)
+    max_padded = numel + (num_experts + 1) * (block_size - 1)
+    max_num_blocks = math.ceil(max_padded / block_size)
+    # At most numel padded blocks, so both totals fit a 16-bit half.
+    prefix_mask = (1 << 16) - 1
+
+    @tilelang.jit(
+        out_idx=[], pass_configs={tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True}
+    )
+    def build():
+        @T.prim_func
+        def align(
+            flat: T.Tensor([numel], "int32"),
+            sorted_token_ids: T.Tensor([max_padded], "int32"),
+            expert_ids: T.Tensor([max_num_blocks], "int32"),
+            num_tokens_post_pad: T.Tensor([1], "int32"),
+        ):
+            with T.Kernel(num_experts // warps, threads=threads) as group:
+                routes = T.alloc_shared((route_rounds * WARP_LANES,), "int32")
+                histogram = T.alloc_shared((num_experts,), "int32")
+                sums = T.alloc_shared((warps,), "int32")
+                packed = T.alloc_var("int32")
+                start = T.alloc_var("int32")
+                rank = T.alloc_var("int32")
+                tid = T.get_thread_binding()
+                lane = tid % WARP_LANES
+                warp = tid // WARP_LANES
+                owner = group * warps + warp
+
+                for i in T.unroll(num_experts // threads):
+                    histogram[i * threads + tid] = 0
+                T.sync_threads()
+                for i in T.unroll(math.ceil(route_rounds * WARP_LANES / threads)):
+                    idx = i * threads + tid
+                    if idx < route_rounds * WARP_LANES:
+                        expert = T.if_then_else(idx < numel, flat[T.min(idx, numel - 1)], -1)
+                        routes[idx] = expert
+                        if T.cast(expert, "uint32") < num_experts:
+                            T.atomic_add(histogram[expert], 1)
+                T.sync_threads()
+
+                packed = 0
+                for i in T.unroll(num_experts // threads):
+                    expert = i * threads + tid
+                    blocks = T.ceildiv(histogram[expert], block_size)
+                    # Add the total for all experts and the prefix before this group's experts.
+                    packed += (blocks << 16) + T.if_then_else(expert < group * warps, blocks, 0)
+                total = T.warp_reduce_sum(packed)
+                if lane == 0:
+                    sums[warp] = total
+                T.sync_threads()
+
+                packed = sums[0] + sums[1] + sums[2] + sums[3]
+                padded = (packed >> 16) * block_size
+                if group == 0 and tid == 0:
+                    num_tokens_post_pad[0] = padded
+
+                count = histogram[owner]
+                if count > 0:
+                    owner_blocks = T.ceildiv(count, block_size)
+                    start = packed & prefix_mask
+                    for i in T.unroll(warps - 1):
+                        if i < warp:
+                            start += T.ceildiv(histogram[group * warps + i], block_size)
+                    rank = 0
+                    for i in T.unroll(route_rounds):
+                        route = i * WARP_LANES + lane
+                        match = routes[route] == owner
+                        ballot = T.cast(T.ballot(match), "uint32")
+                        if match:
+                            before = T.popcount(ballot & ((T.uint32(1) << lane) - 1))
+                            sorted_token_ids[start * block_size + rank + before] = route
+                        rank += T.cast(T.popcount(ballot), "int32")
+                    for i in T.unroll(block_size // WARP_LANES):
+                        offset = (owner_blocks - 1) * block_size + i * WARP_LANES + lane
+                        if offset >= count:
+                            sorted_token_ids[start * block_size + offset] = numel
+                    if lane < owner_blocks:
+                        expert_ids[start + lane] = owner
+
+                # The valid prefix is written only by its owners. The other entries are sentinels.
+                groups = num_experts // warps
+                for i in T.unroll(math.ceil(max_padded / (groups * threads))):
+                    tail = padded + (i * groups + group) * threads + tid
+                    if tail < max_padded:
+                        sorted_token_ids[tail] = numel
+                if tid < warps:
+                    block = padded // block_size + group * warps + tid
+                    if block < max_num_blocks:
+                        expert_ids[block] = num_experts
+
+        return align
+
+    return build
+
+
 class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
     """MoE token permutation and alignment kernel.
 
@@ -398,6 +501,13 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
             if numel < small_numel_threshold and num_experts <= WARP_LANES
             else None
         )
+        if (
+            self.build_target.arch == 90
+            and 0 < numel <= 256
+            and num_experts in (128, 256, 384)
+            and block_size == 64
+        ):
+            self._small_batch_fn = _make_sparse_routes_kernel(numel, num_experts)
         if self._small_batch_fn is None:
             self._align_fn = _make_align_kernel(numel, num_experts, block_size)
             # The scatter kernel takes at least one route.
