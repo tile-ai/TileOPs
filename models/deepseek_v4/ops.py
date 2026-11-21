@@ -32,27 +32,28 @@ from tileops.transform import HadamardTransformFwdOp
 
 __all__ = ["ModelOps", "RoPETable"]
 
-_ACT_BLOCK = 128
-_ACT_AMAX_FLOOR = 1e-4
-_KV_QUANT_BLOCK = 64
-_FP4_BLOCK = 32
-
 
 class ModelOps:
     """One instance of every op the model calls; ops take their shapes from each call."""
 
+    _ACT_BLOCK = 128
+    _ACT_AMAX_FLOOR = 1e-4
+    _KV_QUANT_BLOCK = 64
+    _FP4_BLOCK = 32
+
     def __init__(self, cfg: DeepseekV4Config) -> None:
         eps = cfg.norm_eps
+        floor = self._ACT_AMAX_FLOOR
         self.layout = ContiguousLayoutSpec.tight_physical_psum()
         self.embedding = EmbeddingFwdOp()
-        self.act_quant = FP8QuantPerTokenGroupFwdOp(_ACT_BLOCK, eps=_ACT_AMAX_FLOOR, use_ue8m0=True)
+        self.act_quant = FP8QuantPerTokenGroupFwdOp(self._ACT_BLOCK, eps=floor, use_ue8m0=True)
         self.act_quant_e8m0 = FP8QuantPerTokenGroupFwdOp(
-            _ACT_BLOCK, eps=_ACT_AMAX_FLOOR, use_ue8m0=True, scale_dtype=torch.float8_e8m0fnu
+            self._ACT_BLOCK, eps=floor, use_ue8m0=True, scale_dtype=torch.float8_e8m0fnu
         )
         self.kv_fake_quant = FP8QuantPerTokenGroupFwdOp(
-            _KV_QUANT_BLOCK, eps=_ACT_AMAX_FLOOR, use_ue8m0=True, inplace=True
+            self._KV_QUANT_BLOCK, eps=floor, use_ue8m0=True, inplace=True
         )
-        self.fp4_fake_quant = FP4QuantPerGroupFwdOp(_FP4_BLOCK, inplace=True)
+        self.fp4_fake_quant = FP4QuantPerGroupFwdOp(self._FP4_BLOCK, inplace=True)
         self.gemm_fp8 = GEMMFP8FwdOp()
         self.gemm = GEMMFwdOp()
         self.gemm_f32 = GEMMFwdOp(out_dtype=torch.float32)

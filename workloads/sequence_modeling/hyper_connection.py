@@ -14,6 +14,7 @@ __all__ = [
     "hc_head",
     "hc_post",
     "hc_pre",
+    "hc_split_mixes",
 ]
 
 
@@ -45,16 +46,35 @@ def hc_pre(
     into the pre, post and comb logits, and returns ``(post_mix, comb_mix, layer_input)``."""
     n = residual.shape[-2]
     mixes = _normalized_projection(residual, fn, rms_eps)
-    pre = torch.sigmoid(mixes[..., :n] * hc_scale[0] + hc_base[:n]) + hc_pre_eps
-    post = torch.sigmoid(mixes[..., n : 2 * n] * hc_scale[1] + hc_base[n : 2 * n])
-    comb = mixes[..., 2 * n :].unflatten(-1, (n, n)) * hc_scale[2] + hc_base[2 * n :].view(n, n)
-    comb = comb.softmax(-1) + hc_sinkhorn_eps
-    comb = comb / (comb.sum(-2, keepdim=True) + hc_sinkhorn_eps)
-    for _ in range(sinkhorn_repeat - 1):
-        comb = comb / (comb.sum(-1, keepdim=True) + hc_sinkhorn_eps)
-        comb = comb / (comb.sum(-2, keepdim=True) + hc_sinkhorn_eps)
+    pre, post, comb = hc_split_mixes(
+        mixes, hc_scale, hc_base, n, hc_pre_eps, hc_sinkhorn_eps, sinkhorn_repeat
+    )
     layer_input = _weighted_stream_sum(pre, residual)
     return (post * hc_post_mult_value).unsqueeze(-1), comb, layer_input
+
+
+def hc_split_mixes(
+    mixes: torch.Tensor,
+    hc_scale: torch.Tensor,
+    hc_base: torch.Tensor,
+    n: int,
+    pre_eps: float,
+    sinkhorn_eps: float,
+    sinkhorn_repeat: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The ``(2 + n) * n`` mix logits, scaled and biased, split into ``pre`` (sigmoid plus
+    ``pre_eps``), ``post`` (sigmoid) and the ``n x n`` comb: softmax over its last axis,
+    normalized over columns, then ``sinkhorn_repeat - 1`` times over rows and columns, each
+    step adding ``sinkhorn_eps``."""
+    pre = torch.sigmoid(mixes[..., :n] * hc_scale[0] + hc_base[:n]) + pre_eps
+    post = torch.sigmoid(mixes[..., n : 2 * n] * hc_scale[1] + hc_base[n : 2 * n])
+    comb = mixes[..., 2 * n :].unflatten(-1, (n, n)) * hc_scale[2] + hc_base[2 * n :].view(n, n)
+    comb = comb.softmax(-1) + sinkhorn_eps
+    comb = comb / (comb.sum(-2, keepdim=True) + sinkhorn_eps)
+    for _ in range(sinkhorn_repeat - 1):
+        comb = comb / (comb.sum(-1, keepdim=True) + sinkhorn_eps)
+        comb = comb / (comb.sum(-2, keepdim=True) + sinkhorn_eps)
+    return pre, post, comb
 
 
 def hc_head(

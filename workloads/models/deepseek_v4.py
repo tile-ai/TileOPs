@@ -16,11 +16,14 @@ from pathlib import Path
 
 import torch
 
+from workloads.quantization.fp8_quant import fp8_quant_per_group
 from workloads.quantization.quantize import (
     fp4_quant_per_group,
     round_up_to_power_of_two,
     unpack_e2m1,
 )
+from workloads.sequence_modeling.hyper_connection import hc_split_mixes
+from workloads.transform import hadamard_transform
 
 __all__ = [
     "DEEPSEEK_V4_FLASH_CONFIG",
@@ -47,19 +50,9 @@ def act_quant(
     scale_dtype: torch.dtype = torch.float32,
     inplace: bool = False,
 ):
-    """``kernel.act_quant``: per ``block_size`` elements, ``amax`` floored at 1e-4 over 448,
-    rounded up to a power of two when ``scale_fmt`` is set; FP8 codes and scales, or with
-    ``inplace`` ``x`` overwritten by its dequantized codes."""
-    n = x.shape[-1]
-    groups = x.float().unflatten(-1, (n // block_size, block_size))
-    scale = groups.abs().amax(-1, keepdim=True).clamp(min=1e-4) * (1 / _FP8_MAX)
-    if scale_fmt is not None:
-        scale = round_up_to_power_of_two(scale)
-    codes = (groups / scale).clamp(-_FP8_MAX, _FP8_MAX).to(torch.float8_e4m3fn)
-    if inplace:
-        x.copy_((codes.float() * scale).flatten(-2))
-        return x
-    return codes.flatten(-2), scale.squeeze(-1).to(scale_dtype)
+    """``kernel.act_quant``: :func:`fp8_quant_per_group` with ``amax`` floored at 1e-4, scales
+    rounded up to a power of two when ``scale_fmt`` is set."""
+    return fp8_quant_per_group(x, block_size, 1e-4, scale_fmt is not None, scale_dtype, inplace)
 
 
 def fp4_act_quant(x: torch.Tensor, block_size: int = 32, inplace: bool = False):
@@ -131,33 +124,9 @@ def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale, chunk: int = 256, p_
 
 
 def hc_split_sinkhorn(mixes, hc_scale, hc_base, hc_mult=4, sinkhorn_iters=20, eps=1e-6):
-    """``kernel.hc_split_sinkhorn``: the pre, post and Sinkhorn-normalized comb mixes."""
-    n = hc_mult
-    pre = torch.sigmoid(mixes[..., :n] * hc_scale[0] + hc_base[:n]) + eps
-    post = 2 * torch.sigmoid(mixes[..., n : 2 * n] * hc_scale[1] + hc_base[n : 2 * n])
-    comb = mixes[..., 2 * n :].unflatten(-1, (n, n)) * hc_scale[2] + hc_base[2 * n :].view(n, n)
-    comb = comb.softmax(-1) + eps
-    comb = comb / (comb.sum(-2, keepdim=True) + eps)
-    for _ in range(sinkhorn_iters - 1):
-        comb = comb / (comb.sum(-1, keepdim=True) + eps)
-        comb = comb / (comb.sum(-2, keepdim=True) + eps)
-    return pre, post, comb
-
-
-def rotate_activation(x: torch.Tensor) -> torch.Tensor:
-    """``model.rotate_activation``: the Sylvester Hadamard transform of the last axis, scaled
-    by ``1 / sqrt(n)``, in float32 and rounded to ``x``'s dtype."""
-    n = x.shape[-1]
-    v = x.float().reshape(-1, n)
-    h = 1
-    while h < n:
-        pairs = v.reshape(-1, n // (2 * h), 2, h)
-        v = torch.stack(
-            [pairs[..., 0, :] + pairs[..., 1, :], pairs[..., 0, :] - pairs[..., 1, :]], dim=-2
-        )
-        v = v.reshape(-1, n)
-        h *= 2
-    return (v / math.sqrt(n)).reshape(x.shape).to(x.dtype)
+    """``kernel.hc_split_sinkhorn``: :func:`hc_split_mixes` with one ``eps``, ``post`` doubled."""
+    pre, post, comb = hc_split_mixes(mixes, hc_scale, hc_base, hc_mult, eps, eps, sinkhorn_iters)
+    return pre, 2 * post, comb
 
 
 def torch_kernel_module() -> types.ModuleType:
@@ -184,7 +153,7 @@ def load_official(inference_dir: str | os.PathLike) -> types.ModuleType:
             del sys.modules["kernel"]
         else:
             sys.modules["kernel"] = saved
-    module.rotate_activation = rotate_activation
+    module.rotate_activation = hadamard_transform
     return module
 
 
@@ -438,7 +407,8 @@ def check_decode_state(block, official_block, positions: int) -> None:
 
     The window ring and the compressed entries hold FP8 fake-quantized rows, the indexer's
     entries FP4 fake-quantized ones; their distance, relative L2, comes only from codes the two
-    round across a boundary, 1e-2 for FP8 and 2e-2 for FP4 at most.
+    round across a boundary, 1e-2 for FP8 and 2e-2 for FP4 at most. Entries are compared once
+    a window has closed.
     """
     attn, official = block.attn, official_block.attn
     window = attn.window
@@ -450,7 +420,7 @@ def check_decode_state(block, official_block, positions: int) -> None:
             _FP8_STATE_REL_TOL,
         )
     ]
-    if attn.ratio:
+    if attn.ratio and positions >= attn.ratio:
         n = positions // attn.ratio
         entries = slice(window, window + n)
         pairs.append(
@@ -461,7 +431,7 @@ def check_decode_state(block, official_block, positions: int) -> None:
                 _FP8_STATE_REL_TOL,
             )
         )
-    if attn.indexer is not None:
+    if attn.indexer is not None and positions >= attn.indexer.ratio:
         n = positions // attn.indexer.ratio
         pairs.append(
             (

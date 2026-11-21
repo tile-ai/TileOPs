@@ -12,6 +12,28 @@ from workloads.quantization.quantize import (
 from workloads.workload_base import WorkloadBase
 
 
+def fp8_quant_per_group(
+    x: torch.Tensor,
+    group_size: int,
+    eps: float,
+    use_ue8m0: bool | None,
+    scale_dtype: torch.dtype = torch.float32,
+    inplace: bool = False,
+):
+    """Per ``group_size`` elements of the last axis: ``scale = max(amax, eps) / 448``, under
+    ``use_ue8m0`` rounded up to a power of two no smaller than ``2 ** -126``, and
+    ``q = clamp(x / scale, -448, 448)`` in e4m3. Returns ``(q, scale)``, or with ``inplace``
+    ``x`` overwritten by ``q * scale``."""
+    groups = x.float().unflatten(-1, (-1, group_size))
+    scale = groups.abs().amax(dim=-1, keepdim=True).clamp(min=eps) / 448.0
+    if use_ue8m0:
+        scale = round_up_to_power_of_two(scale.clamp(min=2.0**-126))
+    q = torch.clamp(groups / scale, min=-448.0, max=448.0).to(torch.float8_e4m3fn)
+    if inplace:
+        return x.copy_((q.float() * scale).flatten(-2))
+    return q.flatten(-2), scale.squeeze(dim=-1).to(scale_dtype)
+
+
 class FP8QuantWorkload(WorkloadBase):
     """Group-wise FP8 quantization of a ``shape`` tensor, groups of ``group_size`` columns."""
 
@@ -58,20 +80,11 @@ class FP8QuantWorkload(WorkloadBase):
         return x, torch.empty(self.shape, dtype=torch.float8_e4m3fn, device=run_device())
 
     def ref_program(self, x: torch.Tensor, out_q: torch.Tensor | None = None) -> tuple:
-        """Per group: ``scale = max(amax, eps) / 448``, under ``use_ue8m0`` rounded up to a
-        power of two no smaller than ``2 ** -126``, and ``q = clamp(x / scale, -448, 448)``;
-        with ``inplace``, ``x`` becomes ``q * scale``. The result fills ``(q, scale, None)``
-        or ``(None, None, x)``."""
-        groups = x.float().unflatten(-1, (-1, self.group_size))
-        amax_value = torch.abs(groups).amax(dim=-1, keepdim=True).clamp(min=self.eps)
-        scale = amax_value / 448.0
-        if self.use_ue8m0:
-            scale = round_up_to_power_of_two(scale.clamp(min=2.0**-126))
-        q = torch.clamp(groups / scale, min=-448.0, max=448.0).to(torch.float8_e4m3fn)
-        if self.inplace:
-            x.copy_((q.float() * scale).flatten(-2))
-            return None, None, x
-        return q.flatten(-2), scale.squeeze(dim=-1).to(self.scale_dtype), None
+        """:func:`fp8_quant_per_group`, filling ``(q, scale, None)`` or ``(None, None, x)``."""
+        out = fp8_quant_per_group(
+            x, self.group_size, self.eps, self.use_ue8m0, self.scale_dtype, self.inplace
+        )
+        return (None, None, out) if self.inplace else (*out, None)
 
     def verification(self, *inputs):
         from workloads.numerics import Custom, assert_quantized
