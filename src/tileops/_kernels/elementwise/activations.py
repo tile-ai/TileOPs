@@ -104,6 +104,8 @@ class GELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     # The erf body costs more than its access, so a row the shrink reaches keeps two
     # elements a thread instead of four.
     MIN_NUM_PER_THREAD = 2
+    # nvcc compiles the erf body past 32 registers at the larger elements-a-thread settings.
+    FULL_OCCUPANCY = True
 
     @classmethod
     def refusal(cls, call: GELUCall) -> str | None:
@@ -122,6 +124,9 @@ class GELUTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     Computes ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``,
     matching ``torch.nn.functional.gelu(x, approximate='tanh')``.
     """
+
+    # nvcc compiles the tanh body past 32 registers at the larger elements-a-thread settings.
+    FULL_OCCUPANCY = True
 
     @classmethod
     def refusal(cls, call: GELUCall) -> str | None:

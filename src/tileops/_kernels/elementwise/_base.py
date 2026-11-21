@@ -186,6 +186,11 @@ class UnaryKernel(_StrategyKernel):
     SUPPORTED_DTYPES = None
     # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
     CSRC_HEADERS: tuple[str, ...] = ()
+    # Whether a staged program asks nvcc for registers enough that an SM holds as many
+    # threads as its register file holds at 32 registers each. A kernel sets it for a
+    # body nvcc otherwise compiles past that budget, where fewer resident threads keep
+    # fewer loads in flight.
+    FULL_OCCUPANCY: bool = False
 
     @staticmethod
     def op_func(x):
@@ -271,6 +276,7 @@ class UnaryKernel(_StrategyKernel):
                 effective_op,
                 output_dtype=self.output_dtype_str,
                 headers=self.CSRC_HEADERS,
+                full_occupancy=self.FULL_OCCUPANCY,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
