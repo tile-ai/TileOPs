@@ -939,6 +939,7 @@ def test_avg_pool1d_register_refuses_groups_past_its_int32_thread_index() -> Non
     assert "groups of outputs" in AvgPool1dRegisterKernel.refusal(call)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_avg_pool1d_register_serves_one_row_past_int32_groups_one_run_a_thread() -> None:
     """A row of 2**31 groups of 4-byte stores would pair runs on the one-axis grid, whose
