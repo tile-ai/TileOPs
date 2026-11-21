@@ -1,8 +1,8 @@
 """Average pooling over an NCL row, each thread's windows read into registers.
 
-A thread takes the outputs one 16-byte load of the row covers and reads the few
-elements their windows reach past it on either side; no block stages the row in
-shared memory.
+A thread takes the outputs one 16-byte load of the row covers, or two such loads, and
+reads the few elements their windows reach past each load on either side; no block
+stages the row in shared memory.
 """
 
 from typing import ClassVar
@@ -32,16 +32,41 @@ def _run(itemsize: int, stride_l: int) -> tuple[int, int]:
     return run, run // stride_l
 
 
+def _one_block_an_sm_covers(warps: int, sm_count: int) -> bool:
+    """Whether one block of at most MAX_BLOCK_THREADS an SM holds ``warps`` warps."""
+    return warps * WARP_LANES <= sm_count * MAX_BLOCK_THREADS
+
+
+def _runs_a_thread(itemsize: int, stride_l: int, units: int, sm_count: int) -> int:
+    """The runs one thread pools for a launch of ``units`` runs: two, half the launch
+    apart, where one run's outputs take at most 4 bytes and one block an SM cannot cover
+    the launch even at two runs a thread; otherwise one. Where one block an SM covers it,
+    every thread is resident from the start, and a second run a thread only halves the
+    warps each SM issues from. Past the one-axis grid's int32 thread index, one run on the
+    row grid still serves the launch."""
+    # 4 bytes is one 32-bit register: a run storing that little leaves its thread mostly
+    # index math, which a second run shares; two runs a thread also double the loads each
+    # thread keeps in flight and halve the threads the launch dispatches.
+    paired_store_bytes = 4
+    if units > 2**31 - 1 - MAX_BLOCK_THREADS:
+        return 1
+    _, outputs = _run(itemsize, stride_l)
+    covered = _one_block_an_sm_covers(-(-units // (2 * WARP_LANES)), sm_count)
+    return 2 if outputs * itemsize <= paired_store_bytes and not covered else 1
+
+
 @target_cache(maxsize=32)
 def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, counted, dtype):
     """Build the program for ``rows`` rows of ``l_in`` elements.
 
-    A thread owns ``VECTOR_ACCESS_BYTES`` of the row, ``outputs`` outputs. The windows
-    of those outputs start ``pad_l`` elements before the run and end ``after`` past it;
-    ``window`` holds them in float32, zero outside the row. ``counted`` is the span
-    ``(lo, hi)`` of positions a window counts in its divisor, or ``None`` where every
-    window divides by ``kernel_l``. The program takes ``threads`` a block, and ``flat``
-    lays every row's groups along one grid axis; otherwise the grid is ``(groups, rows)``.
+    A run is ``VECTOR_ACCESS_BYTES`` of the row, ``outputs`` outputs; a thread pools
+    ``runs`` runs, ``span`` groups apart on the flat grid. The windows of a
+    run's outputs start ``pad_l`` elements before it and end ``after`` past it; ``window``
+    holds them in float32, zero outside the row. ``counted`` is the span ``(lo, hi)`` of
+    positions a window counts in its divisor, or ``None`` where every window divides by
+    ``kernel_l``. The program takes ``threads`` a block, and ``flat`` lays every row's
+    groups along one grid axis; otherwise the grid is ``(groups, rows)`` and a thread
+    pools one run.
     """
     run, outputs = _run(getattr(torch, dtype).itemsize, stride_l)
     after = max(kernel_l - stride_l - pad_l, 0)
@@ -58,35 +83,43 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
     position_dtype = "int64" if l_in + max(kernel_l, VECTOR_ACCESS_BYTES) >= 2**31 else "int32"
 
     @tilelang.jit(out_idx=[1])
-    def build(threads: int, flat: bool):
+    def build(threads: int, flat: bool, runs: int):
+        span = -(-units // runs)
         x_shape = (T.int64(rows), T.int64(l_in)) if wide else (rows, l_in)
         y_shape = (T.int64(rows), T.int64(out_l)) if wide else (rows, out_l)
 
-        def element(x, row, at):
-            """``x[row, at]`` in float32, zero outside the row."""
-            inside = T.max(T.min(at, l_in - 1), 0)
-            return T.if_then_else(
-                inside == at, T.cast(x[row, inside], ACCUM_DTYPE), T.cast(0, ACCUM_DTYPE)
-            )
+        @T.macro
+        def side(x, row, at, width, window, first):
+            """``x[row, at:at + width]`` in float32 into ``window[first:]`` as one load, zero
+            where the span lies outside the row. A run's side lies wholly inside the row or
+            wholly outside it, since the row is whole runs and a side is at most one run."""
+            inside = T.max(T.min(at, l_in - width), 0)
+            for i in T.vectorized(width):
+                window[first + i] = T.if_then_else(
+                    inside == at, T.cast(x[row, inside + i], ACCUM_DTYPE), T.cast(0, ACCUM_DTYPE)
+                )
 
         @T.macro
-        def pool(x, row, group, means):
-            """The means of ``group``'s outputs of ``row``, into ``means``."""
-            values = T.alloc_local([run], dtype)
-            window = T.alloc_local([pad_l + run + after], ACCUM_DTYPE)
-            totals = T.alloc_local([outputs], ACCUM_DTYPE)
+        def load(x, row, group, values, v):
+            """``group``'s run of ``row`` into ``values[v]``, as one load."""
             # Widened at the group, so every position of the row derived from it is.
             start = T.cast(group, position_dtype) * run
             for i in T.vectorized(run):
-                values[i] = x[row, start + i]
+                values[v, i] = x[row, start + i]
+
+        @T.macro
+        def pool(x, row, group, values, means, v):
+            """The means of ``group``'s outputs of ``row`` from its run in ``values[v]`` and
+            the elements its windows reach past it, into ``means[v]``."""
+            window = T.alloc_local([pad_l + run + after], ACCUM_DTYPE)
+            totals = T.alloc_local([outputs], ACCUM_DTYPE)
+            start = T.cast(group, position_dtype) * run
             for i in T.unroll(run):
-                window[pad_l + i] = T.cast(values[i], ACCUM_DTYPE)
+                window[pad_l + i] = T.cast(values[v, i], ACCUM_DTYPE)
             if pad_l:
-                for i in T.unroll(pad_l):
-                    window[i] = element(x, row, start - pad_l + i)
+                side(x, row, start - pad_l, pad_l, window, 0)
             if after:
-                for i in T.unroll(after):
-                    window[pad_l + run + i] = element(x, row, start + run + i)
+                side(x, row, start + run, after, window, pad_l + run)
             for e in T.unroll(outputs):
                 totals[e] = T.cast(0, ACCUM_DTYPE)
                 for t in T.unroll(kernel_l):
@@ -94,13 +127,13 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
                 # A division, not a multiply by the reciprocal: torch divides, and the
                 # two round apart.
                 if whole:
-                    means[e] = T.cast(totals[e] / T.cast(kernel_l, ACCUM_DTYPE), dtype)
+                    means[v, e] = T.cast(totals[e] / T.cast(kernel_l, ACCUM_DTYPE), dtype)
                 else:
                     begin = (T.cast(group, position_dtype) * outputs + e) * stride_l - pad_l
                     divisor = T.min(begin + kernel_l, hi) - T.max(begin, lo)
                     # A whole window divides by the constant; only a window cut by the
                     # row's edge takes the division by a computed divisor.
-                    means[e] = T.cast(
+                    means[v, e] = T.cast(
                         T.if_then_else(
                             divisor == kernel_l,
                             totals[e] / T.cast(kernel_l, ACCUM_DTYPE),
@@ -118,16 +151,25 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
                 x: T.Tensor[x_shape, dtype],
                 y: T.Tensor[y_shape, dtype],
             ):
-                with T.Kernel(-(-units // threads), threads=threads) as bx:
+                with T.Kernel(-(-span // threads), threads=threads) as bx:
                     tx = T.get_thread_binding()
-                    unit = bx * threads + tx
-                    means = T.alloc_local([outputs], dtype)
-                    last = T.min(unit, units - 1)
-                    row, group = last // groups, last % groups
-                    pool(x, row, group, means)
-                    if unit < units:
-                        for e in T.vectorized(outputs):
-                            y[row, T.cast(group, position_dtype) * outputs + e] = means[e]
+                    values = T.alloc_local([runs, run], dtype)
+                    means = T.alloc_local([runs, outputs], dtype)
+                    # Every run's 16-byte load issues before any run's arithmetic.
+                    for v in T.unroll(runs):
+                        last = T.min(bx * threads + tx + v * span, units - 1)
+                        load(x, last // groups, last % groups, values, v)
+                    for v in T.unroll(runs):
+                        unit = bx * threads + tx + v * span
+                        last = T.min(unit, units - 1)
+                        row, group = last // groups, last % groups
+                        pool(x, row, group, values, means, v)
+                        # Run v of the launch's threads covers units [v * span, (v + 1) * span):
+                        # a thread past the last of them stores nothing, so each output has
+                        # one writer.
+                        if unit < T.min(units, (v + 1) * span):
+                            for e in T.vectorized(outputs):
+                                y[row, T.cast(group, position_dtype) * outputs + e] = means[v, e]
 
         else:
 
@@ -139,11 +181,14 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
                 with T.Kernel(-(-groups // threads), rows, threads=threads) as (bx, row):
                     tx = T.get_thread_binding()
                     group = bx * threads + tx
-                    means = T.alloc_local([outputs], dtype)
-                    pool(x, row, T.min(group, groups - 1), means)
+                    last = T.min(group, groups - 1)
+                    values = T.alloc_local([1, run], dtype)
+                    means = T.alloc_local([1, outputs], dtype)
+                    load(x, row, last, values, 0)
+                    pool(x, row, last, values, means, 0)
                     if group < groups:
                         for e in T.vectorized(outputs):
-                            y[row, T.cast(group, position_dtype) * outputs + e] = means[e]
+                            y[row, T.cast(group, position_dtype) * outputs + e] = means[0, e]
 
         return main
 
@@ -156,9 +201,9 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
     Serves every divisor but ``divisor_override``: a window cut by the row's edge, or by
     a ceil-mode overhang past the padded row, divides by the positions it counts. The
     stride must divide the elements of a 16-byte load, so that one covers whole outputs;
-    the outputs must divide into those loads, and the loads into the row. A thread's
-    windows reach at most one element past its load on either side, each one a load of
-    its own.
+    the outputs must divide into those loads, and the loads into the row. The elements a
+    run's windows reach past it on each side are read as one load of their own, of at
+    most 4 bytes.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
@@ -177,20 +222,27 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         if run % stride_l:
             return f"requires a stride dividing the {run}-element load, got {stride_l}"
         (out_l,) = AvgPoolWindow.of(call).out
-        # Each element past the load is a load of its own; at two, AvgPool1dKernel's
-        # shared-memory stage is faster.
-        max_reach = 1
-        if pad_l > max_reach or kernel_l - stride_l - pad_l > max_reach:
-            return f"reads at most {max_reach} element past a load"
+        # A side's elements are one load of at most 4 bytes, one fp32 element, so a side of
+        # two 16-bit elements costs a thread the one load a side of one fp32 element does.
+        # The run starts on a 16-byte boundary, so a side of two or four bytes starts on its
+        # own width.
+        side_load_bytes = 4
+        for side, reach in (("before", pad_l), ("after", kernel_l - stride_l - pad_l)):
+            if reach * call.dtype.itemsize > side_load_bytes:
+                return (
+                    f"reads the elements a window reaches {side} a load as one load of at most"
+                    f" {side_load_bytes} bytes; got {reach}"
+                )
         if not (
             out_l > 0 and out_l % outputs == 0 and out_l * stride_l <= l_in and l_in % run == 0
         ):
             return f"requires whole {run}-element loads along the row"
-        # A thread a group of outputs: the one-axis grid's int32 thread index must hold the
-        # last group's thread and the rest of its block. Only rows past grid y put this many
-        # groups on that grid; the row grid indexes groups within a row.
+        # The one-axis grid's int32 thread index must hold the last group's thread and the
+        # rest of its block. Only rows past grid y put this many groups on that grid; the row
+        # grid indexes groups within a row.
         rows = call.n * call.c_in
-        if rows > MAX_GRID_YZ_BLOCKS and rows * (out_l // outputs) > 2**31 - 1 - MAX_BLOCK_THREADS:
+        units = rows * (out_l // outputs)
+        if rows > MAX_GRID_YZ_BLOCKS and units > 2**31 - 1 - MAX_BLOCK_THREADS:
             return f"serves at most 2**31 - 1 - {MAX_BLOCK_THREADS} groups of outputs"
         return super().refusal(call)
 
@@ -208,11 +260,14 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         if not window.whole_window_divides:
             ((lo,), (hi,)) = window.overlap
             counted = (lo, hi)
-        # One thread a group of outputs, ``groups`` a row.
+        # A group of outputs a run, ``groups`` a row; ``runs`` runs a thread, ``lanes``
+        # threads in all.
         _, outputs = _run(call.dtype.itemsize, stride_l)
         groups = out_l // outputs
         units = window.rows * groups
-        warps = -(-units // WARP_LANES)
+        runs = _runs_a_thread(call.dtype.itemsize, stride_l, units, call.sm_count)
+        lanes = -(-units // runs)
+        warps = -(-lanes // WARP_LANES)
         # The row grid: 128-thread blocks along each row. Past one block an SM, the threads
         # resident on an SM, not the block width, set the bytes it has in flight; four warps
         # a block leave a row's last block at most 127 idle threads.
@@ -236,10 +291,12 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         # share, the block limit rather than the SM's residency, since past it an SM needs
         # a second block anyway.
         one_block_threads = -(-warps // call.sm_count) * WARP_LANES
-        one_block_an_sm = (
-            row_blocks > call.sm_count and warps * WARP_LANES <= call.sm_count * MAX_BLOCK_THREADS
+        one_block_an_sm = row_blocks > call.sm_count and _one_block_an_sm_covers(
+            warps, call.sm_count
         )
-        flat = one_block_an_sm or row_idles_sm or window.rows > MAX_GRID_YZ_BLOCKS
+        # Two runs a thread lie half the launch apart, so they take the one-axis grid; one
+        # block an SM never covers such a launch.
+        flat = runs > 1 or one_block_an_sm or row_idles_sm or window.rows > MAX_GRID_YZ_BLOCKS
         threads = one_block_threads if one_block_an_sm else multi_wave_threads
         identity = (
             window.rows,
@@ -252,6 +309,7 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
             call.dtype,
             threads,
             flat,
+            runs,
         )
         return identity, lambda: cls(*identity)
 
@@ -267,10 +325,11 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         dtype: torch.dtype,
         threads: int,
         flat: bool,
+        runs: int,
     ) -> None:
         super().__init__()
         self.rows, self.l_in, self.dtype = rows, l_in, dtype
-        self._launch = {"threads": threads, "flat": flat}
+        self._launch = {"threads": threads, "flat": flat, "runs": runs}
         self.kernel = _avg_pool1d_register_kernel(
             rows, l_in, kernel_l, stride_l, pad_l, out_l, counted, self.dtype_str
         )
@@ -287,7 +346,7 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled for the launch in *cfg*."""
-        return self.kernel(cfg["threads"], cfg["flat"])
+        return self.kernel(cfg["threads"], cfg["flat"], cfg["runs"])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_devices(x=x)
