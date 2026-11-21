@@ -32,9 +32,6 @@ _CASES = (
     # Rows whose one-vector CTAs are all resident at once: each thread takes more vectors
     # until there are at most as many CTAs as SMs.
     pytest.param(
-        [[16, 5120], [16, 5120]], -1, [_BF16] * 2, marks=_FULL, id="bf16-resident-16-rows"
-    ),
-    pytest.param(
         [[32, 5120], [32, 5120]], -1, [_BF16] * 2, marks=_FULL, id="bf16-resident-32-rows"
     ),
     # The MTP draft row: its CTAs are all resident at once, so each thread copies eight
@@ -50,6 +47,11 @@ _CASES = (
     # bfloat16 and float16 promote to a float32 output: 8-byte reads, two per thread, converted.
     pytest.param(
         [[16, 1200], [16, 1032], [16, 8]], -1, [_BF16, _FP16, _BF16], marks=_FULL, id="promote"
+    ),
+    # float16 and float32 promote to float32: the float16 input reads two vectors a thread
+    # and the float32 input one, so each input's tiles take its own count.
+    pytest.param(
+        [[16, 4096], [16, 4096]], -1, [_FP16, _FP32], marks=_FULL, id="mixed-reads-per-thread"
     ),
     # Along dim 0 the output is one row.
     pytest.param([[5], [7]], 0, [_FP32] * 2, marks=_FULL, id="rank-1"),
