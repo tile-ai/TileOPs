@@ -714,6 +714,33 @@ def test_avg_pool1d_staged_windows_match_the_reference(
             id="s4-reach-past-the-load-fp32",
             marks=pytest.mark.full,
         ),
+        # Two 16-bit elements a side, each side one 4-byte load.
+        pytest.param(
+            (2, 3),
+            1024,
+            5,
+            1,
+            2,
+            False,
+            True,
+            torch.bfloat16,
+            0,
+            id="s1-two-each-side-bf16",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 3),
+            4096,
+            5,
+            2,
+            2,
+            False,
+            False,
+            torch.float16,
+            0,
+            id="uncounted-two-before-one-after-fp16",
+            marks=pytest.mark.full,
+        ),
         # Rows of 256 runs fill a row-grid block, so only the grid's y axis takes the launch
         # off the row grid.
         pytest.param(
@@ -816,12 +843,13 @@ def test_avg_pool1d_windows_read_into_registers(
             id="row-past-2-31-elements-register",
             marks=pytest.mark.full,
         ),
-        # A window reaching two elements past a load is staged in shared memory. Costs 6 GiB.
+        # A window reaching three 16-bit elements before a load is staged in shared memory.
+        # Costs 6 GiB.
         pytest.param(
             (1, 1, 2**31),
-            5,
+            7,
             2,
-            2,
+            3,
             AvgPool1dKernel,
             id="row-of-2-31-elements-staged",
             marks=pytest.mark.full,
@@ -840,9 +868,9 @@ def test_avg_pool1d_windows_read_into_registers(
         # Stride 1 past 2**31 elements: output indices pass INT32_MAX. Costs 12 GiB.
         pytest.param(
             (1, 1, 2**31 + 8),
-            5,
+            7,
             1,
-            2,
+            3,
             AvgPool1dKernel,
             id="row-past-2-31-elements-staged",
             marks=pytest.mark.full,
@@ -893,19 +921,31 @@ def test_avg_pool1d_refuses_an_output_row_of_2_31_from_a_shorter_input_row() -> 
     assert AvgPool1dRegisterKernel.refusal(call) is not None
 
 
-@pytest.mark.smoke
-def test_avg_pool1d_register_refuses_groups_past_its_int32_thread_index() -> None:
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "rows, l_in, kernel_l, stride_l, pad_l",
+    [
+        # fp16, kernel 2, stride 2: four outputs a group, 16385 groups a row, 2**31 + 2**17 in
+        # all, on more rows than grid y holds.
+        pytest.param(131072, 131080, 2, 2, 0, id="rows-past-grid-y", marks=pytest.mark.smoke),
+        # fp16, kernel 5, stride 4, padding 2: two outputs (4 bytes) a group, so two runs a
+        # thread put the 2**31 groups of one row on the one-axis grid.
+        pytest.param(1, 2**34, 5, 4, 2, id="paired-runs-one-row", marks=pytest.mark.full),
+    ],
+)
+def test_avg_pool1d_register_refuses_groups_past_its_int32_thread_index(
+    rows: int, l_in: int, kernel_l: int, stride_l: int, pad_l: int
+) -> None:
     """The register kernel's one-axis grid indexes a thread a group of outputs in int32, so
-    a call of more rows than grid y holds whose groups and one more block pass 2**31 - 1
-    goes to AvgPool1dKernel."""
-    # fp16, kernel 2, stride 2: four outputs a group, 16385 groups a row, 2**31 + 2**17 in all.
+    a call that puts every group on that grid, by more rows than grid y holds or by two runs
+    a thread, and whose groups and one more block pass 2**31 - 1, goes to AvgPool1dKernel."""
     call = AvgPoolCall(
         n=1,
-        c_in=131072,
-        size=(131080,),
-        window=(2,),
-        stride=(2,),
-        pad=(0,),
+        c_in=rows,
+        size=(l_in,),
+        window=(kernel_l,),
+        stride=(stride_l,),
+        pad=(pad_l,),
         dtype=torch.float16,
     )
     assert "groups of outputs" in AvgPool1dRegisterKernel.refusal(call)
@@ -982,6 +1022,66 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_avg_pool1d_register_reads_a_side_in_one_load_of_at_most_4_bytes() -> None:
+    """The register kernel reads the elements a window reaches past a load on one side as
+    one load of at most 4 bytes, so a side of two fp32 elements goes to AvgPool1dKernel
+    while one of two 16-bit elements does not."""
+    call = AvgPoolCall(
+        n=1, c_in=8, size=(1024,), window=(5,), stride=(2,), pad=(2,), dtype=torch.float32
+    )
+    assert "at most 4 bytes" in AvgPool1dRegisterKernel.refusal(call)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "case",
+    [
+        # The fixture's fp16 smoke shape.
+        pytest.param("fixture", id="fixture-shape-one-run", marks=pytest.mark.smoke),
+        pytest.param("paired", id="narrow-store-paired", marks=pytest.mark.full),
+        pytest.param("covered", id="narrow-store-one-block-an-sm-covers", marks=pytest.mark.full),
+        pytest.param("wide-store", id="wide-store-one-run", marks=pytest.mark.full),
+    ],
+)
+def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
+    """A thread pools two runs half the launch apart where a run's outputs take at most 4
+    bytes and one block an SM cannot cover the launch at two runs a thread; otherwise one
+    run. An odd number of runs leaves the last thread's second run past the end, which it
+    reads and does not store."""
+    facts = device_facts(run_device().index)
+    # One block an SM covers sm_count * 1024 threads, so 2 * sm_count * 1024 runs at two
+    # runs a thread.
+    covered_runs = 2 * facts.sm_count * 1024
+    # (dtype, kernel, stride, padding, runs in the one row): a run is 16 bytes.
+    window = {
+        # fp16, kernel 5, stride 4, padding 2: two outputs (4 bytes) a run of 8 elements.
+        "fixture": (torch.float16, 5, 4, 2, None),
+        "paired": (torch.float16, 5, 4, 2, covered_runs + 1),
+        "covered": (torch.float16, 5, 4, 2, covered_runs),
+        # fp32, kernel 3, stride 2, padding 1: two outputs (8 bytes) a run of 4 elements.
+        "wide-store": (torch.float32, 3, 2, 1, covered_runs + 1),
+    }[case]
+    dtype, kernel_l, stride_l, pad_l, runs = window
+    launch = {
+        "fixture": {"runs": 1},
+        "paired": {"runs": 2, "flat": True},
+        "covered": {"runs": 1},
+        "wide-store": {"runs": 1},
+    }[case]
+    run = 16 // dtype.itemsize
+    shape = (2, 64, 512) if runs is None else (1, 1, runs * run)
+    x = torch.randn(*shape, device=run_device(), dtype=dtype)
+    op = AvgPool1dFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l, target=BUILTIN)
+    out = op(x)
+    (kernel,) = op.iter_kernels()
+    assert type(kernel) is AvgPool1dRegisterKernel
+    assert {key: kernel.config[key] for key in launch} == launch
+    ref = F.avg_pool1d(x.float(), kernel_l, stride_l, pad_l).to(dtype)
+    compare_outputs(out, ref, pool_verification(maximum=False))
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "rows, l_in, dtype",
     [
@@ -1017,15 +1117,16 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
 def test_avg_pool1d_staged_kernel_launch_limits(
     rows: tuple[int, int], l_in: int, dtype: torch.dtype
 ) -> None:
-    """A window reaching two elements past a load is staged in shared memory; more rows than
-    the grid's y axis holds, more tiles than grid x holds, and an input of 2**31 elements,
-    pool like torch. Torch is run a batch entry at a time, under its own int32 limit."""
+    """A window reaching three 16-bit elements before a load is staged in shared memory;
+    more rows than the grid's y axis holds, more tiles than grid x holds, and an input of
+    2**31 elements, pool like torch. Torch is run a batch entry at a time, under its own
+    int32 limit."""
     x = torch.randn(*rows, l_in, device=run_device(), dtype=dtype)
-    op = AvgPool1dFwdOp(kernel_size=5, stride=2, padding=2, target=BUILTIN)
+    op = AvgPool1dFwdOp(kernel_size=7, stride=2, padding=3, target=BUILTIN)
     out = op(x)
     assert [type(k) for k in op.iter_kernels()] == [AvgPool1dKernel]
     for n in range(x.shape[0]):
-        torch.testing.assert_close(out[n], F.avg_pool1d(x[n], 5, 2, 2), rtol=0, atol=0)
+        torch.testing.assert_close(out[n], F.avg_pool1d(x[n], 7, 2, 3), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize(
