@@ -197,6 +197,16 @@ class TanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     BYTES_PER_THREAD = 32
 
+    @property
+    def FULL_OCCUPANCY(self) -> bool:
+        """Whether the program holds nvcc to the full-occupancy register budget.
+
+        Why: a 16-bit thread holds twice the elements of a float32 thread at the same
+        bytes a thread, and nvcc gives its ``tanhf`` evaluations more than 32 registers;
+        a float32 program stays within the budget without the request.
+        """
+        return self.dtype != torch.float32
+
     @staticmethod
     def op_func(x):
         return T.tanh(T.cast(x, "float32"))
