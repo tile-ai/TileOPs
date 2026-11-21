@@ -18,10 +18,9 @@ class DeepseekV4ForCausalLM:
     """DeepSeek-V4 text decoder: embedding, mHC blocks, ``hc_head`` collapse and LM head.
 
     Layers are spread over ``devices`` in contiguous runs; the streams move to the next
-    device between runs. A forward call advances one batch of requests that share their
-    positions: ``start_pos`` 0 is a prefill that resets the decoding state; any later
-    ``start_pos`` is a decode step of one token per request and must be the number of tokens
-    already passed. The MTP layer is not built.
+    device between runs. A forward call advances one request: ``start_pos`` 0 is a prefill
+    that resets the decoding state; any later ``start_pos`` is a decode step of one token and
+    must be the number of tokens already passed. The MTP layer is not built.
     """
 
     def __init__(
@@ -91,13 +90,15 @@ class DeepseekV4ForCausalLM:
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
-        """Run ``input_ids`` (``[B, S]``) from ``start_pos``; return the float32 logits of
-        each request's last token, ``[B, vocab_size]``."""
+        """Run ``input_ids`` (``[1, S]``) from ``start_pos``; return the float32 logits of its
+        last token, ``[1, vocab_size]``."""
         batch, seqlen = input_ids.shape
+        if batch != 1:
+            raise ValueError(f"forward runs one request, got a batch of {batch}")
         if start_pos == 0:
             self.reset(batch)
-        elif batch != self._batch:
-            raise ValueError(f"decoding batch {batch} differs from the prefill's {self._batch}")
+        elif self._batch == 0:
+            raise ValueError("a decode step needs a prefill at start_pos 0 first")
         elif seqlen != 1:
             raise ValueError(f"a decode step takes one token per request, got {seqlen}")
         if start_pos + seqlen > self.max_seq_len:

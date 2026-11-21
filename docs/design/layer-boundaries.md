@@ -64,7 +64,8 @@ helper such as `x.float().mean(...)` is a tensor primitive, not a fallback.
 public ops and ships with the package. Every computation is an op call; what is
 left between calls is tensor primitives: views, copies, concatenation, index
 metadata and the constant RoPE tables. A model loads its Hugging Face checkpoint
-as published.
+as published; its loader may convert those weights with torch, once, at load
+time, into the layouts its ops read.
 
 The reference a model is tested against is its authors' code, never copied into
 `src/`: the dev image carries it, and
