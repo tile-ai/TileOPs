@@ -334,6 +334,10 @@ class Runner:
         meta: dict[str, dict] = {}
         for name in names + names[::-1]:
             impl = plan[name]
+            # The second pass starts from the block size the first settled on: the same
+            # call on the same inputs fills the launch queue at the same sample, so probing
+            # again only costs a block that times out.
+            first = meta.get(name)
             with torch.no_grad():
                 samples[name].extend(
                     bench_kernel(
@@ -346,6 +350,7 @@ class Runner:
                         count_copies=self.case.count_copies,
                         reset=impl.reset,
                         device=device,
+                        start_block=first.get("block_samples") if first else None,
                     )
                 )
             pass_meta = _capture_bench_meta()

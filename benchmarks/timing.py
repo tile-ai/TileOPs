@@ -177,6 +177,7 @@ def bench_kernel(
     allow_events_fallback: bool | None = None,
     reset: Callable[[], None] | None = None,
     device: torch.device | None = None,
+    start_block: int | None = None,
 ) -> list[Sample]:
     """Time *fn* on *device*, one :class:`Sample` per iteration, by the protocol in this
     module's docstring.
@@ -198,6 +199,11 @@ def bench_kernel(
     Everything runs on *device*, by default :func:`bench_device`. A CUDA device is timed
     through CUPTI; any other is timed with device events, which neither attribute kernels
     nor fall back.
+
+    ``start_block`` is the ``block_samples`` an earlier reading of the same call on the same
+    inputs recorded: the reading starts in blocks of that size, or unheld for 0, rather than
+    finding the size again through a block that times out. A block that still times out is
+    retaken smaller as without it. ``None`` starts with one block of every sample.
 
     Raises:
         TypeError: *args* is not a tuple.
@@ -229,6 +235,7 @@ def bench_kernel(
             count_copies,
             allow_events_fallback,
             reset,
+            start_block,
         )
 
 
@@ -247,6 +254,7 @@ def _bench_kernel(
     count_copies: bool = False,
     allow_events_fallback: bool | None = None,
     reset: Callable[[], None] | None = None,
+    start_block: int | None = None,
 ) -> list[Sample]:
     allow_fallback = (
         events_fallback_allowed() if allow_events_fallback is None else allow_events_fallback
@@ -348,11 +356,18 @@ def _bench_kernel(
 
     def _read(reading: Callable[[int], list[Sample]]) -> list[Sample]:
         """Take *n_repeat* samples in blocks held by the blocking kernel, or all of them
-        unheld where the queue holds no sample."""
+        unheld where the queue holds no sample; start from *start_block* where given."""
         nonlocal size, blocking, retried
         blocking, per_block = True, n_repeat
         _bench_meta.block_samples = None
         _bench_meta.l2_flush = _L2_FLUSH_CUDA
+        if start_block == 0:
+            blocking = False
+            _bench_meta.block_samples = 0
+            _bench_meta.l2_flush = _L2_FLUSH_CUDA_DRAINED
+        elif start_block is not None and start_block < n_repeat:
+            per_block = start_block
+            _bench_meta.block_samples = start_block
         # The row's retries are those of the blocks it keeps.
         _bench_meta.attribution_retries = None
         kept: list[Sample] = []
