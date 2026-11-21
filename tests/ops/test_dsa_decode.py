@@ -294,6 +294,49 @@ def test_dsa_decode_index_only(batch, seq_len, seq_len_kv, topk, with_sink) -> N
 
 
 @pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("batch", "seq_len", "heads", "topk", "is_causal"),
+    [
+        # More rows than SMs: each CTA runs one row after another.
+        pytest.param(1, 300, 64, 200, False, marks=pytest.mark.smoke, id="rows-past-sms"),
+        # Rows that fill fewer than half the SMs: a CTA pair shares each row's keys.
+        pytest.param(4, 2, 64, 640, False, marks=pytest.mark.smoke, id="few-rows"),
+        pytest.param(2, 3, 128, 512, True, marks=pytest.mark.full, id="few-rows-causal"),
+        # More rows than SMs with an odd block count: a row of one block leaves consumer 1
+        # no odd block to score.
+        pytest.param(1, 300, 64, 192, False, marks=pytest.mark.full, id="rows-past-sms-odd"),
+        pytest.param(1, 300, 64, 192, True, marks=pytest.mark.full, id="rows-past-sms-causal"),
+        # Between half and all of the SMs: a CTA a row.
+        pytest.param(1, 100, 64, 640, False, marks=pytest.mark.full, id="row-per-cta"),
+    ],
+)
+def test_dsa_decode_skips_dead_tails(batch, seq_len, heads, topk, is_causal) -> None:
+    """Rows end in dead slots of every length, a row with none live included: the blocks
+    past a row's last live slot weigh nothing, however the rows are spread over the SMs."""
+    seq_len_kv = 1024
+    # Every causal row sees fewer than topk keys.
+    q_start = topk // 2 if is_causal else 0
+    test = DSADecodeTest(
+        batch, heads, seq_len, seq_len_kv, 512, 0, topk, 1, 1, q_start, is_causal=is_causal,
+        dtype=torch.bfloat16,
+    )  # fmt: skip
+    q, kv, _ = test.gen_inputs()
+    generator = torch.Generator().manual_seed(0)
+    rows = batch * seq_len
+    # A causal row pads with seq_len_kv, an index-only one with -1.
+    indices = torch.full((rows, topk), seq_len_kv if is_causal else -1, dtype=torch.int32)
+    for r, live in enumerate(torch.randint(0, topk + 1, (rows,), generator=generator)):
+        live = 0 if r == 0 else int(live)
+        indices[r, :live] = torch.randperm(seq_len_kv, generator=generator)[:live]
+    inputs = [q, kv, indices.view(batch, seq_len, 1, topk).to(q.device)]
+    if not is_causal:
+        sink = torch.randn(heads, generator=generator)
+        sink[0], sink[1] = float("inf"), float("-inf")
+        inputs.append(sink.to(q.device))
+    test.check(DSADenseFwdOp(0, 1, q_start, is_causal=is_causal), *inputs)
+
+
+@pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_dsa_decode_refuses_index_only_selection_off_dim_512() -> None:
