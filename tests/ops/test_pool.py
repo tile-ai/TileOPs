@@ -1048,16 +1048,19 @@ def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
     """A thread pools two runs half the launch apart where a run's outputs take at most 4
     bytes and one block an SM cannot cover the launch at two runs a thread; otherwise one
     run. An odd number of runs leaves the last thread's second run past the end, which it
-    reads and does not store."""
+    reads and does not store. The paired case spans three rows, so a thread's second run
+    lies in another row, and divides by the positions it counts."""
     facts = device_facts(run_device().index)
     # One block an SM covers sm_count * 1024 threads, so 2 * sm_count * 1024 runs at two
     # runs a thread.
     covered_runs = 2 * facts.sm_count * 1024
+    # Three rows whose runs total an odd count above covered_runs.
+    row_runs = covered_runs // 3 + 1 + (covered_runs // 3 + 1) % 2
     # (dtype, kernel, stride, padding, runs in the one row): a run is 16 bytes.
     window = {
         # fp16, kernel 5, stride 4, padding 2: two outputs (4 bytes) a run of 8 elements.
         "fixture": (torch.float16, 5, 4, 2, None),
-        "paired": (torch.float16, 5, 4, 2, covered_runs + 1),
+        "paired": (torch.float16, 5, 4, 2, row_runs),
         "covered": (torch.float16, 5, 4, 2, covered_runs),
         # fp32, kernel 3, stride 2, padding 1: two outputs (8 bytes) a run of 4 elements.
         "wide-store": (torch.float32, 3, 2, 1, covered_runs + 1),
@@ -1070,14 +1073,22 @@ def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
         "wide-store": {"runs": 1},
     }[case]
     run = 16 // dtype.itemsize
-    shape = (2, 64, 512) if runs is None else (1, 1, runs * run)
+    rows = 3 if case == "paired" else 1
+    shape = (2, 64, 512) if runs is None else (1, rows, runs * run)
+    counted = case != "paired"
     x = torch.randn(*shape, device=run_device(), dtype=dtype)
-    op = AvgPool1dFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l, target=BUILTIN)
+    op = AvgPool1dFwdOp(
+        kernel_size=kernel_l,
+        stride=stride_l,
+        padding=pad_l,
+        count_include_pad=counted,
+        target=BUILTIN,
+    )
     out = op(x)
     (kernel,) = op.iter_kernels()
     assert type(kernel) is AvgPool1dRegisterKernel
     assert {key: kernel.config[key] for key in launch} == launch
-    ref = F.avg_pool1d(x.float(), kernel_l, stride_l, pad_l).to(dtype)
+    ref = F.avg_pool1d(x.float(), kernel_l, stride_l, pad_l, count_include_pad=counted).to(dtype)
     compare_outputs(out, ref, pool_verification(maximum=False))
 
 
