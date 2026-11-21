@@ -2505,8 +2505,9 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
     "m, n, k, dtype, out_dtype, bias, tile",
     [
         # At M = 8150 the last of the 64 row tiles holds 86 rows: both 64-row consumers have rows.
-        # 64 row tiles take three 128-wide column tiles, 192 CTAs, or two 144 wide, 128. A
-        # float32 tile 144 wide leaves the helper's WGMMA staged whole in one chunk.
+        # 64 row tiles take three 128-wide column tiles, 192 CTAs, or two 144 wide, 128. With one
+        # tile per CTA, a float32 tile with 16-byte rows is staged in two chunks or more; other
+        # tiles keep the widest chunk that leaves the deepest ring.
         pytest.param(
             8150,
             280,
@@ -2514,7 +2515,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             torch.bfloat16,
             torch.float32,
             True,
-            (144, 144),
+            (144, 48),
             marks=pytest.mark.smoke,
             id="f32-144-bias-n-tail",
         ),
@@ -2525,7 +2526,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             torch.float16,
             torch.float32,
             False,
-            (144, 144),
+            (144, 48),
             marks=pytest.mark.smoke,
             id="fp16-f32-144",
         ),
@@ -2553,9 +2554,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             id="bf16-144",
         ),
         # The other widths the helper issues, each the narrowest whose two column tiles fit
-        # one wave: 160 staged whole, 176 in chunks of 88 past an N tail, 224 and 240 in chunks
-        # of 56 and 120 columns. Each case names the columns its float32 or 16-bit tile is staged
-        # in, so the one-chunk copy stays reached. Rows of 330 values take no ping-pong tile.
+        # one wave. Rows of 332 values take no ping-pong tile.
         pytest.param(
             8150,
             320,
@@ -2563,10 +2562,23 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             torch.bfloat16,
             torch.float32,
             False,
-            (160, 160),
+            (160, 32),
             marks=pytest.mark.full,
             id="f32-160",
         ),
+        pytest.param(
+            8150,
+            332,
+            1032,
+            torch.bfloat16,
+            torch.float32,
+            False,
+            (176, 16),
+            marks=pytest.mark.full,
+            id="f32-176-n-tail",
+        ),
+        # Rows of 330 float32 values are no whole number of 16-byte units: no TMA store, and
+        # the tile keeps the chunk that leaves the deepest ring.
         pytest.param(
             8150,
             330,
@@ -2576,7 +2588,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             False,
             (176, 88),
             marks=pytest.mark.full,
-            id="f32-176-n-tail",
+            id="f32-176-unaligned-rows",
         ),
         pytest.param(
             8150,
@@ -2585,7 +2597,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             torch.bfloat16,
             torch.float32,
             False,
-            (224, 56),
+            (224, 32),
             marks=pytest.mark.full,
             id="f32-224",
         ),
@@ -2596,7 +2608,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             torch.bfloat16,
             torch.float32,
             False,
-            (240, 120),
+            (240, 80),
             marks=pytest.mark.full,
             id="f32-240",
         ),
@@ -2688,6 +2700,30 @@ def test_gemm_one_wave_grid_runs_the_narrowest_coop2_tile(
         else None
     )
     assert got == tile
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gemm_coop2_several_tiles_a_cta_stage_the_widest_chunk_of_the_deepest_ring() -> None:
+    """A coop2 grid whose CTAs each run several tiles hides each tile's epilogue under the
+    next tile's mainloop, so it stages the widest chunk that leaves the deepest ring."""
+    call = GEMMCall(
+        m=256,
+        n=19008,
+        k=1032,
+        dtype=torch.bfloat16,
+        trans_b=True,
+        out_dtype=torch.float32,
+        device=run_device(),
+    )
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("2 row tiles by 108 column tiles 176 wide run several tiles a CTA on 132 SMs")
+    test = GEMMTest(256, 19008, 1032, torch.bfloat16, False, True, out_dtype=torch.float32)
+    op = GEMMFwdOp(trans_b=True, out_dtype=torch.float32, target=BUILTIN)
+    config = op.kernel_for("gemm", lambda: call).config
+    assert (config.get("coop2"), config["block_n"], config.get("stage_n")) == (True, 176, 88)
     test.check(op, *test.gen_inputs())
 
 
