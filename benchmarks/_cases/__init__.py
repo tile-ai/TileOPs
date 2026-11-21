@@ -6,6 +6,7 @@ merge here, and a name registered twice fails. The workload of an op's call come
 """
 
 import dataclasses
+import functools
 import importlib
 from collections.abc import Callable
 from typing import Any
@@ -40,42 +41,29 @@ class Entry:
     inputs: Callable[[Any], tuple] | None = None
 
 
-_FAMILIES = (
-    "attention",
-    "convolution",
-    "elementwise",
-    "gemm",
-    "linear_attention",
-    "mamba",
-    "moe",
-    "ngram_hash",
-    "norm",
-    "pool",
-    "quantization",
-    "rope",
-)
-
-
-@dataclasses.dataclass
-class _Registry:
-    entries: dict[str, Entry] | None = None
-
-
-_registry = _Registry()
-
-
+@functools.cache
 def _load() -> dict[str, Entry]:
-    if _registry.entries is None:
-        merged: dict[str, Entry] = {}
-        for family in _FAMILIES:
-            for name, value in importlib.import_module(
-                f"benchmarks._cases.{family}"
-            ).ENTRIES.items():
-                if name in merged:
-                    raise ValueError(f"{name} is registered twice; the second is in {family}")
-                merged[name] = value
-        _registry.entries = merged
-    return _registry.entries
+    families = (
+        "attention",
+        "convolution",
+        "elementwise",
+        "gemm",
+        "linear_attention",
+        "mamba",
+        "moe",
+        "ngram_hash",
+        "norm",
+        "pool",
+        "quantization",
+        "rope",
+    )
+    merged: dict[str, Entry] = {}
+    for family in families:
+        for name, value in importlib.import_module(f"benchmarks._cases.{family}").ENTRIES.items():
+            if name in merged:
+                raise ValueError(f"{name} is registered twice; the second is in {family}")
+            merged[name] = value
+    return merged
 
 
 def entry(name: str) -> Entry:

@@ -1040,13 +1040,6 @@ def _moe_grouped_gemm_mxfp4_kernel(
     return _moe_grouped_gemm_mxfp4_func
 
 
-def _shared_decode_depths(num_stages: int) -> tuple[int, int]:
-    """The packed-weight and decoded fp8 ring depths of a shared-decode config whose ring of
-    token rows is ``num_stages`` deep: the decode warps fill decoded stages as far ahead as the
-    token rows are loaded."""
-    return MoEGroupedGEMMMXFP4SharedDecodeKernel._PACKED_STAGES, num_stages
-
-
 def _shared_decode_smem_bytes(block_n: int, num_stages: int, scale_k: int) -> int:
     """Bytes of a shared-decode config: the ring of fp8 token rows, the packed-weight and
     decoded fp8 stages, two tasks' weight-code and token-code tables (1024 bytes of alignment),
@@ -1054,21 +1047,23 @@ def _shared_decode_smem_bytes(block_n: int, num_stages: int, scale_k: int) -> in
     barriers."""
     kernel = MoEGroupedGEMMMXFP4SharedDecodeKernel
     block_m = kernel._TILE_ROWS
-    packed_stages, decoded_stages = _shared_decode_depths(num_stages)
+    packed_stages = kernel._PACKED_STAGES
     ring = num_stages * block_m * QUANT_SCALE_BLOCK
     packed = packed_stages * block_n * QUANT_SCALE_BLOCK // 2
-    decoded = decoded_stages * block_n * QUANT_SCALE_BLOCK
+    # The decoded fp8 stages are as many as the token ring's.
+    decoded = num_stages * block_n * QUANT_SCALE_BLOCK
     tables = 2 * (block_n * scale_k * 4 + block_m * scale_k) + SHARED_BUFFER_ALIGN_BYTES
     task_info = 2 * (2 * block_n * 4 + 4)
-    barriers = (2 * num_stages + 2 * packed_stages + 2 * decoded_stages + 4) * 8
+    barriers = (4 * num_stages + 2 * packed_stages + 4) * 8
     return ring + packed + decoded + tables + task_info + block_m * block_n * 2 + barriers
 
 
 def _shared_decode_unroll(num_stages: int) -> int:
-    """K steps the shared-decode loops unroll by: twice the least common multiple of the three
-    ring depths, so each ring makes an even number of round trips in it and every stage and
-    barrier phase of a step is a constant."""
-    return 2 * math.lcm(num_stages, *_shared_decode_depths(num_stages))
+    """K steps the shared-decode loops unroll by: twice the least common multiple of the token
+    ring's depth ``num_stages``, which the decoded fp8 stages share, and the packed-weight
+    stages' depth. Each ring then makes an even number of round trips in the unroll, so every
+    stage and barrier phase of a step is a constant."""
+    return 2 * math.lcm(num_stages, MoEGroupedGEMMMXFP4SharedDecodeKernel._PACKED_STAGES)
 
 
 @target_cache(maxsize=32)
@@ -1128,7 +1123,10 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
         )
         if reason is not None:
             raise ValueError(f"cannot build the MXFP4 grouped GEMM for {config}: {reason}")
-        packed_stages, decoded_stages = _shared_decode_depths(num_stages)
+        packed_stages = MoEGroupedGEMMMXFP4SharedDecodeKernel._PACKED_STAGES
+        # The decode warps fill decoded stages as far ahead as the token rows are loaded, so
+        # step kk's decoded stage and token slot share an index and a phase.
+        decoded_stages = num_stages
         tasks = task_walk(
             num_groups=num_groups,
             block_m=block_m,
@@ -1755,7 +1753,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         return super().refusal(call)
 
     def __init__(self, call: MGroupedGEMMMXFP4Call) -> None:
-        device_index = call.device.index if call.device is not None else None
+        device_index = call.device_index
         super().__init__(device_index=device_index)
         self.call = call
         self.scale_bytes = 1 if call.scale_dtype == torch.float8_e8m0fnu else 4
@@ -1919,9 +1917,9 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
     128 rows of ``a`` are the WGMMA M operand, 128 decoded weight rows its N operand. A task
     folds when each of its weight rows' codes lie in [64, 190] and span at most eleven binades
     over K, and each of its token codes, its padding rows' among them, is 0 or lies in
-    [64, 190]: its sub-blocks then carry
-    their scales relative to their row's largest code less six, each step is added under its
-    token scales alone, and each column is scaled by its row's reference after the last step.
+    [64, 190]: its sub-blocks then carry their scales relative to their row's largest code
+    less six, each step is added under its token scales alone, and each column is scaled by
+    its row's reference after the last step.
     Another task contracts sub-block by sub-block, its products split into mantissa and
     exponent. Rows past an aligned expert's end are its padding and are stored like the others.
 
@@ -1992,7 +1990,7 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
         return super().refusal(call)
 
     def __init__(self, call: MGroupedGEMMMXFP4Call) -> None:
-        Kernel.__init__(self, device_index=call.device.index if call.device is not None else None)
+        Kernel.__init__(self, device_index=call.device_index)
         self.call = call
         self.scale_k = call.k // QUANT_SCALE_BLOCK
         self.sm_count = self.build_target.sm_count

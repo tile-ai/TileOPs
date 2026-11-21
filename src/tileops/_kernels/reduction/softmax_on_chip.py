@@ -12,7 +12,6 @@ of eight vectors a thread, on a portable cluster. See :class:`SoftmaxClusterSpli
 
 import tilelang
 import tilelang.language as T
-import torch
 from tvm import DataType
 
 from tileops._csrc import csrc_include
@@ -21,11 +20,10 @@ from tileops._kernels.constants import LOG2E, MAX_PORTABLE_CLUSTER_BLOCKS, VECTO
 from tileops._kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     FRAGMENT_ELEMS_PER_THREAD,
-    exp_shifted,
-    restore_same_shape,
+    fold_max_sum,
 )
 from tileops._kernels.reduction.call_spec import SoftmaxCall
-from tileops._kernels.reduction.softmax import _SoftmaxKernelBase
+from tileops._kernels.reduction.softmax import _PlannedSoftmaxKernel
 from tileops._kernels.streaming_load import load16
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -62,12 +60,6 @@ def _softmax_on_chip_kernel(
         compile_flags=csrc_include("cluster_partials.h", "approx_math.h", "streaming_load.h"),
     )
     def build():
-        def fold(peak, total, other_peak, other_total):
-            """The ``(max, sum)`` of two partial pairs; two empty ones stay empty."""
-            top = T.max(peak, other_peak)
-            both = total * exp_shifted(peak, top) + other_total * exp_shifted(other_peak, top)
-            return top, T.if_then_else(top == neg_inf, T.cast(0, "float32"), both)
-
         def term(value, peak):
             """``exp(value - peak)`` of one element for the sum, which is at least one: a
             subnormal term reads as zero."""
@@ -164,7 +156,7 @@ def _softmax_on_chip_kernel(
                 for step in T.unroll(WARP_LANES.bit_length() - 1):
                     peer[0] = T.shfl_xor(stat[0], T.shift_left(1, step))
                     peer[1] = T.shfl_xor(stat[1], T.shift_left(1, step))
-                    stat[0], stat[1] = fold(stat[0], stat[1], peer[0], peer[1])
+                    stat[0], stat[1] = fold_max_sum(stat[0], stat[1], peer[0], peer[1])
                 if tx % WARP_LANES == 0:
                     sums[2 * (tx // WARP_LANES)] = stat[0]
                     sums[2 * (tx // WARP_LANES) + 1] = stat[1]
@@ -172,7 +164,7 @@ def _softmax_on_chip_kernel(
                 stat[0] = T.cast(neg_inf, "float32")
                 stat[1] = T.cast(0, "float32")
                 for w in T.unroll(warps):
-                    stat[0], stat[1] = fold(stat[0], stat[1], sums[2 * w], sums[2 * w + 1])
+                    stat[0], stat[1] = fold_max_sum(stat[0], stat[1], sums[2 * w], sums[2 * w + 1])
 
                 # Every peer's barrier is initialized past this wait.
                 T.cluster_wait()
@@ -191,7 +183,7 @@ def _softmax_on_chip_kernel(
                 T.mbarrier_wait_parity(received[0], 0)
                 for p in T.unroll(cluster):
                     if p != rank:
-                        stat[0], stat[1] = fold(
+                        stat[0], stat[1] = fold_max_sum(
                             stat[0],
                             stat[1],
                             sums[own + slot * p],
@@ -220,7 +212,7 @@ def _softmax_on_chip_kernel(
     return build
 
 
-class SoftmaxOnChipKernel(_SoftmaxKernelBase):
+class SoftmaxOnChipKernel(_PlannedSoftmaxKernel):
     """Softmax / log-softmax reading each row once from registers and shared memory.
 
     A row is split across the smallest power-of-two cluster of two to eight CTAs whose
@@ -272,9 +264,7 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
         return super().refusal(call)
 
     def __init__(self, call: SoftmaxCall):
-        super().__init__(device_index=call.device.index)
-        self.call = call
-        self.dtype = call.dtype
+        super().__init__(call)
         self.cluster, threads, held_vectors, ctas_per_sm = self._plan(call)
         self.kernel = _softmax_on_chip_kernel(
             call.m,
@@ -288,26 +278,6 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
             ctas_per_sm,
         )
         self.init_config(None)
-
-    @property
-    def default_config(self) -> dict:
-        return {}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize ``call.axis`` of the contiguous input *x*."""
-        rows = self._rows(x)
-        m = rows.shape[0]
-        chunk = self.call.n // self.cluster
-        y = self.program(self._compile)(rows.reshape(m * self.cluster, chunk))
-        return restore_same_shape(y.reshape(m, self.call.n), self.call.shape, (self.call.axis,))
-
-    def _compile(self, cfg: dict):
-        """The program."""
-        return self.kernel()
 
 
 @target_cache(maxsize=32)
@@ -516,7 +486,7 @@ def _softmax_cluster_split_kernel(M, N, dtype, out_dtype, cluster, threads, min_
     return build
 
 
-class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
+class SoftmaxClusterSplitKernel(_PlannedSoftmaxKernel):
     """Softmax of long rows, each split across a thread-block cluster in registers.
 
     Serves same-dtype softmax calls on SM90 under two plans. A handful of long rows, the
@@ -602,9 +572,7 @@ class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
         return super().refusal(call)
 
     def __init__(self, call: SoftmaxCall):
-        super().__init__(device_index=call.device.index)
-        self.call = call
-        self.dtype = call.dtype
+        super().__init__(call)
         self.cluster, threads, min_blocks = self._plan(call)
         self.kernel = _softmax_cluster_split_kernel(
             call.m,
@@ -616,23 +584,3 @@ class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
             min_blocks,
         )
         self.init_config(None)
-
-    @property
-    def default_config(self) -> dict:
-        return {}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize ``call.axis`` of the contiguous input *x*."""
-        rows = self._rows(x)
-        m = rows.shape[0]
-        chunk = self.call.n // self.cluster
-        y = self.program(self._compile)(rows.reshape(m * self.cluster, chunk))
-        return restore_same_shape(y.reshape(m, self.call.n), self.call.shape, (self.call.axis,))
-
-    def _compile(self, cfg: dict):
-        """The program."""
-        return self.kernel()

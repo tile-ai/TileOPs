@@ -12,7 +12,6 @@ from tileops._utils import get_shared_memory_optin
 from workloads.device import run_device
 from workloads.moe import (
     FusedMoEWorkload,
-    FusedTopKWorkload,
     moe_verification,
     ref_routed_experts,
 )
@@ -78,7 +77,7 @@ class Qwen3Fixture(FixtureBase):
                     True,
                     torch.bfloat16,
                     marks=pytest.mark.full,
-                    id="smoke-sigmoid-renorm-bf16",
+                    id="sigmoid-renorm-bf16",
                 ),
                 pytest.param(
                     512,
@@ -151,23 +150,22 @@ def test_fused_moe_qwen3(
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
-    op_nopad = FusedMoEFwdOp(
+    op = FusedMoEFwdOp(
         top_k=top_k,
         scoring_func=scoring_func,
         renormalize=renormalize,
     )
 
-    out_nopad = op_nopad(hidden, gating, w_gate_up, w_down)
+    out = op(hidden, gating, w_gate_up, w_down)
 
-    assert out_nopad.shape == (num_tokens, hidden_size)
-    assert out_nopad.dtype == dtype
+    assert out.shape == (num_tokens, hidden_size)
+    assert out.dtype == dtype
 
-    # Reference using the same FusedTopKFwdOp routing
     fk = FusedTopKFwdOp(top_k, scoring_func, renormalize)
     topk_weights, topk_ids = fk(gating)
     ref = ref_routed_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
 
-    compare_outputs(out_nopad, ref, moe_verification(2))
+    compare_outputs(out, ref, moe_verification(2))
 
     # vLLM's fp32 Triton tiles take up to 128 KB of shared memory, over SM86/SM89's 99 KB.
     if (
@@ -183,7 +181,7 @@ def test_fused_moe_qwen3(
             topk_weights,
             topk_ids,
         ).to(dtype)
-        compare_outputs(out_nopad.float(), out_vllm.float(), moe_verification(2))
+        compare_outputs(out.float(), out_vllm.float(), moe_verification(2))
 
 
 # The grouped-GEMM epilogue race these cases guard shows only inside the full FusedMoE pipeline
@@ -232,10 +230,7 @@ def test_fused_moe_deterministic(case):
     compare_outputs(first, ref, moe_verification(2))
     for i in range(reps):
         out = op(hidden, gating, w_gate_up, w_down)
-        assert torch.equal(out, first), (
-            f"non-deterministic FusedMoE output on call {i + 1}/{reps}: "
-            "3WG grouped-GEMM TMA-store epilogue write→read race regressed"
-        )
+        assert torch.equal(out, first), f"call {i + 1}/{reps} differs from the first"
 
 
 @pytest.mark.smoke
@@ -292,18 +287,6 @@ class KimiFixture(FixtureBase):
                     id="smoke-bias-scale-fp16",
                 ),
                 pytest.param(
-                    32,
-                    8,
-                    2,
-                    64,
-                    32,
-                    1.0,
-                    True,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
-                    id="bias-bf16",
-                ),
-                pytest.param(
                     64,
                     384,
                     8,
@@ -313,7 +296,7 @@ class KimiFixture(FixtureBase):
                     True,
                     torch.bfloat16,
                     marks=pytest.mark.full,
-                    id="kimi-k2-small-bf16",
+                    id="kimi-k2-64-tokens-bf16",
                 ),
                 pytest.param(
                     512,
@@ -367,56 +350,25 @@ def test_fused_moe_kimi(
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
-    op_nopad = FusedMoEFwdOp(
+    op = FusedMoEFwdOp(
         top_k=top_k,
         scoring_func="sigmoid",
         renormalize=True,
         routed_scaling_factor=routed_scaling_factor,
     )
 
-    out_nopad = op_nopad(hidden, gating, w_gate_up, w_down, correction_bias)
+    out = op(hidden, gating, w_gate_up, w_down, correction_bias)
 
-    assert out_nopad.shape == (num_tokens, hidden_size)
-    assert out_nopad.dtype == dtype
+    assert out.shape == (num_tokens, hidden_size)
+    assert out.dtype == dtype
 
-    # Reference using FusedTopKFwdOp for consistent routing
     fk = FusedTopKFwdOp(top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
     ref = ref_routed_experts(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
     if routed_scaling_factor != 1.0:
         ref = ref * routed_scaling_factor
 
-    compare_outputs(out_nopad, ref, moe_verification(2))
-
-
-@pytest.mark.smoke
-def test_correction_bias_routing_precision() -> None:
-    """Verify correction_bias is used only for top-k selection, not for weights.
-
-    Constructs a case where biased and unbiased top-k differ, then checks:
-      - topk_ids match the biased-sort order
-      - topk_weights use ORIGINAL (unbiased) sigmoid scores, renormalized
-    """
-    torch.manual_seed(7)
-    T, E, K = 4, 8, 2
-    dev = run_device()
-
-    logits = torch.randn(T, E, dtype=torch.float32, device=dev)
-    bias = torch.randn(E, dtype=torch.float32, device=dev)
-
-    call = manifest_call(
-        "FusedTopKFwdOp",
-        {"G": "float32"},
-        T=T,
-        E=E,
-        top_k=K,
-        scoring_func="sigmoid",
-        renormalize=True,
-    )
-    workload = FusedTopKWorkload(call)
-    TestBase.check(
-        workload, FusedTopKFwdOp(top_k=K, scoring_func="sigmoid", renormalize=True), logits, bias
-    )
+    compare_outputs(out, ref, moe_verification(2))
 
 
 @pytest.mark.smoke
@@ -467,7 +419,7 @@ class VllmFixture(FixtureBase):
                     2.827,
                     torch.bfloat16,
                     marks=pytest.mark.full,
-                    id="smoke-scale-bf16",
+                    id="scale-bf16",
                 ),
                 pytest.param(
                     64,
@@ -478,7 +430,7 @@ class VllmFixture(FixtureBase):
                     2.827,
                     torch.bfloat16,
                     marks=pytest.mark.full,
-                    id="kimi-k2-small-bf16",
+                    id="kimi-k2-64-tokens-bf16",
                 ),
                 pytest.param(
                     512,

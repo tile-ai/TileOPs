@@ -1,10 +1,12 @@
 import torch
 
 from workloads.attention.gqa.call_metadata import _dtype, _segments
+from workloads.attention.gqa.dense import packed_gqa_ref
 from workloads.attention.gqa.rope import apply_dense_rope
 from workloads.attention.paged_cache_write import PagedKVCacheWriteWorkload
 from workloads.attention.paged_kv_cache import make_fragmented_block_table
 from workloads.device import run_device
+from workloads.numerics import Exact, reference_tolerance
 from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
@@ -236,34 +238,28 @@ class GQAPagedFwdWorkload(WorkloadBase):
             if k_scale is not None:
                 k_b = k_b * _cache_scale(k_scale, b)
                 v_b = v_b * _cache_scale(v_scale, b)
-            q_pos = torch.arange(q_len, device=q.device) + kv_len - q_len
-            k_pos = torch.arange(kv_len, device=q.device)
             if self.pos_encoding_mode == "rope":
                 rope = dict(rotary_dim=rotary_dim, layout=self.rope_layout)
+                q_pos = torch.arange(q_len, device=q.device) + kv_len - q_len
+                k_pos = torch.arange(kv_len, device=q.device)
                 q_b = apply_dense_rope(q_b[None], q_pos, rope_cos, rope_sin, **rope)[0]
                 k_b = apply_dense_rope(k_b[None], k_pos, rope_cos, rope_sin, **rope)[0]
-            k_b = k_b.repeat_interleave(groups, dim=1).transpose(0, 1)
-            v_b = v_b.repeat_interleave(groups, dim=1).transpose(0, 1)
-            scores = torch.matmul(q_b.transpose(0, 1), k_b.transpose(-2, -1)) * scale
-            if self.softcap is not None and self.softcap > 0:
-                scores = self.softcap * torch.tanh(scores / self.softcap)
-            visible = torch.ones((q_len, kv_len), dtype=torch.bool, device=q.device)
-            if self.is_causal:
-                visible &= k_pos[None, :] <= q_pos[:, None]
-            if self.window_size_left >= 0:
-                visible &= k_pos[None, :] >= q_pos[:, None] - self.window_size_left
-            if self.window_size_right >= 0:
-                visible &= k_pos[None, :] <= q_pos[:, None] + self.window_size_right
-            scores = scores.masked_fill(~visible, float("-inf"))
-            if sinks is not None:
-                scores = torch.cat((scores, sinks[:, None, None].expand(-1, q_len, 1)), dim=-1)
-            probs = torch.softmax(scores, dim=-1).nan_to_num(0.0)[..., :kv_len]
-            outputs.append(torch.matmul(probs, v_b).transpose(0, 1))
+            outputs.append(
+                packed_gqa_ref(
+                    q_b,
+                    k_b,
+                    v_b,
+                    scale=scale,
+                    softcap=self.softcap,
+                    is_causal=self.is_causal,
+                    window_size_left=self.window_size_left,
+                    window_size_right=self.window_size_right,
+                    sinks=sinks,
+                )
+            )
         return torch.cat(outputs).to(self.table_dtype).contiguous()
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, reference_tolerance
-
         if inputs[0].dtype == FP8:
             # Probabilities enter the value product as e4m3, whose 3 mantissa bits round
             # each one by up to 2^-4 of itself; the error is at most 2^-4 of the weighted

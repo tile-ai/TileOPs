@@ -129,9 +129,8 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
                     }
                 )
 
-                # L2 rasterization: reshape the (bx, by) traversal order into
-                # panels of ``panel_size`` blocks along N so neighbouring waves
-                # reuse the same A/B rows in L2.
+                # L2 rasterization: walk (bx, by) in panels of 10 blocks along N so
+                # neighbouring waves reuse the same A/B rows in L2.
                 T.use_swizzle(10, enable=True)
 
                 T.clear(c_local)
@@ -418,7 +417,10 @@ def _bmm_fp8_persistent_ws_kernel(
         scale_b_shape = (1,)
 
         @T.macro
-        def _swizzle_decode(mn_id, swz_m, swz_n):
+        def _decode_tile(flat_id, bs, ms, ns_, swz_m, swz_n):
+            # flat_id = tile_b * (Mt*Nt) + mn_id; mn_id walks group_size_m-row swizzle groups.
+            bs[0] = flat_id // T.int32(num_pid_m * num_pid_n)
+            mn_id = flat_id % T.int32(num_pid_m * num_pid_n)
             _gin = T.int32(group_size_m * num_pid_n)
             _fpm = (mn_id // _gin) * T.int32(group_size_m)
             if T.int32(num_pid_m) - _fpm >= T.int32(group_size_m):
@@ -428,6 +430,8 @@ def _bmm_fp8_persistent_ws_kernel(
                 _gsm = T.int32(num_pid_m) - _fpm
                 swz_m[0] = _fpm + (mn_id % _gin) % _gsm
                 swz_n[0] = (mn_id % _gin) // _gsm
+            ms[0] = swz_m[0] * T.int32(block_m)
+            ns_[0] = swz_n[0] * T.int32(block_n)
 
         @T.prim_func
         def _bmm_fp8_persistent_ws_main(
@@ -487,12 +491,7 @@ def _bmm_fp8_persistent_ws_kernel(
                         flat_id = T.int32(grid_cta) * w + pid
 
                         if flat_id < T.int32(total_tiles):
-                            # BMM tile decode: flat_id = tile_b * (Mt*Nt) + mn_id
-                            bs[0] = flat_id // T.int32(num_pid_m * num_pid_n)
-                            mn_id = flat_id % T.int32(num_pid_m * num_pid_n)
-                            _swizzle_decode(mn_id, swz_m, swz_n)
-                            ms[0] = swz_m[0] * T.int32(block_m)
-                            ns_[0] = swz_n[0] * T.int32(block_n)
+                            _decode_tile(flat_id, bs, ms, ns_, swz_m, swz_n)
 
                             for kk in T.Pipelined(k_iters, num_stages=0):
                                 k_start = kk * block_k
@@ -535,11 +534,7 @@ def _bmm_fp8_persistent_ws_kernel(
                         flat_id = T.int32(grid_cta) * w + pid
 
                         if flat_id < T.int32(total_tiles):
-                            bs[0] = flat_id // T.int32(num_pid_m * num_pid_n)
-                            mn_id = flat_id % T.int32(num_pid_m * num_pid_n)
-                            _swizzle_decode(mn_id, swz_m, swz_n)
-                            ms[0] = swz_m[0] * T.int32(block_m)
-                            ns_[0] = swz_n[0] * T.int32(block_n)
+                            _decode_tile(flat_id, bs, ms, ns_, swz_m, swz_n)
 
                             for kk in T.Pipelined(k_iters, num_stages=0):
                                 slot = gi_cons_0 % num_stages
@@ -582,11 +577,7 @@ def _bmm_fp8_persistent_ws_kernel(
                         flat_id = T.int32(grid_cta) * w + pid
 
                         if flat_id < T.int32(total_tiles):
-                            bs[0] = flat_id // T.int32(num_pid_m * num_pid_n)
-                            mn_id = flat_id % T.int32(num_pid_m * num_pid_n)
-                            _swizzle_decode(mn_id, swz_m, swz_n)
-                            ms[0] = swz_m[0] * T.int32(block_m)
-                            ns_[0] = swz_n[0] * T.int32(block_n)
+                            _decode_tile(flat_id, bs, ms, ns_, swz_m, swz_n)
 
                             for kk in T.Pipelined(k_iters, num_stages=0):
                                 slot = gi_cons_1 % num_stages
@@ -609,7 +600,6 @@ def _bmm_fp8_persistent_ws_kernel(
                             T.barrier_arrive(ab_empty[ps1[0]])
                             T.warpgroup_fence_operand(C_local_wg1, num_regs=64)
 
-                            # ── Epilogue: scale + cast + TMA-store ──
                             for i, j in T.Parallel(half_m, block_n):
                                 C_local_wg1[i, j] = C_local_wg1[i, j] * scale_a[0] * scale_b[0]
                             T.copy(C_local_wg1, C_local_cast_wg1)
@@ -690,11 +680,7 @@ class BMMKernel(Kernel, BMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: BMMCall) -> str | None:
-        return cls._region_refusal(call)
-
-    @staticmethod
-    def _region_refusal(call: BMMCall) -> str | None:
-        return BMMKernel._k_refusal(call.k)
+        return cls._k_refusal(call.k)
 
     @staticmethod
     def _k_refusal(k: int) -> str | None:
@@ -704,7 +690,7 @@ class BMMKernel(Kernel, BMMFwdInterface):
     @classmethod
     def entry_for(cls, call: BMMCall) -> Entry:
         """Build the shape-specialized classic BMM fallback."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
         return identity, lambda: cls(
             call.batch,
@@ -745,6 +731,7 @@ class BMMKernel(Kernel, BMMFwdInterface):
             and (self.m, self.n, self.k) == (128, 128, 128)
             and self.batch <= 8
         ):
+            # Builds the two-panel program: both 64-wide K panels load before the first MMA.
             return {"block_m": 16, "block_n": 64, "block_k": 64, "num_stages": 2, "threads": 64}
         # 64x64x64, stages=2, one warpgroup: the tile the manifest shapes share.
         block_k = 64 if self.k % 64 == 0 else (32 if self.k % 32 == 0 else 16)
@@ -768,8 +755,10 @@ class BMMKernel(Kernel, BMMFwdInterface):
             for bk in block_k_options
             for ns in [2, 3, 4]
         ]
-        if self.default_config["threads"] == 64:
-            configs.append(self.default_config)
+        default = self.default_config
+        if default["threads"] == 64:
+            # The two-panel program, which the grid above does not reach.
+            configs.append(default)
         return [c for c in configs if self.k % c["block_k"] == 0]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -812,10 +801,6 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: BMMCall) -> str | None:
-        return cls._region_refusal(call)
-
-    @classmethod
-    def _region_refusal(cls, call: BMMCall) -> str | None:
         band = cls._PERSISTENT_BANDS.get(call.calibration)
         if band is None:
             return "has no persistent band for this board"
@@ -827,19 +812,16 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
             return "does not fill a persistent wave"
         return None
 
-    @classmethod
-    def _persistent_grid(
-        cls, band: _PersistentBand, batch: int, m: int, n: int, physical_sms: int
-    ) -> int:
-        """Choose a full-wave grid for the band's tile."""
-        tiles = cls._tiles(band, batch, m, n)
+    @staticmethod
+    def _full_wave_grid(tiles: int, physical_sms: int) -> int:
+        """The largest power-of-two grid when it divides *tiles*, else every SM."""
         power_of_two_grid = 1 << (physical_sms.bit_length() - 1)
         return power_of_two_grid if tiles % power_of_two_grid == 0 else physical_sms
 
     @classmethod
     def entry_for(cls, call: BMMCall) -> Entry:
         """Build the persistent template specialization for this BMM call."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
         return identity, lambda: cls(
             call.batch,
@@ -884,7 +866,7 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
         band = self._PERSISTENT_BANDS.get(self.build_target.calibration)
         if band is None:
             return physical_sms
-        return self._persistent_grid(band, batch, m, n, physical_sms)
+        return self._full_wave_grid(self._tiles(band, batch, m, n), physical_sms)
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         b_nk = b.transpose(-2, -1)
@@ -943,7 +925,7 @@ class BMMPingPongKernel(BMMPersistentKernel):
     @classmethod
     def entry_for(cls, call: BMMCall) -> Entry:
         """Build the ping-pong specialization for the call's K."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
         return identity, lambda: cls(call.batch, call.m, call.n, call.k, device_index=index)
 
@@ -983,11 +965,9 @@ class BMMPingPongKernel(BMMPersistentKernel):
 
     def _grid(self, batch: int, m: int, n: int) -> int:
         """The power-of-two grid when it divides the 128x128 tiles, else every SM."""
-        physical_sms = self.build_target.sm_count
         block = self._TEMPLATE_CONFIG["block_m"]
         tiles = batch * -(-m // block) * -(-n // block)
-        power_of_two_grid = 1 << (physical_sms.bit_length() - 1)
-        return power_of_two_grid if tiles % power_of_two_grid == 0 else physical_sms
+        return self._full_wave_grid(tiles, self.build_target.sm_count)
 
 
 class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
@@ -1013,7 +993,7 @@ class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
     @classmethod
     def entry_for(cls, call: BMMFP8Call) -> Entry:
         """The device index is in the identity: the grid is sized from its SM count."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         arguments = (call.batch, call.m, call.n, call.k, call.dtype, call.out_dtype)
         return (*arguments, index), lambda: cls(*arguments, device_index=index)
 
@@ -1323,7 +1303,7 @@ class BMMFP8TransposeKernel(Kernel, BMMFP8TransposeFwdInterface):
 
     @classmethod
     def entry_for(cls, call: BMMFP8TransposeCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         arguments = (call.batch, call.rows, call.cols, call.dtype)
         return (*arguments, index), lambda: cls(*arguments, device_index=index)
 

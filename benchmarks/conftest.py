@@ -4,21 +4,15 @@ import json
 import pytest
 import torch
 
-import benchmarks.baselines  # noqa: F401
-
 # Imported for its side effect: arming the guard that keeps flag_gems from
 # reaching torch's op registry before vllm. See benchmarks.baselines.
+import benchmarks.baselines  # noqa: F401
 from benchmarks import api
 from benchmarks.outcomes import UNAVAILABLE_PROPERTY
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
 from tileops._utils.device import current_accelerator_type
 from tileops.backend import OpNotAvailableError
-
-# What a row carries besides its measurements.
-_NOT_A_MEASUREMENT = frozenset(
-    {"tag", "op", "op_module", "ops", "params", "kernel_config", "result"}
-)
 
 
 def pytest_make_parametrize_id(config, val, argname):
@@ -63,16 +57,17 @@ def _emit(item, tag: str, entry: dict) -> None:
 
     Generic over the keys: a measurement added to the benchmark layer reaches
     the XML, and the consumers that parse `<tag>_<metric>`, without a change
-    here. Hand-listing them is how the report came to publish a quantity the
-    benchmark had stopped comparing.
+    here.
     """
+    # What a row carries besides its measurements.
+    not_a_measurement = {"tag", "op", "op_module", "ops", "params", "kernel_config", "result"}
     measurements = {
         **entry["result"],
         "unverified": (entry.get("params") or {}).get("unverified"),
         "no_ratio": (entry.get("params") or {}).get("no_ratio"),
     }
     for key, value in measurements.items():
-        if key in _NOT_A_MEASUREMENT or value is None:
+        if key in not_a_measurement or value is None:
             continue
         item.user_properties.append((f"{tag}_{key}", _prop(value)))
 

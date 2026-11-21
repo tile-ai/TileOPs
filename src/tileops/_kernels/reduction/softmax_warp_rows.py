@@ -6,6 +6,8 @@ the row's maximum and sum by shuffles, so a row needs no shared memory and no bl
 barrier.
 """
 
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -17,11 +19,11 @@ from tileops._kernels.reduction._primitives import (
     exp_shifted,
     exp_shifted_scaled,
     keeps_input_rows,
-    restore_same_shape,
 )
 from tileops._kernels.reduction.call_spec import SoftmaxCall
-from tileops._kernels.reduction.softmax import _SoftmaxKernelBase
+from tileops._kernels.reduction.softmax import _PlannedSoftmaxKernel
 from tileops._kernels.streaming_load import load16, load16_evict_last
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import RESIDENT_CTAS, WARP_LANES
 
 __all__ = ["SoftmaxWarpRowsKernel"]
@@ -38,8 +40,6 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
     vec = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     held_elems = per_lane * vec
     rows_per_cta = WARP_LANES // lanes * warps
-    # Shuffle distances within a group: 1, 2, ..., lanes / 2.
-    steps = lanes.bit_length() - 1
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h", "approx_math.h"))
     def build():
@@ -65,8 +65,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
                 for i in T.unroll(held_elems):
                     values[i] = T.cast(held[i], "float32")
                     stat[0] = T.max(stat[0], values[i])
-                for s in T.unroll(steps):
-                    stat[0] = T.max(stat[0], T.shfl_xor(stat[0], T.shift_left(1, s)))
+                warp_reduce(stat, T.max, lanes=lanes)
                 stat[1] = 0.0
                 if op_kind == "softmax":
                     for i in T.unroll(held_elems):
@@ -75,8 +74,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
                 else:
                     for i in T.unroll(held_elems):
                         stat[1] += exp_shifted(values[i], stat[0])
-                for s in T.unroll(steps):
-                    stat[1] += T.shfl_xor(stat[1], T.shift_left(1, s))
+                warp_reduce(stat, operator.add, first=1, lanes=lanes)
                 if op_kind == "softmax":
                     # Reuse the row reciprocal across all elements; it cancels the terms' scale.
                     stat[1] = T.call_extern("float32", "tileops::approx_rcp", stat[1])
@@ -96,7 +94,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
     return build
 
 
-class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
+class SoftmaxWarpRowsKernel(_PlannedSoftmaxKernel):
     """Softmax / log-softmax of rows of up to 2 KB, a group of a warp's lanes a row.
 
     A row of ``N`` elements is ``N`` over the 16-byte vector width vectors, at most 128.
@@ -130,9 +128,7 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
         return super().refusal(call)
 
     def __init__(self, call: SoftmaxCall):
-        super().__init__(device_index=call.device.index)
-        self.call = call
-        self.dtype = call.dtype
+        super().__init__(call)
         lanes, per_lane = self._plan(call)
         # The smallest CTA that the SM's resident-CTA limit does not stop short of its warp
         # slots: smaller CTAs schedule the rows in finer steps.
@@ -149,20 +145,3 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
             keep=keeps_input_rows(call),
         )
         self.init_config(None)
-
-    @property
-    def default_config(self) -> dict:
-        return {}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize ``call.axis`` of the contiguous input *x*."""
-        y = self.program(self._compile)(self._rows(x))
-        return restore_same_shape(y, self.call.shape, (self.call.axis,))
-
-    def _compile(self, cfg: dict):
-        """The program."""
-        return self.kernel()

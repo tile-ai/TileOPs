@@ -5,146 +5,121 @@ Input construction and the op's reference computation live in
 definition, including numerical policy. Pytest checks, timing and roofline
 calculations remain consumer responsibilities.
 
-See docs/design/layer-boundaries.md §Test and §Workloads Layer.
+See docs/design/layer-boundaries.md §Test and §Workloads layer.
 """
 
 import ast
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.smoke
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
-
-# Consumer execution and accounting do not belong in workloads.
-NOT_IN_WORKLOADS = ("check", "calculate_flops", "calculate_memory")
+CONSUMERS = ("tests/ops", "benchmarks/ops")
 
 
-def _methods_named(root: Path, wanted) -> dict[str, list[str]]:
-    """Map each file under ``root`` to the wanted methods any class defines."""
+def _offenders(directories: Iterable[str], hits_of: Callable[[ast.AST], str | None]) -> dict:
+    """Map each file under *directories* to the descriptions *hits_of* gives its nodes."""
     offenders = {}
-    for path in sorted(root.rglob("*.py")):
-        if path.name == "__init__.py" or path.resolve() == SELF:
-            continue
-        hits = [
-            f"{node.name}.{m.name} (line {m.lineno})"
-            for node in ast.walk(ast.parse(path.read_text(), filename=str(path)))
-            if isinstance(node, ast.ClassDef)
-            for m in node.body
-            if isinstance(m, ast.FunctionDef) and wanted(m.name)
-        ]
-        if hits:
-            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    for directory in directories:
+        for path in sorted((REPO_ROOT / directory).rglob("*.py")):
+            if path.resolve() == SELF:
+                continue
+            tree = ast.parse(path.read_text(), filename=str(path))
+            hits = [hit for node in ast.walk(tree) if (hit := hits_of(node)) is not None]
+            if hits:
+                offenders[str(path.relative_to(REPO_ROOT))] = hits
     return offenders
 
 
-@pytest.mark.smoke
+def _methods_named(*names: str) -> Callable[[ast.AST], str | None]:
+    """A node test matching a method of one of *names* that any class defines."""
+
+    def hits_of(node: ast.AST) -> str | None:
+        if isinstance(node, ast.ClassDef):
+            methods = [m for m in node.body if isinstance(m, ast.FunctionDef) and m.name in names]
+            if methods:
+                return ", ".join(f"{node.name}.{m.name} (line {m.lineno})" for m in methods)
+        return None
+
+    return hits_of
+
+
 def test_tests_do_not_author_gen_inputs() -> None:
-    assert _methods_named(REPO_ROOT / "tests", lambda n: n == "gen_inputs") == {}
+    assert _offenders(["tests"], _methods_named("gen_inputs")) == {}
 
 
-@pytest.mark.smoke
 def test_workloads_carry_no_consumer_execution() -> None:
-    assert _methods_named(REPO_ROOT / "workloads", NOT_IN_WORKLOADS.__contains__) == {}
+    names = ("check", "calculate_flops", "calculate_memory")
+    assert _offenders(["workloads"], _methods_named(*names)) == {}
 
 
-@pytest.mark.smoke
 def test_workloads_do_not_import_the_benchmark_layer() -> None:
     """The benchmark layer consumes the workload contract; the dependency never runs back."""
-    offenders = {}
-    for path in sorted((REPO_ROOT / "workloads").rglob("*.py")):
-        hits = [
-            f"line {node.lineno}"
-            for node in ast.walk(ast.parse(path.read_text(), filename=str(path)))
-            if (
-                isinstance(node, ast.ImportFrom)
-                and (node.module or "").split(".")[0] == "benchmarks"
-            )
-            or (
-                isinstance(node, ast.Import)
-                and any(alias.name.split(".")[0] == "benchmarks" for alias in node.names)
-            )
-        ]
-        if hits:
-            offenders[str(path.relative_to(REPO_ROOT))] = hits
-    assert offenders == {}
+
+    def imports_benchmarks(node: ast.AST) -> str | None:
+        if isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        elif isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        else:
+            return None
+        return (
+            f"line {node.lineno}" if any(m.split(".")[0] == "benchmarks" for m in modules) else None
+        )
+
+    assert _offenders(["workloads"], imports_benchmarks) == {}
 
 
-def _seeds_global_rng(node: ast.AST) -> bool:
-    """Whether *node* is a call that seeds the global RNG.
-
-    ``torch.manual_seed(...)`` and the imported ``manual_seed(...)`` do.
-    ``generator.manual_seed(...)`` does not: it seeds a generator the workload
-    owns, which is what the rule asks for.
-    """
-    if not isinstance(node, ast.Call):
-        return False
-    if isinstance(node.func, ast.Name):
-        return node.func.id == "manual_seed"
-    return (
-        isinstance(node.func, ast.Attribute)
-        and node.func.attr == "manual_seed"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "torch"
-    )
-
-
-def _global_seed_calls(root: Path) -> dict[str, list[str]]:
-    """Map each file under *root* to the calls that seed the global RNG."""
-    offenders = {}
-    for path in sorted(root.rglob("*.py")):
-        hits = [
-            f"line {node.lineno}"
-            for node in ast.walk(ast.parse(path.read_text(), filename=str(path)))
-            if _seeds_global_rng(node)
-        ]
-        if hits:
-            offenders[str(path.relative_to(REPO_ROOT))] = hits
-    return offenders
-
-
-@pytest.mark.smoke
 def test_workloads_do_not_seed_the_global_rng() -> None:
     """A workload that reseeds the global RNG moves every later draw in the session.
 
     The conftests seed it once per test; an input that must not move with the
-    stream takes ``WorkloadBase.rng()`` instead.
+    stream takes ``WorkloadBase.rng()`` instead. ``generator.manual_seed(...)``
+    seeds a generator the workload owns, which is what the rule asks for.
     """
-    assert _global_seed_calls(REPO_ROOT / "workloads") == {}
 
-
-@pytest.mark.smoke
-def test_consumers_do_not_override_workload_contract():
-    for directory in ("tests/ops", "benchmarks/ops"):
-        assert (
-            _methods_named(REPO_ROOT / directory, {"ref_program", "verification"}.__contains__)
-            == {}
+    def seeds_global_rng(node: ast.AST) -> str | None:
+        if not isinstance(node, ast.Call):
+            return None
+        func = node.func
+        seeds = (isinstance(func, ast.Name) and func.id == "manual_seed") or (
+            isinstance(func, ast.Attribute)
+            and func.attr == "manual_seed"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "torch"
         )
-    offenders = []
-    for path in [
-        *(REPO_ROOT / "benchmarks/ops").glob("*.py"),
-        *(REPO_ROOT / "tests/ops").glob("*.py"),
-    ]:
-        for node in ast.walk(ast.parse(path.read_text())):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in {"Exact", "Partial", "Custom"}
-            ):
-                offenders.append(f"{path.name}:{node.lineno}")
-    assert not offenders, offenders
+        return f"line {node.lineno}" if seeds else None
+
+    assert _offenders(["workloads"], seeds_global_rng) == {}
 
 
-@pytest.mark.smoke
+def test_consumers_do_not_override_workload_contract():
+    assert _offenders(CONSUMERS, _methods_named("ref_program", "verification")) == {}
+
+    def builds_evidence(node: ast.AST) -> str | None:
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"Exact", "Partial", "Custom"}
+        ):
+            return f"line {node.lineno}"
+        return None
+
+    assert _offenders(CONSUMERS, builds_evidence) == {}
+
+
 def test_consumers_do_not_define_private_numerical_comparators():
-    offenders = []
-    for directory in ("tests/ops", "benchmarks/ops"):
-        for path in (REPO_ROOT / directory).glob("*.py"):
-            for node in ast.walk(ast.parse(path.read_text())):
-                if (
-                    isinstance(node, ast.FunctionDef)
-                    and not node.name.startswith("test_")
-                    and ("compare" in node.name or "tolerance" in node.name)
-                ):
-                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} {node.name}")
-    assert not offenders, offenders
+    def defines_comparator(node: ast.AST) -> str | None:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and not node.name.startswith("test_")
+            and ("compare" in node.name or "tolerance" in node.name)
+        ):
+            return f"line {node.lineno} {node.name}"
+        return None
+
+    assert _offenders(CONSUMERS, defines_comparator) == {}

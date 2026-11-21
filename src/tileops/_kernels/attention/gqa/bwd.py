@@ -522,7 +522,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
             call.dtype,
             call.sm_scale,
         )
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -623,16 +623,11 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [64, 128]
-        block_n = [64, 128]
-        num_stages = [1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, num_stages, threads))
         budget = self.build_target.smem_budget
         grouped = self.heads != self.heads_kv
         configs = (
-            {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]}
-            for c in _configs
+            {"block_m": m, "block_n": n, "num_stages": s, "threads": t}
+            for m, n, s, t in itertools.product([64, 128], [64, 128], [1, 2, 3], [128, 256])
         )
         return [
             c for c in configs if self._builds(c, budget, self.dim, self.dtype.itemsize, grouped)

@@ -34,10 +34,10 @@ from tileops._kernels.kernel_base import CompiledProgram
 from tileops._kernels.streaming_load import load16
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES
+from tileops.manifest.primitives import ceil_div
 
 __all__ = [
     "AUTOTUNE_THREADS",
-    "DEFAULT_ALIGNMENT",
     "DEFAULT_THREADS",
     "FP32_EXACT_INT_LIMIT",
     "FRAGMENT_ELEMS_PER_THREAD",
@@ -45,7 +45,6 @@ __all__ = [
     "BlockConfigPlanner",
     "RowTiledAutotuneMixin",
     "block_fold",
-    "ceildiv_int",
     "compute_tile_n",
     "down_rows_launcher",
     "down_rows_splits",
@@ -53,6 +52,7 @@ __all__ = [
     "exp_shifted",
     "exp_shifted_scaled",
     "extrema_combine",
+    "fold_max_sum",
     "fold_rows_kernel",
     "identity_for",
     "keeps_input_rows",
@@ -61,7 +61,6 @@ __all__ = [
     "restore_same_shape",
     "row_layout",
     "rows_for_axes",
-    "torch_dtype_nbytes",
     "tune_by_forward",
 ]
 
@@ -76,10 +75,6 @@ def keeps_input_rows(call) -> bool:
     """
     return call.m * call.n * call.dtype.itemsize > call.l2_bytes
 
-
-# 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
-# shared memory instructions.  Sub-categories may override this default.
-DEFAULT_ALIGNMENT: int = ALIGNMENT
 
 # Widest single fragment/shared-memory tile the reduction kernels plan; shared memory
 # and the register file are checked separately.
@@ -127,14 +122,16 @@ def exp_shifted_scaled(value, shift):
     return T.call_extern("float32", "tileops::approx_exp2", (value - shift) * LOG2E + 24.0)
 
 
+def fold_max_sum(peak, total, other_peak, other_total):
+    """The ``(max, sum)`` of two partial softmax pairs; two empty ones stay empty."""
+    top = T.max(peak, other_peak)
+    both = total * exp_shifted(peak, top) + other_total * exp_shifted(other_peak, top)
+    return top, T.if_then_else(top == float("-inf"), T.cast(0, "float32"), both)
+
+
 # Largest integer count fp32 carries exactly; a statistic folded through
 # fp32 counts or weights is trusted only below it.
 FP32_EXACT_INT_LIMIT = 1 << 24
-
-
-def ceildiv_int(x: int, y: int) -> int:
-    """Return ``ceil(x / y)`` for positive integer dimensions."""
-    return -(-x // y)
 
 
 def identity_for(op_kind: str) -> float:
@@ -213,13 +210,6 @@ def block_fold(
     return fold
 
 
-def torch_dtype_nbytes(dtype: torch.dtype | str) -> int:
-    """Return element size for a torch dtype object or dtype-name string."""
-    if isinstance(dtype, str):
-        dtype = getattr(torch, dtype)
-    return torch.empty(0, dtype=dtype).element_size()
-
-
 class BlockConfigPlanner:
     """Derives ``block_m`` / ``threads`` / ``tile_n`` for a row-wise reduction.
 
@@ -286,7 +276,7 @@ class BlockConfigPlanner:
 
     def frag_elems(self, block_m: int, cols: int, threads: int) -> int:
         """Tile elements one thread holds across every live fragment."""
-        return ceildiv_int(block_m * cols, threads) * self.frag_slots
+        return ceil_div(block_m * cols, threads) * self.frag_slots
 
     def frag_fits(self, block_m: int, cols: int, threads: int) -> bool:
         """Whether a ``(block_m, cols)`` tile stays in registers for this pair."""
@@ -315,7 +305,7 @@ class BlockConfigPlanner:
         still has to divide across the block, which is what ``layout_ok`` measures.
         """
         if block_m == 1:
-            return max(DEFAULT_ALIGNMENT, threads)
+            return max(ALIGNMENT, threads)
         return self.reduce_column_alignment(self.elem_bytes, threads)
 
     def tile_n_for(self, block_m: int, threads: int) -> int:
@@ -414,10 +404,10 @@ class BlockConfigPlanner:
 
     def reject_tile_n(self, block_m: int, tile_n: int, threads: int) -> str:
         """Return why a caller-supplied ``tile_n`` is unusable, or ""."""
-        if tile_n <= 0 or tile_n % DEFAULT_ALIGNMENT:
+        if tile_n <= 0 or tile_n % ALIGNMENT:
             return (
                 f"tile_n={tile_n} must be positive and a multiple of "
-                f"{DEFAULT_ALIGNMENT} (the T.copy shared-memory alignment)"
+                f"{ALIGNMENT} (the T.copy shared-memory alignment)"
             )
         if tile_n > MAX_SINGLE_TILE_COLS:
             return f"tile_n={tile_n} exceeds the {MAX_SINGLE_TILE_COLS} column cap"
@@ -510,7 +500,7 @@ def compute_tile_n(
     block_m: int,
     elem_bytes: int,
     N_padded: int,
-    alignment: int = DEFAULT_ALIGNMENT,
+    alignment: int = ALIGNMENT,
     budget: int = STATIC_SHARED_BYTES,
     num_buffers: int = 1,
 ) -> int:
@@ -534,7 +524,7 @@ def compute_tile_n(
         block_m: Number of rows per thread block.
         elem_bytes: Bytes per element (e.g. 2 for fp16/bf16, 4 for fp32).
         N_padded: Padded hidden dimension (already aligned to *alignment*).
-        alignment: Column alignment boundary (default DEFAULT_ALIGNMENT).
+        alignment: Column alignment boundary (default ALIGNMENT).
         budget: Shared memory budget in bytes (default 48 KiB).
         num_buffers: Number of shared memory buffers of shape
             ``(block_m, tile_n)`` that must fit simultaneously (default 1).
@@ -719,16 +709,13 @@ class RowTiledAutotuneMixin:
         Includes the heuristic tile_n (from block_m=1) plus alternative
         tile_n values derived from ``_tile_n_for_block_m(2)`` and
         ``_tile_n_for_block_m(4)``, with a half-step fallback aligned to
-        ``DEFAULT_ALIGNMENT`` when block_m exploration yields no
+        ``ALIGNMENT`` when block_m exploration yields no
         alternatives.  tile_n=0 means single-tile (no tiling).  All
         candidates are de-duplicated and sorted descending for
         deterministic ordering.
 
-        Each distinct tile_n value requires a full kernel recompilation,
-        which is expensive for large-N workloads (compilations can take
-        minutes each).  To keep autotuner wall time practical we cap
-        the total number of tile_n candidates at ``_MAX_TILE_N_CANDIDATES``
-        (currently 3).
+        Each distinct tile_n value requires a full kernel recompilation, so the
+        candidates are capped at ``_MAX_TILE_N_CANDIDATES``.
 
         - When the heuristic default tile_n is 0 (single-tile / small N),
           return ``[0]`` -- the autotuner varies only block_m and threads. A
@@ -755,13 +742,11 @@ class RowTiledAutotuneMixin:
         # Also try half of the default tile_n (rounded to alignment) as a
         # search point when block_m exploration didn't yield alternatives.
         if len(candidates) < 2:
-            half_tn = (default_tn // 2 // DEFAULT_ALIGNMENT) * DEFAULT_ALIGNMENT
+            half_tn = (default_tn // 2 // ALIGNMENT) * ALIGNMENT
             if half_tn > 0 and half_tn != default_tn:
                 candidates.add(half_tn)
 
-        # Cap to avoid excessive compilation time.
-        sorted_candidates = sorted(candidates, reverse=True)
-        return sorted_candidates[: self._MAX_TILE_N_CANDIDATES]
+        return sorted(candidates, reverse=True)[: self._MAX_TILE_N_CANDIDATES]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Sweep the candidates, rebuilding per tile_n."""
@@ -811,10 +796,7 @@ class RowTiledAutotuneMixin:
         rebuilds the kernel for each tile_n value.  Configs include
         ``tile_n`` alongside ``block_m`` and ``threads``.
         """
-        budget = self._smem_budget
-        smem_per_row = self.N_padded * self._elem_bytes
-        max_block_m_no_tile = budget // smem_per_row if smem_per_row > 0 else 16
-        threads_list = list(AUTOTUNE_THREADS)
+        max_block_m_no_tile = self._smem_budget // (self.N_padded * self._elem_bytes)
 
         configs = []
         for tile_n in self._tile_n_candidates():
@@ -830,7 +812,7 @@ class RowTiledAutotuneMixin:
                         continue
                     if bm > max_block_m_no_tile:
                         continue
-                    for t in threads_list:
+                    for t in AUTOTUNE_THREADS:
                         if not self._planner.layout_ok(bm, self.N_padded, t):
                             continue
                         configs.append({"block_m": bm, "threads": t, "tile_n": 0})
@@ -838,11 +820,11 @@ class RowTiledAutotuneMixin:
                 # Tiled regime: block_m=1 with each tile_n candidate. Each
                 # distinct tile_n triggers a kernel recompilation, so only
                 # threads vary within a tile_n regime.
-                for t in threads_list:
+                for t in AUTOTUNE_THREADS:
                     configs.append({"block_m": 1, "threads": t, "tile_n": tile_n})
 
         if not configs:
-            configs = [{"block_m": 1, "threads": 256, "tile_n": self._tile_n}]
+            configs = [{"block_m": 1, "threads": DEFAULT_THREADS, "tile_n": self._tile_n}]
 
         return configs
 
@@ -904,12 +886,7 @@ def _down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
 
     @T.macro
     def init(acc):
-        if op_kind in ("amax", "amin"):
-            T.fill(acc, identity_for(op_kind))
-        elif op_kind == "prod":
-            T.fill(acc, 1.0)
-        else:
-            T.fill(acc, 0.0)
+        T.fill(acc, identity_for(op_kind))
 
     @T.macro
     def combine(acc, slot, value):
@@ -920,16 +897,13 @@ def _down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
         else:
             acc[slot] = acc[slot] + value
 
+    def finished(accumulated):
+        value = accumulated / divisor if divisor else accumulated
+        return T.sqrt(value) if epilogue == "sqrt" else value
+
     @T.macro
     def finish(out_local, slot, accumulated):
-        if divisor and epilogue == "sqrt":
-            out_local[slot] = T.cast(T.sqrt(accumulated / divisor), out_dtype)
-        elif divisor:
-            out_local[slot] = T.cast(accumulated / divisor, out_dtype)
-        elif epilogue == "sqrt":
-            out_local[slot] = T.cast(T.sqrt(accumulated), out_dtype)
-        else:
-            out_local[slot] = T.cast(accumulated, out_dtype)
+        out_local[slot] = T.cast(finished(accumulated), out_dtype)
 
     return init, combine, finish
 
@@ -973,7 +947,7 @@ def _down_rows_kernel(
             caller whose outer pass finishes a sum-of-squares; ``""`` for none.
     """
     block_b = threads * _LEADING_POLICY.cols_per_thread
-    rows_per_split = ceildiv_int(A, splits)
+    rows_per_split = ceil_div(A, splits)
     exact = B % block_b == 0
     rows_exact = rows_per_split * splits == A
     init_acc, combine, finish = _down_rows_ops(op_kind, divisor, out_dtype, epilogue)
@@ -983,7 +957,9 @@ def _down_rows_kernel(
     # the depth it gives a plain max, too few rows' loads in flight; the walk is unrolled
     # explicitly to a plain max's depth: 64 rows of 4-byte elements, 32 of narrower ones.
     walk = (
-        functools.partial(T.unroll, unroll_factor=64 if torch_dtype_nbytes(in_dtype) == 4 else 32)
+        functools.partial(
+            T.unroll, unroll_factor=64 if getattr(torch, in_dtype).itemsize == 4 else 32
+        )
         if extrema
         else T.serial
     )
@@ -1061,7 +1037,7 @@ def _down_rows_kernel(
 def _vector_tiles(kept: int, in_dtype: str) -> bool:
     """Whether *kept* columns split into at least ``min_vector_blocks`` whole tiles of one
     16-byte vector a thread on ``vector_threads`` threads."""
-    tile = _LEADING_POLICY.vector_threads * VECTOR_ACCESS_BYTES // torch_dtype_nbytes(in_dtype)
+    tile = _LEADING_POLICY.vector_threads * VECTOR_ACCESS_BYTES // getattr(torch, in_dtype).itemsize
     return kept % tile == 0 and kept // tile >= _LEADING_POLICY.min_vector_blocks
 
 
@@ -1076,7 +1052,7 @@ def _down_rows_vector_kernel(
     16-byte boundary.
     """
     threads = _LEADING_POLICY.vector_threads
-    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(in_dtype)
+    vec = VECTOR_ACCESS_BYTES // getattr(torch, in_dtype).itemsize
     init_acc, combine, finish = _down_rows_ops(op_kind, divisor, out_dtype, epilogue)
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h", "nan_extrema.h"))
@@ -1115,8 +1091,8 @@ def down_rows_splits(reduced: int, kept: int) -> int:
     )
     if reduced * kept <= grid_work:
         return 1
-    column_blocks = ceildiv_int(kept, _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread)
-    return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
+    column_blocks = ceil_div(kept, _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread)
+    return max(1, min(reduced, ceil_div(_LEADING_POLICY.target_blocks, column_blocks)))
 
 
 def down_rows_launcher(
@@ -1200,7 +1176,7 @@ def fold_rows_kernel(
         unroll: Vector loads each thread keeps in flight.
         lead: Segments each row reduces, strided ``m * n`` elements apart.
     """
-    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
+    vec = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     slot_dtype = "int32" if op_kind == "inf" else "float32"
     identity = identity_for(op_kind)
 

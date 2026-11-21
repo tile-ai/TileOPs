@@ -93,6 +93,6 @@ def extents_refusal(call: GLACall) -> str | None:
 
 def build_entry(cls: type, call: GLACall, **build_arguments: int | bool) -> Entry:
     """Build *cls* from the call's scale, dtype and device plus the *build_arguments* it compiles."""
-    device_index = call.device.index if call.device is not None else None
+    device_index = call.device_index
     arguments = dict(build_arguments, scale=call.scale, dtype=call.dtype, device_index=device_index)
     return tuple(sorted(arguments.items(), key=lambda item: item[0])), lambda: cls(**arguments)

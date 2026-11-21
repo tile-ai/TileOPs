@@ -44,10 +44,14 @@ def _ssd_decode_kernel(
         block_n: int,
         threads: int,
     ):
-        # block_n must be a power of 2 for the log-depth tree reduction.
         if not (block_n > 0 and (block_n & (block_n - 1)) == 0):
             raise ValueError(
                 f"block_n must be a power of 2 for the log-depth tree reduction; got {block_n}"
+            )
+        if threads != block_p * block_n:
+            raise ValueError(
+                f"threads must be block_p * block_n ({block_p} * {block_n}) for the 2D "
+                f"T.Parallel layout; got {threads}"
             )
         _log_n = int(math.log2(block_n))
 
@@ -184,11 +188,6 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
         config: dict | None = None,
     ) -> None:
         super().__init__()
-        self.batch = batch
-        self.n_heads = n_heads
-        self.d_head = d_head
-        self.d_state = d_state
-        self.n_groups = n_groups
         self.dtype = dtype
         self.kernel = _ssd_decode_kernel(
             batch,
@@ -199,19 +198,6 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
             self.dtype_str,
         )
         self.init_config(config)
-        cfg = self.config
-        bp, bn, threads = cfg["block_p"], cfg["block_n"], cfg["threads"]
-        if bn <= 0 or bn & (bn - 1):
-            raise ValueError(
-                f"SSDDecodeKernel requires block_n to be a power of 2 for the "
-                f"log-depth tree reduction, but got block_n={bn}."
-            )
-        if threads != bp * bn:
-            raise ValueError(
-                f"SSDDecodeKernel requires threads == block_p * block_n "
-                f"({bp} * {bn} = {bp * bn}) for the 2D T.Parallel layout, "
-                f"but got threads={threads}."
-            )
 
     @property
     def default_config(self) -> dict:

@@ -32,7 +32,7 @@ def _fp8_quant_per_block_kernel(n: int, k: int, dtype: str, aligned: bool):
     loaded alone, so that adjacent lanes still read adjacent elements.
     """
     tn, tk = -(-n // QUANT_SCALE_BLOCK), -(-k // QUANT_SCALE_BLOCK)
-    itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    itemsize = getattr(torch, dtype).itemsize
     vec = VECTOR_ACCESS_BYTES // itemsize
     # A thread's elements are held as 32-bit words, ``per_word`` elements to a word.
     words = VECTOR_ACCESS_BYTES // 4
@@ -204,7 +204,7 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
         return reason
 
     def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.call = call
         self.dtype = call.dtype
         self.kernel = _fp8_quant_per_block_kernel(
@@ -265,7 +265,7 @@ class FP8QuantPerBlockFwdKernel(_FP8QuantPerBlockFwdKernel):
     _aligned = True
 
     @classmethod
-    def refusal(cls, call: QuantizeCall) -> "str | None":
+    def refusal(cls, call: QuantizeCall) -> str | None:
         if call.cols * call.dtype.itemsize % VECTOR_ACCESS_BYTES:
             return f"requires a row of whole {VECTOR_ACCESS_BYTES}-byte vectors"
         return super().refusal(call)

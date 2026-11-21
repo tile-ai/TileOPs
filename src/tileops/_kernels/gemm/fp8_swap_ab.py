@@ -180,7 +180,7 @@ def _gemm_fp8_stream_kernel(
                     if not block_scaled:
                         # Read before the stream, so no load latency follows the last step.
                         tensor_scale[0] = scale_a[0, 0] * scale_b[0, 0]
-                    if block_scaled:
+                    else:
                         for i in T.serial(T.ceildiv(k_steps * mpad, 128)):
                             idx = i * 128 + tx
                             if idx < k_steps * mpad:
@@ -335,12 +335,10 @@ def _short_block_scaled_gemm(n, out_dtype):
             b2 = T.alloc_shared((columns, 128), "float8_e4m3fn")
             a3 = T.alloc_shared((8, 128), "float8_e4m3fn")
             b3 = T.alloc_shared((columns, 128), "float8_e4m3fn")
-            total = T.alloc_fragment((columns, 8), "float32")
             dot0 = T.alloc_fragment((columns, 8), "float32")
             dot1 = T.alloc_fragment((columns, 8), "float32")
             dot2 = T.alloc_fragment((columns, 8), "float32")
             dot3 = T.alloc_fragment((columns, 8), "float32")
-            T.clear(total)
             T.async_copy(a[0:8, 0:128], a0)
             T.async_copy(b[bx * columns, 0], b0)
             T.async_copy(a[0:8, 128:256], a1)
@@ -362,24 +360,15 @@ def _short_block_scaled_gemm(n, out_dtype):
             T.sync_threads()
             T.wgmma_gemm(b3, a3, dot3, transpose_B=True, clear_accum=True)
             T.wait_wgmma(0)
+            # The 128-row scale block of this tile's 64 weight rows.
+            block = bx * columns // 128
             for col, row in T.Parallel(columns, 8):
-                total[col, row] += dot0[col, row] * (
-                    a_scale[row, 0] * b_scale[bx * columns // 128, 0]
+                output[row, bx * columns + col] = (
+                    dot0[col, row] * (a_scale[row, 0] * b_scale[block, 0])
+                    + dot1[col, row] * (a_scale[row, 1] * b_scale[block, 1])
+                    + dot2[col, row] * (a_scale[row, 2] * b_scale[block, 2])
+                    + dot3[col, row] * (a_scale[row, 3] * b_scale[block, 3])
                 )
-            for col, row in T.Parallel(columns, 8):
-                total[col, row] += dot1[col, row] * (
-                    a_scale[row, 1] * b_scale[bx * columns // 128, 1]
-                )
-            for col, row in T.Parallel(columns, 8):
-                total[col, row] += dot2[col, row] * (
-                    a_scale[row, 2] * b_scale[bx * columns // 128, 2]
-                )
-            for col, row in T.Parallel(columns, 8):
-                total[col, row] += dot3[col, row] * (
-                    a_scale[row, 3] * b_scale[bx * columns // 128, 3]
-                )
-            for col, row in T.Parallel(columns, 8):
-                output[row, bx * columns + col] = total[col, row]
 
     return kernel
 
@@ -428,7 +417,7 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
 
     @classmethod
     def entry_for(cls, call: GEMMFP8Call) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         # Two (1, 1) scales are one scale per tensor under either grid.
         block_scaled = (call.scale_a_shape, call.scale_b_shape) != ((1, 1), (1, 1))
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, block_scaled, index)

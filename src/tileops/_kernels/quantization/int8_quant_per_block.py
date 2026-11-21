@@ -35,7 +35,7 @@ def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
     n = m * k
     nb = -(-k // QUANT_SCALE_BLOCK)
     blocks = m * nb
-    itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    itemsize = getattr(torch, dtype).itemsize
     vec = VECTOR_ACCESS_BYTES // itemsize
     # A vector is held as 32-bit words, ``per_word`` elements to a word.
     words = VECTOR_ACCESS_BYTES // 4
@@ -170,7 +170,7 @@ def _int8_quant_per_block_shifted_kernel(m: int, k: int, dtype: str):
     n = m * k
     nb = -(-k // QUANT_SCALE_BLOCK)
     blocks = m * nb
-    itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    itemsize = getattr(torch, dtype).itemsize
     vec = VECTOR_ACCESS_BYTES // itemsize
     words = VECTOR_ACCESS_BYTES // 4
     per_word = 4 // itemsize
@@ -353,7 +353,7 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
         return reason
 
     def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.call = call
         self.dtype = call.dtype
         self.kernel = self._builder(call.rows, call.cols, self.dtype_str)
@@ -405,7 +405,7 @@ class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):
     _WIDE_WAVES: ClassVar[int] = 2
 
     @classmethod
-    def refusal(cls, call: QuantizeCall) -> "str | None":
+    def refusal(cls, call: QuantizeCall) -> str | None:
         if call.cols * call.dtype.itemsize % VECTOR_ACCESS_BYTES:
             return f"requires a row of whole {VECTOR_ACCESS_BYTES}-byte vectors"
         return super().refusal(call)

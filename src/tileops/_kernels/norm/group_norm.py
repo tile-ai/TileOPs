@@ -25,7 +25,6 @@ from tileops._kernels.norm._config import (
     row_padding,
     select_row_config_by_width,
     select_row_configs,
-    warp_row_vector,
     widths_for_row,
 )
 from tileops._kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
@@ -116,17 +115,19 @@ class _RowNormKernel(Kernel):
 
     @classmethod
     def _warp_row_vector_for(cls, D: int, dtype: torch.dtype) -> int | None:
-        """`_warp_row_vector` for a row of *D* elements of *dtype*, before construction."""
-        return warp_row_vector(D, dtype.itemsize)
+        """`_warp_row_vector` for a row of *D* elements of *dtype*, before construction: a
+        16-byte vector width for rows of at most 1024 elements it divides; wider rows go to
+        the fragment body."""
+        vec = VECTOR_ACCESS_BYTES // dtype.itemsize
+        widest = 1024
+        return None if D % vec or widest < D else vec
 
     def _held_row_vector(self) -> int | None:
         """Elements of one access of the block-a-row body, or ``None`` if it does not apply."""
         vec = VECTOR_ACCESS_BYTES // self.dtype.itemsize
         if not self._holds_row_in_registers(self.D, self.D_padded):
             return None if self.D % vec else vec
-        while self.D % vec:
-            vec //= 2
-        return vec
+        return math.gcd(self.D, vec)
 
     @property
     def default_config(self) -> dict:
@@ -150,13 +151,6 @@ class _RowNormKernel(Kernel):
 
 # fp32's largest finite value.
 _FMAX = 3.4028234663852886e38
-
-# The factor a warp's merge takes its lanes' differences in: 2^-k with 32 * 4^-k <= 1.
-_LANE_UNIT = 0.125
-
-# A scaled square sum below which a warp keeps its differences unscaled: a warp past it
-# holds a spread whose squares' subnormal rounding stays below fp32's precision.
-_TINY = 2.0**-64
 
 
 class ThreadScale:
@@ -202,9 +196,13 @@ def make_thread_stats(vec, per_thread, full, stride, vectors, dtype, active=None
     else:
         # At least 1/2: a scaled warp is one whose thread scale is below 1.
         scale = 2.0 ** -max(1, (per_thread * vec - 1).bit_length() + 1 >> 1)
-        lane = _LANE_UNIT
+        # The factor a warp's merge takes its lanes' differences in: 2^-k with 32 * 4^-k <= 1.
+        lane = 0.125
     bound = 2.0 ** math.floor(math.log2(math.sqrt(_FMAX / (64.0 * span))))
     units = ThreadScale(scale, lane)
+    # A scaled square sum below which a warp keeps its differences unscaled: a warp past it
+    # holds a spread whose squares' subnormal rounding stays below fp32's precision.
+    tiny = 2.0**-64
     idle = active is not None and active < WARP_LANES
 
     def _held(t, value):
@@ -269,13 +267,13 @@ def make_thread_stats(vec, per_thread, full, stride, vectors, dtype, active=None
         stats[0] = centred[0] + _reference_offset(centred)
         _sums(centred, t, stats, scale, stats[0])
         if units.scaled:
-            # A warp whose squares are all below ``_TINY`` and references within ``bound`` takes its
+            # A warp whose squares are all below ``tiny`` and references within ``bound`` takes its
             # statistics again unscaled, keeping their precision near fp32's smallest normal.
             factors[at] = T.if_then_else(
                 T.any_sync(
                     T.if_then_else(
                         T.Or(
-                            T.Not(stats[3] < _TINY),
+                            T.Not(stats[3] < tiny),
                             T.Not(T.abs(stats[0]) <= bound),
                         ),
                         1,
@@ -668,6 +666,111 @@ def _held_rows(M, D, eps, dtype, vec, threads, num_groups, channels_per_group, a
     return main_no_affine
 
 
+def _staged_rows(M, D, eps, dtype, block_m, threads, num_groups, channels_per_group, affine):
+    """*block_m* rows a block staged through shared memory, padded to ``row_padding(D)``.
+
+    Args:
+        affine: Whether row ``m`` column ``d`` is scaled and shifted by channel
+            ``(m % num_groups) * channels_per_group + d // (D / channels_per_group)``.
+    """
+    D_padded = row_padding(D, 4 if dtype == "float32" else 2)
+    spatial_size = D // channels_per_group
+    C = num_groups * channels_per_group
+    # A non-aligned D or a tail row block reads and writes past the end unless guarded.
+    guarded = D_padded != D or M % block_m != 0
+    # One channel owns the whole row exactly when a group holds one channel.
+    row_constant_affine = affine and channels_per_group == 1
+    row_reduce = make_corrected_row_reduce(block_m, D, D_padded, eps)
+    read_leads = make_read_leads(block_m, M, D)
+
+    @T.macro
+    def body(x, weight, bias, y):
+        with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+            x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
+            squares = T.alloc_fragment((block_m, D_padded), "float32")
+            shared_buf = T.alloc_shared((block_m, D_padded), dtype)
+            shift = T.alloc_fragment((block_m,), "float32")
+            acc = T.alloc_fragment((block_m,), "float32")
+            acc_squares = T.alloc_fragment((block_m,), "float32")
+            ref = T.alloc_fragment((block_m,), "float32")
+            centre = T.alloc_fragment((block_m,), "float32")
+            rstd = T.alloc_fragment((block_m,), "float32")
+            if row_constant_affine:
+                scale = T.alloc_fragment((block_m,), "float32")
+                bias_row = T.alloc_fragment((block_m,), "float32")
+
+            # Ahead of the row load, so the two reads are in flight while
+            # it runs. ``scale`` holds the weight until rstd exists.
+            if row_constant_affine:
+                for i in T.Parallel(block_m):
+                    c = (pid_m * block_m + i) % num_groups
+                    scale[i] = T.cast(weight[c], "float32")
+                    bias_row[i] = T.cast(bias[c], "float32")
+            read_leads(x, pid_m, shift)
+
+            # A padded wide row is staged through shared memory: the per-element guard
+            # costs a register load its vectorized copy.
+            for i, j in T.Parallel(block_m, D_padded):
+                shared_buf[i, j] = T.if_then_else(
+                    T.And(pid_m * block_m + i < M, j < D),
+                    x[pid_m * block_m + i, j],
+                    T.cast(0.0, dtype),
+                )
+                x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+            row_reduce(x_f32, squares, shift, acc, acc_squares, ref, centre, rstd)
+
+            if row_constant_affine:
+                # A group of one channel gives the whole row one weight and
+                # one bias, so the two gathers leave the element loop.
+                for i in T.Parallel(block_m):
+                    scale[i] = scale[i] * rstd[i]
+                    bias_row[i] = bias_row[i] - centre[i] * scale[i]
+                for i, j in T.Parallel(block_m, D_padded):
+                    if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
+                        y[pid_m * block_m + i, j] = T.cast(
+                            x_f32[i, j] * scale[i] + bias_row[i], dtype
+                        )
+            elif affine:
+                for i, j in T.Parallel(block_m, D_padded):
+                    if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
+                        c = ((pid_m * block_m + i) % num_groups) * channels_per_group + (
+                            j // spatial_size
+                        )
+                        normed = (x_f32[i, j] - centre[i]) * rstd[i]
+                        y[pid_m * block_m + i, j] = T.cast(
+                            normed * T.cast(weight[c], "float32") + T.cast(bias[c], "float32"),
+                            dtype,
+                        )
+            else:
+                for i, j in T.Parallel(block_m, D_padded):
+                    if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
+                        y[pid_m * block_m + i, j] = T.cast(
+                            (x_f32[i, j] - centre[i]) * rstd[i], dtype
+                        )
+
+    if affine:
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, D), dtype],
+            weight: T.Tensor[(C,), dtype],
+            bias: T.Tensor[(C,), dtype],
+            y: T.Tensor[(M, D), dtype],
+        ):
+            body(x, weight, bias, y)
+
+        return main
+
+    @T.prim_func
+    def main_no_affine(
+        x: T.Tensor[(M, D), dtype],
+        y: T.Tensor[(M, D), dtype],
+    ):
+        body(x, None, None, y)
+
+    return main_no_affine
+
+
 @target_cache(maxsize=32)
 def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, warp_vec, held_vec):
     """Build a row-wise normalization kernel with a per-channel affine.
@@ -689,9 +792,6 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, warp_ve
             channel takes it.
         held_vec: Vector width of the block-a-row body, or ``None`` for the staged body.
     """
-    D_padded = row_padding(D, 4 if dtype == "float32" else 2)
-    spatial_size = D // channels_per_group
-    C = num_groups * channels_per_group
 
     @tilelang.jit(out_idx=[3], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m, threads):
@@ -701,104 +801,9 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, warp_ve
             return _held_rows(
                 M, D, eps, dtype, held_vec, threads, num_groups, channels_per_group, True
             )
-
-        # A non-aligned D would read and write columns >= D unless masked.
-        def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
-            """Return the channel owning element $[row \\times col]$ of the (M, D) reshape.
-
-            Row ``m`` of the ``(N*G, (C/G)*spatial_size)`` view holds group
-            ``m % G``, and column ``d`` holds that group's local channel
-            ``d // spatial_size``.
-
-            Args:
-                row: Row index into the (M, D) view.
-                col: Column index into the (M, D) view.
-                num_groups: Number of groups G.
-                channels_per_group: C / G.
-                spatial_size: Number of spatial elements per channel.
-
-            Returns:
-                Index into the length-C weight / bias vectors.
-            """
-            return (row % num_groups) * channels_per_group + col // spatial_size
-
-        masked = D_padded != D
-        # One channel owns the whole row exactly when a group holds one channel.
-        row_constant_affine = channels_per_group == 1
-        # A tail row block runs past the end unless every index is guarded.
-        guarded = masked or M % block_m != 0
-        row_reduce = make_corrected_row_reduce(block_m, D, D_padded, eps)
-        read_leads = make_read_leads(block_m, M, D)
-
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M, D), dtype],
-            weight: T.Tensor[(C,), dtype],
-            bias: T.Tensor[(C,), dtype],
-            y: T.Tensor[(M, D), dtype],
-        ):
-            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
-                squares = T.alloc_fragment((block_m, D_padded), "float32")
-                shared_buf = T.alloc_shared((block_m, D_padded), dtype)
-                shift = T.alloc_fragment((block_m,), "float32")
-                acc = T.alloc_fragment((block_m,), "float32")
-                acc_squares = T.alloc_fragment((block_m,), "float32")
-                ref = T.alloc_fragment((block_m,), "float32")
-                centre = T.alloc_fragment((block_m,), "float32")
-                rstd = T.alloc_fragment((block_m,), "float32")
-                if row_constant_affine:
-                    scale = T.alloc_fragment((block_m,), "float32")
-                    bias_row = T.alloc_fragment((block_m,), "float32")
-
-                # Ahead of the row load, so the two reads are in flight while
-                # it runs. ``scale`` holds the weight until rstd exists.
-                if row_constant_affine:
-                    for i in T.Parallel(block_m):
-                        c = (pid_m * block_m + i) % num_groups
-                        scale[i] = T.cast(weight[c], "float32")
-                        bias_row[i] = T.cast(bias[c], "float32")
-                read_leads(x, pid_m, shift)
-
-                # A padded wide row is staged through shared memory: the per-element guard
-                # costs a register load its vectorized copy.
-                for i, j in T.Parallel(block_m, D_padded):
-                    shared_buf[i, j] = T.if_then_else(
-                        T.And(pid_m * block_m + i < M, j < D),
-                        x[pid_m * block_m + i, j],
-                        T.cast(0.0, dtype),
-                    )
-                    x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-                row_reduce(x_f32, squares, shift, acc, acc_squares, ref, centre, rstd)
-
-                if row_constant_affine:
-                    # A group of one channel gives the whole row one weight and
-                    # one bias, so the two gathers leave the element loop.
-                    for i in T.Parallel(block_m):
-                        scale[i] = scale[i] * rstd[i]
-                        bias_row[i] = bias_row[i] - centre[i] * scale[i]
-                    for i, j in T.Parallel(block_m, D_padded):
-                        if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
-                            y[pid_m * block_m + i, j] = T.cast(
-                                x_f32[i, j] * scale[i] + bias_row[i], dtype
-                            )
-                else:
-                    for i, j in T.Parallel(block_m, D_padded):
-                        if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
-                            c = _channel_of(
-                                pid_m * block_m + i,
-                                j,
-                                num_groups,
-                                channels_per_group,
-                                spatial_size,
-                            )
-                            normed = (x_f32[i, j] - centre[i]) * rstd[i]
-                            y[pid_m * block_m + i, j] = T.cast(
-                                normed * T.cast(weight[c], "float32") + T.cast(bias[c], "float32"),
-                                dtype,
-                            )
-
-        return main
+        return _staged_rows(
+            M, D, eps, dtype, block_m, threads, num_groups, channels_per_group, True
+        )
 
     return _func
 
@@ -925,7 +930,6 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype, warp_vec, held_vec):
         warp_vec: Vector width of the warp-a-row body, or ``None``.
         held_vec: Vector width of the block-a-row body, or ``None`` for the staged body.
     """
-    D_padded = row_padding(D, 4 if dtype == "float32" else 2)
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m, threads):
@@ -933,48 +937,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype, warp_vec, held_vec):
             return _warp_rows(M, D, eps, dtype, warp_vec, threads, 1, False)
         if held_vec is not None:
             return _held_rows(M, D, eps, dtype, held_vec, threads, 1, 1, False)
-        # A non-aligned D would read and write columns >= D unless masked.
-        masked = D_padded != D
-        # A tail row block runs past the end unless every index is guarded.
-        guarded = masked or M % block_m != 0
-        row_reduce = make_corrected_row_reduce(block_m, D, D_padded, eps)
-        read_leads = make_read_leads(block_m, M, D)
-
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M, D), dtype],
-            y: T.Tensor[(M, D), dtype],
-        ):
-            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
-                squares = T.alloc_fragment((block_m, D_padded), "float32")
-                shared_buf = T.alloc_shared((block_m, D_padded), dtype)
-                shift = T.alloc_fragment((block_m,), "float32")
-                acc = T.alloc_fragment((block_m,), "float32")
-                acc_squares = T.alloc_fragment((block_m,), "float32")
-                ref = T.alloc_fragment((block_m,), "float32")
-                centre = T.alloc_fragment((block_m,), "float32")
-                rstd = T.alloc_fragment((block_m,), "float32")
-                read_leads(x, pid_m, shift)
-
-                # A padded wide row is staged through shared memory: the per-element guard
-                # costs a register load its vectorized copy.
-                for i, j in T.Parallel(block_m, D_padded):
-                    shared_buf[i, j] = T.if_then_else(
-                        T.And(pid_m * block_m + i < M, j < D),
-                        x[pid_m * block_m + i, j],
-                        T.cast(0.0, dtype),
-                    )
-                    x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-                row_reduce(x_f32, squares, shift, acc, acc_squares, ref, centre, rstd)
-
-                for i, j in T.Parallel(block_m, D_padded):
-                    if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
-                        y[pid_m * block_m + i, j] = T.cast(
-                            (x_f32[i, j] - centre[i]) * rstd[i], dtype
-                        )
-
-        return main
+        return _staged_rows(M, D, eps, dtype, block_m, threads, 1, 1, False)
 
     return _func
 

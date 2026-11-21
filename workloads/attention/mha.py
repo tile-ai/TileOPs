@@ -6,6 +6,7 @@ import torch
 
 from workloads.attention.paged_kv_cache import make_fragmented_block_table
 from workloads.device import run_device
+from workloads.numerics import Custom, reference_tolerance
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
@@ -34,8 +35,8 @@ class MHADecodePagedWorkload(WorkloadBase):
         self,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_pages = self.seqlen_kv // self.page_size
-        cache_seqlens = (
-            torch.ones((self.batch,), dtype=torch.int32, device=run_device()) * self.seqlen_kv
+        cache_seqlens = torch.full(
+            (self.batch,), self.seqlen_kv, dtype=torch.int32, device=run_device()
         )
         q = torch.randn(
             self.batch, self.seqlen_q, self.heads, self.dim, device=run_device(), dtype=self.dtype
@@ -47,12 +48,6 @@ class MHADecodePagedWorkload(WorkloadBase):
             self.seqlen_kv, self.heads, self.dim, device=run_device(), dtype=self.dtype
         )
         block_table = make_fragmented_block_table(self.batch, num_pages, num_pages)
-
-        q = q.contiguous()
-        k_cache = k_cache.contiguous()
-        v_cache = v_cache.contiguous()
-        cache_seqlens = cache_seqlens.contiguous()
-
         return q, k_cache, v_cache, block_table, cache_seqlens
 
     def ref_program(
@@ -99,8 +94,6 @@ class MHADecodePagedWorkload(WorkloadBase):
         return torch.cat(out_list, dim=0)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, reference_tolerance
-
         # A kernel rounds the softmax weights to the input type for the value product, which
         # leaves a bfloat16 output one ulp, 2**-7 relative, off the correctly rounded
         # reference where the exact value sits near a rounding midpoint. bfloat16 is bounded

@@ -176,12 +176,13 @@ def test_gated_pool_compress_calls_without_tokens() -> None:
 
 @pytest.mark.smoke
 def test_gated_pool_compress_rejects_float16() -> None:
+    """The signature check refuses the dtype before any kernel is chosen: CPU tensors suffice."""
     dim, ratio = 64, 4
     op = GatedPoolCompressFwdOp(ratio)
-    kv = torch.randn(4, dim, device=run_device(), dtype=torch.float16)
-    kv_state, score_state = _ring(dim, ratio, False)
-    cu = torch.tensor([0, 4], dtype=torch.int32, device=run_device())
-    zero = torch.zeros(1, dtype=torch.int32, device=run_device())
+    kv = torch.randn(4, dim, dtype=torch.float16)
+    kv_state, score_state = torch.randn(2, 2, ratio, dim)
+    cu = torch.tensor([0, 4], dtype=torch.int32)
+    zero = torch.zeros(1, dtype=torch.int32)
     with pytest.raises(ValueError, match="dtype is outside"):
         op(kv, kv, kv[:ratio], kv_state, score_state, cu, zero, zero)
 

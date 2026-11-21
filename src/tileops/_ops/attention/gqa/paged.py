@@ -60,8 +60,8 @@ class GQAPagedFwdOp(Op):
     Append with ``PagedKVCacheWriteFwdOp`` using physical slots, then read with
     post-append lengths. For rotated caches, apply ``RoPEFwdOp`` at the token positions to
     new Q/K before writing and use ``pos_encoding_mode="none"`` to avoid double
-    rotation. FP8 writes quantize new K/V before attention; the retired fused append
-    op attended those tokens at their original 16-bit precision.
+    rotation. FP8 writes quantize new K/V before attention, so attention reads those
+    tokens at FP8 precision.
 
     The Hopper FP8-query prefill path keeps up to 64 MiB per call geometry and stream for
     the partial outputs of short requests whose keys it splits across work items; a

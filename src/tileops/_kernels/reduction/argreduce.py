@@ -18,15 +18,14 @@ from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
     FRAGMENT_ELEMS_PER_THREAD,
-    ceildiv_int,
     restore_reduced,
     rows_for_axes,
-    torch_dtype_nbytes,
 )
 from tileops._kernels.reduction.call_spec import ArgreduceCall, ArgreduceFwdInterface
 from tileops._kernels.streaming_load import load16
 from tileops._kernels.tiling import align_up
 from tileops._utils import RESIDENT_CTAS, WARP_LANES
+from tileops.manifest.primitives import ceil_div
 
 __all__ = ["ArgreduceKernel", "ArgreduceSplitKernel", "ArgreduceStridedKernel"]
 
@@ -36,19 +35,15 @@ def _power_of_two_at_least(n: int) -> int:
 
 
 def _lanes_per_row(n: int) -> int:
-    lanes = 1
-    while lanes < min(n, WARP_LANES):
-        lanes *= 2
-    return lanes
+    return min(_power_of_two_at_least(n), WARP_LANES)
 
 
 def _ordering_key(op_kind: str):
     """Build the macro turning one element into the int32 key the reduction ranks by.
 
     Ranking bit patterns collapses PyTorch's ordering -- NaN over every number, two NaNs
-    equal, ties to the lower index -- into one integer compare. Spelled out per element
-    it costs a dozen instructions, and this kernel is short of its bandwidth by about
-    the same factor. Callers bind the result to a local before ranking it: a macro
+    equal, ties to the lower index -- into one integer compare, where spelling it out
+    costs a dozen instructions an element. Callers bind the result to a local before ranking it: a macro
     argument is substituted at every mention, so passing the call directly would
     recompute the key once per comparison the merge makes.
 
@@ -248,7 +243,7 @@ def _argreduce_output_kernel(
     thread takes output elements and walks the axis: adjacent threads then
     read adjacent addresses. Transposing into a last-axis layout instead copies
     the whole tensor and hands a row of ``N`` elements to a block built for long
-    rows — on the manifest's 3d workload the copy alone is nearly half the time.
+    rows.
 
     A block covers ``block_m`` consecutive outputs over ``threads`` threads, and a
     thread takes every ``threads``-th of them so that neighbours stay neighbours in
@@ -256,7 +251,7 @@ def _argreduce_output_kernel(
     axis position, it is staged in shared memory first, in 16-byte vectors, and the walk
     reads from there.
     """
-    elem_bytes = torch_dtype_nbytes(dtype)
+    elem_bytes = getattr(torch, dtype).itemsize
     vec = VECTOR_ACCESS_BYTES // elem_bytes
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
@@ -341,7 +336,7 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumula
     Vector runs have ascending indices; fragment reductions require explicit
     index comparisons to preserve first-index tie breaking.
     """
-    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
+    vec = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads: int):
@@ -508,7 +503,7 @@ def _argreduce_multicta_final_kernel(
 
     # A lane walks its share of the row's partials, so the split is free to be
     # wider than a warp; reading one partial per lane would drop the rest.
-    partials_per_lane = ceildiv_int(ctas_per_row, WARP_LANES)
+    partials_per_lane = ceil_div(ctas_per_row, WARP_LANES)
 
     @tilelang.jit(out_idx=[2])
     def _func():
@@ -558,9 +553,12 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90, 100]
+    # Independent (key, index) slots a thread folds into; each program's per-thread
+    # stride and its merge of the slots assume it.
+    _NUM_ACCUMULATORS = 4
 
     def __init__(self, call: ArgreduceCall, config: dict | None = None):
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         if call.op_kind not in ("argmax", "argmin"):
             raise ValueError(
                 f"Unsupported op_kind '{call.op_kind}'. Expected one of ['argmax', 'argmin']."
@@ -583,15 +581,6 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
         """The jit factory this implementation launches."""
         raise NotImplementedError
 
-    def _knobs(self, config: dict) -> dict:
-        """Keep only the knobs this kernel's program actually takes.
-
-        Deriving the keys from the built kernel keeps a config space from naming a knob
-        the kernel would reject.
-        """
-        parameters = self.kernel.signature.parameters
-        return {name: value for name, value in config.items() if name in parameters}
-
     def _candidates(self) -> list[dict]:
         raise NotImplementedError
 
@@ -600,7 +589,7 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
         # Tuning may not come back worse than not tuning, so the default is
         # always among the candidates.
         default = self.default_config
-        ranked = [self._knobs(candidate) for candidate in self._candidates()]
+        ranked = self._candidates()
         if default not in ranked:
             ranked.append(default)
         return ranked
@@ -638,9 +627,6 @@ class ArgreduceKernel(_ArgreduceKernelBase):
     """
 
     general = True
-    # Independent (key, index) slots a thread folds into; each program's per-thread
-    # stride and its merge of the slots assume it.
-    _NUM_ACCUMULATORS = 4
 
     def _program(self, call: ArgreduceCall) -> object:
         self._cta = call.n >= 4096
@@ -662,18 +648,18 @@ class ArgreduceKernel(_ArgreduceKernelBase):
             # Default to the fragment's width, at least 256 threads. Use eight 16-byte vectors
             # per thread only when that makes the launch resident in one wave, which the
             # default does not, and at least doubles the resident rows.
-            wanted = ceildiv_int(self.N, FRAGMENT_ELEMS_PER_THREAD)
+            wanted = ceil_div(self.N, FRAGMENT_ELEMS_PER_THREAD)
             wide = min(1024, max(256, _power_of_two_at_least(wanted)))
             row_bytes = self.N * self.dtype.itemsize
-            narrow = _power_of_two_at_least(ceildiv_int(row_bytes, 8 * VECTOR_ACCESS_BYTES))
+            narrow = _power_of_two_at_least(ceil_div(row_bytes, 8 * VECTOR_ACCESS_BYTES))
             held, narrow_holds = self._rows_a_wave(wide), self._rows_a_wave(narrow)
             if narrow < wide and held < self.M <= narrow_holds and narrow_holds >= 2 * held:
-                return self._knobs({"block_m": 1, "threads": narrow})
-            return self._knobs({"block_m": 1, "threads": wide})
+                return {"threads": narrow}
+            return {"threads": wide}
         lanes = _lanes_per_row(self.N)
         target_threads = 256 if self.M >= 8 else max(32, self.M * lanes)
         block_m = max(1, target_threads // lanes)
-        return self._knobs({"block_m": block_m, "threads": block_m * lanes})
+        return {"block_m": block_m, "threads": block_m * lanes}
 
     def _rows_a_wave(self, threads: int) -> int:
         """Rows resident at once at *threads* threads a row.
@@ -682,7 +668,7 @@ class ArgreduceKernel(_ArgreduceKernelBase):
         four for addressing, allocated in units of eight; each of the SM's four schedulers
         holds the warps a quarter of the register file fits.
         """
-        vectors = ceildiv_int(self.N * self.dtype.itemsize, threads * VECTOR_ACCESS_BYTES)
+        vectors = ceil_div(self.N * self.dtype.itemsize, threads * VECTOR_ACCESS_BYTES)
         registers = align_up(4 * vectors + 2 * self._NUM_ACCUMULATORS + 4, 8)
         warps = 4 * (self._regs_per_sm // 4 // (registers * WARP_LANES))
         ctas = min(
@@ -709,7 +695,7 @@ class ArgreduceKernel(_ArgreduceKernelBase):
         """The program *cfg* launches."""
         if self._cta:
             return self.kernel(cfg["threads"])
-        return self.kernel(cfg.get("block_m", 1), cfg["threads"])
+        return self.kernel(cfg["block_m"], cfg["threads"])
 
 
 class ArgreduceSplitKernel(_ArgreduceKernelBase):
@@ -722,10 +708,6 @@ class ArgreduceSplitKernel(_ArgreduceKernelBase):
     one: it declines a win on a few mid-sized shapes rather than taking a loss on short
     ones, which is where ``dim=None`` and small tensors land. The blocks per row are tuned.
     """
-
-    # Independent (key, index) slots a thread folds into; each program's per-thread
-    # stride and its merge of the slots assume it.
-    _NUM_ACCUMULATORS = 4
 
     @classmethod
     def refusal(cls, call: ArgreduceCall) -> "str | None":
@@ -746,7 +728,7 @@ class ArgreduceSplitKernel(_ArgreduceKernelBase):
         # Only a default: the best split moves with the shape by more than an order of
         # magnitude.
         split = min(16, self._max_split())
-        return self._knobs({"block_m": 1, "threads": 256, "ctas_per_row": split})
+        return {"threads": 256, "ctas_per_row": split}
 
     def _candidates(self) -> list[dict]:
         ceiling = self._max_split()
@@ -803,10 +785,10 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
         block_m, wide = 512, 256
         target = self.build_target
         resident = target.sm_count * (target.threads_per_sm // wide)
-        one_wave = ceildiv_int(self.M, block_m) <= resident
+        one_wave = ceil_div(self.M, block_m) <= resident
         long_walk = self.N * self.dtype.itemsize >= 24
         threads = wide if (one_wave and self.N >= 4) or long_walk else 128
-        return self._knobs({"block_m": block_m, "threads": threads})
+        return {"block_m": block_m, "threads": threads}
 
     def _candidates(self) -> list[dict]:
         return [

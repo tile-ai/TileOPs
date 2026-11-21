@@ -12,20 +12,28 @@ shared memory. :class:`FusedAddRMSNormPerTokenQuantStreamKernel` serves the rows
 hold: it reads a row's inputs once per reduction and once to write the codes.
 """
 
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import (
+    FP8_E4M3_MAX,
+    MAX_PORTABLE_CLUSTER_BLOCKS,
+    VECTOR_ACCESS_BYTES,
+)
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.norm._config import pairwise_sum
 from tileops._kernels.norm.call_spec import (
     FusedAddRMSNormPerTokenQuantFwdInterface,
     RMSNormQuantCall,
 )
 from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._kernels.tiling import align_up
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 
 __all__ = ["FusedAddRMSNormPerTokenQuantKernel", "FusedAddRMSNormPerTokenQuantStreamKernel"]
@@ -49,7 +57,7 @@ def _held_cluster(n: int, rows: int, arch: int, sm_count: int) -> int | None:
     # registers a thread has there; more spill.
     max_held = 32768
     vec = _vec(n)
-    max_cluster = 8 if arch >= 90 else 1
+    max_cluster = MAX_PORTABLE_CLUSTER_BLOCKS if arch >= 90 else 1
 
     def divides(cluster):
         return n % (cluster * vec) == 0
@@ -73,13 +81,10 @@ def _held_cluster(n: int, rows: int, arch: int, sm_count: int) -> int | None:
     return cluster
 
 
-def _pairwise_sum(part, row, count):
-    """``part[row, :count]`` summed as a pairwise tree."""
-    terms = [part[row, i] for i in range(count)]
-    while len(terms) > 1:
-        pairs = [terms[i] + terms[i + 1] for i in range(0, len(terms) - 1, 2)]
-        terms = pairs + terms[len(pairs) * 2 :]
-    return terms[0]
+def _row_sum(part, row, count):
+    """``part[row, :count]`` summed pairwise; a plain function, so the macro calling it does
+    not parse the comprehension as a TIR loop."""
+    return pairwise_sum([part[row, i] for i in range(count)])
 
 
 def _pair(buf, at):
@@ -91,9 +96,9 @@ def _constants(quant_dtype, scale_ub):
     """``(fp8, qmax, min_scale, bound)`` of a code dtype and amax bound."""
     fp8 = quant_dtype == "float8_e4m3fn"
     # vLLM's floor on a row's scale, so an all-zero row divides by a positive number.
-    min_scale = 1.0 / (448.0 * 512.0) if fp8 else float(torch.finfo(torch.float32).eps)
+    min_scale = 1.0 / (FP8_E4M3_MAX * 512.0) if fp8 else float(torch.finfo(torch.float32).eps)
     bound = float("inf") if scale_ub is None else scale_ub
-    return fp8, 448.0 if fp8 else 127.0, min_scale, bound
+    return fp8, FP8_E4M3_MAX if fp8 else 127.0, min_scale, bound
 
 
 @T.macro
@@ -166,7 +171,7 @@ def _codes(y, at, wide, codes, inv_scale, vec, quant_dtype, fp8, nan_clamp):
     if fp8:
         if nan_clamp:
             for i in T.vectorized(vec):
-                wide[i] = T.min(wide[i], T.float32(448.0))
+                wide[i] = T.min(wide[i], T.float32(FP8_E4M3_MAX))
         # Saturates finite values and infinities to +-448.
         for i in T.vectorized(vec):
             codes[i] = T.cast(wide[i], quant_dtype)
@@ -189,8 +194,7 @@ def _codes(y, at, wide, codes, inv_scale, vec, quant_dtype, fp8, nan_clamp):
 def _warp_sum(acc):
     """``acc[0] + acc[1]`` summed over the warp into ``acc[0]`` of every lane."""
     acc[0] += acc[1]
-    for k in T.unroll(WARP_LANES.bit_length() - 1):
-        acc[0] += T.shfl_xor(acc[0], T.shift_left(1, k))
+    warp_reduce(acc, operator.add)
 
 
 @T.macro
@@ -200,7 +204,7 @@ def _block_sum(acc, part, tx, warps):
         if tx % WARP_LANES == 0:
             part[0, tx // WARP_LANES] = acc[0]
         T.sync_threads()
-        acc[0] = _pairwise_sum(part, 0, warps)
+        acc[0] = _row_sum(part, 0, warps)
 
 
 @T.macro

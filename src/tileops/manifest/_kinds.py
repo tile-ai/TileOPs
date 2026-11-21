@@ -7,6 +7,7 @@ as the specification writes it; `fits`, `join` and `comparable` compose them.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, field
 
 from tileops.manifest._dtype_rules import DTYPE_BITS
@@ -25,6 +26,7 @@ __all__ = [
     "dtypes",
     "exclude",
     "fits",
+    "flat_members",
     "join",
     "literals",
     "ordered",
@@ -32,6 +34,7 @@ __all__ = [
     "parse_type",
     "restrict",
     "seq",
+    "split_commas",
     "split_union",
     "union",
 ]
@@ -82,10 +85,7 @@ class Kind:
         if self.tag == "Seq":
             return self
         if self.tag == "Union" and all(m.tag == "Seq" for m in self.members):
-            view = self.members[0]
-            for m in self.members[1:]:
-                view = join(view, m)
-            return view
+            return functools.reduce(join, self.members)
         return None
 
 
@@ -135,16 +135,26 @@ def union(*kinds: Kind) -> Kind:
     return Kind("Maybe", item=inner) if optional else inner
 
 
-def split_union(text: str) -> list[str]:
-    """The top-level members of `A | B`, splitting only outside brackets and quotes."""
+def _split(text: str, sep: str) -> list[str]:
+    """The parts of `text` between the `sep`s that lie outside brackets and quotes."""
     parts, depth, start, quoted = [], 0, 0, False
     for i, c in enumerate(text):
         quoted ^= c == "'"
         depth += 0 if quoted else {"[": 1, "]": -1}.get(c, 0)
-        if c == "|" and depth == 0 and not quoted:
+        if c == sep and depth == 0 and not quoted:
             parts.append(text[start:i].strip())
             start = i + 1
     return [*parts, text[start:].strip()]
+
+
+def split_union(text: str) -> list[str]:
+    """The top-level members of `A | B`."""
+    return _split(text, "|")
+
+
+def split_commas(text: str) -> list[str]:
+    """The top-level items of `A, B`."""
+    return _split(text, ",")
 
 
 def _quoted(text: str) -> bool:
@@ -179,23 +189,13 @@ def parse_type(text: object, adts: dict) -> Kind:
     if (inner := _bracket(t, "list")) is not None:
         return seq(parse_type(inner, adts))
     if (inner := _bracket(t, "tuple")) is not None:
-        items = _commas(inner)
+        items = split_commas(inner)
         if len(items) == 2 and items[1] == "...":
             return seq(parse_type(items[0], adts))
         return seq(union(*(parse_type(i, adts) for i in items)), len(items))
     if t.replace(".", "_").isidentifier():
         return VALUE  # another Python object
     raise ValueError(f"{text!r} is not a parameter type")
-
-
-def _commas(text: str) -> list[str]:
-    parts, depth, start = [], 0, 0
-    for i, c in enumerate(text):
-        depth += {"[": 1, "]": -1}.get(c, 0)
-        if c == "," and depth == 0:
-            parts.append(text[start:i].strip())
-            start = i + 1
-    return [*parts, text[start:].strip()]
 
 
 def parse_spec(text: str, adts: dict | None = None) -> Kind:
@@ -338,11 +338,11 @@ def comparable(a: Kind | None, b: Kind | None) -> bool:
     return False
 
 
-def _members(kind: Kind) -> tuple:
+def flat_members(kind: Kind) -> tuple:
     """`kind` flattened to its members: a `Maybe` contributes its payload's members and `None`."""
     if kind.tag == "Union":
-        return tuple(m for k in kind.members for m in _members(k))
-    return (*_members(kind.item), NONE) if kind.tag == "Maybe" else (kind,)
+        return tuple(m for k in kind.members for m in flat_members(k))
+    return (*flat_members(kind.item), NONE) if kind.tag == "Maybe" else (kind,)
 
 
 def _literal_tag(value) -> str:
@@ -363,7 +363,7 @@ def restrict(kind: Kind | None, values: frozenset) -> Kind | None:
     strings = frozenset(v for v in values if isinstance(v, str))
     tags = {_literal_tag(v) for v in values}
     kept = []
-    for m in _members(kind):
+    for m in flat_members(kind):
         if m.tag in ("Str", "DType"):
             named = _named(m)
             narrowed = strings if named is None else named & strings
@@ -383,7 +383,7 @@ def exclude(kind: Kind | None, values: frozenset) -> Kind | None:
     if kind is None:
         return kind
     kept = []
-    for m in _members(kind):
+    for m in flat_members(kind):
         if m.tag in ("Str", "DType") and _named(m) is not None:
             rest = _named(m) - values
             if rest:

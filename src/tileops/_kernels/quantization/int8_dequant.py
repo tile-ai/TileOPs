@@ -29,11 +29,13 @@ __all__ = [
     "INT8DequantPerTensorSmallFwdKernel",
 ]
 
-# The float32 bit pattern of 2^23 + 128. Adding an int8 code c to it gives the pattern of
-# 2^23 + 128 + c exactly, so subtracting 2^23 + 128 recovers float(c) with an integer add
-# and an FADD instead of I2F, which issues 16 results per clock per SM against FADD's 128.
-_CODE_BIAS_BITS = 0x4B000080
-_CODE_BIAS = 8388736.0
+
+def _code_to_float(code):
+    """The float32 value of an int8 *code*, by an integer add and an FADD instead of I2F,
+    which issues 16 results per clock per SM against FADD's 128."""
+    # 0x4B000080 is the float32 bit pattern of 2^23 + 128. Adding c to it gives the pattern
+    # of 2^23 + 128 + c exactly, and subtracting 2^23 + 128 leaves float(c).
+    return T.reinterpret(T.Cast(T.int32, code) + 0x4B000080, T.float32) - 8388736.0
 
 
 @target_cache(maxsize=32)
@@ -143,7 +145,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
 
     @classmethod
     def entry_for(cls, call: DequantizeCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m, call.k, call.out_dtype, index)
         return identity, lambda: cls(*identity[:3], device_index=index)
 
@@ -153,7 +155,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         k: int,
         out_dtype: torch.dtype,
         config: dict | None = None,
-        device_index: "int | None" = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.m = m
@@ -197,9 +199,6 @@ def _int8_dequant_per_tensor_kernel(
         tail_whole = whole - full_blocks * block
         rest = n - whole
 
-        def code_to_float(code):
-            return T.reinterpret(T.Cast(T.int32, code) + _CODE_BIAS_BITS, T.float32) - _CODE_BIAS
-
         @T.prim_func
         def _int8_dequant_per_tensor_main(
             q: T.Tensor((n,), T.int8),
@@ -228,11 +227,11 @@ def _int8_dequant_per_tensor_kernel(
                         for j in T.unroll(vec):
                             if staged:
                                 x_shared[r * chunk + tx * vec + j] = T.Cast(
-                                    out_dtype, code_to_float(q_local[r * vec + j]) * s
+                                    out_dtype, _code_to_float(q_local[r * vec + j]) * s
                                 )
                             else:
                                 x_local[r * vec + j] = T.Cast(
-                                    out_dtype, code_to_float(q_local[r * vec + j]) * s
+                                    out_dtype, _code_to_float(q_local[r * vec + j]) * s
                                 )
                 if bx < full_blocks:
                     if staged:
@@ -256,7 +255,7 @@ def _int8_dequant_per_tensor_kernel(
                                     for j in T.vectorized(vec):
                                         x[base + j] = x_local[r * vec + j]
                     if rest > 0 and tx < rest:
-                        x[whole + tx] = T.Cast(out_dtype, code_to_float(q[whole + tx]) * s)
+                        x[whole + tx] = T.Cast(out_dtype, _code_to_float(q[whole + tx]) * s)
 
         return _int8_dequant_per_tensor_main
 
@@ -308,7 +307,7 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
 
     @classmethod
     def entry_for(cls, call: DequantizeCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m * call.k, call.out_dtype, index)
         return identity, lambda: cls(*identity[:2], device_index=index)
 
@@ -317,10 +316,9 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         n: int,
         out_dtype: torch.dtype,
         config: dict | None = None,
-        device_index: "int | None" = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
-        self.n = n
         self.dtype = out_dtype
         # Codes per thread per step: one 16-byte vector of ``x``.
         vec = VECTOR_ACCESS_BYTES // out_dtype.itemsize
@@ -368,7 +366,7 @@ class INT8DequantPerTensorSmallFwdKernel(INT8DequantPerTensorFwdKernel):
     _SMALL_N: ClassVar[int] = 1 << 19
 
     @classmethod
-    def refusal(cls, call: DequantizeCall) -> "str | None":
+    def refusal(cls, call: DequantizeCall) -> str | None:
         if call.m * call.k >= cls._SMALL_N:
             return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
         return super().refusal(call)
@@ -405,9 +403,6 @@ def _int8_dequant_per_block_kernel(
         # and at every row start.
         block_scales = block // QUANT_SCALE_BLOCK + block // k + 3
 
-        def code_to_float(code):
-            return T.reinterpret(T.Cast(T.int32, code) + _CODE_BIAS_BITS, T.float32) - _CODE_BIAS
-
         def scaled(q_local, s_local, cross, r, j):
             # The scale of code j of step r's vector: the lanes before each boundary take
             # the earlier scale.
@@ -422,7 +417,7 @@ def _int8_dequant_per_block_kernel(
                 )
             elif straddles:
                 s = T.if_then_else(j < cross[r * 2], s, s_local[r * spans + 1])
-            return T.Cast(out_dtype, code_to_float(q_local[r * vec + j]) * s)
+            return T.Cast(out_dtype, _code_to_float(q_local[r * vec + j]) * s)
 
         @T.macro
         def load_scales(src, first, last, s_local, cross, r, base):
@@ -498,7 +493,7 @@ def _int8_dequant_per_block_kernel(
                             if idx < n:
                                 x[idx] = T.Cast(
                                     out_dtype,
-                                    code_to_float(q[idx])
+                                    _code_to_float(q[idx])
                                     * scale[idx // k * per_row + idx % k // QUANT_SCALE_BLOCK],
                                 )
                 elif bx < full_blocks:
@@ -600,7 +595,7 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
 
     @classmethod
     def entry_for(cls, call: DequantizeCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m, call.k, call.out_dtype, index)
         return identity, lambda: cls(*identity[:3], device_index=index)
 
@@ -610,11 +605,9 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         k: int,
         out_dtype: torch.dtype,
         config: dict | None = None,
-        device_index: "int | None" = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
-        self.m = m
-        self.k = k
         self.dtype = out_dtype
         # Codes per thread per step: one 16-byte vector of ``x``.
         vec = VECTOR_ACCESS_BYTES // out_dtype.itemsize
@@ -662,7 +655,7 @@ class INT8DequantPerBlockSmallFwdKernel(INT8DequantPerBlockFwdKernel):
     _SMALL_N: ClassVar[int] = 1 << 19
 
     @classmethod
-    def refusal(cls, call: DequantizeCall) -> "str | None":
+    def refusal(cls, call: DequantizeCall) -> str | None:
         if call.m * call.k >= cls._SMALL_N:
             return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
         return super().refusal(call)

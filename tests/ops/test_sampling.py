@@ -37,8 +37,6 @@ from workloads.sampling import (
 )
 from workloads.workload_base import manifest_call
 
-pytestmark = pytest.mark.smoke
-
 _DTYPES = ["float16", "bfloat16", "float32"]
 _INF = float("inf")
 
@@ -80,6 +78,7 @@ def _tie_at_the_boundary(logits, p):
     p[1] = 0.5
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_top_k_mask(dtype):
     vocab = 32000
@@ -109,6 +108,7 @@ def _special_rows(vocab: int, dtype: torch.dtype) -> torch.Tensor:
     return rows
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     "dtype, vocab",
     [
@@ -131,6 +131,7 @@ def test_top_k_mask_matches_the_reference_bit_for_bit(dtype: torch.dtype, vocab:
     compare_outputs(out, ref, top_k_mask_verification(logits))
 
 
+@pytest.mark.smoke
 @pytest.mark.packaging(family="sampling")
 def test_top_k_mask_cuts_a_row_its_samples_misplace():
     """Every value a sample can land on is the row's smallest, so the bracket the samples
@@ -144,6 +145,7 @@ def test_top_k_mask_cuts_a_row_its_samples_misplace():
     compare_outputs(out, top_k_mask(logits, k), top_k_mask_verification(logits))
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_min_p_mask(dtype):
     # Allow threshold-rounding differences only for tokens this close to the cutoff.
@@ -160,7 +162,15 @@ def test_min_p_mask(dtype):
     compare_outputs(out, ref, workload.verification(logits, min_p))
 
 
-def test_min_p_mask_rows_without_a_finite_threshold():
+@pytest.mark.parametrize(
+    "vocab",
+    [
+        pytest.param(32000, marks=pytest.mark.smoke),
+        pytest.param(512, marks=pytest.mark.full),
+        pytest.param(4099, marks=pytest.mark.full),
+    ],
+)
+def test_min_p_mask_rows_without_a_finite_threshold(vocab: int):
     """A row whose maximum is not a number passes through, at each shape the kernel plans for.
 
     ``V`` picks the plan: a row split across blocks, which reduces across a grid barrier; a
@@ -168,17 +178,17 @@ def test_min_p_mask_rows_without_a_finite_threshold():
     of 16-byte vectors, which is read and written element by element.
     """
     device = run_device()
-    for vocab in (32000, 512, 4099):
-        logits = torch.randn(5, vocab, device=device)
-        logits[1] = -_INF
-        logits[2, vocab // 2] = float("nan")
-        logits[3, 0] = _INF
-        min_p = torch.tensor([0.0, 0.5, 0.5, 0.5, 1.0], device=device)
-        out = _run(MinPMaskFwdOp(), logits, min_p)
-        ref = min_p_mask(logits, min_p)
-        compare_outputs(out, ref, min_p_mask_verification(logits, min_p))
+    logits = torch.randn(5, vocab, device=device)
+    logits[1] = -_INF
+    logits[2, vocab // 2] = float("nan")
+    logits[3, 0] = _INF
+    min_p = torch.tensor([0.0, 0.5, 0.5, 0.5, 1.0], device=device)
+    out = _run(MinPMaskFwdOp(), logits, min_p)
+    ref = min_p_mask(logits, min_p)
+    compare_outputs(out, ref, min_p_mask_verification(logits, min_p))
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_top_p_mask(dtype):
     # Allow threshold-rounding differences only for tokens this close to the cutoff.
@@ -193,7 +203,15 @@ def test_top_p_mask(dtype):
     compare_outputs(out, ref, workload.verification(logits, p))
 
 
-def test_top_p_mask_rows_at_the_contract_endpoints():
+@pytest.mark.parametrize(
+    "vocab",
+    [
+        pytest.param(32000, marks=pytest.mark.smoke),
+        pytest.param(512, marks=pytest.mark.full),
+        pytest.param(4099, marks=pytest.mark.full),
+    ],
+)
+def test_top_p_mask_rows_at_the_contract_endpoints(vocab: int):
     """``p = 0`` masks a row whole, ``p = 1`` keeps every token the softmax gives mass to,
     and a row with no finite maximum passes through, at each shape the kernel plans for.
 
@@ -206,19 +224,19 @@ def test_top_p_mask_rows_at_the_contract_endpoints():
     """
     device = run_device()
     p = torch.tensor([0.0, 1.0, 0.5], device=device)
-    for vocab in (32000, 512, 4099):
-        logits = torch.randn(3, vocab, device=device)
-        out = _run(TopPMaskFwdOp(), logits, p)
-        assert (out[0] == -_INF).all(), vocab
-        assert torch.equal(out[1] != -_INF, logits.float().softmax(-1)[1] > 0), vocab
-        logits[0, vocab // 2] = float("nan")
-        logits[1, 0] = _INF
-        logits[2] = -_INF
-        out = _run(TopPMaskFwdOp(), logits, p)
-        ref = top_p_mask(logits, p)
-        compare_outputs(out, ref, top_p_mask_verification(logits, p))
+    logits = torch.randn(3, vocab, device=device)
+    out = _run(TopPMaskFwdOp(), logits, p)
+    assert (out[0] == -_INF).all()
+    assert torch.equal(out[1] != -_INF, logits.float().softmax(-1)[1] > 0)
+    logits[0, vocab // 2] = float("nan")
+    logits[1, 0] = _INF
+    logits[2] = -_INF
+    out = _run(TopPMaskFwdOp(), logits, p)
+    ref = top_p_mask(logits, p)
+    compare_outputs(out, ref, top_p_mask_verification(logits, p))
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_top_k_top_p_mask(dtype):
     # Allow threshold-rounding differences only for tokens this close to the cutoff.
@@ -238,6 +256,7 @@ def test_top_k_top_p_mask(dtype):
     compare_outputs(out, ref, workload.verification(logits, k, p))
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     "dtype, vocab",
     [
@@ -252,7 +271,6 @@ def test_top_k_top_p_mask_cuts_special_rows_where_the_reference_does(dtype, voca
     have no finite largest logit once ``k`` leaves them whole, so the reference's
     probabilities are NaN, top-p removes nothing and the kept sets have to agree exactly.
     The NaN row is cut both ways: at a ``k`` that drops its NaNs and at one that keeps them."""
-    # Allow threshold-rounding differences only for tokens this close to the cutoff.
     logits = _special_rows(vocab, dtype)
     device = logits.device
     p = torch.tensor([0.9, 0.95, 0.8, 0.95, 0.6, 0.5], dtype=torch.float32, device=device)
@@ -265,6 +283,7 @@ def test_top_k_top_p_mask_cuts_special_rows_where_the_reference_does(dtype, voca
         compare_outputs(out, ref, top_p_mask_verification(logits, p, k=k))
 
 
+@pytest.mark.smoke
 @pytest.mark.sm89
 def test_top_k_masks_hold_a_row_in_one_cta():
     """Thread block clusters start at SM90, so on SM89 one CTA holds qwen3's bfloat16 row."""
@@ -291,6 +310,7 @@ def _wide_row(vocab: int):
     return logits, torch.ones(1, dtype=torch.int32, device=device)
 
 
+@pytest.mark.smoke
 @pytest.mark.sm89
 @pytest.mark.in_tree_kernels
 def test_top_k_mask_refuses_a_row_one_cta_cannot_hold():
@@ -303,6 +323,7 @@ def test_top_k_mask_refuses_a_row_one_cta_cannot_hold():
         assert not op._entries_built(interface)
 
 
+@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_top_k_top_p_mask_refuses_a_row_it_cannot_hold():
     """A row of 2**19 values is wider than the kernel holds on any architecture, so it is
@@ -315,6 +336,7 @@ def test_top_k_top_p_mask_refuses_a_row_it_cannot_hold():
         assert not op._entries_built(interface)
 
 
+@pytest.mark.smoke
 def test_sampling_from_probs():
     """Unnormalized rows with every fourth weight zero, drawn in 65536 identical rows."""
     n, vocab = 65536, 64
@@ -334,6 +356,7 @@ def test_sampling_from_probs():
     assert torch.equal(out, op(probs, seed, offset))
 
 
+@pytest.mark.smoke
 def test_sampling_from_probs_draws_the_same_token_at_every_launch_shape():
     """A row drawn inside batches that take different launches gives one token, and weight.
 
@@ -358,6 +381,7 @@ def test_sampling_from_probs_draws_the_same_token_at_every_launch_shape():
     assert int(drawn[1]) == int(sampling_from_probs(row[None], seed, offset)[0])
 
 
+@pytest.mark.smoke
 def test_chain_speculative_sampling():
     """Two drafts per row over 16 tokens, each draft drawn from its draft row, in 65536 rows."""
     n, num_draft, vocab = 65536, 2, 16
@@ -392,10 +416,10 @@ def test_chain_speculative_sampling():
         # A row split across blocks, a row one block holds, a row whose bytes are not a whole
         # number of 16-byte vectors, which is folded weight by weight, and a chain longer than
         # the block, whose uniforms one thread each takes over several rounds.
-        (2, 151936, 3),
-        (300, 32000, 3),
-        (8, 4099, 3),
-        (4, 64, 600),
+        pytest.param(2, 151936, 3, marks=pytest.mark.smoke),
+        pytest.param(300, 32000, 3, marks=pytest.mark.full),
+        pytest.param(8, 4099, 3, marks=pytest.mark.full),
+        pytest.param(4, 64, 600, marks=pytest.mark.full),
     ],
 )
 def test_chain_speculative_sampling_accepts_the_reference_prefix(batch, vocab, num_draft):
@@ -422,8 +446,6 @@ def test_chain_speculative_sampling_accepts_the_reference_prefix(batch, vocab, n
         manifest_call("ChainSpeculativeSamplingFwdOp", B=batch, N=num_draft, V=vocab)
     )
     op = ChainSpeculativeSamplingFwdOp()
-    # The dedicated chain test exercises the shared distribution probe once.
-    # These cases cover launch boundaries, exact acceptance and residual-token support.
     out, ref = _run(op, *inputs), workload.ref_program(*inputs)
     compare_outputs(out, ref, workload.verification(*inputs))
 
@@ -442,6 +464,7 @@ _SMALL_CALLS = {
 }
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize("cls", list(_SMALL_CALLS), ids=lambda cls: cls.__name__)
 def test_generated_checks_reject_an_integer_first_input(cls):
     workload_cls, dtype_case, row = _SMALL_CALLS[cls]
@@ -451,6 +474,7 @@ def test_generated_checks_reject_an_integer_first_input(cls):
         cls()(*inputs)
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize("cls", list(_SMALL_CALLS), ids=lambda cls: cls.__name__)
 def test_probabilities_off_a_vector_boundary_give_the_aligned_result(cls):
     """Logits or probabilities starting one element past a 16-byte boundary sample as their

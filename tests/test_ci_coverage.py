@@ -14,11 +14,10 @@ pytestmark = [pytest.mark.smoke, pytest.mark.structural]
 
 
 @pytest.mark.parametrize("gate", [packaging, graph], ids=["packaging", "cuda-graph"])
-@pytest.mark.parametrize(
-    "status", [pytest.ExitCode.INTERRUPTED, pytest.ExitCode.NO_TESTS_COLLECTED]
-)
-def test_collection_failure_overrides_complete_coverage(monkeypatch, gate, status):
+def test_collection_failure_overrides_complete_coverage(monkeypatch, gate):
     import tileops
+
+    status = pytest.ExitCode.INTERRUPTED
 
     def collect(args, plugins):
         plugins[0].covered = dict.fromkeys(

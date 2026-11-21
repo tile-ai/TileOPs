@@ -1,6 +1,7 @@
 import torch
 
 from workloads.device import run_device
+from workloads.numerics import Custom, Exact, NegativeControl, reference_tolerance
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = ["DSADecodeCall", "DSADecodeWorkload", "DSAPagedCall"]
@@ -115,7 +116,7 @@ class DSADecodeWorkload(WorkloadBase):
     ) -> torch.Tensor:
         b, sq, h, dim_q = q.shape
         _, sk, g, _ = kv.shape
-        assert dim_q == self.dim + self.dim_tail, "you should assign dim otherwise"
+        assert dim_q == self.dim + self.dim_tail, "q's width is dim + dim_tail"
         mask = self.selection_mask(indices).view(b, g, 1, sq, sk)
         k = kv.float()
         v = k[..., : self.dim]
@@ -139,8 +140,6 @@ class DSADecodeWorkload(WorkloadBase):
         return output
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, reference_tolerance
-
         tolerance = {"atol": 3e-4, "rtol": 1e-5}
         if inputs[0].dtype == torch.bfloat16 or self.dim_tail == 0:
             tolerance = reference_tolerance(inputs[0].dtype)
@@ -221,28 +220,19 @@ class DSAPagedCall(CallWorkload):
             rows[..., _SCALES:] = rope.to(torch.bfloat16).view(torch.uint8)
         return q, kv_cache, *rest
 
-    @staticmethod
-    def selected(kv_cache, block_table, cache_seqlens, indices):
-        """Dequantized latent and rope of each slot's cache row, and whether the slot is live."""
+    def _rows(self, kv_cache, block_table, cache_seqlens, indices):
+        """The value and the key columns past it of each slot's cache row, in float32, and
+        whether the slot is live. An FP8 row is dequantized."""
         page_size = kv_cache.shape[1]
         pos = indices.long()
         valid = (pos >= 0) & (pos < cache_seqlens.long()[:, None, None])
         slot = pos.masked_fill(~valid, 0)
         page = torch.gather(block_table.long(), 1, (slot // page_size).flatten(1)).view_as(slot)
-        value, rope = _fp8_latent_rows(kv_cache.flatten(0, 1)[page * page_size + slot % page_size])
-        return value, rope, valid
-
-    def _rows(self, q, kv_cache, block_table, cache_seqlens, indices):
-        """``selected`` for either row format: the value and the key columns past it."""
+        rows = kv_cache.flatten(0, 1)[page * page_size + slot % page_size]
         if kv_cache.dtype == torch.uint8:
-            return self.selected(kv_cache, block_table, cache_seqlens, indices)
-        page_size = kv_cache.shape[1]
-        pos = indices.long()
-        valid = (pos >= 0) & (pos < cache_seqlens.long()[:, None, None])
-        slot = pos.masked_fill(~valid, 0)
-        page = torch.gather(block_table.long(), 1, (slot // page_size).flatten(1)).view_as(slot)
-        rows = kv_cache.flatten(0, 1)[page * page_size + slot % page_size].float()
+            return (*_fp8_latent_rows(rows), valid)
         width = self.call.params["head_dim_v"]
+        rows = rows.float()
         return rows[..., :width], rows[..., width:], valid
 
     def _scale(self, q):
@@ -261,7 +251,7 @@ class DSAPagedCall(CallWorkload):
     def ref_program(self, q, kv_cache, block_table, cache_seqlens, indices, attn_sink=None):
         """Float32 attention of each query row over the dequantized rows its valid slots name;
         ``attn_sink`` joins each head's denominator and leaves ``lse`` unchanged."""
-        value, rope, valid = self._rows(q, kv_cache, block_table, cache_seqlens, indices)
+        value, rope, valid = self._rows(kv_cache, block_table, cache_seqlens, indices)
         out, lse, _ = self._attend(q, value, rope, valid, self._scale(q))
         if attn_sink is not None:
             # o * e^lse / (e^lse + e^sink); a row with no live slot stays zero.
@@ -270,12 +260,8 @@ class DSAPagedCall(CallWorkload):
         return out.to(q.dtype), lse.transpose(1, 2)
 
     def verification(self, q, kv_cache, block_table, cache_seqlens, indices, attn_sink=None):
-        from workloads.numerics import Custom, NegativeControl
-
         if kv_cache.dtype != torch.uint8 or attn_sink is not None:
             # The bounds below model the FP8 row; bfloat16 rows and sinks take the defaults.
-            from workloads.numerics import Exact, reference_tolerance
-
             return Exact(**reference_tolerance(torch.bfloat16))
 
         # First-order element-wise bounds; a bfloat16 rounding errs by up to 2^-8:
@@ -286,7 +272,7 @@ class DSAPagedCall(CallWorkload):
         # Weight errors reach dim d through the weights times |value_d|.
         sm_scale = self._scale(q)
         topk = indices.shape[-1]
-        value, rope, valid = self.selected(kv_cache, block_table, cache_seqlens, indices)
+        value, rope, valid = self._rows(kv_cache, block_table, cache_seqlens, indices)
         exact = self._attend(q, value, rope, valid, sm_scale)
         rounded_value = value.bfloat16().float()
         rounded = self._attend(q, rounded_value, rope, valid, sm_scale)

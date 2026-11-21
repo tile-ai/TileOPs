@@ -41,12 +41,17 @@ __all__ = [
 ]
 
 
-class EqFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
-    """Element-wise equality: y = (a == b)."""
+class _CompareKernel(BinaryKernel, BinaryPredicateFwdInterface):
+    """A comparison with a bool result; the 16-bit float forms call ``half_compare.h``."""
 
     SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
     CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+
+
+class EqFwdKernel(_CompareKernel):
+    """Element-wise equality: y = (a == b)."""
+
     lane_mask_func = staticmethod(lane_compare("eq"))
 
     @staticmethod
@@ -64,12 +69,9 @@ class EqBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFwdInterfa
         return T.bitwise_xor(T.bitwise_xor(a, b), T.cast(1, "uint8"))
 
 
-class NeFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
+class NeFwdKernel(_CompareKernel):
     """Element-wise not-equal: y = (a != b), true where either operand is NaN."""
 
-    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.bool
-    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
     lane_mask_func = staticmethod(lane_compare("ne"))
 
     @staticmethod
@@ -87,12 +89,9 @@ class NeBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFwdInterfa
         return T.bitwise_xor(a, b)
 
 
-class GtFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
+class GtFwdKernel(_CompareKernel):
     """Element-wise greater-than: y = (a > b)."""
 
-    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.bool
-    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
     lane_mask_func = staticmethod(lane_compare("gt"))
 
     @staticmethod
@@ -110,12 +109,9 @@ class GtBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFwdInterfa
         return T.bitwise_and(a, T.bitwise_xor(b, T.cast(1, "uint8")))
 
 
-class LtFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
+class LtFwdKernel(_CompareKernel):
     """Element-wise less-than: y = (a < b)."""
 
-    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.bool
-    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
     lane_mask_func = staticmethod(lane_compare("lt"))
 
     @staticmethod
@@ -133,12 +129,9 @@ class LtBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFwdInterfa
         return T.bitwise_and(T.bitwise_xor(a, T.cast(1, "uint8")), b)
 
 
-class GeFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
+class GeFwdKernel(_CompareKernel):
     """Element-wise greater-equal: y = (a >= b)."""
 
-    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.bool
-    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
     lane_mask_func = staticmethod(lane_compare("ge"))
 
     @staticmethod
@@ -156,12 +149,9 @@ class GeBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFwdInterfa
         return T.bitwise_or(a, T.bitwise_xor(b, T.cast(1, "uint8")))
 
 
-class LeFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
+class LeFwdKernel(_CompareKernel):
     """Element-wise less-equal: y = (a <= b)."""
 
-    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
-    OUTPUT_DTYPE = torch.bool
-    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
     lane_mask_func = staticmethod(lane_compare("le"))
 
     @staticmethod

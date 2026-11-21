@@ -37,6 +37,12 @@ from tileops._kernels.kernel_base import Entry, Kernel
 __all__ = ["GQAPagedFwdKernel"]
 
 
+def _softmax_scale(sm_scale: float, softcap: float) -> float:
+    """The exp2 factor the softmax applies to a score. A softcap or a nonpositive scale is
+    applied to the scores before masking, so the factor stays positive."""
+    return LOG2E if softcap > 0.0 or sm_scale <= 0.0 else sm_scale * LOG2E
+
+
 def _make_tile_parts(
     block_M,
     block_N,
@@ -48,8 +54,6 @@ def _make_tile_parts(
     page_size,
     sm_scale,
     softcap,
-    softmax_scale,
-    zero_scores,
     dtype,
     accum_dtype,
     fuse_rope,
@@ -58,6 +62,7 @@ def _make_tile_parts(
     specialized,
     q_dtype,
     kv_dtype,
+    num_stages,
 ):
     """The key-tile pieces the unsplit and the split program share.
 
@@ -71,6 +76,9 @@ def _make_tile_parts(
     q_fp8 = q_dtype != dtype
     kv_fp8 = kv_dtype != dtype
     descaled = q_fp8 or kv_fp8
+    softmax_scale = _softmax_scale(sm_scale, softcap)
+    # Zero scores are cleared to avoid multiplying a mask sentinel by zero.
+    zero_scores = softcap <= 0.0 and sm_scale == 0.0
 
     def as_dtype(value):
         return T.cast(value, dtype) if kv_fp8 else value
@@ -285,7 +293,50 @@ def _make_tile_parts(
                     )
         T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
-    return load_q, load_kv, separate_cut, scan_tile
+    @T.macro
+    def scan_keys(
+        K, V, page_table, rope_cos, rope_sin, q_shared, k_shared, v_shared, acc_s, acc_s_cast,
+        acc_o, scores_max, scores_max_prev, scores_scale, scores_sum, logsum, request, kv_head,
+        row0, rows, q_len, align, kv_len, qk_descale, chunk, chunks,
+    ):  # fmt: skip
+        """Fold chunk *chunk* of *chunks* of the key tiles the row tile sees into its output
+        and softmax statistics: whole key tiles a chunk, so a chunk boundary never splits one.
+        A copied tile the cache end cuts, at most the last, takes its own loop."""
+        last_q = T.min(q_len - 1, (row0 + block_M - 1) // group) + align
+        if is_causal:
+            key_end = T.min(kv_len, last_q + 1)
+        elif window_size_right >= 0:
+            key_end = T.min(kv_len, last_q + 1 + window_size_right)
+        else:
+            key_end = kv_len
+        if window_size_left >= 0:
+            key_start = T.max(0, row0 // group + align - window_size_left)
+        else:
+            key_start = 0
+        tile0 = key_start // block_N
+        span = T.max(0, T.ceildiv(key_end, block_N) - tile0)
+        if chunks == 1:
+            mine = span
+            first = tile0
+        else:
+            per_split = T.ceildiv(span, chunks)
+            mine = T.max(0, T.min(per_split, span - chunk * per_split))
+            first = tile0 + chunk * per_split
+        whole = T.min(mine, T.max(0, kv_len // block_N - first)) if separate_cut else mine
+        tiles = (K, V, page_table, rope_cos, rope_sin, k_shared, v_shared, request, kv_head)
+        state = (q_shared, k_shared, v_shared, acc_s, acc_s_cast, acc_o, scores_max)
+        stats = (scores_max_prev, scores_scale, scores_sum, logsum)
+        for t in T.Pipelined(whole, num_stages=num_stages):
+            key0 = (first + t) * block_N
+            load_kv(*tiles, key0, kv_len, False)
+            scan_tile(*state, *stats, key0, row0, rows, align, kv_len, qk_descale)
+        if separate_cut:
+            for t in T.Pipelined(mine - whole, num_stages=num_stages):
+                key0 = (first + whole + t) * block_N
+                load_kv(*tiles, key0, kv_len, True)
+                scan_tile(*state, *stats, key0, row0, rows, align, kv_len, qk_descale)
+
+    return load_q, scan_keys
 
 
 def _make_descales(dtype, q_dtype, kv_dtype, per_request_kv_scale, accum_dtype):
@@ -340,10 +391,7 @@ def _gqa_paged_varlen_kernel(
     """
     accum_dtype = "float"
     group = heads // heads_kv
-    # Nonpositive scales are applied before masking so softmax always sees a positive
-    # exp2 factor. Zero scores are cleared to avoid multiplying a mask sentinel by zero.
-    zero_scores = softcap <= 0.0 and sm_scale == 0.0
-    softmax_scale = LOG2E if softcap > 0.0 or sm_scale <= 0.0 else sm_scale * LOG2E
+    softmax_scale = _softmax_scale(sm_scale, softcap)
 
     @tilelang.jit(
         out_idx=[-1],
@@ -375,8 +423,6 @@ def _gqa_paged_varlen_kernel(
             page_size,
             sm_scale,
             softcap,
-            softmax_scale,
-            zero_scores,
             dtype,
             accum_dtype,
             fuse_rope,
@@ -385,8 +431,9 @@ def _gqa_paged_varlen_kernel(
             sm90 and producer_warpgroup,
             q_dtype,
             kv_dtype,
+            num_stages,
         )
-        load_q, load_kv, separate_cut, scan_tile = parts
+        load_q, scan_keys = parts
         kv_fp8 = kv_dtype != dtype
         descales = _make_descales(dtype, q_dtype, kv_dtype, per_request_kv_scale, accum_dtype)
         sink_scale = make_sink_scale(softmax_scale, accum_dtype, block_M, head_group=group)
@@ -450,96 +497,12 @@ def _gqa_paged_varlen_kernel(
                     T.clear(logsum)
                     T.fill(scores_max, -T.infinity(accum_dtype))
 
-                    last_q = T.min(q_len - 1, (row0 + block_M - 1) // group) + align
-                    if is_causal:
-                        key_end = T.min(kv_len, last_q + 1)
-                    elif window_size_right >= 0:
-                        key_end = T.min(kv_len, last_q + 1 + window_size_right)
-                    else:
-                        key_end = kv_len
-                    if window_size_left >= 0:
-                        key_start = T.max(0, row0 // group + align - window_size_left)
-                    else:
-                        key_start = 0
-
-                    tile0 = key_start // block_N
-                    span = T.max(0, T.ceildiv(key_end, block_N) - tile0)
-                    # A copied tile the cache end cuts, at most the last, takes its own loop.
-                    if separate_cut:
-                        whole = T.min(span, T.max(0, kv_len // block_N - tile0))
-                    else:
-                        whole = span
-                    for t in T.Pipelined(whole, num_stages=num_stages):
-                        key0 = (tile0 + t) * block_N
-                        load_kv(
-                            K,
-                            V,
-                            page_table,
-                            rope_cos,
-                            rope_sin,
-                            k_shared,
-                            v_shared,
-                            request,
-                            by,
-                            key0,
-                            kv_len,
-                            False,
-                        )
-                        scan_tile(
-                            q_shared,
-                            k_shared,
-                            v_shared,
-                            acc_s,
-                            acc_s_cast,
-                            acc_o,
-                            scores_max,
-                            scores_max_prev,
-                            scores_scale,
-                            scores_sum,
-                            logsum,
-                            key0,
-                            row0,
-                            rows,
-                            align,
-                            kv_len,
-                            qk_descale,
-                        )
-                    if separate_cut:
-                        for t in T.Pipelined(span - whole, num_stages=num_stages):
-                            key0 = (tile0 + whole + t) * block_N
-                            load_kv(
-                                K,
-                                V,
-                                page_table,
-                                rope_cos,
-                                rope_sin,
-                                k_shared,
-                                v_shared,
-                                request,
-                                by,
-                                key0,
-                                kv_len,
-                                True,
-                            )
-                            scan_tile(
-                                q_shared,
-                                k_shared,
-                                v_shared,
-                                acc_s,
-                                acc_s_cast,
-                                acc_o,
-                                scores_max,
-                                scores_max_prev,
-                                scores_scale,
-                                scores_sum,
-                                logsum,
-                                key0,
-                                row0,
-                                rows,
-                                align,
-                                kv_len,
-                                qk_descale,
-                            )
+                    scan_keys(
+                        K, V, page_table, rope_cos, rope_sin, q_shared, k_shared, v_shared,
+                        acc_s, acc_s_cast, acc_o, scores_max, scores_max_prev, scores_scale,
+                        scores_sum, logsum, request, by, row0, rows, q_len, align, kv_len,
+                        qk_descale, 0, 1,
+                    )  # fmt: skip
 
                     if has_sinks:
                         sink_scale(scores_max, logsum, Sinks, by * group, row_scale, row0)
@@ -594,8 +557,7 @@ def _gqa_paged_varlen_split_kernel(
     """
     accum_dtype = "float"
     group = heads // heads_kv
-    zero_scores = softcap <= 0.0 and sm_scale == 0.0
-    softmax_scale = LOG2E if softcap > 0.0 or sm_scale <= 0.0 else sm_scale * LOG2E
+    softmax_scale = _softmax_scale(sm_scale, softcap)
     # Below this a split saw no key at all. A threshold, not an equality with -inf: fast math
     # folds comparisons with infinity away.
     no_key_lse = -1.0e30
@@ -646,8 +608,6 @@ def _gqa_paged_varlen_split_kernel(
             page_size,
             sm_scale,
             softcap,
-            softmax_scale,
-            zero_scores,
             dtype,
             accum_dtype,
             fuse_rope,
@@ -657,8 +617,9 @@ def _gqa_paged_varlen_split_kernel(
             sm90,
             q_dtype,
             kv_dtype,
+            num_stages,
         )
-        load_q, load_kv, separate_cut, scan_tile = parts
+        load_q, scan_keys = parts
         kv_fp8 = kv_dtype != dtype
         descales = _make_descales(dtype, q_dtype, kv_dtype, per_request_kv_scale, accum_dtype)
 
@@ -722,99 +683,12 @@ def _gqa_paged_varlen_split_kernel(
                     T.clear(logsum)
                     T.fill(scores_max, -T.infinity(accum_dtype))
 
-                    last_q = T.min(q_len - 1, (row0 + block_M - 1) // group) + align
-                    if is_causal:
-                        key_end = T.min(kv_len, last_q + 1)
-                    elif window_size_right >= 0:
-                        key_end = T.min(kv_len, last_q + 1 + window_size_right)
-                    else:
-                        key_end = kv_len
-                    if window_size_left >= 0:
-                        key_start = T.max(0, row0 // group + align - window_size_left)
-                    else:
-                        key_start = 0
-
-                    tile0 = key_start // block_N
-                    # Whole key tiles per chunk, so a chunk boundary never splits one.
-                    span = T.max(0, T.ceildiv(key_end, block_N) - tile0)
-                    per_split = T.ceildiv(span, num_split)
-                    mine = T.max(0, T.min(per_split, span - bz * per_split))
-                    first = tile0 + bz * per_split
-                    if separate_cut:
-                        whole = T.min(mine, T.max(0, kv_len // block_N - first))
-                    else:
-                        whole = mine
-                    for t in T.Pipelined(whole, num_stages=num_stages):
-                        key0 = (first + t) * block_N
-                        load_kv(
-                            K,
-                            V,
-                            page_table,
-                            rope_cos,
-                            rope_sin,
-                            k_shared,
-                            v_shared,
-                            request,
-                            by,
-                            key0,
-                            kv_len,
-                            False,
-                        )
-                        scan_tile(
-                            q_shared,
-                            k_shared,
-                            v_shared,
-                            acc_s,
-                            acc_s_cast,
-                            acc_o,
-                            scores_max,
-                            scores_max_prev,
-                            scores_scale,
-                            scores_sum,
-                            logsum,
-                            key0,
-                            row0,
-                            rows,
-                            align,
-                            kv_len,
-                            qk_descale,
-                        )
-                    if separate_cut:
-                        for t in T.Pipelined(mine - whole, num_stages=num_stages):
-                            key0 = (first + whole + t) * block_N
-                            load_kv(
-                                K,
-                                V,
-                                page_table,
-                                rope_cos,
-                                rope_sin,
-                                k_shared,
-                                v_shared,
-                                request,
-                                by,
-                                key0,
-                                kv_len,
-                                True,
-                            )
-                            scan_tile(
-                                q_shared,
-                                k_shared,
-                                v_shared,
-                                acc_s,
-                                acc_s_cast,
-                                acc_o,
-                                scores_max,
-                                scores_max_prev,
-                                scores_scale,
-                                scores_sum,
-                                logsum,
-                                key0,
-                                row0,
-                                rows,
-                                align,
-                                kv_len,
-                                qk_descale,
-                            )
+                    scan_keys(
+                        K, V, page_table, rope_cos, rope_sin, q_shared, k_shared, v_shared,
+                        acc_s, acc_s_cast, acc_o, scores_max, scores_max_prev, scores_scale,
+                        scores_sum, logsum, request, by, row0, rows, q_len, align, kv_len,
+                        qk_descale, bz, num_split,
+                    )  # fmt: skip
 
                     for i in T.Parallel(block_M):
                         row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
@@ -959,7 +833,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         """The packed totals are absent: the kernel reads them from the tensors it is handed,
         so one object serves every packing of these call facts. The device index is in the
         identity, because the kernel is compiled for its architecture."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = dict(
             batch=call.batch,
             heads=call.heads,

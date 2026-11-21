@@ -1,12 +1,12 @@
 import torch
 
 from workloads.device import run_device
-from workloads.linear_attention.input_values import _log_gates, _small
+from workloads.linear_attention.common import log_gates, small
+from workloads.numerics import Custom, Exact, assert_close, assert_rounded, compare_outputs
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
     "GLAChunkwiseCall",
-    "GLAChunkwiseWorkload",
     "GLADecodeCall",
     "GLADecodeWorkload",
     "GLAFwdCall",
@@ -60,26 +60,28 @@ class GLADecodeWorkload(WorkloadBase):
         return decode_verification(inputs[0].dtype)
 
 
-class GLAChunkwiseWorkload(WorkloadBase):
+class GLAFwdWorkload(WorkloadBase):
+    """Inference GLA prefill with a caller-owned optional recurrent state."""
+
     def __init__(
         self,
-        batch,
-        seq_len,
-        heads,
-        dim_k,
-        dim_v,
-        chunk_size,
-        dtype,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
         has_initial_state: bool = False,
-    ):
+        scale: float | None = None,
+    ) -> None:
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
         self.dim_k = dim_k
         self.dim_v = dim_v
-        self.chunk_size = chunk_size
         self.dtype = dtype
         self.has_initial_state = has_initial_state
+        self.scale = scale
 
     def gen_inputs(self):
         B, T, H, K, V = self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v
@@ -95,24 +97,6 @@ class GLAChunkwiseWorkload(WorkloadBase):
             else None
         )
         return q, k, v, g, initial_state
-
-
-class GLAFwdWorkload(GLAChunkwiseWorkload):
-    """Inference GLA prefill with a caller-owned optional recurrent state."""
-
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        has_initial_state: bool = False,
-        scale: float | None = None,
-    ) -> None:
-        super().__init__(batch, seq_len, heads, dim_k, dim_v, 64, dtype, has_initial_state)
-        self.scale = scale
 
     def ref_program(
         self,
@@ -274,7 +258,7 @@ class GLADecodeCall(CallWorkload):
 
     def gen_inputs(self):
         q, k, v, g, state = super().gen_inputs()
-        return _small(q), _small(k), _small(v), _log_gates(g), _small(state)
+        return small(q), small(k), small(v), log_gates(g), small(state)
 
     def ref_program(self, q, k, v, g, state):
         o, new_state = gla_decode_torch(q, k, v, g, state, self.call.indices["scale"])
@@ -289,7 +273,7 @@ class GLAChunkwiseCall(CallWorkload):
 
     def gen_inputs(self):
         tensors = dict(zip(self.call.signature.inputs, super().gen_inputs(), strict=True))
-        return tuple(_log_gates(t) if name == "g" else _small(t) for name, t in tensors.items())
+        return tuple(log_gates(t) if name == "g" else small(t) for name, t in tensors.items())
 
     def ref_program(self, *inputs):
         a = self.arguments()
@@ -332,11 +316,11 @@ class GLAFwdCall(CallWorkload):
     def gen_inputs(self):
         q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu = super().gen_inputs()
         return (
-            _small(q),
-            _small(k),
-            _small(v),
-            _log_gates(g),
-            _small(initial_state),
+            small(q),
+            small(k),
+            small(v),
+            log_gates(g),
+            small(initial_state),
             cu_seqlens,
             cu_seqlens_cpu,
         )
@@ -351,15 +335,11 @@ class GLAFwdCall(CallWorkload):
 
 
 def decode_verification(dtype):
-    from workloads.numerics import Exact
-
     tol = {torch.float32: 3e-06, torch.float16: 0.0007, torch.bfloat16: 0.003}[dtype]
     return Exact(atol=tol, rtol=tol)
 
 
 def inference_verification(dtype, *, decode=False):
-    from workloads.numerics import Custom, assert_close, assert_rounded
-
     if decode:
 
         def validate_decode(got, expected):
@@ -383,8 +363,6 @@ def inference_verification(dtype, *, decode=False):
 
 
 def chunkwise_verification(dtype, *, backward=False):
-    from workloads.numerics import Custom, Exact, compare_outputs
-
     if not backward:
         tol = {torch.float32: 1e-2, torch.float16: 5e-2, torch.bfloat16: 1e-1}[dtype]
 

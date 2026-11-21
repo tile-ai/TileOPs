@@ -500,6 +500,25 @@ def test_either_affine_tensor_alone_matches_torch(give: str, n: int) -> None:
 
 
 @pytest.mark.smoke
+def test_layer_norm_accepts_normalized_shape() -> None:
+    op = LayerNormFwdOp(normalized_shape=[4096])
+    assert tuple(op.normalized_shape) == (4096,)
+
+
+@pytest.mark.smoke
+def test_layer_norm_accepts_tuple_normalized_shape_runtime() -> None:
+    """Multi-axis ``normalized_shape`` is the manifest contract; weight/bias
+    must match ``tuple(normalized_shape)``."""
+    op = LayerNormFwdOp(normalized_shape=(2, 3))
+    assert tuple(op.normalized_shape) == (2, 3)
+    x = torch.randn(4, 2, 3, dtype=torch.float16, device=run_device())
+    w = torch.randn(2, 3, dtype=torch.float16, device=run_device())
+    b = torch.randn(2, 3, dtype=torch.float16, device=run_device())
+    y = op(x, w, b)
+    assert y.shape == x.shape
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     "n", [pytest.param(4096, id="aligned-row"), pytest.param(1000, id="warp-row")]
 )

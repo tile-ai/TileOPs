@@ -1,9 +1,18 @@
+import itertools
+
 import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
-from workloads.linear_attention.input_values import _small, _step_sizes
-from workloads.linear_attention.state_pool import read_states, write_states
+from workloads.linear_attention.common import (
+    in_call_order,
+    longest_first,
+    on_state_pool,
+    sequences,
+    small,
+    step_sizes,
+)
+from workloads.numerics import Custom, assert_close, assert_normalized_error, zeroed_input
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = ["KDAFwdCall", "KDAFwdWorkload", "kda_ref"]
@@ -55,7 +64,7 @@ class KDAFwdWorkload(WorkloadBase):
         shape = (*rows, self.value_heads, self.dim)
         v = torch.randn(shape, device=device, dtype=self.dtype) * 0.1
         g = _channel_log_gates(v)
-        beta = _step_sizes(v[..., 0])
+        beta = step_sizes(v[..., 0])
         initial_state = (
             torch.randn(
                 sequences, self.value_heads, self.dim, self.dim, device=device, dtype=torch.float32
@@ -66,9 +75,7 @@ class KDAFwdWorkload(WorkloadBase):
         )
         if not packed:
             return q, k, v, g, beta, initial_state
-        offsets = [0]
-        for length in self.sequence_lengths:
-            offsets.append(offsets[-1] + length)
+        offsets = [0, *itertools.accumulate(self.sequence_lengths)]
         cu_seqlens = torch.tensor(offsets, device=device, dtype=torch.int64)
         return q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens.cpu()
 
@@ -96,12 +103,12 @@ class KDAFwdCall(CallWorkload):
             a_log = torch.empty_like(a_log).uniform_(1.0, 16.0).log()
             dt_bias = None if dt_bias is None else torch.randn_like(dt_bias) * 0.1
         return (
-            _small(q),
-            _small(k),
-            _small(v),
+            small(q),
+            small(k),
+            small(v),
             g if raw_gate else _channel_log_gates(g),
-            beta if self.call.indices["use_beta_sigmoid_in_kernel"] else _step_sizes(beta),
-            _small(initial_state, 0.01),
+            beta if self.call.indices["use_beta_sigmoid_in_kernel"] else step_sizes(beta),
+            small(initial_state, 0.01),
             cu_seqlens,
             cu_seqlens_cpu,
             a_log,
@@ -127,18 +134,7 @@ class KDAFwdCall(CallWorkload):
         if num_accepted_tokens is not None:
             raise ValueError("the reference keeps one slot a sequence, not one a token")
         p = self.call.indices
-        slots = None if state_indices is None else state_indices.long()
-        o, final_state = kda_ref(
-            q,
-            k,
-            v,
-            g,
-            beta,
-            initial_state if slots is None else read_states(initial_state, slots),
-            cu_seqlens,
-            cu_seqlens_cpu,
-            a_log,
-            dt_bias,
+        flags = dict(
             scale=p["scale"],
             raw_gate=p["use_gate_in_kernel"],
             lower_bound=p["lower_bound"],
@@ -147,13 +143,13 @@ class KDAFwdCall(CallWorkload):
             l2norm=p["use_qk_l2norm_in_kernel"],
             state_v_first=p["state_v_first"],
         )
-        if slots is None:
-            return o, final_state
-        # The pool is updated in place: each sequence's slot takes its final state, and every
-        # other slot keeps the state it held. A slot of -1 is never written.
-        pool = initial_state.clone()
-        write_states(pool, slots, final_state)
-        return o, pool
+        return on_state_pool(
+            lambda state: kda_ref(
+                q, k, v, g, beta, state, cu_seqlens, cu_seqlens_cpu, a_log, dt_bias, **flags
+            ),
+            initial_state,
+            state_indices,
+        )
 
     def verification(self, *inputs):
         return kda_verification(inputs)
@@ -191,13 +187,7 @@ def kda_ref(
     dtype = torch.float64
     scale = q.shape[-1] ** -0.5 if scale is None else scale
     group = v.shape[2] // q.shape[2]
-    if cu_seqlens is None:
-        rows = list(range(q.shape[0]))
-        starts, lengths = [0] * q.shape[0], [q.shape[1]] * q.shape[0]
-    else:
-        bounds = (cu_seqlens if cu_seqlens_cpu is None else cu_seqlens_cpu).tolist()
-        rows, starts = [0] * (len(bounds) - 1), bounds[:-1]
-        lengths = [end - start for start, end in zip(bounds[:-1], bounds[1:], strict=True)]
+    rows, starts, lengths = sequences(q, cu_seqlens, cu_seqlens_cpu)
     g = g.to(dtype)
     if raw_gate:
         heads, dim = v.shape[2], q.shape[-1]
@@ -215,18 +205,9 @@ def kda_ref(
     # The exact per-channel decay gap is [sequences, value heads, chunk, chunk, K] in FP64,
     # which bounds the chunk; a decode call runs one token per step and needs no gap tensor.
     chunk = 1 if longest <= 1 else 16
-    # Longest first, so the sequences still running at a step are a prefix.
-    order = sorted(range(len(lengths)), key=lambda sequence: -lengths[sequence])
-    row = torch.tensor([rows[s] for s in order], dtype=torch.long, device=q.device)
-    start = torch.tensor([starts[s] for s in order], dtype=torch.long, device=q.device)
-    length = torch.tensor([lengths[s] for s in order], dtype=torch.long, device=q.device)
-    if initial_state is None:
-        state = torch.zeros(
-            len(order), v.shape[2], q.shape[-1], v.shape[-1], dtype=dtype, device=q.device
-        )
-    else:
-        state = initial_state[order].to(dtype)
-        state = state.transpose(-1, -2).contiguous() if state_v_first else state
+    order, row, start, length, state = longest_first(
+        q, v, rows, starts, lengths, initial_state, state_v_first, dtype
+    )
     output = torch.zeros_like(v)
     offset = torch.arange(chunk, device=q.device)
     inclusive = torch.ones(chunk, chunk, dtype=torch.bool, device=q.device).tril()
@@ -266,15 +247,10 @@ def kda_ref(
         live = decayed[..., -1, :, None] * live + (k_c * carry).transpose(-1, -2) @ written
         state[:running] = live
         output[r.expand_as(t)[valid], t[valid]] = out[valid].to(v.dtype)
-    final = torch.empty_like(state)
-    final[order] = state
-    final = final.transpose(-1, -2) if state_v_first else final
-    return output, final.float()
+    return output, in_call_order(state, order, state_v_first)
 
 
 def kda_verification(inputs):
-    from workloads.numerics import Custom, assert_close, assert_normalized_error, zeroed_input
-
     q = inputs[0]
     atol = rtol = 2e-3 if q.dtype == torch.float16 else 1.6e-2
 

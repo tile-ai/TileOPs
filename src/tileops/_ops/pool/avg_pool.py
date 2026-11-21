@@ -15,8 +15,8 @@ from tileops._kernels.pool import (
     AvgPool3dKernel,
     AvgPoolCall,
 )
+from tileops._ops._spatial import per_axis_values
 from tileops._ops.op_base import Op
-from tileops._ops.pool.parameters import per_axis_values
 from tileops.backend import Target
 
 __all__ = ["AvgPool1dFwdOp", "AvgPool2dFwdOp", "AvgPool3dFwdOp"]

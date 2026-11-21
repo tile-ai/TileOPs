@@ -28,6 +28,14 @@ from tileops._utils import WARP_LANES
 
 __all__ = ["GEMMW4A8DecodeKernel"]
 
+# Shared by the shared-memory model, the builder and the workspace sizing.
+# Token tiles from which the epilogue stages its output through shared memory.
+_STAGED_MIN_TOKENS = 16
+# Row stride of the output staging buffer: successive token rows offset by four banks.
+_STAGE_STRIDE = WGMMA_ROWS + 8
+# Partial-sum slots of one warpgroup: the head and tail tiles of its unit's item range.
+_PARTIAL_SLOTS = 2
+
 
 def _shared_bytes(m_tile: int, nw: int, uw: int, block_k: int, stages: int) -> tuple[int, int]:
     """Shared memory of a config's buffers, each rounded up to the buffer alignment.
@@ -47,12 +55,12 @@ def _shared_bytes(m_tile: int, nw: int, uw: int, block_k: int, stages: int) -> t
         + footprint(nu * stages * WGMMA_ROWS * uw * groups)
     )
     staged = (
-        footprint(nw * m_tile * GEMMW4A8DecodeKernel._STAGE_STRIDE * torch.bfloat16.itemsize)
-        if m_tile >= GEMMW4A8DecodeKernel._STAGED_MIN_TOKENS
+        footprint(nw * m_tile * _STAGE_STRIDE * torch.bfloat16.itemsize)
+        if m_tile >= _STAGED_MIN_TOKENS
         else 0
     )
     slot_bytes = WGMMA_ROWS * m_tile * torch.float32.itemsize
-    slots = footprint(nw * GEMMW4A8DecodeKernel._PARTIAL_SLOTS * slot_bytes) if nu > 1 else 0
+    slots = footprint(nw * _PARTIAL_SLOTS * slot_bytes) if nu > 1 else 0
     base = ring + staged + footprint(m_tile * torch.float32.itemsize)
     return base, base + slots
 
@@ -165,9 +173,6 @@ def _gemm_w4a8_decode_kernel(
     num_stages: int,
     num_ctas: int,
     shared_slots: bool,
-    staged_min_tokens: int,
-    stage_stride: int,
-    partial_slots: int,
 ) -> Callable:
     """Compile the decode GEMM for one shape and config.
 
@@ -200,7 +205,7 @@ def _gemm_w4a8_decode_kernel(
     slot = WARPGROUP_THREADS * acc_regs
     warps_per_warpgroup = WARPGROUP_THREADS // WARP_LANES
     threads = WARPGROUP_THREADS * nw + WARP_LANES * nu
-    staged = nt >= staged_min_tokens
+    staged = nt >= _STAGED_MIN_TOKENS
     # A one-unit CTA runs its items rotated, the tail it hands to a later CTA first and the head
     # whose earlier parts it receives last.
     rotated = nu == 1
@@ -233,7 +238,7 @@ def _gemm_w4a8_decode_kernel(
     # element over the warpgroup's 32-bit registers.
     frag_regs = 2 * WGMMA_ROWS * mma_k // (WARPGROUP_THREADS * torch.uint32.itemsize)
     # In-CTA partial-sum workspace; a placeholder, never read, when the slots are shared.
-    ws_floats = num_ctas * nw * partial_slots * slot if not shared_slots else 4
+    ws_floats = num_ctas * nw * _PARTIAL_SLOTS * slot if not shared_slots else 4
     load_slice = f"tileops::w4a8::load_slice<{uw}, {chunk_slices}, {units_per_block}, {unit_bytes}>"
 
     @tilelang.jit(
@@ -417,7 +422,7 @@ def _gemm_w4a8_decode_kernel(
             if staged:
                 T.call_extern(
                     "handle",
-                    f"tileops::w4a8::store_staged<{nt}, {stage_stride}>",
+                    f"tileops::w4a8::store_staged<{nt}, {_STAGE_STRIDE}>",
                     v.data,
                     T.address_of(out[0, 0]),
                     m,
@@ -427,7 +432,7 @@ def _gemm_w4a8_decode_kernel(
                     ch0,
                     ch1,
                     T.address_of(as_s[0]),
-                    T.address_of(stage_out[wg * nt * stage_stride]),
+                    T.address_of(stage_out[wg * nt * _STAGE_STRIDE]),
                     bar_base + wg,
                 )
             else:
@@ -460,12 +465,12 @@ def _gemm_w4a8_decode_kernel(
                 wring = T.alloc_shared((nu * st, uw, chunk_slices, slice_words), "uint64")
                 scring = T.alloc_shared((nu * st * stage_scale_bytes,), "uint8")
                 slots = (
-                    T.alloc_shared((nw * partial_slots * slot if not rotated else 4,), "float32")
+                    T.alloc_shared((nw * _PARTIAL_SLOTS * slot if not rotated else 4,), "float32")
                     if shared_slots
                     else ws
                 )
-                sbase = 0 if shared_slots else cid * (nw * partial_slots * slot)
-                stage_out = T.alloc_shared((nw * nt * stage_stride if staged else 8,), "bfloat16")
+                sbase = 0 if shared_slots else cid * (nw * _PARTIAL_SLOTS * slot)
+                stage_out = T.alloc_shared((nw * nt * _STAGE_STRIDE if staged else 8,), "bfloat16")
                 as_s = T.alloc_shared((nt,), "float32")
                 full = T.alloc_barrier([1] * (nu * st))
                 # Each consumer warp of the unit arrives once.
@@ -765,14 +770,14 @@ def _gemm_w4a8_decode_kernel(
                             T.call_extern(
                                 "handle",
                                 f"tileops::w4a8::park<{nt}>",
-                                T.address_of(slots[sbase + (wg * partial_slots) * slot]),
+                                T.address_of(slots[sbase + (wg * _PARTIAL_SLOTS) * slot]),
                                 park0.data,
                             )
                         if parked1 == 1:
                             T.call_extern(
                                 "handle",
                                 f"tileops::w4a8::park<{nt}>",
-                                T.address_of(slots[sbase + (wg * partial_slots + 1) * slot]),
+                                T.address_of(slots[sbase + (wg * _PARTIAL_SLOTS + 1) * slot]),
                                 park1.data,
                             )
                         T.sync_threads()
@@ -806,7 +811,7 @@ def _gemm_w4a8_decode_kernel(
                                                     slots[
                                                         sbase
                                                         + (
-                                                            (v * uw + sub) * partial_slots
+                                                            (v * uw + sub) * _PARTIAL_SLOTS
                                                             + T.if_then_else(
                                                                 vb >= cto * nchunk, 0, 1
                                                             )
@@ -875,10 +880,6 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
         device_index: CUDA device the kernel is built for.
     """
 
-    # Shared by this implementation's allocation, capacity checks, and builder.
-    _STAGED_MIN_TOKENS = 16
-    _STAGE_STRIDE = WGMMA_ROWS + 8  # Offset successive token rows by four banks.
-    _PARTIAL_SLOTS = 2  # Head and tail tiles of a unit's item range.
     # A 16- to 40-token unit's warpgroups where N allows off the exchange-free grid, and its
     # item's K where K allows: the config selection picks them and the 40-token dispatch rule
     # counts in them.
@@ -902,8 +903,8 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     @classmethod
     def refusal(cls, call: GEMMW4A8Call) -> str | None:
         """Serve small token counts, and 33 to 40 tokens on the grids the 40-token tile wins."""
-        if call.m > GEMMW4A8DecodeKernel.token_tiles[-1]:
-            return f"serves m <= {GEMMW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
+        if call.m > cls.token_tiles[-1]:
+            return f"serves m <= {cls.token_tiles[-1]}, got {call.m}"
         if call.m > cls.base_token_limit:
             board = cls._FORTY_TOKEN_BOARDS.get(call.calibration)
             if board is None or call.sm_count != board.sm_count:
@@ -946,7 +947,7 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
 
     @classmethod
     def entry_for(cls, call: GEMMW4A8Call) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m, call.n, call.k, call.group_size, index)
         return identity, lambda: cls(call.m, call.n, call.k, device_index=index)
 
@@ -1011,7 +1012,7 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
             ("flags", ctas * uw),
             lambda: torch.zeros(ctas * uw, dtype=torch.int32, device=device),
         )
-        unit_size = 4 if shared_slots else ctas * nw * self._PARTIAL_SLOTS * slot
+        unit_size = 4 if shared_slots else ctas * nw * _PARTIAL_SLOTS * slot
         unit_partials = self._workspace(
             ("unit_partials", unit_size),
             lambda: torch.empty(unit_size, dtype=torch.float32, device=device),
@@ -1027,9 +1028,6 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
             cfg["num_stages"],
             ctas,
             shared_slots,
-            self._STAGED_MIN_TOKENS,
-            self._STAGE_STRIDE,
-            self._PARTIAL_SLOTS,
         )
         return CompiledProgram(program), partials, flags, unit_partials
 

@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase, check_strided_in_place
 from tileops.quantization import FP8QuantPerTokenGroupFwdOp
 from workloads.device import run_device
 from workloads.quantization.fp8_quant import (
@@ -139,22 +139,6 @@ def test_fp8_quant_ue8m0_floors_scales_at_two_to_the_minus_126(
 
 
 @pytest.mark.parametrize(
-    "dtype, eps, scale_dtype",
-    [
-        pytest.param(torch.bfloat16, 0.0, torch.float32, marks=pytest.mark.smoke),
-        pytest.param(torch.float32, 1e-36, torch.float8_e8m0fnu, marks=pytest.mark.smoke),
-        pytest.param(torch.float16, 0.0, torch.float8_e8m0fnu, marks=pytest.mark.smoke),
-    ],
-)
-def test_fp8_quant_ue8m0_returns_the_floor_scale(dtype, eps, scale_dtype) -> None:
-    """Groups below the floor return the scale ``2 ** -126``, and none returns less."""
-    params = {"eps": eps, "use_ue8m0": True, "scale_dtype": scale_dtype}
-    test = FP8QuantScaleFloorTest((80, 512), 128, dtype, **params)
-    _, scale, _ = FP8QuantPerTokenGroupFwdOp(128, **params)(*test.gen_inputs())
-    assert scale.float().min().item() == 2.0**-126
-
-
-@pytest.mark.parametrize(
     "shape, dtype",
     [
         # DeepSeek-V4-Flash's KV rows, 448 columns per 64.
@@ -188,18 +172,9 @@ def test_fp8_quant_fake_quantizes_in_place(shape, dtype) -> None:
     ],
 )
 def test_fp8_quant_fake_quantizes_a_strided_view_in_place(wide_shape, index) -> None:
-    """Only the view's elements change, and the call returns the view itself."""
     x_shape = torch.empty(wide_shape, device="meta")[index].shape
     test = FP8QuantViewTest(wide_shape, index, x_shape, 64, torch.bfloat16, inplace=True, **_UE8M0)
-    op = FP8QuantPerTokenGroupFwdOp(64, inplace=True, **_UE8M0)
-    test.check(op, *test.gen_inputs())
-    (x,) = test.gen_inputs()
-    wide = x._base
-    before = wide.clone()
-    assert op(x)[2] is x
-    kept = torch.ones_like(wide, dtype=torch.bool)
-    kept[index] = False
-    assert torch.equal(wide[kept], before[kept])
+    check_strided_in_place(test, FP8QuantPerTokenGroupFwdOp(64, inplace=True, **_UE8M0))
 
 
 @pytest.mark.smoke

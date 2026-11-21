@@ -7,8 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.attention.call_spec import DSADecodeCall, SparseMLADecodeFwdInterface
-from tileops._kernels.autotune import autotune
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
@@ -19,6 +18,46 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
     """Shared shape checks, construction and tuning inputs for sparse MLA decode."""
 
     serves_attn_sink: ClassVar[bool] = False
+    # The builder __init__ compiles from, or None for a kernel that builds at launch.
+    _build: ClassVar[Callable | None] = None
+
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        seq_len_kv: int,
+        heads: int,
+        dim: int,
+        tail_dim: int,
+        dtype: torch.dtype,
+        topk: int,
+        kv_stride: int,
+        q_start_index_s: int,
+        kv_group: int,
+        sm_scale: float | None,
+        is_causal: bool,
+        device_index: int | None = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.batch = batch
+        self.seq_len = seq_len
+        self.seq_len_kv = seq_len_kv
+        self.heads = heads
+        self.dim = dim
+        self.tail_dim = tail_dim
+        self.dtype = dtype
+        self.topk = topk
+        self.kv_stride = kv_stride
+        self.q_start_index_s = q_start_index_s
+        self.kv_group = kv_group
+        self.sm_scale = sm_scale
+        self.is_causal = is_causal
+        if self._build is not None:
+            self.kernel = self._build(
+                batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride,
+                q_start_index_s, kv_group, sm_scale, is_causal, self.dtype_str,
+            )  # fmt: skip
+            self.init_config()
 
     @classmethod
     def refusal(cls, call: DSADecodeCall) -> str | None:
@@ -33,9 +72,10 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
         return super().refusal(call)
 
     @classmethod
-    def constructor_args(cls, call: DSADecodeCall) -> tuple:
-        """The constructor's positional arguments for *call*."""
-        return (
+    def entry_for(cls, call: DSADecodeCall) -> Entry:
+        """The call spec is the identity; the kernel is built on its device."""
+        sink = {"has_attn_sink": call.has_attn_sink} if cls.serves_attn_sink else {}
+        return call, lambda: cls(
             call.batch,
             call.seq_len,
             call.seq_len_kv,
@@ -49,22 +89,16 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
             call.kv_group,
             call.sm_scale,
             call.is_causal,
-        )
-
-    @classmethod
-    def entry_for(cls, call: DSADecodeCall) -> Entry:
-        """The call spec is the identity; the kernel is built on its device."""
-        return call, lambda: cls(
-            *cls.constructor_args(call),
-            device_index=call.device.index if call.device is not None else None,
+            device_index=call.device_index,
+            **sink,
         )
 
     @staticmethod
     def shape_refusal(
         dim: int, tail_dim: int, heads: int, kv_group: int, is_causal: bool
     ) -> str | None:
-        """Why neither the basic nor the older warp-specialized implementation serves this
-        shape, or ``None``; their builders ask too."""
+        """Why neither DSADecodeBasicKernel nor DSADecodeKernel serves this shape, or ``None``;
+        their builders ask too."""
         if not is_causal:
             return "requires the causal mask"
         pow2 = tilelang.math.next_power_of_2
@@ -114,6 +148,20 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
 
         return q, kv, indices
 
+    @property
+    def autotune_supply_prog(self) -> Callable | None:
+        # TileLang passes the candidate's JIT parameters, which supply_prog does not read.
+        return lambda *args, **kwargs: self.supply_prog()
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv: torch.Tensor,
+        indices: torch.Tensor,
+        attn_sink: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.program(self._compile)(q, kv, indices)
+
 
 @target_cache(maxsize=32)
 def _dsa_decode_kernel(
@@ -126,15 +174,12 @@ def _dsa_decode_kernel(
     topk: int,
     kv_stride: int,
     q_start_index_s: int,
-    kv_group: int = 1,
-    sm_scale: float = None,
-    is_causal: bool = True,
-    dtype: str = "float16",
-) -> None:
-    """Build causal sparse MLA with manual warp specialization on SM90.
-
-    Returns:
-        JIT factory taking ``block_i`` and ``threads``."""
+    kv_group: int,
+    sm_scale: float | None,
+    is_causal: bool,
+    dtype: str,
+) -> Callable:
+    """Causal sparse MLA on SM90: a KV-gathering producer and two WGMMA consumer warpgroups."""
     reason = DSADecodeKernelBase.shape_refusal(dim, tail_dim, heads, kv_group, is_causal)
     if reason is not None:
         raise ValueError(reason)
@@ -149,30 +194,11 @@ def _dsa_decode_kernel(
         out_idx=[-1],
         compile_flags=[
             "--use_fast_math",
-            "-O3",
-            "-Wno-deprecated-declarations",
-            "-U__CUDA_NO_HALF_OPERATORS__",
-            "-U__CUDA_NO_HALF_CONVERSIONS__",
-            "-U__CUDA_NO_HALF2_OPERATORS__",
-            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-            "--expt-relaxed-constexpr",
-            "--expt-extended-lambda",
+            *CUDA_COMPILE_FLAGS,
             "--ptxas-options=-v,--register-usage-level=10",
-            "-DNDEBUG",
         ],
     )
-    def _dsa_decode_fwd_func(block_i: int, threads: int) -> None:
-        """
-        Performs the forward computation for sparse multi-head attention.
-
-        Args:
-            block_i (int): The block size for sparse attention, which divides the `topk` value.
-            threads (int): The number of threads to be used in the computation.
-
-        Returns:
-            None: The function does not return a value, but it performs in-place computation
-                for the forward pass of the sparse multi-head attention kernel.
-        """
+    def _dsa_decode_fwd_func(block_i: int, threads: int):
         q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
         o_shape = (batch, seq_len, ori_heads, dim)
@@ -213,6 +239,84 @@ def _dsa_decode_kernel(
 
         h_per_block = padded_h if replicate_h == 1 else 64
 
+        @T.macro
+        def score_block(q_l, q_r, q_tail, kv_l, kv_r, k_tail, is_kv_valid, acc_s, s_shared, acc_o_l, sumexp, sumexp_i, alpha_shared, alpha_local, m_i, m_i_prev, bar_k_ready, bar_k_free, bar_s_ready, bar_s_free, phase, wait_s_free, s_free_parity):  # fmt: skip
+            """Consumer 0's step over one KV buffer: score it, fold it into the online softmax,
+            hand the weights and the rescale to consumer 1, and accumulate the left value half."""
+            T.barrier_wait(bar_k_ready[0], phase)
+
+            for h_i, bi_i in T.Parallel(h_per_block, i_block):
+                acc_s[h_i, bi_i] = T.if_then_else(is_kv_valid[bi_i], 0, -T.infinity(acc_s.dtype))
+            T.wgmma_gemm(q_l, kv_l, acc_s, transpose_B=True)
+            T.wgmma_gemm(q_r, kv_r, acc_s, transpose_B=True)
+            T.wgmma_gemm(q_tail, k_tail, acc_s, transpose_B=True)
+
+            T.wait_wgmma(0)
+
+            if wait_s_free:
+                T.barrier_arrive(bar_s_free)
+                T.barrier_wait(bar_s_free, s_free_parity)
+
+            T.copy(m_i, m_i_prev)
+            T.reduce_max(acc_s, m_i, dim=1, clear=False)
+            # m_i_prev becomes the scaled max the weights subtract: 0 while the
+            # row has no valid key, so its weights are 0 instead of NaN.
+            for h_i in T.Parallel(h_per_block):
+                m_sub = T.if_then_else(
+                    m_i[h_i] == -T.infinity(accum_dtype), 0.0, m_i[h_i] * sm_scale
+                )
+                alpha_local[h_i] = T.exp2(m_i_prev[h_i] * sm_scale - m_sub)
+                m_i_prev[h_i] = m_sub
+            for h_i, bi_i in T.Parallel(h_per_block, i_block):
+                acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i_prev[h_i])
+            T.reduce_sum(acc_s, sumexp_i, dim=1)
+            for h_i in T.Parallel(h_per_block):
+                sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
+            for h_i, d_i in T.Parallel(h_per_block, d // 2):
+                acc_o_l[h_i, d_i] *= alpha_local[h_i]
+            T.copy(alpha_local, alpha_shared)
+
+            T.copy(acc_s, s_shared)
+            T.gemm(s_shared, kv_l, acc_o_l)
+
+            T.barrier_arrive(bar_s_ready)
+            T.barrier_arrive(bar_k_free[0])
+
+        @T.macro
+        def gather_block(kv, indices, kv_l, kv_r, k_tail, is_kv_valid, indices_local, bar_k_ready, bar_k_free, b_i, s_i, g_i, block, phase, max_kv_i, tx):  # fmt: skip
+            """The producer's fill of one KV buffer with top-k block `block`: each thread copies
+            8 columns of row (tx - 256) // 8 of every pass."""
+            T.barrier_wait(bar_k_free[0], phase ^ 1)
+            for r in T.serial(i_block // producer_rows):
+                row = r * producer_rows + (tx - 256) // 8
+                col = (tx - 256) % 8 * 8
+                indices_local[0] = indices[b_i, s_i, g_i, block * i_block + row]
+                is_kv_valid[row] = (indices_local[0] >= 0) & (indices_local[0] <= max_kv_i)
+                if is_kv_valid[row]:
+                    with T.attr("default", "async_scope", 1):
+                        for u in T.serial(d // 128):
+                            for v in T.vectorized(8):
+                                kv_l[row, 64 * u + col + v] = kv[
+                                    b_i, indices_local[0], g_i, 64 * u + col + v
+                                ]
+                                kv_r[row, 64 * u + col + v] = kv[
+                                    b_i, indices_local[0], g_i, d // 2 + 64 * u + col + v
+                                ]
+                    with T.attr("default", "async_scope", 1):
+                        for v in T.vectorized(8):
+                            k_tail[row, col + v] = kv[b_i, indices_local[0], g_i, d + col + v]
+                else:
+                    # Zero, not stale: the row's softmax weight is zero, and zero times a NaN
+                    # an earlier tile left in shared memory is NaN.
+                    for u in T.serial(d // 128):
+                        for v in T.vectorized(8):
+                            kv_l[row, 64 * u + col + v] = 0
+                            kv_r[row, 64 * u + col + v] = 0
+                    for v in T.vectorized(8):
+                        k_tail[row, col + v] = 0
+            T.cp_async_barrier_noinc(bar_k_ready[0])
+            T.barrier_arrive(bar_k_ready[0])
+
         @T.prim_func
         def _dsa_decode_fwd_main(
             q: T.Tensor(q_shape, dtype),  # type: ignore
@@ -220,24 +324,6 @@ def _dsa_decode_kernel(
             indices: T.Tensor(indices_shape, indices_dtype),  # type: ignore
             output: T.Tensor(o_shape, dtype),  # type: ignore
         ) -> None:
-            """
-            Computes the forward pass of sparse multi-head attention.
-
-            This function performs the main computation for sparse multi-head attention,
-            taking query (q), key-value (kv), and indices tensors as inputs, and producing
-            the output tensor based on the defined shapes and data types.
-
-            Args:
-                q (T.Tensor): Query tensor of shape `q_shape` and specified `dtype`.
-                kv (T.Tensor): Key-value tensor of shape `kv_shape` and specified `dtype`.
-                indices (T.Tensor): Indices tensor of shape `indices_shape`
-                            and specified `indices_dtype`.
-                output (T.Tensor): output tensor of shape `o_shape` that
-                            stores the result of the computation.
-
-            Returns:
-                None: The result is stored in the `output` tensor passed by reference.
-            """
             with T.Kernel(
                 seq_len * replicate_h,
                 batch,
@@ -297,11 +383,9 @@ def _dsa_decode_kernel(
 
                 tx = T.get_thread_binding()
 
-                # Q -> shared copies must stay inside tx < 128 so that the copy
-                # and the subsequent T.wgmma_gemm share the same 128-thread bounds.
-                # Mixing a 384-thread copy with a 128-thread WGMMA on the same shared
-                # buffer causes TileLang 0.1.9 layout inference to fail with
-                # "no available layout found".
+                # Q -> shared copies stay inside tx < 128, the bounds of the WGMMA that reads
+                # them: TileLang's layout inference finds no layout for a shared buffer a
+                # wider copy writes and a 128-thread WGMMA reads.
                 if tx < 128:
                     T.set_max_nreg(240, 1)
                     T.copy(q[b_i, s_i, h0:h1, 0 : d // 2], q_shared_l)
@@ -312,86 +396,20 @@ def _dsa_decode_kernel(
                     T.fill(acc_o_l, 0)
 
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
-                        T.barrier_wait(bar_k_0_ready[0], (i_i & 1))
-
-                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i, bi_i] = T.if_then_else(
-                                is_kv_valid_0[bi_i], 0, -T.infinity(acc_s.dtype)
-                            )
-                        T.wgmma_gemm(q_shared_l, kv_shared_0_l, acc_s, transpose_B=True)
-                        T.wgmma_gemm(q_shared_r, kv_shared_0_r, acc_s, transpose_B=True)
-                        T.wgmma_gemm(q_tail_shared, k_tail_shared_0, acc_s, transpose_B=True)
-
-                        T.wait_wgmma(0)
-
-                        if i_i != 0:
-                            T.barrier_arrive(bar_s_scale_and_s_free)
-                            T.barrier_wait(bar_s_scale_and_s_free, ((i_i * 2) & 1) ^ 1)
-
-                        T.copy(m_i, m_i_prev)
-                        T.reduce_max(acc_s, m_i, dim=1, clear=False)
-                        # m_i_prev becomes the scaled max the weights subtract: 0 while the
-                        # row has no valid key, so its weights are 0 instead of NaN.
-                        for h_i in T.Parallel(h_per_block):
-                            m_sub = T.if_then_else(
-                                m_i[h_i] == -T.infinity(accum_dtype), 0.0, m_i[h_i] * sm_scale
-                            )
-                            alpha_local[h_i] = T.exp2(m_i_prev[h_i] * sm_scale - m_sub)
-                            m_i_prev[h_i] = m_sub
-                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i_prev[h_i])
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)
-                        for h_i in T.Parallel(h_per_block):
-                            sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
-                        for h_i, d_i in T.Parallel(h_per_block, d // 2):
-                            acc_o_l[h_i, d_i] *= alpha_local[h_i]
-                        T.copy(alpha_local, alpha_shared)
-
-                        T.copy(acc_s, s_shared)
-                        T.gemm(s_shared, kv_shared_0_l, acc_o_l)
-
-                        T.barrier_arrive(bar_s_scale_and_s_ready)
-                        T.barrier_arrive(bar_k_0_free[0])
-
-                        T.barrier_wait(bar_k_1_ready[0], (i_i & 1))
-
-                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i, bi_i] = T.if_then_else(
-                                is_kv_valid_1[bi_i], 0, -T.infinity(acc_s.dtype)
-                            )
-                        T.wgmma_gemm(q_shared_l, kv_shared_1_l, acc_s, transpose_B=True)
-                        T.wgmma_gemm(q_shared_r, kv_shared_1_r, acc_s, transpose_B=True)
-                        T.wgmma_gemm(q_tail_shared, k_tail_shared_1, acc_s, transpose_B=True)
-
-                        T.wait_wgmma(0)
-
-                        T.barrier_arrive(bar_s_scale_and_s_free)
-                        T.barrier_wait(bar_s_scale_and_s_free, ((i_i * 2 + 1) & 1) ^ 1)
-
-                        T.copy(m_i, m_i_prev)
-                        T.reduce_max(acc_s, m_i, dim=1, clear=False)
-                        # m_i_prev becomes the scaled max the weights subtract: 0 while the
-                        # row has no valid key, so its weights are 0 instead of NaN.
-                        for h_i in T.Parallel(h_per_block):
-                            m_sub = T.if_then_else(
-                                m_i[h_i] == -T.infinity(accum_dtype), 0.0, m_i[h_i] * sm_scale
-                            )
-                            alpha_local[h_i] = T.exp2(m_i_prev[h_i] * sm_scale - m_sub)
-                            m_i_prev[h_i] = m_sub
-                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i_prev[h_i])
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)
-                        for h_i in T.Parallel(h_per_block):
-                            sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
-                        for h_i, d_i in T.Parallel(h_per_block, d // 2):
-                            acc_o_l[h_i, d_i] *= alpha_local[h_i]
-                        T.copy(alpha_local, alpha_shared)
-
-                        T.copy(acc_s, s_shared)
-                        T.gemm(s_shared, kv_shared_1_l, acc_o_l)
-
-                        T.barrier_arrive(bar_s_scale_and_s_ready)
-                        T.barrier_arrive(bar_k_1_free[0])
+                        score_block(
+                            q_shared_l, q_shared_r, q_tail_shared, kv_shared_0_l, kv_shared_0_r,
+                            k_tail_shared_0, is_kv_valid_0, acc_s, s_shared, acc_o_l, sumexp,
+                            sumexp_i, alpha_shared, alpha_local, m_i, m_i_prev, bar_k_0_ready,
+                            bar_k_0_free, bar_s_scale_and_s_ready, bar_s_scale_and_s_free,
+                            i_i & 1, i_i != 0, 1,
+                        )  # fmt: skip
+                        score_block(
+                            q_shared_l, q_shared_r, q_tail_shared, kv_shared_1_l, kv_shared_1_r,
+                            k_tail_shared_1, is_kv_valid_1, acc_s, s_shared, acc_o_l, sumexp,
+                            sumexp_i, alpha_shared, alpha_local, m_i, m_i_prev, bar_k_1_ready,
+                            bar_k_1_free, bar_s_scale_and_s_ready, bar_s_scale_and_s_free,
+                            i_i & 1, True, 0,
+                        )  # fmt: skip
 
                     # Only a row with no valid key sums to 0; its acc_o is 0, and so is its output.
                     for h_i in T.Parallel(h_per_block):
@@ -434,128 +452,16 @@ def _dsa_decode_kernel(
                 elif tx >= 256:
                     T.set_max_nreg(80, 0)
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
-                        T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
-                        for r in T.serial(i_block // producer_rows):
-                            indices_local[0] = indices[
-                                b_i,
-                                s_i,
-                                g_i,
-                                (i_i * 2) * i_block + r * producer_rows + (tx - 256) // 8,
-                            ]
-                            is_kv_valid_0[r * producer_rows + (tx - 256) // 8] = (
-                                indices_local[0] >= 0
-                            ) & (indices_local[0] <= max_kv_i)
-                            if is_kv_valid_0[r * producer_rows + (tx - 256) // 8]:
-                                with T.attr("default", "async_scope", 1):
-                                    for u in T.serial(d // 128):
-                                        for v in T.vectorized(8):
-                                            kv_shared_0_l[
-                                                r * producer_rows + (tx - 256) // 8,
-                                                64 * u + (tx - 256) % 8 * 8 + v,
-                                            ] = kv[
-                                                b_i,
-                                                indices_local[0],
-                                                g_i,
-                                                64 * u + (tx - 256) % 8 * 8 + v,
-                                            ]
-                                            kv_shared_0_r[
-                                                r * producer_rows + (tx - 256) // 8,
-                                                64 * u + (tx - 256) % 8 * 8 + v,
-                                            ] = kv[
-                                                b_i,
-                                                indices_local[0],
-                                                g_i,
-                                                d // 2 + 64 * u + (tx - 256) % 8 * 8 + v,
-                                            ]
-                                with T.attr("default", "async_scope", 1):
-                                    for v in T.vectorized(8):
-                                        k_tail_shared_0[
-                                            r * producer_rows + (tx - 256) // 8,
-                                            (tx - 256) % 8 * 8 + v,
-                                        ] = kv[
-                                            b_i, indices_local[0], g_i, d + (tx - 256) % 8 * 8 + v
-                                        ]
-                            else:
-                                # Zero, not stale: the row's softmax weight is zero,
-                                # and zero times a NaN an earlier tile left in shared
-                                # memory is NaN.
-                                for u in T.serial(d // 128):
-                                    for v in T.vectorized(8):
-                                        kv_shared_0_l[
-                                            r * producer_rows + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = 0
-                                        kv_shared_0_r[
-                                            r * producer_rows + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = 0
-                                for v in T.vectorized(8):
-                                    k_tail_shared_0[
-                                        r * producer_rows + (tx - 256) // 8,
-                                        (tx - 256) % 8 * 8 + v,
-                                    ] = 0
-                        T.cp_async_barrier_noinc(bar_k_0_ready[0])
-                        T.barrier_arrive(bar_k_0_ready[0])
-
-                        T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
-                        for r in T.serial(i_block // producer_rows):
-                            indices_local[0] = indices[
-                                b_i,
-                                s_i,
-                                g_i,
-                                (i_i * 2 + 1) * i_block + r * producer_rows + (tx - 256) // 8,
-                            ]
-                            is_kv_valid_1[r * producer_rows + (tx - 256) // 8] = (
-                                indices_local[0] >= 0
-                            ) & (indices_local[0] <= max_kv_i)
-                            if is_kv_valid_1[r * producer_rows + (tx - 256) // 8]:
-                                with T.attr("default", "async_scope", 1):
-                                    for u in T.serial(d // 128):
-                                        for v in T.vectorized(8):
-                                            kv_shared_1_l[
-                                                r * producer_rows + (tx - 256) // 8,
-                                                64 * u + (tx - 256) % 8 * 8 + v,
-                                            ] = kv[
-                                                b_i,
-                                                indices_local[0],
-                                                g_i,
-                                                64 * u + (tx - 256) % 8 * 8 + v,
-                                            ]
-                                            kv_shared_1_r[
-                                                r * producer_rows + (tx - 256) // 8,
-                                                64 * u + (tx - 256) % 8 * 8 + v,
-                                            ] = kv[
-                                                b_i,
-                                                indices_local[0],
-                                                g_i,
-                                                d // 2 + 64 * u + (tx - 256) % 8 * 8 + v,
-                                            ]
-                                with T.attr("default", "async_scope", 1):
-                                    for v in T.vectorized(8):
-                                        k_tail_shared_1[
-                                            r * producer_rows + (tx - 256) // 8,
-                                            (tx - 256) % 8 * 8 + v,
-                                        ] = kv[
-                                            b_i, indices_local[0], g_i, d + (tx - 256) % 8 * 8 + v
-                                        ]
-                            else:
-                                for u in T.serial(d // 128):
-                                    for v in T.vectorized(8):
-                                        kv_shared_1_l[
-                                            r * producer_rows + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = 0
-                                        kv_shared_1_r[
-                                            r * producer_rows + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = 0
-                                for v in T.vectorized(8):
-                                    k_tail_shared_1[
-                                        r * producer_rows + (tx - 256) // 8,
-                                        (tx - 256) % 8 * 8 + v,
-                                    ] = 0
-                        T.cp_async_barrier_noinc(bar_k_1_ready[0])
-                        T.barrier_arrive(bar_k_1_ready[0])
+                        gather_block(
+                            kv, indices, kv_shared_0_l, kv_shared_0_r, k_tail_shared_0,
+                            is_kv_valid_0, indices_local, bar_k_0_ready, bar_k_0_free, b_i, s_i,
+                            g_i, i_i * 2, i_i & 1, max_kv_i, tx,
+                        )  # fmt: skip
+                        gather_block(
+                            kv, indices, kv_shared_1_l, kv_shared_1_r, k_tail_shared_1,
+                            is_kv_valid_1, indices_local, bar_k_1_ready, bar_k_1_free, b_i, s_i,
+                            g_i, i_i * 2 + 1, i_i & 1, max_kv_i, tx,
+                        )  # fmt: skip
 
         return _dsa_decode_fwd_main
 
@@ -573,24 +479,14 @@ def _dsa_decode_basic_kernel(
     topk: int,
     kv_stride: int,
     q_start_index_s: int,
-    kv_group: int = 1,
-    sm_scale: float = None,
-    is_causal: bool = True,
-    dtype: str = "float16",
-) -> None:
-    """
-    Architecture-agnostic sparse MLA forward (plain T.gemm + T.Pipelined).
-
-    Re-implements ``_dsa_decode_kernel`` without WGMMA or warp specialization
-    so it compiles on pre-SM90 targets (sm80 / sm86 / sm89). The math (online
-    softmax over gathered top-k KV rows) is identical to the WGMMA version;
-    only the execution strategy changes:
-
-    - One homogeneous thread group instead of producer + 2 consumer warpgroups.
-    - ``T.Pipelined`` software pipelining instead of hand-rolled double
-      buffering with mbarriers.
-    - Per-row KV gather via ``T.copy`` with runtime row indices.
-    """
+    kv_group: int,
+    sm_scale: float | None,
+    is_causal: bool,
+    dtype: str,
+) -> Callable:
+    """Causal sparse MLA on any architecture: ``_dsa_decode_kernel``'s online softmax over the
+    gathered top-k KV rows, with one thread group, ``T.Pipelined`` stages and per-row
+    ``T.copy`` gathers in place of warp specialization and WGMMA."""
     reason = DSADecodeKernelBase.shape_refusal(dim, tail_dim, heads, kv_group, is_causal)
     if reason is not None:
         raise ValueError(reason)
@@ -605,21 +501,11 @@ def _dsa_decode_basic_kernel(
         out_idx=[-1],
         compile_flags=[
             "--use_fast_math",
-            "-O3",
-            "-Wno-deprecated-declarations",
-            "-U__CUDA_NO_HALF_OPERATORS__",
-            "-U__CUDA_NO_HALF_CONVERSIONS__",
-            "-U__CUDA_NO_HALF2_OPERATORS__",
-            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-            "--expt-relaxed-constexpr",
-            "--expt-extended-lambda",
+            *CUDA_COMPILE_FLAGS,
             "--ptxas-options=-v,--register-usage-level=10",
-            "-DNDEBUG",
         ],
     )
-    def _dsa_decode_basic_fwd_func(
-        block_i: int, threads: int, num_stages: int = 2, block_h: int = 64
-    ) -> None:
+    def _dsa_decode_basic_fwd_func(block_i: int, threads: int, num_stages: int, block_h: int):
         if topk % block_i != 0:
             raise ValueError("otherwise will load some index=0 thus causing wrong kv to be loaded")
         i_block = block_i
@@ -734,7 +620,6 @@ def _dsa_decode_basic_kernel(
                             policy=T.GemmWarpPolicy.FullCol,
                         )
 
-                    # Online softmax — same math as the WGMMA version.
                     T.copy(m_i, m_i_prev)
                     T.reduce_max(acc_s, m_i, dim=1, clear=False)
                     # m_i_prev becomes the scaled max the weights subtract: 0 while the row
@@ -775,6 +660,7 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     general = True
+    _build = staticmethod(_dsa_decode_basic_kernel)
 
     @classmethod
     def refusal(cls, call: DSADecodeCall) -> str | None:
@@ -860,65 +746,8 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
             return q + kv + max(kv_tail, s)
         return q + kv + kv_tail + s + 2 * threads * 4
 
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        seq_len_kv: int,
-        heads: int,
-        dim: int,
-        tail_dim: int,
-        dtype: torch.dtype,
-        topk: int,
-        kv_stride: int,
-        q_start_index_s: int,
-        kv_group: int = 1,
-        sm_scale: float = None,
-        is_causal: bool = True,
-        config: dict | None = None,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.batch = batch
-        self.seq_len = seq_len
-        self.seq_len_kv = seq_len_kv
-        self.heads = heads
-        self.dim = dim
-        self.tail_dim = tail_dim
-        self.dtype = dtype
-        self.topk = topk
-        self.kv_stride = kv_stride
-        self.kv_group = kv_group
-        self.sm_scale = sm_scale
-        self.is_causal = is_causal
-        self.q_start_index_s = q_start_index_s
-
-        self.kernel = _dsa_decode_basic_kernel(
-            self.batch,
-            self.seq_len,
-            self.seq_len_kv,
-            self.heads,
-            self.dim,
-            self.tail_dim,
-            self.topk,
-            self.kv_stride,
-            self.q_start_index_s,
-            self.kv_group,
-            self.sm_scale,
-            self.is_causal,
-            self.dtype_str,
-        )
-
-        self.init_config(config)
-
     @property
     def default_config(self) -> dict:
-        # 128 threads (4 warps) matches the row-parallel online-softmax
-        # layout and MLADecodeKernel's sm89 best config. The WGMMA version
-        # instead spreads acc_o across two 128-thread consumer warpgroups.
-        # Below SM90, block_i=32 keeps the KV tiles small enough for the
-        # per-block shared-memory limit, and fewer heads a block where 64
-        # still do not fit; ``refusal`` rejects a shape where even 16 do not.
         return self._default_config_for(
             self.build_target.arch,
             self.heads // self.kv_group,
@@ -930,59 +759,23 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """
-        Generates a list of autotuning configurations for the kernel.
-
-        ``block_i=32`` halves the KV shared-memory footprint, which matters
-        where ``BLOCK_SHARED_BYTES_OPT_IN`` gives a block less shared memory
-        than on SM90.
-
-        Returns:
-            list[dict]: Configs with 'block_i', 'threads' and 'num_stages'.
-        """
-        # threads=256 is kept for targets that support it; the autotuner
-        # prunes configs that fail to compile.
+        # The autotuner drops a candidate that fails to compile.
         block_h = self.default_config["block_h"]
         return [
             {"block_i": block_i, "threads": threads, "num_stages": 2, "block_h": block_h}
             for block_i, threads in itertools.product((32, 64), (128, 256))
         ]
 
-    def forward(
-        self,
-        q: torch.Tensor,
-        kv: torch.Tensor,
-        indices: torch.Tensor,
-        attn_sink: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """
-        Performs the forward pass of the sparse multi-head attention kernel.
-
-        Args:
-            q (torch.Tensor): Query tensor.
-            kv (torch.Tensor): Key-value tensor.
-            indices (torch.Tensor): Indices tensor.
-
-        Returns:
-           torch.Tensor: Result of the sparse multi-head attention.
-        """
-        return self.program(self._compile)(q, kv, indices)
-
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(cfg["block_i"], cfg["threads"], cfg["num_stages"], cfg["block_h"])
-
-    @property
-    def autotune_supply_prog(self) -> Callable | None:
-        # supply_prog generates inputs from instance shape attributes and takes
-        # no JIT params; discard whatever TileLang passes in.
-        return lambda *args, **kwargs: self.supply_prog()
 
 
 class DSADecodeKernel(DSADecodeKernelBase):
     """Causal sparse MLA with SM90 WGMMA and manual warp specialization."""
 
     supported_archs: list[int] = [90]
+    _build = staticmethod(_dsa_decode_kernel)
 
     @staticmethod
     def gather_refusal(dim: int, tail_dim: int) -> str | None:
@@ -1004,129 +797,20 @@ class DSADecodeKernel(DSADecodeKernelBase):
             return "requires topk a multiple of 128"
         return super().refusal(call)
 
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        seq_len_kv: int,
-        heads: int,
-        dim: int,
-        tail_dim: int,
-        dtype: torch.dtype,
-        topk: int,
-        kv_stride: int,
-        q_start_index_s: int,
-        kv_group: int = 1,
-        sm_scale: float = None,
-        is_causal: bool = True,
-        config: dict | None = None,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.batch = batch
-        self.seq_len = seq_len
-        self.seq_len_kv = seq_len_kv
-        self.heads = heads
-        self.dim = dim
-        self.tail_dim = tail_dim
-        self.dtype = dtype
-        self.topk = topk
-        self.kv_stride = kv_stride
-        self.kv_group = kv_group
-        self.sm_scale = sm_scale
-        self.is_causal = is_causal
-        self.q_start_index_s = q_start_index_s
-
-        self.kernel = _dsa_decode_kernel(
-            self.batch,
-            self.seq_len,
-            self.seq_len_kv,
-            self.heads,
-            self.dim,
-            self.tail_dim,
-            self.topk,
-            self.kv_stride,
-            self.q_start_index_s,
-            self.kv_group,
-            self.sm_scale,
-            self.is_causal,
-            self.dtype_str,
-        )
-
-        self.init_config(config)
-
     @property
     def default_config(self) -> dict:
-        """
-        Returns the default configuration for the kernel.
-
-        Returns:
-            dict: Default kernel configuration with 'block_i' and 'threads'.
-        """
         return {"block_i": 64, "threads": 384}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """
-        Generates a list of autotuning configurations for the kernel.
-
-        Returns:
-            list[dict]: A list of dictionaries containing 'block_i' and 'threads' combinations.
-        """
-        block_i = [64, 128]
-        threads = [384, 512]
-        _configs = list(itertools.product(block_i, threads))
-
         return [
-            {
-                "block_i": c[0],
-                "threads": c[1],
-            }
-            for c in _configs
+            {"block_i": block_i, "threads": threads}
+            for block_i, threads in itertools.product((64, 128), (384, 512))
         ]
 
-    def forward(
-        self,
-        q: torch.Tensor,
-        kv: torch.Tensor,
-        indices: torch.Tensor,
-        attn_sink: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """
-        Performs the forward pass of the sparse multi-head attention kernel.
-
-        Args:
-            q (torch.Tensor): Query tensor.
-            kv (torch.Tensor): Key-value tensor.
-            indices (torch.Tensor): Indices tensor.
-
-        Returns:
-           torch.Tensor: Result of the sparse multi-head attention.
-        """
-        return self.program(self._compile)(q, kv, indices)
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
+        super().autotune(warmup=warmup, rep=rep)
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(cfg["block_i"], cfg["threads"])
-
-    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Tune candidate configurations and store the best in ``self.config``."""
-        if self.autotune_configs is None:
-            return  # kernel doesn't support autotuning
-
-        tunable_params = list(self._autotune_initial_kwargs(self.kernel).keys())
-        # TileLang invokes supply_prog with the candidate JIT params; DSADecodeKernel.supply_prog
-        # generates inputs from instance shape attributes and takes none, so discard them.
-        autotune_kwargs = dict(
-            configs=self.tuning_candidates(self.autotune_configs),
-            warmup=warmup,
-            rep=rep,
-            supply_prog=lambda *args, **kwargs: self.supply_prog(),
-        )
-        if tunable_params:
-            autotune_kwargs["do_not_specialize"] = tunable_params
-        autotuned_kernel_fn = autotune(**autotune_kwargs)(self.kernel)
-
-        tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
-
-        self._publish_tuned(tuned_kernel.config)

@@ -52,7 +52,7 @@ __all__ = [
     "mla_varlen_bwd_roofline",
     "mla_varlen_fwd_roofline",
     "moe_expert_mlp_roofline",
-    "moe_grouped_gemm_fp8_roofline",
+    "moe_grouped_gemm_block_scaled_roofline",
     "moe_grouped_gemm_roofline",
     "moe_layout_rows",
     "moe_post_permute_roofline",
@@ -324,7 +324,7 @@ def moe_grouped_gemm_roofline(call: CallView) -> tuple[int, int]:
     return flops, _moe_layout_bytes(call, rows=("a", "output"), weights=weights)
 
 
-def moe_grouped_gemm_fp8_roofline(call: CallView) -> tuple[int, int]:
+def moe_grouped_gemm_block_scaled_roofline(call: CallView) -> tuple[int, int]:
     """Grouped expert GEMM over the valid rows, with no fused activation; a masked slab moves
     only its valid rows of ``a``, ``a_scale`` and ``output``, and an expert with no valid row
     reads neither its weight nor that weight's scale."""

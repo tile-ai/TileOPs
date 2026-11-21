@@ -40,118 +40,26 @@ __device__ __forceinline__ void dense_wgmma_64xN_k64(float* accumulator,
 }
 
 // The instantiations the coop2 kernel and the persistent template name, one per
-// dtype and width.
-__device__ __forceinline__ void dense_wgmma_bf16_64x176_k64(float* accumulator,
-                                                            bfloat16_t* a_smem,
-                                                            bfloat16_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 176>(accumulator, a_smem,
-                                                     b_smem, accumulate);
-}
+// dtype and width: dense_wgmma_{bf16,fp16}_64x<N>_k64.
+#define TILEOPS_DENSE_WGMMA_64XN_K64(TAG, T, AB, N)                       \
+  __device__ __forceinline__ void dense_wgmma_##TAG##_64x##N##_k64(       \
+      float* accumulator, T* a_smem, T* b_smem, int accumulate) {         \
+    dense_wgmma_64xN_k64<AB, N>(accumulator, a_smem, b_smem, accumulate); \
+  }
+#define TILEOPS_DENSE_WGMMA_64XN_K64_BOTH(N)                                 \
+  TILEOPS_DENSE_WGMMA_64XN_K64(bf16, bfloat16_t, tl::DataType::kBFloat16, N) \
+  TILEOPS_DENSE_WGMMA_64XN_K64(fp16, half_t, tl::DataType::kFloat16, N)
 
-__device__ __forceinline__ void dense_wgmma_bf16_64x192_k64(float* accumulator,
-                                                            bfloat16_t* a_smem,
-                                                            bfloat16_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 192>(accumulator, a_smem,
-                                                     b_smem, accumulate);
-}
+TILEOPS_DENSE_WGMMA_64XN_K64_BOTH(144)
+TILEOPS_DENSE_WGMMA_64XN_K64_BOTH(160)
+TILEOPS_DENSE_WGMMA_64XN_K64_BOTH(176)
+TILEOPS_DENSE_WGMMA_64XN_K64_BOTH(192)
+TILEOPS_DENSE_WGMMA_64XN_K64_BOTH(224)
+TILEOPS_DENSE_WGMMA_64XN_K64_BOTH(240)
+TILEOPS_DENSE_WGMMA_64XN_K64_BOTH(256)
 
-__device__ __forceinline__ void dense_wgmma_fp16_64x176_k64(float* accumulator,
-                                                            half_t* a_smem,
-                                                            half_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 176>(accumulator, a_smem, b_smem,
-                                                    accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_fp16_64x192_k64(float* accumulator,
-                                                            half_t* a_smem,
-                                                            half_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 192>(accumulator, a_smem, b_smem,
-                                                    accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_bf16_64x144_k64(float* accumulator,
-                                                            bfloat16_t* a_smem,
-                                                            bfloat16_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 144>(accumulator, a_smem,
-                                                     b_smem, accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_fp16_64x144_k64(float* accumulator,
-                                                            half_t* a_smem,
-                                                            half_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 144>(accumulator, a_smem, b_smem,
-                                                    accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_bf16_64x160_k64(float* accumulator,
-                                                            bfloat16_t* a_smem,
-                                                            bfloat16_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 160>(accumulator, a_smem,
-                                                     b_smem, accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_fp16_64x160_k64(float* accumulator,
-                                                            half_t* a_smem,
-                                                            half_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 160>(accumulator, a_smem, b_smem,
-                                                    accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_bf16_64x240_k64(float* accumulator,
-                                                            bfloat16_t* a_smem,
-                                                            bfloat16_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 240>(accumulator, a_smem,
-                                                     b_smem, accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_fp16_64x240_k64(float* accumulator,
-                                                            half_t* a_smem,
-                                                            half_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 240>(accumulator, a_smem, b_smem,
-                                                    accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_bf16_64x256_k64(float* accumulator,
-                                                            bfloat16_t* a_smem,
-                                                            bfloat16_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 256>(accumulator, a_smem,
-                                                     b_smem, accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_fp16_64x256_k64(float* accumulator,
-                                                            half_t* a_smem,
-                                                            half_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 256>(accumulator, a_smem, b_smem,
-                                                    accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_bf16_64x224_k64(float* accumulator,
-                                                            bfloat16_t* a_smem,
-                                                            bfloat16_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 224>(accumulator, a_smem,
-                                                     b_smem, accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_fp16_64x224_k64(float* accumulator,
-                                                            half_t* a_smem,
-                                                            half_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 224>(accumulator, a_smem, b_smem,
-                                                    accumulate);
-}
+#undef TILEOPS_DENSE_WGMMA_64XN_K64_BOTH
+#undef TILEOPS_DENSE_WGMMA_64XN_K64
 
 // One 64-wide K step of a 128 x N output tile, issued as one N-wide WGMMA per
 // 16 of K for each 64-row half (lo, hi), so a width that does not divide 256

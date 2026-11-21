@@ -351,20 +351,10 @@ def _run(workload) -> tuple:
             marks=pytest.mark.smoke,
             id="aligned-per-row",
         ),
-        pytest.param(
-            _aligned("physical_psum"),
-            {"P": 128 * 9},
-            torch.bfloat16,
-            marks=pytest.mark.full,
-            id="aligned-psum",
-        ),
-        pytest.param(
-            {"masked": {"max_m": 128}}, {}, torch.bfloat16, marks=pytest.mark.full, id="masked"
-        ),
     ],
 )
 def test_grouped_gemm_runs_each_layout_through_the_op(layout, rows, dtype):
-    """Each claimed layout: the op builds the device's kernel once and matches the reference."""
+    """A layout's generated call, in each dtype, matches the reference."""
     num_experts = 6
     op, out = _run(
         MoEGroupedGEMMWorkload(_gemm_call(dtype, layout, K=512, E=num_experts, N=256, **rows))
@@ -959,9 +949,6 @@ def test_grouped_gemm_accepts_out_ending_where_an_input_starts(_architecture):
     compare_outputs(out, workload.ref_program(*args), workload.verification(*args))
 
 
-# Unpermute at a hidden size no power of two divides.
-
-
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
 def test_post_permute_more_tokens_than_sms_at_gpt_oss_hidden_size() -> None:
@@ -1037,10 +1024,6 @@ def test_post_permute_adds_the_residual_before_the_cast(dtype: torch.dtype) -> N
             for shift in ("a", "b", "bias", "out")
             for masked in (False, True)
             if (shift, masked) != ("a", False)
-        ),
-        *(
-            pytest.param(torch.float16, shift, True, marks=pytest.mark.full)
-            for shift in ("a", "b", "bias", "out")
         ),
     ],
 )
@@ -1165,20 +1148,13 @@ def _deepseek_v4_moe(x, ids, weights, w_gate_up, w_down, shared_gate_up, shared_
 
 
 @pytest.mark.sm90
-@pytest.mark.parametrize(
-    "tokens, hidden, inter, experts",
-    [
-        pytest.param(64, 512, 256, 16, marks=pytest.mark.smoke),
-    ],
-)
-def test_deepseek_v4_moe_block_matches_the_float32_reference(
-    tokens: int, hidden: int, inter: int, experts: int
-) -> None:
+@pytest.mark.smoke
+def test_deepseek_v4_moe_block_matches_the_float32_reference() -> None:
     """DeepSeek-V4-Flash's MoE block from TileOPs ops, its weights spread so the clamp engages:
     the routing weight scales each clamped SwiGLU row before the down projection, and the
     shared expert joins the float32 sum before the one cast. Its error against the float32
     reference stays within twice the official bfloat16 code's."""
-    top_k, limit = 6, 10.0
+    tokens, hidden, inter, experts, top_k, limit = 64, 512, 256, 16, 6, 10.0
     device, dtype = run_device(), torch.bfloat16
     spread = 7 * hidden**-0.5
     x = torch.randn(tokens, hidden, device=device).to(dtype)

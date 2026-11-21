@@ -3,6 +3,7 @@ import torch
 from workloads.attention.gqa.call_metadata import _dtype
 from workloads.attention.gqa.rope import apply_dense_rope
 from workloads.device import run_device
+from workloads.numerics import Exact
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
@@ -13,6 +14,10 @@ __all__ = [
     "GQADenseWithLSECall",
     "dense_gqa_logits",
     "dense_gqa_ref",
+    "dense_gqa_verification",
+    "fp8_qkv",
+    "packed_gqa_ref",
+    "rotation_tables",
 ]
 
 
@@ -100,6 +105,86 @@ def dense_gqa_ref(
     return output.transpose(1, 2).to(q.dtype).contiguous()
 
 
+def packed_gqa_ref(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    scale: float,
+    softcap: float | None,
+    is_causal: bool,
+    window_size_left: int,
+    window_size_right: int,
+    sinks: torch.Tensor | None,
+) -> torch.Tensor:
+    """FP32 GQA of one request's ``[S_q, H, D]`` queries over its ``[S_kv, H_kv, D]`` keys and
+    values, returned as ``[S_q, H, D]``.
+
+    Query row ``i`` sits at key position ``i + S_kv - S_q``. A per-head sink logit joins each
+    softmax denominator. A row that sees no key, or whose head's sink is ``+inf``, is zero.
+    """
+    q_len, heads, _ = q.shape
+    kv_len = k.shape[0]
+    groups = heads // k.shape[1]
+    q_i = q.transpose(0, 1).float()
+    k_i = k.repeat_interleave(groups, dim=1).transpose(0, 1).float()
+    v_i = v.repeat_interleave(groups, dim=1).transpose(0, 1).float()
+    scores = torch.matmul(q_i, k_i.transpose(-2, -1)) * scale
+    if softcap is not None and softcap > 0:
+        scores = softcap * torch.tanh(scores / softcap)
+    q_pos = torch.arange(q_len, device=q.device)[:, None] + kv_len - q_len
+    k_pos = torch.arange(kv_len, device=q.device)[None, :]
+    visible = torch.ones((q_len, kv_len), dtype=torch.bool, device=q.device)
+    if is_causal:
+        visible &= k_pos <= q_pos
+    if window_size_left >= 0:
+        visible &= k_pos >= q_pos - window_size_left
+    if window_size_right >= 0:
+        visible &= k_pos <= q_pos + window_size_right
+    scores = scores.masked_fill(~visible, float("-inf"))
+    if sinks is not None:
+        scores = torch.cat((scores, sinks[:, None, None].expand(-1, q_len, 1)), dim=-1)
+    probs = torch.softmax(scores, dim=-1)[..., :kv_len]
+    if sinks is not None:
+        probs = torch.where(torch.isposinf(sinks)[:, None, None], 0, probs)
+    probs = torch.where(visible.any(dim=-1)[None, :, None], probs, 0)
+    return torch.matmul(probs, v_i).transpose(0, 1)
+
+
+def dense_gqa_verification(dtype):
+    """FP8 attention rounds probabilities as well as its quantized operands."""
+    if dtype == torch.float8_e4m3fn:
+        return Exact(atol=8e-2, rtol=2e-2)
+    return Exact()
+
+
+def fp8_qkv(
+    shapes: tuple[tuple[int, ...], ...], batch: int, heads_kv: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...]]:
+    """FP8 ``q``, ``k`` and ``v`` of *shapes*, and their ``[batch, heads_kv]`` float32 scales.
+
+    The score spread in standard deviations is the draw's variance: the head dimension
+    cancels against the default sm_scale. At 0.2 the spread is 0.04, the softmax is uniform
+    to within 4%, and a kernel that never reads its query still agrees with the reference.
+    At 2.0 the spread is 4, which separates a query-blind kernel by 38x to 58x. A wider draw
+    separates them less: a sharper softmax amplifies the e4m3 score error faster than it
+    sharpens the weights. The scales are not one, so a kernel that never reads one disagrees.
+    """
+    q, k = ((torch.randn(s, device=run_device()) * 2.0).to(torch.float8_e4m3fn) for s in shapes[:2])
+    v = (torch.randn(shapes[2], device=run_device()) * 0.2).to(torch.float8_e4m3fn)
+    scales = tuple(
+        torch.rand(batch, heads_kv, device=run_device(), dtype=torch.float32) * 0.5 + 0.75
+        for _ in range(3)
+    )
+    return q, k, v, scales
+
+
+def rotation_tables(rows: int, rotary_dim: int, dtype: torch.dtype) -> tuple[torch.Tensor, ...]:
+    """RoPE cosine and sine tables ``[rows, rotary_dim // 2]`` of small random angles."""
+    angles = torch.randn(rows, rotary_dim // 2, device=run_device()) * 0.1
+    return angles.cos().to(dtype), angles.sin().to(dtype)
+
+
 class GQADenseDecodeWorkload(WorkloadBase):
     """Single-token decode over a contiguous BSHD KV cache."""
 
@@ -137,15 +222,16 @@ class GQADenseDecodeWorkload(WorkloadBase):
         return q, k, v
 
     def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        groups = self.heads // self.heads_kv
-        q_bhsd = q.transpose(1, 2).float()
-        k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-        v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-        scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * self.sm_scale
-        if self.softcap > 0:
-            scores = self.softcap * torch.tanh(scores / self.softcap)
-        probs = torch.softmax(scores, dim=-1)
-        return torch.matmul(probs, v_bhsd).transpose(1, 2).to(q.dtype).contiguous()
+        return dense_gqa_ref(
+            q,
+            k,
+            v,
+            heads=self.heads,
+            heads_kv=self.heads_kv,
+            is_causal=False,
+            sm_scale=self.sm_scale,
+            softcap=self.softcap,
+        )
 
     def verification(self, *inputs):
         return dense_gqa_verification(inputs[0].dtype)
@@ -203,26 +289,13 @@ class GQADensePrefillWorkload(WorkloadBase):
             (self.batch, self.seq_len_kv, self.heads_kv, self.dim),
         )
         if self.dtype == torch.float8_e4m3fn:
-            # As in the packed FP8 workload, Q and K at 2.0 spread the scores by 4 standard
-            # deviations, so a row's output depends on which keys and which scales it reads.
-            q, k = ((torch.randn(s, device=run_device()) * 2.0).to(self.dtype) for s in shapes[:2])
-            v = (torch.randn(shapes[2], device=run_device()) * 0.2).to(self.dtype)
-            # Not one: a kernel that never reads a scale must not agree.
-            scales = tuple(
-                torch.rand(self.batch, self.heads_kv, device=run_device(), dtype=torch.float32)
-                * 0.5
-                + 0.75
-                for _ in range(3)
-            )
+            q, k, v, scales = fp8_qkv(shapes, self.batch, self.heads_kv)
         else:
             q, k, v = (torch.randn(s, device=run_device(), dtype=self.dtype) for s in shapes)
             scales = (None, None, None)
-
         rope_cos = rope_sin = None
         if self.rotary_dim is not None:
-            angles = torch.randn(self.seq_len_kv, self.rotary_dim // 2, device=run_device()) * 0.1
-            rope_cos = angles.cos().to(self.out_dtype)
-            rope_sin = angles.sin().to(self.out_dtype)
+            rope_cos, rope_sin = rotation_tables(self.seq_len_kv, self.rotary_dim, self.out_dtype)
         sinks = None
         if self.has_sinks:
             # Nonzero-mean values make a missing sink visible even under the
@@ -297,8 +370,6 @@ class GQADensePrefillWorkload(WorkloadBase):
 
     def verification(self, *inputs):
         if inputs[0].dtype == torch.float8_e4m3fn and self.rotary_dim is not None:
-            from workloads.numerics import Exact
-
             # This bound also covers paths that round rotated Q/K back to e4m3.
             # SM89 dense prefill instead retains the rotated Q/K in 16 bits.
             return Exact(atol=0.12, rtol=0.04)
@@ -391,16 +462,5 @@ class GQADenseWithLSECall(CallWorkload):
 
     def verification(self, *inputs):
         """The output's dtype bound, applied to the FP32 ``lse`` as well."""
-        from workloads.numerics import Exact
-
         tolerance = 1e-3 if inputs[0].dtype == torch.float16 else 1.6e-2
         return Exact(atol=tolerance, rtol=tolerance)
-
-
-def dense_gqa_verification(dtype):
-    """FP8 attention rounds probabilities as well as its quantized operands."""
-    from workloads.numerics import Exact
-
-    if dtype == torch.float8_e4m3fn:
-        return Exact(atol=8e-2, rtol=2e-2)
-    return Exact()

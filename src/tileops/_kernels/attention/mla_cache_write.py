@@ -310,7 +310,7 @@ class MLAKVCacheWriteKernel(Kernel, MLAKVCacheWriteFwdInterface):
             cos_sin_dtype=call.cos_sin_dtype if call.fuse_rope else None,
             max_position=call.max_position if call.fuse_rope else 0,
         )
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*args.values(), index), lambda: cls(**args, device_index=index)
 
     def __init__(
@@ -345,7 +345,6 @@ class MLAKVCacheWriteKernel(Kernel, MLAKVCacheWriteFwdInterface):
         """
         super().__init__(device_index=device_index)
         self.latent_dim, self.rope_dim = latent_dim, rope_dim
-        self.num_pages, self.page_size = num_pages, page_size
         self.dtype, self.cache_dtype = dtype, cache_dtype
         self.rope_layout, self.cos_sin_dtype = rope_layout, cos_sin_dtype
         self.max_position = max_position

@@ -16,7 +16,6 @@ from tileops._kernels.pool.common import (
     ACCUM_DTYPE,
     AvgPoolWindow,
     WindowSpan,
-    dtype_itemsize,
     window_span,
 )
 
@@ -69,10 +68,10 @@ class _WindowStaging:
 
     def widths(self) -> list[int]:
         """The tile widths whose span fits the static shared budget, widest first."""
-        budget = STATIC_SHARED_BYTES // dtype_itemsize(self._dtype)
+        budget = STATIC_SHARED_BYTES // getattr(torch, self._dtype).itemsize
         fitting = [width for width in self._TILE_CHOICES if self._span(width).span <= budget]
         if not fitting:
-            need = self._span(1).span * dtype_itemsize(self._dtype)
+            need = self._span(1).span * getattr(torch, self._dtype).itemsize
             raise ValueError(
                 f"avg_pool1d stages the pooling window in shared memory: kernel_size="
                 f"{self._kernel_l} needs {need} B for a single output, over the "
@@ -121,13 +120,11 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
     # The outputs whose window lies inside the row, and so divides by the kernel width.
     clean_lo = -(-pad_l // stride_l)
     clean_hi = min((l_in + pad_l - kernel_l) // stride_l, out_l - 1)
-    # Rows past the 65535 blocks of the grid's y axis share grid x with the row's tiles, in
-    # chunks of rows whose tiles grid x holds; grid y counts the chunks.
+    # Rows past the grid's y axis share grid x with the row's tiles, in chunks of rows whose
+    # tiles grid x holds; grid y counts the chunks.
     flat = rows > MAX_GRID_YZ_BLOCKS
     # An input or an output of 2**31 elements or more takes int64 extents: int32 cannot hold
     # an extent of exactly 2**31, and TileLang widens the offsets of a longer tensor by itself.
-    # Stride 1 and padding give a row one output more than its input; `refusal` turns away a
-    # single such row of 2**31 outputs, which TileLang does not compile.
     wide = rows * max(l_in, out_l) >= 2**31
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -270,7 +267,7 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
     @classmethod
-    def refusal(cls, call: AvgPoolCall) -> "str | None":
+    def refusal(cls, call: AvgPoolCall) -> str | None:
         if len(call.size) == 1:
             (l_in,) = call.size
             (out_l,) = AvgPoolWindow.of(call).out

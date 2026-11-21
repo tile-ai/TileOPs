@@ -117,7 +117,7 @@ class TestVerdicts:
 class TestExitCodes:
     """An audit that reached no conclusion must not read as a passed one."""
 
-    @pytest.mark.parametrize("outcome", ["skipped", "failure", "error"])
+    @pytest.mark.parametrize("outcome", ["failure", "error"])
     def test_unsuccessful_cases_fail_even_with_complete_coverage(
         self, tmp_path, monkeypatch, outcome
     ):

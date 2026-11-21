@@ -20,20 +20,18 @@ STR_TO_DTYPE = {
 }
 
 
-# Calibrated boards: the key selection tables use -> the name fragment CUDA reports.
-# All SKUs of a board share its key. GPU profiles match the full name instead
-# (:func:`tileops._perf.find_profile`): a speed-of-light reading is not shared.
-_CALIBRATION_BOARDS = {"h200": "H200"}
-
-
 def calibration_key(device_name: str) -> "str | None":
     """The key of the calibrated board *device_name* belongs to, or ``None``.
 
     The one place a device name is matched; fitted tuning data is keyed by the result.
     Case-insensitive.
     """
+    # The key selection tables use -> the name fragment CUDA reports. All SKUs of a board
+    # share its key. GPU profiles match the full name instead
+    # (:func:`tileops._perf.find_profile`): a speed-of-light reading is not shared.
+    boards = {"h200": "H200"}
     upper = device_name.upper()
-    return next((key for key, board in _CALIBRATION_BOARDS.items() if board in upper), None)
+    return next((key for key, board in boards.items() if board in upper), None)
 
 
 class CudaFacts(NamedTuple):

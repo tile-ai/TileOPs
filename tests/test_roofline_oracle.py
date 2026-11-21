@@ -1652,32 +1652,22 @@ def _binder_agrees(op_name: str) -> bool:
 class TestCoverageLevels:
     """Every op sits at exactly one level, and the level is the truth."""
 
-    def test_a_generated_case_equals_its_op(self):
+    def test_a_generated_case_equals_its_op_on_both_halves(self):
+        """The audit judges the read side alone, and an op derives it by taking the write
+        side the signature settles off its `bytes`. Where the binder recounts the op, the
+        total and the read half both have to agree."""
         from tests.roofline_binder import manifest_cases
 
         checked = 0
         for op_name in _entries():
             if op_name in HAND_WRITTEN:
                 continue
-            for label, dtype, op, oracle, _reads in manifest_cases(op_name):
-                assert op.eval_roofline()[1] == oracle, f"{op_name} {label} {dtype}"
-                checked += 1
-        assert checked > 0
-
-    def test_a_generated_case_agrees_on_the_read_half(self):
-        """The audit judges the read side alone, and an op derives it by taking the
-        write side the signature settles off its `bytes`. Where the
-        binder recounts the op, the two halves have to be the same halves."""
-        from tests.roofline_binder import manifest_cases
-
-        checked = 0
-        for op_name in _entries():
-            if op_name in HAND_WRITTEN:
-                continue
-            for label, dtype, op, _oracle, reads in manifest_cases(op_name):
+            for label, dtype, op, oracle, reads in manifest_cases(op_name):
+                where = f"{op_name} {label} {dtype}"
+                assert op.eval_roofline()[1] == oracle, where
                 declared = op.eval_roofline_read_bytes()
-                assert declared is not None, f"{op_name} {label} {dtype}"
-                assert declared == reads, f"{op_name} {label} {dtype}"
+                assert declared is not None, where
+                assert declared == reads, where
                 checked += 1
         assert checked > 0
 

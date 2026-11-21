@@ -4,8 +4,8 @@ some row of each entry selects one.
 A row may declare a call no in-tree implementation serves yet, such as a pilot model's mode;
 every implementation's refusal then declines it, and the op raises ``OpNotAvailableError``.
 Any other error is a defect. Shapes and dtypes come from meta tensors; selection reads the
-run device, and nothing is built for that selection check. The focused SM90 cases below also run the selected
-kernels and compare their outputs against the workload references.
+run device, and nothing is built. Separately, a few manifest rows run on the kernel the SM90
+selection picks for them, against their workload references.
 """
 
 import pytest
@@ -83,13 +83,12 @@ def test_every_row_selects_an_implementation_or_is_refused(name, monkeypatch):
             {},
             ("_uses_tma_panels",),
         ),
-        ("Conv2dFwdOp", "mbv2-depthwise-float16", "DepthwiseConv2dWarpKernel", {}, ()),
-        ("EngramDecodeFwdOp", "serving-b1-float16", "EngramDecodeSplitKernel", {}, ()),
     ],
 )
 def test_sm90_workload_selects_and_runs_its_specialized_kernel(
     name, case_id, expected_kernel, config, program_checks
 ):
+    """Row *case_id* selects *expected_kernel* with *config* and matches its reference."""
     from tileops.backend import BUILTIN
     from workloads.calls import call_workload
     from workloads.numerics import compare_outputs

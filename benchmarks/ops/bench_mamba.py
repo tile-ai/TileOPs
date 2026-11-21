@@ -18,6 +18,7 @@ from benchmarks.baselines import (
     optional_baseline,
     private_inputs,
     vllm_op,
+    vllm_state_lines,
 )
 from tileops._ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
 from tileops._ops.mamba.mamba2_fwd import Mamba2FwdOp
@@ -223,21 +224,12 @@ def test_mamba2_fwd_bench(case):
     bench.Runner(op, case).compare(implementations)
 
 
-def _vllm_state_lines(
-    conv_state: torch.Tensor, slots: torch.Tensor | None, count: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """vLLM's cache lines for *conv_state*, and the line of each of the *count* sequences.
-
-    vLLM skips cache line 0, its null block, so a state or pool slot ``i`` is line ``i + 1``.
-    """
-    lines = torch.empty(
-        (conv_state.shape[0] + 1, *conv_state.shape[1:]),
-        dtype=conv_state.dtype,
-        device=conv_state.device,
-    )
+def _vllm_conv_lines(conv_state: torch.Tensor, slots: torch.Tensor | None, count: int):
+    """vLLM's cache lines for *conv_state*, the line of each of the *count* sequences, and the
+    reset that loads the state into them; without *slots*, sequence i holds state i."""
     if slots is None:
         slots = torch.arange(count, dtype=torch.int32, device=conv_state.device)
-    return lines, slots + 1
+    return vllm_state_lines(conv_state, slots)
 
 
 def _vllm_taps_differ(case) -> str | None:
@@ -263,16 +255,13 @@ def test_causal_conv1d_bench(case) -> None:
     x, weight, conv_state, cu_seqlens, bias, has_initial_state, cache_indices = case.inputs
     op = CausalConv1dFwdOp(**case.arguments)
     causal_conv1d_fn = vllm_op("causal_conv1d_fn", module=VLLM_CONV1D)
-    lines, indices = _vllm_state_lines(conv_state, cache_indices, cu_seqlens.numel() - 1)
+    lines, indices, reset = _vllm_conv_lines(conv_state, cache_indices, cu_seqlens.numel() - 1)
     # vLLM reads the flags unconditionally; absent, no sequence has a state.
     flags = (
         has_initial_state
         if has_initial_state is not None
         else torch.zeros(cu_seqlens.numel() - 1, dtype=torch.bool, device=x.device)
     )
-
-    def reset() -> None:
-        lines[1:].copy_(conv_state)
 
     def run() -> tuple[torch.Tensor, torch.Tensor]:
         out = causal_conv1d_fn(
@@ -299,14 +288,11 @@ def test_causal_conv1d_update_bench(case) -> None:
     op = CausalConv1dUpdateFwdOp(**case.arguments)
     causal_conv1d_update = vllm_op("causal_conv1d_update", module=VLLM_CONV1D)
     count = x.shape[0] if query_start_loc is None else query_start_loc.numel() - 1
-    lines, indices = _vllm_state_lines(conv_state, slots, count)
+    lines, indices, reset = _vllm_conv_lines(conv_state, slots, count)
     out = torch.empty_like(x)
     varlen = {}
     if query_start_loc is not None:
         varlen = {"query_start_loc": query_start_loc, "max_query_len": op.max_query_len}
-
-    def reset() -> None:
-        lines[1:].copy_(conv_state)
 
     def run() -> tuple[torch.Tensor, torch.Tensor]:
         causal_conv1d_update(

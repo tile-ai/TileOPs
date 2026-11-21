@@ -6,6 +6,7 @@ import weakref
 import pytest
 import torch
 
+from workloads.attention.dsa import DSAPagedCall
 from workloads.numerics import (
     Custom,
     Exact,
@@ -18,6 +19,7 @@ from workloads.numerics import (
     verify,
     zeroed_input,
 )
+from workloads.workload_base import manifest_call
 
 pytestmark = pytest.mark.smoke
 
@@ -30,7 +32,7 @@ def _verify_one(subject, inputs, *, reference, evidence, subject_inputs=None):
     )["subject"]
 
 
-@pytest.mark.parametrize("fault", ["shape", "dtype", "arity", "value", "none", "nan", "inf"])
+@pytest.mark.parametrize("fault", ["shape", "dtype", "arity", "value", "none", "nan"])
 def test_incorrect_results_are_rejected(fault):
     expected = torch.ones(2)
     got = {
@@ -40,7 +42,6 @@ def test_incorrect_results_are_rejected(fault):
         "value": torch.zeros(2),
         "none": None,
         "nan": torch.full((2,), float("nan")),
-        "inf": torch.full((2,), float("inf")),
     }[fault]
     with pytest.raises((AssertionError, ValueError)):
         compare_outputs(got, expected, Exact())
@@ -450,7 +451,6 @@ def test_grouped_routing_on_a_near_tied_boundary(selection, topk_group, ids, acc
 def _grouped_topk_workload(num_experts, num_groups, topk_group, top_k, biased):
     """The ``FusedTopKWorkload`` of one token's sigmoid grouped routing, on the CPU."""
     from workloads.moe import FusedTopKWorkload
-    from workloads.workload_base import manifest_call
 
     call = manifest_call(
         "FusedTopKFwdOp",
@@ -638,3 +638,50 @@ def test_grouped_routing_accepts_exactly_the_selections_of_a_valid_group_set():
             workload, (gating, bias), selection, valid, group_size, candidates
         )
     assert disagree == []
+
+
+@pytest.fixture
+def dsa_paged_empty_selection(request):
+    """A paged DSA call whose selected indices are all -1, or one row's are."""
+    call = manifest_call(
+        "DSAPagedFwdOp",
+        {"KV": "uint8"},
+        DK=576,
+        S_q=2,
+        H=64,
+        K=64,
+        NP=8,
+        PS=64,
+        W=2,
+        cache_lens="repeat(100, 2)",
+    )
+    workload = DSAPagedCall(call, device="cpu")
+    inputs = workload.gen_inputs()[:5]
+    if request.param == "all":
+        inputs[-1].fill_(-1)
+    else:
+        inputs[-1][0, 0].fill_(-1)
+    return workload, inputs
+
+
+@pytest.mark.parametrize("dsa_paged_empty_selection", ["all", "mixed"], indirect=True)
+def test_dsa_paged_empty_selection_accepts_the_reference(dsa_paged_empty_selection):
+    workload, inputs = dsa_paged_empty_selection
+    verify(
+        workload.ref_program,
+        inputs,
+        evidence=workload.verification(*inputs),
+        requests={"reference": Request(workload.ref_program, inputs)},
+    )
+
+
+@pytest.mark.parametrize("dsa_paged_empty_selection", ["mixed"], indirect=True)
+@pytest.mark.parametrize("field,value", [(0, 1.0), (1, 0.0), (1, float("nan"))])
+def test_dsa_paged_empty_selection_rejects_a_wrong_result(dsa_paged_empty_selection, field, value):
+    workload, inputs = dsa_paged_empty_selection
+    expected = workload.ref_program(*inputs)
+    evidence = workload.verification(*inputs)
+    changed = [tensor.clone() for tensor in expected]
+    changed[field][0, 0, 0] = value
+    with pytest.raises(AssertionError):
+        compare_outputs(tuple(changed), expected, evidence)

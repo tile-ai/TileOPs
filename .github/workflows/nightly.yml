@@ -94,7 +94,7 @@ jobs:
         run: |
           python -m pytest -q -n auto --durations=20 -p tests.privateuse1.target \
             --tileops-device=tileops_test --tileops-target=tileops_test -m smoke \
-            tests/ops tests/test_privateuse1_target.py
+            tests/ops tests/test_privateuse1.py
 
   # =========================================================================
   # Phase 1 — Benchmark (exclusive GPU access for accurate profiling)

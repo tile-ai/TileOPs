@@ -3,6 +3,8 @@
 Separate copy groups allow the first row's stores to overlap the second row's loads.
 """
 
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -12,7 +14,8 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.norm.call_spec import LayerNormCall
 from tileops._kernels.norm.rms_norm import _RMSNormRowsKernel
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 
 __all__ = ["RMSNormStagedKernel"]
 
@@ -41,10 +44,7 @@ def _rms_norm_staged_kernel(M, N, eps, dtype, has_weight):
                     piece[c] = tile[g, (k * _THREADS + tx) * vec + c]
                 for c in T.unroll(vec):
                     total[0] += T.cast(piece[c], "float32") * T.cast(piece[c], "float32")
-            for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                total[0] += T.shfl_xor(
-                    total[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
-                )
+            warp_reduce(total, operator.add, high_first=True)
             if tx % WARP_LANES == 0:
                 sums[g, tx // WARP_LANES] = total[0]
             T.sync_threads()

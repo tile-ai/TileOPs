@@ -87,39 +87,19 @@ class FP8QuantViewWorkload(StridedInput, FP8QuantWorkload):
     """``FP8QuantWorkload`` on a strided ``x``."""
 
 
-# Values on the midpoint of two adjacent e4m3 codes under a scale of 1, which a group whose
-# maximum is 448 has, each beside the code it rounds to (the even one); signed zeros; and
-# values below half the smallest subnormal code.
-_E4M3_TIES = (
-    448.0,
-    1.0625,
-    1.1875,
-    2.0**-10,
-    3 * 2.0**-10,
-    272.0,
-    304.0,
-    432.0,
-    0.0,
-    -0.0,
-    -1.0625,
-    -1.1875,
-    -(2.0**-10),
-    -3 * 2.0**-10,
-    -272.0,
-    -304.0,
-    -432.0,
-    2.0**-12,
-)
-
-
 class FP8QuantTiesWorkload(FP8QuantWorkload):
     """The workload on rows of e4m3 rounding ties, each row scaled by its own power of two,
     and on all-zero rows, whose maximum is the ``eps`` floor."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         x, *rest = super().gen_inputs()
+        # Values on the midpoint of two adjacent e4m3 codes under a scale of 1, which a group
+        # whose maximum is 448 has, each beside the code it rounds to (the even one); signed
+        # zeros; and values below half the smallest subnormal code.
+        midpoints = (1.0625, 1.1875, 2.0**-10, 3 * 2.0**-10, 272.0, 304.0, 432.0)
+        ties = (448.0, *midpoints, 0.0, -0.0, *(-m for m in midpoints), 2.0**-12)
         # Within float16's range: 448 * 2 ** 7 and 2 ** -12 * 2 ** -8 are both normal or zero.
-        fill_with_ties(x, self.group_size, _E4M3_TIES, 16)
+        fill_with_ties(x, self.group_size, ties, 16)
         return (x, *rest)
 
 

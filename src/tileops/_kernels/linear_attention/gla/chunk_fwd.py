@@ -864,11 +864,11 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
             call.dim_k, call.dim_v, call.chunk_size
         )
         if reason is not None or not call.smem_budget:
-            return reason
+            return reason or super().refusal(call)
         c, k, v = call.chunk_size, call.dim_k, call.dim_v
         need = cls._shared_bytes(c, k, v, call.dtype.itemsize)
         if need <= call.smem_budget:
-            return None
+            return super().refusal(call)
         return (
             f"needs at least {need} bytes of shared memory per block at chunk {c}, head dims "
             f"{k} / {v} in {call.dtype}; the device gives {call.smem_budget}"
@@ -890,7 +890,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
             call.chunk_size,
             call.scale,
         )
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*arguments, call.dtype, index), lambda: cls(
             *arguments, output_final_state=True, dtype=call.dtype
         )

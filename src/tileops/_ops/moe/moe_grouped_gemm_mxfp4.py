@@ -19,7 +19,7 @@ from tileops._kernels.moe import (
     MoEGroupedGEMMMXFP4Kernel,
     MoEGroupedGEMMMXFP4SharedDecodeKernel,
 )
-from tileops._ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec
+from tileops._ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec, layout_call_fields
 from tileops._ops.moe.staged import MoELayoutRowsRoofline
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
@@ -67,11 +67,11 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
     ``[2 ** -63, 2 ** 63]`` and span at most eleven binades over ``K`` and each ``a_scale`` of
     its rows, padding rows included, is code 0 (flushed as above) or lies in
     ``[2 ** -63, 2 ** 63]`` (a padding row left holding other codes sends its tile to the
-    sub-block contraction, which is slower); its sub-blocks enter the
-    contraction scaled relative to a reference six binades under their row's largest scale
-    (exact while the e2m1 values stay e4m3 normals), each block is added under the row's
-    ``a_scale``, and each column is scaled by its reference once at the end. Other tiles there are
-    contracted sub-block by sub-block as above. The float32 accumulator flushes terms and sums
+    slower sub-block contraction); its sub-blocks enter the contraction scaled relative to a
+    reference six binades under their row's largest scale (exact while the e2m1 values stay
+    e4m3 normals), each block is added under the row's ``a_scale``, and each column is scaled
+    by its reference once at the end. Other tiles there are contracted sub-block by sub-block
+    as above. The float32 accumulator flushes terms and sums
     below ``2 ** -126`` to zero. The result is written in bfloat16.
 
     Accuracy: on the valid rows the output matches an fp32 reference that dequantizes both
@@ -144,17 +144,11 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
         """
         num_experts, n, _ = b.shape
         k = a.shape[-1]
-        layout = self.layout
-        contiguous = layout.kind == "contiguous"
         kernel = self.kernel_for(
             "grouped_gemm_mxfp4",
             lambda: MGroupedGEMMMXFP4Call(
                 device=a.device,
-                kind=layout.kind,
-                packing=layout.packing.value if contiguous else None,
-                metadata_kind=layout.metadata_kind.value if contiguous else None,
-                alignment=layout.alignment if contiguous else 1,
-                max_m=layout.max_m,
+                **layout_call_fields(self.layout),
                 scale_dtype=a_scale.dtype,
                 num_groups=num_experts,
                 m=math.prod(a.shape[:-1]),

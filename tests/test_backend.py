@@ -36,17 +36,9 @@ pytestmark = pytest.mark.smoke
 
 
 @pytest.fixture(autouse=True)
-def isolated_registry():
-    """Give each test an empty registry and hand the real one back afterwards."""
-    state = registry.snapshot()
-    registry.DETECTORS.clear()
-    registry.BUILDERS.clear()
+def isolated_registry(isolated_registry):
+    """The shared empty registry, without device facts either."""
     registry.DEVICE_FACTS.clear()
-    registry.LOAD_FAILURES.clear()
-    registry.default_target = None
-    registry._loaded = True  # no test may import the backends actually installed
-    yield
-    registry.restore(state)
 
 
 def fake_build_kernel(*_inputs, **_params):
@@ -504,8 +496,8 @@ _REGISTERS_ANOTHER_DEVICE_TYPE = [
 
 
 def test_another_device_type_is_read_after_a_backend_renames_private_use():
-    """Regression: a reader registered under ``"privateuseone"`` went unread once a backend
-    renamed PrivateUse1. Renaming cannot be undone, hence the fresh interpreter."""
+    """A reader registered under the renamed PrivateUse1 type is read. Renaming cannot be
+    undone, hence the fresh interpreter."""
     exit_code = probe(
         "import types, pytest, torch\n"
         "torch.utils.rename_privateuse1_backend('tileops_probe')\n"
@@ -564,8 +556,8 @@ def test_importing_costs_nothing(setup, expr, why):
 
 
 def test_an_import_check_ignores_what_a_package_prints_while_loading(tmp_path):
-    """Regression: a device runtime that found no device printed on stdout at import, and
-    the check compared the whole stdout with ``False``."""
+    """A device runtime that finds no device may print on stdout at import; the check reads
+    only its own result line."""
     # Unterminated, so the result line must not be appended to it.
     (tmp_path / "sitecustomize.py").write_text("print('CreatePlatform failed!', end='')\n")
     path = os.pathsep.join(filter(None, [str(tmp_path), os.environ.get("PYTHONPATH")]))

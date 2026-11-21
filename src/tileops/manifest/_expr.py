@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import dataclasses
 import functools
 import math
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from tileops.manifest._kinds import (
     comparable,
     exclude,
     fits,
+    flat_members,
     join,
     literals,
     ordered,
@@ -263,16 +265,7 @@ class KindEnv:
     tags: dict = field(default_factory=dict)
 
     def narrowed(self, kinds: dict) -> KindEnv:
-        return KindEnv(
-            {**self.kinds, **kinds},
-            self.adts,
-            self.families,
-            self.presence,
-            self.maybes,
-            self.facts,
-            self.point,
-            self.tags,
-        )
+        return dataclasses.replace(self, kinds={**self.kinds, **kinds})
 
 
 # The kind each argument member holds, as a value.
@@ -308,11 +301,6 @@ def call_errors(node: ast.Call, table: dict, env: KindEnv, where: str) -> list[s
     infer = _Infer(env, where)
     infer.call(node, table)
     return infer.errors
-
-
-def _formal(text: object, adts: dict) -> Kind:
-    """A kind as a table, a family formal or a primitive signature writes it."""
-    return parse_spec(str(text), adts)
 
 
 def _guards(node: ast.expr, env: KindEnv) -> tuple[dict, dict]:
@@ -382,13 +370,7 @@ def _alternatives(env: KindEnv, v: str) -> list[str]:
     current = env.kinds.get(v)
     if current is None:
         return list(env.tags[v])
-
-    def flat(kind: Kind) -> list[Kind]:
-        if kind.tag == "Maybe":
-            return [*flat(kind.item), NONE]
-        return [m for k in kind.members for m in flat(k)] if kind.members else [kind]
-
-    kinds = flat(current)
+    kinds = flat_members(current)
     return [t for t in env.tags[v] if member_kind([t]) in kinds] or list(env.tags[v])
 
 
@@ -426,13 +408,13 @@ def _constant_kind(value) -> Kind:
         return NONE
     if isinstance(value, tuple):
         # A folded literal tuple keeps its sequence kind.
-        if not value:
-            return seq(None, 0)
-        item = _constant_kind(value[0])
-        for v in value[1:]:
-            item = join(item, _constant_kind(v))
-        return seq(item, len(value))
+        return _tuple_kind([_constant_kind(v) for v in value])
     return VALUE
+
+
+def _tuple_kind(kinds: list[Kind | None]) -> Kind:
+    """The kind of a tuple whose items have `kinds`: a sequence of their join."""
+    return seq(functools.reduce(join, kinds), len(kinds)) if kinds else seq(None, 0)
 
 
 class _Infer:
@@ -508,13 +490,7 @@ class _Infer:
                 self.error(f"{ast.unparse(node)} has arms of kinds {body} and {orelse}")
             return kind
         if isinstance(node, ast.Tuple):
-            kinds = [self.of(e) for e in node.elts]
-            if not kinds:
-                return seq(None, 0)
-            item = kinds[0]
-            for k in kinds[1:]:
-                item = join(item, k)
-            return seq(item, len(kinds))
+            return _tuple_kind([self.of(e) for e in node.elts])
         if isinstance(node, ast.Subscript):
             return self._subscript(node)
         if isinstance(node, ast.Attribute):
@@ -657,13 +633,13 @@ class _Infer:
         if missing:
             self.error(f"{name} misses argument {missing[0] + 1} of {len(slots)}")
         kinds = {
-            i: self.argument(arg, _formal(slots[i][1], self.env.adts))
+            i: self.argument(arg, parse_spec(slots[i][1], self.env.adts))
             for i, arg in sorted(bound.items())
             if i < len(slots)
         }
         if name == "ceil_div" and all(k is not None and k.nonneg for k in kinds.values()):
             return Kind("Int", nonneg=True)
-        return _formal(result, self.env.adts)
+        return parse_spec(result, self.env.adts)
 
     def argument(self, arg: ast.expr, expected: Kind) -> Kind | None:
         kind = self.of(arg)

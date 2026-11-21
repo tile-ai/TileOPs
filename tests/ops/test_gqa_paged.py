@@ -10,6 +10,7 @@ from tileops.attention import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
 from tileops.backend import OpNotAvailableError
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 from workloads.attention.paged_cache_write import paged_cache_write_result
+from workloads.attention.paged_kv_cache import make_fragmented_block_table
 from workloads.device import run_device
 
 
@@ -1197,6 +1198,44 @@ def test_gqa_paged_rejects_invalid_tensor_contract() -> None:
         op(*inputs)
 
 
+@pytest.mark.smoke
+@pytest.mark.sm89
+@pytest.mark.in_tree_kernels
+def test_gqa_paged_autotune_supplies_packed_inputs(monkeypatch) -> None:
+    """Guard the supplier's three missing scale inputs through real Op autotuning.
+
+    SM89 selects the ordinary paged kernel here; SM90 can select another implementation.
+    """
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
+
+    production_configs = GQAPagedFwdKernel.autotune_configs.fget
+
+    def one_config(entry):
+        candidates = production_configs(entry)
+        return [
+            next(
+                config
+                for config in candidates
+                if config["block_M"] == 64
+                and config["block_N"] == 64
+                and config["num_stages"] == 1
+                and config["threads"] == 128
+            )
+        ]
+
+    # Keep the initial seed in the same single-stage compilation path as the sweep.
+    monkeypatch.setattr(GQAPagedFwdKernel, "default_config", property(lambda e: one_config(e)[0]))
+    monkeypatch.setattr(GQAPagedFwdKernel, "autotune_configs", property(one_config))
+    workload = GQAPagedFwdWorkload(32, 8, 128, [160, 160], [700, 450], 64, 11, 22, torch.float16)
+    op = GQAPagedFwdOp(is_causal=True)
+    op.request_tune()
+    TestBase.check(workload, op, *workload.gen_inputs())
+    entries = [
+        entry for interface in op.interfaces for entry in op._entries_built(interface).values()
+    ]
+    assert entries and all(isinstance(entry, GQAPagedFwdKernel) for entry in entries)
+
+
 FP8 = torch.float8_e4m3fn
 
 
@@ -1880,3 +1919,28 @@ def test_gqa_paged_write_then_read(cache_dtype: torch.dtype) -> None:
     )
     write_op(*write_inputs)
     _check(GQAPagedFwdOp(is_causal=True), case, inputs)
+
+
+@pytest.mark.smoke
+def test_fragmented_block_table() -> None:
+    batch, pages_per_req = 4, 8
+    pool_pages = batch * pages_per_req
+
+    disjoint = make_fragmented_block_table(batch, pages_per_req, pool_pages)
+    assert disjoint.shape == (batch, pages_per_req)
+    assert sorted(disjoint.flatten().tolist()) == list(range(pool_pages))
+    assert not torch.equal(
+        disjoint,
+        torch.arange(pool_pages, dtype=torch.int32, device=run_device()).reshape(batch, -1),
+    )
+
+    shared = make_fragmented_block_table(batch, pages_per_req, pages_per_req).tolist()
+    for row in shared:
+        assert sorted(row) == list(range(pages_per_req))
+    assert not all(row == sorted(row) for row in shared)
+
+    assert torch.equal(disjoint, make_fragmented_block_table(batch, pages_per_req, pool_pages))
+
+    case = GQAPagedFwdWorkload(16, 4, 128, [64, 64], [192, 192], 64, 3, 6, torch.float16)
+    table = case.gen_inputs()[3]
+    assert sorted(table.flatten().tolist()) == list(range(6))

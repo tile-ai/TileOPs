@@ -18,7 +18,9 @@ __all__ = [
 CONV_KERNEL_SIZE = 4
 
 
-class EngramGateConvFwdWorkload(WorkloadBase):
+class _EngramGateConvWorkload(WorkloadBase):
+    """The forward inputs of a GateConv over ``[M, seq_len, d]`` tokens."""
+
     def __init__(self, M, seq_len, d, dtype, eps=1e-6):
         self.M = M
         self.seq_len = seq_len
@@ -35,6 +37,8 @@ class EngramGateConvFwdWorkload(WorkloadBase):
         conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device=run_device()) * 0.02
         return H, k, v, rms_w_h, rms_w_v, conv_w
 
+
+class EngramGateConvFwdWorkload(_EngramGateConvWorkload):
     def ref_program(self, H, k, v, rms_w_h, rms_w_v, conv_w):
         return engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
 
@@ -45,39 +49,14 @@ class EngramGateConvFwdWorkload(WorkloadBase):
         return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=atol, rtol=0.1)
 
 
-class EngramGateConvBwdWorkload(WorkloadBase):
-    def __init__(self, M, seq_len, d, dtype, eps=1e-6):
-        self.M = M
-        self.seq_len = seq_len
-        self.d = d
-        self.dtype = dtype
-        self.eps = eps
-
+class EngramGateConvBwdWorkload(_EngramGateConvWorkload):
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        """Generate inputs including saved intermediates from a reference forward."""
-        H = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=run_device())
-        k = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=run_device()) * 0.1
-        v = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=run_device()) * 0.1
-        rms_w_h = torch.ones(self.d, dtype=self.dtype, device=run_device())
-        rms_w_v = torch.ones(self.d, dtype=self.dtype, device=run_device())
-        conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device=run_device()) * 0.02
+        """The output gradient, the forward inputs, and the intermediates the reference
+        forward saves."""
+        forward_inputs = super().gen_inputs()
         dY = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=run_device()) * 0.1
-
-        # Compute saved intermediates with the same normalization as the reference.
-        h_norm, rrms_h = _rmsnorm(H, rms_w_h, self.eps)
-        k_norm, rrms_k = _rmsnorm(k, rms_w_h, self.eps)
-        dot = (h_norm * k_norm).sum(dim=-1, keepdim=True)
-        alpha = torch.sigmoid(dot / (self.d**0.5))
-        v_hat = alpha * v.float()
-        _, rrms_v = _rmsnorm(v_hat.to(self.dtype), rms_w_v, self.eps)
-
-        vhat = v_hat.to(self.dtype)
-        alpha_squeezed = alpha.squeeze(-1).float()
-        rrms_h = rrms_h.float()
-        rrms_k = rrms_k.float()
-        rrms_v = rrms_v.float()
-
-        return (dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha_squeezed, rrms_h, rrms_k, rrms_v)
+        _, *saved = engram_gate_conv_fwd_torch(*forward_inputs, self.eps)
+        return (dY, *forward_inputs, *saved)
 
     def ref_program(
         self, dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v
@@ -146,7 +125,7 @@ class EngramDecodeWorkload(WorkloadBase):
         return e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w
 
     def ref_program(self, e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
-        y_ref, state_ref = engram_decode_step_torch(
+        return engram_decode_step_torch(
             e_t,
             h_t,
             conv_state,
@@ -159,7 +138,6 @@ class EngramDecodeWorkload(WorkloadBase):
             self.dilation,
             self.eps,
         )
-        return y_ref, state_ref
 
     def verification(self, *inputs):
         from workloads.numerics import Exact, zeroed_input
@@ -250,12 +228,6 @@ def ref_engram_gate_conv_bwd(
     )
 
 
-def _rmsnorm_decode(x, w, eps=1e-6):
-    x_f = x.float()
-    rrms = (x_f**2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
-    return (x_f * rrms * w.float()), rrms
-
-
 def engram_decode_step_torch(
     e_t,
     h_t,
@@ -277,17 +249,14 @@ def engram_decode_step_torch(
     k = e_t.float() @ W_K.float()
     v = e_t.float() @ W_V.float()
 
-    h_norm, _ = _rmsnorm_decode(h_t.unsqueeze(1), rms_w_h)
-    k_norm, _ = _rmsnorm_decode(k.unsqueeze(1), rms_w_h)
-    h_norm = h_norm.squeeze(1)
-    k_norm = k_norm.squeeze(1)
+    h_norm, _ = _rmsnorm(h_t, rms_w_h, eps)
+    k_norm, _ = _rmsnorm(k, rms_w_h, eps)
 
     dot = (h_norm * k_norm).sum(dim=-1, keepdim=True)
     alpha = torch.sigmoid(dot / (d**0.5))
     v_hat = alpha * v
 
-    v_hat_norm, _ = _rmsnorm_decode(v_hat.unsqueeze(1), rms_w_v)
-    v_hat_norm = v_hat_norm.squeeze(1)
+    v_hat_norm, _ = _rmsnorm(v_hat, rms_w_v, eps)
 
     if max_conv_len > L:
         padded_state = F.pad(conv_state.float(), (0, 0, max_conv_len - L, 0))
@@ -301,22 +270,9 @@ def engram_decode_step_torch(
             conv_out += conv_w[p].float().unsqueeze(0) * padded_state[:, state_idx, :]
     conv_out += conv_w[w - 1].float().unsqueeze(0) * v_hat_norm
 
-    if max_conv_len > L:
-        new_conv_state = torch.cat(
-            [
-                conv_state,
-                v_hat_norm.unsqueeze(1).to(conv_state.dtype),
-            ],
-            dim=1,
-        )
-    else:
-        new_conv_state = torch.cat(
-            [
-                conv_state[:, 1:, :],
-                v_hat_norm.unsqueeze(1).to(conv_state.dtype),
-            ],
-            dim=1,
-        )
+    # A cache shorter than max_conv_len grows by the new step; a full one drops its oldest.
+    kept = conv_state if max_conv_len > L else conv_state[:, 1:, :]
+    new_conv_state = torch.cat([kept, v_hat_norm.unsqueeze(1).to(conv_state.dtype)], dim=1)
 
     y_t = F.silu(conv_out) + v_hat
     return y_t.to(h_t.dtype), new_conv_state

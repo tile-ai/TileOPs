@@ -18,19 +18,10 @@ import pytest
 import torch
 
 from benchmarks import api as bench
+from benchmarks._cases.convolution import static_weight as bind_static_weight
 from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
+from tileops._ops._spatial import per_axis_values
 from tileops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
-
-# Bench-local: autotuning is benchmark infrastructure, not a workload property.
-_TUNE = True
-
-# flag_gems' aten-level convolutions, by spatial rank.
-_FLAGGEMS_CONV = {1: "conv1d", 2: "conv2d", 3: "conv3d"}
-
-
-def _spatial(value, rank: int) -> tuple:
-    """A per-axis parameter as one value per spatial axis, as flag_gems takes it."""
-    return tuple(value) if isinstance(value, (list, tuple)) else (value,) * rank
 
 
 def _flaggems_conv_baseline(rank: int, workload) -> Callable:
@@ -38,10 +29,10 @@ def _flaggems_conv_baseline(rank: int, workload) -> Callable:
 
     Same parameter names as ``F.convNd``, but the spatial extents go in as lists.
     """
-    conv_fn = flaggems_op(_FLAGGEMS_CONV[rank])
-    stride = list(_spatial(workload.stride, rank))
-    padding = list(_spatial(workload.padding, rank))
-    dilation = list(_spatial(workload.dilation, rank))
+    conv_fn = flaggems_op(f"conv{rank}d")
+    stride = list(per_axis_values(workload.stride, rank))
+    padding = list(per_axis_values(workload.padding, rank))
+    dilation = list(per_axis_values(workload.dilation, rank))
 
     def baseline_fn(
         x: torch.Tensor,
@@ -65,39 +56,26 @@ def _run_conv(op, case: bench.Case, *, rank: int, static_weight: bool = False) -
         flaggems = _flaggems_conv_baseline(rank, workload)
         baselines = {FLAGGEMS_TAG: flaggems, **baselines}
     if static_weight:
-        baselines = {tag: _bind_static_weight(fn, case) for tag, fn in baselines.items()}
+        baselines = {tag: bind_static_weight(fn, case) for tag, fn in baselines.items()}
     bench.Runner(op, case).compare(baselines)
-
-
-def _bind_static_weight(fn: Callable, case: bench.Case) -> bench.Implementation:
-    """*fn* called on ``x`` alone, the weight and bias bound across calls."""
-    x, weight, bias = case.inputs
-
-    def run(x_i):
-        return fn(x_i, weight, bias)
-
-    return bench.Implementation(run=run, args=(x,))
 
 
 @pytest.mark.parametrize("case", bench.cases(Conv1dFwdOp), ids=lambda case: case.id)
 def test_conv1d_bench(case) -> None:
     op = Conv1dFwdOp(**case.arguments)
-    if _TUNE:
-        op.request_tune()
+    op.request_tune()
     _run_conv(op, case, rank=1, static_weight=True)
 
 
 @pytest.mark.parametrize("case", bench.cases(Conv2dFwdOp), ids=lambda case: case.id)
 def test_conv2d_bench(case) -> None:
     op = Conv2dFwdOp(**case.arguments)
-    if _TUNE:
-        op.request_tune()
+    op.request_tune()
     _run_conv(op, case, rank=2)
 
 
 @pytest.mark.parametrize("case", bench.cases(Conv3dFwdOp), ids=lambda case: case.id)
 def test_conv3d_bench(case) -> None:
     op = Conv3dFwdOp(**case.arguments)
-    if _TUNE:
-        op.request_tune()
+    op.request_tune()
     _run_conv(op, case, rank=3)

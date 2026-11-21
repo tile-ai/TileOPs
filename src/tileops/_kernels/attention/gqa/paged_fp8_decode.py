@@ -720,7 +720,7 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
     def entry_for(cls, call: AttentionCall) -> Entry:
         """The device index is in the identity: the kernel is compiled for its architecture,
         and the split count reads its multiprocessors."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = dict(
             batch=call.batch,
             heads=call.heads,

@@ -105,6 +105,11 @@ class CallSpec:
             device = torch.device(device)
         object.__setattr__(self, "device", on_current_index(device))
 
+    @property
+    def device_index(self) -> "int | None":
+        """The index of ``device``, or ``None`` for a record that names no device."""
+        return self.device.index if self.device is not None else None
+
     def _read_device_facts(self) -> None:
         """Fill the device facts the caller left unstated from ``device``.
 

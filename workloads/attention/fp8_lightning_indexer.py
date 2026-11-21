@@ -1,6 +1,7 @@
 import torch
 
 from workloads.device import run_device
+from workloads.numerics import Custom, assert_normalized_error, zeroed_input
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
@@ -23,153 +24,56 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         self.kv_group = kv_group
         self.clean_logits = clean_logits
         self.dtype = torch.float8_e4m3fn
-        self.accum_dtype = torch.float32
-        self.index_dtype = torch.int32
 
-    def cal_seq_idx_for_q(
-        self, cu_seqlens_qs: torch.LongTensor, cu_seqlens_qe: torch.LongTensor, seq_len: int
-    ) -> torch.IntTensor:
-        seq_idx_for_q = torch.zeros(seq_len, dtype=torch.int32, device=cu_seqlens_qs.device)
-        if len(cu_seqlens_qs) > 1:
-            seq_idx_for_q[cu_seqlens_qs[1:]] = 1
-        return torch.cumsum(seq_idx_for_q, dim=0, dtype=torch.int32)
+    def _key_windows(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Each query row's key window ``[ks, ke)`` on this rank of a context-parallel sequence.
 
-    def cal_cu_seqlen_ke_for_q(
-        self,
-        cu_seqlens_qs: torch.LongTensor,
-        cu_seqlens_qe: torch.LongTensor,
-        cu_seqlens_ks: torch.LongTensor,
-        cu_seqlens_ke: torch.LongTensor,
-        q_start_idxs: torch.LongTensor,
-        seq_len: int,
-        kv_stride: int,
-    ) -> torch.IntTensor:
-        cu_seqlen_ke_for_each_q = torch.gather(
-            input=torch.cat(
-                [cu_seqlens_ke, torch.zeros(1, dtype=torch.int32, device=cu_seqlens_qs.device)]
-            ),
-            dim=0,
-            index=self.cal_seq_idx_for_q(
-                cu_seqlens_qs=cu_seqlens_qs, cu_seqlens_qe=cu_seqlens_qe, seq_len=seq_len
-            ).long(),
-        )
-        casual_cu_seqlen_ke_for_each_q = torch.zeros(
-            (seq_len,), dtype=torch.int32, device=cu_seqlens_qs.device
-        )
-        for i in range(len(cu_seqlens_qs)):
-            casual_cu_seqlen_ke_for_each_q[cu_seqlens_qs[i] : cu_seqlens_qe[i]] = (
-                torch.arange(
-                    q_start_idxs[i],
-                    q_start_idxs[i] + cu_seqlens_qe[i] - cu_seqlens_qs[i],
-                    dtype=torch.int32,
-                    device=cu_seqlens_qs.device,
-                )
-                + 1
-            ) // kv_stride + cu_seqlens_ks[i]
-        cu_seqlen_ke_for_each_q = torch.minimum(
-            casual_cu_seqlen_ke_for_each_q, cu_seqlen_ke_for_each_q
-        )
-        return cu_seqlen_ke_for_each_q.int()
-
-    def cal_cu_seqlen_ks_for_q(
-        self,
-        cu_seqlens_qs: torch.LongTensor,
-        cu_seqlens_qe: torch.LongTensor,
-        cu_seqlens_ks: torch.LongTensor,
-        seq_len: int,
-    ) -> torch.IntTensor:
-        cu_seqlen_ks_for_each_q = torch.gather(
-            input=torch.cat(
-                [
-                    cu_seqlens_ks,
-                    torch.full(
-                        (1,),
-                        torch.iinfo(torch.int32).max,
-                        dtype=torch.int32,
-                        device=cu_seqlens_qs.device,
-                    ),
-                ]
-            ),
-            dim=0,
-            index=self.cal_seq_idx_for_q(
-                cu_seqlens_qs=cu_seqlens_qs, cu_seqlens_qe=cu_seqlens_qe, seq_len=seq_len
-            ).long(),
-        )
-        return cu_seqlen_ks_for_each_q.int()
-
-    def generate_random_cu_seqlens(
-        self, cp_size: int = 4, cp_rank: int = 3, kv_stride: int = 1, average_q_len: int = 512
-    ):
-        total_seqlen = self.seq_len * cp_size
-
-        cu_seqlens = torch.randint(0, average_q_len * 2, (total_seqlen // average_q_len * 2,)).to(
+        Four ranks split a packed sequence of random request lengths, about 2048 tokens each;
+        each rank holds two halves of ``seq_len // 2`` rows, rank 3's being the fourth from the
+        start and the fourth from the end. A row's window runs from its request's first token
+        through itself.
+        """
+        cp_size, cp_rank, average_q_len = 4, 3, 2048
+        total = self.seq_len * cp_size
+        lengths = torch.randint(0, average_q_len * 2, (total // average_q_len * 2,)).to(
             run_device()
         )
-        last_seq_id = torch.where(cu_seqlens.cumsum(0) >= total_seqlen)[0][0]
-        cu_seqlens = cu_seqlens[:last_seq_id]
-
-        if cu_seqlens.sum() < total_seqlen:
-            cu_seqlens = torch.cat(
-                [cu_seqlens, torch.tensor([total_seqlen - cu_seqlens.sum()]).to(run_device())]
+        lengths = lengths[: torch.where(lengths.cumsum(0) >= total)[0][0]]
+        if lengths.sum() < total:
+            lengths = torch.cat([lengths, torch.tensor([total - lengths.sum()]).to(run_device())])
+        ends = lengths.cumsum(0)
+        starts = torch.cat([torch.tensor([0]).to(run_device()), ends[:-1]])
+        # Row t's request index: how many requests after the first start at or before t.
+        request = torch.zeros(total, dtype=torch.int32, device=run_device())
+        if len(starts) > 1:
+            request[starts[1:]] = 1
+        request = torch.cumsum(request, dim=0, dtype=torch.int32).long()
+        int_max = torch.full((1,), torch.iinfo(torch.int32).max, device=run_device())
+        ks_all = torch.gather(torch.cat([starts, int_max]), 0, request).int()
+        causal = torch.zeros(total, dtype=torch.int32, device=run_device())
+        for i in range(len(starts)):
+            causal[starts[i] : ends[i]] = (
+                torch.arange(1, ends[i] - starts[i] + 1, dtype=torch.int32, device=run_device())
+                + starts[i]
             )
-
-        cu_seqlens_cumsum = torch.cumsum(cu_seqlens, dim=0)
-        cu_seqlens_k_cumsum = torch.cumsum(cu_seqlens // kv_stride, dim=0)
-        cu_seqlens_qs = torch.cat([torch.tensor([0]).to(run_device()), cu_seqlens_cumsum[:-1]])
-        cu_seqlens_ks = torch.cat([torch.tensor([0]).to(run_device()), cu_seqlens_k_cumsum[:-1]])
-        cu_seqlens_qe = cu_seqlens_cumsum.clone()
-        cu_seqlens_ke = cu_seqlens_k_cumsum.clone()
-
-        cu_seqlens_ks_for_each_q = self.cal_cu_seqlen_ks_for_q(
-            cu_seqlens_qs,
-            cu_seqlens_qe,
-            cu_seqlens_ks,
-            total_seqlen,
-        )
-
-        cu_seqlens_ke_for_each_q = self.cal_cu_seqlen_ke_for_q(
-            cu_seqlens_qs=cu_seqlens_qs,
-            cu_seqlens_qe=cu_seqlens_qe,
-            cu_seqlens_ks=cu_seqlens_ks,
-            cu_seqlens_ke=cu_seqlens_ke,
-            q_start_idxs=torch.zeros_like(cu_seqlens_qs),
-            seq_len=total_seqlen,
-            kv_stride=kv_stride,
-        )
-
+        zero = torch.zeros(1, dtype=torch.int32, device=run_device())
+        ke_all = torch.minimum(causal, torch.gather(torch.cat([ends, zero]), 0, request)).int()
         assert self.seq_len % 2 == 0
-        per_chunk_seqlen = self.seq_len // 2
-        slice_short = slice(cp_rank * per_chunk_seqlen, (cp_rank + 1) * per_chunk_seqlen)
-        slice_long = slice(
-            total_seqlen - (cp_rank + 1) * per_chunk_seqlen,
-            total_seqlen - cp_rank * per_chunk_seqlen,
-        )
-
-        ks = torch.cat(
-            [
-                cu_seqlens_ks_for_each_q[slice_short],
-                cu_seqlens_ks_for_each_q[slice_long],
-            ]
-        )
-        ke = torch.cat(
-            [
-                cu_seqlens_ke_for_each_q[slice_short],
-                cu_seqlens_ke_for_each_q[slice_long],
-            ]
-        )
-        assert len(ks) == len(ke) == self.seq_len
+        half = self.seq_len // 2
+        short = slice(cp_rank * half, (cp_rank + 1) * half)
+        long = slice(total - (cp_rank + 1) * half, total - cp_rank * half)
+        ks = torch.cat([ks_all[short], ks_all[long]])
+        ke = torch.cat([ke_all[short], ke_all[long]])
         if int(ks.min()) >= self.seq_len_kv:
             raise ValueError(
                 f"no query row reaches a key: ranges start at {int(ks.min())} and "
                 f"seq_len_kv is {self.seq_len_kv}. These offsets span the "
-                f"{self.seq_len * cp_size} keys of a context-parallel sequence"
+                f"{total} keys of a context-parallel sequence"
             )
         return ks, ke
 
-    def gen_inputs(
-        self, params=None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        IndexQ = torch.randn(
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        index_q = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
@@ -177,7 +81,7 @@ class FP8LightningIndexerWorkload(WorkloadBase):
             device=run_device(),
             dtype=torch.bfloat16,
         )
-        IndexK = torch.randn(
+        index_k = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.kv_group,
@@ -185,11 +89,9 @@ class FP8LightningIndexerWorkload(WorkloadBase):
             device=run_device(),
             dtype=torch.bfloat16,
         )
-        Weights = torch.randn(self.seq_len, self.heads, device=run_device(), dtype=self.accum_dtype)
-        CuSeqLenKS, CuSeqLenKE = self.generate_random_cu_seqlens(
-            cp_size=4, cp_rank=3, kv_stride=1, average_q_len=2048
-        )
-        return IndexQ, IndexK, Weights, CuSeqLenKS, CuSeqLenKE
+        weights = torch.randn(self.seq_len, self.heads, device=run_device(), dtype=torch.float32)
+        ks, ke = self._key_windows()
+        return index_q, index_k, weights, ks, ke
 
     def gen_weight_boundary_inputs(self) -> tuple:
         """Normal FP32 weights whose halves are subnormal, with a compensating key scale."""
@@ -217,9 +119,8 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         ends: torch.Tensor,
         index_k_scale: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor]:
-        k = kv
         q = q.float()
-        k = k.float()
+        k = kv.float()
         if index_k_scale is not None:
             k = k * index_k_scale.unsqueeze(-1)
         batch, seq_len, heads, index_dim = q.shape
@@ -230,9 +131,8 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         k = k.view(batch, seq_len_kv, kv_group, index_dim)
         q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
 
-        mask_lo = torch.arange(0, seq_len_kv, device=run_device())[None, :] >= starts[:, None]
-        mask_hi = torch.arange(0, seq_len_kv, device=run_device())[None, :] < ends[:, None]
-        mask = mask_lo & mask_hi
+        keys = torch.arange(seq_len_kv, device=q.device)[None, :]
+        mask = (keys >= starts[:, None]) & (keys < ends[:, None])
 
         # Bound the FP32 head-score workspace while checking the complete output.
         score_elements = 64 * 1024 * 1024
@@ -252,8 +152,6 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         return (logits,)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, assert_normalized_error, zeroed_input
-
         return Custom(
             assert_normalized_error,
             "normalized squared error <= 1e-3",
@@ -291,9 +189,3 @@ class FP8LightningIndexerCall(CallWorkload, FP8LightningIndexerWorkload):
             index_k_scale = keys.abs().amax(dim=-1).clamp(min=1e-4) / 448.0
             keys = keys / index_k_scale.unsqueeze(-1)
         return index_q, keys.to(self.index_dtype), weights, ks, ke, index_k_scale
-
-    def ref_program(self, index_q, index_k, weights, starts, ends, index_k_scale):
-        keys = index_k.float()
-        if index_k_scale is not None:
-            keys = keys * index_k_scale.unsqueeze(-1)
-        return FP8LightningIndexerWorkload.ref_program(self, index_q, keys, weights, starts, ends)

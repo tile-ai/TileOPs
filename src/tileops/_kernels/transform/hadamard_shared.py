@@ -15,12 +15,11 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._kernels.transform.call_spec import (
-    HadamardTransformCall,
-    HadamardTransformFwdInterface,
-)
+from tileops._kernels.kernel_base import CompiledProgram, Entry
+from tileops._kernels.transform.call_spec import HadamardTransformCall
 from tileops._kernels.transform.hadamard_register import (
+    PASS_CONFIGS,
+    HadamardKernel,
     base_outputs,
     base_program,
     base_temps,
@@ -31,12 +30,6 @@ from tileops._kernels.transform.hadamard_register import (
 )
 
 __all__ = ["HadamardMultiPassKernel", "HadamardSharedRowsKernel"]
-
-# All three shared/global-memory passes fence their shared buffers explicitly.
-_PASS_CONFIGS = {
-    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
-}
 
 
 def _strides(bits: int) -> tuple:
@@ -56,7 +49,7 @@ def _hadamard_shared_rows_kernel(
     product mixes the segments, and the last pass scales and stores.
     """
 
-    @tilelang.jit(out_idx=[1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[1], pass_configs=PASS_CONFIGS)
     def _func():
         m = n // base
         log_m = m.bit_length() - 1
@@ -179,7 +172,7 @@ def _shared_rows_threads(n: int, rows: int) -> int:
     return min(1024, max(32, -(-(rows * n // 8) // 32) * 32))
 
 
-class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
+class HadamardSharedRowsKernel(HadamardKernel):
     """Any base order, rows that fit a block's shared memory as float32.
 
     Args:
@@ -190,7 +183,6 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
         device_index: The device the kernel runs on.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
     preferred_over = frozenset({"hadamard_multi_pass"})
 
     @classmethod
@@ -202,7 +194,7 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
 
     @classmethod
     def entry_for(cls, call: HadamardTransformCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (call.n, call.base_order, call.dtype, index), lambda: cls(
             call.n, call.base_order, call.dtype, device_index=index
         )
@@ -236,10 +228,6 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
         flat = x.contiguous().view(-1)
         return self.program(self._compile)(flat).view(x.shape)
 
-    def _compile(self, cfg: dict[str, Any]) -> Callable:
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)()
-
 
 @target_cache(maxsize=64)
 def _hadamard_bit_pass_kernel(low: int, bits: int, out_dtype: str, scale: float):
@@ -251,7 +239,7 @@ def _hadamard_bit_pass_kernel(low: int, bits: int, out_dtype: str, scale: float)
     """
     in_place = out_dtype == "float32"
 
-    @tilelang.jit(out_idx=None if in_place else [1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=None if in_place else [1], pass_configs=PASS_CONFIGS)
     def _func():
         total = T.dynamic("total", "int64")
         # 256 threads, sixteen values each.
@@ -291,7 +279,7 @@ def _hadamard_bit_pass_kernel(low: int, bits: int, out_dtype: str, scale: float)
 def _hadamard_base_pass_kernel(n: int, base: int, out_dtype: str, scale: float):
     """The base product over float32 rows: thread t mixes row t // m's segments at t mod m."""
 
-    @tilelang.jit(out_idx=[1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[1], pass_configs=PASS_CONFIGS)
     def _func():
         m = n // base
         temps, outputs = base_program(base)
@@ -320,7 +308,7 @@ def _hadamard_base_pass_kernel(n: int, base: int, out_dtype: str, scale: float):
     return _func
 
 
-class HadamardMultiPassKernel(Kernel, HadamardTransformFwdInterface):
+class HadamardMultiPassKernel(HadamardKernel):
     """Any served row: shared-memory chunks first, then float32 passes over global memory.
 
     The first pass transforms contiguous chunks of up to 8192 elements of each segment into a
@@ -335,12 +323,11 @@ class HadamardMultiPassKernel(Kernel, HadamardTransformFwdInterface):
         device_index: The device the kernel runs on.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
     general = True
 
     @classmethod
     def entry_for(cls, call: HadamardTransformCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (call.n, call.base_order, call.dtype, index), lambda: cls(
             call.n, call.base_order, call.dtype, device_index=index
         )

@@ -67,21 +67,6 @@ class BitwiseNotWorkload(WorkloadBase):
         return _REFERENCES["BitwiseNotFwdOp"]({}, x)
 
 
-class AddCompileWorkload(WorkloadBase):
-    def __init__(self, a_shape, b_shape, dtype):
-        self.a_shape = a_shape
-        self.b_shape = b_shape
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        a = torch.randn(self.a_shape, dtype=self.dtype, device=run_device())
-        b = torch.randn(self.b_shape, dtype=self.dtype, device=run_device())
-        return a, b
-
-    def ref_program(self, a, b):
-        return _REFERENCES["AddFwdOp"]({}, a, b)
-
-
 class EqCompileWorkload(WorkloadBase):
     def __init__(self, a_shape, b_shape, dtype):
         self.a_shape = a_shape
@@ -97,23 +82,6 @@ class EqCompileWorkload(WorkloadBase):
 
     def ref_program(self, a, b):
         return _REFERENCES["EqFwdOp"]({}, a, b)
-
-
-class SiLUAndMulCompileWorkload(WorkloadBase):
-    def __init__(self, M, N, dtype):
-        self.M = M
-        self.N = N
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        x = torch.randn(self.M, 2 * self.N, dtype=self.dtype, device=run_device())
-        return (x,)
-
-    def ref_program(self, x):
-        return _REFERENCES["SiLUAndMulFwdOp"]({}, x)
-
-    def verification(self, *inputs):
-        return fused_gated_verification(inputs[0].dtype)
 
 
 class LogicalNotWorkload(WorkloadBase):
@@ -139,47 +107,6 @@ class LogicalNotWorkload(WorkloadBase):
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return _REFERENCES["LogicalNotFwdOp"]({}, x)
-
-
-class BitwiseWorkload(WorkloadBase):
-    def __init__(self, n_total: int):
-        self.n_total = n_total
-        self.dtype = torch.int32
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=run_device())
-        b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=run_device())
-        return a, b
-
-
-class LogicalWorkload(WorkloadBase):
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device=run_device()) > 0
-        b = torch.randn(self.n_total, dtype=self.dtype, device=run_device()) > 0
-        a = a.to(self.dtype)
-        b = b.to(self.dtype)
-        return a, b
-
-
-class SpecialWorkload(WorkloadBase):
-    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None):
-        self.n_total = n_total
-        self.dtype = dtype
-        self._gen_fn = gen_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self._gen_fn is not None:
-            return (self._gen_fn(self.n_total, self.dtype),)
-        x = torch.randn(self.n_total, device=run_device(), dtype=self.dtype)
-        quarter = self.n_total // 4
-        x[:quarter] = float("nan")
-        x[quarter : 2 * quarter] = float("inf")
-        x[2 * quarter : 3 * quarter] = float("-inf")
-        return (x,)
 
 
 class RandnFlatWorkload(WorkloadBase):
@@ -238,9 +165,6 @@ class GatedRandnWorkload(WorkloadBase):
         return (torch.randn(self.m, 2 * self.n, dtype=self.dtype, device=run_device()),)
 
 
-# One manifest call of an elementwise op (docs/design/manifest.md § Workloads).
-
-
 def _draw_normal(shape: tuple, dtype: torch.dtype, device) -> torch.Tensor:
     if dtype == torch.bool:
         return torch.randint(0, 2, shape, device=device).bool()
@@ -295,6 +219,27 @@ _DOMAINS = {
     **dict.fromkeys(("LogicalNotFwdOp", "LogicalAndFwdOp", "LogicalOrFwdOp"), _draw_sparse),
     **dict.fromkeys(("IsnanFwdOp", "IsinfFwdOp", "IsfiniteFwdOp"), _draw_special),
 }
+
+
+def _every_16bit(dtype: torch.dtype) -> torch.Tensor:
+    """Every bit pattern of the 16-bit *dtype*, in code order from ``+0``."""
+    codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
+    return codes.view(dtype)
+
+
+def _same_bits(description: str, int_dtype: torch.dtype, nan_as_nan: bool = False):
+    """A verification requiring the reference's bits, viewed as *int_dtype*; with
+    *nan_as_nan*, any NaN matches any NaN."""
+    from workloads.numerics import Custom
+
+    def validate(got, expected):
+        if nan_as_nan:
+            nan = expected.isnan()
+            assert torch.equal(got.isnan(), nan)
+            got, expected = got[~nan], expected[~nan]
+        assert torch.equal(got.view(int_dtype), expected.view(int_dtype))
+
+    return Custom(validate, description)
 
 
 def alibi_reference(seq_len: int, num_heads: int, dtype: torch.dtype, device=None) -> torch.Tensor:
@@ -572,11 +517,6 @@ def fused_gated_verification(dtype):
     )
 
 
-class ReLUCompileCase(RandnFlatWorkload):
-    def ref_program(self, x):
-        return _REFERENCES["ReLUFwdOp"]({}, x)
-
-
 class AbsCompileCase(RandnFlatWorkload):
     def ref_program(self, x):
         return _REFERENCES["AbsFwdOp"]({}, x)
@@ -607,11 +547,6 @@ class GELUAndMulCase(GatedRandnWorkload):
         return fused_gated_verification(inputs[0].dtype)
 
 
-class AddSameShapeCase(RandnPairWorkload):
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["AddFwdOp"]({}, a, b)
-
-
 class BinarySameShapeCase(RandnPairWorkload, ElementwiseWorkload):
     """Input fixture using the shared operator reference and verification."""
 
@@ -626,26 +561,6 @@ class BinaryPositiveCase(PositivePairWorkload, ElementwiseWorkload):
     def __init__(self, n_total, dtype, op_name, **parameters):
         PositivePairWorkload.__init__(self, n_total, dtype)
         ElementwiseWorkload.__init__(self, op_name, (), **parameters)
-
-
-class RemainderCase(PositivePairWorkload):
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["RemainderFwdOp"]({}, a, b)
-
-    def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        return Exact(atol=0, rtol=0)
-
-
-class FloorDivideCase(PositivePairWorkload):
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["FloorDivideFwdOp"]({}, a, b)
-
-    def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        return Exact(atol=0, rtol=0)
 
 
 class LerpCase(RandnPairWorkload):
@@ -665,20 +580,31 @@ class LerpCase(RandnPairWorkload):
         return lerp_verification(inputs[0].dtype)
 
 
-class SpecialCase(SpecialWorkload, ElementwiseWorkload):
-    """Input fixture using the shared operator reference and verification."""
+class SpecialCase(RandnFlatWorkload, ElementwiseWorkload):
+    """A quarter each of NaN, +Inf, -Inf and finite values, unless *gen_fn* draws the input."""
 
     def __init__(self, n_total, dtype, op_name, gen_fn=None, **parameters):
-        SpecialWorkload.__init__(self, n_total, dtype, gen_fn=gen_fn)
+        RandnFlatWorkload.__init__(self, n_total, dtype, gen_fn=gen_fn)
         ElementwiseWorkload.__init__(self, op_name, (), **parameters)
 
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self._gen_fn is not None:
+            return (self._gen_fn(self.n_total, self.dtype),)
+        return (_draw_special((self.n_total,), self.dtype, run_device()),)
 
-class BitwiseCase(BitwiseWorkload, ElementwiseWorkload):
-    """Input fixture using the shared operator reference and verification."""
+
+class BitwiseCase(ElementwiseWorkload):
+    """Two int32 vectors in ``[-1000, 1000)``."""
 
     def __init__(self, n_total, op_name, **parameters):
-        BitwiseWorkload.__init__(self, n_total)
         ElementwiseWorkload.__init__(self, op_name, (), **parameters)
+        self.n_total = n_total
+        self.dtype = torch.int32
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=run_device())
+        b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=run_device())
+        return a, b
 
 
 class FullRangeCase(ElementwiseWorkload):
@@ -713,14 +639,6 @@ class UnaryActivationCase(RandnFlatWorkload, ElementwiseWorkload):
         ElementwiseWorkload.__init__(self, op_name, (), **parameters)
 
 
-class UnaryMathCase(RandnFlatWorkload, ElementwiseWorkload):
-    """Input fixture using the shared operator reference and verification."""
-
-    def __init__(self, n_total, dtype, op_name, gen_fn=None, **parameters):
-        RandnFlatWorkload.__init__(self, n_total, dtype, gen_fn=gen_fn)
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
-
-
 class Every16BitCase(ElementwiseWorkload):
     """Every bit pattern of a 16-bit float dtype, NaN and infinities included, as one input.
 
@@ -736,20 +654,18 @@ class Every16BitCase(ElementwiseWorkload):
         return (bits.to(torch.int16).view(self.dtype), *self.trailing)
 
 
-class ComparisonCase(RandnPairWorkload, ElementwiseWorkload):
-    """Input fixture using the shared operator reference and verification."""
+class LogicalCase(ElementwiseWorkload):
+    """Two vectors of zeros and ones in *dtype*, each element a fair coin."""
 
     def __init__(self, n_total, dtype, op_name, **parameters):
-        RandnPairWorkload.__init__(self, n_total, dtype)
         ElementwiseWorkload.__init__(self, op_name, (), **parameters)
+        self.n_total = n_total
+        self.dtype = dtype
 
-
-class LogicalCase(LogicalWorkload, ElementwiseWorkload):
-    """Input fixture using the shared operator reference and verification."""
-
-    def __init__(self, n_total, dtype, op_name, **parameters):
-        LogicalWorkload.__init__(self, n_total, dtype)
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.n_total, dtype=self.dtype, device=run_device()) > 0
+        b = torch.randn(self.n_total, dtype=self.dtype, device=run_device()) > 0
+        return a.to(self.dtype), b.to(self.dtype)
 
 
 def lerp_verification(dtype):
@@ -791,8 +707,7 @@ class GELUSignWorkload(ElementwiseWorkload):
     """Every 16-bit input; GELU of a negative input is never positive."""
 
     def __init__(self, dtype):
-        codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
-        super().__init__("GELUFwdOp", (codes.view(dtype),))
+        super().__init__("GELUFwdOp", (_every_16bit(dtype),))
 
     def verification(self, *inputs):
         from workloads.numerics import Custom
@@ -811,18 +726,12 @@ class SiLUAndMulGateSweepWorkload(ElementwiseWorkload):
     """Every bfloat16 gate against a value of one; each result is torch's, bit for bit."""
 
     def __init__(self):
-        codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
-        gate = codes.view(torch.bfloat16)
+        gate = _every_16bit(torch.bfloat16)
         super().__init__("SiLUAndMulFwdOp", (torch.cat([gate, torch.ones_like(gate)])[None],))
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
-        def validate(got, expected):
-            # Bit patterns, not values: zero tolerances still pass -0 for +0.
-            assert torch.equal(got.view(torch.int16), expected.view(torch.int16))
-
-        return Custom(validate, "torch's bfloat16 bit pattern at every gate")
+        # Bit patterns, not values: zero tolerances still pass -0 for +0.
+        return _same_bits("torch's bfloat16 bit pattern at every gate", torch.int16)
 
 
 class SigmoidEdgeWorkload(ElementwiseWorkload):
@@ -893,8 +802,7 @@ class ErfRoundingWorkload(ElementwiseWorkload):
     """Exhaust the 16-bit domain; the polynomial must stay within one storage step."""
 
     def __init__(self, dtype):
-        codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
-        super().__init__("ErfFwdOp", (codes.view(dtype),))
+        super().__init__("ErfFwdOp", (_every_16bit(dtype),))
 
     def verification(self, *inputs):
         from workloads.numerics import Custom
@@ -924,16 +832,12 @@ class Exhaustive16BitWorkload(ElementwiseWorkload):
     """
 
     def __init__(self, op_name, dtype, repeats=1):
-        codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
-        super().__init__(op_name, (codes.view(dtype).repeat(repeats),))
+        super().__init__(op_name, (_every_16bit(dtype).repeat(repeats),))
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
-        def validate(got, expected):
-            assert torch.equal(got.view(torch.int16), expected.view(torch.int16))
-
-        return Custom(validate, "the reference's bits at every 16-bit input, NaN payloads included")
+        return _same_bits(
+            "the reference's bits at every 16-bit input, NaN payloads included", torch.int16
+        )
 
 
 class Float16DivisorClassesWorkload(ElementwiseWorkload):
@@ -953,14 +857,11 @@ class Float16DivisorClassesWorkload(ElementwiseWorkload):
         super().__init__(op_name, (a, b if broadcast else b.expand_as(a).contiguous()))
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
-        def validate(got, expected):
-            nan = expected.isnan()
-            assert torch.equal(got.isnan(), nan)
-            assert torch.equal(got[~nan].view(torch.int16), expected[~nan].view(torch.int16))
-
-        return Custom(validate, "the reference's bits at every float16 numerator, NaN as NaN")
+        return _same_bits(
+            "the reference's bits at every float16 numerator, NaN as NaN",
+            torch.int16,
+            nan_as_nan=True,
+        )
 
 
 class Float32SpecialValuesWorkload(ElementwiseWorkload):
@@ -985,14 +886,11 @@ class Float32SpecialValuesWorkload(ElementwiseWorkload):
         super().__init__(op_name, (codes.repeat(repeats).view(torch.float32),))
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
-        def validate(got, expected):
-            nan = expected.isnan()
-            assert torch.equal(got.isnan(), nan)
-            assert torch.equal(got[~nan].view(torch.int32), expected[~nan].view(torch.int32))
-
-        return Custom(validate, "the reference's bits at every float32 value class, NaN as NaN")
+        return _same_bits(
+            "the reference's bits at every float32 value class, NaN as NaN",
+            torch.int32,
+            nan_as_nan=True,
+        )
 
 
 class Float32BinadeWorkload(ElementwiseWorkload):
@@ -1009,12 +907,7 @@ class Float32BinadeWorkload(ElementwiseWorkload):
         super().__init__(op_name, (codes.view(torch.float32),))
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
-        def validate(got, expected):
-            assert torch.equal(got.view(torch.int32), expected.view(torch.int32))
-
-        return Custom(validate, "the reference's bits at every float32 of one binade")
+        return _same_bits("the reference's bits at every float32 of one binade", torch.int32)
 
 
 class LerpCancellationWorkload(ElementwiseWorkload):

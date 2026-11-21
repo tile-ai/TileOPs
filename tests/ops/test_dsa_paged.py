@@ -1,8 +1,11 @@
 import pytest
 import torch
 
+from tileops._kernels.attention.call_spec import DSAPagedCall as DSAPagedKernelCall
 from tileops.attention import DSAPagedFwdOp
+from tileops.backend import OpNotAvailableError
 from workloads.attention.dsa import DSAPagedCall
+from workloads.device import run_device
 from workloads.numerics import Request, verify
 from workloads.workload_base import manifest_call
 
@@ -215,6 +218,35 @@ def test_dsa_paged_refuses(row, reason, arch) -> None:
     """The in-tree kernels serve 64-head blocks, and on the FP8 row 64-slot key blocks and no
     sink only."""
     _check_refused(_call(**row), reason)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+def test_dsa_paged_kernels_refuse_a_cache_of_another_dtype() -> None:
+    """The op's signature admits uint8 and bfloat16 caches; each in-tree kernel refuses any
+    other dtype on its own."""
+    call = DSAPagedKernelCall(
+        batch=2, seq_len=1, heads=64, topk=128, page_size=64,
+        cache_dtype=torch.float8_e4m3fn, device=torch.device(run_device()),
+    )  # fmt: skip
+    with pytest.raises(OpNotAvailableError, match="reads uint8 FP8 rows or bfloat16 rows only"):
+        DSAPagedFwdOp().key_for("dsa_paged", call)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+def test_dsa_paged_kernel_refuses_a_sink_on_another_device() -> None:
+    """The op's signature keeps every tensor on one device; a kernel called directly checks
+    ``attn_sink`` too."""
+    call = _bf16_call(**_LATENT, some=["attn_sink"])
+    *inputs, attn_sink = DSAPagedCall(call).gen_inputs()
+    op = DSAPagedFwdOp(**call.arguments())
+    op(*inputs, attn_sink=attn_sink)
+    (kernel,) = op._entries_built("dsa_paged").values()
+    with pytest.raises(ValueError, match="attn_sink on cpu"):
+        kernel(*inputs, attn_sink.cpu())
 
 
 def _check_refused(call, reason):

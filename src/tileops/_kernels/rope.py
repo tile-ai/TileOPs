@@ -24,10 +24,13 @@ import torch
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
-from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS, VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import (
+    MAX_BLOCK_THREADS,
+    MAX_GRID_YZ_BLOCKS,
+    VECTOR_ACCESS_BYTES,
+)
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
-
-_FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+from tileops._utils import WARP_LANES
 
 __all__ = [
     "RoPECall",
@@ -511,7 +514,6 @@ class _RoPEPositionsKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
     _NEOX: bool
 
     @classmethod
@@ -561,14 +563,8 @@ class _RoPEPositionsKernel(Kernel):
             raise ValueError(f"position_dtype must be int32 or int64, got {position_dtype}")
         if offset_dtype not in (None, torch.int32, torch.int64):
             raise ValueError(f"offset_dtype must be int32, int64 or None, got {offset_dtype}")
-        self.query_heads = query_heads
         self.key_heads = key_heads
-        self.head_size = head_size
-        self.rotary_dim = rotary_dim
-        self.max_position = max_position
         self.dtype = dtype
-        self.position_dtype = position_dtype
-        self.offset_dtype = offset_dtype
         lanes = VECTOR_ACCESS_BYTES // dtype.itemsize
         span = rotary_dim // 2 if self._NEOX else rotary_dim
         rot_vec = math.gcd(lanes, head_size, span)
@@ -690,7 +686,8 @@ class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
     def _device_terms(cls, call: RoPECall) -> dict:
         row = cls._row_bytes(call)
         share = -(-call.smem_per_sm // call.threads_per_sm // VECTOR_ACCESS_BYTES)
-        threads = min(1024, -(-row // (share * VECTOR_ACCESS_BYTES * 32)) * 32)
+        warp_bytes = share * VECTOR_ACCESS_BYTES * WARP_LANES
+        threads = min(MAX_BLOCK_THREADS, -(-row // warp_bytes) * WARP_LANES)
         per_sm = min(call.threads_per_sm // threads, call.smem_per_sm // row)
         return {
             **super()._device_terms(call),
@@ -833,7 +830,8 @@ def _rope_cos_sin_kernel(
     adjacent = interleaved and vec == 1
     head_units = rot_units + (0 if inplace else (head_dim - rotary) // vec)
 
-    # The flat index proves no access in bounds; the bound check would split every vector.
+    # TileLang proves no flat-index access in bounds, and its inserted check would split every
+    # vector; `item < units` guards each thread instead.
     @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True})
     def kernel(threads, per_thread):
         # A flat view, a table or the sequences may number 2^31 or more.
@@ -1105,7 +1103,6 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @classmethod
     def entry_for(cls, call: RoPECosSinCall) -> Entry:

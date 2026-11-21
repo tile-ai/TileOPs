@@ -15,6 +15,7 @@ __all__ = [
     "MGroupedLayoutSpec",
     "MaskedLayoutSpec",
     "RoutingEpilogueSpec",
+    "layout_call_fields",
 ]
 
 
@@ -30,12 +31,6 @@ class ContiguousMetadata(str, enum.Enum):
 
     PHYSICAL_PSUM = "physical_psum"
     PER_ROW = "per_row"
-
-
-class _LayoutKind(str, enum.Enum):
-    """Non-contiguous layout specializations understood by kernel candidates."""
-
-    MASKED_PREDICATED = "masked_predicated"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -110,7 +105,7 @@ class MaskedLayoutSpec:
     @property
     def selection_key(self) -> str:
         """Return the concrete specialization key recorded in CallSpecs."""
-        return _LayoutKind.MASKED_PREDICATED.value
+        return "masked_predicated"
 
     @property
     def kind(self) -> str:
@@ -119,6 +114,19 @@ class MaskedLayoutSpec:
 
 
 type MGroupedLayoutSpec = ContiguousLayoutSpec | MaskedLayoutSpec
+
+
+def layout_call_fields(layout: MGroupedLayoutSpec) -> dict:
+    """The layout fields an M-grouped GEMM call record opens with: ``kind``, ``packing``,
+    ``metadata_kind``, ``alignment`` and ``max_m``."""
+    contiguous = isinstance(layout, ContiguousLayoutSpec)
+    return {
+        "kind": layout.kind,
+        "packing": layout.packing.value if contiguous else None,
+        "metadata_kind": layout.metadata_kind.value if contiguous else None,
+        "alignment": layout.alignment if contiguous else 1,
+        "max_m": layout.max_m,
+    }
 
 
 @dataclasses.dataclass(frozen=True)

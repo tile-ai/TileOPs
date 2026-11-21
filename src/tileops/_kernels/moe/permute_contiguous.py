@@ -6,10 +6,15 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.moe.call_spec import PrePermuteCall, PrePermuteFwdInterface
+from tileops._kernels.moe.layout import row_threads
 
 __all__ = ["MoEPrePermuteContiguousKernel"]
+
+# Elements of a 16-bit row one vector access copies; both gathers copy rows this wide.
+_ROW_VECTOR = VECTOR_ACCESS_BYTES // 2
 
 
 def _make_tight_scan(numel: int, num_experts: int):
@@ -270,14 +275,6 @@ def _make_aligned_per_row_scan(
     return _scan
 
 
-def _row_threads(hidden_size: int) -> int:
-    """Threads that copy one row eight elements each: the most, up to 1024, dividing it."""
-    threads = min(1024, hidden_size // 8)
-    while threads > 0 and hidden_size % threads != 0:
-        threads -= 1
-    return max(threads, 1)
-
-
 def _make_aligned_gather(
     num_tokens: int,
     physical_rows: int,
@@ -287,7 +284,7 @@ def _make_aligned_gather(
     rows_per_block: int,
 ):
     """Gather real rows and zero-fill padding and capacity rows."""
-    threads = _row_threads(hidden_size)
+    threads = row_threads(hidden_size, _ROW_VECTOR)
     grid = (physical_rows + rows_per_block - 1) // rows_per_block
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -326,7 +323,7 @@ def _make_token_gather(num_tokens: int, top_k: int, hidden_size: int, dtype: str
     Block ``split`` handles routes ``split + i * splits``. Reusing the row avoids
     repeated DRAM reads when the hidden states exceed L2.
     """
-    threads = _row_threads(hidden_size)
+    threads = row_threads(hidden_size, _ROW_VECTOR)
     per_block = (top_k + splits - 1) // splits
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -366,7 +363,7 @@ class MoEPrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
         return super().refusal(call)
 
     def __init__(self, call: PrePermuteCall, config: dict | None = None) -> None:
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         layout = call.layout
         self.layout_key = getattr(layout, "selection_key", "")
         self.num_tokens = call.num_tokens

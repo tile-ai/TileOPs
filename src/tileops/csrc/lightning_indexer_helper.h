@@ -8,24 +8,26 @@ __device__ __forceinline__ float relu_term(float x) {
   return DOUBLED ? x + fabsf(x) : fmaxf(x, 0.f);
 }
 
+// The 2 BQ head sums of relu(score) * weight a thread holds, sum 2 q + h of
+// query q at row half h. With SIGNED, a score first takes the sign of its row's
+// key scale: ``scale0`` at row half 0, ``scale1`` at row half 1.
 template <int HEADS, int BQ, bool DOUBLED, bool SIGNED>
 __device__ __forceinline__ void indexer_head_sums(const float* acc,
                                                   const float* wt, float scale0,
                                                   float scale1, float* v) {
   constexpr int N = 2 * BQ;
   constexpr int JQ = HEADS / 8;
-  // Partial sums first, sum 2 q + h of query q at row half h.
 #pragma unroll
   for (int q = 0; q < BQ; ++q) {
 #pragma unroll
     for (int h = 0; h < 2; ++h) {
-      // Two chains a sum below 16 sums a thread, so at least 16 FFMA chains run
-      // at once.
       const unsigned sign = __float_as_uint(h ? scale1 : scale0) & 0x80000000u;
       const auto score = [=](float x) {
         if constexpr (SIGNED) return __uint_as_float(__float_as_uint(x) ^ sign);
         return x;
       };
+      // Two chains a sum below 16 sums a thread, so at least 16 FFMA chains run
+      // at once.
       float a = 0.f, b = 0.f;
 #pragma unroll
       for (int jj = 0; jj < JQ; ++jj) {
@@ -48,16 +50,16 @@ __device__ __forceinline__ void indexer_head_sums(const float* acc,
 // for thread t of the consumer warpgroup that holds the tile's m64n(HEADS * BQ)
 // WGMMA accumulator.
 //
-// Accumulator element 4 j + 2 h + b of thread t sits at key row 16 (t / 32) +
-// (t % 32) / 4
-// + 8 h and query-head column 8 j + 2 (t % 4) + b. ``wt`` holds that column's
-// head weight at 2 j + b. Each (row, query) logit is the head sum of
-// relu(score * sign(key_scale)) * weight. The four lanes that
+// Accumulator element 4 j + 2 h + b of thread t sits at key row
+// 16 (t / 32) + (t % 32) / 4 + 8 h and query-head column 8 j + 2 (t % 4) + b.
+// ``wt`` holds that column's head weight at 2 j + b. Each (row, query) logit is
+// the head sum of relu(score * sign(key_scale)) * weight. The four lanes that
 // share a row then reduce-scatter the 2 BQ sums, so lane t % 4 ends with the
 // (query q, row half h) of 2 q + h congruent to it, and stores them times the
-// key scale magnitude. Outside its row's window a logit is -inf when CLEAN;
+// key scale's magnitude. Outside its row's window a logit is -inf when CLEAN;
 // ``interior`` says the whole tile is inside every window and inside the
-// tensor.
+// tensor. With CHECK_SCALE_SIGN, a warp none of whose key scales is negative
+// takes the unsigned head sums.
 //
 // With DOUBLED the rectification and weighted sum share the FMA pipe:
 // the sum is of (x + |x|) * weight, twice relu(x) * weight, halved before
@@ -108,9 +110,9 @@ __device__ __forceinline__ void indexer_tile_epilogue_impl(
   // locates the first, each next one is two queries further. A row past
   // seq_len gets an address but no store.
   float* out = logits + off + k0;
+  const float magnitude = CHECK_SCALE_SIGN ? fabsf(key_scale) : key_scale;
 #pragma unroll
   for (int m = 0; m < N / 4; ++m) {
-    const float magnitude = CHECK_SCALE_SIGN ? fabsf(key_scale) : key_scale;
     float v_out = DOUBLED ? __fmul_rn(__fmul_rn(own[m], 0.5f), magnitude)
                           : own[m] * magnitude;
     float* p = out + 2LL * m * seq_len_kv;

@@ -7,8 +7,11 @@ from tileops._kernels.linear_attention.call_spec import (
     KDACall,
     KDAFwdInterface,
 )
-from tileops._kernels.linear_attention.chunk_plan import launch_plan
-from tileops._kernels.linear_attention.chunk_prefill import run_chunk_prefill, staged_bytes
+from tileops._kernels.linear_attention.chunk_prefill import (
+    chunk_refusal,
+    run_chunk_prefill,
+    staged_bytes,
+)
 
 __all__ = ["KDAChunkPrefillFwdKernel"]
 
@@ -34,25 +37,13 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             return chunked
         if call.seq_len < 2:
             return "serves a sequence of at least two tokens"
-        plan = launch_plan(
-            call.dim_k,
-            call.dtype.itemsize,
-            call.sequences,
-            call.smem_budget,
-            call.arch,
-            staged_bytes=staged_bytes(call),
-            walk=True,
-        )
-        if plan is None:
-            return (
-                f"needs more than {call.smem_budget} bytes of shared memory for "
-                f"{call.sequences} sequences"
-            )
-        return None
+        return chunk_refusal(
+            call, call.sequences, staged=staged_bytes(call), walk=True
+        ) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: KDACall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (
             call.batch,
             call.seq_len,

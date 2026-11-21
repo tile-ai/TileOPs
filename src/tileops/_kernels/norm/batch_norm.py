@@ -8,6 +8,7 @@ one channel, whose element *l* sits at ``[l // S, c, l % S]``.
 """
 
 import functools
+import operator
 from collections.abc import Callable
 
 import tilelang
@@ -20,13 +21,11 @@ from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.norm._config import (
     FP32_RANGE_BOUND,
-    FP32_RANGE_BOUND_BITS,
     VARIANCE_FLOOR,
     fold_chains,
     make_raw_sums_hold,
     pairwise_sum,
     read_first,
-    warp_sum,
 )
 from tileops._kernels.norm.call_spec import (
     BatchNormBwdInterface,
@@ -35,6 +34,7 @@ from tileops._kernels.norm.call_spec import (
     BatchNormTrainFwdInterface,
     InstanceNormInferFwdInterface,
 )
+from tileops._kernels.warp_reduce import warp_reduce
 
 __all__ = [
     "BatchNormBwdKernel",
@@ -110,7 +110,8 @@ def rstd_in_unit(var_u, unit, eps: float):
 def _past_range(value):
     """Whether *value* is past `FP32_RANGE_BOUND` in magnitude or NaN, read from its bits: the
     compiler may negate a comparison into its converse, which a NaN fails."""
-    return T.bitwise_and(T.reinterpret(value, "int32"), 0x7FFFFFFF) > FP32_RANGE_BOUND_BITS
+    bound_bits = 0x7F61B1E6  # FP32_RANGE_BOUND's bit pattern
+    return T.bitwise_and(T.reinterpret(value, "int32"), 0x7FFFFFFF) > bound_bits
 
 
 def _ratio(num, den):
@@ -168,34 +169,31 @@ class _TiledPath:
 
     Chosen when no other path serves the shape. The training forward and the
     backward kernel both read this space: different prim_funcs, same reduction,
-    same two parameters. Every bound below holds for those two only.
+    same two parameters. Every bound in `for_length` holds for those two only.
     """
-
-    # Length at or below which one block holds a whole channel: x_shared costs
-    # L * sizeof(dtype), 16 KB at L=8192 in fp16, and backward holds two of them.
-    PERSISTENT_MAX_L = 8192
-
-    # TileLang's AllReduce template needs a power-of-two thread count.
-    REDUCE_THREADS = (256, 128, 64, 32)
-
-    # Widest tile one block takes, bounding register pressure.
-    MAX_BLOCK_L = 512
 
     @classmethod
     def for_length(cls, L: int) -> list[dict]:
         """The pairs accepted for *L*, best first; element zero runs untuned."""
+        # Length at or below which one block holds a whole channel: x_shared costs
+        # L * sizeof(dtype), 16 KB at L=8192 in fp16, and backward holds two of them.
+        persistent_max_l = 8192
+        # TileLang's AllReduce template needs a power-of-two thread count.
+        reduce_threads = (256, 128, 64, 32)
+        # Widest tile one block takes, bounding register pressure.
+        max_block_l = 512
         configs: list[dict] = []
 
         # One tile per channel: the whole channel is the tile.
-        if L <= cls.PERSISTENT_MAX_L:
-            configs += [{"block_l": L, "threads": t} for t in cls.REDUCE_THREADS if L % t == 0]
+        if persistent_max_l >= L:
+            configs += [{"block_l": L, "threads": t} for t in reduce_threads if L % t == 0]
 
         # Several tiles per channel. block_l need not be a power of two, only
         # the thread count must, so 448 is available at L=3136 where 512 is not.
         # No pair repeats: threads separates these, and the entry above has
         # block_l == L, which this loop excludes.
-        for threads in cls.REDUCE_THREADS:
-            for k in range(cls.MAX_BLOCK_L // threads, 0, -1):
+        for threads in reduce_threads:
+            for k in range(max_block_l // threads, 0, -1):
                 block_l = threads * k
                 if block_l < L and L % block_l == 0:
                     configs.append({"block_l": block_l, "threads": threads})
@@ -205,11 +203,11 @@ class _TiledPath:
 
         # No tile divides L: the last tile is masked. Below the threshold one
         # block still holds the channel, rounded up to a whole thread count.
-        threads = max((t for t in cls.REDUCE_THREADS if t <= L), default=cls.REDUCE_THREADS[-1])
+        threads = max((t for t in reduce_threads if t <= L), default=reduce_threads[-1])
         block_l = -(-L // threads) * threads
-        if block_l <= cls.PERSISTENT_MAX_L:
+        if block_l <= persistent_max_l:
             return [{"block_l": block_l, "threads": threads}]
-        return [{"block_l": cls.MAX_BLOCK_L, "threads": cls.REDUCE_THREADS[0]}]
+        return [{"block_l": max_block_l, "threads": reduce_threads[0]}]
 
 
 @target_cache(maxsize=32)
@@ -1238,7 +1236,7 @@ def _batch_norm_fwd_train_wide_kernel(
                             ) * T.cast(held[k * num_per_thread + i], accum_dtype)
                 stats[0] = fold_chains(raw, 0, chains)
                 stats[1] = fold_chains(raw, chains, chains)
-                warp_sum(stats, 2)
+                warp_reduce(stats, operator.add, 2)
                 if tx % lanes == 0:
                     slots[3, tx // lanes] = stats[0]
                     slots[4, tx // lanes] = stats[1]
@@ -1249,9 +1247,7 @@ def _batch_norm_fwd_train_wide_kernel(
                         stats[j] = T.if_then_else(
                             lane < n_warps, slots[3 + j, T.min(lane, n_warps - 1)], 0.0
                         )
-                    for st in T.unroll(warp_depth):
-                        for j in T.unroll(2):
-                            stats[j] += T.shfl_xor(stats[j], T.shift_left(1, st))
+                    warp_reduce(stats, operator.add, 2, lanes=1 << warp_depth)
                 else:
                     stats[0] = raw_sums(slots, 3)
                     stats[1] = raw_sums(slots, 4)
@@ -1340,7 +1336,7 @@ def _batch_norm_fwd_train_wide_kernel(
                     share = T.cast(count, accum_dtype) * warp_inverse(tx // lanes)
                     stats[0] = share * offset
                     stats[1] = share * (group_total[1] * inverse) + share * offset * offset
-                    warp_sum(stats, 2)
+                    warp_reduce(stats, operator.add, 2)
                     if tx % lanes == 0:
                         w = tx // lanes
                         slots[0, w] = reference_hi
@@ -1366,9 +1362,7 @@ def _batch_norm_fwd_train_wide_kernel(
                             )
                             + lane_count * (1.0 / L) * spread * spread
                         )
-                        for st in T.unroll(warp_depth):
-                            for j in T.unroll(2):
-                                stats[j] += T.shfl_xor(stats[j], T.shift_left(1, st))
+                        warp_reduce(stats, operator.add, 2, lanes=1 << warp_depth)
                     else:
                         stats[0] = warp_terms(slots, unit)[0]
                         stats[1] = warp_terms(slots, unit)[1]
@@ -1523,21 +1517,16 @@ class _BatchNormKernel(Kernel):
 
     supported_archs: list[int] = [80, 89, 90]
 
-    # The longest channel of one element per batch item that one thread holds.
-    _THREAD_MAX_L = 32
-
-    # Elements one thread of a register-holding block keeps, over every tensor it holds.
-    _BLOCK_MAX_HELD = 256
+    # Threads a register-holding block starts from, and the most it widens to; both
+    # `_block_launch` and `BatchNormFwdTrainWideKernel._trimmed_launch` size blocks by them.
     _HOLDING_BLOCK_THREADS = 256
     _BLOCK_MAX_THREADS = 1024
-    # The widest block once the grid alone covers every SM.
-    _BLOCK_MAX_THREADS_FULL_GRID = 512
 
-    # At or above this many channels one block per channel already fills the device.
-    _SPLIT_MAX_C = 1024
-    _SPLIT_MIN_L = 1 << 16
-    # Blocks a split grid aims for before tuning.
-    _SPLIT_TARGET_BLOCKS = 512
+    @classmethod
+    def _entry(cls, call: BatchNormCall, *args, **kwargs) -> Entry:
+        """The entry building ``cls(*args, **kwargs)`` on the call's device."""
+        index = call.device_index
+        return (*args, *kwargs.values(), index), lambda: cls(*args, **kwargs, device_index=index)
 
     @classmethod
     def _block_launch(cls, call: BatchNormCall, held_tensors: int) -> tuple[int, int] | None:
@@ -1546,9 +1535,13 @@ class _BatchNormKernel(Kernel):
         ``None`` where the channel does not fit. A thread holds *held_tensors* elements per
         channel element, and its vector never straddles two batch items.
         """
+        # Elements one thread keeps, over every tensor it holds.
+        max_held = 256
+        # The widest block once the grid alone covers every SM.
+        max_threads_full_grid = 512
         L = call.n * call.spatial
         full_grid = call.sm_count <= call.c
-        widest = cls._BLOCK_MAX_THREADS_FULL_GRID if full_grid else cls._BLOCK_MAX_THREADS
+        widest = max_threads_full_grid if full_grid else cls._BLOCK_MAX_THREADS
         vector = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         for num_per_thread in (vector >> k for k in range(vector.bit_length())):
             if call.spatial % num_per_thread:
@@ -1568,7 +1561,7 @@ class _BatchNormKernel(Kernel):
             ):
                 threads *= 2
                 steps = -(-L // (threads * num_per_thread))
-            if steps * num_per_thread * held_tensors <= cls._BLOCK_MAX_HELD:
+            if steps * num_per_thread * held_tensors <= max_held:
                 return threads, num_per_thread
         return None
 
@@ -1576,22 +1569,37 @@ class _BatchNormKernel(Kernel):
     def _holder(cls, call: BatchNormCall, held_tensors: int) -> str:
         """What holds one channel of *held_tensors* tensors: the smallest of ``"thread"``,
         ``"block"``, ``"split"`` (across blocks) and ``"tiled"`` that fits it."""
-        if call.spatial <= 1 and call.n * call.spatial <= cls._THREAD_MAX_L:
+        # The longest channel of one element per batch item that one thread holds.
+        thread_max_l = 32
+        # At or above this many channels one block per channel already fills the device.
+        split_max_c = 1024
+        split_min_l = 1 << 16
+        if call.spatial <= 1 and call.n * call.spatial <= thread_max_l:
             return "thread"
         if cls._block_launch(call, held_tensors) is not None:
             return "block"
-        if call.c < cls._SPLIT_MAX_C and call.n * call.spatial >= cls._SPLIT_MIN_L:
+        if call.c < split_max_c and call.n * call.spatial >= split_min_l:
             return "split"
         return "tiled"
 
     @classmethod
     def _split_seed(cls, call: BatchNormCall) -> int:
         """Pieces a split channel is cut into before anything is measured."""
-        return max(1, min(call.n * call.spatial, -(-cls._SPLIT_TARGET_BLOCKS // call.c)))
+        # Blocks a split grid aims for before tuning.
+        target_blocks = 512
+        return max(1, min(call.n * call.spatial, -(-target_blocks // call.c)))
 
 
-class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormTrainFwdInterface):
-    """Training forward with a channel held in registers, launched with ``self.launch``."""
+class _BatchNormFwdTrain(_BatchNormKernel, BatchNormTrainFwdInterface):
+    """Training forward: the call and the launch every candidate shares. ``_compile`` returns
+    what runs on ``(x, weight, bias, running_mean, running_var, mean_out, rstd_out)``."""
+
+    @classmethod
+    def _train_entry(cls, call: BatchNormCall, *extra) -> Entry:
+        """The entry building ``cls`` for *call*, with *extra* after the momentum."""
+        presence = (call.has_weight, call.has_bias, call.has_running_stats)
+        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum, *extra)
+        return cls._entry(call, *args, presence=presence)
 
     def forward(
         self,
@@ -1620,6 +1628,10 @@ class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         )
         return y, mean_out, rstd_out
 
+
+class _BatchNormFwdTrainHeldKernel(_BatchNormFwdTrain):
+    """Training forward with a channel held in registers, launched with ``self.launch``."""
+
     def _compile(self, cfg: dict):
         """The program, launched as ``self.launch`` says."""
         return self.kernel(*self.launch)
@@ -1641,10 +1653,6 @@ class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
-    # Wider than the channels it covers when there are few, so the block still has
-    # enough warps to cover load latency.
-    _BLOCK_THREADS = 256
-
     @classmethod
     def refusal(cls, call: BatchNormCall) -> "str | None":
         holder = cls._holder(call, 1)
@@ -1654,10 +1662,7 @@ class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
-        index = call.device.index if call.device is not None else None
-        presence = (call.has_weight, call.has_bias, call.has_running_stats)
-        return (*args, presence, index), lambda: cls(*args, presence=presence, device_index=index)
+        return cls._train_entry(call)
 
     def __init__(
         self,
@@ -1673,7 +1678,10 @@ class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
         super().__init__(device_index=device_index)
         self.C = C
         self.dtype = dtype
-        self.launch = (self._BLOCK_THREADS,)
+        # Wider than the channels it covers when there are few, so the block still has
+        # enough warps to cover load latency.
+        block_threads = 256
+        self.launch = (block_threads,)
         self.kernel = _batch_norm_fwd_train_whole_kernel(
             N, C, S, self.dtype_str, eps, momentum, *presence
         )
@@ -1708,18 +1716,7 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (
-            call.n,
-            call.c,
-            call.spatial,
-            call.dtype,
-            call.eps,
-            call.momentum,
-            cls._trimmed_launch(call),
-        )
-        index = call.device.index if call.device is not None else None
-        presence = (call.has_weight, call.has_bias, call.has_running_stats)
-        return (*args, presence, index), lambda: cls(*args, presence=presence, device_index=index)
+        return cls._train_entry(call, cls._trimmed_launch(call))
 
     @classmethod
     def _trimmed_launch(cls, call: BatchNormCall) -> tuple[int, int]:
@@ -1756,7 +1753,7 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
         )
 
 
-class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface):
+class BatchNormFwdTrainSplitKernel(_BatchNormFwdTrain):
     """Training forward with a channel across several blocks: sum, merge, then map.
 
     Serves a channel one block does not hold and that is long enough, among few enough
@@ -1774,13 +1771,6 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
-    # How far either side of the seed the split count is offered to the tuner.
-    _SEARCH_REACH = 4
-    # Relative spread within which two timings tie.
-    _TIE_BAND = 0.02
-    # Powers of two only: T.reduce_sum lowers to an XOR butterfly.
-    _SUM_THREADS = (128, 256, 512, 1024)
-
     @classmethod
     def refusal(cls, call: BatchNormCall) -> "str | None":
         holder = cls._holder(call, 1)
@@ -1790,18 +1780,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (
-            call.n,
-            call.c,
-            call.spatial,
-            call.dtype,
-            call.eps,
-            call.momentum,
-            cls._split_seed(call),
-        )
-        index = call.device.index if call.device is not None else None
-        presence = (call.has_weight, call.has_bias, call.has_running_stats)
-        return (*args, presence, index), lambda: cls(*args, presence=presence, device_index=index)
+        return cls._train_entry(call, cls._split_seed(call))
 
     def __init__(
         self,
@@ -1840,12 +1819,16 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
     def autotune_configs(self) -> list[dict]:
         # Powers of two either side of the seed, and the seed itself, so tuning that
         # builds no candidate has nothing to fall back to and raises.
-        widest = min(self.L, self.splits * self._SEARCH_REACH)
+        # How far either side of the seed the split count is offered to the tuner.
+        search_reach = 4
+        # Powers of two only: T.reduce_sum lowers to an XOR butterfly.
+        sum_threads = (128, 256, 512, 1024)
+        widest = min(self.L, self.splits * search_reach)
         counts = {1 << k for k in range(widest.bit_length())} | {self.splits}
         return [
             {"splits": splits, "threads": threads}
             for splits in sorted(c for c in counts if c <= self.L)
-            for threads in self._SUM_THREADS
+            for threads in sum_threads
         ]
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
@@ -1870,7 +1853,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         try:
             for candidate in self.tuning_candidates(self.autotune_configs):
                 splits, threads = candidate["splits"], candidate["threads"]
-                args = (x, stat(), stat(), weight, bias, stat(), stat())
+                args = (x, weight, bias, stat(), stat(), stat(), stat())
                 try:
                     run = self._launch_of(splits, threads)
                     elapsed = candidate_busy_ms(lambda run=run, args=args: run(*args), warmup, rep)
@@ -1893,16 +1876,18 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         # A tie inside the guard band breaks by distance from the seed, then
         # the narrower block, then the smaller count: a total order, so a seed
         # equidistant from two counts still resolves the same way.
+        # Relative spread within which two timings tie.
+        tie_band = 0.02
         floor = min(timed)[0]
         best = min(
-            (c for c in timed if c[0] <= floor * (1.0 + self._TIE_BAND)),
+            (c for c in timed if c[0] <= floor * (1.0 + tie_band)),
             key=lambda c: (abs(c[1] - self.splits), c[2], c[1]),
         )
         self._publish_tuned({"splits": best[1], "threads": best[2]})
 
     def _launch_of(self, splits: int, threads: int) -> Callable:
         """Sum, merge, then map -- three launches over an element-wide grid, run on
-        ``(x, running_mean, running_var, weight, bias, mean_out, rstd_out)``."""
+        ``(x, weight, bias, running_mean, running_var, mean_out, rstd_out)``."""
         stats, finalize, apply_ = self.stages
         num_per_thread = _vector_elements(self.dtype)
         span = threads * num_per_thread
@@ -1913,7 +1898,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         apply_ = CompiledProgram(apply_(blocks, threads, num_per_thread))
         C = self.C
 
-        def launch(x, running_mean, running_var, weight, bias, mean_out, rstd_out):
+        def launch(x, weight, bias, running_mean, running_var, mean_out, rstd_out):
             empty = functools.partial(torch.empty, device=x.device, dtype=torch.float32)
             partial_lead = empty((C, splits))
             partial_sum = empty((C, splits))
@@ -1939,39 +1924,12 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
 
         return launch
 
-    def _launcher(self, cfg: dict) -> Callable:
+    def _compile(self, cfg: dict) -> Callable:
         """What one launch under *cfg* runs; see :meth:`_launch_of`."""
         return self._launch_of(cfg["splits"], cfg["threads"])
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        running_mean: torch.Tensor | None,
-        running_var: torch.Tensor | None,
-        weight: torch.Tensor | None,
-        bias: torch.Tensor | None,
-    ):
-        """Normalize an ``(N, C, S)`` input by its batch statistics.
 
-        Returns:
-            ``(y, mean, rstd)``: the ``(N, C, S)`` output and the per-channel batch
-            mean and reciprocal std the backward pass reads.
-        """
-        self._require_devices(
-            x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
-        )
-        running_mean, running_var, weight, bias = _fill_absent(
-            x, self.C, running_mean, running_var, weight, bias
-        )
-        mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
-        rstd_out = torch.empty_like(mean_out)
-        y = self.program(self._launcher)(
-            x, running_mean, running_var, weight, bias, mean_out, rstd_out
-        )
-        return y, mean_out, rstd_out
-
-
-class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
+class BatchNormFwdTrainKernel(_BatchNormFwdTrain):
     """Training forward with one channel per block, streamed through shared memory.
 
     The general implementation: it serves every shape the specialised ones do not.
@@ -1987,15 +1945,11 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
     general: bool = True
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
-        index = call.device.index if call.device is not None else None
-        presence = (call.has_weight, call.has_bias, call.has_running_stats)
-        return (*args, presence, index), lambda: cls(*args, presence=presence, device_index=index)
+        return cls._train_entry(call)
 
     def __init__(
         self,
@@ -2025,33 +1979,6 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         return _TiledPath.for_length(self.L)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        running_mean: torch.Tensor | None,
-        running_var: torch.Tensor | None,
-        weight: torch.Tensor | None,
-        bias: torch.Tensor | None,
-    ):
-        """Normalize an ``(N, C, S)`` input by its batch statistics.
-
-        Returns:
-            ``(y, mean, rstd)``: the ``(N, C, S)`` output and the per-channel batch
-            mean and reciprocal std the backward pass reads.
-        """
-        self._require_devices(
-            x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
-        )
-        running_mean, running_var, weight, bias = _fill_absent(
-            x, self.C, running_mean, running_var, weight, bias
-        )
-        mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
-        rstd_out = torch.empty_like(mean_out)
-        y = self.program(self._compile)(
-            x, weight, bias, running_mean, running_var, mean_out, rstd_out
-        )
-        return y, mean_out, rstd_out
 
     def _compile(self, cfg: dict):
         """The program *cfg* tiles."""
@@ -2203,7 +2130,9 @@ def _batch_norm_fwd_infer_kernel(
     return _bn_fwd_infer_func
 
 
-class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormInferFwdInterface):
+class BatchNormFwdInferKernel(
+    _BatchNormKernel, BatchNormInferFwdInterface, InstanceNormInferFwdInterface
+):
     """Inference-mode batch normalization forward kernel.
 
     Args:
@@ -2219,19 +2148,7 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
     general: bool = True
-
-    # Elements one block covers, and its width. Each block pays the whole
-    # per-channel table as a prologue, so the span fixes the block count and the
-    # step count absorbs what the per-thread vector gives up.
-    _BLOCK_SPAN = 2048
-    _BLOCK_THREADS = 256
-
-    # What autotune sweeps around that default: block widths, and how many
-    # per-thread vectors one block walks.
-    _TUNE_THREADS = (128, 256, 512, 1024)
-    _TUNE_STEPS = (1, 2, 4)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
@@ -2245,8 +2162,7 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
             call.has_weight,
             call.has_bias,
         )
-        index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        return cls._entry(call, *args)
 
     def __init__(
         self,
@@ -2271,29 +2187,34 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
 
     @property
     def default_config(self) -> dict:
+        # Elements one block covers, and its width. Each block pays the whole
+        # per-channel table as a prologue, so the span fixes the block count and the
+        # step count absorbs what the per-thread vector gives up.
+        block_span = 2048
+        threads = 256
         # The widest vector the element count divides, with steps keeping the
-        # block span at _BLOCK_SPAN.
-        threads = self._BLOCK_THREADS
+        # block span.
         vector = _vector_elements(self.dtype)
         for num_per_thread in (vector >> k for k in range(vector.bit_length())):
             if self.total % num_per_thread == 0:
-                steps = max(1, self._BLOCK_SPAN // (threads * num_per_thread))
+                steps = max(1, block_span // (threads * num_per_thread))
                 return {
                     "threads": threads,
                     "num_per_thread": num_per_thread,
                     "steps": steps,
                 }
-        return {"threads": threads, "num_per_thread": 1, "steps": self._BLOCK_SPAN // threads}
+        return {"threads": threads, "num_per_thread": 1, "steps": block_span // threads}
 
     @property
     def autotune_configs(self) -> list[dict]:
         configs = []
         vector = _vector_elements(self.dtype)
-        for threads in self._TUNE_THREADS:
+        # Block widths, and how many per-thread vectors one block walks.
+        for threads in (128, 256, 512, 1024):
             for num_per_thread in (vector >> k for k in range(vector.bit_length())):
                 if self.total % num_per_thread:
                     continue
-                for steps in self._TUNE_STEPS:
+                for steps in (1, 2, 4):
                     configs.append(
                         {
                             "threads": threads,
@@ -2838,47 +2759,9 @@ def _batch_norm_bwd_split_kernel(
     return _stats_func, _finalize_func, _apply_func
 
 
-class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
-    """Backward with one channel per block, ``grad_out`` and ``x`` held in its registers.
-
-    Serves a channel whose two tensors one block holds, a thread-held one included.
-
-    Args:
-        N: Batch size.
-        C: Number of channels.
-        S: Elements per channel in one batch item, ``product(spatial)``.
-        dtype: grad_out/x/grad_x data type.
-        launch: ``(threads, num_per_thread)`` of the block.
-        device_index: CUDA device the kernel runs on; ``None`` is the current one.
-    """
-
-    @classmethod
-    def refusal(cls, call: BatchNormCall) -> "str | None":
-        holder = cls._holder(call, 2)
-        if holder not in ("thread", "block"):
-            return f"a channel of this call is held by a {holder}, not a thread or a block"
-        return super().refusal(call)
-
-    @classmethod
-    def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype, cls._block_launch(call, 2))
-        index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
-
-    def __init__(
-        self,
-        N: int,
-        C: int,
-        S: int,
-        dtype: torch.dtype,
-        launch: tuple[int, int],
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.C = C
-        self.dtype = dtype
-        self.launch = launch
-        self.kernel = _batch_norm_bwd_wide_kernel(N, C, S, self.dtype_str)
+class _BatchNormBwd(_BatchNormKernel, BatchNormBwdInterface):
+    """Backward: the launch every candidate shares. ``_compile`` returns what runs on
+    ``(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)``."""
 
     def forward(
         self,
@@ -2901,12 +2784,55 @@ class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
         )
         return grad_x, grad_weight, grad_bias
 
+
+class BatchNormBwdWideKernel(_BatchNormBwd):
+    """Backward with one channel per block, ``grad_out`` and ``x`` held in its registers.
+
+    Serves a channel whose two tensors one block holds, a thread-held one included.
+
+    Args:
+        N: Batch size.
+        C: Number of channels.
+        S: Elements per channel in one batch item, ``product(spatial)``.
+        dtype: grad_out/x/grad_x data type.
+        launch: ``(threads, num_per_thread)`` of the block.
+        device_index: CUDA device the kernel runs on; ``None`` is the current one.
+    """
+
+    @classmethod
+    def refusal(cls, call: BatchNormCall) -> "str | None":
+        holder = cls._holder(call, 2)
+        if holder not in ("thread", "block"):
+            return f"a channel of this call is held by a {holder}, not a thread or a block"
+        return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: BatchNormCall) -> Entry:
+        return cls._entry(
+            call, call.n, call.c, call.spatial, call.dtype, cls._block_launch(call, 2)
+        )
+
+    def __init__(
+        self,
+        N: int,
+        C: int,
+        S: int,
+        dtype: torch.dtype,
+        launch: tuple[int, int],
+        device_index: int | None = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.C = C
+        self.dtype = dtype
+        self.launch = launch
+        self.kernel = _batch_norm_bwd_wide_kernel(N, C, S, self.dtype_str)
+
     def _compile(self, cfg: dict):
         """The program, launched as ``self.launch`` says."""
         return self.kernel(*self.launch)
 
 
-class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
+class BatchNormBwdSplitKernel(_BatchNormBwd):
     """Backward with a channel across several blocks: sum, merge, then map.
 
     Serves a channel whose two tensors one block does not hold and that is long enough,
@@ -2932,9 +2858,7 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype, cls._split_seed(call))
-        index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        return cls._entry(call, call.n, call.c, call.spatial, call.dtype, cls._split_seed(call))
 
     def __init__(
         self,
@@ -2962,28 +2886,7 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
             "threads": _TiledPath.for_length(self.L)[0]["threads"],
         }
 
-    def forward(
-        self,
-        grad_out: torch.Tensor,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        mean: torch.Tensor,
-        rstd: torch.Tensor,
-    ):
-        """Run the backward pass on ``(N, C, S)`` inputs.
-
-        Returns:
-            ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
-        """
-        self._require_devices(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
-        grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
-        grad_bias = torch.empty_like(grad_weight)
-        grad_x = self.program(self._launcher)(
-            grad_out, x, weight, mean, rstd, grad_weight, grad_bias
-        )
-        return grad_x, grad_weight, grad_bias
-
-    def _launcher(self, cfg: dict) -> Callable:
+    def _compile(self, cfg: dict) -> Callable:
         """Sum, merge, then map under *cfg* -- three launches over an element-wide grid, run
         on ``(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)``."""
         stats, finalize, apply_ = self.stages
@@ -3018,7 +2921,7 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
         return launch
 
 
-class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
+class BatchNormBwdKernel(_BatchNormBwd):
     """Backward with one channel per block, streamed through shared memory.
 
     The general implementation: it serves every shape the specialised ones do not.
@@ -3032,14 +2935,11 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
     general: bool = True
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype)
-        index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        return cls._entry(call, call.n, call.c, call.spatial, call.dtype)
 
     def __init__(
         self,
@@ -3064,26 +2964,6 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         return _TiledPath.for_length(self.L)
-
-    def forward(
-        self,
-        grad_out: torch.Tensor,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        mean: torch.Tensor,
-        rstd: torch.Tensor,
-    ):
-        """Run the backward pass on ``(N, C, S)`` inputs.
-
-        Returns:
-            ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
-        """
-        self._require_devices(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
-        grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
-        grad_bias = torch.empty_like(grad_weight)
-        program = self.program(self._compile)
-        grad_x = program(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
-        return grad_x, grad_weight, grad_bias
 
     def _compile(self, cfg: dict):
         """The program *cfg* tiles."""

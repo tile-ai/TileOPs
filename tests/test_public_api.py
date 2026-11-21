@@ -16,8 +16,10 @@ import tileops
 from tests.fresh_interpreter import probe
 from tileops.manifest import load_manifest
 
+pytestmark = pytest.mark.smoke
+
 SRC = Path(tileops.__file__).parent
-# Off the tree, not off `_FAMILIES` — one test compares the two.
+# Read off the tree, not off `_FAMILIES`, so one test can compare the two.
 FAMILIES = sorted(p.stem for p in SRC.glob("*.py") if not p.stem.startswith("_"))
 
 
@@ -48,13 +50,13 @@ def _imported_names(path: Path) -> set[str]:
     }
 
 
-@pytest.mark.smoke
-def test_families_match_the_tree():
+def test_families_match_the_tree_and_are_listed():
     assert sorted(tileops._FAMILIES) == FAMILIES
     assert len(set(tileops._FAMILIES)) == len(tileops._FAMILIES)
+    assert set(FAMILIES) <= set(tileops.__all__)
+    assert set(FAMILIES) <= set(dir(tileops))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("family", FAMILIES)
 def test_family_all_covers_every_import(family: str):
     mod = _family_module(family)
@@ -63,7 +65,6 @@ def test_family_all_covers_every_import(family: str):
     assert [name for name in mod.__all__ if not hasattr(mod, name)] == []
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("family", FAMILIES)
 def test_family_defines_nothing(family: str):
     """A family module re-exports; it never defines. A family can draw on more than one
@@ -78,7 +79,6 @@ def test_family_defines_nothing(family: str):
     assert foreign == {}
 
 
-@pytest.mark.smoke
 def test_each_public_name_has_exactly_one_family():
     owners: dict[str, list[str]] = {}
     for family in FAMILIES:
@@ -95,7 +95,6 @@ def _public_objects() -> dict[str, object]:
     }
 
 
-@pytest.mark.smoke
 def test_public_surface_is_the_manifest():
     """An op reachable as `tileops.<family>.<Op>` has a manifest entry, and every
     implemented entry is reachable; a spec-only entry may have no class yet. Abstract
@@ -112,7 +111,6 @@ def test_public_surface_is_the_manifest():
     assert {name for name, entry in manifest.items() if entry["status"] == "implemented"} <= public
 
 
-@pytest.mark.smoke
 def test_every_other_public_name_is_a_frozen_value_type():
     """Such as `tileops.moe.MaskedLayoutSpec`; an op that holds one never sees it change."""
     from tileops._ops.op_base import Op
@@ -125,13 +123,6 @@ def test_every_other_public_name_is_a_frozen_value_type():
     ] == []
 
 
-@pytest.mark.smoke
-def test_families_are_listed():
-    assert set(FAMILIES) <= set(tileops.__all__)
-    assert set(FAMILIES) <= set(dir(tileops))
-
-
-@pytest.mark.smoke
 def test_a_family_resolves_from_a_bare_import():
     """`import tileops` then `tileops.<family>` has to work through `__getattr__`.
 
@@ -142,7 +133,6 @@ def test_a_family_resolves_from_a_bare_import():
     assert probe("import tileops", "tileops.elementwise.HardtanhFwdOp.__name__") == "HardtanhFwdOp"
 
 
-@pytest.mark.smoke
 def test_importing_tileops_does_not_import_torch():
     """The manifest tooling reads YAML where torch is not installed, so resolving a
     family — not importing the package — has to be what pulls torch in. Checked in a
@@ -150,7 +140,6 @@ def test_importing_tileops_does_not_import_torch():
     assert probe("import sys, tileops", "'torch' in sys.modules") == "False"
 
 
-@pytest.mark.smoke
 def test_the_kernels_root_lists_every_name_it_resolves():
     """The lazy root states each name twice: in `_LAZY`, which resolves it, and under
     `if TYPE_CHECKING:`, which is all a type checker sees. One without the other is a
@@ -160,7 +149,6 @@ def test_the_kernels_root_lists_every_name_it_resolves():
     assert listed == set(mod._LAZY) == set(mod.__all__)
 
 
-@pytest.mark.smoke
 def test_the_op_base_class_does_not_import_the_compiler():
     """`Op` and `Kernel` describe ops; only a concrete kernel compiles one. Reaching the
     base classes must not import TileLang, which it does the moment either package root

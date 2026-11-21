@@ -2,12 +2,11 @@
 
 import tilelang
 import tilelang.language as T
-import torch
 
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.elementwise._dtype import FLOAT_DTYPES
+from tileops._kernels.elementwise._base import GeneratorKernel
 from tileops._kernels.elementwise.call_spec import SinusoidalCall, SinusoidalFwdInterface
-from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.kernel_base import Entry
 
 __all__ = [
     "SinusoidalFwdKernel",
@@ -65,7 +64,7 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype):
     return kernel
 
 
-class SinusoidalFwdKernel(Kernel, SinusoidalFwdInterface):
+class SinusoidalFwdKernel(GeneratorKernel, SinusoidalFwdInterface):
     """Sinusoidal positional encoding from "Attention Is All You Need".
 
     PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
@@ -78,20 +77,9 @@ class SinusoidalFwdKernel(Kernel, SinusoidalFwdInterface):
         config: Optional config dict.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = FLOAT_DTYPES
-
-    @classmethod
-    def refusal(cls, call: SinusoidalCall) -> "str | None":
-        if call.dtype in cls.SUPPORTED_DTYPES:
-            return None
-        supported = ", ".join(str(dt) for dt in cls.SUPPORTED_DTYPES)
-        return f"serves dtypes [{supported}], not {call.dtype}"
-
     @classmethod
     def entry_for(cls, call: SinusoidalCall) -> Entry:
-        index = None if call.device is None else call.device.index
+        index = call.device_index
         return call, lambda: cls(call.seq_len, call.d_model, call.dtype, device_index=index)
 
     def __init__(self, seq_len, d_model, dtype, config=None, device_index=None):
@@ -107,20 +95,9 @@ class SinusoidalFwdKernel(Kernel, SinusoidalFwdInterface):
     def default_config(self):
         return {"threads": 256}
 
-    def init_config(self, config=None):
-        """Set the config and compile the program ``forward`` launches from it."""
-        super().init_config(config)
-        self.program(self._compile)
-
     def _compile(self, cfg: dict):
         return self.kernel(cfg["threads"])
 
     def forward(self):
         """Return the encoding in the shape the interface publishes."""
-        compiled = self.program(self._compile)
-        if self.device_index is None:
-            out = compiled()
-        else:
-            with torch.cuda.device(self.device_index):
-                out = compiled()
-        return out.reshape(self.seq_len, self.d_model)
+        return self._generate().reshape(self.seq_len, self.d_model)

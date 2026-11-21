@@ -1,17 +1,9 @@
-"""
-Fused prepare_wy_repr + compute_w_u kernel for DeltaNet (ungated).
+"""Fused WY preparation and w/u products of ungated DeltaNet, one CTA a chunk.
 
-Combines:
-  prepare_wy_repr: (k, beta) -> Aw, Au  (Neumann series inversion)
-  compute_w_u:     (Aw, Au, k, v, beta) -> w, u  (matmul)
-
-Into a single kernel where Aw/Au stay in shared memory:
-  fused: (k, v, beta) -> (Aw, Au, w, u)
-
-This eliminates the Aw/Au global memory round-trip between the two kernels. With
-*walk_operands* it also writes the state walk's per-chunk operands -(k^T w) and k^T u, so the
-walk h <- h + k^T u - (k^T w) h carries one matmul a chunk.
-Unlike Gated DeltaNet (GDN), there is no gate parameter g and no Gamma decay matrix.
+(k, v, beta) -> (Aw, Au, w, u): the Neumann-series inversion forms Aw and Au, which stay in
+shared memory for the w and u products. With *walk_operands* it also writes the state walk's
+per-chunk operands -(k^T w) and k^T u, so the walk h <- h + k^T u - (k^T w) h carries one
+matmul a chunk. There is no gate g and no Gamma decay matrix, unlike Gated DeltaNet (GDN).
 """
 
 import math

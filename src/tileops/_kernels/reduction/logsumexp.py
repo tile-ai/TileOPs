@@ -7,12 +7,8 @@ an edge-axis split read in the tensor's own layout, a streaming kernel for long
 fp16/bf16 rows on a filled grid, a split across blocks for a handful of long rows, and
 the general row kernel.
 
-256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
-memory instructions.  Boundary handling for non-aligned N is performed
-inside the kernel via masked loads and -inf fills, eliminating host-side
-``F.pad`` from the forward path.  In the multi-tile path, only the last
-tile uses element-wise masked loads; all preceding tiles use the fast
-vectorized T.copy path since their columns are fully in-bounds.
+A row whose length is not a multiple of the 256-element ``T.copy`` alignment is masked
+inside the kernel, its padding read as ``-inf``.
 """
 
 import functools
@@ -28,16 +24,13 @@ from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
-    DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
-    ceildiv_int,
     edge_axis_split,
     exp_shifted,
     restore_reduced,
     rows_for_axes,
-    torch_dtype_nbytes,
 )
 from tileops._kernels.reduction._split_softmax import (
     edge_split_partials_kernel,
@@ -47,8 +40,9 @@ from tileops._kernels.reduction._split_softmax import (
     split_seg_n,
 )
 from tileops._kernels.reduction.call_spec import LogSumExpCall, LogSumExpFwdInterface
-from tileops._kernels.tiling import align_up
+from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES
+from tileops.manifest.primitives import ceil_div
 
 __all__ = [
     "LogSumExpEdgeSplitKernel",
@@ -73,13 +67,8 @@ class _StreamingLogSumExpPolicy:
     # Enough rows to fill the device with one block per row.
     min_rows: int = 256
 
-    # Rows long enough that the tiled kernel's staging measurably loses.
+    # Rows long enough that the tiled kernel's staging loses to streaming.
     min_cols: int = 16384
-
-    # Seed of the running max: below every finite fp16/bf16 value, but
-    # finite, so an all--inf row keeps a zero sum and folds to
-    # max_floor + log(0) = -inf, matching torch.
-    max_floor: float = -3.4e38
 
 
 _STREAMING_LOGSUMEXP = _StreamingLogSumExpPolicy()
@@ -96,7 +85,7 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
     input. An all--inf row reads ``-inf + log(0)`` and a row holding +inf
     reads ``inf + log(inf)``, which are torch's ``-inf`` and ``+inf``.
     """
-    num_segs = ceildiv_int(N, seg_n)
+    num_segs = ceil_div(N, seg_n)
     lanes = min(WARP_LANES, 1 << (num_segs - 1).bit_length())
     fold = make_block_split_fold(num_segs, lanes, keep_inf=True)
 
@@ -122,20 +111,17 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
     return _func
 
 
-# Single-tile kernel (N fits in shared memory) -- original fast path
-
-
 @target_cache(maxsize=64)
 def _logsumexp_kernel_single(M: int, N: int, dtype: str):
     """Build a single-tile logsumexp kernel (N fits in smem).
 
     Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
-    ``DEFAULT_ALIGNMENT``, the kernel uses element-wise ``T.if_then_else``
+    ``ALIGNMENT``, the kernel uses element-wise ``T.if_then_else``
     loads that substitute ``-inf`` for out-of-bounds columns (kernel-side
     boundary handling).  When ``N`` is already aligned, the fast ``T.copy``
     path is used.
     """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
     _needs_pad = N_padded != N
     _neg_inf = float("-inf")
 
@@ -155,9 +141,6 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
                 row_sum = T.alloc_fragment((block_m,), "float32")
 
                 if _needs_pad:
-                    # Kernel-side boundary handling: element-wise load
-                    # with T.if_then_else masking for padding columns
-                    # and row-tail safety (M % block_m != 0).
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
                             x_f32[i, j] = T.if_then_else(
@@ -199,9 +182,6 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
     return _func
 
 
-# Multi-tile kernel (N tiled over shared memory)
-
-
 @target_cache(maxsize=64)
 def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
     """Build a multi-tile logsumexp kernel.
@@ -213,7 +193,7 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
     The input tensor has the raw shape $[M \\times N]$ (no host-side padding).
     Boundary handling for the last tile is performed via masked loads.
     """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
     total_cols = num_tiles * tile_n
     _needs_mask = total_cols > N
@@ -244,9 +224,7 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
 
                 for t in T.Serial(num_tiles):
                     if _needs_mask:
-                        # Only the last tile may have out-of-bounds columns.
-                        # Use fast vectorized T.copy for all earlier tiles,
-                        # and element-wise T.if_then_else only for the last.
+                        # Only the last tile may hold columns past the row end.
                         with T.If(t < num_tiles - 1):
                             with T.Then():
                                 T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
@@ -316,9 +294,6 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
     return _func
 
 
-# Streaming kernel (one block per row, direct vectorized loads)
-
-
 @target_cache(maxsize=32)
 def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_per_thread: int):
     """Build a streaming logsumexp kernel for long rows on a filled grid.
@@ -335,10 +310,12 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
         raise ValueError(f"streaming kernel needs N % {chunk} == 0, got N={N}")
     num_chunks = N // chunk
     num_warps = threads // WARP_LANES
-    vec_elems = min(cols_per_thread, VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype))
+    vec_elems = min(cols_per_thread, VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize)
     vec_groups = cols_per_thread // vec_elems
     warp_stages = WARP_LANES.bit_length() - 1
-    floor = _STREAMING_LOGSUMEXP.max_floor
+    # Seed of the running max: below every finite fp16/bf16 value, but finite, so an
+    # all--inf row keeps a zero sum and folds to floor + log(0) = -inf, matching torch.
+    floor = -3.4e38
     # Clamp for exponent arguments, above every finite fp16/bf16 value: a +inf element
     # contributes exp2(+inf) = +inf and its row folds to +inf, matching torch.
     ceil = -floor
@@ -434,6 +411,11 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
     # take one fp32 per thread of shared memory besides the tile, at the untuned thread count.
     _TILED_WORKSPACE_BYTES = 2 * DEFAULT_THREADS * 4
 
+    def __init__(self, call: LogSumExpCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.dtype = call.dtype
+
     def _rows(self, x: torch.Tensor) -> torch.Tensor:
         """The rows of *x* along ``call.axes``."""
         return rows_for_axes(x, self.call.axes)
@@ -442,7 +424,7 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
     def row_plan(cls, call: LogSumExpCall) -> "tuple[int, int]":
         """The row kernel's untuned ``(block_m, tile_n)``; ``tile_n == 0`` is one tile."""
         return cls._plan_rows(
-            align_up(call.n, DEFAULT_ALIGNMENT),
+            align_up(call.n, ALIGNMENT),
             call.dtype.itemsize,
             call.smem_budget,
             cls._TILED_WORKSPACE_BYTES,
@@ -480,7 +462,7 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
             if (
                 tn == 0
                 or best_tile_n != 0
-                and ceildiv_int(n_padded, tn) < ceildiv_int(n_padded, best_tile_n)
+                and ceil_div(n_padded, tn) < ceil_div(n_padded, best_tile_n)
             ):
                 best_bm = bm
                 best_tile_n = tn
@@ -510,9 +492,7 @@ class LogSumExpEdgeSplitKernel(_LogSumExpKernelBase):
         return super().refusal(call)
 
     def __init__(self, call: LogSumExpCall):
-        super().__init__(device_index=call.device.index)
-        self.call = call
-        self.dtype = call.dtype
+        super().__init__(call)
         self.view = self.edge_view(call)
         self.program(self._launcher)
 
@@ -559,9 +539,7 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
         return super().refusal(call)
 
     def __init__(self, call: LogSumExpCall):
-        super().__init__(device_index=call.device.index)
-        self.call = call
-        self.dtype = call.dtype
+        super().__init__(call)
         self.kernel = _logsumexp_kernel_streaming(
             call.m,
             call.n,
@@ -594,9 +572,7 @@ class LogSumExpSplitKernel(_LogSumExpKernelBase):
         return super().refusal(call)
 
     def __init__(self, call: LogSumExpCall):
-        super().__init__(device_index=call.device.index)
-        self.call = call
-        self.dtype = call.dtype
+        super().__init__(call)
         self.program(self._launcher)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -640,12 +616,10 @@ class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
     _MAX_TILE_N_CANDIDATES = 3
 
     def __init__(self, call: LogSumExpCall):
-        super().__init__(device_index=call.device.index)
-        self.call = call
+        super().__init__(call)
         self.M = call.m
         self.N = call.n
-        self.dtype = call.dtype
-        self.N_padded = align_up(self.N, DEFAULT_ALIGNMENT)
+        self.N_padded = align_up(self.N, ALIGNMENT)
         self._elem_bytes = call.dtype.itemsize
         self._smem_budget = call.smem_budget
         self._planner = BlockConfigPlanner(

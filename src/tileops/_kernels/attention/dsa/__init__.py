@@ -11,6 +11,7 @@ from tileops._kernels.attention.dsa.paged import (
     DSAPagedKernelBase,
     DSAPagedWSKernel,
 )
+from tileops._kernels.attention.dsa.paged_mma import DSAPagedMMAKernel
 
 __all__ = [
     "DSADecodeBasicKernel",
@@ -19,5 +20,6 @@ __all__ = [
     "DSADecodeWSKernel",
     "DSAPagedClusterKernel",
     "DSAPagedKernelBase",
+    "DSAPagedMMAKernel",
     "DSAPagedWSKernel",
 ]

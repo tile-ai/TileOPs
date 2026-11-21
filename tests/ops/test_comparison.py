@@ -1,7 +1,7 @@
 """Tests for comparison elementwise ops (eq, ne, gt, lt, ge, le).
 
-All comparison ops output torch.bool. Covers L1 smoke correctness
-and L4 edge case for eq.
+All comparison ops output torch.bool. Covers same-shape correctness, broadcasting,
+and eq on inputs with known-equal elements.
 """
 
 import pytest
@@ -11,11 +11,11 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 from tileops.backend import BUILTIN
 from workloads.device import run_device
-from workloads.elementwise import ComparisonCase, ElementwiseWorkload
+from workloads.elementwise import BinarySameShapeCase, ElementwiseWorkload
 from workloads.numerics import compare_outputs
 
 
-class ComparisonTest(ComparisonCase, TestBase):
+class ComparisonTest(BinarySameShapeCase, TestBase):
     pass
 
 
@@ -139,7 +139,7 @@ def test_le_op(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
-# Broadcast pattern tests for all comparison ops (L3)
+# Broadcast pattern tests for all comparison ops
 
 
 _CMP_OPS = [
@@ -195,7 +195,7 @@ def test_comparison_broadcast(
     test.check(op, a, b)
 
 
-# L4 edge case: eq with some equal elements
+# eq with some equal elements
 
 
 class EqEdgeCaseFixture(FixtureBase):
@@ -211,7 +211,7 @@ class EqEdgeCaseFixture(FixtureBase):
 
 @EqEdgeCaseFixture
 def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
-    """L4: eq with known-equal elements at specific positions."""
+    """eq with known-equal elements at specific positions."""
     a = torch.randn(n_total, dtype=dtype, device=run_device())
     b = a.clone()
     # Make some elements differ

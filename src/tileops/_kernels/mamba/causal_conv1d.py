@@ -34,6 +34,7 @@ from tileops._kernels.mamba.call_spec import (
     CausalConv1dUpdateFwdInterface,
 )
 from tileops._kernels.state_pool import state_row
+from tileops._utils import WARP_LANES
 
 __all__ = ["CausalConv1dKernel", "CausalConv1dUpdateKernel", "CausalConv1dUpdateRollbackKernel"]
 
@@ -86,8 +87,7 @@ def _causal_conv1d_kernel(
         total = T.dynamic("total")
         batch = T.dynamic("batch")
         pool = T.dynamic("pool")
-        lanes = 32
-        block_d = lanes * vec
+        block_d = WARP_LANES * vec
         chunk = seg * steps
         # Keeps every index into part a constant of the unrolled step.
         if seg % width:
@@ -163,12 +163,12 @@ def _causal_conv1d_kernel(
             with T.Kernel(
                 T.ceildiv(dim, block_d),
                 T.ceildiv(T.ceildiv(total, chunk), warps),
-                threads=lanes * warps,
+                threads=WARP_LANES * warps,
             ) as (bd, bc):
                 ring = T.alloc_shared((warps, stages, seg, block_d), dtype)
                 tx = T.get_thread_binding()
-                lane = tx % lanes
-                w = tx // lanes
+                lane = tx % WARP_LANES
+                w = tx // WARP_LANES
                 c0 = bd * block_d + lane * vec
                 cs = (bc * warps + w) * chunk
                 ce = T.min(cs + chunk, total)
@@ -386,7 +386,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     @classmethod
     def entry_for(cls, call: CausalConv1dCall) -> Entry:
         args = (call.dim, call.width, call.dtype, call.has_bias, call.has_init, call.silu)
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*args, call.pooled, index), lambda: cls(
             *args, device_index=index, pooled=call.pooled
         )
@@ -560,7 +560,7 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
     @classmethod
     def entry_for(cls, call: CausalConv1dUpdateCall) -> Entry:
         args = (call.dim, call.width, call.dtype, call.has_bias, call.silu)
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*args, call.pooled, index), lambda: cls(
             *args, device_index=index, pooled=call.pooled
         )
@@ -580,16 +580,12 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         super().__init__(device_index=device_index)
         self.dim, self.width, self.dtype = dim, width, dtype
         self.pooled = pooled
-        self.vec = _vector(dim, dtype)
         self.kernel = _causal_conv1d_update_kernel(
-            dim, width, self.dtype_str, has_bias, silu, self.vec, pooled
+            dim, width, self.dtype_str, has_bias, silu, _vector(dim, dtype), pooled
         )
         self.init_config(config)
-        device = (
-            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
-        )
         # The slots an unpooled build leaves unread are declared one element wide.
-        self._unread = torch.zeros(1, dtype=torch.int32, device=device)
+        self._unread = torch.zeros(1, dtype=torch.int32, device=self._build_device)
 
     @property
     def default_config(self) -> dict:
@@ -798,7 +794,7 @@ class CausalConv1dUpdateRollbackKernel(Kernel, CausalConv1dUpdateFwdInterface):
             call.dim, call.width, call.dilation, call.state_len, call.dtype, call.weight_dtype,
             call.has_bias, call.silu, call.pooled, call.varlen,
         )  # fmt: skip
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -824,11 +820,8 @@ class CausalConv1dUpdateRollbackKernel(Kernel, CausalConv1dUpdateFwdInterface):
         )  # fmt: skip
 
         self.init_config()
-        device = (
-            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
-        )
         # The index tensors this build leaves unread are declared one element wide.
-        self._unread = torch.zeros(1, dtype=torch.int32, device=device)
+        self._unread = torch.zeros(1, dtype=torch.int32, device=self._build_device)
 
     @property
     def default_config(self) -> dict:

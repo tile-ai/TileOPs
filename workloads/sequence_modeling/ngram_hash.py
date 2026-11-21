@@ -4,6 +4,7 @@ import torch
 
 from workloads.device import run_device
 from workloads.numerics import Exact
+from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
@@ -179,15 +180,7 @@ class NGramHashWorkload(WorkloadBase):
                 ]
             )
             offsets.fill_(2**63 - 1)
-        cu = (
-            torch.tensor(
-                [0, *torch.tensor(self.lengths).cumsum(0).tolist()],
-                dtype=torch.int32,
-                device=device,
-            )
-            if self.packed
-            else None
-        )
+        cu = make_cu_seqlens(self.lengths) if self.packed else None
         if not self.packed:
             tokens = tokens.reshape(len(self.lengths), self.lengths[0] if self.lengths else 0)
         slots = (
@@ -213,19 +206,16 @@ class NGramHashWorkload(WorkloadBase):
         context_indices=None,
         num_accepted_tokens=None,
     ):
-        context = context.clone()
-        ids = ngram_hash(
+        return self.torch_program(
             input_ids,
-            context,
+            context.clone(),
             multipliers,
             primes,
             offsets,
-            self.eos_token_id,
             cu_seqlens,
             context_indices,
             num_accepted_tokens,
         )
-        return ids, context
 
     def torch_program(
         self,

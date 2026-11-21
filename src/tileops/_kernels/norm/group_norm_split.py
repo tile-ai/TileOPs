@@ -7,6 +7,8 @@ the device.
 """
 
 import functools
+import math
+import operator
 from collections.abc import Callable
 
 import tilelang
@@ -17,10 +19,15 @@ from tvm import DataType
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._kernels.norm._config import read_first, row_padding, select_row_config_by_width
+from tileops._kernels.norm._config import (
+    read_first,
+    row_padding,
+    select_row_config_by_width,
+)
 from tileops._kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
 from tileops._kernels.norm.group_norm import GroupNormKernel
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 
 __all__ = ["GroupNormSplitKernel"]
 
@@ -32,9 +39,7 @@ def _block_sum(threads):
 
     @T.macro
     def block_sum(value, sums, slots, phase, tx, total):
-        for st in T.unroll(WARP_SHUFFLE_STAGES):
-            for s in T.unroll(sums):
-                value[s] += T.shfl_xor(value[s], T.shift_left(1, st))
+        warp_reduce(value, operator.add, sums)
         if tx % WARP_LANES == 0:
             for s in T.unroll(sums):
                 slots[phase + s, tx // WARP_LANES] = value[s]
@@ -53,9 +58,7 @@ def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, a
     and the three stages' JIT factories."""
     accum_dtype = "float32"
     # The widest access that divides the row, so every row and piece starts on one.
-    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
-    while D % vec:
-        vec //= 2
+    vec = math.gcd(D, VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8))
     spatial = D // channels_per_group
     C = num_groups * channels_per_group
 
@@ -238,19 +241,18 @@ class GroupNormSplitKernel(Kernel, GroupNormFwdInterface):
     supported_archs = [80, 86, 89, 90]
     preferred_over = frozenset({"group_norm", "group_norm_no_affine"})
 
-    # Past 64 columns for each of 1024 threads, a row held in registers runs faster cut up.
-    _REGISTER_ROW = 1024 * 64
-    # One block a row takes time by the row's length, the pieces by its bytes: past this many
-    # columns an fp16 or bf16 row staged through shared memory runs faster cut up.
-    _STAGED_TWO_BYTE_ROW = 16384
-
     @classmethod
     def refusal(cls, call: GroupNormCall) -> "str | None":
         d = call.c // call.num_groups * call.spatial
+        # Past 64 columns for each of 1024 threads, a row held in registers runs faster cut up.
+        register_row = 1024 * 64
+        # One block a row takes time by the row's length, the pieces by its bytes: past this
+        # many columns an fp16 or bf16 row staged through shared memory runs faster cut up.
+        staged_two_byte_row = 16384
         d_padded = row_padding(d, call.dtype.itemsize)
         if GroupNormKernel._holds_row_in_registers(d, d_padded):
-            split = d_padded > cls._REGISTER_ROW
-        elif call.dtype.itemsize == 2 and d_padded > cls._STAGED_TWO_BYTE_ROW:
+            split = d_padded > register_row
+        elif call.dtype.itemsize == 2 and d_padded > staged_two_byte_row:
             split = True
         else:
             # A staged row sits in shared memory beside the reduction's scratch, a word a thread.

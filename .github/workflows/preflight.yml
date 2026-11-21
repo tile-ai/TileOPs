@@ -272,8 +272,7 @@ jobs:
         run: actionlint -color
 
       # These assert what the workflows select, which actionlint cannot see. They
-      # run here rather than under gpu-smoke because they need `jq` — the runner
-      # image has none, and the suite skipped its own regression there.
+      # need `jq`, which the gpu-smoke runner image lacks.
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:

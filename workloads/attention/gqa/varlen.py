@@ -4,14 +4,15 @@ import math
 import torch
 
 from workloads.attention.gqa.call_metadata import _dtype, _segments
+from workloads.attention.gqa.dense import fp8_qkv, packed_gqa_ref, rotation_tables
 from workloads.attention.gqa.rope import apply_dense_rope, apply_packed_rope
 from workloads.device import run_device
+from workloads.numerics import Exact, zeroed_input
 from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
     "GQAPrefillVarlenFwdWorkload",
-    "GQASlidingWindowVarlenFwdWorkload",
     "GQAVarlenCall",
     "GQAVarlenFwdWorkload",
     "GQAVarlenScaledCall",
@@ -60,26 +61,14 @@ class GQAPrefillVarlenFwdWorkload(WorkloadBase):
     def gen_inputs(
         self,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        q = torch.randn(
-            self.total_q, self.heads, self.dim, device=run_device(), dtype=self.dtype
-        ).contiguous()
+        q = torch.randn(self.total_q, self.heads, self.dim, device=run_device(), dtype=self.dtype)
         k = torch.randn(
             self.total_kv, self.heads_kv, self.dim, device=run_device(), dtype=self.dtype
-        ).contiguous()
+        )
         v = torch.randn(
             self.total_kv, self.heads_kv, self.dim, device=run_device(), dtype=self.dtype
-        ).contiguous()
-        cu_seqlens_q = torch.tensor(
-            [0] + torch.tensor(self.q_lens).cumsum(0).tolist(),
-            dtype=torch.int32,
-            device=run_device(),
         )
-        cu_seqlens_kv = torch.tensor(
-            [0] + torch.tensor(self.kv_lens).cumsum(0).tolist(),
-            dtype=torch.int32,
-            device=run_device(),
-        )
-        return q, k, v, cu_seqlens_q, cu_seqlens_kv
+        return q, k, v, make_cu_seqlens(self.q_lens), make_cu_seqlens(self.kv_lens)
 
 
 class GQAVarlenFwdWorkload(WorkloadBase):
@@ -136,16 +125,9 @@ class GQAVarlenFwdWorkload(WorkloadBase):
         q = torch.randn(total_q, self.heads, self.dim, dtype=self.dtype, device=run_device())
         k = torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device=run_device())
         v = torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device=run_device())
-
-        cu_seqlens_q = torch.tensor(
-            [0] + list(torch.cumsum(torch.tensor(self.seqlens_q), 0).tolist()),
-            dtype=torch.int32,
-            device=run_device(),
-        )
-        cu_seqlens_k = torch.tensor(
-            [0] + list(torch.cumsum(torch.tensor(self.seqlens_k), 0).tolist()),
-            dtype=torch.int32,
-            device=run_device(),
+        cu_seqlens_q, cu_seqlens_k = (
+            make_cu_seqlens(self.seqlens_q),
+            make_cu_seqlens(self.seqlens_k),
         )
         if self.pos_encoding_mode != "rope":
             return self._with_sinks((q, k, v, cu_seqlens_q, cu_seqlens_k))
@@ -186,7 +168,6 @@ class GQAVarlenFwdWorkload(WorkloadBase):
         Under RoPE, query token ``i`` of a request sits at position ``kv_len - q_len + i``
         and key token ``j`` at position ``j``; the rotation runs before the scores form.
         """
-        groups = self.heads // self.heads_kv
         scale = self.dim**-0.5 if self.sm_scale is None else self.sm_scale
         outputs = []
         for request in range(self.batch):
@@ -204,41 +185,24 @@ class GQAVarlenFwdWorkload(WorkloadBase):
                 q_positions = torch.arange(kv_len - q_len, kv_len, device=q.device).clamp(min=0)
                 q_b = apply_dense_rope(q_b[None], q_positions, rope_cos, rope_sin, **rope)[0]
                 k_b = apply_dense_rope(k_b[None], positions, rope_cos, rope_sin, **rope)[0]
-            q_i = q_b.transpose(0, 1).float()
-            k_i = k_b.repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
-            v_i = v[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
-            scores = torch.matmul(q_i, k_i.transpose(-2, -1)) * scale
-            if self.softcap is not None and self.softcap > 0:
-                scores = self.softcap * torch.tanh(scores / self.softcap)
-            offset = kv_len - q_len
-            q_pos = torch.arange(q_len, device=q.device)[:, None] + offset
-            kv_pos = torch.arange(kv_len, device=q.device)[None, :]
-            visible = torch.ones((q_len, kv_len), dtype=torch.bool, device=q.device)
-            if self.is_causal:
-                visible &= kv_pos <= q_pos
-            if self.wl >= 0:
-                visible &= kv_pos >= q_pos - self.wl
-            if self.wr >= 0:
-                visible &= kv_pos <= q_pos + self.wr
-            scores = scores.masked_fill(~visible.view(1, q_len, kv_len), float("-inf"))
-            if sinks is not None:
-                scores = torch.cat((scores, sinks[:, None, None].expand(-1, q_len, 1)), dim=-1)
-            probs = torch.softmax(scores, dim=-1)
-            if sinks is not None:
-                probs = probs[..., :kv_len]
-                probs = torch.where(torch.isposinf(sinks)[:, None, None], 0, probs)
-            probs = torch.where(
-                visible.any(dim=-1).view(1, q_len, 1), probs, torch.zeros_like(probs)
+            out = packed_gqa_ref(
+                q_b,
+                k_b,
+                v[kv_start:kv_end],
+                scale=scale,
+                softcap=self.softcap,
+                is_causal=self.is_causal,
+                window_size_left=self.wl,
+                window_size_right=self.wr,
+                sinks=sinks,
             )
-            outputs.append(torch.matmul(probs, v_i).transpose(0, 1).to(q.dtype).contiguous())
+            outputs.append(out.to(q.dtype))
         return torch.cat(outputs, dim=0)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, zeroed_input
-
         if inputs[0].dtype == torch.float8_e4m3fn:
             # FP8 softmax and optional fused QK rotation each round once.
-            atol, rtol = (0.12, 0.04) if getattr(self, "rotary_dim", 0) else (0.08, 0.02)
+            atol, rtol = (0.12, 0.04) if self.rotary_dim else (0.08, 0.02)
         else:
             atol = rtol = 1e-3 if inputs[0].dtype == torch.float16 else 1e-2
         # Query removal is observable only when attention can select among keys.
@@ -312,36 +276,15 @@ class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
             (total_k, self.heads_kv, self.dim),
         )
         if self.dtype == torch.float8_e4m3fn:
-            # The score spread in standard deviations is the draw's variance: the head
-            # dimension cancels against the default sm_scale. At 0.2 the spread is 0.04,
-            # the softmax is uniform to within 4%, and a kernel that never reads its
-            # query still agrees with the reference. At 2.0 the spread is 4, which
-            # separates a query-blind kernel by 38x to 58x on these rows. A wider draw
-            # separates them less: a sharper softmax amplifies the e4m3 score error
-            # faster than it sharpens the weights.
-            q, k = (
-                (torch.randn(shape, device=run_device()) * 2.0).to(self.dtype)
-                for shape in shapes[:2]
-            )
-            v = (torch.randn(shapes[2], device=run_device()) * 0.2).to(self.dtype)
-            # Not one: a kernel that never reads a scale must not agree.
-            scales = tuple(
-                torch.rand(self.batch, self.heads_kv, device=run_device(), dtype=torch.float32)
-                * 0.5
-                + 0.75
-                for _ in range(3)
-            )
+            q, k, v, scales = fp8_qkv(shapes, self.batch, self.heads_kv)
         else:
             q, k, v = (torch.randn(s, device=run_device(), dtype=self.dtype) for s in shapes)
             scales = (None, None, None)
-
         rope_cos = rope_sin = None
         if self.rotary_dim is not None:
-            angles = (
-                torch.randn(self.max_seqlen_kv, self.rotary_dim // 2, device=run_device()) * 0.1
+            rope_cos, rope_sin = rotation_tables(
+                self.max_seqlen_kv, self.rotary_dim, self.out_dtype
             )
-            rope_cos = angles.cos().to(self.out_dtype)
-            rope_sin = angles.sin().to(self.out_dtype)
         return self._with_sinks(
             (
                 q,
@@ -409,10 +352,6 @@ class GQAVarlenScaledWorkload(GQAVarlenFwdWorkload):
             cu_seqlens_kv,
             sinks=sinks,
         )
-
-
-class GQASlidingWindowVarlenFwdWorkload(GQAVarlenFwdWorkload):
-    """Compatibility name for the superseded sliding-window public Op."""
 
 
 class GQAVarlenSinkWorkload(GQAVarlenScaledWorkload):

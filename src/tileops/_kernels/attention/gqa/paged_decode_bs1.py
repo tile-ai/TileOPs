@@ -18,6 +18,7 @@ from tileops._kernels.attention.call_spec import (
 )
 from tileops._kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
+    RING_DEPTH,
     allocate_partials,
     make_gqa_decode_bs1_combine,
     make_gqa_decode_bs1_split,
@@ -45,12 +46,9 @@ def _gqa_decode_paged_bs1_ctx_kernel(
     sm_scale,
     dtype,
 ):
-    score_scale = dim**-0.5 if sm_scale is None else sm_scale
-    scale = score_scale * LOG2E
+    scale = sm_scale * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // groups
-    # Barrier parity assumes this double-buffered schedule.
-    ring_depth = 2
 
     @tilelang.jit(
         out_idx=[-1],
@@ -75,13 +73,13 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             physical_block = block_table[bid, page_idx] * blocks_per_page + block_in_page
             T.tma_copy(
                 K[physical_block * block_N : (physical_block + 1) * block_N, hid, :],
-                Ks[k % ring_depth, :, :],
-                barrier=ready[k % ring_depth],
+                Ks[k % RING_DEPTH, :, :],
+                barrier=ready[k % RING_DEPTH],
             )
             T.tma_copy(
                 V[physical_block * block_N : (physical_block + 1) * block_N, hid, :],
-                Vs[k % ring_depth, :, :],
-                barrier=ready[k % ring_depth],
+                Vs[k % RING_DEPTH, :, :],
+                barrier=ready[k % RING_DEPTH],
             )
 
         split = make_gqa_decode_bs1_split(
@@ -96,9 +94,8 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             ctx_splits,
             threads,
             accum_dtype,
-            True,
             load_kv,
-            ring_depth,
+            paged=True,
         )
         combine = make_gqa_decode_bs1_combine(
             batch,
@@ -120,7 +117,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             Output_partial: T.Tensor(part_shape, accum_dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
-            split(Q, K, V, block_table, real_seqlen_kv, glse, Output_partial)
+            split(Q, K, V, block_table, real_seqlen_kv, Q, Q, glse, Output_partial)
             combine(glse, Output_partial, Output)
 
         return gqa_decode_paged_bs1_ctx
@@ -173,7 +170,7 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
         # The device index is in the identity: the kernel is compiled for its architecture.
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = (
             call.batch,
             call.heads,
@@ -184,9 +181,9 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
             call.max_pages_per_req,
             call.dtype,
         )
-        extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
-        identity = (*args, *extra.values(), index)
-        return identity, lambda: cls(*args, **extra, device_index=index)
+        return (*args, call.sm_scale, index), lambda: cls(
+            *args, sm_scale=call.sm_scale, device_index=index
+        )
 
     def __init__(
         self,
@@ -199,7 +196,6 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         max_pages_per_req,
         dtype="float16",
         sm_scale: float | None = None,
-        softcap: float = 0.0,
         config: dict | None = None,
         device_index: int | None = None,
     ):
@@ -213,7 +209,6 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         self.max_pages_per_req = max_pages_per_req
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = softcap
         if self.groups <= 0:
             raise ValueError("groups must be positive")
         if self.heads % self.groups != 0:
@@ -233,10 +228,11 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
             raise ValueError("batch=1 paged decode requires page_size=64 or a multiple of 128")
         return {"block_M": 64, "block_N": block_n, "threads": 160}
 
-    def _ctx_splits_for(self, real_seqlen_kv: int) -> int:
+    def _ctx_splits_for(self, capacity: int) -> int:
+        """The most splits that divide a table of *capacity* keys into whole key tiles."""
         block_n = self.config["block_N"]
         for ctx_splits in self._CTX_SPLIT_CANDIDATES:
-            if real_seqlen_kv % (ctx_splits * block_n) == 0:
+            if capacity % (ctx_splits * block_n) == 0:
                 return ctx_splits
         return self._CTX_SPLIT_CANDIDATES[-1]
 
@@ -280,7 +276,7 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
             self.max_pages_per_req,
             False,
             self.sm_scale,
-            self.softcap,
+            0.0,  # the batch-1 region has no softcap
             self.dtype_str,
         )(64, cfg["block_N"], 2, 128)
 

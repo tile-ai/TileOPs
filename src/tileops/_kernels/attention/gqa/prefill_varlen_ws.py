@@ -7,10 +7,15 @@ from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import ATTENTION_DTYPES
-from tileops._kernels.attention.online_softmax import finite_max_floor, make_sink_scale
+from tileops._kernels.attention.online_softmax import (
+    finite_max_floor,
+    make_apply_softcap,
+    make_sink_scale,
+)
+from tileops._kernels.attention.stream_counter import stream_counter
 from tileops._kernels.attention.varlen import VarlenKernel
 from tileops._kernels.attention.varlen_rope import make_varlen_query_rope
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 
@@ -54,15 +59,7 @@ def _three_consumer_head(dim: int) -> bool:
         tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True,
     },
     compile_flags=[
-        "-O3",
-        "-Wno-deprecated-declarations",
-        "-U__CUDA_NO_HALF_OPERATORS__",
-        "-U__CUDA_NO_HALF_CONVERSIONS__",
-        "-U__CUDA_NO_HALF2_OPERATORS__",
-        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "-DNDEBUG",
+        *CUDA_COMPILE_FLAGS,
         *csrc_include("attn_wgmma.h"),
     ],
 )
@@ -76,10 +73,9 @@ def _gqa_prefill_varlen_ws_kernel(
     rows each run it, ``block_m // 64`` of them.
 
     With *pack*, a request's tiles may hold its KV head's group position by position."""
-    score_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
     has_window = window_left >= 0 or window_right >= 0
     use_softcap = softcap > 0.0
-    scale = LOG2E if use_softcap else score_scale * LOG2E
+    scale = LOG2E if use_softcap else sm_scale * LOG2E
     max_floor = finite_max_floor(scale)
     groups = heads // heads_kv
     accum = "float"
@@ -326,15 +322,7 @@ def _gqa_prefill_varlen_ws_kernel(
                         T.cast(0, dtype),
                     )
 
-    @T.macro
-    def apply_softcap(acc_s):
-        for i, j in T.Parallel(half, block_n):
-            capped = T.cast(softcap, accum) * T.tanh(
-                acc_s[i, j] * T.cast(score_scale / softcap, accum)
-            )
-            acc_s[i, j] = T.if_then_else(
-                acc_s[i, j] == -T.infinity(accum), -T.infinity(accum), capped
-            )
+    apply_softcap = make_apply_softcap(sm_scale, softcap, accum, half, block_n)
 
     def p_operand(Ps, pcast, wg):
         """The A operand of a warpgroup's P V: its rows of the shared P, or its P fragment.
@@ -587,6 +575,38 @@ def _gqa_prefill_varlen_ws_kernel(
         T.sync_warp()
 
     @T.macro
+    def scan_tiles(meta, positions):
+        """Fill meta[6], the key tiles the item meta[0:6] describes scans, and meta[first_at],
+        the first, where the program keeps it; the item's tile spans *positions* positions."""
+        if has_window:
+            last_q = T.min(meta[3] - 1, meta[5] + positions - 1) + meta[4] - meta[3]
+            key_end = T.alloc_var("int32", init=meta[4])
+            if is_causal:
+                key_end = T.min(key_end, last_q + 1)
+            if window_right >= 0:
+                key_end = T.min(key_end, last_q + window_right + 1)
+            first = T.alloc_var("int32", init=0)
+            if window_left >= 0:
+                first = T.max(0, meta[5] + meta[4] - meta[3] - window_left) // block_n
+            meta[first_at] = first
+            # The first transfer must still be issued for an entirely masked query tile.
+            meta[6] = T.max(1, T.ceildiv(key_end, block_n) - first)
+        else:
+            if packs:
+                meta[first_at] = 0
+            if is_causal:
+                meta[6] = T.max(
+                    1,
+                    T.min(
+                        T.ceildiv(meta[4], block_n),
+                        T.ceildiv(meta[5] + positions + meta[4] - meta[3], block_n),
+                    ),
+                )
+            else:
+                # At least one tile: the consumers always wait on tile 0.
+                meta[6] = T.max(1, T.ceildiv(meta[4], block_n))
+
+    @T.macro
     def locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta, order=None):
         """Fill meta (head, q_start, kv_start, q_len, kv_len, q0, eff) for work item *work*."""
         q_tiling.decode(tile_cum[batch] - 1 - work // heads, tile_cum, lo, hi, request, q_row)
@@ -598,31 +618,7 @@ def _gqa_prefill_varlen_ws_kernel(
         meta[3] = CuQ[request[0] + 1] - meta[1]
         meta[4] = CuKV[request[0] + 1] - meta[2]
         meta[5] = q_row[0]
-        if has_window:
-            last_q = T.min(meta[3] - 1, meta[5] + block_m - 1) + meta[4] - meta[3]
-            key_end = T.alloc_var("int32", init=meta[4])
-            if is_causal:
-                key_end = T.min(key_end, last_q + 1)
-            if window_right >= 0:
-                key_end = T.min(key_end, last_q + window_right + 1)
-            first = T.alloc_var("int32", init=0)
-            if window_left >= 0:
-                first = T.max(0, meta[5] + meta[4] - meta[3] - window_left) // block_n
-            meta[7] = first
-            # The first transfer must still be issued for an entirely masked query tile.
-            meta[6] = T.max(1, T.ceildiv(key_end, block_n) - first)
-        else:
-            if is_causal:
-                meta[6] = T.max(
-                    1,
-                    T.min(
-                        T.ceildiv(meta[4], block_n),
-                        T.ceildiv(meta[5] + block_m + meta[4] - meta[3], block_n),
-                    ),
-                )
-            else:
-                # At least one tile: the consumers always wait on tile 0.
-                meta[6] = T.max(1, T.ceildiv(meta[4], block_n))
+        scan_tiles(meta, block_m)
 
     @T.macro
     def packed_request_key(CuQ, CuKV, r):
@@ -753,33 +749,7 @@ def _gqa_prefill_varlen_ws_kernel(
         else:
             meta[0] = q_row[0] % heads
             meta[5] = q_row[0] // heads * block_m
-        positions = tile_positions(packed)
-        if has_window:
-            last_q = T.min(meta[3] - 1, meta[5] + positions - 1) + meta[4] - meta[3]
-            key_end = T.alloc_var("int32", init=meta[4])
-            if is_causal:
-                key_end = T.min(key_end, last_q + 1)
-            if window_right >= 0:
-                key_end = T.min(key_end, last_q + window_right + 1)
-            first = T.alloc_var("int32", init=0)
-            if window_left >= 0:
-                first = T.max(0, meta[5] + meta[4] - meta[3] - window_left) // block_n
-            meta[first_at] = first
-            # The first transfer must still be issued for an entirely masked query tile.
-            meta[6] = T.max(1, T.ceildiv(key_end, block_n) - first)
-        else:
-            meta[first_at] = 0
-            if is_causal:
-                meta[6] = T.max(
-                    1,
-                    T.min(
-                        T.ceildiv(meta[4], block_n),
-                        T.ceildiv(meta[5] + positions + meta[4] - meta[3], block_n),
-                    ),
-                )
-            else:
-                # At least one tile: the consumers always wait on tile 0.
-                meta[6] = T.max(1, T.ceildiv(meta[4], block_n))
+        scan_tiles(meta, tile_positions(packed))
         if splits:
             parts = request_parts(meta[3], meta[4], chunk)
             # A split request has one tile; part p of KV head h is its item p * heads_kv + h.
@@ -855,18 +825,10 @@ def _gqa_prefill_varlen_ws_kernel(
     @T.macro
     def load_q(Q, Qs, slot, q_bar, q_start, head, edges=None):
         """TMA block_m positions of one head, 64 rows a warpgroup."""
-        T.tma_copy(
-            Q[q_start : q_start + half, head, 0:width], Qs[slot, 0, :, :], barrier=q_bar[slot]
-        )
-        T.tma_copy(
-            Q[q_start + half : q_start + 2 * half, head, 0:width],
-            Qs[slot, 1, :, :],
-            barrier=q_bar[slot],
-        )
-        if wgs == 3:
+        for wg in T.unroll(wgs):
             T.tma_copy(
-                Q[q_start + 2 * half : q_start + 3 * half, head, 0:width],
-                Qs[slot, 2, :, :],
+                Q[q_start + wg * half : q_start + (wg + 1) * half, head, 0:width],
+                Qs[slot, wg, :, :],
                 barrier=q_bar[slot],
             )
         if edges is not None:
@@ -1057,7 +1019,7 @@ def _gqa_prefill_varlen_ws_kernel(
         """Consumer warpgroup *wg*: rows ``q0 + wg*64`` onward of each claimed query tile."""
         T.set_max_nreg(consumer_regs, 1)
         my_bar = 1 + wg
-        nxt_bar = 2 - wg if wgs == 2 else 1 + (wg + 1) % wgs
+        nxt_bar = 1 + (wg + 1) % wgs
         acc_s = T.alloc_fragment([half, block_n], accum)
         # P: a register fragment, or the warpgroup's tile of the shared P.
         if shared_p:
@@ -1570,6 +1532,7 @@ def _gqa_prefill_varlen_ws_kernel(
             T.mbarrier_arrive(kfree[n % stages])
             T.mbarrier_wait_parity(vready[n % stages], (n // stages) % 2)
             T.mbarrier_arrive(vfree[n % stages])
+        out = (Os, O, Sinks, acc_o, sm, logsum, alpha, wg, head, q_start, q_len, q0, row, packed)
         if splits:
             if meta[parts_at] > 1:
                 # Only the part that finishes a warpgroup's rows last stores them.
@@ -1578,56 +1541,11 @@ def _gqa_prefill_varlen_ws_kernel(
                     meta, first_q, q_len,
                 )  # fmt: skip
                 if (first_q < q_len) & (item_slot[slot, meta_count + 1 + wg] == meta[parts_at] - 1):
-                    store(
-                        Os,
-                        O,
-                        Sinks,
-                        acc_o,
-                        sm,
-                        logsum,
-                        alpha,
-                        wg,
-                        head,
-                        q_start,
-                        q_len,
-                        q0,
-                        row,
-                        packed,
-                    )
+                    store(*out)
             else:
-                store(
-                    Os,
-                    O,
-                    Sinks,
-                    acc_o,
-                    sm,
-                    logsum,
-                    alpha,
-                    wg,
-                    head,
-                    q_start,
-                    q_len,
-                    q0,
-                    row,
-                    packed,
-                )
+                store(*out)
         else:
-            store(
-                Os,
-                O,
-                Sinks,
-                acc_o,
-                sm,
-                logsum,
-                alpha,
-                wg,
-                head,
-                q_start,
-                q_len,
-                q0,
-                row,
-                packed,
-            )
+            store(*out)
 
     @T.macro
     def packed_consumer(
@@ -1984,7 +1902,6 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
         return {}
 
     def __init__(self, *args, **kwargs) -> None:
-        # One counter per stream: concurrent launches on one counter steal each other's items.
         self._counters: dict = {}
         super().__init__(*args, **kwargs)
 
@@ -2003,15 +1920,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
         sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
-        if torch.cuda.is_current_stream_capturing():
-            # Each captured graph owns a counter from its private pool.
-            counter = torch.zeros(2, dtype=torch.int32, device=q.device)
-        else:
-            stream = torch.cuda.current_stream(q.device).cuda_stream
-            counter = self._counters.get(stream)
-            if counter is None:
-                counter = torch.zeros(2, dtype=torch.int32, device=q.device)
-                self._counters[stream] = counter
+        counter = stream_counter(self._counters, q.device)
         out = torch.empty_like(q)
         program = self.program(self._compile, *self._program_facts(q))
         if self.key_rope is None:
@@ -2143,18 +2052,11 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
         slots += -(-tail_n // self.heads_kv) * self._TAIL_PARTS * self.heads_kv
         part = torch.empty(slots, self._BLOCK_M, self.dim, dtype=torch.float32, device=q.device)
         stat = torch.empty(slots, self._BLOCK_M, 2, dtype=torch.float32, device=q.device)
-        merge_size = _merge_counters(self.batch, self.heads_kv, tail_n)
-        if torch.cuda.is_current_stream_capturing():
-            merge = torch.zeros(merge_size, dtype=torch.int32, device=q.device)
-        else:
-            stream = torch.cuda.current_stream(q.device).cuda_stream
-            merge = self._merge_counters.get(stream)
-            if merge is None:
-                merge = self._merge_counters[stream] = torch.zeros(
-                    merge_size, dtype=torch.int32, device=q.device
-                )
+        merge = stream_counter(
+            self._merges, q.device, _merge_counters(self.batch, self.heads_kv, tail_n)
+        )
         return part, stat, merge, chunk, tail_base
 
     def __init__(self, *args, **kwargs) -> None:
-        self._merge_counters: dict = {}
+        self._merges: dict = {}
         super().__init__(*args, **kwargs)

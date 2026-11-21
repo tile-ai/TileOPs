@@ -1,14 +1,13 @@
 """Tests for unary math elementwise ops (17 ops).
 
-Covers L1 correctness across supported float dtypes and
-L4 edge cases for numerically sensitive ops.
+Covers correctness across supported float dtypes and edge values for
+numerically sensitive ops.
 """
-
-import re
 
 import pytest
 import torch
 
+from tests.launch_bounds import elementwise_launch_bounds, full_occupancy_bounds
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.elementwise import (
     AbsFwdOp,
@@ -39,7 +38,7 @@ from workloads.elementwise import (
     Exhaustive16BitWorkload,
     Float32BinadeWorkload,
     Float32SpecialValuesWorkload,
-    UnaryMathCase,
+    UnaryActivationCase,
 )
 from workloads.numerics import compare_outputs
 
@@ -60,7 +59,7 @@ class MathFixture(FixtureBase):
 
 
 class MathEdgeFixture(FixtureBase):
-    """L4 edge-case fixture: fp32, 4K elements."""
+    """Edge values: fp32, 4K elements."""
 
     PARAMS = [
         (
@@ -72,7 +71,7 @@ class MathEdgeFixture(FixtureBase):
     ]
 
 
-class UnaryMathTest(UnaryMathCase, TestBase):
+class UnaryMathTest(UnaryActivationCase, TestBase):
     pass
 
 
@@ -102,7 +101,7 @@ def _make_math_test(n_total, dtype, gen_fn, op_cls):
     test.check(op, *test.gen_inputs())
 
 
-# L1 tests (17 ops)
+# Float correctness
 
 
 @MathFixture
@@ -213,30 +212,36 @@ def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(n_total, dtype, _randn, Expm1FwdOp)
 
 
-# Integer-dtype identity short-circuit for floor / ceil / round / trunc.
-#
-# The manifest declares these ops over both integer and float dtypes; the
-# underlying kernels are float-only. ``torch.{floor,ceil,round,trunc}`` are
-# no-ops on integer tensors, so the op layer short-circuits and returns a
-# clone of the input unchanged.
+def _non_float_input(n_total: int, dtype: torch.dtype) -> torch.Tensor:
+    """*n_total* random values of an integer or bool *dtype*, signed where it is."""
+    if dtype == torch.bool:
+        low, high = 0, 2
+    elif dtype == torch.uint8:
+        low, high = 0, 100
+    else:
+        low, high = -50, 50
+    return torch.randint(low, high, (n_total,), device=run_device(), dtype=dtype)
+
+
+# An integral input to floor, ceil, round, trunc, abs, neg, sign and the float predicates
+# reaches a torch fallback kernel; every op and every integral dtype appears once, since the
+# fallback does not depend on which pairs them.
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_cls",
-    [FloorFwdOp, CeilFwdOp, RoundFwdOp, TruncFwdOp],
-)
-@pytest.mark.parametrize(
-    "int_dtype",
-    [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
+    "op_cls, int_dtype",
+    [
+        (FloorFwdOp, torch.int8),
+        (CeilFwdOp, torch.int16),
+        (RoundFwdOp, torch.int32),
+        (TruncFwdOp, torch.int64),
+        (FloorFwdOp, torch.uint8),
+    ],
 )
 def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
-    n_total = 1024
     op = op_cls()
-    if int_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=int_dtype)
-    else:
-        x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=int_dtype)
+    x = _non_float_input(1024, int_dtype)
     y = op(x)
     assert y.dtype == int_dtype
     assert y.shape == x.shape
@@ -252,39 +257,20 @@ def test_round_rejects_decimals_on_integer_input() -> None:
         op(x)
 
 
-# Integer-dtype op-layer fallbacks for abs / neg / sign and the
-# is{nan,inf,finite} predicates. Their manifest entries declare integer
-# input dtypes alongside floats; the underlying kernels are float-only,
-# so the op layer routes int input through a torch primitive (or the
-# constant-bool result, for the predicates).
-
-
-_INT_DTYPES = [
-    torch.int8,
-    torch.int16,
-    torch.int32,
-    torch.int64,
-    torch.uint8,
-]
-
-
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_cls, torch_fn",
+    "op_cls, torch_fn, int_dtype",
     [
-        (AbsFwdOp, torch.abs),
-        (NegFwdOp, torch.neg),
-        (SignFwdOp, torch.sign),
+        (AbsFwdOp, torch.abs, torch.int8),
+        (NegFwdOp, torch.neg, torch.int16),
+        (SignFwdOp, torch.sign, torch.int32),
+        (AbsFwdOp, torch.abs, torch.int64),
+        (SignFwdOp, torch.sign, torch.uint8),
     ],
 )
-@pytest.mark.parametrize("int_dtype", _INT_DTYPES)
 def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
-    n_total = 1024
     op = op_cls()
-    if int_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=int_dtype)
-    else:
-        x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=int_dtype)
+    x = _non_float_input(1024, int_dtype)
     y = op(x)
     assert y.dtype == int_dtype
     compare_outputs(
@@ -294,32 +280,28 @@ def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_cls, expected",
+    "op_cls, expected, non_float_dtype",
     [
-        (IsnanFwdOp, False),
-        (IsinfFwdOp, False),
-        (IsfiniteFwdOp, True),
+        (IsnanFwdOp, False, torch.int8),
+        (IsinfFwdOp, False, torch.int16),
+        (IsfiniteFwdOp, True, torch.int32),
+        (IsnanFwdOp, False, torch.int64),
+        (IsinfFwdOp, False, torch.uint8),
+        (IsfiniteFwdOp, True, torch.bool),
     ],
 )
-@pytest.mark.parametrize("non_float_dtype", _INT_DTYPES + [torch.bool])
 def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None:
     """Predicate ops return constant bool on every non-float dtype the
     manifest declares (integer dtypes plus ``torch.bool``)."""
-    n_total = 256
     op = op_cls()
-    if non_float_dtype == torch.bool:
-        x = torch.randint(0, 2, (n_total,), device=run_device(), dtype=torch.bool)
-    elif non_float_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=non_float_dtype)
-    else:
-        x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=non_float_dtype)
+    x = _non_float_input(256, non_float_dtype)
     y = op(x)
     assert y.dtype == torch.bool
     assert y.shape == x.shape
     assert (y == expected).all()
 
 
-# L4 edge-case tests (fp32, 4K)
+# Edge values
 
 
 @MathEdgeFixture
@@ -420,10 +402,7 @@ def _erf_launch_bounds(n_total: int, dtype: torch.dtype) -> tuple[int, list]:
     test = UnaryMathTest(n_total, dtype, "ErfFwdOp", gen_fn=_randn)
     op = ErfFwdOp()
     test.check(op, *test.gen_inputs())
-    (kernel,) = op._entries_built("elementwise").values()
-    source = kernel.program(kernel._compile).get_kernel_source()
-    bounds = re.findall(r"__launch_bounds__\((\d+), (\d+)\)", source)
-    return kernel.config["threads"], bounds
+    return elementwise_launch_bounds(op)
 
 
 @pytest.mark.in_tree_kernels
@@ -439,8 +418,7 @@ def test_erf_float32_keeps_an_sm_of_threads_resident(n_total: int) -> None:
     """float32 erf is right, and asks for as many blocks an SM as the register file holds
     threads at 32 registers each."""
     threads, bounds = _erf_launch_bounds(n_total, torch.float32)
-    resident = torch.cuda.get_device_properties(run_device()).regs_per_multiprocessor // 32
-    assert bounds == [(str(threads), str(resident // threads))]
+    assert bounds == full_occupancy_bounds(threads)
 
 
 @pytest.mark.smoke

@@ -79,12 +79,12 @@ from tileops.elementwise import DropoutFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
     AbsCompileCase,
-    AddCompileWorkload,
+    AddBroadcastWorkload,
     ElementwiseWorkload,
     EqCompileWorkload,
-    ReLUCompileCase,
+    ReLUWorkload,
     SignCompileCase,
-    SiLUAndMulCompileWorkload,
+    SiLUAndMulCase,
 )
 
 
@@ -120,7 +120,7 @@ class ReLUCompileFixture(FixtureBase):
     ]
 
 
-class ReLUCompileTest(ReLUCompileCase, TestBase):
+class ReLUCompileTest(ReLUWorkload, TestBase):
     pass
 
 
@@ -151,7 +151,7 @@ class AddCompileFixture(FixtureBase):
     ]
 
 
-class AddCompileTest(AddCompileWorkload, TestBase):
+class AddCompileTest(AddBroadcastWorkload, TestBase):
     pass
 
 
@@ -211,7 +211,7 @@ class SiLUAndMulCompileFixture(FixtureBase):
     ]
 
 
-class SiLUAndMulCompileTest(SiLUAndMulCompileWorkload, TestBase):
+class SiLUAndMulCompileTest(SiLUAndMulCase, TestBase):
     pass
 
 

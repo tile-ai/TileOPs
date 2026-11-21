@@ -37,7 +37,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
     shared memory across the grid barrier, and the rest are read again after it. ``batch``
     is how many vector loads a thread issues before using any.
     """
-    vec = VECTOR_ACCESS_BYTES // torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    vec = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     tile = threads * vec
     tiles = n // tile
     tail = n - tiles * tile
@@ -312,8 +312,8 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
 
     A grid-wide amax has to finish before any value is quantized, so the launch holds as
     much of ``x`` on chip as shared memory and registers take across a grid barrier and
-    reads only the rest a second time. ``q`` is bit-equal to the torch reference: the scale is the product torch
-    computes, and the quotient is correctly rounded.
+    reads only the rest a second time. ``q`` is bit-equal to the torch reference: the scale
+    is the product torch computes, and the quotient is correctly rounded.
 
     Args:
         call: The call's shape, dtype and device facts.
@@ -347,7 +347,7 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
         return reason
 
     def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.dtype = call.dtype
         self.numel = call.rows * call.cols
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize

@@ -16,7 +16,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.autotune import TUNING_FATAL, candidate_busy_ms
+from tileops._kernels.autotune import candidate_busy_ms
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -24,6 +24,11 @@ from tileops._kernels.linear_attention.call_spec import (
     GLADecodeCall,
     GLADecodeFwdInterface,
     head_count_refusal,
+)
+from tileops._kernels.linear_attention.deltanet.recurrent import (
+    k_tile_refusal,
+    stream_state_configs,
+    tune_decode,
 )
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
@@ -130,13 +135,25 @@ def _gla_decode_tl(
     return decode()
 
 
+def _decode_inputs(kernel: Kernel, dtype: torch.dtype) -> tuple[torch.Tensor, ...]:
+    """Random ``(q, k, v, gk, state)`` of *kernel*'s shape to time its candidates on."""
+    B, H, DK, DV = kernel.batch, kernel.head, kernel.dim_k, kernel.dim_v
+    return (
+        torch.randn(B, H, DK, device="cuda", dtype=dtype),
+        torch.randn(B, H, DK, device="cuda", dtype=dtype),
+        torch.randn(B, H, DV, device="cuda", dtype=dtype),
+        -torch.rand(B, H, DK, device="cuda", dtype=dtype),
+        torch.randn(B, H, DK, DV, device="cuda", dtype=dtype),
+    )
+
+
 def _decode_entry(cls: type, call: GLADecodeCall) -> Entry:
     """The entry for a GLA decode kernel: both take the same construction arguments.
 
     The device index is in the identity because the kernel is compiled for the
     architecture it is built on.
     """
-    index = call.device.index if call.device is not None else None
+    index = call.device_index
     dtype = Kernel.dtype_to_str(call.dtype)
     identity = (call.batch, call.heads, call.dim_k, call.dim_v, call.scale, dtype, index)
     return identity, lambda: cls(
@@ -158,7 +175,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
 
     @classmethod
     def refusal(cls, call: GLADecodeCall) -> str | None:
-        return head_count_refusal(call.heads)
+        return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GLADecodeCall) -> Entry:
@@ -207,40 +224,13 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
         """Sweep block_v and threads, then publish the fastest config."""
-        best_time = float("inf")
-        best_config = None
-
-        B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
-        torch_dtype = getattr(torch, self.dtype_str)
-        q = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
-        k = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
-        v = torch.randn(B, H, DV, device="cuda", dtype=torch_dtype)
-        gk = -torch.rand(B, H, DK, device="cuda", dtype=torch_dtype)
-        state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
-
-        candidates = self.tuning_candidates(
-            [
-                {"block_v": block_v, "threads": threads}
-                for block_v in self._block_v_options()
-                for threads in (128, 256)
-            ]
-        )
-        for config in candidates:
-            try:
-                fn = _gla_decode_tl(
-                    B, H, DK, DV, config["block_v"], config["threads"], self.dtype_str, self.scale
-                )
-                t = candidate_busy_ms(lambda _fn=fn: _fn(q, k, v, gk, state), warmup, rep)
-                if t < best_time:
-                    best_time = t
-                    best_config = config
-            except TUNING_FATAL:
-                raise
-            except Exception:
-                continue
-
-        if best_config is not None:
-            self._publish(best_config, self._compile)
+        configs = [
+            {"block_v": block_v, "threads": threads}
+            for block_v in self._block_v_options()
+            for threads in (128, 256)
+        ]
+        inputs = _decode_inputs(self, getattr(torch, self.dtype_str))
+        tune_decode(self, configs, inputs, warmup, rep, candidate_busy_ms)
 
     @property
     def default_config(self) -> dict:
@@ -365,16 +355,19 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
     """GLA decode for fp32 inputs, one block a head; the state streams in key tiles."""
 
     supported_archs: list[int] = [80, 89, 90]
-    # The key-dimension tile the untuned decode program splits the state into.
+    # The key-dimension tile the untuned decode program splits the state into, so it is
+    # what decides which key dims this kernel serves.
     _DEFAULT_K_TILE = 16
 
     @classmethod
     def refusal(cls, call: GLADecodeCall) -> "str | None":
         if call.dtype != torch.float32:
             return f"serves float32, got {call.dtype}"
-        if call.dim_k % cls._DEFAULT_K_TILE:
-            return f"requires dim_k a multiple of {cls._DEFAULT_K_TILE}, got {call.dim_k}"
-        return head_count_refusal(call.heads) or super().refusal(call)
+        return (
+            k_tile_refusal(call.dim_k, cls._DEFAULT_K_TILE)
+            or head_count_refusal(call.heads)
+            or super().refusal(call)
+        )
 
     @classmethod
     def entry_for(cls, call: GLADecodeCall) -> Entry:
@@ -416,46 +409,8 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
         """Sweep k_tile, num_stages and threads, then publish the fastest config."""
-        best_time = float("inf")
-        best_config = None
-        B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
-
-        q = torch.randn(B, H, DK, device="cuda", dtype=torch.float32)
-        k = torch.randn(B, H, DK, device="cuda", dtype=torch.float32)
-        v = torch.randn(B, H, DV, device="cuda", dtype=torch.float32)
-        gk = -torch.rand(B, H, DK, device="cuda", dtype=torch.float32)
-        state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch.float32)
-
-        candidates = self.tuning_candidates(
-            [
-                {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
-                for k_tile in (16, 32, 64)
-                if DK % k_tile == 0
-                for num_stages in (1, 2, 3)
-                for threads in (128, 256)
-            ]
-        )
-        for config in candidates:
-            try:
-                fn = _gla_decode_fp32_tl(
-                    B,
-                    H,
-                    DK,
-                    DV,
-                    config["k_tile"],
-                    self.scale,
-                )(config["num_stages"], config["threads"])
-                t = candidate_busy_ms(lambda _fn=fn: _fn(q, k, v, gk, state), warmup, rep)
-                if t < best_time:
-                    best_time = t
-                    best_config = config
-            except TUNING_FATAL:
-                raise
-            except Exception:
-                continue
-
-        if best_config is not None:
-            self._publish(best_config, self._compile)
+        inputs = _decode_inputs(self, torch.float32)
+        tune_decode(self, stream_state_configs(self.dim_k), inputs, warmup, rep, candidate_busy_ms)
 
     @property
     def default_config(self) -> dict:

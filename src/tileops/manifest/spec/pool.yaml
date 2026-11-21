@@ -1,8 +1,3 @@
-# pool.yaml -- manifest entries for the 'pool' family.
-#
-# Source of truth for pooling op interfaces. Each entry's `status` field is the
-# authority on whether it is implemented.
-
 AvgPool1dFwdOp:
   ref_api: torch.nn.functional.avg_pool1d
   family: pool
@@ -31,7 +26,7 @@ AvgPool1dFwdOp:
     - "L_in > 0 and L_out > 0"
 
   workloads:
-  # Temporal/audio downsampling cases, expressed in PyTorch NCL layout.
+  # Temporal and audio downsampling in NCL layout.
   - {N: 4, C: 128, L_in: 4096, kernel_size: 3, stride: 2, padding: 1, dtype_cases: [{T: float16}, {T: float32}], label: audio-downsample}
   - {N: 2, C: 256, L_in: 32000, kernel_size: 5, stride: 4, padding: 2, dtype_cases: [{T: float16}], label: long-temporal}
   - {N: 2, C: 128, L_in: 2048, kernel_size: 4, stride: 2, padding: 1, ceil_mode: true, count_include_pad: false, dtype_cases: [{T: bfloat16}], label: ceil}
@@ -73,10 +68,8 @@ AvgPool2dFwdOp:
     - "H_in > 0 and W_in > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-  # Real-model sources: ResNet-style and ConvNeXt-style vision backbones use
-  # 2D average-pooling/downsampling over NCHW feature maps at early and middle
-  # feature stages. The asymmetric ceil/divisor case is a stress workload for
-  # PyTorch avg_pool2d semantics, not a separate model family.
+  # ResNet- and ConvNeXt-style downsampling at early and middle stages; the asymmetric
+  # ceil/divisor row tests avg_pool2d semantics, not a model.
   - {N: 2, C: 64, H_in: 112, W_in: 112, kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtype_cases: [{T: float16}, {T: float32}], label: vision-3x3-s2}
   - {N: 2, C: 128, H_in: 56, W_in: 56, kernel_size: [5, 5], stride: [2, 2], padding: [2, 2], dtype_cases: [{T: float16}], label: vision-5x5-s2}
   - {N: 3, C: 96, H_in: 55, W_in: 57, kernel_size: [3, 5], stride: [2, 2], padding: [1, 2], ceil_mode: true, count_include_pad: false, divisor_override: 7, dtype_cases: [{T: bfloat16}], label: ceil-divisor}
@@ -122,9 +115,7 @@ AvgPool3dFwdOp:
     - "D_in > 0 and H_in > 0 and W_in > 0 and D_out > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-  # Real-model sources: I3D/SlowFast-style video CNNs use 3D spatiotemporal
-  # pooling over NCDHW activations. The ceil and divisor workloads stress
-  # PyTorch avg_pool3d semantics on video-like feature volumes.
+  # I3D/SlowFast-style video pooling; the ceil and divisor rows test avg_pool3d semantics.
   - {N: 1, C: 32, D_in: 16, H_in: 56, W_in: 56, kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}, {T: float32}], label: video-2x2x2}
   - {N: 2, C: 64, D_in: 8, H_in: 28, W_in: 28, kernel_size: [2, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, count_include_pad: false, dtype_cases: [{T: float16}], label: ceil-video}
   - {N: 2, C: 24, D_in: 10, H_in: 20, W_in: 22, kernel_size: [2, 2, 3], stride: [2, 2, 2], padding: [0, 1, 1], divisor_override: 7, dtype_cases: [{T: bfloat16}], label: divisor}
@@ -133,7 +124,7 @@ AvgPool3dFwdOp:
     func: tileops._perf.formulas.pool_roofline
 
 MaxPool1dFwdOp:
-  # Equivalent to torch.nn.functional.max_pool1d (return_indices=False)
+  # return_indices=False.
   ref_api: torch.nn.functional.max_pool1d
   family: pool
   status: implemented
@@ -163,10 +154,8 @@ MaxPool1dFwdOp:
     - "L_in > 0 and L_out > 0"
 
   workloads:
-  # Real-model sources: SincNet-style speaker CNNs use local MaxPool1d
-  # over waveform features; TextCNN-style classifiers use global temporal
-  # max pooling over token-convolution channels; ECG CNN classifiers use
-  # repeated 1D max-pooling downsampling on long signals.
+  # SincNet local pooling over waveform features, TextCNN global temporal pooling, and ECG
+  # CNN downsampling of long signals.
   - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-local}
   - {N: 64, C: 256, L_in: 128, kernel_size: 128, stride: 1, padding: 0, dtype_cases: [{T: float16}], label: textcnn-global}
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
@@ -175,7 +164,7 @@ MaxPool1dFwdOp:
     func: tileops._perf.formulas.pool_roofline
 
 MaxPool1dIndicesFwdOp:
-  # Equivalent to torch.nn.functional.max_pool1d (return_indices=True)
+  # return_indices=True.
   ref_api: torch.nn.functional.max_pool1d
   family: pool
   status: implemented
@@ -206,8 +195,7 @@ MaxPool1dIndicesFwdOp:
     - "L_in > 0 and L_out > 0"
 
   workloads:
-  # Same model sources as MaxPool1dFwdOp; indices output is consumed by
-  # unpooling or argmax-tracking paths rather than changing input shapes.
+  # The MaxPool1dFwdOp shapes.
   - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-local}
   - {N: 64, C: 256, L_in: 128, kernel_size: 128, stride: 1, padding: 0, dtype_cases: [{T: float16}], label: textcnn-global}
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
@@ -216,7 +204,7 @@ MaxPool1dIndicesFwdOp:
     func: tileops._perf.formulas.pool_roofline
 
 MaxPool2dFwdOp:
-  # Equivalent to torch.nn.functional.max_pool2d (return_indices=False)
+  # return_indices=False.
   ref_api: torch.nn.functional.max_pool2d
   family: pool
   status: implemented
@@ -251,9 +239,8 @@ MaxPool2dFwdOp:
     - "H_in > 0 and W_in > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-  # Real-model sources: ResNet stem uses 3x3 stride-2 max pooling on
-  # 64-channel 112x112 features; VGG blocks use 2x2 stride-2 max pooling;
-  # AlexNet-style CNNs use 3x3 stride-2 pooling on early 55x55 features.
+  # ResNet stem (3x3 stride 2 on 112x112), VGG blocks (2x2 stride 2), AlexNet (3x3 stride 2
+  # on 55x55).
   - {N: 32, C: 64, H_in: 112, W_in: 112, kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: resnet-stem}
   - {N: 16, C: 128, H_in: 56, W_in: 56, kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: vgg-block}
   - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
@@ -262,7 +249,7 @@ MaxPool2dFwdOp:
     func: tileops._perf.formulas.pool_roofline
 
 MaxPool2dIndicesFwdOp:
-  # Equivalent to torch.nn.functional.max_pool2d (return_indices=True)
+  # return_indices=True.
   ref_api: torch.nn.functional.max_pool2d
   family: pool
   status: implemented
@@ -298,8 +285,7 @@ MaxPool2dIndicesFwdOp:
     - "H_in > 0 and W_in > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-  # Same model sources as MaxPool2dFwdOp; indices output is consumed by
-  # unpooling or argmax-tracking paths rather than changing input shapes.
+  # The MaxPool2dFwdOp shapes.
   - {N: 32, C: 64, H_in: 112, W_in: 112, kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: resnet-stem}
   - {N: 16, C: 128, H_in: 56, W_in: 56, kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: vgg-block}
   - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
@@ -308,7 +294,7 @@ MaxPool2dIndicesFwdOp:
     func: tileops._perf.formulas.pool_roofline
 
 MaxPool3dFwdOp:
-  # Equivalent to torch.nn.functional.max_pool3d (return_indices=False)
+  # return_indices=False.
   ref_api: torch.nn.functional.max_pool3d
   family: pool
   status: implemented
@@ -348,9 +334,7 @@ MaxPool3dFwdOp:
     - "D_in > 0 and H_in > 0 and W_in > 0 and D_out > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-  # Real-model sources: C3D uses an initial 1x2x2 max pool over video
-  # features followed by 2x2x2 stages; 3D ResNet/MedicalNet-style
-  # volumetric backbones use 3x3x3 stride-2 max pooling after the stem.
+  # C3D's 1x2x2 first pool and 2x2x2 stages; 3D ResNet/MedicalNet 3x3x3 stride-2 stem pool.
   - {N: 8, C: 64, D_in: 16, H_in: 112, W_in: 112, kernel_size: [1, 2, 2], stride: [1, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}, {T: float32}], label: c3d-pool1}
   - {N: 4, C: 128, D_in: 16, H_in: 56, W_in: 56, kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}], label: c3d-pool2}
   - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
@@ -359,7 +343,7 @@ MaxPool3dFwdOp:
     func: tileops._perf.formulas.pool_roofline
 
 MaxPool3dIndicesFwdOp:
-  # Equivalent to torch.nn.functional.max_pool3d (return_indices=True)
+  # return_indices=True.
   ref_api: torch.nn.functional.max_pool3d
   family: pool
   status: implemented
@@ -400,8 +384,7 @@ MaxPool3dIndicesFwdOp:
     - "D_in > 0 and H_in > 0 and W_in > 0 and D_out > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-  # Same model sources as MaxPool3dFwdOp; indices output is consumed by
-  # unpooling or argmax-tracking paths rather than changing input shapes.
+  # The MaxPool3dFwdOp shapes.
   - {N: 8, C: 64, D_in: 16, H_in: 112, W_in: 112, kernel_size: [1, 2, 2], stride: [1, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}, {T: float32}], label: c3d-pool1}
   - {N: 4, C: 128, D_in: 16, H_in: 56, W_in: 56, kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}], label: c3d-pool2}
   - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
@@ -430,10 +413,8 @@ AdaptiveAvgPool2dFwdOp:
     - "H_out > 0 and W_out > 0"
 
   workloads:
-  # Real-model sources: ResNet-50 applies a global adaptive average pool to
-  # its final 7x7 feature map before the FC layer; SPP-style heads pool
-  # arbitrary feature maps to a fixed grid; the non-divisible case stresses
-  # PyTorch adaptive bin-boundary semantics.
+  # ResNet-50's global pool of its final 7x7 map, SPP-style fixed-grid heads, and a
+  # non-divisible case that tests adaptive bin boundaries.
   - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-gap}
   - {B: [2], C: 128, H_in: 56, W_in: 56, output_size: [6, 6], dtype_cases: [{T: float16}], label: spp-6x6}
   - {B: [2], C: 64, H_in: 55, W_in: 57, output_size: [7, 7], dtype_cases: [{T: bfloat16}], label: nondiv-7x7}
@@ -443,7 +424,7 @@ AdaptiveAvgPool2dFwdOp:
     func: tileops._perf.formulas.adaptive_pool2d_roofline
 
 AdaptiveMaxPool2dFwdOp:
-  # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=False)
+  # return_indices=False.
   ref_api: torch.nn.functional.adaptive_max_pool2d
   family: pool
   status: implemented
@@ -464,8 +445,7 @@ AdaptiveMaxPool2dFwdOp:
     - "H_out > 0 and W_out > 0"
 
   workloads:
-  # Same model sources as AdaptiveAvgPool2dFwdOp; adaptive max pooling shows
-  # up in SPP-style detection/segmentation heads with the same grid shapes.
+  # The AdaptiveAvgPool2dFwdOp shapes, as SPP-style heads use them.
   - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: global-1x1}
   - {B: [2], C: 128, H_in: 56, W_in: 56, output_size: [6, 6], dtype_cases: [{T: float16}], label: spp-6x6}
   - {B: [2], C: 64, H_in: 55, W_in: 57, output_size: [7, 7], dtype_cases: [{T: bfloat16}], label: nondiv-7x7}
@@ -475,7 +455,7 @@ AdaptiveMaxPool2dFwdOp:
     func: tileops._perf.formulas.adaptive_pool2d_roofline
 
 AdaptiveMaxPool2dIndicesFwdOp:
-  # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=True)
+  # return_indices=True.
   ref_api: torch.nn.functional.adaptive_max_pool2d
   family: pool
   status: implemented
@@ -497,8 +477,7 @@ AdaptiveMaxPool2dIndicesFwdOp:
     - "H_out > 0 and W_out > 0"
 
   workloads:
-  # Same model sources as AdaptiveMaxPool2dFwdOp; indices output is consumed
-  # by unpooling or argmax-tracking paths rather than changing input shapes.
+  # The AdaptiveMaxPool2dFwdOp shapes.
   - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: global-1x1}
   - {B: [2], C: 128, H_in: 56, W_in: 56, output_size: [6, 6], dtype_cases: [{T: float16}], label: spp-6x6}
   - {B: [2], C: 64, H_in: 55, W_in: 57, output_size: [7, 7], dtype_cases: [{T: bfloat16}], label: nondiv-7x7}
@@ -509,9 +488,9 @@ AdaptiveMaxPool2dIndicesFwdOp:
 
 MeanPoolingFwdOp:
   # A chunked mean over the sequence axis, along ragged boundaries when `cu_seqlens` and
-  # `chunk_indices` are passed; torch has no such API. Declared limits, not kernel limits:
-  # a block takes a power-of-two share of `H * D` and bounds-tests a share that does
-  # not divide it.
+  # `chunk_indices` are passed; torch has no such API. The `chunk_size` and `D` shape rules
+  # are the op's contract, not the kernel's limits: the kernel bounds-tests a block whose
+  # power-of-two share of `H * D` does not divide it.
   family: pool
   status: implemented
   ref_api: fla.ops.utils.pooling.mean_pooling_fwd

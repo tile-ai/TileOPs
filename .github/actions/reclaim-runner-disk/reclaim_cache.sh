@@ -2,13 +2,8 @@
 # reclaim_cache.sh — cache-reclaim primitives used by the
 # .github/actions/reclaim-runner-disk composite action.
 #
-# The action.yml composite used to embed all reclaim logic inline, which
-# meant the cache-trim paths could only be exercised on a self-hosted
-# runner. That made it impossible to catch regressions at PR time; a bad
-# trim rule only surfaced after merge when it had already corrupted the
-# live cache. This script exposes the trim primitives as
-# pytest-driveable subcommands so tests/test_reclaim_action.py can
-# validate behaviour against a tmp_path fixture.
+# The trim primitives are subcommands so tests/test_reclaim_action.py can
+# run them against a tmp_path fixture.
 #
 # The core safety invariant this script enforces is that some cache
 # roots (notably /ci-cache/tilelang/autotuner) store

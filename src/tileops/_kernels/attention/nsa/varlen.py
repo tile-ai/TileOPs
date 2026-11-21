@@ -802,16 +802,11 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return {
-            "threads": 32,
-        }
+        return {"threads": 32}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        threads = [
-            32,
-        ]
-        return [{"threads": t} for t in threads]
+        return [{"threads": 32}]
 
     def forward(
         self,

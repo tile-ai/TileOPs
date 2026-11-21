@@ -18,7 +18,7 @@ import re
 import sys
 from pathlib import Path
 
-from common import allow_marker, files, relative, report
+from common import allow_marker, lint_files, relative
 
 SCANNED = ("tests", "workloads")
 # An architecture mark names a CUDA compute capability, so it needs CUDA as cuda_only does.
@@ -123,7 +123,7 @@ def file_findings(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    return report(e for p in files(argv, SCANNED, (".py",)) for e in file_findings(p))
+    return lint_files(argv, __doc__, SCANNED, (".py",), file_findings)
 
 
 if __name__ == "__main__":

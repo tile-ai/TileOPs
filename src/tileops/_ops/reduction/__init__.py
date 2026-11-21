@@ -1,10 +1,6 @@
 # Copyright (c) Tile-AI. All rights reserved.
-"""Reduction op layer (L2) package.
-
-This package will host stateless dispatchers for reduction operators
-(sum, max, softmax, variance, prefix-scan, etc.) once their corresponding
-kernels are implemented.
-"""
+"""Reduction op layer (L2) package: sums, extrema, variance, softmax, argreduce, logical
+reductions, prefix scans and vector norms."""
 
 from tileops._ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 from tileops._ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp

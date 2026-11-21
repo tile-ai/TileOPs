@@ -1,4 +1,4 @@
-"""Tests for scripts/perf_tracker.py: the wiki's daily Perf Tracker page."""
+"""Tests for scripts/perf_tracker.py, the wiki's daily Perf Tracker page, and scripts/perf_board.py."""
 
 import importlib.util
 import json

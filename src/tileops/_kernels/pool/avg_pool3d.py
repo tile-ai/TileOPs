@@ -9,7 +9,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool3dFwdInterface, AvgPoolCall
-from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow, dtype_itemsize
+from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow
 
 __all__ = ["AvgPool3dKernel"]
 
@@ -54,7 +54,7 @@ def _wide_run(window: AvgPoolWindow, dtype: str) -> _WideRun | None:
     if not window.window_inside or kernel_w != stride_w:
         return None
     # Past one full-width access a longer run only adds groups, so it bounds the search.
-    widest = VECTOR_ACCESS_BYTES // dtype_itemsize(dtype)
+    widest = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     best = None
     run = 1
     while run <= widest:
@@ -208,7 +208,7 @@ def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
         items = rows * out_d * out_h * runs_per_row
         # A compile-time truth when the launch divides, and the tail test drops out.
         block_full = items % threads == 0
-        whole_vector = vector_elems * dtype_itemsize(dtype) == VECTOR_ACCESS_BYTES
+        whole_vector = vector_elems * getattr(torch, dtype).itemsize == VECTOR_ACCESS_BYTES
         # Every (kd, kh) row of the run is read before the first add, so the reads are in
         # flight together. The rows a thread holds bound the registers, so a
         # window past 64 elements of them keeps reading a row at a time.
@@ -353,9 +353,8 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
             count_include_pad=count_include_pad,
             divisor_override=divisor_override,
         )
-        # Only the wide-run program reads x in 16-byte vectors.
-        self._wide = _wide_run(self.window, self.dtype_str) is not None
-        build = _avg_pool3d_wide_kernel if self._wide else _avg_pool3d_kernel
+        wide = _wide_run(self.window, self.dtype_str) is not None
+        build = _avg_pool3d_wide_kernel if wide else _avg_pool3d_kernel
         self.kernel = build(self.window, self.dtype_str)
         self.init_config(config)
 

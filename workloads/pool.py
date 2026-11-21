@@ -37,8 +37,7 @@ class AvgPoolWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self, *shape: int) -> tuple[torch.Tensor]:
-        x = torch.randn(*shape, device=run_device(), dtype=self.dtype).contiguous()
-        return (x,)
+        return (torch.randn(*shape, device=run_device(), dtype=self.dtype),)
 
     def ref_program(self, input: torch.Tensor) -> torch.Tensor:
         return self.torch_program(input.float()).to(input.dtype)
@@ -84,9 +83,7 @@ class MaxPoolWorkload(WorkloadBase):
 
     def gen_inputs(self, *shape: int) -> tuple[torch.Tensor]:
         x = torch.randn(*shape, device=run_device(), dtype=self.dtype)
-        if self.contiguous:
-            x = x.contiguous()
-        else:
+        if not self.contiguous:
             # Non-contiguous view: transpose the last two dims twice so strides
             # differ but shape semantics stay N,C,<spatial dims>.
             x = x.transpose(-2, -1).contiguous().transpose(-2, -1)
@@ -133,8 +130,14 @@ class AdaptivePool2dWorkload(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(
             self.n, self.c_in, self.h_in, self.w_in, device=run_device(), dtype=self.dtype
-        ).contiguous()
+        )
         return (x,)
+
+    @property
+    def _torch_output_size(self) -> int | tuple[int | None, int | None]:
+        """``output_size`` as torch takes it: torch rejects a scalar None, and (None, None)
+        means the same."""
+        return (None, None) if self.output_size is None else self.output_size
 
 
 class AdaptiveAvgPool2dWorkload(AdaptivePool2dWorkload):
@@ -144,9 +147,7 @@ class AdaptiveAvgPool2dWorkload(AdaptivePool2dWorkload):
         return self.torch_program(input.float()).to(input.dtype)
 
     def torch_program(self, input: torch.Tensor) -> torch.Tensor:
-        # torch rejects a scalar None here; (None, None) means the same.
-        size = (None, None) if self.output_size is None else self.output_size
-        return F.adaptive_avg_pool2d(input, size)
+        return F.adaptive_avg_pool2d(input, self._torch_output_size)
 
     def verification(self, *inputs):
         return pool_verification(maximum=False)
@@ -160,9 +161,9 @@ class AdaptiveMaxPool2dWorkload(AdaptivePool2dWorkload):
         self.return_indices = return_indices
 
     def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        # torch rejects a scalar None here; (None, None) means the same.
-        size = (None, None) if self.output_size is None else self.output_size
-        return F.adaptive_max_pool2d(input, size, return_indices=self.return_indices)
+        return F.adaptive_max_pool2d(
+            input, self._torch_output_size, return_indices=self.return_indices
+        )
 
     def verification(self, *inputs):
         return pool_verification(maximum=True)
@@ -244,28 +245,6 @@ class AdaptiveMaxPool2dCall(CallWorkload, AdaptiveMaxPool2dWorkload):
     gen_inputs = CallWorkload.gen_inputs
 
 
-def mean_pooling_chunk_index(
-    seq_lens: Sequence[int], chunk_size: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The ``cu_seqlens`` and ``chunk_indices`` a ragged mean-pooling call takes.
-
-    Args:
-        seq_lens: Length of each sequence, in tokens.
-        chunk_size: Tokens per chunk; a sequence's last chunk may hold fewer.
-
-    Returns:
-        ``cu_seqlens``, the ``len(seq_lens) + 1`` cumulative boundaries, and ``chunk_indices``, one
-        ``(sequence, chunk-within-sequence)`` pair per chunk.
-    """
-    from workloads.sequence_metadata import prepare_chunk_indices
-
-    bounds = [0]
-    for length in seq_lens:
-        bounds.append(bounds[-1] + length)
-    cu_seqlens = torch.tensor(bounds, dtype=torch.int32, device=run_device())
-    return cu_seqlens, prepare_chunk_indices(cu_seqlens, chunk_size)
-
-
 class MeanPoolingWorkload(WorkloadBase):
     """One chunked-sequence-mean case: its shape, its dtype, and how it is split.
 
@@ -281,7 +260,6 @@ class MeanPoolingWorkload(WorkloadBase):
         dim: int,
         chunk_size: int,
         dtype: torch.dtype,
-        accum_dtype: torch.dtype,
         seq_lens: Sequence[int] | None = None,
     ) -> None:
         self.batch = batch
@@ -290,7 +268,6 @@ class MeanPoolingWorkload(WorkloadBase):
         self.dim = dim
         self.chunk_size = chunk_size
         self.dtype = dtype
-        self.accum_dtype = accum_dtype
         self.seq_lens = None if seq_lens is None else list(seq_lens)
 
     def gen_inputs(self) -> tuple:
@@ -299,7 +276,11 @@ class MeanPoolingWorkload(WorkloadBase):
         )
         if self.seq_lens is None:
             return (x,)
-        return (x, *mean_pooling_chunk_index(self.seq_lens, self.chunk_size))
+        from workloads.sequence_metadata import make_cu_seqlens, prepare_chunk_indices
+
+        # The ragged split: cumulative boundaries and one (sequence, chunk) pair per chunk.
+        cu_seqlens = make_cu_seqlens(self.seq_lens)
+        return x, cu_seqlens, prepare_chunk_indices(cu_seqlens, self.chunk_size)
 
     def chunk_slices(
         self,
@@ -367,7 +348,6 @@ class MeanPoolingCallWorkload(CallWorkload, MeanPoolingWorkload):
             dim=dim,
             chunk_size=call.params["chunk_size"],
             dtype=getattr(torch, call.tensors["x"][1]),
-            accum_dtype=getattr(torch, call.params["accum_dtype"]),
             seq_lens=None
             if cu_seqlens is None
             else [b - a for a, b in zip(cu_seqlens, cu_seqlens[1:], strict=False)],

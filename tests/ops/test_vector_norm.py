@@ -274,20 +274,15 @@ class VectorNormNaNFixture(FixtureBase):
 def test_inf_nan_propagation(m: int, n: int, dtype: torch.dtype) -> None:
     """``ord=inf`` must return NaN for rows containing NaN, matching PyTorch."""
     x = torch.randn(m, n, dtype=dtype, device=run_device())
-    # Inject NaN into the first row
     x[0, 0] = float("nan")
-    # Inject NaN into the last position of the second row
     x[1, -1] = float("nan")
-    # Rows 2+ remain finite
 
     op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
 
-    # Rows with NaN should produce NaN
     assert y[0].isnan().item(), f"Row 0 should be NaN, got {y[0]}"
     assert y[1].isnan().item(), f"Row 1 should be NaN, got {y[1]}"
-    # Finite rows should match reference
     compare_outputs(y[2:], ref[2:], vector_norm_verification(dtype))
 
 
@@ -300,11 +295,9 @@ class VectorNormSpecFixture(FixtureBase):
             "op_kind, dtype",
             [
                 pytest.param("l1", torch.float16, marks=pytest.mark.smoke),
-                pytest.param("l2", torch.float16, marks=pytest.mark.smoke),
-                pytest.param("inf", torch.float16, marks=pytest.mark.smoke),
-                pytest.param("l1", torch.float32, marks=pytest.mark.smoke),
                 pytest.param("l2", torch.float32, marks=pytest.mark.smoke),
-                pytest.param("inf", torch.float32, marks=pytest.mark.smoke),
+                pytest.param("inf", torch.float16, marks=pytest.mark.full),
+                pytest.param("inf", torch.float32, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -356,93 +349,6 @@ def test_spec_dim0_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
-def _make_dtype_smoke_fixture(dt: torch.dtype) -> type:
-    """Create a single-param smoke fixture for the given dtype."""
-    m = 64
-    n = 512
-    dt_name = str(dt).split(".")[-1]
-
-    class _Fixture(FixtureBase):
-        PARAMS = [
-            (
-                "m, n, dtype",
-                [pytest.param(m, n, dt, marks=pytest.mark.smoke)],
-            )
-        ]
-
-    _Fixture.__name__ = f"_DtypeSmoke_{dt_name}"
-    _Fixture.__qualname__ = _Fixture.__name__
-    return _Fixture
-
-
-_DtypeSmoke_float16 = _make_dtype_smoke_fixture(torch.float16)
-_DtypeSmoke_bfloat16 = _make_dtype_smoke_fixture(torch.bfloat16)
-_DtypeSmoke_float32 = _make_dtype_smoke_fixture(torch.float32)
-
-
-@_DtypeSmoke_float16
-def test_l1_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
-    test = VectorNormTest(m, n, dtype, "l1")
-    op = _make_op("l1")
-    test.check(op, *test.gen_inputs())
-
-
-@_DtypeSmoke_bfloat16
-def test_l1_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
-    test = VectorNormTest(m, n, dtype, "l1")
-    op = _make_op("l1")
-    test.check(op, *test.gen_inputs())
-
-
-@_DtypeSmoke_float32
-def test_l1_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
-    test = VectorNormTest(m, n, dtype, "l1")
-    op = _make_op("l1")
-    test.check(op, *test.gen_inputs())
-
-
-@_DtypeSmoke_float16
-def test_l2_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
-    test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op("l2")
-    test.check(op, *test.gen_inputs())
-
-
-@_DtypeSmoke_bfloat16
-def test_l2_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
-    test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op("l2")
-    test.check(op, *test.gen_inputs())
-
-
-@_DtypeSmoke_float32
-def test_l2_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
-    test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op("l2")
-    test.check(op, *test.gen_inputs())
-
-
-@_DtypeSmoke_float16
-def test_inf_smoke_float16(m: int, n: int, dtype: torch.dtype) -> None:
-    test = VectorNormTest(m, n, dtype, "inf")
-    op = _make_op("inf")
-    test.check(op, *test.gen_inputs())
-
-
-@_DtypeSmoke_bfloat16
-def test_inf_smoke_bfloat16(m: int, n: int, dtype: torch.dtype) -> None:
-    test = VectorNormTest(m, n, dtype, "inf")
-    op = _make_op("inf")
-    test.check(op, *test.gen_inputs())
-
-
-@_DtypeSmoke_float32
-def test_inf_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
-    test = VectorNormTest(m, n, dtype, "inf")
-    op = _make_op("inf")
-    test.check(op, *test.gen_inputs())
-
-
 # Empty-dim full-reduction (dim=[])
 
 
@@ -464,11 +370,13 @@ def test_empty_dim_full_reduction_keepdim(op_kind: str, keepdim: bool) -> None:
     compare_outputs(y, ref, vector_norm_verification(dtype))
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
 @pytest.mark.parametrize(
-    "dtype",
-    [torch.float16, torch.bfloat16, torch.float32],
+    "op_kind, dtype",
+    [
+        pytest.param("l1", torch.float16, marks=pytest.mark.smoke),
+        pytest.param("l2", torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param("inf", torch.float32, marks=pytest.mark.smoke),
+    ],
 )
 def test_empty_dim_full_reduction_3d_dtypes(
     op_kind: str,

@@ -174,7 +174,7 @@ class BatchNormFwdOp(Op):
         # absent one. The running statistics are written, so normalizing them is not
         # enough: whoever serves this op writes the tensor it was handed, and a copy would
         # swallow that write. ``contiguous()`` returns the same object when it has nothing
-        # to do, so what came back tells us whether a write-back is owed.
+        # to do, so what came back says whether a write-back is owed.
         stats = (running_mean, running_var)
         handed = stats if running_mean is None else tuple(stat.contiguous() for stat in stats)
         weight = None if weight is None else weight.contiguous()

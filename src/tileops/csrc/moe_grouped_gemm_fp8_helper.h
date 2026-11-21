@@ -3,10 +3,8 @@
 // WGMMA, promotion and epilogue helpers of the FP8 M-grouped GEMM. The MXFP4
 // M-grouped GEMM also calls the descriptor (moe_fp8_wgmma_desc_lo,
 // kMoeFp8WgmmaDescHi), TMA store and row store helpers, so a change to those
-// changes both kernels. The WGMMA and epilogue helpers are copied from the
-// dense FP8 1D2D kernel's fp8_1d2d_helper.h, so that header can change without
-// moving these kernels; the promotion here also serves tiles whose columns span
-// several ``b`` scale rows.
+// changes both kernels. The promotion serves tiles whose columns span several
+// ``b`` scale rows.
 
 #include <cuda.h>
 #include <tl_templates/cuda/common.h>

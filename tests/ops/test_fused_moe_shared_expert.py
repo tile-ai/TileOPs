@@ -9,7 +9,6 @@ from tileops._kernels.gemm.dense import GEMMTMAKernel
 from tileops._kernels.moe import SharedExpertMLPKernel
 from tileops._ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops._ops.moe.fused_moe import FusedMoEFwdOp
-from tileops._utils import get_sm_version
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
 from workloads.device import run_device
@@ -33,6 +32,7 @@ def test_the_shared_expert_matches_its_reference(dtype):
     TestBase.check(workload, SharedExpertMLPFwdOp(), *inputs)
 
 
+@pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "tokens, hidden, ffn, dtype",
@@ -58,8 +58,6 @@ def test_the_shared_expert_matches_its_reference(dtype):
 def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, hidden, ffn, dtype):
     """A shared expert past ``template_min_m`` runs its gate/up GEMM, and its down GEMM when
     the expert is at least as wide as the model, on the SM90 dense template."""
-    if get_sm_version(torch.device(run_device()).index) != 90:
-        pytest.skip("the dense template serves SM90")
     workload = SharedExpertMLPWorkload(
         manifest_call("SharedExpertMLPFwdOp", {"D": dtype}, T=tokens, H=hidden, S=ffn)
     )
@@ -67,13 +65,12 @@ def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, hi
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
+@pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_a_published_threshold_decomposes_the_next_call_again():
     """``template_min_m`` decides which GEMMs the expert runs, so publishing it decomposes the
     next call from the new value."""
-    if get_sm_version(torch.device(run_device()).index) != 90:
-        pytest.skip("the dense template serves SM90")
     workload = SharedExpertMLPWorkload(
         manifest_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=1024, H=256, S=512)
     )
@@ -88,6 +85,7 @@ def test_a_published_threshold_decomposes_the_next_call_again():
     assert [type(k) for k in decomposed[0][:2]] != [type(k) for k in templated[:2]]
 
 
+@pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "tokens, hidden, ffn",
@@ -102,8 +100,6 @@ def test_a_published_threshold_decomposes_the_next_call_again():
 def test_a_published_tile_runs_as_the_basic_gemm_it_states(tokens, hidden, ffn):
     """A published GEMM tile naming no structure runs each dense GEMM as that basic tile, also
     one the selector serves with a config outside the basic schema on a 132-SM H200."""
-    if get_sm_version(torch.device(run_device()).index) != 90:
-        pytest.skip("the dense GEMM kernel serves SM90")
     workload = SharedExpertMLPWorkload(
         manifest_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=tokens, H=hidden, S=ffn)
     )
@@ -224,6 +220,25 @@ def test_fused_moe_shared_expert_refuses_swigluoai():
     experts' gpt-oss activation is refused at construction."""
     with pytest.raises(ValueError, match="swigluoai"):
         FusedMoESharedExpertFwdOp(top_k=2, activation="swigluoai")
+
+
+@pytest.mark.smoke
+def test_the_shared_expert_refuses_a_non_silu_activation():
+    """The shared-expert kernel applies silu_and_mul; with gelu routed experts the two halves
+    would disagree, so a call passing the shared weights is refused."""
+    T, E, H, F, S = 4, 4, 128, 128, 128
+    op = FusedMoESharedExpertFwdOp(2, activation="gelu_and_mul")
+    args = (
+        torch.randn(T, H, dtype=torch.bfloat16, device=run_device()),
+        torch.randn(T, E, device=run_device()),
+        torch.randn(E, 2 * F, H, dtype=torch.bfloat16, device=run_device()),
+        torch.randn(E, H, F, dtype=torch.bfloat16, device=run_device()),
+        None,
+        torch.randn(2 * S, H, dtype=torch.bfloat16, device=run_device()),
+        torch.randn(H, S, dtype=torch.bfloat16, device=run_device()),
+    )
+    with pytest.raises(ValueError, match="silu_and_mul"):
+        op(*args)
 
 
 @pytest.mark.smoke

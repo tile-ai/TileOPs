@@ -15,8 +15,6 @@ from workloads.linear_attention.gdn import GDNFwdCall, GDNFwdWorkload
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
-pytestmark = pytest.mark.smoke
-
 # SM89 and SM90 prefill run different implementations. Each architecture's copy
 # carries its marker, so ``-m sm89`` selects the SM89 copies.
 PREFILL_ARCHITECTURES = pytest.mark.parametrize(
@@ -25,10 +23,18 @@ PREFILL_ARCHITECTURES = pytest.mark.parametrize(
 )
 
 
+# Smoke runs the first state layout; the second is full.
+STATE_LAYOUTS = [
+    pytest.param(False, marks=pytest.mark.smoke, id="key-major"),
+    pytest.param(True, marks=pytest.mark.full, id="value-major"),
+]
+
+
 class GDNFwdTest(GDNFwdWorkload, TestBase):
     pass
 
 
+@pytest.mark.smoke
 @pytest.mark.sm89
 @pytest.mark.in_tree_kernels
 def test_gdn_split_prefill_preserves_tail_state() -> None:
@@ -42,6 +48,7 @@ def test_gdn_split_prefill_preserves_tail_state() -> None:
     assert [type(kernel).__name__ for kernel in op.iter_kernels()] == [expected]
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @PREFILL_ARCHITECTURES
 def test_gdn_dense_prefill_matches_reference(_architecture: int, dtype: torch.dtype) -> None:
@@ -64,6 +71,7 @@ def test_gdn_dense_prefill_matches_reference(_architecture: int, dtype: torch.dt
             compare_outputs(tuple(faulty), reference, evidence)
 
 
+@pytest.mark.smoke
 @PREFILL_ARCHITECTURES
 def test_gdn_dense_prefill_continues_an_initial_state(_architecture: int) -> None:
     torch.manual_seed(42)
@@ -71,6 +79,7 @@ def test_gdn_dense_prefill_continues_an_initial_state(_architecture: int) -> Non
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 @PREFILL_ARCHITECTURES
 def test_gdn_dense_prefill_carries_a_value_major_state(_architecture: int) -> None:
     """The caller's state is ``[N, HV, V, K]`` at both ends of the recurrence."""
@@ -81,7 +90,13 @@ def test_gdn_dense_prefill_carries_a_value_major_state(_architecture: int) -> No
 
 
 @pytest.mark.sm89
-@pytest.mark.parametrize("length", [16, 65], ids=["partial-subblock", "cross-chunk"])
+@pytest.mark.parametrize(
+    "length",
+    [
+        pytest.param(16, marks=pytest.mark.smoke, id="partial-subblock"),
+        pytest.param(65, marks=pytest.mark.full, id="cross-chunk"),
+    ],
+)
 def test_gdn_prefill_preserves_finite_strong_decay(length: int) -> None:
     """SM89 head-gate scaling must stay finite across partial blocks and chunks."""
     torch.manual_seed(42)
@@ -99,6 +114,7 @@ def test_gdn_prefill_preserves_finite_strong_decay(length: int) -> None:
     test.check(GDNFwdOp(), *inputs[:3], gate, *inputs[4:])
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 def test_gdn_partitioned_prefill_carries_a_value_major_state() -> None:
@@ -110,6 +126,7 @@ def test_gdn_partitioned_prefill_carries_a_value_major_state() -> None:
     _check_partitioned(test, q, k, v, g * 0.01, beta, *state, state_v_first=True)
 
 
+@pytest.mark.smoke
 @PREFILL_ARCHITECTURES
 def test_gdn_prefill_packs_ragged_sequences_with_grouped_value_heads(_architecture: int) -> None:
     """Lengths below, across and on a chunk boundary, with four value heads per key head."""
@@ -127,6 +144,7 @@ def test_gdn_prefill_packs_ragged_sequences_with_grouped_value_heads(_architectu
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 def test_gdn_prefill_packs_sequences_of_one_length() -> None:
     """Packed sequences of one length that is not a whole chunk, with grouped value heads."""
@@ -135,6 +153,7 @@ def test_gdn_prefill_packs_sequences_of_one_length() -> None:
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 def test_gdn_prefill_packs_many_sequences_shorter_than_a_chunk() -> None:
     """The warp-group solve over bfloat16 sequences of one length, each a chunk whose last
@@ -156,6 +175,7 @@ def test_gdn_prefill_packs_many_sequences_shorter_than_a_chunk() -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 def test_gdn_prefill_keeps_busy_packed_sequences_whole() -> None:
     """Packed sequences whose walks hold more than half the SMs run unpartitioned."""
@@ -166,6 +186,7 @@ def test_gdn_prefill_keeps_busy_packed_sequences_whole() -> None:
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 def test_gdn_prefill_leaves_the_previous_sequence_to_an_empty_one() -> None:
     """An empty sequence writes no output, so the sequence before it keeps its last rows.
@@ -177,6 +198,7 @@ def test_gdn_prefill_leaves_the_previous_sequence_to_an_empty_one() -> None:
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 @PREFILL_ARCHITECTURES
 def test_gdn_prefill_reads_offsets_rewritten_in_place(_architecture: int) -> None:
     """The same tensors, with the boundary between two sequences moved, compute the new split."""
@@ -193,6 +215,7 @@ def test_gdn_prefill_reads_offsets_rewritten_in_place(_architecture: int) -> Non
     test.check(op, *inputs)
 
 
+@pytest.mark.smoke
 @PREFILL_ARCHITECTURES
 def test_gdn_prefill_inverts_a_chunk_of_correlated_keys(_architecture: int) -> None:
     """Identical keys, step size 0.5 and no decay: every power of the chunk's strictly
@@ -206,6 +229,7 @@ def test_gdn_prefill_inverts_a_chunk_of_correlated_keys(_architecture: int) -> N
     test.check(GDNFwdOp(), q, k, v, g, beta)
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 def test_gdn_prefill_inverts_correlated_keys_in_the_warp_group_solve() -> None:
     """The warp-group solve's inverse on bfloat16 chunks of identical keys, step size 0.5
@@ -229,19 +253,24 @@ FUSED_ROWS, FUSED_HEADS = 2, 64
 @pytest.mark.parametrize(
     ("dtype", "params", "flags"),
     [
-        (torch.bfloat16, dict(seq_len=100), {}),
-        (
+        pytest.param(
+            torch.bfloat16, dict(seq_len=100), {}, marks=pytest.mark.smoke, id="bf16-partial-chunk"
+        ),
+        pytest.param(
             torch.float16,
             dict(seq_len=128, has_initial_state=True, state_v_first=True),
             dict(state_v_first=True),
+            marks=pytest.mark.smoke,
+            id="fp16-value-major-state",
         ),
-        (
+        pytest.param(
             torch.bfloat16,
             dict(seq_len=128, raw_gate=True, beta_sigmoid=True, allow_neg_eigval=True),
             dict(use_gate_in_kernel=True, use_beta_sigmoid_in_kernel=True, allow_neg_eigval=True),
+            marks=pytest.mark.full,
+            id="in-kernel-transforms",
         ),
     ],
-    ids=["bf16-partial-chunk", "fp16-value-major-state", "in-kernel-transforms"],
 )
 def test_gdn_fused_prefill_matches_reference(dtype: torch.dtype, params: dict, flags: dict) -> None:
     """The one-kernel prefill: a row that ends inside a chunk, a float16 call continuing a
@@ -252,6 +281,7 @@ def test_gdn_fused_prefill_matches_reference(dtype: torch.dtype, params: dict, f
     test.check(GDNFwdOp(**flags), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 def test_gdn_fused_prefill_inverts_correlated_keys_in_float16() -> None:
     """The one-kernel prefill's float16 inverse on chunks of identical keys, step size 0.5 and
@@ -265,6 +295,7 @@ def test_gdn_fused_prefill_inverts_correlated_keys_in_float16() -> None:
     test.check(GDNFwdOp(), q, k, v, g, beta)
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 def test_gdn_fused_prefill_keeps_a_fast_decay_finite_in_fp16() -> None:
     """A float16 raw gate decaying 1.6 nats a row: the one-kernel prefill's gate factors and
@@ -280,6 +311,7 @@ def test_gdn_fused_prefill_keeps_a_fast_decay_finite_in_fp16() -> None:
     test.check(GDNFwdOp(use_gate_in_kernel=True), *inputs)
 
 
+@pytest.mark.smoke
 @PREFILL_ARCHITECTURES
 def test_gdn_prefill_runs_a_row_that_is_not_a_whole_chunk(_architecture: int) -> None:
     torch.manual_seed(42)
@@ -287,26 +319,42 @@ def test_gdn_prefill_runs_a_row_that_is_not_a_whole_chunk(_architecture: int) ->
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@PREFILL_ARCHITECTURES
 @pytest.mark.parametrize(
     ("l2norm", "raw_gate", "beta_sigmoid", "allow_neg_eigval", "dtype"),
     [
-        (True, False, False, False, torch.bfloat16),
-        (False, True, False, False, torch.bfloat16),
-        (False, False, True, False, torch.bfloat16),
-        (False, False, True, True, torch.bfloat16),
-        (True, True, True, True, torch.bfloat16),
-        (True, True, True, True, torch.float16),
-    ],
-    ids=[
-        "l2norm",
-        "raw-gate",
-        "beta-sigmoid",
-        "beta-sigmoid-negative",
-        "every-transform",
-        "every-transform-fp16",
+        pytest.param(
+            True, True, True, True, torch.bfloat16, marks=pytest.mark.smoke, id="every-transform"
+        ),
+        pytest.param(
+            True,
+            True,
+            True,
+            True,
+            torch.float16,
+            marks=pytest.mark.smoke,
+            id="every-transform-fp16",
+        ),
+        pytest.param(
+            True, False, False, False, torch.bfloat16, marks=pytest.mark.full, id="l2norm"
+        ),
+        pytest.param(
+            False, True, False, False, torch.bfloat16, marks=pytest.mark.full, id="raw-gate"
+        ),
+        pytest.param(
+            False, False, True, False, torch.bfloat16, marks=pytest.mark.full, id="beta-sigmoid"
+        ),
+        pytest.param(
+            False,
+            False,
+            True,
+            True,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="beta-sigmoid-negative",
+        ),
     ],
 )
-@PREFILL_ARCHITECTURES
 def test_gdn_prefill_takes_each_input_transform(
     _architecture: int,
     l2norm: bool,
@@ -345,8 +393,14 @@ def test_gdn_prefill_takes_each_input_transform(
 
 
 @pytest.mark.sm89
-@pytest.mark.parametrize("seq_len", [4096, 16385], ids=["16-columns", "32-columns"])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize(
+    ("seq_len", "dtype"),
+    [
+        pytest.param(4096, torch.float16, marks=pytest.mark.smoke, id="16-columns-fp16"),
+        pytest.param(4096, torch.bfloat16, marks=pytest.mark.smoke, id="16-columns-bf16"),
+        pytest.param(16385, torch.bfloat16, marks=pytest.mark.full, id="32-columns-bf16"),
+    ],
+)
 def test_gdn_sm89_prefill_scans_a_long_sequence_in_narrow_value_tiles(
     seq_len: int, dtype: torch.dtype
 ) -> None:
@@ -357,6 +411,7 @@ def test_gdn_sm89_prefill_scans_a_long_sequence_in_narrow_value_tiles(
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 @PREFILL_ARCHITECTURES
 def test_gdn_prefill_keeps_a_fast_decay_finite_in_fp16(_architecture: int) -> None:
     """A float16 raw gate whose decay leaves float16's range within one chunk.
@@ -374,6 +429,7 @@ def test_gdn_prefill_keeps_a_fast_decay_finite_in_fp16(_architecture: int) -> No
     test.check(GDNFwdOp(use_gate_in_kernel=True), *inputs)
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 def test_gdn_partitioned_prefill_normalizes_the_key_it_stages() -> None:
@@ -391,7 +447,13 @@ def _check_partitioned(test, *inputs, **params) -> None:
 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("has_initial_state", [False, True], ids=["from-zero", "continued"])
+@pytest.mark.parametrize(
+    "has_initial_state",
+    [
+        pytest.param(True, marks=pytest.mark.smoke, id="continued"),
+        pytest.param(False, marks=pytest.mark.full, id="from-zero"),
+    ],
+)
 def test_gdn_partitioned_dense_prefill_matches_reference(
     has_initial_state: bool,
 ) -> None:
@@ -403,6 +465,7 @@ def test_gdn_partitioned_dense_prefill_matches_reference(
     _check_partitioned(test, q, k, v, g * 0.01, beta, *state)
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 def test_gdn_partitioned_prefill_ends_on_a_short_piece() -> None:
@@ -414,6 +477,7 @@ def test_gdn_partitioned_prefill_ends_on_a_short_piece() -> None:
     _check_partitioned(test, q, k, v, g * 0.01, beta)
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 def test_gdn_partitioned_prefill_splits_only_the_long_packed_sequences() -> None:
@@ -429,9 +493,15 @@ def test_gdn_partitioned_prefill_splits_only_the_long_packed_sequences() -> None
     test.check(GDNFwdOp(target=BUILTIN), *inputs[:7], None)
 
 
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-@pytest.mark.parametrize("batch", [1, 8], ids=["b1", "b8"])
-def test_gdn_dense_decode_matches_reference(dtype: torch.dtype, batch: int) -> None:
+@pytest.mark.parametrize(
+    ("batch", "dtype"),
+    [
+        pytest.param(8, torch.float16, marks=pytest.mark.smoke, id="b8-fp16"),
+        pytest.param(8, torch.bfloat16, marks=pytest.mark.smoke, id="b8-bf16"),
+        pytest.param(1, torch.bfloat16, marks=pytest.mark.full, id="b1-bf16"),
+    ],
+)
+def test_gdn_dense_decode_matches_reference(batch: int, dtype: torch.dtype) -> None:
     torch.manual_seed(42)
     test = GDNFwdTest(batch, 1, 16, 128, dtype, has_initial_state=True)
     test.check(GDNFwdOp(), *test.gen_inputs())
@@ -440,12 +510,15 @@ def test_gdn_dense_decode_matches_reference(dtype: torch.dtype, batch: int) -> N
 @pytest.mark.parametrize(
     "flags",
     [
-        {"state_v_first": True},
-        {"use_gate_in_kernel": True},
-        {"use_beta_sigmoid_in_kernel": True, "allow_neg_eigval": True},
-        {"use_qk_l2norm_in_kernel": True},
+        pytest.param({"state_v_first": True}, marks=pytest.mark.smoke, id="v-first"),
+        pytest.param({"use_gate_in_kernel": True}, marks=pytest.mark.full, id="gate-fused"),
+        pytest.param(
+            {"use_beta_sigmoid_in_kernel": True, "allow_neg_eigval": True},
+            marks=pytest.mark.full,
+            id="beta-sigmoid-neg",
+        ),
+        pytest.param({"use_qk_l2norm_in_kernel": True}, marks=pytest.mark.full, id="l2norm"),
     ],
-    ids=["v-first", "gate-fused", "beta-sigmoid-neg", "l2norm"],
 )
 def test_gdn_decode_runs_each_recurrence_flag(flags: dict) -> None:
     torch.manual_seed(42)
@@ -468,6 +541,7 @@ def test_gdn_decode_runs_each_recurrence_flag(flags: dict) -> None:
     test.check(GDNFwdOp(**flags), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 def test_gdn_decode_starts_a_value_major_state_from_zero() -> None:
     """A value-major step without a starting state writes the state it forms, k v^T, in the
     16-byte runs a value-major row moves in."""
@@ -476,6 +550,7 @@ def test_gdn_decode_starts_a_value_major_state_from_zero() -> None:
     test.check(GDNFwdOp(state_v_first=True), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 def test_gdn_decode_groups_value_heads_over_a_64_wide_state() -> None:
     """A batch and head counts that are neither powers of two nor warp multiples."""
     torch.manual_seed(42)
@@ -483,6 +558,7 @@ def test_gdn_decode_groups_value_heads_over_a_64_wide_state() -> None:
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.smoke
 def test_gdn_dense_decode_propagates_fp32_state() -> None:
     torch.manual_seed(42)
     workload = GDNFwdWorkload(
@@ -506,6 +582,7 @@ def test_gdn_dense_decode_propagates_fp32_state() -> None:
         )
 
 
+@pytest.mark.smoke
 def test_gdn_contract_reaches_target_builder(isolated_registry) -> None:
     calls = []
 
@@ -623,11 +700,22 @@ def _pooled(dtype: torch.dtype, *, some: tuple[str, ...] = (), **row) -> GDNFwdC
 @pytest.mark.parametrize(
     ("dtype", "dim", "flags"),
     [
-        (torch.float16, 128, {}),
-        (torch.bfloat16, 128, {"state_v_first": True, "use_qk_l2norm_in_kernel": True}),
-        (torch.bfloat16, 64, {"state_v_first": True}),
+        pytest.param(torch.float16, 128, {}, marks=pytest.mark.smoke, id="fp16-key-major"),
+        pytest.param(
+            torch.bfloat16,
+            128,
+            {"state_v_first": True, "use_qk_l2norm_in_kernel": True},
+            marks=pytest.mark.smoke,
+            id="bf16-value-major",
+        ),
+        pytest.param(
+            torch.bfloat16,
+            64,
+            {"state_v_first": True},
+            marks=pytest.mark.full,
+            id="bf16-value-major-64",
+        ),
     ],
-    ids=["fp16-key-major", "bf16-value-major", "bf16-value-major-64"],
 )
 def test_gdn_decode_updates_its_slots_of_a_state_pool(
     dtype: torch.dtype, dim: int, flags: dict
@@ -640,7 +728,7 @@ def test_gdn_decode_updates_its_slots_of_a_state_pool(
 
 
 @pytest.mark.sm90
-@pytest.mark.parametrize("state_v_first", [False, True], ids=["key-major", "value-major"])
+@pytest.mark.parametrize("state_v_first", STATE_LAYOUTS)
 def test_gdn_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool) -> None:
     """Packed sequences walked whole start from and end in their slots, in either state layout,
     with Q/K normalized in kernel and grouped value heads, the Qwen3.6 form; an empty sequence
@@ -655,7 +743,7 @@ def test_gdn_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool) -> N
 
 
 @pytest.mark.sm90
-@pytest.mark.parametrize("state_v_first", [False, True], ids=["key-major", "value-major"])
+@pytest.mark.parametrize("state_v_first", STATE_LAYOUTS)
 def test_gdn_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool) -> None:
     """The one-kernel prefill reads and writes the states through their slots, in either
     layout."""
@@ -669,7 +757,7 @@ def test_gdn_fused_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool
 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("state_v_first", [False, True], ids=["key-major", "value-major"])
+@pytest.mark.parametrize("state_v_first", STATE_LAYOUTS)
 def test_gdn_partitioned_prefill_updates_its_slots_of_a_state_pool(state_v_first: bool) -> None:
     """A walk split in partitions starts each partition from the slot's state and writes the
     last partition's state back to the slot, in either state layout."""
@@ -683,6 +771,7 @@ def test_gdn_partitioned_prefill_updates_its_slots_of_a_state_pool(state_v_first
     _check_partitioned(test, q, k, v, g * 1e-4, beta, *rest, state_v_first=state_v_first)
 
 
+@pytest.mark.smoke
 def test_gdn_decode_updates_a_strided_pool_in_place() -> None:
     """A pool that is a strided view is advanced in place, the call returning that view."""
     torch.manual_seed(42)
@@ -701,6 +790,7 @@ def test_gdn_decode_updates_a_strided_pool_in_place() -> None:
     test.check(op, q, k, v, g, beta, strided, *rest, runs=run)
 
 
+@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_gdn_refuses_a_pooled_call_no_kernel_serves():
     """Dispatch on SM89 facts refuses the pooled prefill before a build: the SM89 chunk
@@ -731,28 +821,42 @@ def test_gdn_refuses_a_pooled_call_no_kernel_serves():
 @pytest.mark.parametrize(
     ("dtype", "dim", "drafts", "flags", "row"),
     [
-        (
+        pytest.param(
             torch.bfloat16,
             128,
             8,
             {"state_v_first": True, "use_qk_l2norm_in_kernel": True},
             {"B": 1, "S": 21, "seq_lens": [8, 5, 0, 1, 7], "some": ("cu_seqlens",)},
+            marks=pytest.mark.smoke,
+            id="packed-two-chunks",
         ),
-        (torch.float16, 64, 4, {}, {"B": 3, "S": 3}),
-        (torch.bfloat16, 128, 4, {}, {"B": 64, "S": 3}),
-        (
+        pytest.param(
+            torch.float16,
+            64,
+            4,
+            {},
+            {"B": 3, "S": 3},
+            marks=pytest.mark.smoke,
+            id="fp16-key-major-64",
+        ),
+        pytest.param(
+            torch.bfloat16,
+            128,
+            4,
+            {},
+            {"B": 64, "S": 3},
+            marks=pytest.mark.full,
+            id="key-major-one-warp",
+        ),
+        pytest.param(
             torch.bfloat16,
             128,
             4,
             {"use_gate_in_kernel": True, "use_beta_sigmoid_in_kernel": True},
             {"B": 2, "S": 4, "some": ("A_log", "dt_bias")},
+            marks=pytest.mark.full,
+            id="raw-gate-and-step",
         ),
-    ],
-    ids=[
-        "packed-two-chunks",
-        "fp16-key-major-64",
-        "key-major-one-warp",
-        "raw-gate-and-step",
     ],
 )
 def test_gdn_decode_verifies_drafts_from_the_accepted_slot(
@@ -786,40 +890,62 @@ _ROLLBACK = {"B": 3, "S": 3, "P": 12, "L": 4, "some": ("num_accepted_tokens",)}
 @pytest.mark.parametrize(
     ("dtype", "flags", "row", "padded"),
     [
-        (torch.float16, {}, {"B": 5, "S": 1, "P": 16}, [1, 3]),
-        (torch.bfloat16, _VALUE_MAJOR, {"B": 5, "S": 1, "P": 16}, [1, 3]),
-        (torch.float16, {}, _ROLLBACK, [0, (1, 2)]),
-        (torch.bfloat16, _VALUE_MAJOR, _ROLLBACK, [0, (1, 2)]),
+        pytest.param(
+            torch.float16,
+            {},
+            {"B": 5, "S": 1, "P": 16},
+            [1, 3],
+            marks=pytest.mark.smoke,
+            id="decode-key-major",
+        ),
+        pytest.param(
+            torch.bfloat16,
+            _VALUE_MAJOR,
+            {"B": 5, "S": 1, "P": 16},
+            [1, 3],
+            marks=pytest.mark.smoke,
+            id="decode-value-major",
+        ),
+        pytest.param(
+            torch.float16,
+            {},
+            _ROLLBACK,
+            [0, (1, 2)],
+            marks=pytest.mark.full,
+            id="rollback-key-major",
+        ),
+        pytest.param(
+            torch.bfloat16,
+            _VALUE_MAJOR,
+            _ROLLBACK,
+            [0, (1, 2)],
+            marks=pytest.mark.full,
+            id="rollback-value-major",
+        ),
         pytest.param(
             torch.bfloat16,
             _VALUE_MAJOR,
             {"B": 1, "S": 201, "seq_lens": [100, 0, 37, 64], "P": 12, "some": ("cu_seqlens",)},
             [0, 2],
-            marks=pytest.mark.sm90,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="prefill",
         ),
         pytest.param(
             torch.float16,
             {},
             {"B": FUSED_ROWS, "S": 100, "HV": FUSED_HEADS, "P": 8},
             [1],
-            marks=pytest.mark.sm90,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="fused-prefill",
         ),
         pytest.param(
             torch.bfloat16,
             {"target": BUILTIN},
             {"B": 1, "S": 512, "HV": 2, "P": 4},
             [0],
-            marks=[pytest.mark.sm90, pytest.mark.in_tree_kernels],
+            marks=[pytest.mark.full, pytest.mark.sm90, pytest.mark.in_tree_kernels],
+            id="partitioned-prefill",
         ),
-    ],
-    ids=[
-        "decode-key-major",
-        "decode-value-major",
-        "rollback-key-major",
-        "rollback-value-major",
-        "prefill",
-        "fused-prefill",
-        "partitioned-prefill",
     ],
 )
 def test_gdn_skips_the_states_of_negative_slots(
@@ -841,8 +967,10 @@ def test_gdn_skips_the_states_of_negative_slots(
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "batch,heads,allow_neg_eigval",
-    [(1, 8, False), (4, 2, True)],
-    ids=["one-request-eight-heads", "four-requests-two-heads"],
+    [
+        pytest.param(1, 8, False, marks=pytest.mark.smoke, id="one-request-eight-heads"),
+        pytest.param(4, 2, True, marks=pytest.mark.full, id="four-requests-two-heads"),
+    ],
 )
 def test_gdn_column_decode_uses_the_call_gate_and_beta_shapes(batch, heads, allow_neg_eigval):
     """The Hopper decode reads the given gate and beta for each request and head."""

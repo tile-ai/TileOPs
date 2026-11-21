@@ -19,8 +19,9 @@ from tileops._kernels.attention.call_spec import (
     GQAPagedFwdInterface,
 )
 from tileops._kernels.attention.gqa.paged_rope_prepare import _gqa_paged_rope_prepare_kernel
-from tileops._kernels.attention.online_softmax import make_sink_scale
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.attention.online_softmax import make_apply_softcap, make_sink_scale
+from tileops._kernels.attention.stream_counter import stream_counter
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -28,17 +29,13 @@ from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 __all__ = ["GQAPagedFwdWSKernel"]
 
 
-def scheduler_counter(counters: dict, device: torch.device) -> torch.Tensor:
-    """The work counter a persistent launch claims items from, one per stream in *counters*:
-    concurrent launches on one counter steal each other's items. A captured graph owns a
-    counter from its private pool."""
-    if torch.cuda.is_current_stream_capturing():
-        return torch.zeros(2, dtype=torch.int32, device=device)
-    stream = torch.cuda.current_stream(device).cuda_stream
-    counter = counters.get(stream)
-    if counter is None:
-        counter = counters[stream] = torch.zeros(2, dtype=torch.int32, device=device)
-    return counter
+@T.macro
+def claim_work(Sched, lane, work):
+    """Claim the next work item of a persistent launch into work[0]: lane 0 claims, the warp
+    shares it."""
+    if lane == 0:
+        work[0] = T.atomic_add(Sched[0], 1, return_prev=True)
+    work[0] = T.tvm_warp_shuffle(T.uint32(0xFFFFFFFF), work[0], 0, 32, 32)
 
 
 @target_cache(maxsize=32)
@@ -51,15 +48,7 @@ def scheduler_counter(counters: dict, device: torch.device) -> torch.Tensor:
         tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True,
     },
     compile_flags=[
-        "-O3",
-        "-Wno-deprecated-declarations",
-        "-U__CUDA_NO_HALF_OPERATORS__",
-        "-U__CUDA_NO_HALF_CONVERSIONS__",
-        "-U__CUDA_NO_HALF2_OPERATORS__",
-        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "-DNDEBUG",
+        *CUDA_COMPILE_FLAGS,
         *csrc_include("value_wait_anchor.h"),
     ],
 )
@@ -123,15 +112,9 @@ def _gqa_paged_ws_kernel(
     # while the consumers scan; at dimension 256 the key and value rings leave room for one.
     q_slots = 2 if dim <= 128 else 1
 
-    @T.macro
-    def apply_softcap(acc_s):
-        for i, j in T.Parallel(half, block_n):
-            capped = T.cast(softcap, accum) * T.tanh(
-                acc_s[i, j] * T.cast(sm_scale / softcap, accum)
-            )
-            acc_s[i, j] = T.if_then_else(
-                acc_s[i, j] == -T.infinity(accum), -T.infinity(accum), capped
-            )
+    apply_softcap = (
+        make_apply_softcap(sm_scale, softcap, accum, half, block_n) if use_softcap else None
+    )
 
     @T.macro
     def mask(acc_s, key0, q0, wg, align, kv_len):
@@ -289,13 +272,6 @@ def _gqa_paged_ws_kernel(
             meta[6] = T.max(1, T.ceildiv(key_end, block_n))
 
     @T.macro
-    def fetch(Sched, lane, work):
-        """Claim the next work item into work[0]: lane 0 claims, the warp shares it."""
-        if lane == 0:
-            work[0] = T.atomic_add(Sched[0], 1, return_prev=True)
-        work[0] = T.tvm_warp_shuffle(T.uint32(0xFFFFFFFF), work[0], 0, 32, 32)
-
-    @T.macro
     def tile_rows(page_table, rows, rotated, request, key0, kv_len):
         """The pool row (and with rope_cols the KR row) each box of the key tile at *key0*
         starts at; a page past the cache end repeats the last one."""
@@ -366,7 +342,7 @@ def _gqa_paged_ws_kernel(
         work = T.alloc_local([1], "int32")
         rows = T.alloc_local([boxes], "int32")
         rotated = T.alloc_local([boxes], "int32") if rope_cols > 0 else None
-        fetch(Sched, lane, work)
+        claim_work(Sched, lane, work)
         while work[0] < total:
             locate(work[0], CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta)
             cv = meta[0]
@@ -418,7 +394,7 @@ def _gqa_paged_ws_kernel(
                 T.mbarrier_arrive(vready[s])
             issued += meta[6]
             loaded += 1
-            fetch(Sched, lane, work)
+            claim_work(Sched, lane, work)
         # Stop the consumers, then leave the counters zeroed for the next launch.
         T.mbarrier_wait_parity(qfree[loaded % q_slots], ((loaded // q_slots) % 2) ^ 1)
         item_slot[loaded % q_slots, meta_count] = -1
@@ -914,7 +890,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     def entry_for(cls, call: AttentionCall) -> Entry:
         """The packed totals are read from the tensors, so one object serves every packing of
         these call facts; the device index is in the identity, as the SM count is."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = dict(
             batch=call.batch,
             heads=call.heads,
@@ -1126,7 +1102,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             page_table,
             cu_seqlens_q,
             out,
-            scheduler_counter(counters, q.device),
+            stream_counter(counters, q.device),
             sinks,
         )
         return out.view(-1, heads, dim)

@@ -1,5 +1,3 @@
-# norm.yaml -- manifest entries for the norm family (docs/design/manifest.md).
-
 RMSNormFwdOp:
   # Not torch's: group_size splits the flattened normalized_shape into runs of group_size
   # elements, each divided by its own RMS, the weight spanning all of them (transformers
@@ -380,15 +378,11 @@ InstanceNormFwdOp:
     flops: "((5 if use_input_stats else 2) + (1 if present(weight) else 0) + (1 if present(bias) else 0)) * B * C * prod(L)"
 
 FusedQKNormRoPEFwdOp:
-  # In place on a packed projection qkv = [q heads | k heads | v heads] of width D each:
-  # RMSNorm over each q head (q_weight) and each k head (k_weight), then RoPE at
-  # positions[n] on the first R columns of each q and k head, from cos_sin_cache (cos ‖ sin
-  # halves). The v columns are untouched.
-  # Not vLLM's fused_qk_norm_rope: zero_centered scales by 1 + weight in float32 (vLLM
-  # GemmaRMSNorm). mrope_section and mrope_interleaved are vLLM MRotaryEmbedding's: each token
-  # has temporal, height and width positions, and rotary frequency i takes its angle from the
-  # cache row of one of them, by section (chunked) or by i % 3 within the sections
-  # (interleaved, transformers Qwen3_5TextRotaryEmbedding.apply_interleaved_mrope).
+  # In place on qkv = [q heads | k heads | v heads] of width D each: RMSNorm over each q and k
+  # head, then RoPE at positions[n] on their first R columns from cos_sin_cache (cos ‖ sin).
+  # Beyond vLLM's fused_qk_norm_rope: zero_centered scales by 1 + weight in float32, and
+  # mrope_section / mrope_interleaved follow vLLM MRotaryEmbedding: rotary frequency i takes
+  # its angle from the temporal, height or width position, by section or by i % 3 (interleaved).
   family: norm
   status: implemented
   ref_api: vllm._custom_ops.fused_qk_norm_rope

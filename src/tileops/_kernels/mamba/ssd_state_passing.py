@@ -56,20 +56,24 @@ def _ssd_state_passing_fwd_kernel(
                 f"threads must equal block_d // 2 (got threads={threads}, block_d={block_d})"
             )
 
-        states_shape = (B, C, H, D)
-        dA_shape = (B, H, C)
-        init_shape = (B, H, D)
-        out_shape = (B, C, H, D)
-        final_shape = (B, H, D)
         scale_tile = min(C, max(1, 256 // prefetch) * prefetch)
+
+        @T.macro
+        def stage_scales(dA_chunk_cumsum, scale_shared, bb, bh, tile):
+            """Restage *scale_shared* with exp(dA) of the chunks of group *tile*, between barriers."""
+            T.sync_threads()
+            for c in T.Parallel(scale_tile):
+                if tile * scale_tile + c < C:
+                    scale_shared[c] = T.exp(dA_chunk_cumsum[bb, bh, tile * scale_tile + c])
+            T.sync_threads()
 
         @T.prim_func
         def main(
-            states: T.Tensor(states_shape, dtype),  # type: ignore
-            dA_chunk_cumsum: T.Tensor(dA_shape, accum_dtype),  # type: ignore
-            initial_states: T.Tensor(init_shape, accum_dtype),  # type: ignore
-            out: T.Tensor(out_shape, accum_dtype),  # type: ignore
-            final_states: T.Tensor(final_shape, accum_dtype),  # type: ignore
+            states: T.Tensor((B, C, H, D), dtype),  # type: ignore
+            dA_chunk_cumsum: T.Tensor((B, H, C), accum_dtype),  # type: ignore
+            initial_states: T.Tensor((B, H, D), accum_dtype),  # type: ignore
+            out: T.Tensor((B, C, H, D), accum_dtype),  # type: ignore
+            final_states: T.Tensor((B, H, D), accum_dtype),  # type: ignore
         ):
             with T.Kernel(
                 T.ceildiv(D, block_d),  # tile over d_state
@@ -96,13 +100,7 @@ def _ssd_state_passing_fwd_kernel(
                             s_run[v] = T.float32(0.0)
                     for tile in T.serial(T.ceildiv(C, scale_tile)):
                         if tile > 0:
-                            T.sync_threads()
-                            for c in T.Parallel(scale_tile):
-                                if tile * scale_tile + c < C:
-                                    scale_shared[c] = T.exp(
-                                        dA_chunk_cumsum[bb, bh, tile * scale_tile + c]
-                                    )
-                            T.sync_threads()
+                            stage_scales(dA_chunk_cumsum, scale_shared, bb, bh, tile)
                         for local in T.serial(T.min(scale_tile, C - tile * scale_tile) // prefetch):
                             group = tile * (scale_tile // prefetch) + local
                             for p in T.unroll(prefetch):
@@ -147,13 +145,7 @@ def _ssd_state_passing_fwd_kernel(
                     # unconditional.
                     for tile in T.serial(T.ceildiv(C, scale_tile)):
                         if tile > 0:
-                            T.sync_threads()
-                            for i in T.Parallel(scale_tile):
-                                if tile * scale_tile + i < C:
-                                    scale_shared[i] = T.exp(
-                                        dA_chunk_cumsum[bb, bh, tile * scale_tile + i]
-                                    )
-                            T.sync_threads()
+                            stage_scales(dA_chunk_cumsum, scale_shared, bb, bh, tile)
                         for local in T.serial(T.min(scale_tile, C - tile * scale_tile)):
                             c = tile * scale_tile + local
                             scale = scale_shared[local]
@@ -206,13 +198,7 @@ def _ssd_state_passing_fwd_kernel(
                     # unconditional.
                     for tile in T.serial(T.ceildiv(C, scale_tile)):
                         if tile > 0:
-                            T.sync_threads()
-                            for i in T.Parallel(scale_tile):
-                                if tile * scale_tile + i < C:
-                                    scale_shared[i] = T.exp(
-                                        dA_chunk_cumsum[bb, bh, tile * scale_tile + i]
-                                    )
-                            T.sync_threads()
+                            stage_scales(dA_chunk_cumsum, scale_shared, bb, bh, tile)
                         for local in T.serial(T.min(scale_tile, C - tile * scale_tile)):
                             c = tile * scale_tile + local
                             scale = scale_shared[local]
@@ -249,21 +235,10 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
 
     with s_{-1} = initial_states (or 0 if has_initial_states=False).
 
-    Config keys
-    -----------
-    block_d : int
-        Number of d-state elements per CTA tile.
-    threads : int
-        Threads per CTA; ``block_d // 2`` when ``vectorize=True``.
-    vectorize : bool
-        False (default) — one element per thread, threads free.
-        True            — two elements per thread, threads = block_d // 2.
-    items : int
-        0 (default) — the ``vectorize`` modes; > 0 — that many contiguous
-        elements per thread, threads * items = block_d.
-    prefetch : int
-        Chunks an ``items`` thread loads before scanning them; divides
-        num_chunks.
+    The config's ``block_d`` is the d-state elements of a CTA. With ``items`` 0, a thread
+    holds one element, or two under ``vectorize`` with ``threads = block_d // 2``. With
+    ``items`` above 0, a thread holds that many contiguous elements, ``threads * items =
+    block_d``, and loads ``prefetch`` chunks, a divisor of num_chunks, before scanning them.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -290,11 +265,8 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
         config: dict | None = None,
     ) -> None:
         super().__init__()
-        self.batch = batch
         self.num_chunks = num_chunks
-        self.n_heads = n_heads
         self.d_state = d_state
-        self.has_initial_states = has_initial_states
         self.dtype = dtype
         self.kernel = _ssd_state_passing_fwd_kernel(
             batch,

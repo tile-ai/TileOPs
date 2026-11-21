@@ -6,8 +6,8 @@ Computes vector norms along the last dimension:
   - inf: max(|x|), reduced over IEEE bit patterns as int32 so a row holding NaN
     norms to NaN without a second look at the input
 
-Rows of whole 16-byte vectors fold in `ReduceFoldKernel`. The row programs here handle
-256-element alignment padding internally via masked loads with zero identity values.
+Rows of whole 16-byte vectors fold in `ReduceFoldKernel`. The row programs here mask a
+row that is not a multiple of the 256-element alignment, reading zero past its end.
 
 Output dtype matches input dtype unless one is given; l1 and l2 compute in fp32.
 """
@@ -21,26 +21,22 @@ import torch
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import CompiledProgram
 from tileops._kernels.reduction._primitives import (
-    DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     down_rows_launcher,
     down_rows_splits,
 )
 from tileops._kernels.reduction.call_spec import ReduceCall, VectorNormFwdInterface
 from tileops._kernels.reduction.reduce import (
+    EdgeReduceKernelBase,
     ReduceFoldKernel,
-    ReduceKernelBase,
     RowReduceKernelBase,
 )
-from tileops._kernels.tiling import align_up
+from tileops._kernels.tiling import ALIGNMENT, align_up
 
 __all__ = [
     "VectorNormEdgeKernel",
     "VectorNormKernel",
 ]
-
-
-# Vector norm kernel
 
 
 # Dtype of the fragment each kind reduces. ``inf`` reduces IEEE bit patterns as int32:
@@ -86,7 +82,7 @@ def _vector_norm_kernel(
     Returns:
         A TileLang JIT-compiled kernel factory accepting (block_m, threads).
     """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
     _needs_pad = N_padded != N
     work_dtype = _WORK_DTYPE[op_kind]
 
@@ -142,7 +138,7 @@ def _vector_norm_kernel_tiled(
     ``partial`` writes partials for an outer pass, as in
     ``_vector_norm_kernel``.
     """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    N_padded = align_up(N, ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
     work_dtype = _WORK_DTYPE[op_kind]
 
@@ -251,7 +247,7 @@ class VectorNormKernel(RowReduceKernelBase, VectorNormFwdInterface):
         )
 
 
-class VectorNormEdgeKernel(ReduceKernelBase, VectorNormFwdInterface):
+class VectorNormEdgeKernel(EdgeReduceKernelBase, VectorNormFwdInterface):
     """Norm a prefix and a suffix of the axes without permuting the tensor.
 
     The trailing axes reduce as contiguous rows into fp32 partials, tiled where a row
@@ -264,19 +260,10 @@ class VectorNormEdgeKernel(ReduceKernelBase, VectorNormFwdInterface):
     preferred_over = frozenset({"vector_norm_fold"})
 
     @classmethod
-    def refusal(cls, call: ReduceCall) -> "str | None":
-        if not cls.reduces_edge_axes(call):
-            return "serves a reduced prefix and suffix around kept axes"
+    def _edge_refusal(cls, call: ReduceCall) -> "str | None":
         if ReduceFoldKernel.holds_edge_row_in_flight(call):
             return "leaves a row ReduceFoldKernel holds in flight to its one launch"
-        return super().refusal(call)
-
-    def __init__(self, call: ReduceCall):
-        super().__init__(call)
-        self.program(self._launcher)
-
-    def _reduce(self, x: torch.Tensor) -> torch.Tensor:
-        return self.program(self._launcher)(x)
+        return None
 
     def _launcher(self, cfg: dict) -> Callable:
         """The rows pass into fp32 partials, then the fold down them."""

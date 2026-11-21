@@ -6,7 +6,7 @@ import torch
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._base import MultiInputElementwiseKernel
-from tileops._kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, clamp_to_dtype_range
+from tileops._kernels.elementwise._dtype import FLOAT_DTYPES, INT_DTYPES, clamp_to_dtype_range
 from tileops._kernels.elementwise.call_spec import (
     ElementwiseCall,
     MaskedFillCall,
@@ -21,8 +21,8 @@ __all__ = [
     "MaskedFillTensorValueFwdKernel",
 ]
 
-# uint8/intN + fp16/bf16/fp32. bool operands arrive in uint8 storage.
-_MASKED_FILL_DTYPES = BITWISE_DTYPES[1:] + FLOAT_DTYPES
+# Bool operands arrive in uint8 storage.
+_MASKED_FILL_DTYPES = INT_DTYPES + FLOAT_DTYPES
 
 
 def _bool_as_uint8(dtype, value):

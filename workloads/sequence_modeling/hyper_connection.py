@@ -17,6 +17,18 @@ __all__ = [
 ]
 
 
+def _normalized_projection(streams: torch.Tensor, fn: torch.Tensor, eps: float) -> torch.Tensor:
+    """``(x @ fn^T) * rsqrt(mean(x^2) + eps)``, ``x`` each token's streams flattened to
+    float32."""
+    x = streams.flatten(-2).float()
+    return (x @ fn.T) * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps)
+
+
+def _weighted_stream_sum(weights: torch.Tensor, streams: torch.Tensor) -> torch.Tensor:
+    """``sum_i weights_i * streams_i`` per token in float32, rounded once to bfloat16."""
+    return (weights.unsqueeze(-1) * streams.float()).sum(-2).to(torch.bfloat16)
+
+
 def hc_pre(
     residual: torch.Tensor,
     fn: torch.Tensor,
@@ -32,8 +44,7 @@ def hc_pre(
     the ``n`` streams flattened give ``mixes = (x @ fn^T) * rsqrt(mean(x^2) + rms_eps)``, split
     into the pre, post and comb logits, and returns ``(post_mix, comb_mix, layer_input)``."""
     n = residual.shape[-2]
-    x = residual.flatten(-2).float()
-    mixes = (x @ fn.T) * torch.rsqrt(x.square().mean(-1, keepdim=True) + rms_eps)
+    mixes = _normalized_projection(residual, fn, rms_eps)
     pre = torch.sigmoid(mixes[..., :n] * hc_scale[0] + hc_base[:n]) + hc_pre_eps
     post = torch.sigmoid(mixes[..., n : 2 * n] * hc_scale[1] + hc_base[n : 2 * n])
     comb = mixes[..., 2 * n :].unflatten(-1, (n, n)) * hc_scale[2] + hc_base[2 * n :].view(n, n)
@@ -42,7 +53,7 @@ def hc_pre(
     for _ in range(sinkhorn_repeat - 1):
         comb = comb / (comb.sum(-1, keepdim=True) + hc_sinkhorn_eps)
         comb = comb / (comb.sum(-2, keepdim=True) + hc_sinkhorn_eps)
-    layer_input = (pre.unsqueeze(-1) * residual.float()).sum(-2).to(torch.bfloat16)
+    layer_input = _weighted_stream_sum(pre, residual)
     return (post * hc_post_mult_value).unsqueeze(-1), comb, layer_input
 
 
@@ -62,10 +73,9 @@ def hc_head(
     n, c = hidden_states.shape[-2:]
     if hc_fn.shape != (n, n * c) or hc_scale.shape != (1,) or hc_base.shape != (n,):
         raise ValueError("hc_fn, hc_scale and hc_base must match the streams")
-    x = hidden_states.flatten(-2).float()
-    rsqrt = torch.rsqrt(x.square().mean(-1, keepdim=True) + rms_norm_eps)
-    pre = torch.sigmoid((x @ hc_fn.T) * rsqrt * hc_scale + hc_base) + hc_eps
-    return (pre.unsqueeze(-1) * hidden_states.float()).sum(-2).to(torch.bfloat16)
+    logits = _normalized_projection(hidden_states, hc_fn, rms_norm_eps)
+    pre = torch.sigmoid(logits * hc_scale + hc_base) + hc_eps
+    return _weighted_stream_sum(pre, hidden_states)
 
 
 class HyperConnectionPreCall(CallWorkload):

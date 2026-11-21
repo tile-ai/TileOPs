@@ -155,12 +155,6 @@ class GQAVarlenFwdOp(Op):
         """Return the ``gqa_varlen`` kernel for *inputs*."""
         return self.kernel_for("gqa_varlen", lambda: self._varlen_call(inputs))
 
-    @staticmethod
-    def _canonicalize_inputs(
-        *inputs: torch.Tensor | None,
-    ) -> tuple[torch.Tensor | None, ...]:
-        return tuple(tensor.contiguous() if tensor is not None else None for tensor in inputs)
-
     def forward(
         self,
         q: torch.Tensor,
@@ -200,17 +194,11 @@ class GQAVarlenFwdOp(Op):
             Attention output, $[T_q \\times H \\times D]$, in ``out_dtype`` when given,
             else in the dtype of ``q``.
         """
-        inputs = self._canonicalize_inputs(
-            q,
-            k,
-            v,
-            cu_seqlens_q,
-            cu_seqlens_kv,
-            q_scale,
-            k_scale,
-            v_scale,
-            rope_cos,
-            rope_sin,
-            sinks,
-        )
+        inputs = tuple(
+            tensor.contiguous() if tensor is not None else None
+            for tensor in (
+                q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale,
+                rope_cos, rope_sin, sinks,
+            )
+        )  # fmt: skip
         return self._get_kernel(inputs)(*inputs)

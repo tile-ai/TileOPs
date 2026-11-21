@@ -15,24 +15,11 @@ from tilelang.layout import make_swizzled_layout
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import DSAPagedCall, DSAPagedFwdInterface
 from tileops._kernels.attention.dsa.decode_ws import ROLE_INDEX_CALL
-from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import LOG2E
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
+from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 
 __all__ = ["DSAPagedClusterKernel", "DSAPagedKernelBase", "DSAPagedWSKernel"]
-
-# Both the attention kernel and the split merge compile with these flags.
-_COMPILE_FLAGS = [
-    "-O3",
-    "-Wno-deprecated-declarations",
-    "-U__CUDA_NO_HALF_OPERATORS__",
-    "-U__CUDA_NO_HALF_CONVERSIONS__",
-    "-U__CUDA_NO_HALF2_OPERATORS__",
-    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-    "--expt-relaxed-constexpr",
-    "--expt-extended-lambda",
-    "-DNDEBUG",
-]
 
 
 def _pair(bf16: bool, split: int) -> bool:
@@ -52,7 +39,7 @@ def _pair(bf16: bool, split: int) -> bool:
         tilelang.PassConfigKey.TL_DISABLE_SHARED_MEMORY_REUSE: True,
     },
     compile_flags=[
-        *_COMPILE_FLAGS,
+        *CUDA_COMPILE_FLAGS,
         *csrc_include("warp_uniform.h", "row_gather.h", "cluster_partials.h", "pair_merge.h"),
     ],
 )
@@ -94,8 +81,6 @@ def _dsa_paged_kernel(
     rope_col = dim if bf16 else (dim + 4 * groups) // 2  # in bfloat16 elements
     row_bytes = 2 * (dim + rope) if bf16 else dim + 4 * groups + 2 * rope
     dq = dim + rope
-    # A block's weights stage in the rope tile, so it keeps block_k columns without a rope.
-    tile = block_k
     atom = 64  # bf16 columns one 128-byte swizzle atom holds
     vec = 8  # bf16 elements one 16-byte copy moves
     rows_mine = block_k // cluster  # the rows of a block this CTA gathers and dequantizes
@@ -104,7 +89,7 @@ def _dsa_paged_kernel(
     row_threads = 128 // rows_mine  # warpgroup 1 threads gathering one row's latent
     chunk = 8  # values a lane dequantizes per row and half: 32 lanes cover 256 columns
     tail_lanes = rope // vec  # the rope tile's 16-byte vectors per row
-    warpgroup = 128
+    warpgroup = WARPGROUP_THREADS
     consumer_threads = 2 * warpgroup  # tx < 256; the producer warpgroup follows
     producer_threads = warpgroup
     # 384 threads launch at 168 registers; the producer's spare 64 fund the scorer's 56.
@@ -564,7 +549,8 @@ def _dsa_paged_kernel(
             QT = T.alloc_shared([block_h, rope], dtype) if rope > 0 else None
             KL = T.alloc_shared([stages, block_k, half], dtype)
             KR = T.alloc_shared([stages, block_k, half], dtype)
-            KT = T.alloc_shared([stages, block_k, tile], dtype)
+            # The rope tile also stages a block's weights: block_k columns even without a rope.
+            KT = T.alloc_shared([stages, block_k, block_k], dtype)
             T.annotate_layout(
                 {
                     buf: make_swizzled_layout(buf)
@@ -625,18 +611,12 @@ def _dsa_paged_kernel(
     return main
 
 
-def _no_sink(heads: int, device: torch.device) -> torch.Tensor:
-    """The sink parameter of a call without one: zeros the kernels do not read. A kernel
-    allocates it once and keeps it."""
-    return torch.zeros(heads, dtype=torch.float32, device=device)
-
-
 @target_cache(maxsize=32)
 def _dsa_paged_combine_kernel(batch, seq_len, heads, split, target="sm_90", sink=False):
     """Cache the merge by its explicit compilation target as well as its shape."""
-    builder = tilelang.jit(target={"kind": "cuda", "arch": target}, compile_flags=_COMPILE_FLAGS)(
-        _dsa_paged_combine
-    )
+    builder = tilelang.jit(
+        target={"kind": "cuda", "arch": target}, compile_flags=list(CUDA_COMPILE_FLAGS)
+    )(_dsa_paged_combine)
     return builder(batch, seq_len, heads, split, sink)
 
 
@@ -704,18 +684,20 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
                 return "reads bfloat16 rows in the single-CTA kernel only"
             if call.dim != 512 or call.dim_tail not in (0, 64):
                 return "reads bfloat16 rows of 512 value columns and 0 or 64 more only"
-        else:
+        elif call.cache_dtype == torch.uint8:
             if call.has_attn_sink:
                 return "does not serve attn_sink on the FP8 row"
             if call.topk % 64 != 0:
                 return "requires topk a multiple of 64 on the FP8 row"
+        else:
+            return "reads uint8 FP8 rows or bfloat16 rows only"
         if call.heads % (64 * cls.cluster) != 0:
             return f"requires a multiple of {64 * cls.cluster} heads"
         return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: DSAPagedCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         bf16 = call.cache_dtype == torch.bfloat16
         ctas = call.batch * call.seq_len * (call.heads // 64)
         split = (
@@ -777,6 +759,15 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         self._sinkless = None
         self.program(self._compile)
 
+    def _sink(self, attn_sink, heads, device):
+        """*attn_sink*, or for a call without one zeros the programs do not read, allocated
+        once."""
+        if attn_sink is not None:
+            return attn_sink
+        if self._sinkless is None:
+            self._sinkless = torch.zeros(heads, dtype=torch.float32, device=device)
+        return self._sinkless
+
     def _compile(self, cfg: dict):
         """The attention program and, over key splits a pair does not merge, the combine; no
         configuration."""
@@ -794,13 +785,12 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
     def forward(self, q, kv_cache, block_table, cache_seqlens, indices, attn_sink=None):
         self._require_devices(
             q=q, kv_cache=kv_cache, block_table=block_table, cache_seqlens=cache_seqlens,
-            indices=indices,
+            indices=indices, attn_sink=attn_sink,
         )  # fmt: skip
         # The kernel addresses the cache's bfloat16 view with int32 offsets.
-        if kv_cache.numel() * kv_cache.element_size() // 2 >= 2**31:
+        if kv_cache.nbytes // 2 >= 2**31:
             raise ValueError(
-                f"kv_cache holds {kv_cache.numel() * kv_cache.element_size()} bytes; this "
-                "kernel addresses below 2^32"
+                f"kv_cache holds {kv_cache.nbytes} bytes; this kernel addresses below 2^32"
             )
         tokens = self.batch * self.seq_len
         dim = 512  # value dims
@@ -810,9 +800,7 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         lse = torch.empty(
             (self.parts, self.batch, self.heads, self.seq_len), dtype=torch.float32, device=q.device
         )
-        if attn_sink is None and self._sinkless is None:
-            self._sinkless = _no_sink(self.heads, q.device)
-        sink = attn_sink if attn_sink is not None else self._sinkless
+        sink = self._sink(attn_sink, self.heads, q.device)
         main, combine = self.program(self._compile)
         main(
             q.view(tokens, self.heads, -1),

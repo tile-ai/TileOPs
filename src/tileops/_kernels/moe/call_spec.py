@@ -38,7 +38,14 @@ __all__ = [
     "PrePermuteFwdInterface",
     "SharedExpertMLPCall",
     "SharedExpertMLPFwdInterface",
+    "route_metadata_size",
 ]
+
+
+def route_metadata_size(num_experts: int, num_tokens: int, top_k: int) -> int:
+    """``int32`` elements of the indexed route metadata: per-expert route counts, each route's
+    rank within its expert, then up to ``num_tokens`` routes listed per expert."""
+    return num_experts + num_tokens * top_k + num_experts * num_tokens
 
 
 @dataclasses.dataclass(frozen=True)
@@ -507,7 +514,7 @@ class IndexedRouteStatsFwdInterface(KernelInterface):
         ``call.num_tokens`` routes listed per expert. The op allocates *out* from this,
         so every implementation writes the same layout.
         """
-        return call.num_experts * (1 + call.num_tokens) + call.num_tokens * call.top_k
+        return route_metadata_size(call.num_experts, call.num_tokens, call.top_k)
 
     @abstractmethod
     def forward(self, expert_ids: torch.Tensor, out: torch.Tensor) -> torch.Tensor:

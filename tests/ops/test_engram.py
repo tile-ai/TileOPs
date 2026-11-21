@@ -20,32 +20,27 @@ class EngramGateConvFwdTest(EngramGateConvFwdWorkload, TestBase):
 class EngramGateConvFwdFixture(FixtureBase):
     PARAMS = [
         (
-            "M, seq_len, d, dtype, tune",
+            "M, seq_len, d, dtype",
             [
                 pytest.param(
                     1,
                     32,
                     256,
                     torch.float16,
-                    False,
                     marks=[pytest.mark.smoke, pytest.mark.packaging(family="sequence_modeling")],
                 ),
-                pytest.param(1, 32, 256, torch.bfloat16, False, marks=pytest.mark.smoke),
-                pytest.param(2, 64, 512, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(2, 16, 256, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1, 32, 256, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 16, 256, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
 @EngramGateConvFwdFixture
-def test_engram_gate_conv_fwd(M, seq_len, d, dtype, tune):
+def test_engram_gate_conv_fwd(M, seq_len, d, dtype):
     test = EngramGateConvFwdTest(M, seq_len, d, dtype)
-    op = EngramGateConvFwdOp()
-    if tune:
-        op.request_tune()
-    inputs = test.gen_inputs()
-    test.check(op, *inputs)
+    test.check(EngramGateConvFwdOp(), *test.gen_inputs())
 
 
 class EngramGateConvBwdTest(EngramGateConvBwdWorkload, TestBase):
@@ -55,31 +50,29 @@ class EngramGateConvBwdTest(EngramGateConvBwdWorkload, TestBase):
 class EngramGateConvBwdFixture(FixtureBase):
     PARAMS = [
         (
-            "M, seq_len, d, dtype, tune",
+            "M, seq_len, d, dtype",
             [
-                pytest.param(1, 32, 256, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param(1, 32, 256, torch.bfloat16, False, marks=pytest.mark.smoke),
-                pytest.param(2, 64, 512, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(2, 16, 256, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(2, 512, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 32, 256, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1, 32, 256, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 16, 256, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 512, 256, torch.float16, marks=pytest.mark.full),
                 # 1203 tokens: the capped run count lengthens dconv_w runs to 10 tokens,
                 # the last run is short, and some runs cross a batch boundary.
-                pytest.param(3, 401, 256, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(3, 401, 256, torch.bfloat16, marks=pytest.mark.full),
                 # 8 tokens: one dconv_w run, stored without the atomic add.
-                pytest.param(1, 8, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 8, 256, torch.float16, marks=pytest.mark.full),
                 # One-token sequences: every dconv_w source row but one is conv padding.
-                pytest.param(2, 1, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 1, 256, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
 @EngramGateConvBwdFixture
-def test_engram_gate_conv_bwd(M, seq_len, d, dtype, tune):
+def test_engram_gate_conv_bwd(M, seq_len, d, dtype):
     test = EngramGateConvBwdTest(M, seq_len, d, dtype)
     op = EngramGateConvBwdOp()
-    if tune:
-        op.request_tune()
     inputs = test.gen_inputs()
     test.check(op, *inputs)
     run1 = [o.clone() for o in op(*inputs)]
@@ -169,7 +162,7 @@ def test_engram_decode_multi_step():
     dilation = 3
     max_conv_len = dilation * (conv_kernel_size - 1)  # = 9, minimum required
     dtype = torch.float16
-    eps = 1e-6
+    eps = 1e-2  # large enough to move the norms of the small K and V projections
 
     torch.manual_seed(123)
     W_K = torch.randn(d_mem, d, dtype=dtype, device=run_device()) * 0.02
@@ -178,7 +171,7 @@ def test_engram_decode_multi_step():
     rms_w_v = torch.ones(d, dtype=dtype, device=run_device())
     conv_w = torch.randn(conv_kernel_size, d, dtype=dtype, device=run_device()) * 0.02
 
-    op = EngramDecodeFwdOp(max_conv_len, conv_kernel_size, dilation)
+    op = EngramDecodeFwdOp(max_conv_len, conv_kernel_size, dilation, eps)
 
     conv_state = torch.zeros(B, 0, d, dtype=dtype, device=run_device())
     conv_state_ref = conv_state.clone()

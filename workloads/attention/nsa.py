@@ -2,6 +2,7 @@ import torch
 from einops import einsum
 
 from workloads.device import run_device
+from workloads.numerics import Custom, Exact, NegativeControl, reference_tolerance, zeroed_input
 from workloads.sequence_metadata import prepare_chunk_offsets, prepare_token_indices
 from workloads.workload_base import CallWorkload, WorkloadBase
 
@@ -115,14 +116,10 @@ class NSAFwdWorkload(WorkloadBase):
                 .view(rows, 1, 1)
                 .expand(rows, n_head, self.dim)
                 .clone()
-                .requires_grad_(True)
             )
 
         q = _shuffled(self.c_seq_len, self.heads)
         k, v = _shuffled(n_keys, self.head_kv), _shuffled(n_keys, self.head_kv)
-        self.g_slc = torch.ones(
-            (self.batch, self.c_seq_len, self.heads), dtype=self.dtype, device=run_device()
-        ).requires_grad_(True)
 
         token_indices = prepare_token_indices(cu_seqlens)
         # A request's queries are the last of its keys.
@@ -205,7 +202,6 @@ class NSAFwdWorkload(WorkloadBase):
         token_indices: torch.Tensor,
         cu_seqlens_k: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        _ = token_indices
         cu_seqlens_k = cu_seqlens if cu_seqlens_k is None else cu_seqlens_k
         dtype, device = q.dtype, q.device
         bs = self.block_size
@@ -249,13 +245,11 @@ class NSAFwdWorkload(WorkloadBase):
                     .nan_to_num(0.0)  # a token no selected block gives a key outputs zeros
                 )
                 out = einsum(attn, v_slc, "t k g n, t k n v -> t k g v").flatten(1, 2)
-                o_slc[lo:hi] = out * self.g_slc[0, lo:hi].unsqueeze(-1)
+                o_slc[lo:hi] = out
 
         return o_slc.to(dtype)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         # Both tensor-core implementations narrow unnormalized softmax weights
         # before P @ V, then narrow the output again. Cancellation therefore
         # needs the storage-dtype absolute bound as well as its relative bound.
@@ -288,19 +282,14 @@ class NSACompressedFwdWorkload(WorkloadBase):
         self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.group
-        # chunk_num is computed during gen_inputs and stored for later use
-        self.chunk_num = None
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         cu_seqlens = _packed_offsets(self.seq_lens, self.seq_num, self.c_seq_len, self.bs).to(
             torch.int32
         )
-
         chunk_offsets = prepare_chunk_offsets(cu_seqlens, self.bs).to(torch.int32)
         token_indices = prepare_token_indices(cu_seqlens).to(torch.int32)
         chunk_num = chunk_offsets[-1].item()
-
-        # float16, data Tie-breaking
         q = torch.randn(
             (self.c_seq_len, self.heads, self.dim_k), dtype=self.dtype, device=run_device()
         )
@@ -310,16 +299,7 @@ class NSACompressedFwdWorkload(WorkloadBase):
         v = torch.randn(
             (chunk_num, self.head_kv, self.dim_v), dtype=self.dtype, device=run_device()
         )
-
-        self.chunk_num = chunk_offsets[-1].item()
-        return (
-            q,
-            k,
-            v,
-            cu_seqlens.to(torch.int32),
-            chunk_offsets.to(torch.int32),
-            token_indices.to(torch.int32),
-        )
+        return q, k, v, cu_seqlens, chunk_offsets, token_indices
 
     def ref_program(
         self,
@@ -330,14 +310,53 @@ class NSACompressedFwdWorkload(WorkloadBase):
         chunk_offsets: torch.LongTensor,
         token_indices: torch.LongTensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        _ = chunk_offsets, token_indices
-        return _parallel_nsa_compression_fwd_pytorch(
-            self, q, k_cmp, v_cmp, self.bs, self.scale, cu_seqlens
-        )
+        """Float32 attention of each token over the compressed blocks closed at it.
+
+        Returns ``o`` in the workload's dtype and the float32, head-major ``lse``. A token
+        before its sequence's first block closes attends to nothing: ``o`` zero, ``lse`` -inf.
+        """
+        seq_len, heads, dim_k = q.shape
+        head_kv = k_cmp.shape[1]
+        dim_v = v_cmp.shape[-1]
+        group = heads // head_kv
+        device = q.device
+        block_size = self.bs
+        scale = dim_k**-0.5 if self.scale is None else self.scale
+        o = torch.zeros((seq_len, heads, dim_v), dtype=torch.float32, device=device)
+        lse = torch.full((seq_len, heads), float("-inf"), dtype=torch.float32, device=device)
+        # The blocks' offsets follow from cu_seqlens, independently of the chunk_offsets input.
+        block_offsets = prepare_chunk_offsets(cu_seqlens, block_size)
+        for i_n in range(len(cu_seqlens) - 1):
+            bos, eos = cu_seqlens[i_n].item(), cu_seqlens[i_n + 1].item()
+            boc = block_offsets[i_n].item()
+            n_token = eos - bos
+            # Blocks the last token attends to; every earlier token attends to a prefix.
+            n_chunk = n_token // block_size
+            if n_chunk == 0:
+                continue
+            nc = (torch.arange(n_token, device=device) + 1) // block_size
+            q_seq = q[bos:eos].float().view(n_token, head_kv, group, dim_k)
+            k_seq = k_cmp[boc : boc + n_chunk].float()
+            v_seq = v_cmp[boc : boc + n_chunk].float()
+            scores = einsum(q_seq, k_seq, "t h g d, n h d -> t h g n") * scale
+            scores = scores.masked_fill(
+                torch.arange(n_chunk, device=device) >= nc[:, None, None, None], float("-inf")
+            )
+            m = scores.max(dim=-1, keepdim=True)[0]
+            reached = scores > float("-inf")
+            exp_scores = torch.where(reached, torch.exp(torch.where(reached, scores - m, 0.0)), 0.0)
+            sum_exp = exp_scores.sum(dim=-1, keepdim=True)
+            out = einsum(exp_scores / sum_exp, v_seq, "t h g n, n h v -> t h g v")
+            # A token whose blocks have not closed divides 0 by 0 above; where() writes the
+            # zero output and -inf lse rather than that quotient.
+            attends = (nc > 0).view(n_token, 1, 1)
+            o[bos:eos] = torch.where(attends.unsqueeze(-1), out, 0.0).reshape(n_token, heads, dim_v)
+            lse[bos:eos] = torch.where(
+                attends, (m + torch.log(sum_exp)).squeeze(-1), float("-inf")
+            ).reshape(n_token, heads)
+        return o.to(self.dtype), lse.T.contiguous()
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, reference_tolerance, zeroed_input
-
         tol = (
             reference_tolerance(inputs[0].dtype)
             if inputs[0].dtype == torch.bfloat16
@@ -372,8 +391,6 @@ class NSATopKWorkload(WorkloadBase):
         self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.group
-        # chunk_num is computed during gen_inputs and stored for later use
-        self.chunk_num = None
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         cu_seqlens = _packed_offsets(self.seq_lens, self.seq_num, self.c_seq_len, 16)
@@ -381,8 +398,6 @@ class NSATopKWorkload(WorkloadBase):
         chunk_offsets = prepare_chunk_offsets(cu_seqlens, self.bs)
         token_indices = prepare_token_indices(cu_seqlens)
         chunk_num = chunk_offsets[-1].item()
-
-        # float16, data Tie-breaking
         q = (
             torch.randn(
                 (self.c_seq_len, self.heads, self.dim), dtype=self.dtype, device=run_device()
@@ -393,11 +408,6 @@ class NSATopKWorkload(WorkloadBase):
             torch.randn((chunk_num, self.head_kv, self.dim), dtype=self.dtype, device=run_device())
             * 0.1
         )
-
-        q.requires_grad_(True)
-        k.requires_grad_(True)
-
-        self.chunk_num = chunk_offsets[-1].item()
         return (
             q,
             k,
@@ -449,8 +459,6 @@ class NSATopKWorkload(WorkloadBase):
         return selected
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, NegativeControl
-
         def validate(got, expected):
             assert torch.equal(got == -1, expected == -1), "unfilled top-k slots differ"
             current = inputs[-1][:, 1, None, None] // self.bs
@@ -478,58 +486,6 @@ class NSATopKWorkload(WorkloadBase):
                 ),
             ),
         )
-
-
-def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, scale, cu_seqlens):
-    """PyTorch reference implementation on GPU."""
-    seq_len, heads, dim_k = q.shape
-    _, head_kv, _ = k_cmp.shape
-    dim_v = v_cmp.shape[-1]
-    group = heads // head_kv
-    device = q.device
-    scale = dim_k**-0.5 if scale is None else scale
-    num_seq = len(cu_seqlens) - 1
-
-    # A token before the first block closed attends to nothing: o zero, lse -inf.
-    o = torch.zeros((seq_len, heads, dim_v), dtype=torch.float32, device=device)
-    lse = torch.full((seq_len, heads), float("-inf"), dtype=torch.float32, device=device)
-
-    chunk_offsets_local = prepare_chunk_offsets(cu_seqlens, block_size)
-
-    for i_n in range(num_seq):
-        bos, eos = cu_seqlens[i_n].item(), cu_seqlens[i_n + 1].item()
-        boc = chunk_offsets_local[i_n].item()
-        n_token = eos - bos
-        # Blocks the last token attends to; every earlier token attends to a prefix.
-        n_chunk = n_token // block_size
-        if n_chunk == 0:
-            continue
-
-        nc = (torch.arange(n_token, device=device) + 1) // block_size
-        q_seq = q[bos:eos].float().view(n_token, head_kv, group, dim_k)
-        k_seq = k_cmp[boc : boc + n_chunk].float()
-        v_seq = v_cmp[boc : boc + n_chunk].float()
-
-        scores = einsum(q_seq, k_seq, "t h g d, n h d -> t h g n") * scale
-        scores = scores.masked_fill(
-            torch.arange(n_chunk, device=device) >= nc[:, None, None, None], float("-inf")
-        )
-        m = scores.max(dim=-1, keepdim=True)[0]
-        reached = scores > float("-inf")
-        exp_scores = torch.where(reached, torch.exp(torch.where(reached, scores - m, 0.0)), 0.0)
-        sum_exp = exp_scores.sum(dim=-1, keepdim=True)
-        out = einsum(exp_scores / sum_exp, v_seq, "t h g n, n h v -> t h g v")
-
-        # A token whose blocks have not closed divides 0 by 0 above; where() writes the
-        # zero output and -inf lse the kernel writes rather than that quotient.
-        attends = (nc > 0).view(n_token, 1, 1)
-        o[bos:eos] = torch.where(attends.unsqueeze(-1), out, 0.0).reshape(n_token, heads, dim_v)
-        lse[bos:eos] = torch.where(
-            attends, (m + torch.log(sum_exp)).squeeze(-1), float("-inf")
-        ).reshape(n_token, heads)
-
-    # The lse is float32 and head-major, as the op returns it.
-    return o.to(test.dtype), lse.T.contiguous()
 
 
 def _nsa_topk_scores(q, k_cmp, block_size, scale):
@@ -570,7 +526,6 @@ class NSACompressedFwdCall(CallWorkload, NSACompressedFwdWorkload):
             params["block_size"],
             getattr(torch, indices["T"]),
         )
-        self.chunk_num = indices["C"]
 
     gen_inputs = CallWorkload.gen_inputs
 
@@ -593,7 +548,6 @@ class NSATopKCall(CallWorkload, NSATopKWorkload):
             params["block_size"],
             getattr(torch, indices["T"]),
         )
-        self.chunk_num = indices["C"]
 
     gen_inputs = CallWorkload.gen_inputs
 
@@ -616,10 +570,6 @@ class NSAFwdCall(CallWorkload, NSAFwdWorkload):
             indices["H"] // indices["H_kv"],
             indices["SEL"],
             getattr(torch, indices["T"]),
-        )
-        # The reference scales the selected branch by its gate, which this op does not take.
-        self.g_slc = torch.ones(
-            (indices["N"], indices["T_q"], indices["H"]), dtype=self.dtype, device=run_device()
         )
 
     gen_inputs = CallWorkload.gen_inputs

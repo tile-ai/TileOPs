@@ -1,4 +1,5 @@
 import dataclasses
+import math
 from abc import abstractmethod
 
 import tilelang
@@ -17,12 +18,11 @@ from tileops._kernels.quantization.group_quant import (
     launch_shape,
     pow2_ceil_exponent,
     register_refusal,
+    store_groups,
     write_in_place,
 )
 
 __all__ = ["FP4QuantCall", "FP4QuantFwdInterface", "FP4QuantKernel"]
-
-_E2M1_MAX = 6.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -113,15 +113,6 @@ def _e2m1_value(y):
     )
 
 
-def _vector(block_size: int, itemsize: int) -> int:
-    """Elements of the run a thread holds: one 16-byte vector, or the block where a vector
-    does not divide it."""
-    vector = VECTOR_ACCESS_BYTES // itemsize
-    while block_size % vector:
-        vector //= 2
-    return vector
-
-
 def _load_blocks(block_m: int, block_size: int, vector: int):
     """A macro loading the blocks at column ``col`` of rows ``first`` onward of ``rows`` into a
     ``[block_m, block_size // vector, vector]`` fragment, one thread's run on its last axis.
@@ -153,8 +144,9 @@ def _block_scales(block_m: int, block_size: int, vector: int):
     reciprocal lies in ``[-6, 6]`` and needs no clamp.
     """
     runs = block_size // vector
-    amax_floor = _E2M1_MAX * 2.0**-126
-    inv_e2m1_max = float32_constant(1.0 / _E2M1_MAX)
+    e2m1_max = 6.0
+    amax_floor = e2m1_max * 2.0**-126
+    inv_e2m1_max = float32_constant(1.0 / e2m1_max)
 
     @T.macro
     def block_scales(input_local, exponent_local, recip_local):
@@ -172,6 +164,8 @@ def _block_scales(block_m: int, block_size: int, vector: int):
     return block_scales
 
 
+# The word a run of 8, 4 or 2 four-bit codes packs into; the program stores it and forward
+# views the codes as it.
 _PACKED_DTYPES = {8: "uint32", 4: "uint16", 2: "uint8"}
 
 
@@ -183,6 +177,8 @@ def _fp4_quant_kernel(block_size: int, in_dtype: str, threads: int, vector: int)
         packed_dtype = _PACKED_DTYPES[vector]
         load_blocks = _load_blocks(block_m, block_size, vector)
         block_scales = _block_scales(block_m, block_size, vector)
+        # An e8m0 scale is its biased exponent.
+        store = store_groups(block_m, runs, lambda exponent, i: T.cast(exponent[i], "uint8"))
         rows = T.dynamic("rows")
 
         @T.prim_func
@@ -208,18 +204,7 @@ def _fp4_quant_kernel(block_size: int, in_dtype: str, threads: int, vector: int)
                         packed = packed + (_e2m1_code(y) << T.cast(4 * v, "uint32"))
                     output_local[i, j] = T.cast(packed, packed_dtype)
 
-                if first + block_m <= rows:
-                    for i in T.Parallel(block_m):
-                        scale_tensor[first + i] = T.cast(exponent_local[i], "uint8")
-                    for i, j in T.Parallel(block_m, runs):
-                        output_tensor[first + i, j] = output_local[i, j]
-                else:
-                    for i in T.Parallel(block_m):
-                        if first + i < rows:
-                            scale_tensor[first + i] = T.cast(exponent_local[i], "uint8")
-                    for i, j in T.Parallel(block_m, runs):
-                        if first + i < rows:
-                            output_tensor[first + i, j] = output_local[i, j]
+                store(scale_tensor, output_tensor, first, rows, exponent_local, output_local)
 
         return _fp4_quant_fwd_main
 
@@ -324,7 +309,9 @@ class FP4QuantKernel(Kernel, FP4QuantFwdInterface):
         self.block_size = block_size
         self.dtype = dtype
         self.inplace = inplace
-        self.vector = _vector(block_size, dtype.itemsize)
+        # Elements of the run a thread holds: one 16-byte vector, or the widest power of two
+        # dividing the block.
+        self.vector = math.gcd(block_size, VECTOR_ACCESS_BYTES // dtype.itemsize)
         self.init_config(config)
 
     @property

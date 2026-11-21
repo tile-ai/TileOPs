@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.misaligned import misaligned
 from tests.workload_test_base import TestBase
 from tileops._kernels.mamba import SelectiveScanCall
 from tileops.mamba import SelectiveScanFwdOp
@@ -197,3 +198,15 @@ def test_selective_scan_dispatch_range(seqlen, key) -> None:
     """The step kernel serves sequences up to its length; the chunk kernel serves the rest."""
     call = SelectiveScanCall(dim=64, seqlen=seqlen, dstate=16, groups=1, device=run_device())
     assert SelectiveScanFwdOp().key_for("selective_scan", call) == key
+
+
+@pytest.mark.smoke
+def test_selective_scan_offset_input_runs_as_an_aligned_one() -> None:
+    """A ``u`` whose storage starts off a 16-byte boundary gives the aligned result."""
+    sizes = {"Bsz": 2, "S": 1024, "Di": 64, "N": 16, "G": 1, "delta_softplus": True}
+    call = manifest_call("SelectiveScanFwdOp", {"T": "bfloat16"}, **sizes, some=["D", "z"])
+    op = SelectiveScanFwdOp(**call.arguments())
+    inputs = list(SelectiveScanFwdCall(call).gen_inputs())
+    expected = op(*inputs)
+    inputs[0] = misaligned(inputs[0])
+    torch.testing.assert_close(op(*inputs), expected, rtol=0, atol=0)

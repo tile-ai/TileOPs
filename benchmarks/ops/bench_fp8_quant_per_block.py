@@ -12,16 +12,11 @@ from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from tileops.quantization import FP8QuantPerBlockFwdOp
 
-# Autotuning is a bench-run policy, not a workload property; manifest
-# workloads do not carry it.
-_TUNE = True
-
 
 @pytest.mark.parametrize("case", bench.cases(FP8QuantPerBlockFwdOp), ids=lambda case: case.id)
 def test_fp8_quant_per_block_bench(case) -> None:
     op = FP8QuantPerBlockFwdOp(**case.arguments)
-    if _TUNE:
-        op.request_tune()
+    op.request_tune()
 
     # vllm's per_block_cast_to_fp8 with 128x128 tiles, a torch.compile'd expression.
     vllm_quant = functools.partial(

@@ -190,7 +190,7 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
             use_offsets=int(call.use_offsets),
             dtype=call.dtype,
             accum_dtype=call.accum_dtype,
-            device_index=call.device.index if call.device is not None else None,
+            device_index=call.device_index,
         )
 
     def __init__(

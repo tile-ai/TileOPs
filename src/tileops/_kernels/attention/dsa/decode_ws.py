@@ -6,16 +6,14 @@ from typing import ClassVar
 import tilelang
 import tilelang.language as T
 import torch
-import tvm_ffi
 from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import DSADecodeCall
 from tileops._kernels.attention.dsa.decode import DSADecodeKernelBase
 from tileops._kernels.attention.online_softmax import make_sink_scale
-from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import LOG2E
-from tileops._kernels.kernel_base import Entry
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, chain_cuda_postproc, target_cache
+from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS
 
 __all__ = ["DSADecodeWSKernel"]
 
@@ -25,7 +23,7 @@ ROLE_INDEX_CALL = "tileops::canonical_warp_group_idx"
 
 
 def _uniform_role_branches(code: str) -> str:
-    """Make the seesaw kernel's role branches test the warpgroup index from lane 0.
+    """Make a warp-specialized kernel's role branches test the warpgroup index from lane 0.
 
     TileLang emits each role branch as a test of threadIdx.x, which ptxas cannot prove
     uniform across a warp, so inside it the WGMMA descriptors stay in ordinary registers
@@ -48,19 +46,7 @@ def _uniform_role_branches(code: str) -> str:
     return code
 
 
-def _register_uniform_role_branches() -> None:
-    """Chain the rewrite after whatever holds TileLang's one CUDA post-processing slot."""
-    previous = tvm_ffi.get_global_func("tilelang_callback_cuda_postproc", allow_missing=True)
-
-    def postproc(code, target):
-        if previous is not None:
-            code = previous(code, target)
-        return _uniform_role_branches(code)
-
-    tilelang.register_cuda_postproc(postproc)
-
-
-_register_uniform_role_branches()
+chain_cuda_postproc(_uniform_role_branches)
 
 
 @target_cache(maxsize=32)
@@ -70,15 +56,7 @@ _register_uniform_role_branches()
         tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
     },
     compile_flags=[
-        "-O3",
-        "-Wno-deprecated-declarations",
-        "-U__CUDA_NO_HALF_OPERATORS__",
-        "-U__CUDA_NO_HALF_CONVERSIONS__",
-        "-U__CUDA_NO_HALF2_OPERATORS__",
-        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "-DNDEBUG",
+        *CUDA_COMPILE_FLAGS,
         *csrc_include("warp_uniform.h"),
     ],
 )
@@ -107,7 +85,7 @@ def _dsa_decode_ws_kernel(
     tail_atoms = 1  # the key tail, when present, is one atom
     vec = 8  # elements one 16-byte cp.async moves
     lanes = atom // vec  # producer lanes per tile row
-    warpgroup = 128
+    warpgroup = WARPGROUP_THREADS
     consumer_threads = 2 * warpgroup  # tx < 256; the producer warpgroup follows
     producer_threads = warpgroup
     rows_per_pass = producer_threads // lanes
@@ -511,8 +489,8 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
     or without the causal mask and the attention sink."""
 
     supported_archs: list[int] = [90]
-    # Both consumers score and both accumulate, where the older warp-specialized kernel
-    # leaves the scores, the softmax and half the sums to one of them.
+    # Both consumers score and both accumulate, where DSADecodeKernel leaves the scores, the
+    # softmax and half the sums to one of them.
     preferred_over: ClassVar[frozenset[str]] = frozenset({"dsa_decode_kernel"})
     serves_attn_sink: ClassVar[bool] = True
 
@@ -528,47 +506,8 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
             return "requires dim 512 and tail_dim 0 or 64"
         return super().refusal(call)
 
-    @classmethod
-    def entry_for(cls, call: DSADecodeCall) -> Entry:
-        return call, lambda: cls(
-            *cls.constructor_args(call),
-            device_index=call.device.index if call.device is not None else None,
-            has_attn_sink=call.has_attn_sink,
-        )
-
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        seq_len_kv: int,
-        heads: int,
-        dim: int,
-        tail_dim: int,
-        dtype: torch.dtype,
-        topk: int,
-        kv_stride: int,
-        q_start_index_s: int,
-        kv_group: int = 1,
-        sm_scale: float | None = None,
-        is_causal: bool = True,
-        device_index: int | None = None,
-        *,
-        has_attn_sink: bool = False,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.batch = batch
-        self.seq_len = seq_len
-        self.seq_len_kv = seq_len_kv
-        self.heads = heads
-        self.dim = dim
-        self.tail_dim = tail_dim
-        self.dtype = dtype
-        self.topk = topk
-        self.kv_stride = kv_stride
-        self.q_start_index_s = q_start_index_s
-        self.kv_group = kv_group
-        self.sm_scale = sm_scale
-        self.is_causal = is_causal
+    def __init__(self, *args, has_attn_sink: bool = False, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
         self.has_attn_sink = has_attn_sink
         self.program(self._compile)
 

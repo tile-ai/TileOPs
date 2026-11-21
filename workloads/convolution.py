@@ -9,19 +9,67 @@ from workloads.device import run_device
 from workloads.workload_base import WorkloadBase
 
 
-def _float32_conv(conv, x, weight, bias):
-    """``conv`` on fp32 operands with cuDNN's TF32 off, rounded once to ``x.dtype``."""
-    cudnn = torch.backends.cudnn
-    saved = cudnn.allow_tf32
-    cudnn.allow_tf32 = False
-    try:
-        out = conv(x.float(), weight.float(), None if bias is None else bias.float())
-    finally:
-        cudnn.allow_tf32 = saved
-    return out.to(x.dtype)
+class _ConvWorkload(WorkloadBase):
+    """A convolution's input, weight and bias, and its reference; a subclass names the torch
+    function as ``_conv`` and the spatial extents of the input and the kernel."""
+
+    def _extents(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        raise NotImplementedError
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        spatial, kernel = self._extents()
+        device = run_device()
+        x = torch.randn(self.n, self.c_in, *spatial, device=device, dtype=self.dtype)
+        weight = torch.randn(
+            self.c_out, self.c_in // self.groups, *kernel, device=device, dtype=self.dtype
+        )
+        bias = torch.zeros(self.c_out, device=device, dtype=self.dtype) if self.bias else None
+        return x, weight, bias
+
+    def ref_program(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """The convolution on fp32 operands with cuDNN's TF32 off, rounded once to ``x.dtype``."""
+        cudnn = torch.backends.cudnn
+        saved = cudnn.allow_tf32
+        cudnn.allow_tf32 = False
+        try:
+            out = self.torch_program(
+                x.float(), weight.float(), None if bias is None else bias.float()
+            )
+        finally:
+            cudnn.allow_tf32 = saved
+        return out.to(x.dtype)
+
+    def torch_program(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None,
+    ) -> torch.Tensor:
+        out = self._conv(
+            x,
+            weight,
+            bias=bias,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+        )
+        return out.contiguous()
+
+    def verification(self, *inputs):
+        return convolution_verification(
+            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:], inputs=inputs
+        )
 
 
-class Conv1dWorkload(WorkloadBase):
+class Conv1dWorkload(_ConvWorkload):
+    _conv = staticmethod(F.conv1d)
+
     def __init__(
         self,
         n: int,
@@ -66,52 +114,13 @@ class Conv1dWorkload(WorkloadBase):
             bias=call.present("bias"),
         )
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        x = torch.randn(
-            self.n, self.c_in, self.l_in, device=run_device(), dtype=self.dtype
-        ).contiguous()
-        weight = torch.randn(
-            self.c_out,
-            self.c_in // self.groups,
-            self.kernel_size,
-            device=run_device(),
-            dtype=self.dtype,
-        ).contiguous()
-        bias = torch.zeros(self.c_out, device=run_device(), dtype=self.dtype) if self.bias else None
-        return x, weight, bias
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor | None,
-    ) -> torch.Tensor:
-        return _float32_conv(self.torch_program, x, weight, bias)
-
-    def torch_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor | None,
-    ) -> torch.Tensor:
-        out = F.conv1d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=self.groups,
-        )
-        return out.contiguous()
-
-    def verification(self, *inputs):
-        return convolution_verification(
-            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:], inputs=inputs
-        )
+    def _extents(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        return (self.l_in,), (self.kernel_size,)
 
 
-class Conv2dWorkload(WorkloadBase):
+class Conv2dWorkload(_ConvWorkload):
+    _conv = staticmethod(F.conv2d)
+
     def __init__(
         self,
         n: int,
@@ -159,53 +168,13 @@ class Conv2dWorkload(WorkloadBase):
             bias=call.present("bias"),
         )
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        x = torch.randn(
-            self.n, self.c_in, self.h, self.w, device=run_device(), dtype=self.dtype
-        ).contiguous()
-        weight = torch.randn(
-            self.c_out,
-            self.c_in // self.groups,
-            self.kernel_size[0],
-            self.kernel_size[1],
-            device=run_device(),
-            dtype=self.dtype,
-        ).contiguous()
-        bias = torch.zeros(self.c_out, device=run_device(), dtype=self.dtype) if self.bias else None
-        return x, weight, bias
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor | None,
-    ) -> torch.Tensor:
-        return _float32_conv(self.torch_program, x, weight, bias)
-
-    def torch_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor | None,
-    ) -> torch.Tensor:
-        out = F.conv2d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=self.groups,
-        )
-        return out.contiguous()
-
-    def verification(self, *inputs):
-        return convolution_verification(
-            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:], inputs=inputs
-        )
+    def _extents(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        return (self.h, self.w), tuple(self.kernel_size)
 
 
-class Conv3dWorkload(WorkloadBase):
+class Conv3dWorkload(_ConvWorkload):
+    _conv = staticmethod(F.conv3d)
+
     def __init__(
         self,
         n: int,
@@ -256,57 +225,8 @@ class Conv3dWorkload(WorkloadBase):
             bias=call.present("bias"),
         )
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        x = torch.randn(
-            self.n,
-            self.c_in,
-            self.d,
-            self.h,
-            self.w,
-            device=run_device(),
-            dtype=self.dtype,
-        ).contiguous()
-        weight = torch.randn(
-            self.c_out,
-            self.c_in // self.groups,
-            self.kernel_size[0],
-            self.kernel_size[1],
-            self.kernel_size[2],
-            device=run_device(),
-            dtype=self.dtype,
-        ).contiguous()
-        bias = torch.zeros(self.c_out, device=run_device(), dtype=self.dtype) if self.bias else None
-        return x, weight, bias
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor | None,
-    ) -> torch.Tensor:
-        return _float32_conv(self.torch_program, x, weight, bias)
-
-    def torch_program(
-        self,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor | None,
-    ) -> torch.Tensor:
-        out = F.conv3d(
-            x,
-            weight,
-            bias=bias,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=self.groups,
-        )
-        return out.contiguous()
-
-    def verification(self, *inputs):
-        return convolution_verification(
-            inputs[0].dtype, padding=self.padding, kernel_shape=inputs[1].shape[2:], inputs=inputs
-        )
+    def _extents(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        return (self.d, self.h, self.w), tuple(self.kernel_size)
 
 
 def convolution_verification(dtype, *, padding=0, kernel_shape=(), inputs=None):

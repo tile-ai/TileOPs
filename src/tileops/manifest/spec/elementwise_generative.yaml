@@ -1,8 +1,6 @@
 AlibiFwdOp:
-  # ALiBi position-encoding bias: out[h, i, j] = -slope_h * |i - j|, where
-  # slope_h = 2^(-8 * (h + 1) / num_heads). No tensor input -- the full
-  # (num_heads, seq_len, seq_len) bias is synthesized from the
-  # construction-time integer parameters.
+  # ALiBi bias out[h, i, j] = -slope_h * |i - j|, slope_h = 2^(-8 * (h + 1) / num_heads),
+  # built from the integer parameters alone; the op takes no tensor input.
   family: elementwise
   status: implemented
   ref_api: workloads.elementwise.alibi_reference
@@ -27,17 +25,12 @@ AlibiFwdOp:
   - {seq_len: 4096, num_heads: 32, out_dtype: bfloat16, label: "mpt-7b-4k"}
 
   roofline:
-    # FLOPs: per output element compute |i - j| (sub + abs = 2) and
-    # multiply by -slope_h (1) = 3. Slope precomputation is O(H) and
-    # negligible vs the H * S * S body.
+    # Per element: sub and abs for |i - j|, one mul by -slope_h. The O(H) slopes are omitted.
     flops: "3 * num_heads * seq_len * seq_len"
 
 SinusoidalFwdOp:
-  # Sinusoidal positional encoding (Vaswani et al. 2017):
-  # PE(pos, 2i)   = sin(pos / 10000^(2i / d_model))
-  # PE(pos, 2i+1) = cos(pos / 10000^(2i / d_model))
-  # No tensor input -- the full (seq_len, d_model) encoding is synthesized
-  # from the construction-time integer parameters. d_model must be even.
+  # PE(pos, 2i) = sin(pos / 10000^(2i / d_model)), PE(pos, 2i+1) = the matching cos, built
+  # from the integer parameters alone; the op takes no tensor input.
   family: elementwise
   status: implemented
   ref_api: workloads.elementwise.sinusoidal_reference
@@ -56,7 +49,6 @@ SinusoidalFwdOp:
     - "d_model % 2 == 0"
 
   workloads:
-  # Transformer-style positional encodings
   - {seq_len: 2048, d_model: 4096, out_dtype: float16, label: "transformer-2k-4k"}
   - {seq_len: 2048, d_model: 4096, out_dtype: bfloat16, label: "transformer-2k-4k"}
   - {seq_len: 4096, d_model: 4096, out_dtype: float16, label: "transformer-4k-4k"}

@@ -21,8 +21,10 @@ from tileops._kernels.linear_attention.gla.call_spec import (
 )
 from tileops._kernels.linear_attention.gla.varlen_prefill import (
     CHUNK_TOKENS,
+    contract_chunk,
     gla_varlen_causal_kernel,
     gla_varlen_cumsum_kernel,
+    stage_chunk_operands,
 )
 from tileops._kernels.linear_attention.v_tile import GEMM_MIN_N
 
@@ -426,22 +428,9 @@ def gla_varlen_partitioned_output_kernel(
                             partitions[0] += (size + partition_tokens - 1) // partition_tokens
                     part = partitions[0]
 
-                    # The query and its gate are each read once, so neither is staged: the
-                    # two tiles they would occupy bound this block's shared footprint.
-                    for i, d in T.Parallel(CHUNK_TOKENS, dim_k):
-                        q_gated[i, d] = T.cast(
-                            T.cast(q[0, T.min(start + i, end - 1), i_h, d], "float32")
-                            * T.exp2(g_cumsum[0, T.min(start + i, end - 1), i_h, d] * LOG2E),
-                            dtype,
-                        )
-                    for i, d in T.Parallel(CHUNK_TOKENS, dim_v):
-                        values[i, d] = v[0, T.min(start + i, end - 1), i_h, d]
-                    # The causal pass launches only the sub-block pairs at or below the
-                    # diagonal, so the product above the diagonal is read as the zero it is.
-                    for i, j in T.Parallel(CHUNK_TOKENS, CHUNK_TOKENS):
-                        weights[i, j] = T.if_then_else(
-                            j <= i, causal[0, T.min(start + i, end - 1), i_h, j], T.cast(0, dtype)
-                        )
+                    stage_chunk_operands(
+                        q, v, g_cumsum, causal, q_gated, values, weights, start, end, i_h
+                    )
                     for d, j in T.Parallel(dim_k, dim_v):
                         state[d, j] = T.cast(
                             start_state[part, i_h, d, j]
@@ -449,14 +438,7 @@ def gla_varlen_partitioned_output_kernel(
                             + T.cast(chunk_state[chunk, i_h, d, j], "float32"),
                             dtype,
                         )
-                    T.fill(acc, 0.0)
-                    T.gemm(q_gated, state, acc)
-                    for i, j in T.Parallel(CHUNK_TOKENS, dim_v):
-                        acc[i, j] *= scale
-                    T.gemm(weights, values, acc)
-                    for i, j in T.Parallel(CHUNK_TOKENS, dim_v):
-                        if start + i < end:
-                            o[0, start + i, i_h, j] = T.cast(acc[i, j], dtype)
+                    contract_chunk(q_gated, state, weights, values, acc, o, start, end, i_h, scale)
 
         return _main
 

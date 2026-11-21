@@ -1022,13 +1022,11 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         self.init_config(config)
 
     def _make_supply_prog(self):
-        import torch as _torch
-        from tilelang.utils.device import get_current_device as _get_current_device
+        from tilelang.utils.device import get_current_device
 
-        batch = self.batch
         seq_len_kv = self.seq_len_kv
-
-        dim_map = {"batch": batch, "seq_len_kv": seq_len_kv}
+        # The program's symbolic dimensions.
+        dims = {"batch": self.batch, "seq_len_kv": seq_len_kv}
 
         def symbol_name(value):
             name = getattr(value, "name", None)
@@ -1036,36 +1034,26 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
                 name = getattr(value, "name_hint", None)
             return name() if callable(name) else name
 
-        def resolve_shape(shape):
-            result = []
-            for s in shape:
-                try:
-                    result.append(int(s))
-                except (TypeError, ValueError):
-                    result.append(dim_map.get(symbol_name(s), 1))
-            return result
+        def extent(dim):
+            try:
+                return int(dim)
+            except (TypeError, ValueError):
+                return dims.get(symbol_name(dim), 1)
 
         def supply_prog(params):
+            device = get_current_device()
             inputs = []
-            device = _get_current_device()
-            int_tensors = []  # track indices of int tensor params
-            for i, param in enumerate(params):
-                if param.is_scalar():
-                    name = param.name if hasattr(param, "name") else ""
-                    inputs.append(dim_map[name])
+            for param in params:
+                shape = [extent(dim) for dim in param.shape]
+                dtype = param.torch_dtype()
+                if dtype.is_floating_point:
+                    # Normal scores, as the workloads draw: uniform [0, 1) puts most keys
+                    # in a few float16 buckets and tunes for a rescan the real rows skip.
+                    inputs.append(torch.randn(shape, dtype=dtype, device=device))
                 else:
-                    shape = resolve_shape(param.shape)
-                    dtype = param.torch_dtype()
-                    if dtype in (_torch.int32, _torch.int64, _torch.int16, _torch.int8):
-                        inputs.append(_torch.zeros(shape, dtype=dtype, device=device))
-                        int_tensors.append(i)
-                    else:
-                        # Normal scores, as the workloads draw: uniform [0, 1) puts most keys
-                        # in a few float16 buckets and tunes for a rescan the real rows skip.
-                        inputs.append(_torch.randn(shape, dtype=dtype, device=device))
-            # last int tensor is 'ends' — fill with seq_len_kv so kernel processes all elements
-            if int_tensors:
-                inputs[int_tensors[-1]].fill_(seq_len_kv)
+                    inputs.append(torch.zeros(shape, dtype=dtype, device=device))
+            # The last parameter is ``ends``: every row reads its whole window.
+            inputs[-1].fill_(seq_len_kv)
             return inputs
 
         return supply_prog

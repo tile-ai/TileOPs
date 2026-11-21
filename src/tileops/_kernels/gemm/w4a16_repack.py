@@ -78,7 +78,7 @@ class W4A16RepackKernel(Kernel, W4A16RepackFwdInterface):
     def entry_for(cls, call: W4A16RepackCall) -> Entry:
         """The device index is in the identity: the tile is narrowed to divide ``n`` on
         the device the program compiles for."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (call.n, call.packed_k, index), lambda: cls(
             call.n, call.packed_k, device_index=index
         )

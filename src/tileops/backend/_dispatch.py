@@ -10,16 +10,12 @@ from tileops.backend import _registry as registry
 from tileops.backend._errors import AmbiguousTargetError, BackendError, UnknownTargetError
 from tileops.backend._protocol import BUILTIN, BuildKernel, DetectFn, DeviceFacts, Target
 
-# What a device reports when nobody registered its type: no architecture, compute units or
-# shared memory.
-_NO_DEVICE_FACTS = DeviceFacts(arch=-1, sm_count=0, smem_budget=0)
-
 
 class TuningFacts(NamedTuple):
     """The facts TileOPs' own CUDA kernels tune by, beside `.protocol.DeviceFacts`.
 
     Only in-tree call specs and build targets read them, so a backend never supplies them;
-    a device other than CUDA reports `_NO_TUNING_FACTS`.
+    a device other than CUDA reports zeros and no calibration.
     """
 
     # The key of the calibrated board (``tileops._utils.calibration_key``), or ``None``.
@@ -29,11 +25,6 @@ class TuningFacts(NamedTuple):
     # Shared memory of one SM, in bytes.
     smem_per_sm: int
     l2_bytes: int
-
-
-_NO_TUNING_FACTS = TuningFacts(
-    calibration=None, threads_per_sm=0, regs_per_sm=0, smem_per_sm=0, l2_bytes=0
-)
 
 
 def detect_target(device: torch.device) -> str | None:
@@ -97,17 +88,22 @@ def select_target(requested: Target, device: torch.device | None) -> Target:
     """
     registry.ensure_loaded()  # even the no-device answer must be able to blame a bad wheel
     if requested is not None:
-        if requested is not BUILTIN and requested not in registry.known_targets():
-            raise UnknownTargetError(
-                f"no backend registered target {requested!r}; known targets: "
-                f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}"
-            )
+        _check_registered(requested)
         return requested
     if registry.default_target is not None:
         return registry.default_target
     if device is None:
         return None
     return detect_target(device)
+
+
+def _check_registered(target: Target) -> None:
+    """Raise `UnknownTargetError` when *target* names a target no backend registered."""
+    if target is not BUILTIN and target not in registry.known_targets():
+        raise UnknownTargetError(
+            f"no backend registered target {target!r}; known targets: "
+            f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}"
+        )
 
 
 def device_facts_of(device: torch.device | None) -> DeviceFacts:
@@ -136,9 +132,14 @@ def device_facts_and_tuning(device: torch.device | None) -> tuple[DeviceFacts, T
     from tileops._utils import device_facts
     from tileops._utils.device import current_device, on_current_index
 
+    # A device type nobody registered reports no architecture, compute units or memory.
+    no_facts = DeviceFacts(arch=-1, sm_count=0, smem_budget=0)
+    no_tuning = TuningFacts(
+        calibration=None, threads_per_sm=0, regs_per_sm=0, smem_per_sm=0, l2_bytes=0
+    )
     device = current_device() if device is None else on_current_index(device)
     if device is None:
-        return _NO_DEVICE_FACTS, _NO_TUNING_FACTS
+        return no_facts, no_tuning
     if device.type == "cuda":
         facts = device_facts(device.index)
         return (
@@ -154,7 +155,7 @@ def device_facts_and_tuning(device: torch.device | None) -> tuple[DeviceFacts, T
     registry.ensure_loaded()
     read = registry.DEVICE_FACTS.get(device.type)
     if read is None:
-        return _NO_DEVICE_FACTS, _NO_TUNING_FACTS
+        return no_facts, no_tuning
     try:
         facts = read(device)
     except Exception as exc:
@@ -168,7 +169,7 @@ def device_facts_and_tuning(device: torch.device | None) -> tuple[DeviceFacts, T
             f"device facts reader {registry.describe(read)} returned {facts!r} for "
             f"{device}: {problem}"
         )
-    return facts, _NO_TUNING_FACTS
+    return facts, no_tuning
 
 
 def _invalid_facts(facts: object) -> str | None:
@@ -214,11 +215,8 @@ def set_default_target(target: Target) -> None:
         UnknownTargetError: *target* is a name no backend registered.
     """
     registry.ensure_loaded()
-    if target is not None and target is not BUILTIN and target not in registry.known_targets():
-        raise UnknownTargetError(
-            f"no backend registered target {target!r}; known targets: "
-            f"{sorted(registry.known_targets())}{registry.load_failure_suffix()}"
-        )
+    if target is not None:
+        _check_registered(target)
     registry.default_target = target
 
 

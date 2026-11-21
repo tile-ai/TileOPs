@@ -12,6 +12,7 @@ from tests.ops.moe_grouped_gemm_helpers import (
     run_into_guarded_out,
     with_counts,
 )
+from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.moe import MGroupedGEMMMXFP4Call, MoEGroupedGEMMMXFP4SharedDecodeKernel
 from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import (
     _shared_decode_smem_bytes,
@@ -764,6 +765,20 @@ def test_mxfp4_grouped_gemm_smem_model_matches_the_build(
     assert modelled - _compiled_smem(kernel.kernel(**config)) == (1024 if tables else 0)
 
 
+# SM90's opt-in shared memory a block, less the kernels' headroom.
+_SM90_SMEM_LIMIT = (
+    BLOCK_SHARED_BYTES_OPT_IN[90] - MoEGroupedGEMMMXFP4SharedDecodeKernel._SMEM_HEADROOM
+)
+
+
+def _shared_decode_refusal(num_stages: int, scale_k: int, smem_limit: int) -> str | None:
+    """Why a 128 x 128 shared-decode config of ``num_stages`` is refused on 132 SMs."""
+    config = {"block_m": 128, "block_n": 128, "num_stages": num_stages, "num_sms": 132}
+    return MoEGroupedGEMMMXFP4SharedDecodeKernel.config_refusal(
+        config, sm_count=132, smem_limit=smem_limit, scale_k=scale_k, alignment=128
+    )
+
+
 def _aligned_kernel(k: int):
     """The implementation the op selects for 512 rows of four experts in aligned 128-row runs
     under e8m0 scales, N = 256."""
@@ -812,16 +827,9 @@ def test_mxfp4_grouped_gemm_shared_decode_takes_the_modelled_shared_memory() -> 
     ``_shared_decode_smem_bytes`` models and taken at it; a call whose shallowest ring does not
     fit (K = 16384, whose code tables alone pass 160 KiB) keeps the register-fragment kernel."""
     scale_k = 4096 // 128
-    config = {"block_m": 128, "block_n": 128, "num_stages": 4, "num_sms": 132}
     need = _shared_decode_smem_bytes(128, 4, scale_k)
-
-    def refusal(smem_limit: int) -> str | None:
-        return MoEGroupedGEMMMXFP4SharedDecodeKernel.config_refusal(
-            config, sm_count=132, smem_limit=smem_limit, scale_k=scale_k, alignment=128
-        )
-
-    assert "shared memory" in refusal(need - 1)
-    assert refusal(need) is None
+    assert "shared memory" in _shared_decode_refusal(4, scale_k, need - 1)
+    assert _shared_decode_refusal(4, scale_k, need) is None
     # The tuning candidates at K = 2048 are the ring depths that fit beside the tiles and whose
     # unrolled loop tiles its 16 steps; depth 8 tiles them but does not fit.
     assert [c["num_stages"] for c in _aligned_kernel(2048).autotune_configs] == [2, 4]
@@ -834,20 +842,10 @@ def test_mxfp4_grouped_gemm_shared_decode_refuses_a_ring_its_unrolled_loop_canno
     K loop, unrolled by twice the ring depths' least common multiple, tiles the K steps: a token
     ring 3 deep at K = 2048 (16 steps, an unroll of 12) is refused, the refusal naming the
     unroll, and rings 2 and 4 deep are taken."""
-    config = {"block_m": 128, "block_n": 128, "num_stages": 3, "num_sms": 132}
-
-    def refusal(stages: int) -> str | None:
-        return MoEGroupedGEMMMXFP4SharedDecodeKernel.config_refusal(
-            {**config, "num_stages": stages},
-            sm_count=132,
-            smem_limit=232448 - 2048,
-            scale_k=2048 // 128,
-            alignment=128,
-        )
-
-    assert "unrolls the K steps by 12" in refusal(3)
-    assert refusal(2) is None
-    assert refusal(4) is None
+    scale_k = 2048 // 128
+    assert "unrolls the K steps by 12" in _shared_decode_refusal(3, scale_k, _SM90_SMEM_LIMIT)
+    assert _shared_decode_refusal(2, scale_k, _SM90_SMEM_LIMIT) is None
+    assert _shared_decode_refusal(4, scale_k, _SM90_SMEM_LIMIT) is None
 
 
 @pytest.mark.smoke
@@ -856,7 +854,7 @@ def test_mxfp4_grouped_gemm_takes_bulk_tables_under_the_tma_bound() -> None:
     tables; it is taken only where those token tables would fit beside it too. On a 128 x 128
     tile and a 7-deep ring, K = 1792's tables fit by their own size but not with token tables,
     so the scales come a stage at a time; a smaller tile takes them."""
-    smem_limit = 232448 - 2048
+    smem_limit = _SM90_SMEM_LIMIT
     scale_k = 1792 // 128
     assert _smem_bytes(128, 128, 7, 1, scale_k, True) <= smem_limit
     assert not _uses_tables(128, 128, 7, 1, scale_k, smem_limit)

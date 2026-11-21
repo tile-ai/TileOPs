@@ -2,7 +2,6 @@
 
 from tileops._perf.profile import (
     find_profile,
-    get_profile_path,
     load_profile,
     resolve_roof,
     tensor_core_roof,
@@ -10,7 +9,6 @@ from tileops._perf.profile import (
 
 __all__ = [
     "find_profile",
-    "get_profile_path",
     "load_profile",
     "resolve_roof",
     "tensor_core_roof",

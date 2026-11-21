@@ -17,8 +17,9 @@ from tileops._kernels.pool import (
     AvgPool1dKernel,
     AvgPool1dRegisterKernel,
     AvgPool2dFwdInterface,
+    MaxPool2dWarpKernel,
 )
-from tileops._kernels.pool.call_spec import AvgPoolCall
+from tileops._kernels.pool.call_spec import AvgPoolCall, MaxPoolCall
 from tileops._utils import device_facts
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -36,14 +37,16 @@ from tileops.pool import (
     MaxPool2dIndicesFwdOp,
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
+    MeanPoolingFwdOp,
 )
-from workloads.device import run_device, run_device_available
+from workloads.device import run_device, run_device_available, run_device_is_cuda
 from workloads.numerics import compare_outputs
 from workloads.pool import (
     AdaptiveAvgPool2dWorkload,
     AdaptiveMaxPool2dWorkload,
     AvgPoolWorkload,
     MaxPoolWorkload,
+    MeanPoolingWorkload,
     max_pool_ref,
     pool_verification,
 )
@@ -310,57 +313,6 @@ class AvgPool3dFixture(FixtureBase):
         (
             "n, c_in, d_in, h_in, w_in, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override, dtype, tune",
             [
-                pytest.param(
-                    1,
-                    32,
-                    16,
-                    28,
-                    28,
-                    (2, 2, 2),
-                    None,
-                    (0, 0, 0),
-                    False,
-                    True,
-                    None,
-                    torch.float16,
-                    False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
-                    id="smoke-2x2x2-default-stride-fp16",
-                ),
-                pytest.param(
-                    1,
-                    32,
-                    16,
-                    28,
-                    28,
-                    (2, 2, 2),
-                    None,
-                    (0, 0, 0),
-                    False,
-                    True,
-                    None,
-                    torch.bfloat16,
-                    False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-2x2x2-default-stride-bf16",
-                ),
-                pytest.param(
-                    1,
-                    16,
-                    8,
-                    14,
-                    14,
-                    (2, 2, 2),
-                    None,
-                    (0, 0, 0),
-                    False,
-                    True,
-                    None,
-                    torch.float32,
-                    False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-2x2x2-default-stride-fp32",
-                ),
                 # Windows past the rows the wide kernel holds, and padded windows past the taps
                 # it unrolls: both keep a serial loop.
                 pytest.param(
@@ -394,7 +346,7 @@ class AvgPool3dFixture(FixtureBase):
                     5,
                     torch.float16,
                     False,
-                    marks=pytest.mark.smoke,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-4x4x3-padded-serial-fp16",
                 ),
                 pytest.param(
@@ -414,6 +366,23 @@ class AvgPool3dFixture(FixtureBase):
                     # A padded window with a fixed divisor and at most 32 taps: the clamped taps.
                     marks=pytest.mark.smoke,
                     id="smoke-divisor-override-clamped-bf16",
+                ),
+                pytest.param(
+                    1,
+                    32,
+                    16,
+                    28,
+                    28,
+                    (2, 2, 2),
+                    None,
+                    (0, 0, 0),
+                    False,
+                    True,
+                    None,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-2x2x2-default-stride-fp16",
                 ),
                 pytest.param(
                     1,
@@ -958,9 +927,7 @@ def test_avg_pool1d_register_serves_one_row_past_int32_groups_one_run_a_thread()
 @pytest.mark.parametrize(
     "case",
     [
-        # The fixture's fp32 smoke shape.
-        pytest.param("fixture", id="fixture-shape", marks=pytest.mark.smoke),
-        pytest.param("sub-wave", id="sub-wave-one-block-an-sm", marks=pytest.mark.full),
+        pytest.param("sub-wave", id="sub-wave-one-block-an-sm", marks=pytest.mark.smoke),
         pytest.param("widest", id="widest-blocks-one-an-sm", marks=pytest.mark.full),
         pytest.param(
             "past-one-block-an-sm", id="past-one-block-an-sm-row-grid", marks=pytest.mark.full
@@ -979,10 +946,9 @@ def test_avg_pool1d_register_serves_one_row_past_int32_groups_one_run_a_thread()
 def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
     """Where the row grid puts a second block on some SM, a launch that one block an SM of
     at most 1024 threads covers runs as one block an SM of the fewest whole warps that cover
-    it. Another runs 128-thread blocks along each row,
-    unless the row grid has more blocks than the SMs hold at once and a row leaves so many
-    of a block's threads idle that the blocks an SM holds cannot fill it: then its blocks
-    span rows on one grid axis."""
+    it. Another runs 128-thread blocks along each row, unless the row grid has more blocks
+    than the SMs hold at once and a row leaves so many of a block's threads idle that the
+    blocks an SM holds cannot fill it: then its blocks span rows on one grid axis."""
     facts = device_facts(run_device().index)
     sm_count = facts.sm_count
     # Row-grid blocks the SMs hold at once.
@@ -990,8 +956,6 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
     # fp32 input, kernel 2, stride 2: one thread a 16-byte run of four values, l_in // 4 runs
     # a row.
     shape = {
-        # 128 rows of 128 runs.
-        "fixture": (2, 64, 512),
         # Rows of 64 runs; one block an SM covers both launches, so the row grid's fill does
         # not decide them. Four rows an SM and one more: an SM's share is 8 warps and part of
         # a ninth, which takes a whole warp.
@@ -1007,7 +971,6 @@ def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
         "short-rows-resident": (1, sm_count, 32),
     }[case]
     launch = {
-        "fixture": {},
         "sub-wave": {"flat": True, "threads": 288},
         "widest": {"flat": True, "threads": 1024},
         "past-one-block-an-sm": {"flat": False, "threads": 128},
@@ -1040,9 +1003,7 @@ def test_avg_pool1d_register_reads_a_side_in_one_load_of_at_most_4_bytes() -> No
 @pytest.mark.parametrize(
     "case",
     [
-        # The fixture's fp16 smoke shape.
-        pytest.param("fixture", id="fixture-shape-one-run", marks=pytest.mark.smoke),
-        pytest.param("paired", id="narrow-store-paired", marks=pytest.mark.full),
+        pytest.param("paired", id="narrow-store-paired", marks=pytest.mark.smoke),
         pytest.param("covered", id="narrow-store-one-block-an-sm-covers", marks=pytest.mark.full),
         pytest.param("wide-store", id="wide-store-one-run", marks=pytest.mark.full),
     ],
@@ -1062,7 +1023,6 @@ def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
     # (dtype, kernel, stride, padding, runs in the one row): a run is 16 bytes.
     window = {
         # fp16, kernel 5, stride 4, padding 2: two outputs (4 bytes) a run of 8 elements.
-        "fixture": (torch.float16, 5, 4, 2, None),
         "paired": (torch.float16, 5, 4, 2, row_runs),
         "covered": (torch.float16, 5, 4, 2, covered_runs),
         # fp32, kernel 3, stride 2, padding 1: two outputs (8 bytes) a run of 4 elements.
@@ -1070,14 +1030,13 @@ def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
     }[case]
     dtype, kernel_l, stride_l, pad_l, runs = window
     launch = {
-        "fixture": {"runs": 1},
         "paired": {"runs": 2, "flat": True},
         "covered": {"runs": 1},
         "wide-store": {"runs": 1},
     }[case]
     run = 16 // dtype.itemsize
     rows = 3 if case == "paired" else 1
-    shape = (2, 64, 512) if runs is None else (1, rows, runs * run)
+    shape = (1, rows, runs * run)
     counted = case != "paired"
     x = torch.randn(*shape, device=run_device(), dtype=dtype)
     op = AvgPool1dFwdOp(
@@ -1099,15 +1058,13 @@ def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
 @pytest.mark.parametrize(
     "rows, l_in, dtype",
     [
-        # The fixture's fp16 smoke shape.
-        pytest.param((2, 64), 512, torch.float16, id="fixture-shape-fp16", marks=pytest.mark.smoke),
         # 65536 rows: one more than the grid's y axis holds.
         pytest.param(
             (64, 1024),
             64,
             torch.float16,
             id="rows-past-the-grid-y-axis-fp16",
-            marks=pytest.mark.full,
+            marks=pytest.mark.smoke,
         ),
         # 32768 rows of 65536: 2**31 elements, an extent one past INT32_MAX, in rows the
         # grid's y axis holds. Costs 8 GiB.
@@ -1528,21 +1485,31 @@ def _check_max_pool2d_odd_rectangle_and_nan(height, width, dtype):
     ],
 )
 def test_warp_pool_odd_rectangle_and_nan(height, width, dtype, half_warp):
-    from tileops._kernels.pool import MaxPool2dWarpKernel
-
-    kernel = _check_max_pool2d_odd_rectangle_and_nan(height, width, dtype)
+    x = torch.randn(2, 3, height, width, device=run_device(), dtype=dtype)
+    x[:, :, -1, -1] = float("nan")
+    op = MaxPool2dFwdOp(3, stride=2, ceil_mode=True, target=BUILTIN)
+    expected = F.max_pool2d(x, 3, stride=2, ceil_mode=True)
+    torch.testing.assert_close(op(x), expected, rtol=0, atol=0, equal_nan=True)
+    (kernel,) = op.iter_kernels()
     assert type(kernel) is MaxPool2dWarpKernel
     assert kernel.half_warp is half_warp
 
 
 @pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-@pytest.mark.sm90
-def test_max_pool2d_mixed_extents_use_fallback():
-    from tileops._kernels.pool import MaxPool2dKernel
-
-    kernel = _check_max_pool2d_odd_rectangle_and_nan(33, 63, torch.bfloat16)
-    assert type(kernel) is MaxPool2dKernel
+def test_max_pool2d_warp_refuses_mixed_extents() -> None:
+    """A 33-wide axis is served only when both axes are 33; 33 by 63 goes to the fallback."""
+    call = MaxPoolCall(
+        n=2,
+        c_in=3,
+        size=(33, 63),
+        window=(3, 3),
+        stride=(2, 2),
+        pad=(0, 0),
+        dilation=(1, 1),
+        ceil_mode=True,
+        dtype=torch.bfloat16,
+    )
+    assert MaxPool2dWarpKernel.refusal(call) is not None
 
 
 @pytest.mark.smoke
@@ -2905,3 +2872,124 @@ def test_max_pool2d_indices_windows_read_into_registers(
     expected, expected_indices = F.max_pool2d(x, kernel, stride, padding, return_indices=True)
     torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
     assert torch.equal(indices, expected_indices)
+
+
+class MeanPoolingTest(MeanPoolingWorkload, TestBase):
+    pass
+
+
+class MeanPoolingFixture(FixtureBase):
+    PARAMS = [
+        (
+            "batch, seq_len, heads, dim, chunk_size, dtype, tune, seq_lens",
+            [
+                pytest.param(
+                    1, 8192, 64, 128, 64, torch.float16, False, None, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    1, 8192, 64, 128, 64, torch.float16, True, None, marks=pytest.mark.full
+                ),
+                pytest.param(
+                    2, 2048, 64, 128, 64, torch.float16, False, None, marks=pytest.mark.full
+                ),
+                # Ragged, every sequence ending mid-chunk: the case that divides by a short
+                # count.
+                pytest.param(
+                    1,
+                    1000,
+                    64,
+                    128,
+                    32,
+                    torch.float16,
+                    False,
+                    [100, 200, 300, 400],
+                    marks=pytest.mark.full,
+                ),
+                pytest.param(
+                    2,
+                    2048,
+                    64,
+                    128,
+                    64,
+                    torch.float16,
+                    False,
+                    [1024, 1024],
+                    marks=pytest.mark.full,
+                ),
+            ],
+        ),
+    ]
+
+
+@MeanPoolingFixture
+def test_mean_pooling_op(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    dim: int,
+    chunk_size: int,
+    dtype: torch.dtype,
+    tune: bool,
+    seq_lens: list[int] | None,
+) -> None:
+    test = MeanPoolingTest(
+        batch=batch,
+        seq_len=seq_len,
+        heads=heads,
+        dim=dim,
+        chunk_size=chunk_size,
+        dtype=dtype,
+        seq_lens=seq_lens,
+    )
+    op = MeanPoolingFwdOp(chunk_size=chunk_size, accum_dtype=torch.float32)
+    if tune:
+        op.request_tune()
+    inputs = list(test.gen_inputs())
+    if seq_lens is not None:
+        # Output rows follow the caller's chunk order, not the canonical one.
+        inputs[2] = inputs[2].flip(0).contiguous()
+    if seq_lens is not None and run_device_is_cuda():
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            op(*inputs)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = op(*inputs)
+        graph.replay()
+        test.check(op, *inputs, runs=lambda *args: output)
+    else:
+        test.check(op, *inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dim", [100, 256])
+def test_mean_pooling_dim_not_one_full_tile(dim: int) -> None:
+    """`dim` values the manifest allows but no workload row carries.
+
+    A block takes a power-of-two share of `heads * dim`: `dim` 100 gives a width of 200
+    that no share divides, so the last block is bounds-tested; 256 gives 512 that they
+    divide. The range the manifest rules out between them is a contract bound, not a shape
+    the kernel cannot read.
+    """
+    test = MeanPoolingTest(
+        batch=1,
+        seq_len=64,
+        heads=2,
+        dim=dim,
+        chunk_size=32,
+        dtype=torch.float16,
+    )
+    op = MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_mean_pooling_reads_its_shapes_off_the_call() -> None:
+    """One op, two shapes, two chunk counts — what taking shapes from the call buys."""
+    op = MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32, validate_inputs=True)
+    short = torch.randn(1, 64, 2, 64, device=run_device(), dtype=torch.float16)
+    assert tuple(op(short).shape) == (1, 2, 2, 64)
+    tall = torch.randn(3, 128, 2, 64, device=run_device(), dtype=torch.float16)
+    assert tuple(op(tall).shape) == (3, 4, 2, 64)

@@ -1,6 +1,5 @@
 """Normalization benchmarks against vendor, QuACK and compiled PyTorch kernels."""
 
-import dataclasses
 import math
 
 import pytest
@@ -293,8 +292,10 @@ def _flashinfer_static_quant(inputs: tuple, eps: float) -> bench.Implementation:
         fn(q, x, residual, weight, scale, eps)
         return q, scale, residual
 
-    return dataclasses.replace(
-        private_inputs(run, inputs, 1),
+    return private_inputs(
+        run,
+        inputs,
+        1,
         noncomparable_reason="quantizes with one static per-tensor scale, not a per-token one",
     )
 

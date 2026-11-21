@@ -31,9 +31,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-for _path in (REPO_ROOT, REPO_ROOT / "src"):
+for _path in (REPO_ROOT, REPO_ROOT / "src", REPO_ROOT / "scripts"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
+
+from nightly_report import case_id  # noqa: E402
 
 from benchmarks.outcomes import UNAVAILABLE_PROPERTY  # noqa: E402
 from tileops.manifest import load_adts, load_manifest  # noqa: E402
@@ -73,7 +75,7 @@ def parse_run(
         props = _properties(testcase)
         failed = any(testcase.find(tag) is not None for tag in ("failure", "error"))
         if not failed and testcase.find("skipped") is not None and UNAVAILABLE_PROPERTY in props:
-            case = _case_id(testcase.attrib.get("name", ""))
+            case = case_id(testcase.attrib.get("name", ""))
             for name in (n for n in (props.get("ops") or props.get("op") or "").split(",") if n):
                 unavailable.setdefault(name, []).append(case)
             continue
@@ -90,17 +92,10 @@ def parse_run(
             errors.append(f"{testcase.get('name', '<unnamed>')}: {props['tileops_unverified']}")
             continue
         ops = props.get("ops") or props.get("op") or ""
-        case = _case_id(testcase.attrib.get("name", ""))
+        case = case_id(testcase.attrib.get("name", ""))
         for name in (n for n in ops.split(",") if n):
             recorded.setdefault(name, []).append(case)
     return recorded, unavailable, errors
-
-
-def _case_id(name: str) -> str:
-    """The parametrized part of a testcase name, which is the case's own id."""
-    if name.endswith("]") and "[" in name:
-        return name[name.index("[") + 1 : -1]
-    return name
 
 
 def _declared(op_name: str, entry: dict, nightly: bool = False) -> set[str]:

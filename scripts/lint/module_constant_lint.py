@@ -12,13 +12,12 @@ Exempt: ``lint: module-constant allow: <reason>`` on the binding line. Default s
 ``src/tileops/``.
 """
 
-import argparse
 import ast
 import sys
 from pathlib import Path
 
 from comment_lines import allowed_lines
-from common import files, relative, report
+from common import lint_files, relative
 
 SCANNED = ("src/tileops",)
 
@@ -147,10 +146,7 @@ def findings(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("files", nargs="*", type=Path)
-    args = parser.parse_args(argv)
-    return report(e for p in files(args.files, SCANNED, (".py",)) for e in findings(p))
+    return lint_files(argv, __doc__, SCANNED, (".py",), findings)
 
 
 if __name__ == "__main__":

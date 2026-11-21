@@ -48,11 +48,13 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetFwdInterface):
             )
             if present
         ]
-        return "does not support " + ", ".join(unsupported) if unsupported else None
+        if unsupported:
+            return "does not support " + ", ".join(unsupported)
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: DeltaNetCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (
             call.batch,
             call.heads,
@@ -96,9 +98,7 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetFwdInterface):
         self.l2norm = l2norm
         self.init_config()
         self.program(self._compile)
-        device = (
-            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
-        )
+        device = self._build_device
         # The parameters an ungated build leaves unread are declared one element wide.
         self._unread_gate = torch.empty(1, dtype=dtype, device=device)
         self._unread = torch.empty(1, dtype=torch.float32, device=device)

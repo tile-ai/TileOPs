@@ -46,7 +46,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     is_causal: bool,
     sm_scale: float,
     softcap: float,
-    write_lse: bool,
     num_sms: int,
     overlap_softmax_pv: bool,
     has_sinks: bool = False,
@@ -77,7 +76,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     causal_offset = seq_len_kv - seq_len_q
 
     @tilelang.jit(
-        out_idx=[7, 8],
+        out_idx=[7],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
@@ -93,7 +92,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         sink_scale = make_dense_sink_scale(lse_scale, half_m)
 
         @T.macro
-        def online_softmax_with_partial_sum(
+        def online_softmax_partial_sum(
             acc_s,
             scores_max,
             scores_max_prev,
@@ -101,109 +100,55 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
             scores_sum,
             logsum,
             score_scale,
+            keep_max,
         ):
-            score_scale_softmax = score_scale * scale
+            """Online softmax that adds each thread's partial row sums; the quad reduces them
+            at finalization. ``keep_max`` keeps the running maximum from falling, for tiles
+            the causal mask may leave without a key. A capped score arrives already capped."""
             T.copy(scores_max, scores_max_prev)
             T.fill(scores_max, -T.infinity(accum_dtype))
             T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-            for i in T.Parallel(half_m):
-                scores_max[i] *= score_scale
-            for i in T.Parallel(half_m):
-                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-            for i, j in T.Parallel(half_m, 224):
-                acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
-            # Accumulate lane-local row sums here; the quad reduction is deferred
-            # until finalization instead of running once per K/V tile.
-            T.call_extern(
-                "handle",
-                row_sum_helper,
-                acc_s.data,
-                scores_sum.data,
-            )
-            for i in T.Parallel(half_m):
-                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-
-        @T.macro
-        def online_softmax_with_causal_partial_sum(
-            acc_s,
-            scores_max,
-            scores_max_prev,
-            scores_scale,
-            scores_sum,
-            logsum,
-            score_scale,
-        ):
-            score_scale_softmax = score_scale * scale
-            T.copy(scores_max, scores_max_prev)
-            T.fill(scores_max, -T.infinity(accum_dtype))
-            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-            for i in T.Parallel(half_m):
-                scores_max[i] = T.max(scores_max[i] * score_scale, scores_max_prev[i])
-                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
-            for i, j in T.Parallel(half_m, 224):
-                acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
-            T.call_extern(
-                "handle",
-                row_sum_helper,
-                acc_s.data,
-                scores_sum.data,
-            )
-            for i in T.Parallel(half_m):
-                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
-
-        @T.macro
-        def online_softmax_with_softcap_partial_sum(
-            acc_s,
-            scores_max,
-            scores_max_prev,
-            scores_scale,
-            scores_sum,
-            logsum,
-            score_scale,
-        ):
-            # The raw accumulator was capped before masking.  Keeping the tanh
-            # transform in the raw PTX layout avoids a generic fragment loop.
-            T.copy(scores_max, scores_max_prev)
-            T.fill(scores_max, -T.infinity(accum_dtype))
-            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-            for i in T.Parallel(half_m):
-                scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
-                scores_scale[i] = T.exp2(
-                    (scores_max_prev[i] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
-                )
-            for i, j in T.Parallel(half_m, 224):
-                acc_s[i, j] = T.exp2(
-                    (acc_s[i, j] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
-                )
-            T.call_extern(
-                "handle",
-                row_sum_helper,
-                acc_s.data,
-                scores_sum.data,
-            )
+            if use_softcap:
+                for i in T.Parallel(half_m):
+                    scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+                    scores_scale[i] = T.exp2(
+                        (scores_max_prev[i] - scores_max[i])
+                        * T.cast(capped_softmax_scale, accum_dtype)
+                    )
+                for i, j in T.Parallel(half_m, 224):
+                    acc_s[i, j] = T.exp2(
+                        (acc_s[i, j] - scores_max[i]) * T.cast(capped_softmax_scale, accum_dtype)
+                    )
+            else:
+                score_scale_softmax = score_scale * scale
+                if keep_max:
+                    for i in T.Parallel(half_m):
+                        scores_max[i] = T.max(scores_max[i] * score_scale, scores_max_prev[i])
+                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+                else:
+                    for i in T.Parallel(half_m):
+                        scores_max[i] *= score_scale
+                    for i in T.Parallel(half_m):
+                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+                for i, j in T.Parallel(half_m, 224):
+                    acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - scores_max[i] * scale)
+            T.call_extern("handle", row_sum_helper, acc_s.data, scores_sum.data)
             for i in T.Parallel(half_m):
                 logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
 
         q_shape = (batch, seq_len_q, heads, dim)
         kv_shape = (batch, seq_len_kv, heads_kv, dim)
         descale_shape = (batch, heads_kv)
-        # Preserve the original reduction schedule for long non-causal calls.
-        # Causal calls use lane-local partial sums so their boundary masking
-        # does not add a quad reduction to every visible KV tile.
-        online_softmax_fast = make_online_softmax_with_score_scale(scale, accum_dtype, half_m, 224)
-        if use_softcap:
-            online_softmax_fast = online_softmax_with_softcap_partial_sum
-            online_softmax = online_softmax_with_softcap_partial_sum
-        elif is_causal:
-            online_softmax = online_softmax_with_causal_partial_sum
-            # The row sum is reduced across the quad once, at finalization, so
-            # every tile must add lane partials: a tile below the diagonal adding
-            # the reduced sum would be counted four times.
-            online_softmax_fast = online_softmax_with_partial_sum
-        elif not defer_row_sum:
-            online_softmax = online_softmax_fast
-        else:
-            online_softmax = online_softmax_with_partial_sum
+        # A long non-causal call reduces each tile's row sums across the quad. Every other
+        # call adds lane partials and reduces them once, at finalization, so that the causal
+        # boundary masking adds no quad reduction to a tile; every tile must then add
+        # partials, as a tile below the diagonal adding the reduced sum would count it four
+        # times.
+        full_row_sum_softmax = (
+            None
+            if defer_row_sum
+            else make_online_softmax_with_score_scale(scale, accum_dtype, half_m, 224)
+        )
         pv_helper = (
             "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224"
             if overlap_softmax_pv
@@ -213,9 +158,9 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         has_kv_tail = seq_len_kv % 224 != 0
         use_out_of_place_v = is_causal or has_kv_tail
         v_transform_helper = (
-            "tileops::fp8_transpose_v_128x224_fa3_src_ldsm_stsm_out_of_place"
+            "tileops::fp8_transpose_v_128x224_fa3_src_ldsm_stsm<false>"
             if use_out_of_place_v
-            else "tileops::fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter"
+            else "tileops::fp8_transpose_v_128x224_fa3_src_ldsm_stsm<true>"
         )
 
         @T.macro
@@ -267,13 +212,16 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         acc_s[i, j],
                         -T.infinity(accum_dtype),
                     )
-            if is_causal and not overlap_softmax_pv:
+            if full_row_sum_softmax is not None:
+                full_row_sum_softmax(acc_s, sm, smp, ss, ssum, ls, qk_descale)
+            elif is_causal and not overlap_softmax_pv:
+                # A tile wholly below the diagonal has a key in every row.
                 if (n_idx + 1) * 224 <= causal_offset + row_base + 1:
-                    online_softmax_fast(acc_s, sm, smp, ss, ssum, ls, qk_descale)
+                    online_softmax_partial_sum(acc_s, sm, smp, ss, ssum, ls, qk_descale, False)
                 else:
-                    online_softmax(acc_s, sm, smp, ss, ssum, ls, qk_descale)
+                    online_softmax_partial_sum(acc_s, sm, smp, ss, ssum, ls, qk_descale, True)
             else:
-                online_softmax(acc_s, sm, smp, ss, ssum, ls, qk_descale)
+                online_softmax_partial_sum(acc_s, sm, smp, ss, ssum, ls, qk_descale, is_causal)
 
         @T.macro
         def issue_qk(q_tile, k0, k1, acc_s, step):
@@ -325,6 +273,196 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 shared_scales.access_ptr("r"),
             )
 
+        @T.macro
+        def wait_v_full(v_full_0, v_full_1, step):
+            if step % 2 == 0:
+                T.barrier_wait(v_full_0, (step // 2) % 2)
+            else:
+                T.barrier_wait(v_full_1, (step // 2) % 2)
+
+        @T.macro
+        def release_v(v_empty_0, v_empty_1, step):
+            if step % 2 == 0:
+                T.barrier_arrive(v_empty_0)
+            else:
+                T.barrier_arrive(v_empty_1)
+
+        @T.macro
+        def wait_v_empty(v_empty_0, v_empty_1, step):
+            """Wait until both consumers have released the V stage that ``step`` reuses."""
+            if step >= 2:
+                if step % 2 == 0:
+                    T.barrier_wait(v_empty_0, (step // 2 - 1) % 2)
+                else:
+                    T.barrier_wait(v_empty_1, (step // 2 - 1) % 2)
+
+        @T.macro
+        def transform_v(
+            v_vt_smem_0, v_vt_smem_1, v_tc_smem_0, v_tc_smem_1, v_raw_full, v_full_0, v_full_1,
+            v_empty_0, v_empty_1, step,
+        ):  # fmt: skip
+            """Transpose the loaded V tile of ``step`` into its WGMMA operand and publish it."""
+            wait_v_empty(v_empty_0, v_empty_1, step)
+            if step % 2 == 0:
+                T.barrier_wait(v_raw_full, step % 2)
+                T.call_extern(
+                    "handle",
+                    v_transform_helper,
+                    v_vt_smem_0.access_ptr("rw"),
+                    v_tc_smem_0.access_ptr("w"),
+                )
+            else:
+                T.barrier_wait(v_raw_full, step % 2)
+                T.call_extern(
+                    "handle",
+                    v_transform_helper,
+                    v_vt_smem_1.access_ptr("rw"),
+                    v_tc_smem_1.access_ptr("w"),
+                )
+            if step % 2 == 0:
+                T.barrier_arrive(v_full_0)
+            else:
+                T.barrier_arrive(v_full_1)
+
+        @T.macro
+        def consume(
+            wg, q, k_descale, q_descale, v_descale, sinks, output, q_shared, o_shared, ss_shared,
+            ls_shared, p_regs, acc_s, acc_o, sm, smp, ss, ssum, ls, k_smem_0, k_smem_1,
+            v_tc_smem_0, v_tc_smem_1, k_full, k_empty, v_full_0, v_full_1, v_empty_0, v_empty_1,
+            q_full, bx,
+        ):  # fmt: skip
+            """Compute warpgroup ``wg``: the 64 query rows ``64 wg`` onward of each tile. With
+            ``overlap_softmax_pv`` the two groups pass the turn to issue between them."""
+            my_bar = 8 + wg
+            nxt_bar = 9 - wg
+            row_offset = wg * half_m
+            T.inc_max_nreg(240)
+            gi_kc = T.alloc_var("int32", init=0)
+            gi_vc = T.alloc_var("int32", init=0)
+            gi_q = T.alloc_var("int32", init=0)
+            if overlap_softmax_pv and wg == 1:
+                T.named_barrier_arrive(nxt_bar, 256)
+            for tile_b, tile_hkv, tile_m, tile_g in T.Persistent(
+                [batch, heads_kv, T.ceildiv(seq_len_q, block_m), groups],
+                wave_size=num_sms,
+                index=bx,
+                group_size=8,
+            ):
+                tile_h = tile_hkv * groups + tile_g
+                head_kv = tile_hkv
+                row_base = tile_m * block_m + row_offset
+                if is_causal:
+                    loop_range = T.ceildiv(
+                        T.min(seq_len_kv, causal_offset + tile_m * block_m + block_m), 224
+                    )
+                else:
+                    loop_range = T.ceildiv(seq_len_kv, 224)
+                qk_descale = T.alloc_var(
+                    accum_dtype,
+                    init=q_descale[tile_b, head_kv] * k_descale[tile_b, head_kv],
+                )
+                value_descale = T.alloc_var(accum_dtype, init=v_descale[tile_b, head_kv])
+                T.tma_copy(
+                    q[tile_b, row_base : row_base + half_m, tile_h, :],
+                    q_shared,
+                    barrier=q_full,
+                )
+                T.barrier_arrive(q_full)
+                T.barrier_wait(q_full, gi_q % 2)
+                gi_q = gi_q + 1
+                T.clear(acc_o)
+                T.clear(ls)
+                T.fill(sm, -T.infinity(accum_dtype))
+                if overlap_softmax_pv:
+                    T.sync_threads(my_bar, 256)
+                    T.barrier_wait(k_full[gi_kc % k_stages], (gi_kc // k_stages) % 2)
+                    issue_qk(q_shared, k_smem_0, k_smem_1, acc_s, gi_kc)
+                    T.named_barrier_arrive(nxt_bar, 256)
+                    T.wait_wgmma(0)
+                    T.warpgroup_fence_operand(acc_s, num_regs=112)
+                    T.barrier_arrive(k_empty[gi_kc % k_stages])
+                    gi_kc = gi_kc + 1
+                    scores(acc_s, sm, smp, ss, ssum, ls, qk_descale, 0, row_base)
+                    rescale_output(acc_o, ss, ss_shared, 6 + wg)
+                    T.call_extern(
+                        "handle",
+                        "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
+                        acc_s.data,
+                        p_regs.data,
+                    )
+                    for n_idx in T.serial(1, loop_range):
+                        T.sync_threads(my_bar, 256)
+                        T.barrier_wait(k_full[gi_kc % k_stages], (gi_kc // k_stages) % 2)
+                        issue_qk(q_shared, k_smem_0, k_smem_1, acc_s, gi_kc)
+                        wait_v_full(v_full_0, v_full_1, gi_vc)
+                        issue_pv(p_regs, v_tc_smem_0, v_tc_smem_1, acc_o, gi_vc)
+                        T.named_barrier_arrive(nxt_bar, 256)
+                        T.wait_wgmma(1)
+                        T.warpgroup_fence_operand(acc_s, num_regs=112)
+                        T.barrier_arrive(k_empty[gi_kc % k_stages])
+                        gi_kc = gi_kc + 1
+                        scores(acc_s, sm, smp, ss, ssum, ls, qk_descale, n_idx, row_base)
+                        T.wait_wgmma(0)
+                        T.warpgroup_fence_operand(acc_o, num_regs=64)
+                        T.call_extern("handle", "tileops::fp8_fence_p_regs_64x224", p_regs.data)
+                        release_v(v_empty_0, v_empty_1, gi_vc)
+                        gi_vc = gi_vc + 1
+                        rescale_output(acc_o, ss, ss_shared, 6 + wg)
+                        T.call_extern(
+                            "handle",
+                            "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
+                            acc_s.data,
+                            p_regs.data,
+                        )
+                else:
+                    for n_idx in T.Pipelined(loop_range, num_stages=0):
+                        T.barrier_wait(k_full[gi_kc % k_stages], (gi_kc // k_stages) % 2)
+                        issue_qk(q_shared, k_smem_0, k_smem_1, acc_s, gi_kc)
+                        if n_idx > 0:
+                            T.wait_wgmma(1)
+                            T.warpgroup_fence_operand(acc_o, num_regs=64)
+                            release_v(v_empty_0, v_empty_1, gi_vc)
+                            gi_vc = gi_vc + 1
+                        T.wait_wgmma(0)
+                        T.warpgroup_fence_operand(acc_s, num_regs=112)
+                        T.barrier_arrive(k_empty[gi_kc % k_stages])
+                        gi_kc = gi_kc + 1
+                        scores(acc_s, sm, smp, ss, ssum, ls, qk_descale, n_idx, row_base)
+                        rescale_output(acc_o, ss, ss_shared, 6 + wg)
+                        wait_v_full(v_full_0, v_full_1, gi_vc)
+                        issue_pv(acc_s, v_tc_smem_0, v_tc_smem_1, acc_o, gi_vc)
+                if overlap_softmax_pv:
+                    wait_v_full(v_full_0, v_full_1, gi_vc)
+                    issue_pv(p_regs, v_tc_smem_0, v_tc_smem_1, acc_o, gi_vc)
+                T.wait_wgmma(0)
+                if overlap_softmax_pv:
+                    T.call_extern("handle", "tileops::fp8_fence_p_regs_64x224", p_regs.data)
+                T.warpgroup_fence_operand(acc_o, num_regs=64)
+                release_v(v_empty_0, v_empty_1, gi_vc)
+                gi_vc = gi_vc + 1
+                if defer_row_sum:
+                    for i in T.Parallel(half_m):
+                        ls[i] = ls[i] + T.shfl_xor(ls[i], 1)
+                        ls[i] = ls[i] + T.shfl_xor(ls[i], 2)
+                if has_sinks:
+                    sink_scale(ls, sm, sinks, ss, tile_h, 0, half_m)
+                    rescale_output(acc_o, ss, ss_shared, 3 + wg)
+                T.copy(ls, ls_shared)
+                T.sync_threads(barrier_id=6 + wg, arrive_count=128)
+                T.call_extern(
+                    "handle",
+                    "tileops::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
+                    acc_o.data,
+                    ls_shared.access_ptr("r"),
+                    value_descale,
+                    o_shared.access_ptr("w"),
+                )
+                T.fence_proxy_async()
+                T.sync_threads(barrier_id=3 + wg, arrive_count=128)
+                store_output_tile(o_shared, output, tile_b, row_base, tile_h)
+                if groups == 8 and defer_row_sum:
+                    T.sync_threads(barrier_id=5, arrive_count=384)
+
         @T.prim_func
         def main(
             q: T.Tensor(q_shape, fp8_dtype),
@@ -337,7 +475,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 [heads] if has_sinks else q_shape, "float32" if has_sinks else fp8_dtype
             ),
             output: T.Tensor(q_shape, out_dtype),
-            lse: T.Tensor([batch, heads, seq_len_q], accum_dtype),
         ) -> None:
             with T.Kernel(num_sms, 1, 1, threads=384) as (bx, _by, _bz):
                 q_shared_1 = T.alloc_shared([half_m, dim], fp8_dtype)
@@ -358,8 +495,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 ss_shared_2 = T.alloc_shared([half_m], accum_dtype)
                 ls_shared_1 = T.alloc_shared([half_m], accum_dtype)
                 ls_shared_2 = T.alloc_shared([half_m], accum_dtype)
-                if overlap_softmax_pv:
-                    p_regs_1 = T.alloc_local([28], "uint32")
+                p_regs_1 = T.alloc_local([28], "uint32") if overlap_softmax_pv else None
                 acc_s_1 = T.alloc_fragment([half_m, 224], accum_dtype)
                 acc_o_1 = T.alloc_fragment([half_m, dim], accum_dtype)
                 sm_1 = T.alloc_fragment([half_m], accum_dtype)
@@ -367,8 +503,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 ss_1 = T.alloc_fragment([half_m], accum_dtype)
                 ssum_1 = T.alloc_fragment([half_m], accum_dtype)
                 ls_1 = T.alloc_fragment([half_m], accum_dtype)
-                if overlap_softmax_pv:
-                    p_regs_2 = T.alloc_local([28], "uint32")
+                p_regs_2 = T.alloc_local([28], "uint32") if overlap_softmax_pv else None
                 acc_s_2 = T.alloc_fragment([half_m, 224], accum_dtype)
                 acc_o_2 = T.alloc_fragment([half_m, dim], accum_dtype)
                 sm_2 = T.alloc_fragment([half_m], accum_dtype)
@@ -408,17 +543,11 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                     }
                 )
                 T.sync_threads()
-                gi_kc1 = T.alloc_var("int32", init=0)
-                gi_vc1 = T.alloc_var("int32", init=0)
-                gi_kc2 = T.alloc_var("int32", init=0)
-                gi_vc2 = T.alloc_var("int32", init=0)
-                gi_q1 = T.alloc_var("int32", init=0)
-                gi_q2 = T.alloc_var("int32", init=0)
-                gi_kp = T.alloc_var("int32", init=0)
-                gi_vp = T.alloc_var("int32", init=0)
                 tx = T.get_thread_binding()
                 if tx < 128:
                     T.dec_max_nreg(24)
+                    gi_kp = T.alloc_var("int32", init=0)
+                    gi_vp = T.alloc_var("int32", init=0)
                     for tile_b, tile_hkv, tile_m, _tile_g in T.Persistent(
                         [batch, heads_kv, T.ceildiv(seq_len_q, block_m), groups],
                         wave_size=num_sms,
@@ -427,48 +556,22 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                     ):
                         head_kv = tile_hkv
                         if is_causal:
-                            visible_tiles = T.ceildiv(
+                            loop_range = T.ceildiv(
                                 T.min(seq_len_kv, causal_offset + (tile_m + 1) * block_m),
                                 224,
                             )
-                            loop_range = visible_tiles
                         else:
                             loop_range = T.ceildiv(seq_len_kv, 224)
                         for n_idx in T.Pipelined(loop_range, num_stages=0):
                             if n_idx > 0:
-                                if gi_vp >= 2:
-                                    if gi_vp % 2 == 0:
-                                        T.barrier_wait(v_empty_0, (gi_vp // 2 - 1) % 2)
-                                    else:
-                                        T.barrier_wait(v_empty_1, (gi_vp // 2 - 1) % 2)
-                                if gi_vp % 2 == 0:
-                                    T.barrier_wait(v_raw_full, gi_vp % 2)
-                                    T.call_extern(
-                                        "handle",
-                                        v_transform_helper,
-                                        v_vt_smem_0.access_ptr("rw"),
-                                        v_tc_smem_0.access_ptr("w"),
-                                    )
-                                else:
-                                    T.barrier_wait(v_raw_full, gi_vp % 2)
-                                    T.call_extern(
-                                        "handle",
-                                        v_transform_helper,
-                                        v_vt_smem_1.access_ptr("rw"),
-                                        v_tc_smem_1.access_ptr("w"),
-                                    )
-                                if gi_vp % 2 == 0:
-                                    T.barrier_arrive(v_full_0)
-                                else:
-                                    T.barrier_arrive(v_full_1)
+                                transform_v(
+                                    v_vt_smem_0, v_vt_smem_1, v_tc_smem_0, v_tc_smem_1,
+                                    v_raw_full, v_full_0, v_full_1, v_empty_0, v_empty_1, gi_vp,
+                                )  # fmt: skip
                                 gi_vp = gi_vp + 1
-                            if overlap_softmax_pv and not use_out_of_place_v:  # noqa: SIM102
+                            if overlap_softmax_pv and not use_out_of_place_v:
                                 # Aliased V cannot be overwritten until the preceding PV completes.
-                                if gi_vp >= 2:
-                                    if gi_vp % 2 == 0:
-                                        T.barrier_wait(v_empty_0, (gi_vp // 2 - 1) % 2)
-                                    else:
-                                        T.barrier_wait(v_empty_1, (gi_vp // 2 - 1) % 2)
+                                wait_v_empty(v_empty_0, v_empty_1, gi_vp)
                             if tx == 0:
                                 T.mbarrier_expect_tx(v_raw_full, dim * 224)
                                 v_desc = T.create_tma_descriptor(
@@ -536,393 +639,27 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 )
                             T.barrier_arrive(k_full[gi_kp % k_stages])
                             gi_kp = gi_kp + 1
-                        if gi_vp >= 2:
-                            if gi_vp % 2 == 0:
-                                T.barrier_wait(v_empty_0, (gi_vp // 2 - 1) % 2)
-                            else:
-                                T.barrier_wait(v_empty_1, (gi_vp // 2 - 1) % 2)
-                        if gi_vp % 2 == 0:
-                            T.barrier_wait(v_raw_full, gi_vp % 2)
-                            T.call_extern(
-                                "handle",
-                                v_transform_helper,
-                                v_vt_smem_0.access_ptr("rw"),
-                                v_tc_smem_0.access_ptr("w"),
-                            )
-                        else:
-                            T.barrier_wait(v_raw_full, gi_vp % 2)
-                            T.call_extern(
-                                "handle",
-                                v_transform_helper,
-                                v_vt_smem_1.access_ptr("rw"),
-                                v_tc_smem_1.access_ptr("w"),
-                            )
-                        if gi_vp % 2 == 0:
-                            T.barrier_arrive(v_full_0)
-                        else:
-                            T.barrier_arrive(v_full_1)
+                        transform_v(
+                            v_vt_smem_0, v_vt_smem_1, v_tc_smem_0, v_tc_smem_1, v_raw_full,
+                            v_full_0, v_full_1, v_empty_0, v_empty_1, gi_vp,
+                        )  # fmt: skip
                         gi_vp = gi_vp + 1
                         if groups == 8 and defer_row_sum:
                             T.sync_threads(barrier_id=5, arrive_count=384)
                 elif tx < 256:
-                    T.inc_max_nreg(240)
-                    for tile_b, tile_hkv, tile_m, tile_g in T.Persistent(
-                        [batch, heads_kv, T.ceildiv(seq_len_q, block_m), groups],
-                        wave_size=num_sms,
-                        index=bx,
-                        group_size=8,
-                    ):
-                        tile_h = tile_hkv * groups + tile_g
-                        head_kv = tile_hkv
-                        row_base = tile_m * block_m
-                        if is_causal:
-                            visible_tiles = T.ceildiv(
-                                T.min(seq_len_kv, causal_offset + row_base + block_m),
-                                224,
-                            )
-                            loop_range = visible_tiles
-                        else:
-                            loop_range = T.ceildiv(seq_len_kv, 224)
-                        qk_descale = T.alloc_var(
-                            accum_dtype,
-                            init=q_descale[tile_b, head_kv] * k_descale[tile_b, head_kv],
-                        )
-                        value_descale = T.alloc_var(accum_dtype, init=v_descale[tile_b, head_kv])
-                        T.tma_copy(
-                            q[tile_b, row_base : row_base + half_m, tile_h, :],
-                            q_shared_1,
-                            barrier=q_full_1,
-                        )
-                        T.barrier_arrive(q_full_1)
-                        T.barrier_wait(q_full_1, gi_q1 % 2)
-                        gi_q1 = gi_q1 + 1
-                        T.clear(acc_o_1)
-                        T.clear(ls_1)
-                        T.fill(sm_1, -T.infinity(accum_dtype))
-                        if overlap_softmax_pv:
-                            T.sync_threads(8, 256)
-                            T.barrier_wait(k_full[gi_kc1 % k_stages], (gi_kc1 // k_stages) % 2)
-                            issue_qk(q_shared_1, k_smem_0, k_smem_1, acc_s_1, gi_kc1)
-                            T.named_barrier_arrive(9, 256)
-                            T.wait_wgmma(0)
-                            T.warpgroup_fence_operand(acc_s_1, num_regs=112)
-                            T.barrier_arrive(k_empty[gi_kc1 % k_stages])
-                            gi_kc1 = gi_kc1 + 1
-                            scores(
-                                acc_s_1, sm_1, smp_1, ss_1, ssum_1, ls_1, qk_descale, 0, row_base
-                            )
-                            rescale_output(acc_o_1, ss_1, ss_shared_1, 6)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
-                                acc_s_1.data,
-                                p_regs_1.data,
-                            )
-                            for n_idx in T.serial(1, loop_range):
-                                T.sync_threads(8, 256)
-                                T.barrier_wait(k_full[gi_kc1 % k_stages], (gi_kc1 // k_stages) % 2)
-                                issue_qk(q_shared_1, k_smem_0, k_smem_1, acc_s_1, gi_kc1)
-                                if gi_vc1 % 2 == 0:
-                                    T.barrier_wait(v_full_0, (gi_vc1 // 2) % 2)
-                                else:
-                                    T.barrier_wait(v_full_1, (gi_vc1 // 2) % 2)
-                                issue_pv(p_regs_1, v_tc_smem_0, v_tc_smem_1, acc_o_1, gi_vc1)
-                                T.named_barrier_arrive(9, 256)
-                                T.wait_wgmma(1)
-                                T.warpgroup_fence_operand(acc_s_1, num_regs=112)
-                                T.barrier_arrive(k_empty[gi_kc1 % k_stages])
-                                gi_kc1 = gi_kc1 + 1
-                                scores(
-                                    acc_s_1,
-                                    sm_1,
-                                    smp_1,
-                                    ss_1,
-                                    ssum_1,
-                                    ls_1,
-                                    qk_descale,
-                                    n_idx,
-                                    row_base,
-                                )
-                                T.wait_wgmma(0)
-                                T.warpgroup_fence_operand(acc_o_1, num_regs=64)
-                                T.call_extern(
-                                    "handle", "tileops::fp8_fence_p_regs_64x224", p_regs_1.data
-                                )
-                                if gi_vc1 % 2 == 0:
-                                    T.barrier_arrive(v_empty_0)
-                                else:
-                                    T.barrier_arrive(v_empty_1)
-                                gi_vc1 = gi_vc1 + 1
-                                rescale_output(acc_o_1, ss_1, ss_shared_1, 6)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
-                                    acc_s_1.data,
-                                    p_regs_1.data,
-                                )
-                        else:
-                            for n_idx in T.Pipelined(loop_range, num_stages=0):
-                                T.barrier_wait(k_full[gi_kc1 % k_stages], (gi_kc1 // k_stages) % 2)
-                                issue_qk(q_shared_1, k_smem_0, k_smem_1, acc_s_1, gi_kc1)
-                                if n_idx > 0:
-                                    T.wait_wgmma(1)
-                                    T.warpgroup_fence_operand(acc_o_1, num_regs=64)
-                                    if gi_vc1 % 2 == 0:
-                                        T.barrier_arrive(v_empty_0)
-                                    else:
-                                        T.barrier_arrive(v_empty_1)
-                                    gi_vc1 = gi_vc1 + 1
-                                T.wait_wgmma(0)
-                                T.warpgroup_fence_operand(acc_s_1, num_regs=112)
-                                T.barrier_arrive(k_empty[gi_kc1 % k_stages])
-                                gi_kc1 = gi_kc1 + 1
-                                scores(
-                                    acc_s_1,
-                                    sm_1,
-                                    smp_1,
-                                    ss_1,
-                                    ssum_1,
-                                    ls_1,
-                                    qk_descale,
-                                    n_idx,
-                                    row_base,
-                                )
-                                rescale_output(acc_o_1, ss_1, ss_shared_1, 6)
-                                if gi_vc1 % 2 == 0:
-                                    T.barrier_wait(v_full_0, (gi_vc1 // 2) % 2)
-                                else:
-                                    T.barrier_wait(v_full_1, (gi_vc1 // 2) % 2)
-                                issue_pv(acc_s_1, v_tc_smem_0, v_tc_smem_1, acc_o_1, gi_vc1)
-                        if overlap_softmax_pv:
-                            if gi_vc1 % 2 == 0:
-                                T.barrier_wait(v_full_0, (gi_vc1 // 2) % 2)
-                            else:
-                                T.barrier_wait(v_full_1, (gi_vc1 // 2) % 2)
-                            issue_pv(p_regs_1, v_tc_smem_0, v_tc_smem_1, acc_o_1, gi_vc1)
-                        T.wait_wgmma(0)
-                        if overlap_softmax_pv:
-                            T.call_extern(
-                                "handle", "tileops::fp8_fence_p_regs_64x224", p_regs_1.data
-                            )
-                        T.warpgroup_fence_operand(acc_o_1, num_regs=64)
-                        if gi_vc1 % 2 == 0:
-                            T.barrier_arrive(v_empty_0)
-                        else:
-                            T.barrier_arrive(v_empty_1)
-                        gi_vc1 = gi_vc1 + 1
-                        if defer_row_sum:
-                            for i in T.Parallel(half_m):
-                                ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 1)
-                                ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 2)
-                        if has_sinks:
-                            sink_scale(ls_1, sm_1, sinks, ss_1, tile_h, 0, half_m)
-                            rescale_output(acc_o_1, ss_1, ss_shared_1, 3)
-                        T.copy(ls_1, ls_shared_1)
-                        T.sync_threads(barrier_id=6, arrive_count=128)
-                        T.call_extern(
-                            "handle",
-                            "tileops::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
-                            acc_o_1.data,
-                            ls_shared_1.access_ptr("r"),
-                            4,
-                            value_descale,
-                            o_shared_1.access_ptr("w"),
-                        )
-                        T.fence_proxy_async()
-                        T.sync_threads(barrier_id=3, arrive_count=128)
-                        store_output_tile(o_shared_1, output, tile_b, row_base, tile_h)
-                        if write_lse:
-                            for i in T.Parallel(half_m):
-                                ls_1[i] = T.log2(ls_1[i]) + sm_1[i] * lse_scale
-                            T.copy(ls_1, lse[tile_b, tile_h, row_base : row_base + half_m])
-                        if groups == 8 and defer_row_sum:
-                            T.sync_threads(barrier_id=5, arrive_count=384)
+                    consume(
+                        0, q, k_descale, q_descale, v_descale, sinks, output, q_shared_1,
+                        o_shared_1, ss_shared_1, ls_shared_1, p_regs_1, acc_s_1, acc_o_1, sm_1,
+                        smp_1, ss_1, ssum_1, ls_1, k_smem_0, k_smem_1, v_tc_smem_0, v_tc_smem_1,
+                        k_full, k_empty, v_full_0, v_full_1, v_empty_0, v_empty_1, q_full_1, bx,
+                    )  # fmt: skip
                 else:
-                    T.inc_max_nreg(240)
-                    if overlap_softmax_pv:
-                        T.named_barrier_arrive(8, 256)
-                    for tile_b, tile_hkv, tile_m, tile_g in T.Persistent(
-                        [batch, heads_kv, T.ceildiv(seq_len_q, block_m), groups],
-                        wave_size=num_sms,
-                        index=bx,
-                        group_size=8,
-                    ):
-                        tile_h = tile_hkv * groups + tile_g
-                        head_kv = tile_hkv
-                        row_base = tile_m * block_m
-                        if is_causal:
-                            visible_tiles = T.ceildiv(
-                                T.min(seq_len_kv, causal_offset + row_base + block_m),
-                                224,
-                            )
-                            loop_range = visible_tiles
-                        else:
-                            loop_range = T.ceildiv(seq_len_kv, 224)
-                        qk_descale = T.alloc_var(
-                            accum_dtype,
-                            init=q_descale[tile_b, head_kv] * k_descale[tile_b, head_kv],
-                        )
-                        value_descale = T.alloc_var(accum_dtype, init=v_descale[tile_b, head_kv])
-                        T.tma_copy(
-                            q[tile_b, row_base + half_m : row_base + block_m, tile_h, :],
-                            q_shared_2,
-                            barrier=q_full_2,
-                        )
-                        T.barrier_arrive(q_full_2)
-                        T.barrier_wait(q_full_2, gi_q2 % 2)
-                        gi_q2 = gi_q2 + 1
-                        T.clear(acc_o_2)
-                        T.clear(ls_2)
-                        T.fill(sm_2, -T.infinity(accum_dtype))
-                        if overlap_softmax_pv:
-                            T.sync_threads(9, 256)
-                            T.barrier_wait(k_full[gi_kc2 % k_stages], (gi_kc2 // k_stages) % 2)
-                            issue_qk(q_shared_2, k_smem_0, k_smem_1, acc_s_2, gi_kc2)
-                            T.named_barrier_arrive(8, 256)
-                            T.wait_wgmma(0)
-                            T.warpgroup_fence_operand(acc_s_2, num_regs=112)
-                            T.barrier_arrive(k_empty[gi_kc2 % k_stages])
-                            gi_kc2 = gi_kc2 + 1
-                            scores(
-                                acc_s_2,
-                                sm_2,
-                                smp_2,
-                                ss_2,
-                                ssum_2,
-                                ls_2,
-                                qk_descale,
-                                0,
-                                row_base + half_m,
-                            )
-                            rescale_output(acc_o_2, ss_2, ss_shared_2, 7)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
-                                acc_s_2.data,
-                                p_regs_2.data,
-                            )
-                            for n_idx in T.serial(1, loop_range):
-                                T.sync_threads(9, 256)
-                                T.barrier_wait(k_full[gi_kc2 % k_stages], (gi_kc2 // k_stages) % 2)
-                                issue_qk(q_shared_2, k_smem_0, k_smem_1, acc_s_2, gi_kc2)
-                                if gi_vc2 % 2 == 0:
-                                    T.barrier_wait(v_full_0, (gi_vc2 // 2) % 2)
-                                else:
-                                    T.barrier_wait(v_full_1, (gi_vc2 // 2) % 2)
-                                issue_pv(p_regs_2, v_tc_smem_0, v_tc_smem_1, acc_o_2, gi_vc2)
-                                T.named_barrier_arrive(8, 256)
-                                T.wait_wgmma(1)
-                                T.warpgroup_fence_operand(acc_s_2, num_regs=112)
-                                T.barrier_arrive(k_empty[gi_kc2 % k_stages])
-                                gi_kc2 = gi_kc2 + 1
-                                scores(
-                                    acc_s_2,
-                                    sm_2,
-                                    smp_2,
-                                    ss_2,
-                                    ssum_2,
-                                    ls_2,
-                                    qk_descale,
-                                    n_idx,
-                                    row_base + half_m,
-                                )
-                                T.wait_wgmma(0)
-                                T.warpgroup_fence_operand(acc_o_2, num_regs=64)
-                                T.call_extern(
-                                    "handle", "tileops::fp8_fence_p_regs_64x224", p_regs_2.data
-                                )
-                                if gi_vc2 % 2 == 0:
-                                    T.barrier_arrive(v_empty_0)
-                                else:
-                                    T.barrier_arrive(v_empty_1)
-                                gi_vc2 = gi_vc2 + 1
-                                rescale_output(acc_o_2, ss_2, ss_shared_2, 7)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
-                                    acc_s_2.data,
-                                    p_regs_2.data,
-                                )
-                        else:
-                            for n_idx in T.Pipelined(loop_range, num_stages=0):
-                                T.barrier_wait(k_full[gi_kc2 % k_stages], (gi_kc2 // k_stages) % 2)
-                                issue_qk(q_shared_2, k_smem_0, k_smem_1, acc_s_2, gi_kc2)
-                                if n_idx > 0:
-                                    T.wait_wgmma(1)
-                                    T.warpgroup_fence_operand(acc_o_2, num_regs=64)
-                                    if gi_vc2 % 2 == 0:
-                                        T.barrier_arrive(v_empty_0)
-                                    else:
-                                        T.barrier_arrive(v_empty_1)
-                                    gi_vc2 = gi_vc2 + 1
-                                T.wait_wgmma(0)
-                                T.warpgroup_fence_operand(acc_s_2, num_regs=112)
-                                T.barrier_arrive(k_empty[gi_kc2 % k_stages])
-                                gi_kc2 = gi_kc2 + 1
-                                scores(
-                                    acc_s_2,
-                                    sm_2,
-                                    smp_2,
-                                    ss_2,
-                                    ssum_2,
-                                    ls_2,
-                                    qk_descale,
-                                    n_idx,
-                                    row_base + half_m,
-                                )
-                                rescale_output(acc_o_2, ss_2, ss_shared_2, 7)
-                                if gi_vc2 % 2 == 0:
-                                    T.barrier_wait(v_full_0, (gi_vc2 // 2) % 2)
-                                else:
-                                    T.barrier_wait(v_full_1, (gi_vc2 // 2) % 2)
-                                issue_pv(acc_s_2, v_tc_smem_0, v_tc_smem_1, acc_o_2, gi_vc2)
-                        if overlap_softmax_pv:
-                            if gi_vc2 % 2 == 0:
-                                T.barrier_wait(v_full_0, (gi_vc2 // 2) % 2)
-                            else:
-                                T.barrier_wait(v_full_1, (gi_vc2 // 2) % 2)
-                            issue_pv(p_regs_2, v_tc_smem_0, v_tc_smem_1, acc_o_2, gi_vc2)
-                        T.wait_wgmma(0)
-                        if overlap_softmax_pv:
-                            T.call_extern(
-                                "handle", "tileops::fp8_fence_p_regs_64x224", p_regs_2.data
-                            )
-                        T.warpgroup_fence_operand(acc_o_2, num_regs=64)
-                        if gi_vc2 % 2 == 0:
-                            T.barrier_arrive(v_empty_0)
-                        else:
-                            T.barrier_arrive(v_empty_1)
-                        gi_vc2 = gi_vc2 + 1
-                        if defer_row_sum:
-                            for i in T.Parallel(half_m):
-                                ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 1)
-                                ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 2)
-                        if has_sinks:
-                            sink_scale(ls_2, sm_2, sinks, ss_2, tile_h, 0, half_m)
-                            rescale_output(acc_o_2, ss_2, ss_shared_2, 4)
-                        T.copy(ls_2, ls_shared_2)
-                        T.sync_threads(barrier_id=7, arrive_count=128)
-                        T.call_extern(
-                            "handle",
-                            "tileops::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
-                            acc_o_2.data,
-                            ls_shared_2.access_ptr("r"),
-                            4,
-                            value_descale,
-                            o_shared_2.access_ptr("w"),
-                        )
-                        T.fence_proxy_async()
-                        T.sync_threads(barrier_id=4, arrive_count=128)
-                        store_output_tile(o_shared_2, output, tile_b, row_base + half_m, tile_h)
-                        if write_lse:
-                            for i in T.Parallel(half_m):
-                                ls_2[i] = T.log2(ls_2[i]) + sm_2[i] * lse_scale
-                            T.copy(
-                                ls_2,
-                                lse[tile_b, tile_h, row_base + half_m : row_base + block_m],
-                            )
-                        if groups == 8 and defer_row_sum:
-                            T.sync_threads(barrier_id=5, arrive_count=384)
+                    consume(
+                        1, q, k_descale, q_descale, v_descale, sinks, output, q_shared_2,
+                        o_shared_2, ss_shared_2, ls_shared_2, p_regs_2, acc_s_2, acc_o_2, sm_2,
+                        smp_2, ss_2, ssum_2, ls_2, k_smem_0, k_smem_1, v_tc_smem_0, v_tc_smem_1,
+                        k_full, k_empty, v_full_0, v_full_1, v_empty_0, v_empty_1, q_full_2, bx,
+                    )  # fmt: skip
 
         return main
 
@@ -1020,7 +757,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             softcap=call.softcap,
             has_sinks=call.has_sinks,
             **call.rope_args,
-            device_index=call.device.index if call.device is not None else None,
+            device_index=call.device_index,
         )
         return tuple(args.values()), lambda: cls(**args)
 
@@ -1140,7 +877,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             q, k = rope(q, k, rope_cos, rope_sin)
         elif rope_cos is not None or rope_sin is not None:
             raise ValueError("native-FP8 Dense GQA does not accept RoPE tables")
-        return attention(q, k, v, q_scale, k_scale, v_scale, sinks if self.has_sinks else q)[0]
+        return attention(q, k, v, q_scale, k_scale, v_scale, sinks if self.has_sinks else q)
 
     def _compile(self, cfg: dict) -> tuple:
         """The attention program, and the Q/K rotation ahead of it or ``None``."""
@@ -1162,7 +899,6 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             self.is_causal,
             self.sm_scale,
             self.softcap,
-            False,
             grid_size,
             overlap_softmax_pv,
             self.has_sinks,

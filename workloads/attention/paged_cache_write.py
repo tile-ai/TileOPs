@@ -46,10 +46,6 @@ class PagedKVCacheWriteWorkload(WorkloadBase):
         self.slots = slots
 
     @property
-    def row_width(self) -> int:
-        return self.heads_kv * self.dim
-
-    @property
     def physical_tokens(self) -> int:
         return self.num_pages * self.page_size
 

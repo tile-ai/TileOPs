@@ -9,7 +9,6 @@ import torch
 
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.tiling import ALIGNMENT
-from tileops._utils import WARP_LANES
 
 __all__ = [
     "FP32_RANGE_BOUND",
@@ -22,15 +21,12 @@ __all__ = [
     "make_raw_sums_hold",
     "make_read_leads",
     "pairwise_sum",
-    "raw_sums_ratio",
     "read_first",
     "rms_scale",
     "row_padding",
     "select_row_config",
     "select_row_config_by_width",
     "select_row_configs",
-    "warp_row_vector",
-    "warp_sum",
     "widths_for_row",
 ]
 
@@ -128,26 +124,12 @@ def select_row_configs(
             no offered block_m fits; otherwise such a row gets the single default.
     """
 
-    def _feasible_threads(
-        n_padded: int, dtype: torch.dtype = torch.float16, widths: tuple = _CANDIDATE_THREADS
-    ) -> list[int]:
-        """Thread counts that divide the row and keep loads 128-bit vectorizable.
-
-        128-bit needs ``16 // element_size`` columns per thread (8 for fp16/bf16, 4
-        for fp32). If no candidate meets that floor (small rows), fall back to any
-        thread count that divides the row so the autotune space is never empty.
-
-        Args:
-            n_padded: Padded row width.
-            dtype: Element type the row is stored in.
-            widths: Block widths to draw from.
-        """
-        min_elements = VECTOR_ACCESS_BYTES // dtype.itemsize
-        candidates = [t for t in widths if n_padded % t == 0]
-        vectorizable = [t for t in candidates if n_padded // t >= min_elements]
-        return vectorizable or candidates
-
-    threads = _feasible_threads(n_padded, dtype, widths)
+    # Thread counts that divide the row and keep loads 128-bit vectorizable: 16 // itemsize
+    # columns a thread. A row too short for any of them takes every count that divides it, so
+    # the space is never empty.
+    min_elements = VECTOR_ACCESS_BYTES // dtype.itemsize
+    candidates = [t for t in widths if n_padded % t == 0]
+    threads = [t for t in candidates if n_padded // t >= min_elements] or candidates
     smem_per_row = n_padded * dtype.itemsize
     max_block_m = STATIC_SHARED_BYTES // (num_buffers * smem_per_row)
     configs = [
@@ -179,15 +161,6 @@ def rms_scale(weight, zero_centered: bool):
 def fold_chains(partial, first: int = 0, chains: int = 4):
     """The pairwise sum of a thread's add chains, ``partial[first:first + chains]``."""
     return pairwise_sum([partial[first + j] for j in range(chains)])
-
-
-@T.macro
-def warp_sum(acc, count: int, first: int = 0, lanes: int = WARP_LANES):
-    """Add each of ``acc[first:first + count]`` across each aligned group of *lanes* lanes, a
-    power of two, by XOR shuffles."""
-    for st in T.unroll(lanes.bit_length() - 1):
-        for j in T.unroll(first, first + count):
-            acc[j] += T.shfl_xor(acc[j], T.shift_left(1, st))
 
 
 @T.macro
@@ -280,30 +253,16 @@ def make_corrected_row_reduce(block_m, n, n_padded, eps):
     return corrected_row_reduce
 
 
-def warp_row_vector(n: int, elem_bytes: int) -> int | None:
-    """Return a 16-byte vector width for aligned rows of at most 1024 elements."""
-    vec = VECTOR_ACCESS_BYTES // elem_bytes
-    # Wider rows go to the fragment body.
-    widest = 1024
-    if n % vec or n > widest:
-        return None
-    return vec
-
-
-def raw_sums_ratio(dtype: str, adds: int) -> float:
-    """The largest ``E[x^2] / var`` at which fp32 sums of ``x`` and ``x^2``, each ``adds``
-    dependent adds deep, keep a row's variance, mean and output within ``tau``:
-    ``tau / (6 * adds * 2^-24)``. ``tau`` is half the dtype's accuracy for fp16 (``2^-11``)
-    and bf16 (``2^-8``); for fp32 it is an error budget of ``2^-17``, not half its accuracy."""
-    tau = {"float32": 2.0**-17, "float16": 2.0**-11, "bfloat16": 2.0**-8}[dtype]
-    return tau / (6.0 * adds * 2.0**-24)
-
-
 def make_raw_sums_hold(dtype: str, adds: int):
-    """The predicate on ``(square_mean, var)`` under which a kernel keeps raw sums: within
-    `raw_sums_ratio`, ``square_mean`` at most `FP32_RANGE_BOUND` and ``var`` at least
-    `VARIANCE_FLOOR`."""
-    ratio = raw_sums_ratio(dtype, adds)
+    """The predicate on ``(square_mean, var)`` under which a kernel keeps raw sums:
+    ``square_mean`` at most `FP32_RANGE_BOUND`, ``var`` at least `VARIANCE_FLOOR`, and
+    ``square_mean / var`` at most the ratio below."""
+    # The largest ``E[x^2] / var`` at which fp32 sums of ``x`` and ``x^2``, each ``adds``
+    # dependent adds deep, keep a row's variance, mean and output within ``tau``. ``tau`` is
+    # half the dtype's accuracy for fp16 (2^-11) and bf16 (2^-8); for fp32 it is an error
+    # budget of 2^-17, not half its accuracy.
+    tau = {"float32": 2.0**-17, "float16": 2.0**-11, "bfloat16": 2.0**-8}[dtype]
+    ratio = tau / (6.0 * adds * 2.0**-24)
 
     def raw_sums_hold(square_mean, var):
         return T.And(

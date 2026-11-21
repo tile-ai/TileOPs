@@ -96,13 +96,12 @@ def test_dsa_decode_decode(
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("dim_tail", "dtype"),
     [
-        pytest.param(64, torch.bfloat16, id="bf16-tail"),
-        pytest.param(0, torch.bfloat16, id="bf16-no-tail"),
-        pytest.param(0, torch.float16, id="fp16-no-tail"),
+        pytest.param(0, torch.bfloat16, marks=pytest.mark.smoke, id="bf16-no-tail"),
+        pytest.param(0, torch.float16, marks=pytest.mark.smoke, id="fp16-no-tail"),
+        pytest.param(64, torch.bfloat16, marks=pytest.mark.full, id="bf16-tail"),
     ],
 )
 def test_dsa_decode_decode_tail_and_dtype(dim_tail, dtype) -> None:

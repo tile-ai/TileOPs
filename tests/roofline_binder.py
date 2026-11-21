@@ -6,9 +6,9 @@ signature generates, since the recount needs no implementation.
 In parallel the oracle counts the traffic the checked call implies -- one read per input it
 binds except one that a determining predicate fixes from the others (listed here, not taken
 from the signature), a tensor sequence's read counted over its materialized elements, one
-write per output, both for a written input -- and the caller
-requires the two to be equal. Empty experts and groups read no weights, a masked slab moves only its valid rows,
-and attention moves only the rows some score needs. The `roofline` block is never read.
+write per output, both for a written input -- and the caller requires the two to be equal.
+Empty experts and groups read no weights, a masked slab moves only its valid rows, and
+attention moves only the rows some score needs. The `roofline` block is never read.
 
 Shared with the formula, and nothing beyond it: the minimum-traffic definition and the
 signature the call is checked against.
@@ -39,33 +39,24 @@ _SIGNATURE_CLASSES: dict[tuple[str, int], tuple[dict, type]] = {}
 def signature_class(op_name: str, entry: dict) -> type:
     """An `Op` subclass with *entry*'s generated methods and no kernel."""
     key = (op_name, id(entry))
-    if key not in _SIGNATURE_CLASSES:
-        _SIGNATURE_CLASSES[key] = (entry, _build_signature_class(op_name, entry))
-    return _SIGNATURE_CLASSES[key][1]
+    if key in _SIGNATURE_CLASSES:
+        return _SIGNATURE_CLASSES[key][1]
 
-
-def _build_signature_class(op_name: str, entry: dict) -> type:
     def construct(self, **params):
         vars(self).update(params)
         Op.__init__(self)
 
-    body = {"__init__": construct}
-    body["forward"] = lambda self, *args: None
+    body = {"__init__": construct, "forward": lambda self, *args: None}
     if "output" in _SLAB_ROWS.get(op_name, ()):
         body["eval_roofline_read_bytes"] = MoELayoutRowsRoofline.eval_roofline_read_bytes
     cls = type(f"Signature{op_name}", (Op,), body)
     if not install(cls, entry):
         raise ValueError(f"{op_name}: the signature does not generate")
+    _SIGNATURE_CLASSES[key] = (entry, cls)
     return cls
 
 
-# The per-expert weights, and the tensors with one row per slab row, of the grouped MoE ops.
-_EXPERT_WEIGHTS = {
-    "MoEGroupedGEMMFwdOp": ("b", "bias"),
-    "MoEGroupedGEMMFP8FwdOp": ("b", "b_scale"),
-    "MoEGroupedGEMMMXFP4FwdOp": ("b", "b_scale"),
-    "MoEExpertMLPFwdOp": ("w_gate_up", "w_down", "b_gate_up", "b_down"),
-}
+# The tensors with one row per slab row, of the grouped MoE ops.
 _SLAB_ROWS = {
     "MoEGroupedGEMMFwdOp": ("a", "output"),
     "MoEGroupedGEMMFP8FwdOp": ("a", "a_scale", "output"),
@@ -74,19 +65,15 @@ _SLAB_ROWS = {
 }
 
 
-# The inputs whose contents a determining predicate fixes from other inputs, by op: a
-# kernel recomputes them, so the call reads none. Kept apart from the manifest's predicate
-# set, so a wrong entry there makes the two counts differ.
-_DETERMINED_INPUTS = {
-    "NSACompressedVarlenFwdOp": ("chunk_offsets", "token_indices"),
-    "NSATopKVarlenFwdOp": ("chunk_offsets", "token_indices"),
-    "NSAVarlenFwdOp": ("token_indices",),
-    "GroupedGEMMFwdOp": ("batch_offsets",),
-}
-
-
 def _unused_expert_weights(op_name: str, call) -> int:
-    weights = _EXPERT_WEIGHTS.get(op_name)
+    """Bytes of the per-expert weights of the grouped MoE ops that an expert with no row
+    leaves unread."""
+    weights = {
+        "MoEGroupedGEMMFwdOp": ("b", "bias"),
+        "MoEGroupedGEMMFP8FwdOp": ("b", "b_scale"),
+        "MoEGroupedGEMMMXFP4FwdOp": ("b", "b_scale"),
+        "MoEExpertMLPFwdOp": ("w_gate_up", "w_down", "b_gate_up", "b_down"),
+    }.get(op_name)
     if weights is None:
         return 0
     layout, experts = call.indices["layout"], call.indices["E"]
@@ -244,6 +231,15 @@ def manifest_cases(op_name: str):
         if entry["status"] == "implemented"
         else signature_class(op_name, entry)
     )
+    # The inputs whose contents a determining predicate fixes from other inputs: a kernel
+    # recomputes them, so the call reads none. Kept apart from the manifest's predicate set,
+    # so a wrong entry there makes the two counts differ.
+    determined = {
+        "NSACompressedVarlenFwdOp": ("chunk_offsets", "token_indices"),
+        "NSATopKVarlenFwdOp": ("chunk_offsets", "token_indices"),
+        "NSAVarlenFwdOp": ("token_indices",),
+        "GroupedGEMMFwdOp": ("batch_offsets",),
+    }.get(op_name, ())
     for row in entry["workloads"]:
         for case in row.get("dtype_cases") or [{}]:
             call = instantiate(plan, row, case)
@@ -260,7 +256,6 @@ def manifest_cases(op_name: str):
                 | _nsa_compressed_unread(op_name, call)
                 | _lightning_indexer_unread(op_name, call)
             )
-            determined = _DETERMINED_INPUTS.get(op_name, ())
             reads = sum(
                 (
                     sum(x.numel() * x.element_size() for x in tensors[t.name])

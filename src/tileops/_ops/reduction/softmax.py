@@ -35,7 +35,7 @@ from tileops._ops.reduction.reduce import _ReduceOpBase
 from tileops.backend import Target
 from tileops.manifest.primitives import normalize_axis
 
-__all__ = ["LogSoftmaxFwdOp", "LogSumExpFwdOp", "SoftmaxFwdOp", "_SoftmaxBaseOp"]
+__all__ = ["LogSoftmaxFwdOp", "LogSumExpFwdOp", "SoftmaxFwdOp"]
 
 
 class _SoftmaxBaseOp(Op):

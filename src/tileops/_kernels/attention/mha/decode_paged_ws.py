@@ -15,6 +15,7 @@ from tileops._kernels.attention.call_spec import (
     AttentionCall,
     MHAPagedDecodeFwdInterface,
 )
+from tileops._kernels.attention.stream_counter import stream_counter
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
@@ -55,8 +56,9 @@ def _mha_decode_paged_ws_kernel(
     prod = 128
     # Named barrier the consumer group uses on its own, never block-wide.
     merge_barrier = 1
-    # Finite stand-in for -inf in the running max, so a fully masked tile rescales
-    # by exactly one instead of evaluating exp2(-inf - -inf).
+    # Finite stand-in for -inf in the running max: a warp whose rows are all masked, or a
+    # split past the end of a short cache, rescales by exactly one over a zero accumulator
+    # instead of evaluating exp2(-inf - -inf) = NaN.
     neg_floor = -1.0e38
     # What an empty split publishes as its log-sum-exp, beside a zero partial: finite, so
     # the merge weighs it exp2(empty_lse - peak), zero beside a split that saw a key and
@@ -188,11 +190,6 @@ def _mha_decode_paged_ws_kernel(
                                 row_len[g] = T.max(kv_len_block - (group - 1 - g), 0)
                             for c in T.serial(vec):
                                 acc_o[g, c] = 0
-                            # A finite floor, not -inf. A warp whose rows are all
-                            # masked, or a split past the end of a short cache, would
-                            # otherwise reach exp2(-inf - -inf) = NaN and poison the
-                            # merge; from a floor the same arithmetic yields a
-                            # rescale of exactly 1 over a zero accumulator.
                             m_run[g] = neg_floor
                             # This lane's share of the row sum.
                             l_run[g] = 0
@@ -281,9 +278,6 @@ def _mha_decode_paged_ws_kernel(
                                     l_run[g] += warp_l[g, u] * resc[0]
                                     for c in T.serial(vec):
                                         acc_o[g, c] += warp_o[g, u, d0 + c] * resc[0]
-                                # A split with no rows publishes a zero partial and a
-                                # finite floor, so the cross-split merge weights it
-                                # out exactly instead of multiplying zero by a NaN.
                                 resc[0] = T.if_then_else(l_run[g] > 0, 1.0 / l_run[g], 0.0)
                                 if num_split == 1:
                                     for c in T.serial(vec):
@@ -397,7 +391,7 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
         # The device index is in the identity: the kernel is compiled for its architecture.
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = (
             call.batch,
             call.heads,
@@ -598,26 +592,12 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
             dtype=torch.float32,
             device=Q.device,
         )
+        # The zeroed per-output split counts; the kernel leaves them zeroed again.
+        arrived = stream_counter(self._arrived, Q.device, self.batch * self.seqlen_q * self.heads)
         return self.program(self._compile)(
-            Q, K, V, real_seqlen_kv, block_table, glse, O_partial, self._arrival_counts(Q.device)
+            Q, K, V, real_seqlen_kv, block_table, glse, O_partial, arrived
         )
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(cfg["block_N"], cfg["num_split"], cfg["stages"], cfg["group"])
-
-    def _arrival_counts(self, device: torch.device) -> torch.Tensor:
-        """The zeroed per-output split counts; the kernel leaves them zeroed again.
-
-        One buffer per stream, since two launches on different streams would share
-        the counts; a captured graph owns one from its private pool.
-        """
-        size = self.batch * self.seqlen_q * self.heads
-        if torch.cuda.is_current_stream_capturing():
-            return torch.zeros(size, dtype=torch.int32, device=device)
-        stream = torch.cuda.current_stream(device).cuda_stream
-        counts = self._arrived.get(stream)
-        if counts is None:
-            counts = torch.zeros(size, dtype=torch.int32, device=device)
-            self._arrived[stream] = counts
-        return counts

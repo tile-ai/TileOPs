@@ -23,12 +23,11 @@ from tileops._kernels.elementwise._op_body import (
 )
 from tileops._kernels.streaming_load import load16_evict_last
 
-# Threads a 64K-register SM holds at 32 registers each. A guarded body's fast loop
-# keeps every element of a thread in flight, and nvcc left to itself gives it, or a
-# long body whose kernel declares ``FULL_OCCUPANCY``, more than 32 registers, which
-# leaves fewer threads resident; asking for blocks enough to fill this many threads
-# holds it at 32. The row-broadcast and register-copy builders both set this
-# occupancy floor, so they must agree on it.
+# Threads a 64K-register SM holds at 32 registers each. nvcc gives a guarded body's fast
+# loop, which keeps every element of a thread in flight, and a long body whose kernel sets
+# ``FULL_OCCUPANCY`` more than 32 registers, which leaves fewer threads resident; asking for
+# blocks enough to fill this many threads holds it at 32. The row-broadcast and register-copy
+# builders both set this occupancy floor, so they must agree on it.
 _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
 
 
@@ -67,9 +66,8 @@ def _broadcast_index_terms(plan_name):
 
 
 @target_cache(maxsize=32)
-def make_unary_direct(N, dtype, op_name, output_dtype=None):
-    """Strategy 1: 1 element per thread."""
-    out_dtype = output_dtype or dtype
+def make_unary_direct(N, dtype, op_name, out_dtype):
+    """One element a thread."""
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg):
@@ -88,15 +86,14 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None):
 
 
 @target_cache(maxsize=32)
-def make_unary_regcopy(N, dtype, op_name, output_dtype=None, headers=(), full_occupancy=False):
-    """Strategy 3: fragment load -> compute -> fragment store.
+def make_unary_regcopy(N, dtype, op_name, out_dtype, headers, full_occupancy):
+    """Fragment load, compute, fragment store.
 
     A ``GuardedOpFunc`` body runs its fast form over a fragment-copy thread's
-    elements, and the full body only in a thread where the guard fails. A staged
-    program holds the occupancy floor for a guarded body, and for any body whose
-    kernel declares *full_occupancy*.
+    elements, and the full body only in a thread where the guard fails. The fragment
+    program holds the occupancy floor for a guarded body, and for any body whose kernel
+    sets *full_occupancy*.
     """
-    out_dtype = output_dtype or dtype
     vec = 16 // (DataType(dtype).bits // 8)
 
     @tilelang.jit(out_idx=[1], compile_flags=_compile_flags(headers))
@@ -402,15 +399,14 @@ def _row_broadcast_prim(
                     y_reg[e] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
                 T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
 
-    vec = 16 // (DataType(dtype).bits // 8)
     hinted = (
         stage
         and fast is None
         and DataType(out_dtype).bits == 8
-        and num_per_thread % vec == 0
-        and inner % vec == 0
+        and num_per_thread % lanes == 0
+        and inner % lanes == 0
     )
-    chunks = num_per_thread // vec
+    chunks = num_per_thread // lanes
 
     @T.macro
     def write_block_hinted(a, b, y, a_base, b_base, by, bx, words=False):
@@ -430,19 +426,19 @@ def _row_broadcast_prim(
         a_run = T.alloc_local((num_per_thread,), dtype)
         b_run = T.alloc_local((num_per_thread,), dtype)
         for c in T.unroll(chunks):
-            at = col0 + (c * threads + tx) * vec
+            at = col0 + (c * threads + tx) * lanes
             if a_inner:
                 if a_numel < N_total:
-                    load16_evict_last(a_run, c * vec, a, a_base + at)
+                    load16_evict_last(a_run, c * lanes, a, a_base + at)
                 else:
-                    for v in T.vectorized(vec):
-                        a_run[c * vec + v] = a[a_base + at + v]
+                    for v in T.vectorized(lanes):
+                        a_run[c * lanes + v] = a[a_base + at + v]
             if b_inner:
                 if b_numel < N_total:
-                    load16_evict_last(b_run, c * vec, b, b_base + at)
+                    load16_evict_last(b_run, c * lanes, b, b_base + at)
                 else:
-                    for v in T.vectorized(vec):
-                        b_run[c * vec + v] = b[b_base + at + v]
+                    for v in T.vectorized(lanes):
+                        b_run[c * lanes + v] = b[b_base + at + v]
         if not a_inner:
             a_run[0] = a[a_base]
         if not b_inner:
@@ -466,9 +462,9 @@ def _row_broadcast_prim(
                     a_run[e] if a_inner else a_run[0], b_run[e] if b_inner else b_run[0]
                 )
         for c in T.unroll(chunks):
-            at = by * inner + col0 + (c * threads + tx) * vec
-            for v in T.vectorized(vec):
-                y[at + v] = y_run[c * vec + v]
+            at = by * inner + col0 + (c * threads + tx) * lanes
+            for v in T.vectorized(lanes):
+                y[at + v] = y_run[c * lanes + v]
 
     @T.macro
     def write_held_block(a, b, y, a_base, b_base, by, bxc):
@@ -908,31 +904,18 @@ def _row_broadcast_prim(
 
 
 @target_cache(maxsize=32)
-def make_binary_register_copy(
-    N_total,
-    dtype,
-    op_name,
-    output_dtype=None,
-    threads=256,
-    num_per_thread=8,
-    headers=(),
-):
-    """Binary register_copy: fragment load -> compute -> fragment store."""
-    out_dtype = output_dtype or dtype
+def make_binary_register_copy(N_total, dtype, op_name, out_dtype, headers):
+    """Same-shape operands: fragment load, compute, fragment store."""
 
     @tilelang.jit(out_idx=[2], compile_flags=_compile_flags(headers))
     def kernel(threads, num_per_thread):
-        def _vector_lanes(dtype, count):
-            """Elements of *dtype* in one 16-byte vector, at most *count*."""
-            return min(count, 128 // DataType(dtype).bits)
-
         op_func = op_func_for(op_name)
         block_size = threads * num_per_thread
         # The fragment copy hands a thread one vector in each block-wide chunk, and
         # the guarded loops below walk it in that order. A ragged last block, or a
         # thread holding part of a vector, has no such layout; it runs the body per
         # element instead.
-        lanes = _vector_lanes(dtype, num_per_thread)
+        lanes = min(num_per_thread, 128 // DataType(dtype).bits)
         chunks = num_per_thread // lanes
         whole = N_total % block_size == 0 and num_per_thread % lanes == 0
         fast = _fast_of(op_func) if whole else None
@@ -997,19 +980,8 @@ def make_binary_register_copy(
 
 
 @target_cache(maxsize=32)
-def make_binary_direct(
-    N_total,
-    dtype,
-    op_name,
-    plan_name,
-    a_numel,
-    b_numel,
-    output_dtype=None,
-    threads=256,
-    headers=(),
-):
-    """Binary direct: 1 element per thread with stride-based broadcast."""
-    out_dtype = output_dtype or dtype
+def make_binary_direct(N_total, dtype, op_name, plan_name, a_numel, b_numel, out_dtype, headers):
+    """One element a thread, each operand read at its broadcast strides."""
     plan = broadcast_plan_for(plan_name)
 
     if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
@@ -1078,21 +1050,18 @@ def make_binary_explicit(
     plan_name,
     a_numel,
     b_numel,
-    output_dtype=None,
-    threads=256,
-    num_per_thread=8,
-    stage=False,
-    bias_rows=None,
-    max_resident_threads=None,
-    headers=(),
+    out_dtype,
+    headers,
+    stage,
+    bias_rows,
+    max_resident_threads,
 ):
-    """Binary explicit_parallel: N elements per thread with stride-based broadcast.
+    """Several elements a thread, each operand read at its broadcast strides.
 
     *bias_rows* is how many rows a thread walks against one vector of a bias row, and
     *max_resident_threads* the most threads the device holds at once; see
     ``_row_broadcast_prim``.
     """
-    out_dtype = output_dtype or dtype
     plan = broadcast_plan_for(plan_name)
 
     if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
@@ -1167,8 +1136,8 @@ def make_binary_explicit(
 
 
 @target_cache(maxsize=32)
-def make_fused_gated_explicit(M, N, dtype, op_name, row_scaled=False):
-    """FusedGated explicit_parallel: N elements per thread.
+def make_fused_gated_explicit(M, N, dtype, op_name, row_scaled):
+    """Several elements a thread of ``act(gate) * value``.
 
     One block per column block of a row, numbered row-major along a one-dimensional grid, so
     *M* may exceed the 65535 blocks of a grid's y dimension. A *row_scaled* program takes a

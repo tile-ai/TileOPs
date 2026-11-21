@@ -30,12 +30,24 @@ from tileops._kernels.transform.call_spec import (
 
 __all__ = ["HadamardBaseExchangeKernel", "HadamardExchangeKernel", "HadamardWarpRowsKernel"]
 
-_PASS_CONFIGS = {
+# The pass configs every Hadamard program, here and in hadamard_shared, builds with.
+PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     # Every shared-memory hazard is fenced by hand: the inferred fences land inside branches
     # one warp of a pair takes.
     tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
 }
+
+
+class HadamardKernel(Kernel, HadamardTransformFwdInterface):
+    """The architectures and the config-built program every Hadamard kernel shares."""
+
+    # mma.m16n8k16 on 16-bit operands.
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    def _compile(self, cfg: dict[str, Any]) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)()
 
 
 def _bit(x, b: int):
@@ -99,7 +111,7 @@ def _hadamard_warp_rows_kernel(log_n: int, dtype: str, slots: int, ctas: int):
     5 .. log_n - 1, so after the MMA pair every remaining bit is a register butterfly.
     """
 
-    @tilelang.jit(out_idx=[1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[1], pass_configs=PASS_CONFIGS)
     def _func():
         n = 1 << log_n
         # A slot spans 32 elements of a row: 8 a lane, 4 lanes.
@@ -232,7 +244,7 @@ def _exchange_bytes(log_n: int, slots: int) -> int:
 def _hadamard_exchange_kernel(log_n: int, dtype: str, slots: int, ctas: int):
     """Rows of 2**log_n, 1024 to 32768 elements, through one shared-memory exchange a row."""
 
-    @tilelang.jit(out_idx=[1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[1], pass_configs=PASS_CONFIGS)
     def _func():
         n = 1 << log_n
         warps, p0_slot, p0_warp, p1_local, p1_lane, p1_warp, fill = _exchange_plan(log_n, slots)
@@ -340,13 +352,18 @@ def _hadamard_exchange_kernel(log_n: int, dtype: str, slots: int, ctas: int):
     return _func
 
 
-def _rows_of(x: torch.Tensor, n: int) -> "tuple[int, torch.Tensor]":
-    """The row count and *x* as rows of 32-bit words."""
-    rows = x.numel() // n
-    return rows, x.contiguous().view(rows, n).view(torch.uint32)
+class _WordRowsKernel(HadamardKernel):
+    """A kernel whose program reads each row of 16-bit elements as 32-bit words."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rows = x.numel() // self.n
+        if rows == 0:
+            return torch.empty_like(x)
+        words = x.contiguous().view(rows, self.n).view(torch.uint32)
+        return self.program(self._compile)(words).view(x.shape)
 
 
-class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
+class HadamardWarpRowsKernel(_WordRowsKernel):
     """Base order 1, rows of 32 to 512 elements, each in four lanes' registers.
 
     Args:
@@ -357,8 +374,6 @@ class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
         device_index: The device the kernel runs on.
     """
 
-    # mma.m16n8k16 on 16-bit operands.
-    supported_archs: list[int] = [80, 86, 89, 90]
     preferred_over = frozenset({"hadamard_shared_rows"})
 
     @classmethod
@@ -371,7 +386,7 @@ class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
 
     @classmethod
     def entry_for(cls, call: HadamardTransformCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         sms = call.sm_count
         return (call.n, call.dtype, index), lambda: cls(
             call.n, call.dtype, sm_count=sms, device_index=index
@@ -401,23 +416,13 @@ class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
         # Eight slots a thread where a row fits them, and a grid of every block up to 64 an SM.
         return {"slots": max(8, self.n // 32), "ctas_per_sm": 64}
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rows, words = _rows_of(x, self.n)
-        if rows == 0:
-            return torch.empty_like(x)
-        return self.program(self._compile)(words).view(x.shape)
-
-    def _compile(self, cfg: dict[str, Any]) -> Callable:
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)()
-
 
 def _fewest_slots(log_n: int) -> int:
     """The fewest slots a thread whose P1 still holds every bit no P0 thread held."""
     return next(s for s in (2, 4, 8, 16) if _exchange_fits(log_n, s))
 
 
-class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
+class HadamardExchangeKernel(_WordRowsKernel):
     """Base order 1, rows of 1024 to 32768 elements, through one shared-memory exchange a row.
 
     A thread takes the fewest slots the exchange allows, so a row spreads over the most warps
@@ -433,7 +438,6 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
         device_index: The device the kernel runs on.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
     preferred_over = frozenset({"hadamard_shared_rows"})
 
     @classmethod
@@ -450,7 +454,7 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
 
     @classmethod
     def entry_for(cls, call: HadamardTransformCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         sms, budget = call.sm_count, call.smem_budget
         return (call.n, call.dtype, index), lambda: cls(
             call.n, call.dtype, sm_count=sms, smem_budget=budget, device_index=index
@@ -486,16 +490,6 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
     @property
     def default_config(self) -> dict[str, Any]:
         return {"slots": _fewest_slots(self.log_n)}
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rows, words = _rows_of(x, self.n)
-        if rows == 0:
-            return torch.empty_like(x)
-        return self.program(self._compile)(words).view(x.shape)
-
-    def _compile(self, cfg: dict[str, Any]) -> Callable:
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)()
 
 
 @target_cache(maxsize=8)
@@ -584,7 +578,7 @@ def _hadamard_base_exchange_kernel(base: int, log_m: int, dtype: str, ctas: int)
     register butterflies and the base product is a straight-line program in the thread.
     """
 
-    @tilelang.jit(out_idx=[1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[1], pass_configs=PASS_CONFIGS)
     def _func():
         m = 1 << log_m
         n = base * m
@@ -653,7 +647,7 @@ def _hadamard_base_exchange_kernel(base: int, log_m: int, dtype: str, ctas: int)
     return _func
 
 
-class HadamardBaseExchangeKernel(Kernel, HadamardTransformFwdInterface):
+class HadamardBaseExchangeKernel(_WordRowsKernel):
     """Base order above 1, segments of 32 to 128, a row in one warp's registers.
 
     Args:
@@ -665,7 +659,6 @@ class HadamardBaseExchangeKernel(Kernel, HadamardTransformFwdInterface):
         device_index: The device the kernel runs on.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
     preferred_over = frozenset({"hadamard_shared_rows"})
 
     @classmethod
@@ -681,7 +674,7 @@ class HadamardBaseExchangeKernel(Kernel, HadamardTransformFwdInterface):
 
     @classmethod
     def entry_for(cls, call: HadamardTransformCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         sms = call.sm_count
         return (call.n, call.base_order, call.dtype, index), lambda: cls(
             call.n, call.base_order, call.dtype, sm_count=sms, device_index=index
@@ -712,13 +705,3 @@ class HadamardBaseExchangeKernel(Kernel, HadamardTransformFwdInterface):
     @property
     def default_config(self) -> dict[str, Any]:
         return {"ctas_per_sm": 8}
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rows, words = _rows_of(x, self.n)
-        if rows == 0:
-            return torch.empty_like(x)
-        return self.program(self._compile)(words).view(x.shape)
-
-    def _compile(self, cfg: dict[str, Any]) -> Callable:
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)()

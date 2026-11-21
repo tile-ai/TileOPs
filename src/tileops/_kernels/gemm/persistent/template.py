@@ -8,14 +8,12 @@ from collections.abc import Callable
 import tilelang
 import tilelang.language as T
 import torch
-from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
-    TensorCoreIntrinEmitter as WgmmaEmitter,
-)
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import WARPGROUP_THREADS
 from tileops._kernels.elementwise._erf import erf
+from tileops._kernels.gemm.dense import wgmma_acc_layout
 from tileops._kernels.gemm.persistent.heuristics import (
     ACTIVATIONS,
     INTERLEAVED_ACTIVATIONS,
@@ -634,18 +632,7 @@ def _make_prim_func(
     def native_acc_layout(buf, width):
         """The layout ``T.wgmma_gemm`` gives a math warp-group's ``64 x width`` accumulator,
         which the native-width WGMMA writes register for register."""
-        return WgmmaEmitter(
-            a_dtype=dtype,
-            b_dtype=dtype,
-            accum_dtype="float32",
-            a_transposed=False,
-            b_transposed=True,
-            block_row_warps=4,
-            block_col_warps=1,
-            warp_row_tiles=wg_rows // 4,
-            warp_col_tiles=width,
-            chunk=block_k,
-        ).make_mma_store_layout(buf)
+        return wgmma_acc_layout(buf, wg_rows, width, block_k, dtype, "float32")
 
     @T.macro
     def mma(A_s, B_s, C_l, slot, ki):

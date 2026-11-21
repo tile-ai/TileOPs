@@ -14,9 +14,20 @@ from tileops._kernels.pool.call_spec import (
     MaxPool2dIndicesFwdInterface,
     MaxPoolCall,
 )
-from tileops._kernels.pool.common import axis_inside, dtype_itemsize, pool_output_dim
+from tileops._kernels.pool.common import (
+    ACCUM_DTYPE,
+    MaxPoolKernelBase,
+    axis_inside,
+    pool_output_dim,
+)
+from tileops._utils import WARP_LANES
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWarpKernel", "MaxPool2dWithIndicesKernel"]
+
+
+def _band(tile: int, stride: int, kernel: int, dilation: int) -> int:
+    """The input extent *tile* outputs of one thread span on an axis."""
+    return (tile - 1) * stride + (kernel - 1) * dilation + 1
 
 
 @target_cache(maxsize=32)
@@ -34,9 +45,8 @@ def _max_pool2d_kernel(
     dilation_h: int,
     dilation_w: int,
     ceil_mode: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
-    accum_dtype = "float"
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
     rows = n * c_in
@@ -45,9 +55,8 @@ def _max_pool2d_kernel(
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool2d_func(block_m: int, threads: int, tile_h: int, tile_w: int):
-        # Input extent one thread's outputs span on each axis.
-        band_h = (tile_h - 1) * stride_h + (kernel_h - 1) * dilation_h + 1
-        band_w = (tile_w - 1) * stride_w + (kernel_w - 1) * dilation_w + 1
+        band_h = _band(tile_h, stride_h, kernel_h, dilation_h)
+        band_w = _band(tile_w, stride_w, kernel_w, dilation_w)
         tiles_h = -(-out_h // tile_h)
         tiles_w = -(-out_w // tile_w)
         total = rows * tiles_h * tiles_w
@@ -56,7 +65,7 @@ def _max_pool2d_kernel(
         window_inside = rows_inside and cols_inside
         # Every tile starts the same distance into its row, so one check settles
         # 16-byte alignment for all of them.
-        vector_width = VECTOR_ACCESS_BYTES // dtype_itemsize(dtype)
+        vector_width = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
         vector_band = (
             window_inside and band_w % vector_width == 0 and (tile_w * stride_w) % vector_width == 0
         )
@@ -83,7 +92,7 @@ def _max_pool2d_kernel(
                         top = th * tile_h * stride_h - pad_h
                         left = tw * tile_w * stride_w - pad_w
                         band = T.alloc_local((band_w,), dtype)
-                        across = T.alloc_local((band_h * tile_w,), accum_dtype)
+                        across = T.alloc_local((band_h * tile_w,), ACCUM_DTYPE)
                         for r in T.serial(band_h):
                             ih = top + r
                             if vector_band:
@@ -111,11 +120,11 @@ def _max_pool2d_kernel(
                             # kernel_h times, so the band is read once.
                             for j in T.serial(tile_w):
                                 run = T.alloc_var(T.float32)
-                                run = T.cast(band[j * stride_w], accum_dtype)
+                                run = T.cast(band[j * stride_w], ACCUM_DTYPE)
                                 for kw in T.serial(kernel_w - 1):
                                     v = T.cast(
                                         band[j * stride_w + (kw + 1) * dilation_w],
-                                        accum_dtype,
+                                        ACCUM_DTYPE,
                                     )
                                     # NaN enters `run` and never leaves, since a
                                     # later value fails `v > NaN`.
@@ -153,9 +162,8 @@ def _max_pool2d_with_indices_kernel(
     dilation_h: int,
     dilation_w: int,
     ceil_mode: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
-    accum_dtype = "float"
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
     rows = n * c_in
@@ -190,7 +198,7 @@ def _max_pool2d_with_indices_kernel(
                         left = ow * stride_w - pad_w
                         run = T.alloc_var(T.float32)
                         best = T.alloc_var(T.int32)
-                        run = -T.infinity(accum_dtype)
+                        run = -T.infinity(ACCUM_DTYPE)
                         # Seeded at the window's first tap inside the input, so a
                         # window of nothing but -inf reports that tap.
                         best = (top + T.max(0, T.ceildiv(-top, dilation_h)) * dilation_h) * w_in + (
@@ -204,7 +212,7 @@ def _max_pool2d_with_indices_kernel(
                                     # Why: a branch on the column splits the warp
                                     # at the row edges; the test rides the update.
                                     live = cols_inside or ((iw >= 0) and (iw < w_in))
-                                    v = T.cast(x[row, ih, safe_w(iw)], accum_dtype)
+                                    v = T.cast(x[row, ih, safe_w(iw)], ACCUM_DTYPE)
                                     # Strict > keeps the first maximum; a NaN takes
                                     # the position and holds it, so the last NaN in
                                     # the window wins.
@@ -219,31 +227,10 @@ def _max_pool2d_with_indices_kernel(
     return _max_pool2d_with_indices_func
 
 
-class _MaxPool2dKernelBase(Kernel):
-    """Shared construction and dispatch for the 2d max-pool kernels.
-
-    Concrete kernels supply ``_build`` and ``_launch``; everything else —
-    parameter capture, output extents, config and program — is identical between
-    the value-only and with-indices variants.
-    """
+class _MaxPool2dKernelBase(MaxPoolKernelBase):
+    """The constructor both 2d max-pool kernels share; a subclass names its ``_build``."""
 
     _build: ClassVar[Callable[..., Any]]
-
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
-
-    @classmethod
-    def entry_for(cls, call: MaxPoolCall) -> Entry:
-        return call, lambda: cls(
-            call.n,
-            call.c_in,
-            *call.size,
-            *call.window,
-            *call.stride,
-            *call.pad,
-            *call.dilation,
-            call.ceil_mode,
-            call.dtype,
-        )
 
     def __init__(
         self,
@@ -280,7 +267,6 @@ class _MaxPool2dKernelBase(Kernel):
         self.pad_w = pad_w
         self.dilation_h = dilation_h
         self.dilation_w = dilation_w
-        self.ceil_mode = ceil_mode
         self.dtype = dtype
         self.out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
         self.out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
@@ -302,43 +288,22 @@ class _MaxPool2dKernelBase(Kernel):
         )
         self.init_config(config)
 
-    @property
-    def default_config(self) -> dict:
-        return {"block_m": 512, "threads": 128}
 
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [
-            {"block_m": block_m, "threads": threads}
-            for block_m, threads in itertools.product([256, 512, 1024, 2048], [128, 256, 512])
-            if threads <= block_m
-        ]
-
-    def forward(self, x: torch.Tensor) -> Any:
-        self._require_devices(x=x)
-        return self._launch(self.program(self._compile), x)
-
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)
-
-    def _launch(self, program, x: torch.Tensor) -> Any:
-        """Run *program* on ``x`` and shape its outputs as the interface publishes them."""
-        raise NotImplementedError
+@T.macro
+def _nan_max(a, b):
+    """*b* where it is NaN or larger than *a*, so a NaN tap wins as in the generic kernel."""
+    return T.if_then_else(T.isnan(b) or b > a, b, a)
 
 
 @target_cache(maxsize=32)
 def _max_pool2d_warp_kernel(planes: int, h_in: int, w_in: int, dtype: str):
     out_h, out_w = (h_in - 1) // 2, (w_in - 1) // 2
+    # Three warps split the output rows; a lane takes one of at most 31 output columns.
     rows_per_warp = (out_h + 2) // 3
     band_h = 2 * rows_per_warp + 1
 
     @tilelang.jit(out_idx=[1])
     def build():
-        @T.macro
-        def maximum(a, b):
-            return T.if_then_else(T.isnan(b) or b > a, b, a)
-
         @T.prim_func
         def main(
             x: T.Tensor[(planes, h_in, w_in), dtype],
@@ -346,21 +311,23 @@ def _max_pool2d_warp_kernel(planes: int, h_in: int, w_in: int, dtype: str):
         ):
             with T.Kernel(planes, threads=96) as plane:
                 thread = T.get_thread_binding()
-                column = thread % 32
-                row = thread // 32 * rows_per_warp
-                across = T.alloc_local((band_h,), "float32")
+                column = thread % WARP_LANES
+                row = thread // WARP_LANES * rows_per_warp
+                across = T.alloc_local((band_h,), ACCUM_DTYPE)
                 # A lane reads two columns and gets the rightmost tap from its neighbour.
                 # Reducing across each row first preserves the generic kernel's tie order.
                 for i in T.unroll(band_h):
                     ih = T.min(row * 2 + i, h_in - 1)
-                    left = T.cast(x[plane, ih, T.min(column * 2, w_in - 1)], "float32")
-                    middle = T.cast(x[plane, ih, T.min(column * 2 + 1, w_in - 1)], "float32")
+                    left = T.cast(x[plane, ih, T.min(column * 2, w_in - 1)], ACCUM_DTYPE)
+                    middle = T.cast(x[plane, ih, T.min(column * 2 + 1, w_in - 1)], ACCUM_DTYPE)
                     right = T.shfl_down(left, 1)
-                    across[i] = maximum(maximum(left, middle), right)
+                    across[i] = _nan_max(_nan_max(left, middle), right)
                 for j in T.unroll(rows_per_warp):
                     if row + j < out_h and column < out_w:
-                        upper = maximum(across[j * 2], across[j * 2 + 1])
-                        y[plane, row + j, column] = T.cast(maximum(upper, across[j * 2 + 2]), dtype)
+                        upper = _nan_max(across[j * 2], across[j * 2 + 1])
+                        y[plane, row + j, column] = T.cast(
+                            _nan_max(upper, across[j * 2 + 2]), dtype
+                        )
 
         return main
 
@@ -375,10 +342,6 @@ def _max_pool2d_half_warp_kernel(planes: int):
 
     @tilelang.jit(out_idx=[1])
     def build():
-        @T.macro
-        def maximum(a, b):
-            return T.if_then_else(T.isnan(b) or b > a, b, a)
-
         @T.prim_func
         def main(
             x: T.Tensor[(planes, 33, 33), dtype],
@@ -388,17 +351,17 @@ def _max_pool2d_half_warp_kernel(planes: int):
                 thread = T.get_thread_binding()
                 column = thread % 16
                 band = thread // 16
-                rows = T.alloc_local((5,), "float32")
+                rows = T.alloc_local((5,), ACCUM_DTYPE)
                 for r in T.unroll(5):
-                    left = T.cast(x[plane, 4 * band + r, 2 * column], "float32")
-                    middle = T.cast(x[plane, 4 * band + r, 2 * column + 1], "float32")
-                    right = T.alloc_var("float32", init=T.shfl_down(left, 1, width=16))
+                    left = T.cast(x[plane, 4 * band + r, 2 * column], ACCUM_DTYPE)
+                    middle = T.cast(x[plane, 4 * band + r, 2 * column + 1], ACCUM_DTYPE)
+                    right = T.alloc_var(ACCUM_DTYPE, init=T.shfl_down(left, 1, width=16))
                     if column == 15:
-                        right = T.cast(x[plane, 4 * band + r, 32], "float32")
-                    rows[r] = maximum(maximum(left, middle), right)
+                        right = T.cast(x[plane, 4 * band + r, 32], ACCUM_DTYPE)
+                    rows[r] = _nan_max(_nan_max(left, middle), right)
                 for r in T.unroll(2):
-                    y[plane, 2 * band + r, column] = maximum(
-                        maximum(rows[2 * r], rows[2 * r + 1]), rows[2 * r + 2]
+                    y[plane, 2 * band + r, column] = _nan_max(
+                        _nan_max(rows[2 * r], rows[2 * r + 1]), rows[2 * r + 2]
                     )
 
         return main
@@ -407,7 +370,7 @@ def _max_pool2d_half_warp_kernel(planes: int):
 
 
 class MaxPool2dWarpKernel(Kernel, MaxPool2dFwdInterface):
-    """Share adjacent, unpadded 3-by-3 BF16 pooling windows within a warp."""
+    """Share adjacent, unpadded 3-by-3 FP16 or BF16 pooling windows within a warp."""
 
     supported_archs = [90]
     preferred_over = frozenset({"max_pool2d_kernel"})
@@ -433,7 +396,7 @@ class MaxPool2dWarpKernel(Kernel, MaxPool2dFwdInterface):
 
     @classmethod
     def entry_for(cls, call: MaxPoolCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = (call.n * call.c_in, *call.size, call.dtype)
         return (*args, index), lambda: cls(*args, device_index=index)
 
@@ -534,15 +497,11 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
             }
             for block_m, threads, tile_h, tile_w in space
             if threads <= block_m
-            and self._band(tile_h, self.stride_h, self.kernel_h, self.dilation_h) * tile_w
-            + self._band(tile_w, self.stride_w, self.kernel_w, self.dilation_w)
+            and _band(tile_h, self.stride_h, self.kernel_h, self.dilation_h) * tile_w
+            + _band(tile_w, self.stride_w, self.kernel_w, self.dilation_w)
             <= max_tile_registers
         ]
         return configs or [self.default_config]
-
-    @staticmethod
-    def _band(tile: int, stride: int, kernel: int, dilation: int) -> int:
-        return (tile - 1) * stride + (kernel - 1) * dilation + 1
 
 
 class MaxPool2dWithIndicesKernel(_MaxPool2dKernelBase, MaxPool2dIndicesFwdInterface):

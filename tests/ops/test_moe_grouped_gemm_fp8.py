@@ -98,10 +98,10 @@ def test_fp8_grouped_gemm_valid_rows_at_tile_and_slab_boundaries(
     run_into_guarded_out(op, workload, *with_counts(workload, counts))
 
 
-def _forced_op(layout, config: dict) -> MoEGroupedGEMMFP8FwdOp:
-    """Use the in-tree kernel with an explicit launch configuration."""
+def _forced_op(layout, config: dict, kernel=MoEGroupedGEMMFP8Kernel) -> MoEGroupedGEMMFP8FwdOp:
+    """Use the in-tree *kernel* with an explicit launch configuration."""
 
-    class Forced(MoEGroupedGEMMFP8Kernel):
+    class Forced(kernel):
         preferred_over = frozenset(MoEGroupedGEMMFP8FwdOp.kernel_types)
 
         @property
@@ -318,6 +318,55 @@ def test_fp8_grouped_gemm_mma_rejects_unaligned_tiles() -> None:
     run_into_guarded_out(op, workload, *_scaled_inputs(workload))
     with pytest.raises(ValueError, match="must divide"):
         next(op.iter_kernels()).init_config({"block_m": 64, "block_n": 64})
+
+
+@pytest.mark.sm89
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "block_m,block_n",
+    [
+        pytest.param(32, 64, marks=pytest.mark.smoke),
+        pytest.param(32, 128, marks=pytest.mark.full),
+        pytest.param(64, 64, marks=pytest.mark.full),
+        pytest.param(64, 128, marks=pytest.mark.full),
+    ],
+)
+def test_fp8_grouped_gemm_mma_explicit_configs(block_m: int, block_n: int) -> None:
+    workload = _workload(65, E=3, N=256, K=256)
+    config = {"block_m": block_m, "block_n": block_n}
+    op = _forced_op(MaskedLayoutSpec(max_m=65), config, MoEGroupedGEMMFP8MMAKernel)
+    run_into_guarded_out(op, workload, *with_counts(workload, [0, 33, 65]))
+    entries = op._entries_built(_KEY).values()
+    assert entries
+    for entry in entries:
+        assert isinstance(entry, MoEGroupedGEMMFP8MMAKernel)
+        assert entry.config == config
+
+
+@pytest.mark.sm89
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"threads": 128},
+        {"num_stages": 2},
+        {"block_m": 16},
+        {"block_n": 32},
+        {"block_n": 64.0},
+        {"block_m": True},
+    ],
+)
+def test_fp8_grouped_gemm_mma_rejects_invalid_config(change: dict) -> None:
+    workload = _workload(65, E=3, N=256, K=256)
+    op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=65))
+    op(*with_counts(workload, [0, 33, 65]))
+    entries = op._entries_built(_KEY).values()
+    assert entries
+    for entry in entries:
+        assert isinstance(entry, MoEGroupedGEMMFP8MMAKernel)
+        with pytest.raises(ValueError, match="FP8 MMA"):
+            entry.init_config(change)
 
 
 @pytest.mark.parametrize(

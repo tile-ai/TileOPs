@@ -36,11 +36,52 @@ from tileops._kernels.grouped_tiling import GroupTiling
 __all__ = ["GQAPrefillVarlenFwdKernel"]
 
 
-def _stages_score_tile(block_m: int, threads: int) -> bool:
+def stages_score_tile(block_m: int, threads: int) -> bool:
     """Whether the score tile goes through shared memory: TileLang finds no register
     layout for it when a warpgroup holds fewer than ``WGMMA_ROWS`` rows."""
     warpgroups = threads // WARPGROUP_THREADS
     return block_m // warpgroups < WGMMA_ROWS
+
+
+def varlen_key_tiles(q_row, rows, kv_len, offset, block_n, is_causal, window_left, window_right):
+    """The first key tile a query tile of *rows* rows from position *q_row* scans, and how many.
+
+    A request's queries are aligned to the end of its keys by *offset*; key tiles wholly left
+    of the window are skipped, not masked.
+    """
+    if is_causal:
+        stop = T.max(0, T.ceildiv(T.min(kv_len, offset + q_row + rows), block_n))
+    elif window_right >= 0:
+        stop = T.max(0, T.ceildiv(T.min(kv_len, offset + q_row + rows + window_right), block_n))
+    else:
+        stop = T.ceildiv(kv_len, block_n)
+    if window_left < 0:
+        return 0, stop
+    first = T.max(0, offset + q_row - window_left) // block_n
+    return first, T.max(0, stop - first)
+
+
+def varlen_visible(q_pos, kv_pos, q_len, kv_len, offset, is_causal, window_left, window_right):
+    """Whether query *q_pos* of a request sees its key *kv_pos* under the mask and window."""
+    valid = (q_pos < q_len) & (kv_pos < kv_len)
+    if is_causal:
+        valid = valid & (kv_pos <= q_pos + offset)
+    elif window_right >= 0:
+        valid = valid & (kv_pos <= q_pos + offset + window_right)
+    if window_left >= 0:
+        valid = valid & (kv_pos >= q_pos + offset - window_left)
+    return valid
+
+
+def _aligned_bytes(buffers: list[int]) -> int:
+    """Shared memory *buffers* take, each rounded up to TileLang's allocation alignment."""
+    align = SHARED_BUFFER_ALIGN_BYTES
+    return sum(-(-size // align) * align for size in buffers)
+
+
+def _narrow_config(dim: int) -> dict:
+    """The one-stage, one-warpgroup plan: 64 query rows, and 32 keys past 128 channels."""
+    return {"block_m": 64, "block_n": 64 if dim <= 128 else 32, "num_stages": 1, "threads": 128}
 
 
 @target_cache(maxsize=32)
@@ -64,8 +105,6 @@ def _gqa_prefill_varlen_fwd_kernel(
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
-    has_left = window_size_left >= 0
-    has_right = window_size_right >= 0
     scale = LOG2E if use_softcap or score_scale <= 0 else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
@@ -93,7 +132,7 @@ def _gqa_prefill_varlen_fwd_kernel(
             else None
         )
         rescale = make_rescale(block_m, dim)
-        p_via_shared = _stages_score_tile(block_m, threads)
+        p_via_shared = stages_score_tile(block_m, threads)
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
         rotate_query_tile = (
@@ -111,6 +150,12 @@ def _gqa_prefill_varlen_fwd_kernel(
         )
 
         sink_scale = make_sink_scale(scale, accum_dtype, block_m)
+
+        def normalized(acc_o, inv_logsum, i, j):
+            """Output element (i, j); a row the sinks zero stays zero whatever acc_o holds."""
+            if has_sinks:
+                return T.if_then_else(inv_logsum[i] > 0, acc_o[i, j] * inv_logsum[i], 0)
+            return acc_o[i, j] * inv_logsum[i]
 
         @T.macro
         def attend(
@@ -171,36 +216,13 @@ def _gqa_prefill_varlen_fwd_kernel(
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                if is_causal:
-                    loop_range = T.max(
-                        0,
-                        T.ceildiv(T.min(kv_len, causal_offset + q_row[0] + block_m), block_n),
-                    )
-                elif has_right:
-                    loop_range = T.max(
-                        0,
-                        T.ceildiv(
-                            T.min(
-                                kv_len,
-                                causal_offset + q_row[0] + block_m + window_size_right,
-                            ),
-                            block_n,
-                        ),
-                    )
-                else:
-                    loop_range = T.ceildiv(kv_len, block_n)
-                # Key tiles wholly left of the window are skipped, not masked.
-                if has_left:
-                    k_first = T.max(0, causal_offset + q_row[0] - window_size_left) // block_n
-                    loop_range = T.max(0, loop_range - k_first)
-
+                k_first, loop_range = varlen_key_tiles(
+                    q_row[0], block_m, kv_len, causal_offset, block_n,
+                    is_causal, window_size_left, window_size_right,
+                )  # fmt: skip
                 for k_idx in T.Pipelined(loop_range, num_stages=num_stages):
-                    if has_left:
-                        tile_start = (k_first + k_idx) * block_n
-                        tile_end = (k_first + k_idx + 1) * block_n
-                    else:
-                        tile_start = k_idx * block_n
-                        tile_end = (k_idx + 1) * block_n
+                    tile_start = (k_first + k_idx) * block_n
+                    tile_end = tile_start + block_n
                     if tile_end <= kv_len:
                         T.copy(
                             k[kv_start + tile_start : kv_start + tile_end, cur_kv_head, :],
@@ -225,22 +247,10 @@ def _gqa_prefill_varlen_fwd_kernel(
                     for i, j in T.Parallel(block_m, block_n):
                         q_pos = q_row[0] + i
                         kv_pos = tile_start + j
-                        if is_causal:
-                            valid = (
-                                (q_pos < q_len)
-                                & (kv_pos < kv_len)
-                                & (kv_pos <= q_pos + causal_offset)
-                            )
-                        elif has_right:
-                            valid = (
-                                (q_pos < q_len)
-                                & (kv_pos < kv_len)
-                                & (kv_pos <= q_pos + causal_offset + window_size_right)
-                            )
-                        else:
-                            valid = (q_pos < q_len) & (kv_pos < kv_len)
-                        if has_left:
-                            valid = valid & (kv_pos >= q_pos + causal_offset - window_size_left)
+                        valid = varlen_visible(
+                            q_pos, kv_pos, q_len, kv_len, causal_offset,
+                            is_causal, window_size_left, window_size_right,
+                        )  # fmt: skip
                         acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
                     T.gemm(
                         q_shared,
@@ -278,11 +288,7 @@ def _gqa_prefill_varlen_fwd_kernel(
                     # The query tile is dead after the last key tile, so the output
                     # goes through its shared buffer and leaves as whole rows.
                     for i, j in T.Parallel(block_m, dim):
-                        q_shared[i, j] = (
-                            T.if_then_else(inv_logsum[i] > 0, acc_o[i, j] * inv_logsum[i], 0)
-                            if has_sinks
-                            else acc_o[i, j] * inv_logsum[i]
-                        )
+                        q_shared[i, j] = normalized(acc_o, inv_logsum, i, j)
                     T.copy(
                         q_shared,
                         output[q_start + q_row[0] : q_start + q_row[0] + block_m, by, :],
@@ -292,11 +298,7 @@ def _gqa_prefill_varlen_fwd_kernel(
                     for i, j in T.Parallel(block_m, dim):
                         q_pos = q_row[0] + i
                         if q_pos < q_len:
-                            output[q_start + q_pos, by, j] = (
-                                T.if_then_else(inv_logsum[i] > 0, acc_o[i, j] * inv_logsum[i], 0)
-                                if has_sinks
-                                else acc_o[i, j] * inv_logsum[i]
-                            )
+                            output[q_start + q_pos, by, j] = normalized(acc_o, inv_logsum, i, j)
 
         if fuse_rope:
             half = rotary_dim // 2
@@ -345,15 +347,14 @@ def prefill_shared_bytes(config: dict, *, batch: int, dim: int, element: int) ->
     block_m, block_n = config["block_m"], config["block_n"]
     tile = block_n * dim * element
     buffers = [block_m * dim * element, tile, tile, 4 * (batch + 1)]
-    if _stages_score_tile(block_m, config["threads"]):
+    if stages_score_tile(block_m, config["threads"]):
         buffers += [block_m * block_n * element, 4 * config["threads"], 4 * config["threads"]]
-    align = SHARED_BUFFER_ALIGN_BYTES
-    return sum(-(-size // align) * align for size in buffers)
+    return _aligned_bytes(buffers)
 
 
 def prefill_default_config(*, batch: int, dim: int, element: int, budget: int):
     """Select the existing one-stage plan, or report that no candidate fits."""
-    narrow = {"block_m": 64, "block_n": 64 if dim <= 128 else 32, "num_stages": 1, "threads": 128}
+    narrow = _narrow_config(dim)
     candidates = [narrow, {**narrow, "block_m": 32}, {**narrow, "block_m": 32, "block_n": 16}]
     if 256 < dim <= 512:
         candidates.insert(0, {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256})
@@ -411,18 +412,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
             element=self.dtype.itemsize,
             budget=self.build_target.smem_budget,
         )
-        return plan or {
-            "block_m": 64,
-            "block_n": 64 if self.dim <= 128 else 32,
-            "num_stages": 1,
-            "threads": 128,
-        }
-
-    def _shared_bytes(self, config: dict) -> int:
-        """Shared memory a one-stage *config* allocates, buffer by buffer as TileLang does."""
-        return prefill_shared_bytes(
-            config, batch=self.batch, dim=self.dim, element=self.dtype.itemsize
-        )
+        return plan or _narrow_config(self.dim)
 
     def tuning_candidates(self, configs, untuned=None) -> list[dict]:
         candidates = super().tuning_candidates(configs, untuned)

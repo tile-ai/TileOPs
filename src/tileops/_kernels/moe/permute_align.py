@@ -339,7 +339,8 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
 
 @target_cache(maxsize=32)
 def _make_sparse_routes_kernel(numel: int, num_experts: int):
-    """One block of four warps owns four experts and fills part of the output tail."""
+    """Each warp of a four-warp block scatters the routes of one expert, and each block fills
+    its share of the outputs' sentinel tail."""
     threads = 128
     warps = threads // WARP_LANES
     block_size = 64
@@ -474,7 +475,7 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
     @classmethod
     def entry_for(cls, call: PermuteAlignCall) -> Entry:
         """One build per routed count, expert count, tile height and device."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.num_routes, call.num_experts, call.block_size, index)
         return identity, lambda: cls(
             call.num_routes, call.num_experts, call.block_size, device_index=index
@@ -496,19 +497,18 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
 
         # Fewer routes than this, with at most a warp of experts, take the small-batch kernel.
         small_numel_threshold = 1024
-        self._small_batch_fn = (
-            _make_small_batch_kernel(numel, num_experts, block_size)
-            if numel < small_numel_threshold and num_experts <= WARP_LANES
-            else None
-        )
-        if (
+        # The one fused program that replaces align and scatter, or None.
+        self._fused_fn = None
+        if numel < small_numel_threshold and num_experts <= WARP_LANES:
+            self._fused_fn = _make_small_batch_kernel(numel, num_experts, block_size)
+        elif (
             self.build_target.arch == 90
             and 0 < numel <= 256
             and num_experts in (128, 256, 384)
             and block_size == 64
         ):
-            self._small_batch_fn = _make_sparse_routes_kernel(numel, num_experts)
-        if self._small_batch_fn is None:
+            self._fused_fn = _make_sparse_routes_kernel(numel, num_experts)
+        if self._fused_fn is None:
             self._align_fn = _make_align_kernel(numel, num_experts, block_size)
             # The scatter kernel takes at least one route.
             self._scatter_fn = (
@@ -563,9 +563,9 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
         expert_ids = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
         num_tokens_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
 
-        if self._small_batch_fn is not None:
-            small = self.program(self._compile_small_batch)
-            small(flat, sorted_token_ids, expert_ids, num_tokens_post_pad)
+        if self._fused_fn is not None:
+            fused = self.program(self._compile_fused)
+            fused(flat, sorted_token_ids, expert_ids, num_tokens_post_pad)
         else:
             cumsum = torch.empty(self.num_experts + 1, dtype=torch.int32, device=dev)
             align, scatter = self.program(self._compile_align)
@@ -575,9 +575,9 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
 
         return sorted_token_ids, expert_ids, num_tokens_post_pad
 
-    def _compile_small_batch(self, cfg: dict):
-        """The small-batch program, which takes no launch parameter from *cfg*."""
-        return self._small_batch_fn()
+    def _compile_fused(self, cfg: dict):
+        """The fused program, which takes no launch parameter from *cfg*."""
+        return self._fused_fn()
 
     def _compile_align(self, cfg: dict) -> tuple:
         """The align program of config *cfg*, and the scatter program, ``None`` without routes."""

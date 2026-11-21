@@ -21,17 +21,17 @@ MoEPermuteAlignFwdOp:
     - "num_experts > 0"
     - "block_size > 0"
   workloads:
-    # Kimi K2: E=384, K=8, block_size=64
+  # Kimi K2: E=384, K=8, block_size=64
   - {T: 1, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-t1"}
   - {T: 32, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-t32"}
   - {T: 512, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-t512"}
   - {T: 4096, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-t4096"}
-    # DeepSeek-V3: E=256, K=8, block_size=64
+  # DeepSeek-V3: E=256, K=8, block_size=64
   - {T: 1, K: 8, num_experts: 256, block_size: 64, label: "ds-v3-t1"}
   - {T: 32, K: 8, num_experts: 256, block_size: 64, label: "ds-v3-t32"}
   - {T: 512, K: 8, num_experts: 256, block_size: 64, label: "ds-v3-t512"}
   - {T: 4096, K: 8, num_experts: 256, block_size: 64, label: "ds-v3-t4096"}
-    # Qwen3: E=128, K=8, block_size=64
+  # Qwen3: E=128, K=8, block_size=64
   - {T: 1, K: 8, num_experts: 128, block_size: 64, label: "qwen3-235b-t1"}
   - {T: 32, K: 8, num_experts: 128, block_size: 64, label: "qwen3-235b-t32"}
   - {T: 512, K: 8, num_experts: 128, block_size: 64, label: "qwen3-235b-t512"}
@@ -72,13 +72,13 @@ FusedMoEExpertsFwdOp:
     - "F > 0"
     - "routed_scaling_factor > 0"
   workloads:
-    # Qwen3-235B-A22B: H=4096, F=1536, E=128, K=8
+  # Qwen3-235B-A22B: H=4096, F=1536, E=128, K=8
   - {T: 512, E: 128, K: 8, H: 4096, F: 1536, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode"}
   - {T: 4096, E: 128, K: 8, H: 4096, F: 1536, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
-    # DeepSeek-V3: H=7168, F=2048, E=256, K=8
+  # DeepSeek-V3: H=7168, F=2048, E=256, K=8
   - {T: 512, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-decode"}
   - {T: 4096, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-prefill"}
-    # gpt-oss-120b: E=128 and gpt-oss-20b: E=32; top_k=4, H=F=2880, swigluoai with both biases.
+  # gpt-oss-120b: E=128 and gpt-oss-20b: E=32; top_k=4, H=F=2880, swigluoai with both biases.
   - {T: 64, E: 128, K: 4, H: 2880, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-decode"}
   - {T: 4096, E: 128, K: 4, H: 2880, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-prefill"}
   - {T: 1024, E: 32, K: 4, H: 2880, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-prefill"}
@@ -119,11 +119,11 @@ IndexedExpertMLPFwdOp:
     - "F > 0"
     - "routed_scaling_factor > 0"
   workloads:
-    # DeepSeek-V3: H=7168, F=2048, E=256, K=8
+  # DeepSeek-V3: H=7168, F=2048, E=256, K=8
   - {T: 1, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-t1"}
   - {T: 32, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-t32"}
   - {T: 64, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-t64"}
-    # Qwen3-235B-A22B: H=4096, F=1536, E=128, K=8
+  # Qwen3-235B-A22B: H=4096, F=1536, E=128, K=8
   - {T: 32, E: 128, K: 8, H: 4096, F: 1536, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-t32"}
   roofline:
     # Only the experts topk_ids selects are read.
@@ -174,23 +174,23 @@ FusedTopKFwdOp:
     - "present(expert_ids) or num_expert_group == 1 or not present(correction_bias) or E // num_expert_group >= 2"
     - "routed_scaling_factor > 0"
   workloads:
-    # Kimi K2 routing, then Qwen3-235B-A22B, over the decode-to-prefill token range.
+  # Kimi K2 routing, then Qwen3-235B-A22B, over the decode-to-prefill token range.
   - {T: 32, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, dtype_cases: [{G: bfloat16}], label: "kimi-k2-t32"}
   - {T: 512, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, dtype_cases: [{G: bfloat16}], label: "kimi-k2-t512"}
   - {T: 4096, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, dtype_cases: [{G: bfloat16}], label: "kimi-k2-t4096"}
-    # Kimi K2 also routes with a per-expert bias, which is a second kernel build.
+  # Kimi K2 also routes with a per-expert bias, which is a second kernel build.
   - {T: 512, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "kimi-k2-t512-bias"}
   - {T: 32, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t32"}
   - {T: 512, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "qwen3-235b-t512"}
   - {T: 4096, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t4096"}
-    # DeepSeek-V3 routing over the decode-to-prefill token range: biased sigmoid scores,
-    # 8 groups of 32 experts with the best 4 kept, renormalized and scaled by 2.5.
+  # DeepSeek-V3 routing over the decode-to-prefill token range: biased sigmoid scores,
+  # 8 groups of 32 experts with the best 4 kept, renormalized and scaled by 2.5.
   - {T: 1, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: "ds-v3-grouped-t1"}
   - {T: 32, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: "ds-v3-grouped-t32"}
   - {T: 64, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "ds-v3-grouped-t64"}
   - {T: 4096, E: 256, top_k: 8, num_expert_group: 8, topk_group: 4, routed_scaling_factor: 2.5, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}], label: "ds-v3-grouped-t4096"}
-    # DeepSeek-V4-Flash: 256 experts, top 6 of the biased sqrt-softplus scores of float32
-    # logits, renormalized and scaled by 1.5; its first three layers route by token id.
+  # DeepSeek-V4-Flash: 256 experts, top 6 of the biased sqrt-softplus scores of float32
+  # logits, renormalized and scaled by 1.5; its first three layers route by token id.
   - {T: 1, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [correction_bias], dtype_cases: [{G: float32}], label: "dsv4-flash-t1"}
   - {T: 64, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [correction_bias], dtype_cases: [{G: float32}], label: "dsv4-flash-t64"}
   - {T: 4096, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [correction_bias], dtype_cases: [{G: float32}], label: "dsv4-flash-t4096"}
@@ -198,15 +198,13 @@ FusedTopKFwdOp:
   - {T: 1, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [expert_ids], dtype_cases: [{G: float32}], label: "dsv4-flash-hash-t1"}
   - {T: 4096, E: 256, top_k: 6, scoring_func: sqrtsoftplus, renormalize: true, routed_scaling_factor: 1.5, some: [expert_ids], dtype_cases: [{G: float32}], label: "dsv4-flash-hash-t4096"}
   roofline:
-    # Per token: scoring (sigmoid and sqrtsoftplus 4 per score, softmax 3 plus the row sum and
-    # a divide per kept weight unless renormalizing, or per logit when a bias selects), top_k compare-and-selects per logit,
-    # the bias add, and 2 * top_k to renormalize. Grouping adds the group scores (2
-    # compare-and-selects per logit for the two best and an add per group with a bias, a max
-    # per logit without), topk_group compare-and-selects per group to keep the best groups,
-    # and a select per logit to drop the rest; a scaling factor other than one, a multiply
-    # per kept weight. With expert_ids nothing is selected, and only the given experts are
-    # scored and read unless an unrenormalized softmax needs the whole row; the bias is not
-    # read.
+    # Per token: scoring (sigmoid, sqrtsoftplus 4 per score; softmax 3, plus the row sum and a
+    # divide per kept weight unless renormalizing, or per logit when a bias selects), top_k
+    # compare-and-selects per logit, the bias add, 2 * top_k to renormalize, and a multiply per
+    # kept weight for a scaling factor other than one. Grouping adds the group scores (two
+    # compare-and-selects per logit and an add per group with a bias, a max per logit without),
+    # topk_group selects per group and a select per logit. With expert_ids only the given experts
+    # are scored and read, unless an unrenormalized softmax needs the whole row.
     flops: "T * ((top_k if present(expert_ids) and (scoring_func != 'softmax' or renormalize) else E) * (4 if scoring_func in ('sigmoid', 'sqrtsoftplus') else 3) + (2 * E if scoring_func == 'softmax' and present(correction_bias) and not present(expert_ids) else E + top_k if scoring_func == 'softmax' and not renormalize else 0) + (0 if present(expert_ids) else top_k * E + (E if present(correction_bias) else 0) + (((2 * E + num_expert_group if present(correction_bias) else E) + topk_group * num_expert_group + E) if num_expert_group > 1 else 0)) + (2 * top_k if renormalize else 0) + (top_k if routed_scaling_factor != 1.0 else 0))"
     bytes: "(bytes(gating_output) * top_k // E if present(expert_ids) and (scoring_func != 'softmax' or renormalize) else bytes(gating_output)) + (bytes(correction_bias) if present(correction_bias) and not present(expert_ids) else 0) + (bytes(expert_ids) if present(expert_ids) else 0) + bytes(topk_weights) + bytes(topk_ids)"
 
@@ -265,8 +263,8 @@ FusedMoEFwdOp:
   - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-prefill"}
   - {T: 1, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-decode-b1}
   - {T: 32, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-decode-b32}
-    # gpt-oss-120b: E=128 and gpt-oss-20b: E=32; top_k=4, H=F=2880, swigluoai with both biases.
-    # The router's softmax over the top_k logits it keeps is softmax, then renormalize.
+  # gpt-oss-120b: E=128 and gpt-oss-20b: E=32; top_k=4, H=F=2880, swigluoai with both biases.
+  # The router's softmax over the top_k logits it keeps is softmax, then renormalize.
   - {T: 64, E: 128, H: 2880, F: 2880, top_k: 4, scoring_func: softmax, renormalize: true, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-decode"}
   - {T: 4096, E: 128, H: 2880, F: 2880, top_k: 4, scoring_func: softmax, renormalize: true, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-prefill"}
   - {T: 1024, E: 32, H: 2880, F: 2880, top_k: 4, scoring_func: softmax, renormalize: true, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-prefill"}
@@ -313,7 +311,7 @@ MoEPrePermuteFwdOp:
   workloads:
   - {T: 32, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "decode-t32"}
   - {T: 512, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill-t512"}
-    # DeepSeek-V3 under EP=8: 32 local experts, H=7168, K=8.
+  # DeepSeek-V3 under EP=8: 32 local experts, H=7168, K=8.
   - {T: 100, H: 7168, K: 8, num_local_experts: 32, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
   - {T: 1, H: 2048, K: 8, num_local_experts: 16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-b1}
   roofline:
@@ -364,7 +362,7 @@ MoEGroupedGEMMFwdOp:
     # An aligned layout materializes whole tiles.
     - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
   workloads:
-    # DeepSeek-V3: 256 experts, H=7168, F=2048; gate_up is [E, 2F, H], down is [E, H, F].
+  # DeepSeek-V3: 256 experts, H=7168, F=2048; gate_up is [E, 2F, H], down is [E, H, F].
   - {P: 4096, K: 7168, E: 256, N: 4096, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}, {D: float16}], label: "ds-v3-decode-mlp-up"}
   - {P: 32768, K: 7168, E: 256, N: 4096, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill-mlp-up"}
   - {P: 4096, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-decode-down"}
@@ -372,13 +370,13 @@ MoEGroupedGEMMFwdOp:
   - {P: 32768, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill-down"}
   - {P: 4096, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-decode-swiglu"}
   - {P: 32768, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill-swiglu"}
-    # DeepSeek-V3 under EP=8 with a masked dispatch: 32 local experts, 128 slots each.
+  # DeepSeek-V3 under EP=8 with a masked dispatch: 32 local experts, 128 slots each.
   - {K: 7168, E: 32, N: 4096, layout: {masked: {max_m: 128}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-ep8-masked"}
   - {P: 8, K: 2048, E: 16, N: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-decode}
   - {P: 256, K: 2048, E: 16, N: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-routed256}
-    # gpt-oss-120b (E=128) at T=64 and T=4096, gpt-oss-20b (E=32) at T=1024; top_k=4, so
-    # P = 4 * T; H=F=2880. The up row is gate_up, [E, 2F, H] with swigluoai and its [E, 2F]
-    # bias; the down row is [E, H, F] with its [E, H] bias.
+  # gpt-oss-120b (E=128) at T=64 and T=4096, gpt-oss-20b (E=32) at T=1024; top_k=4, so
+  # P = 4 * T; H=F=2880. The up row is gate_up, [E, 2F, H] with swigluoai and its [E, 2F]
+  # bias; the down row is [E, H, F] with its [E, H] bias.
   - {P: 256, K: 2880, E: 128, N: 2880, activation: swigluoai, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-t64-up"}
   - {P: 256, K: 2880, E: 128, N: 2880, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-t64-down"}
   - {P: 16384, K: 2880, E: 128, N: 2880, activation: swigluoai, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-t4096-up"}
@@ -434,13 +432,13 @@ MoEExpertMLPFwdOp:
     # An aligned layout materializes whole tiles.
     - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
   workloads:
-    # Qwen3-235B-A22B: H=4096, F=1536, E=128; DeepSeek-V3: H=7168, F=2048, E=256.
+  # Qwen3-235B-A22B: H=4096, F=1536, E=128; DeepSeek-V3: H=7168, F=2048, E=256.
   - {P: 4096, H: 4096, E: 128, F: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode"}
   - {P: 32768, H: 4096, E: 128, F: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
   - {P: 4096, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-decode"}
   - {P: 32768, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-prefill"}
-    # gpt-oss-120b (E=128) at T=64 and T=4096, gpt-oss-20b (E=32) at T=1024; top_k=4, so
-    # P = 4 * T; H=F=2880, swigluoai with both biases.
+  # gpt-oss-120b (E=128) at T=64 and T=4096, gpt-oss-20b (E=32) at T=1024; top_k=4, so
+  # P = 4 * T; H=F=2880, swigluoai with both biases.
   - {P: 256, H: 2880, E: 128, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-decode"}
   - {P: 16384, H: 2880, E: 128, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-prefill"}
   - {P: 4096, H: 2880, E: 32, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-prefill"}
@@ -487,15 +485,15 @@ MoEPostPermuteFwdOp:
     - "H > 0"
   workloads:
   - {T: 32, K: 2, P: 64, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "decode-t32"}
-    # The output dtype stated explicitly, equal to the expert output's.
+  # The output dtype stated explicitly, equal to the expert output's.
   - {T: 32, K: 2, P: 64, H: 128, out_dtype: float16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}], label: "decode-t32"}
   - {T: 32, K: 2, P: 64, H: 128, out_dtype: bfloat16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "decode-t32"}
   - {T: 512, K: 2, P: 1024, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill-t512"}
-    # DeepSeek-V3 under EP=8: H=7168, K=8.
+  # DeepSeek-V3 under EP=8: H=7168, K=8.
   - {T: 100, K: 8, P: 800, H: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
   - {T: 1, K: 8, P: 8, H: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-b1}
-    # DeepSeek-V4-Flash: hidden 4096, top 6, and the shared expert added before the cast. The
-    # model applies its routing weights before the down projection and passes ones.
+  # DeepSeek-V4-Flash: hidden 4096, top 6, and the shared expert added before the cast. The
+  # model applies its routing weights before the down projection and passes ones.
   - {T: 1, K: 6, P: 6, H: 4096, some: [residual], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: dsv4-flash-t1}
   - {T: 4096, K: 6, P: 24576, H: 4096, some: [residual], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: dsv4-flash-t4096}
   - {T: 32768, K: 6, P: 196608, H: 4096, some: [residual], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: dsv4-flash-t32768}
@@ -617,6 +615,7 @@ FusedMoESharedExpertFwdOp:
     - {name: route_select, op: FusedTopKFwdOp}
     - {name: routed_experts, op: FusedMoEExpertsFwdOp}
     - {name: shared_expert, op: SharedExpertMLPFwdOp, optional: true}
+
 MoEGroupedGEMMFP8FwdOp:
   family: moe
   status: implemented
@@ -629,15 +628,15 @@ MoEGroupedGEMMFP8FwdOp:
         params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
         match: layout
         cases:
-          - {when: {masked: "_"}, is: "[E, layout.max_m, C]"}
-          - {when: {contiguous: "_"}, is: "[P, C]"}
+        - {when: {masked: "_"}, is: "[E, layout.max_m, C]"}
+        - {when: {contiguous: "_"}, is: "[P, C]"}
       LayoutMetadata:
         params: {layout: MGroupedLayout, E: Dim, P: Dim}
         match: layout
         cases:
-          - {when: {masked: "_"}, is: "[E]"}
-          - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
-          - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
+        - {when: {masked: "_"}, is: "[E]"}
+        - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
+        - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
     forall:
       P: Dim
       K: Dim
@@ -664,53 +663,48 @@ MoEGroupedGEMMFP8FwdOp:
       # Materialized rows of `a`.
       R: "E * layout.max_m if layout.kind == 'masked' else P"
     shape_rules:
-      - "E > 0"
-      # The scales tile the operands in exact 128-element blocks; a ragged final block has
-      # no representation on either side.
-      - "K % 128 == 0"
-      - "N % 128 == 0"
-      # An aligned layout materializes whole runs.
-      - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
+    - "E > 0"
+    # The scales tile the operands in exact 128-element blocks; a ragged final block has
+    # no representation on either side.
+    - "K % 128 == 0"
+    - "N % 128 == 0"
+    # An aligned layout materializes whole runs.
+    - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
     outputs:
       output: {dtype: bfloat16, shape: "Rows[layout, E, P, N]", buffer: out, contiguous: true}
-  roofline:
-    func: tileops._perf.formulas.moe_grouped_gemm_fp8_roofline
   workloads:
-    - {N: 4096, K: 7168, E: 8, T: 768, layout: {masked: {max_m: 128}}, label: ds-v3-e8-up-masked}
-    - {N: 7168, K: 2048, E: 8, T: 768, layout: {masked: {max_m: 128}}, label: ds-v3-e8-down-masked}
-    # Decode, one token per request, top-8 routing under EP8: a shard receives T = batch rows over
-    # its E = experts / 8 local experts, and max_m = batch is the slab one expert taking every
-    # token needs. The generator leaves empty the round(E * exp(-T / E)) experts uniform routing
-    # would leave empty.
-    - {N: 4096, K: 7168, E: 32, T: 64, layout: {masked: {max_m: 64}}, label: ds-v3-dec-b64-up}
-    - {N: 7168, K: 2048, E: 32, T: 64, layout: {masked: {max_m: 64}}, label: ds-v3-dec-b64-down}
-    - {N: 4096, K: 7168, E: 32, T: 256, layout: {masked: {max_m: 256}}, label: ds-v3-dec-b256-up}
-    - {N: 7168, K: 2048, E: 32, T: 256, layout: {masked: {max_m: 256}}, label: ds-v3-dec-b256-down}
-    - {N: 3072, K: 4096, E: 16, T: 64, layout: {masked: {max_m: 64}}, label: qwen3-235b-dec-b64-up}
-    - {N: 4096, K: 1536, E: 16, T: 64, layout: {masked: {max_m: 64}}, label: qwen3-235b-dec-b64-down}
-    - {N: 3072, K: 4096, E: 16, T: 256, layout: {masked: {max_m: 256}}, label: qwen3-235b-dec-b256-up}
-    - {N: 4096, K: 1536, E: 16, T: 256, layout: {masked: {max_m: 256}}, label: qwen3-235b-dec-b256-down}
-    - {N: 4096, K: 7168, E: 48, T: 64, layout: {masked: {max_m: 64}}, label: kimi-k2-dec-b64-up}
-    - {N: 7168, K: 2048, E: 48, T: 64, layout: {masked: {max_m: 64}}, label: kimi-k2-dec-b64-down}
-    - {N: 4096, K: 7168, E: 48, T: 256, layout: {masked: {max_m: 256}}, label: kimi-k2-dec-b256-up}
-    - {N: 7168, K: 2048, E: 48, T: 256, layout: {masked: {max_m: 256}}, label: kimi-k2-dec-b256-down}
-    # Prefill under EP8, in DeepGEMM's contiguous layout: per-row expert ids, each expert's run
-    # padded to 128 rows. Qwen3-30B-A3B-FP8 takes measured group sizes: Qwen3-Omni-30B-A3B's
-    # thinker (Qwen3-30B-A3B's 128 experts, top 8) routing 4096 wikitext-2 test tokens at layer
-    # 44 (median skew of the 48), on the EP8 rank given the most rows. DeepSeek-V3 spreads 4096
-    # routed rows evenly over its 32 local experts.
-    - {N: 1536, K: 2048, E: 16, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: qwen3-30b-ep8-skew-up}
-    - {N: 2048, K: 768, E: 16, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: qwen3-30b-ep8-skew-down}
-    - {N: 4096, K: 7168, E: 32, sizes: 'balanced_sizes(4096, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-ep8-prefill-up}
-    - {N: 7168, K: 2048, E: 32, sizes: 'balanced_sizes(4096, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-ep8-prefill-down}
+  - {N: 4096, K: 7168, E: 8, T: 768, layout: {masked: {max_m: 128}}, label: ds-v3-e8-up-masked}
+  - {N: 7168, K: 2048, E: 8, T: 768, layout: {masked: {max_m: 128}}, label: ds-v3-e8-down-masked}
+  # Decode under EP8, top 8: a shard receives T = batch rows over its E = experts / 8 experts,
+  # and max_m = batch fits one expert taking every token. The generator leaves
+  # round(E * exp(-T / E)) experts empty, as uniform routing would.
+  - {N: 4096, K: 7168, E: 32, T: 64, layout: {masked: {max_m: 64}}, label: ds-v3-dec-b64-up}
+  - {N: 7168, K: 2048, E: 32, T: 64, layout: {masked: {max_m: 64}}, label: ds-v3-dec-b64-down}
+  - {N: 4096, K: 7168, E: 32, T: 256, layout: {masked: {max_m: 256}}, label: ds-v3-dec-b256-up}
+  - {N: 7168, K: 2048, E: 32, T: 256, layout: {masked: {max_m: 256}}, label: ds-v3-dec-b256-down}
+  - {N: 3072, K: 4096, E: 16, T: 64, layout: {masked: {max_m: 64}}, label: qwen3-235b-dec-b64-up}
+  - {N: 4096, K: 1536, E: 16, T: 64, layout: {masked: {max_m: 64}}, label: qwen3-235b-dec-b64-down}
+  - {N: 3072, K: 4096, E: 16, T: 256, layout: {masked: {max_m: 256}}, label: qwen3-235b-dec-b256-up}
+  - {N: 4096, K: 1536, E: 16, T: 256, layout: {masked: {max_m: 256}}, label: qwen3-235b-dec-b256-down}
+  - {N: 4096, K: 7168, E: 48, T: 64, layout: {masked: {max_m: 64}}, label: kimi-k2-dec-b64-up}
+  - {N: 7168, K: 2048, E: 48, T: 64, layout: {masked: {max_m: 64}}, label: kimi-k2-dec-b64-down}
+  - {N: 4096, K: 7168, E: 48, T: 256, layout: {masked: {max_m: 256}}, label: kimi-k2-dec-b256-up}
+  - {N: 7168, K: 2048, E: 48, T: 256, layout: {masked: {max_m: 256}}, label: kimi-k2-dec-b256-down}
+  # Prefill under EP8 in DeepGEMM's contiguous layout, each expert's run padded to 128 rows.
+  # Qwen3-30B-A3B uses measured routing of 4096 wikitext-2 tokens at layer 44 on the busiest
+  # EP8 rank; DeepSeek-V3 spreads 4096 routed rows evenly over its 32 local experts.
+  - {N: 1536, K: 2048, E: 16, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: qwen3-30b-ep8-skew-up}
+  - {N: 2048, K: 768, E: 16, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: qwen3-30b-ep8-skew-down}
+  - {N: 4096, K: 7168, E: 32, sizes: 'balanced_sizes(4096, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-ep8-prefill-up}
+  - {N: 7168, K: 2048, E: 32, sizes: 'balanced_sizes(4096, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-ep8-prefill-down}
+  roofline:
+    func: tileops._perf.formulas.moe_grouped_gemm_block_scaled_roofline
 
 MoEGroupedGEMMMXFP4FwdOp:
-  # MoEGroupedGEMMFP8FwdOp with MXFP4 weights: output = a * a_scale @ (e2m1(b) * b_scale)^T
-  # per expert, in float32 and rounded once to bfloat16, a_scale per 128 and b_scale per 32
-  # elements along K. b holds two e2m1 codes per byte along K, the even k in the low nibble:
-  # float4_e2m1fn_x2 in a uint8 carrier.
-  # DeepSeek-V4-Flash inference/kernel.py fp4_gemm, per expert as inference/model.py
-  # Expert.forward calls it; its one scale_dtype covers both scales.
+  # MoEGroupedGEMMFP8FwdOp with MXFP4 weights, as DeepSeek-V4-Flash fp4_gemm per expert:
+  # output = a * a_scale @ (e2m1(b) * b_scale)^T in float32, rounded once to bfloat16; a_scale
+  # per 128 and b_scale per 32 elements along K, both of one dtype S. b packs two e2m1 codes per
+  # byte along K, the even k in the low nibble.
   family: moe
   status: implemented
   ref_api: workloads.moe.ref_moe_grouped_gemm_mxfp4
@@ -720,15 +714,15 @@ MoEGroupedGEMMMXFP4FwdOp:
         params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
         match: layout
         cases:
-          - {when: {masked: "_"}, is: "[E, layout.max_m, C]"}
-          - {when: {contiguous: "_"}, is: "[P, C]"}
+        - {when: {masked: "_"}, is: "[E, layout.max_m, C]"}
+        - {when: {contiguous: "_"}, is: "[P, C]"}
       LayoutMetadata:
         params: {layout: MGroupedLayout, E: Dim, P: Dim}
         match: layout
         cases:
-          - {when: {masked: "_"}, is: "[E]"}
-          - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
-          - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
+        - {when: {masked: "_"}, is: "[E]"}
+        - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
+        - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
     forall:
       P: Dim
       K: Dim
@@ -756,27 +750,27 @@ MoEGroupedGEMMMXFP4FwdOp:
       # Materialized rows of `a`.
       R: "E * layout.max_m if layout.kind == 'masked' else P"
     shape_rules:
-      - "E > 0"
-      # The activation scales tile K in exact 128-element blocks.
-      - "K % 128 == 0"
-      # An aligned layout materializes whole runs.
-      - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
+    - "E > 0"
+    # The activation scales tile K in exact 128-element blocks.
+    - "K % 128 == 0"
+    # An aligned layout materializes whole runs.
+    - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
     outputs:
       output: {dtype: bfloat16, shape: "Rows[layout, E, P, N]", buffer: out, contiguous: true}
-  roofline:
-    func: tileops._perf.formulas.moe_grouped_gemm_fp8_roofline
   workloads:
-    # DeepSeek-V4-Flash under EP8: 32 local experts, hidden 4096, intermediate 2048, top 6.
-    # The up row is gate and up together, N = 2 * 2048 over K = 4096; the down row N = 4096
-    # over K = 2048. Decode, one token per request: a shard receives T = batch rows, and
-    # max_m = batch is the slab one expert taking every token needs.
-    - {N: 4096, K: 4096, E: 32, T: 64, layout: {masked: {max_m: 64}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-dec-b64-up}
-    - {N: 4096, K: 2048, E: 32, T: 64, layout: {masked: {max_m: 64}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-dec-b64-down}
-    - {N: 4096, K: 4096, E: 32, T: 256, layout: {masked: {max_m: 256}}, dtype_cases: [{S: float8_e8m0fnu}, {S: float32}], label: dsv4-dec-b256-up}
-    - {N: 4096, K: 2048, E: 32, T: 256, layout: {masked: {max_m: 256}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-dec-b256-down}
-    # Prefill in the contiguous layout, each expert's run padded to 128 rows: 4096 and 32768
-    # tokens at top 6 spread evenly over the 256 experts, a shard taking an eighth.
-    - {N: 4096, K: 4096, E: 32, sizes: 'balanced_sizes(3072, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-4k-up}
-    - {N: 4096, K: 2048, E: 32, sizes: 'balanced_sizes(3072, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-4k-down}
-    - {N: 4096, K: 4096, E: 32, sizes: 'balanced_sizes(24576, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-32k-up}
-    - {N: 4096, K: 2048, E: 32, sizes: 'balanced_sizes(24576, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-32k-down}
+  # DeepSeek-V4-Flash under EP8: 32 local experts, hidden 4096, intermediate 2048, top 6.
+  # The up row is gate and up together, N = 2 * 2048 over K = 4096; the down row N = 4096
+  # over K = 2048. Decode, one token per request: a shard receives T = batch rows, and
+  # max_m = batch is the slab one expert taking every token needs.
+  - {N: 4096, K: 4096, E: 32, T: 64, layout: {masked: {max_m: 64}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-dec-b64-up}
+  - {N: 4096, K: 2048, E: 32, T: 64, layout: {masked: {max_m: 64}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-dec-b64-down}
+  - {N: 4096, K: 4096, E: 32, T: 256, layout: {masked: {max_m: 256}}, dtype_cases: [{S: float8_e8m0fnu}, {S: float32}], label: dsv4-dec-b256-up}
+  - {N: 4096, K: 2048, E: 32, T: 256, layout: {masked: {max_m: 256}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-dec-b256-down}
+  # Prefill in the contiguous layout, each expert's run padded to 128 rows: 4096 and 32768
+  # tokens at top 6 spread evenly over the 256 experts, a shard taking an eighth.
+  - {N: 4096, K: 4096, E: 32, sizes: 'balanced_sizes(3072, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-4k-up}
+  - {N: 4096, K: 2048, E: 32, sizes: 'balanced_sizes(3072, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-4k-down}
+  - {N: 4096, K: 4096, E: 32, sizes: 'balanced_sizes(24576, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-32k-up}
+  - {N: 4096, K: 2048, E: 32, sizes: 'balanced_sizes(24576, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, dtype_cases: [{S: float8_e8m0fnu}], label: dsv4-ep8-32k-down}
+  roofline:
+    func: tileops._perf.formulas.moe_grouped_gemm_block_scaled_roofline

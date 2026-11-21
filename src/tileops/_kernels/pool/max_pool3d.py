@@ -1,4 +1,3 @@
-import itertools
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -8,13 +7,16 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
     MaxPool3dFwdInterface,
     MaxPool3dIndicesFwdInterface,
-    MaxPoolCall,
 )
-from tileops._kernels.pool.common import axis_inside, pool_output_dim
+from tileops._kernels.pool.common import (
+    ACCUM_DTYPE,
+    MaxPoolKernelBase,
+    axis_inside,
+    pool_output_dim,
+)
 
 __all__ = ["MaxPool3dKernel", "MaxPool3dWithIndicesKernel"]
 
@@ -39,9 +41,8 @@ def _max_pool3d_kernel(
     dilation_h: int,
     dilation_w: int,
     ceil_mode: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
-    accum_dtype = "float"
     out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
@@ -76,7 +77,7 @@ def _max_pool3d_kernel(
                         top = oh * stride_h - pad_h
                         left = ow * stride_w - pad_w
                         run = T.alloc_var(T.float32)
-                        run = -T.infinity(accum_dtype)
+                        run = -T.infinity(ACCUM_DTYPE)
                         for kd in T.serial(kernel_d):
                             for kh in T.serial(kernel_h):
                                 for kw in T.serial(kernel_w):
@@ -93,7 +94,7 @@ def _max_pool3d_kernel(
                                         and (iw >= 0)
                                         and (iw < w_in)
                                     ):
-                                        v = T.cast(x[row, id_, ih, iw], accum_dtype)
+                                        v = T.cast(x[row, id_, ih, iw], ACCUM_DTYPE)
                                         # NaN enters `run` and never leaves,
                                         # since a later value fails `v > NaN`.
                                         run = T.if_then_else(T.isnan(v) or (v > run), v, run)
@@ -124,9 +125,8 @@ def _max_pool3d_with_indices_kernel(
     dilation_h: int,
     dilation_w: int,
     ceil_mode: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
-    accum_dtype = "float"
     out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
@@ -138,8 +138,7 @@ def _max_pool3d_with_indices_kernel(
         and axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
     )
 
-    # Only the float32 vector path reads through the csrc header; other dtypes build as
-    # before, flags included.
+    # Only the float32 vector path reads through the csrc header, so only it includes it.
     flags = ["-O3", "-DENABLE_BF16"]
     if dtype == "float32":
         flags += csrc_include("streaming_load.h")
@@ -180,7 +179,7 @@ def _max_pool3d_with_indices_kernel(
             left = ow * stride_w - pad_w
             run = T.alloc_var(T.float32)
             best = T.alloc_var(T.int32)
-            run = -T.infinity(accum_dtype)
+            run = -T.infinity(ACCUM_DTYPE)
             # Seeded at the window's first tap inside the input, so a
             # window of nothing but -inf reports that tap.
             best = (
@@ -201,7 +200,7 @@ def _max_pool3d_with_indices_kernel(
                             and (iw >= 0)
                             and (iw < w_in)
                         ):
-                            v = T.cast(_tap(x, row, id_, ih, iw, evict_last), accum_dtype)
+                            v = T.cast(_tap(x, row, id_, ih, iw, evict_last), ACCUM_DTYPE)
                             # Strict > keeps the first maximum; a NaN
                             # takes the position and holds it, so the
                             # last NaN in the window wins.
@@ -254,31 +253,10 @@ def _max_pool3d_with_indices_kernel(
     return _max_pool3d_with_indices_func
 
 
-class _MaxPool3dKernelBase(Kernel):
-    """Shared construction and dispatch for the 3d max-pool kernels.
-
-    Concrete kernels supply ``_build`` and ``_launch``; everything else —
-    parameter capture, output extents, config and program — is identical between
-    the value-only and with-indices variants.
-    """
+class _MaxPool3dKernelBase(MaxPoolKernelBase):
+    """The constructor both 3d max-pool kernels share; a subclass names its ``_build``."""
 
     _build: ClassVar[Callable[..., Any]]
-
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
-
-    @classmethod
-    def entry_for(cls, call: MaxPoolCall) -> Entry:
-        return call, lambda: cls(
-            call.n,
-            call.c_in,
-            *call.size,
-            *call.window,
-            *call.stride,
-            *call.pad,
-            *call.dilation,
-            call.ceil_mode,
-            call.dtype,
-        )
 
     def __init__(
         self,
@@ -313,19 +291,6 @@ class _MaxPool3dKernelBase(Kernel):
         self.d_in = d_in
         self.h_in = h_in
         self.w_in = w_in
-        self.kernel_d = kernel_d
-        self.kernel_h = kernel_h
-        self.kernel_w = kernel_w
-        self.stride_d = stride_d
-        self.stride_h = stride_h
-        self.stride_w = stride_w
-        self.pad_d = pad_d
-        self.pad_h = pad_h
-        self.pad_w = pad_w
-        self.dilation_d = dilation_d
-        self.dilation_h = dilation_h
-        self.dilation_w = dilation_w
-        self.ceil_mode = ceil_mode
         self.dtype = dtype
         self.out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
         self.out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
@@ -352,30 +317,6 @@ class _MaxPool3dKernelBase(Kernel):
             self.dtype_str,
         )
         self.init_config(config)
-
-    @property
-    def default_config(self) -> dict:
-        return {"block_m": 512, "threads": 128}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [
-            {"block_m": block_m, "threads": threads}
-            for block_m, threads in itertools.product([256, 512, 1024, 2048], [128, 256, 512])
-            if threads <= block_m
-        ]
-
-    def forward(self, x: torch.Tensor) -> Any:
-        self._require_devices(x=x)
-        return self._launch(self.program(self._compile), x)
-
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)
-
-    def _launch(self, program, x: torch.Tensor) -> Any:
-        """Run *program* on ``x`` and shape its outputs as the interface publishes them."""
-        raise NotImplementedError
 
 
 class MaxPool3dKernel(_MaxPool3dKernelBase, MaxPool3dFwdInterface):

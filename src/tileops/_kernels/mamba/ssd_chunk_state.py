@@ -159,15 +159,15 @@ def _ssd_chunk_state_fwd_kernel(
 
 @target_cache(maxsize=32)
 @tilelang.jit(out_idx=[5], pass_configs={"tl.enable_aggressive_shared_memory_merge": True})
-def _ssd_chunk_state_tma(batch, chunks, heads, groups, has_seq_idx, dtype):
-    """Use 128-token TMA panels and a contiguous FP32 state write on Hopper."""
+def _ssd_chunk_state_tma_kernel(batch, chunks, heads, has_seq_idx, dtype):
+    """Use 128-token TMA panels and a contiguous FP32 state write on Hopper, for one B group."""
     chunk, d_head, d_state, panel = 256, 64, 128, 128
     seq = chunks * chunk
 
     @T.prim_func
     def main(
         x: T.Tensor((batch, seq, heads, d_head), dtype),
-        b: T.Tensor((batch, seq, groups, d_state), dtype),
+        b: T.Tensor((batch, seq, 1, d_state), dtype),
         dt: T.Tensor((batch, heads, chunks, chunk), "float32"),
         da: T.Tensor((batch, heads, chunks, chunk), "float32"),
         seq_idx: T.Tensor((batch, seq), "int32"),
@@ -179,9 +179,8 @@ def _ssd_chunk_state_tma(batch, chunks, heads, groups, has_seq_idx, dtype):
             weights = T.alloc_shared((chunk,), "float32")
             acc = T.alloc_fragment((d_head, d_state), "float32")
             ready = T.alloc_barrier([128, 128])
-            group = h // (heads // groups)
             start = c * chunk
-            T.tma_copy(b[z, start : start + panel, group, :], b_tile, barrier=ready[0])
+            T.tma_copy(b[z, start : start + panel, 0, :], b_tile, barrier=ready[0])
             T.tma_copy(x[z, start : start + panel, h, :], x_tile, barrier=ready[0])
             T.barrier_arrive(ready[0])
             for k in T.Parallel(chunk):
@@ -196,9 +195,7 @@ def _ssd_chunk_state_tma(batch, chunks, heads, groups, has_seq_idx, dtype):
             T.sync_threads()
             for tile in T.unroll(2):
                 if tile == 1:
-                    T.tma_copy(
-                        b[z, start + panel : start + chunk, group, :], b_tile, barrier=ready[1]
-                    )
+                    T.tma_copy(b[z, start + panel : start + chunk, 0, :], b_tile, barrier=ready[1])
                     T.tma_copy(x[z, start + panel : start + chunk, h, :], x_tile, barrier=ready[1])
                     T.barrier_arrive(ready[1])
                 T.barrier_wait(ready[tile], 0)
@@ -376,13 +373,8 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
         if self._uses_tma_panels() and cfg == self.default_config:
-            return _ssd_chunk_state_tma(
-                self.batch,
-                self.num_chunks,
-                self.n_heads,
-                self.n_groups,
-                self.has_seq_idx,
-                self.dtype_str,
+            return _ssd_chunk_state_tma_kernel(
+                self.batch, self.num_chunks, self.n_heads, self.has_seq_idx, self.dtype_str
             )
         return self.kernel(
             cfg["block_n"],

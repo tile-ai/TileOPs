@@ -1,16 +1,11 @@
 """Call workloads of the engram family."""
 
-import torch
-
+from workloads.attention.gqa.call_metadata import _dtype
 from workloads.sequence_modeling.engram import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
     EngramGateConvFwdWorkload,
 )
-
-
-def _dtype(call, tensor: str) -> torch.dtype:
-    return getattr(torch, call.tensors[tensor][1])
 
 
 def _extents(call, *names: str) -> dict:

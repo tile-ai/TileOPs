@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.misaligned import misaligned
-from tests.workload_test_base import TestBase
+from tests.workload_test_base import FixtureBase, TestBase
 from tileops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
@@ -15,6 +15,11 @@ from tileops.quantization import (
     SmoothQuantFwdOp,
 )
 from workloads.device import run_device
+from workloads.quantization.int8_dequant import (
+    INT8DequantPerBlockWorkload,
+    INT8DequantPerChannelWorkload,
+    INT8DequantPerTensorWorkload,
+)
 from workloads.quantization.quantize import (
     FP8QuantPerBlockWorkload,
     INT4QuantPerGroupWorkload,
@@ -554,3 +559,117 @@ def test_fp8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
     test = type("QuantizeTest", (FP8QuantPerBlockWorkload, TestBase), {})(rows, cols, dtype)
     (w,) = test.gen_inputs()
     test.check(FP8QuantPerBlockFwdOp(), make(w))
+
+
+class INT8DequantPerTensorTest(INT8DequantPerTensorWorkload, TestBase):
+    pass
+
+
+class INT8DequantPerChannelTest(INT8DequantPerChannelWorkload, TestBase):
+    pass
+
+
+class INT8DequantPerBlockTest(INT8DequantPerBlockWorkload, TestBase):
+    pass
+
+
+_DEQUANT_TESTS = {
+    INT8DequantPerTensorFwdOp: INT8DequantPerTensorTest,
+    INT8DequantPerChannelFwdOp: INT8DequantPerChannelTest,
+    INT8DequantPerBlockFwdOp: INT8DequantPerBlockTest,
+}
+
+
+class INT8DequantFixture(FixtureBase):
+    @classmethod
+    def get_params(cls):
+        # One typical shape per op; the per-block K is not a multiple of 128, so the last block of
+        # each row is partial.
+        shapes = {
+            INT8DequantPerTensorFwdOp: (1024, 1024),
+            INT8DequantPerChannelFwdOp: (256, 1024),
+            INT8DequantPerBlockFwdOp: (256, 1000),
+        }
+        return [
+            (
+                "op_cls, m, k, out_dtype",
+                [
+                    pytest.param(op_cls, *shape, dtype, marks=pytest.mark.smoke)
+                    for op_cls, shape in shapes.items()
+                    for dtype in (torch.float16, torch.bfloat16, torch.float32)
+                ]
+                # Per-channel rows shorter than a thread's eight codes, over whole blocks: no
+                # block takes the vector path.
+                + [
+                    pytest.param(
+                        INT8DequantPerChannelFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.full
+                    ),
+                    # Per-block rows shorter than a vector: every block converts code by code.
+                    pytest.param(
+                        INT8DequantPerBlockFwdOp, 512, 5, torch.bfloat16, marks=pytest.mark.full
+                    ),
+                    # Per-block, K % 128 = 3: a vector crosses a row's short last group and the
+                    # row end, so its codes take three scales.
+                    pytest.param(
+                        INT8DequantPerBlockFwdOp, 16, 131, torch.bfloat16, marks=pytest.mark.full
+                    ),
+                    # Per-tensor: scalar-only output.
+                    pytest.param(
+                        INT8DequantPerTensorFwdOp, 1, 5, torch.bfloat16, marks=pytest.mark.full
+                    ),
+                    # Per-tensor: one full block followed by a scalar-only tail.
+                    pytest.param(
+                        INT8DequantPerTensorFwdOp, 1, 2051, torch.float32, marks=pytest.mark.full
+                    ),
+                    # Per-tensor, past the small-matrix kernel's region, with a tail whose length
+                    # is not a multiple of any vector width.
+                    pytest.param(
+                        INT8DequantPerTensorFwdOp,
+                        2051,
+                        1025,
+                        torch.bfloat16,
+                        marks=pytest.mark.full,
+                    ),
+                    # Per-block, past the small-matrix kernel's region, float32 with K % 128 = 1:
+                    # the staged kernel with three scales per vector and a tail.
+                    pytest.param(
+                        INT8DequantPerBlockFwdOp, 4100, 129, torch.float32, marks=pytest.mark.full
+                    ),
+                ],
+            ),
+        ]
+
+
+@INT8DequantFixture
+def test_int8_dequant_op(op_cls: type, m: int, k: int, out_dtype: torch.dtype) -> None:
+    test = _DEQUANT_TESTS[op_cls](m, k, out_dtype)
+    # One float32 multiply and one cast: a conforming kernel is bit-exact.
+    test.check(op_cls(out_dtype), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, scale_shape",
+    [
+        (INT8DequantPerTensorFwdOp, (2,)),
+        (INT8DequantPerChannelFwdOp, (1,)),
+        (INT8DequantPerBlockFwdOp, (64, 2)),
+    ],
+)
+def test_int8_dequant_rejects_wrong_scale_shape(op_cls: type, scale_shape: tuple) -> None:
+    q = torch.zeros(64, 1000, dtype=torch.int8, device=run_device())
+    scale = torch.ones(scale_shape, dtype=torch.float32, device=run_device())
+    with pytest.raises(ValueError, match="scale"):
+        op_cls(torch.bfloat16)(q, scale)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls", [INT8DequantPerChannelFwdOp, INT8DequantPerTensorFwdOp, INT8DequantPerBlockFwdOp]
+)
+def test_int8_dequant_misaligned_input(op_cls: type) -> None:
+    """A ``q`` whose storage is off the vector boundary, rows that split a thread's codes, a tail."""
+    test = _DEQUANT_TESTS[op_cls](5, 1001, torch.bfloat16)
+    q, scale = test.gen_inputs()
+    q = misaligned(q)
+    test.check(op_cls(torch.bfloat16), q, scale)

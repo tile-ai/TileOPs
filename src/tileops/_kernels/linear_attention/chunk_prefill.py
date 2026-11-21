@@ -1,3 +1,6 @@
+"""The chunked prefill shared by GDN, ungated DeltaNet and KDA: the gate cumsum, the block
+solve, the chunk preparation and the scan, planned to the device's shared memory."""
+
 import torch
 
 from tileops._kernels.kernel_base import CompiledProgram
@@ -44,66 +47,23 @@ def staged_bytes(call):
     return 3 * call.dim_k * 4 + 16 + (2 * CHUNK_SIZE * 4 if call.l2norm else 0)
 
 
-def chunk_plan(call):
-    return launch_plan(
-        call.dim_k, call.dtype.itemsize, call.num_sequences, call.smem_budget, call.arch
-    )
-
-
-def chunk_refusal(call):
-    if chunk_plan(call) is None:
-        return f"needs more than {call.smem_budget} bytes of shared memory for {call.num_sequences} sequences"
-    return None
-
-
-def cumulative_gate_program(call):
-    """The program that accumulates a head gate within each chunk."""
-    from tileops._kernels.linear_attention.gdn.prefill_prepare import (
-        prefill_chunk_local_cumsum_bthd_tl,
-    )
-
-    return prefill_chunk_local_cumsum_bthd_tl(
-        call.batch * call.seq_len,
-        call.num_sequences,
-        call.value_heads,
-        CHUNK_SIZE,
-        str(call.dtype).removeprefix("torch."),
-        "int64",
-        call.gate_in_kernel,
-    )
-
-
-def prepare_gate(call, inputs, offsets, *, gate_mode, program):
-    _, _, _, g, beta, _, _, a_log, dt_bias = inputs
-    total = call.batch * call.seq_len
-    if gate_mode == "channel":
-        return g.reshape(1, total, call.value_heads, call.dim_k)
-    if gate_mode == "none":
-        return torch.empty((1, total, call.value_heads), dtype=torch.float32, device=beta.device)
-    gate = g.reshape(1, total, call.value_heads)
-    if call.gate_in_kernel:
-        return program(gate, offsets, a_log, dt_bias)
-    return program(gate, offsets)
-
-
-def solve_program(call, num_sequences, offsets_dtype, *, gate_mode):
-    """The block solve that forms each chunk's inverse ahead of a head-gate or ungated scan."""
-    from tileops._kernels.linear_attention.gdn.prefill_prepare import prefill_blocksolve_A_bthd_tl
-
-    return prefill_blocksolve_A_bthd_tl(
-        call.batch * call.seq_len,
-        num_sequences,
-        call.value_heads,
-        call.heads,
-        CHUNK_SIZE,
+def chunk_refusal(call, sequences, *, staged=0, walk=False):
+    """Why no shared-memory plan serves *call*'s chunk programs over *sequences*, or ``None``;
+    *staged* and *walk* are ``launch_plan``'s."""
+    plan = launch_plan(
         call.dim_k,
-        str(call.dtype).removeprefix("torch."),
-        str(offsets_dtype).removeprefix("torch."),
-        use_gate=gate_mode == "head",
-        l2norm=call.l2norm,
-        beta_sigmoid=call.beta_sigmoid,
-        allow_neg_eigval=call.allow_neg_eigval,
+        call.dtype.itemsize,
+        sequences,
+        call.smem_budget,
+        call.arch,
+        staged_bytes=staged,
+        walk=walk,
     )
+    if plan is None:
+        return (
+            f"needs more than {call.smem_budget} bytes of shared memory for {sequences} sequences"
+        )
+    return None
 
 
 def chunk_programs(
@@ -114,12 +74,44 @@ def chunk_programs(
 
     A ``Kernel.program`` build: *config* is unread, and the rest are the launch's facts.
     """
+    from tileops._kernels.linear_attention.gdn.prefill_prepare import (
+        prefill_blocksolve_A_bthd_tl,
+        prefill_chunk_local_cumsum_bthd_tl,
+    )
+
+    total = call.batch * call.seq_len
+    dtype = str(call.dtype).removeprefix("torch.")
     gate = solve = None
     if gate_mode == "head":
-        gate = CompiledProgram(cumulative_gate_program(call))
+        # Accumulates a head gate within each chunk.
+        gate = CompiledProgram(
+            prefill_chunk_local_cumsum_bthd_tl(
+                total,
+                call.num_sequences,
+                call.value_heads,
+                CHUNK_SIZE,
+                dtype,
+                "int64",
+                call.gate_in_kernel,
+            )
+        )
     if gate_mode != "channel":
+        # Forms each chunk's inverse ahead of a head-gate or ungated scan.
         solve = CompiledProgram(
-            solve_program(call, num_sequences, offsets_dtype, gate_mode=gate_mode)
+            prefill_blocksolve_A_bthd_tl(
+                total,
+                num_sequences,
+                call.value_heads,
+                call.heads,
+                CHUNK_SIZE,
+                call.dim_k,
+                dtype,
+                str(offsets_dtype).removeprefix("torch."),
+                use_gate=gate_mode == "head",
+                l2norm=call.l2norm,
+                beta_sigmoid=call.beta_sigmoid,
+                allow_neg_eigval=call.allow_neg_eigval,
+            )
         )
     prepare, scan = build_programs(
         call,
@@ -132,9 +124,8 @@ def chunk_programs(
     return gate, solve, prepare, scan
 
 
-def build_programs(
-    call, num_sequences, *, gate_mode, initial_state=True, dense=False, split_output=False
-):
+def build_programs(call, num_sequences, *, gate_mode, initial_state, dense, split_output):
+    """The chunk preparation and the scan of one chunked prefill launch."""
     from tileops._kernels.linear_attention.kda.chunk_programs import (
         chunk_prepare_program,
         chunk_scan_program,
@@ -240,7 +231,7 @@ def build_programs(
     return prepare, CompiledProgram(scan)
 
 
-def _split_scan(call, num_sequences, total, dtype, initial_state=True):
+def _split_scan(call, num_sequences, total, dtype, initial_state):
     """The scan as the state walk over the chunks, forming the outputs in the walk or after it.
 
     The returned scan takes the prepared tensors, the initial states (a state pool under
@@ -328,26 +319,13 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
     return scan
 
 
-def prepare_inputs(call, tensors, *, programs, gate_mode, gate_params=()):
-    q, k, v, gate, beta, offsets = tensors
-    _, solve, prepare, _ = programs
-    if gate_mode == "channel":
-        return prepare(q, k, v, gate, beta, offsets, *gate_params)
-    from tileops._kernels.linear_attention.gdn.prefill_prepare import prefill_blocksolve_A_bthd
-
-    inverse, _ = prefill_blocksolve_A_bthd(
-        solve, k, gate, beta, offsets, CHUNK_SIZE, l2norm=call.l2norm
-    )
-    return prepare(q, k, v, gate, beta, offsets, inverse)
-
-
 def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False, slots=None):
     """Run one chunked prefill launch on the programs *kernel* holds for its facts.
 
     Under ``call.pooled`` the state in *inputs* is a pool and *slots* names each sequence's
     slot; the pool is advanced in place and returned as the final state.
     """
-    q, k, v, _, beta, state, offsets, _, _ = inputs
+    q, k, v, g, beta, state, offsets, a_log, dt_bias = inputs
     total = call.batch * call.seq_len
     offsets = packed_offsets(call.batch, call.seq_len, offsets, q.device)
     num_sequences = offsets.numel() - 1
@@ -358,7 +336,15 @@ def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False, sl
     programs = kernel.program(
         chunk_programs, call, gate_mode, num_sequences, initial_state, offsets.dtype, split_output
     )
-    gate = prepare_gate(call, inputs, offsets, gate_mode=gate_mode, program=programs[0])
+    gate_program, solve, prepare, scan = programs
+    if gate_mode == "channel":
+        gate = g.reshape(1, total, call.value_heads, call.dim_k)
+    elif gate_mode == "none":
+        gate = torch.empty((1, total, call.value_heads), dtype=torch.float32, device=q.device)
+    elif call.gate_in_kernel:
+        gate = gate_program(g.reshape(1, total, call.value_heads), offsets, a_log, dt_bias)
+    else:
+        gate = gate_program(g.reshape(1, total, call.value_heads), offsets)
     if state is None:
         state = (torch.zeros if initial_state else torch.empty)(
             num_sequences,
@@ -368,19 +354,21 @@ def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False, sl
             dtype=torch.float32,
             device=q.device,
         )
-    gate_params = ()
     if gate_mode == "channel":
         from tileops._kernels.linear_attention.kda.gate import raw_gate_arguments
 
-        gate_params = raw_gate_arguments(call.gate_in_kernel, *inputs[-2:])
-    prepared = prepare_inputs(
-        call,
-        (q, k, v, gate, beta, offsets),
-        programs=programs,
-        gate_mode=gate_mode,
-        gate_params=gate_params,
-    )
-    scan = programs[3]
+        gate_params = raw_gate_arguments(call.gate_in_kernel, a_log, dt_bias)
+        prepared = prepare(q, k, v, gate, beta, offsets, *gate_params)
+    else:
+        from tileops._kernels.linear_attention.gdn.prefill_prepare import (
+            prefill_blocksolve_A_bthd,
+        )
+
+        inverse, _ = prefill_blocksolve_A_bthd(
+            solve, k, gate, beta, offsets, CHUNK_SIZE, l2norm=call.l2norm
+        )
+        prepared = prepare(q, k, v, gate, beta, offsets, inverse)
+    # Only the state walk reads a pool; the other scans take no slots.
     output, final_state = (
         scan(*prepared, state, offsets, slots) if call.pooled else scan(*prepared, state, offsets)
     )

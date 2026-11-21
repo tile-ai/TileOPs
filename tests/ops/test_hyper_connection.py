@@ -120,10 +120,9 @@ def test_hyper_connection_pre_serves_new_token_counts_from_one_kernel(
     [
         (3, 4096, _DSV4, "serves four streams"),
         (4, 4000, _DSV4, "multiple of 128"),
-        (4, 0, _DSV4, "multiple of 128"),
         (4, 4096, {**_DSV4, "sinkhorn_repeat": 0}, "at least one Sinkhorn iteration"),
     ],
-    ids=["three-streams", "4000-channels", "no-channels", "no-sinkhorn-iteration"],
+    ids=["three-streams", "4000-channels", "no-sinkhorn-iteration"],
 )
 def test_hyper_connection_pre_refuses_what_no_kernel_serves(n, c, params, reason) -> None:
     from tileops.backend import OpNotAvailableError

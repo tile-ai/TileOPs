@@ -218,13 +218,10 @@ def tune_delta_rule_fwd(
     """
 
     def _tune_sub_kernel(
-        kernel,
         label: str,
         jit_kernel: Callable,
         configs: Sequence[dict[str, int]],
-        warmup: int,
-        rep: int,
-        untuned: dict[str, int] | None = None,
+        untuned: dict[str, int] | None,
     ) -> tuple[dict[str, int] | None, float | None]:
         """Sweep one sub-kernel and return its ``(winning config, latency)``.
 
@@ -288,12 +285,9 @@ def tune_delta_rule_fwd(
     candidates = _require_h_block_v_candidates(kernel.dim_v)  # before any sweep
 
     fused_config, _ = _tune_sub_kernel(
-        kernel,
         "fused_prepare_compute_w_u",
         fused_builder(*shape),
         fused_configs,
-        warmup,
-        rep,
         {"threads": default["fused_threads"]},
     )
 
@@ -308,14 +302,11 @@ def tune_delta_rule_fwd(
         label = f"h_recurrence (block_v={block_v})" if block_v else "h_recurrence (no V tiling)"
         try:
             config, latency = _tune_sub_kernel(
-                kernel,
                 label,
                 h_builder(*shape, block_v=block_v),
                 _recurrence_configs(
                     kernel.dim_v, block_v, kernel.chunk_size, kernel.dim_k, kernel.wgmma
                 ),
-                warmup,
-                rep,
                 h_untuned if block_v == default["h_block_v"] else None,
             )
         except TUNING_FATAL:
@@ -347,13 +338,7 @@ def tune_delta_rule_fwd(
         h_block_v = preferred if preferred in compiled else compiled[0]
 
     o_config, _ = _tune_sub_kernel(
-        kernel,
-        "output_o",
-        o_builder(*shape),
-        output_configs,
-        warmup,
-        rep,
-        {"threads": default["o_threads"]},
+        "output_o", o_builder(*shape), output_configs, {"threads": default["o_threads"]}
     )
 
     config = {

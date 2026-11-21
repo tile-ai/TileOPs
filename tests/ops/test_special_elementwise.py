@@ -77,7 +77,7 @@ def test_isfinite(n_total: int, dtype: torch.dtype) -> None:
     _make_special_test(n_total, dtype, IsfiniteFwdOp)
 
 
-# L4 edge-case tests (fp32, 4K)
+# Edge values
 
 
 @SpecialEdgeFixture
@@ -323,7 +323,7 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
     )
 
 
-# L2 — Dtype x Size (4 cases for clamp)
+# Clamp dtypes and sizes
 
 
 class ClampDtypeSizeFixture(FixtureBase):
@@ -355,7 +355,7 @@ def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
     )
 
 
-# L4 — Edge Cases (8 cases, fp32, 4K)
+# Edge values
 
 
 @IndependentEdgeFixture

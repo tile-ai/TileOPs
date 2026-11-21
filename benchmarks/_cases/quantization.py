@@ -7,22 +7,14 @@ from benchmarks.api import Implementation
 from benchmarks.baselines import private_inputs
 
 
-def _fp8_per_token_group_binder(op: Any, case: Any) -> Implementation:
-    """The op on a private ``out_q`` it writes the codes into, where the call passes one, and
-    on a private ``x`` where it fake-quantizes ``x`` in place."""
-    if case.arguments["inplace"]:
-        return private_inputs(default_binder(op, case).run, case.inputs, 0)
-    return private_inputs(default_binder(op, case).run, case.inputs, *range(1, len(case.inputs)))
-
-
-def _fp4_per_group_binder(op: Any, case: Any) -> Implementation:
-    """The op on a private ``x`` where it fake-quantizes ``x`` in place."""
-    if case.arguments["inplace"]:
-        return private_inputs(default_binder(op, case).run, case.inputs, 0)
-    return default_binder(op, case)
+def _quantize_binder(op: Any, case: Any) -> Implementation:
+    """The op on private copies of what it writes: ``x`` where it fake-quantizes ``x`` in
+    place, otherwise any ``out_q`` the call passes after ``x``."""
+    positions = (0,) if case.arguments["inplace"] else range(1, len(case.inputs))
+    return private_inputs(default_binder(op, case).run, case.inputs, *positions)
 
 
 ENTRIES = {
-    "FP4QuantPerGroupFwdOp": Entry(binder=_fp4_per_group_binder),
-    "FP8QuantPerTokenGroupFwdOp": Entry(binder=_fp8_per_token_group_binder),
+    "FP4QuantPerGroupFwdOp": Entry(binder=_quantize_binder),
+    "FP8QuantPerTokenGroupFwdOp": Entry(binder=_quantize_binder),
 }

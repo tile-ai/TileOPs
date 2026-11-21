@@ -30,14 +30,6 @@ from benchmarks.baselines import (
 from tileops.attention import TopKSelectFwdOp
 from workloads.attention.topk_select import TopKSelectCall
 
-# Autotuning is a bench-run policy, not a workload property; manifest
-# workloads do not carry it.
-_TUNE = True
-
-# The query rows per request vLLM's indexer serves as decode, 1 + its speculative tokens:
-# one, or two under MTP. A longer request is prefill.
-_VLLM_DECODE_ROWS = 2
-
 
 def _fills_with_minus_one(
     workload: TopKSelectCall, starts: torch.Tensor, ends: torch.Tensor
@@ -94,7 +86,9 @@ def _vllm_topk(workload: TopKSelectCall, starts: torch.Tensor, ends: torch.Tenso
     rows, topk, width = workload.batch * workload.seq_len, workload.topk, workload.seq_len_kv
     ends = ends.reshape(rows)
     out = torch.empty(rows, topk, dtype=torch.int32, device=ends.device)
-    if workload.seq_len > _VLLM_DECODE_ROWS:
+    # vLLM's indexer serves a request of 1 + its speculative tokens as decode: one row, or two
+    # under MTP. A longer request is prefill.
+    if workload.seq_len > 2:
         prefill = vllm_op("top_k_per_row_prefill")
         starts = starts.reshape(rows)
 
@@ -138,8 +132,7 @@ def test_topk_select_bench(case) -> None:
     inputs = case.inputs
 
     op = TopKSelectFwdOp(**case.arguments)
-    if _TUNE:
-        op.request_tune()
+    op.request_tune()
 
     implementations = {
         "torch": case.reference,

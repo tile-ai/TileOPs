@@ -17,6 +17,7 @@ from tileops._kernels.quantization.group_quant import (
     launch_shape,
     pow2_ceil_exponent,
     register_refusal,
+    store_groups,
     write_in_place,
 )
 
@@ -105,7 +106,6 @@ def _group_scales(block_m: int, eps: float, ue8m0: bool, amax_dtype: str):
     The group maximum is reduced in *amax_dtype*: an absolute value and a maximum are exact
     in any float format, and a 16-bit one reduces two elements an instruction.
     """
-    fp8_max = FP8_E4M3_MAX
     # act_quant multiplies by the float32 reciprocal of 448 rather than dividing.
     inv_fp8_max = float32_constant(1.0 / FP8_E4M3_MAX)
 
@@ -122,7 +122,7 @@ def _group_scales(block_m: int, eps: float, ue8m0: bool, amax_dtype: str):
                 scale_local[i] = exponent_scale(biased)
                 recip_local[i] = exponent_scale(T.uint32(254) - biased)
             else:
-                scale_local[i] = amax / fp8_max
+                scale_local[i] = amax / FP8_E4M3_MAX
                 recip_local[i] = 1.0 / scale_local[i]
 
     return group_scales
@@ -158,8 +158,6 @@ def _fp8_quant_kernel(
 ):
     @tilelang.jit
     def _fp8_quant_fwd_func(block_m):
-        if block_m < 1:
-            raise ValueError(f"block_m={block_m} must be positive")
         out_dtype = T.float8_e4m3fn
         # An e8m0 scale is the exponent byte of its power-of-two float32 scale.
         scale_dtype = T.uint8 if e8m0_scales else T.float32
@@ -168,6 +166,7 @@ def _fp8_quant_kernel(
         load_groups = _load_groups(block_m, group_size)
         group_scales = _group_scales(block_m, eps, ue8m0, in_dtype if ue8m0 else "float32")
         ue8m0_codes = _ue8m0_codes(block_m, group_size, in_dtype)
+        store = store_groups(block_m, group_size, lambda scale, i: scale[i])
         # The group count is a runtime extent, so a new token count builds no program.
         rows = T.dynamic("rows")
 
@@ -205,18 +204,7 @@ def _fp8_quant_kernel(
                             input_local[i, j] * recip_local[i], fp8_min, fp8_max
                         )
 
-                if first + block_m <= rows:
-                    for i in T.Parallel(block_m):
-                        scale_tensor[first + i] = scale_out[i]
-                    for i, j in T.Parallel(block_m, group_size):
-                        output_tensor[first + i, j] = output_local[i, j]
-                else:
-                    for i in T.Parallel(block_m):
-                        if first + i < rows:
-                            scale_tensor[first + i] = scale_out[i]
-                    for i, j in T.Parallel(block_m, group_size):
-                        if first + i < rows:
-                            output_tensor[first + i, j] = output_local[i, j]
+                store(scale_tensor, output_tensor, first, rows, scale_out, output_local)
 
         return _fp8_quant_fwd_main
 
@@ -229,8 +217,6 @@ def _fp8_fake_quant_kernel(
 ):
     @tilelang.jit
     def _fp8_fake_quant_fwd_func(block_m):
-        if block_m < 1:
-            raise ValueError(f"block_m={block_m} must be positive")
         load_groups = _load_groups(block_m, group_size)
         group_scales = _group_scales(block_m, eps, True, in_dtype)
         ue8m0_codes = _ue8m0_codes(block_m, group_size, in_dtype)

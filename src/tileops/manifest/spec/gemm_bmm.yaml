@@ -1,5 +1,4 @@
-# Batched GEMM. A shard of the gemm family, kept in its own file because the batched entries share
-# a shape contract the dense ones do not.
+# Batched GEMM: the gemm-family entries whose operands carry a batch axis the dense ones lack.
 
 # Strict 3D-3D batched matrix multiplication.
 BMMFwdOp:
@@ -16,7 +15,7 @@ BMMFwdOp:
       d: {dtype: T, shape: "[B, M, N]"}
 
   workloads:
-  # A representative sweep across small/large batch counts and decode/prefill
+  # Small and large batch counts, decode and prefill.
   - {B: 8, M: 128, N: 128, K: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-128}
   - {B: 8, M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k}
   - {B: 16, M: 512, N: 512, K: 512, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-512}
@@ -30,8 +29,8 @@ BMMFwdOp:
   roofline:
     flops: "2 * B * M * N * K"
 
-# Strict 3D-3D batched FP8 GEMM with per-tensor scaling. A single fp32 scalar per operand is shared
-# across the whole batch, mirroring flashinfer.bmm_fp8's A_scale / B_scale signature 1:1.
+# Strict 3D-3D batched FP8 GEMM with one fp32 scale per operand shared across the batch, as in
+# flashinfer.bmm_fp8's A_scale / B_scale.
 BMMFP8FwdOp:
   family: gemm
   status: implemented

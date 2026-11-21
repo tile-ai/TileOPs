@@ -35,6 +35,32 @@ from tileops._kernels.tiling import ALIGNMENT, align_up
 __all__ = ["EngramGateConvFwdKernel"]
 
 
+@T.macro
+def causal_conv(conv_out, vhat, rrms_v, rms_w_v, conv_w, bid, tid, d_padded):
+    """``conv_out``: the causal depthwise convolution of ``RMSNorm(vhat, rms_w_v)`` at position
+    ``tid`` of sequence ``bid``, a position before the sequence reading as zero.
+
+    As PyTorch's left-padded conv1d, ``conv_w[p]`` multiplies position ``tid - (K - 1) + p``.
+    """
+    for j in T.Parallel(d_padded):
+        conv_out[j] = 0.0
+    for p in T.serial(CONV_KERNEL_SIZE):
+        src_t = tid - (CONV_KERNEL_SIZE - 1) + p
+        for j in T.Parallel(d_padded):
+            raw_val = T.if_then_else(
+                src_t >= 0,
+                T.cast(vhat[bid, src_t, j], conv_out.dtype),
+                0.0,
+            )
+            src_rrms = T.if_then_else(
+                src_t >= 0,
+                rrms_v[bid, src_t],
+                0.0,
+            )
+            normed = raw_val * src_rrms * T.cast(rms_w_v[j], conv_out.dtype)
+            conv_out[j] += T.cast(conv_w[p, j], conv_out.dtype) * normed
+
+
 @target_cache(maxsize=32)
 def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
     accum_dtype = "float"
@@ -45,8 +71,8 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads):
-        @T.macro
-        def _gate_fwd(
+        @T.prim_func
+        def main(
             H: T.Tensor((M, seq_len, d_padded), dtype),
             k: T.Tensor((M, seq_len, d_padded), dtype),
             v: T.Tensor((M, seq_len, d_padded), dtype),
@@ -122,60 +148,11 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
                 for j in T.Parallel(d_padded):
                     vhat_cur[j] = T.cast(vhat_buf[bid, tid, j], accum_dtype)
 
-                for j in T.Parallel(d_padded):
-                    conv_out[j] = 0.0
-
-                # PyTorch conv1d with left-padding: output[t] = sum_p w[p] * input[t - (K-1) + p]
-                # So conv_w[p] multiplies vhat_norm at position t - (K-1) + p
-                for p in T.serial(CONV_KERNEL_SIZE):
-                    src_t = tid - (CONV_KERNEL_SIZE - 1) + p
-                    for j in T.Parallel(d_padded):
-                        raw_val = T.if_then_else(
-                            src_t >= 0,
-                            T.cast(vhat_buf[bid, src_t, j], accum_dtype),
-                            0.0,
-                        )
-                        src_rrms = T.if_then_else(
-                            src_t >= 0,
-                            rrms_v_buf[bid, src_t],
-                            0.0,
-                        )
-                        normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
-                        conv_out[j] += T.cast(conv_w[p, j], accum_dtype) * normed
+                causal_conv(conv_out, vhat_buf, rrms_v_buf, rms_w_v, conv_w, bid, tid, d_padded)
 
                 for j in T.Parallel(d_padded):
                     sig = 1.0 / (1.0 + T.exp(-conv_out[j]))
                     Y[bid, tid, j] = T.cast(conv_out[j] * sig + vhat_cur[j], dtype)
-
-        @T.prim_func
-        def main(
-            H: T.Tensor((M, seq_len, d_padded), dtype),
-            k: T.Tensor((M, seq_len, d_padded), dtype),
-            v: T.Tensor((M, seq_len, d_padded), dtype),
-            rms_w_h: T.Tensor((d_padded,), dtype),
-            rms_w_v: T.Tensor((d_padded,), dtype),
-            conv_w: T.Tensor((CONV_KERNEL_SIZE, d_padded), dtype),
-            Y: T.Tensor((M, seq_len, d_padded), dtype),
-            vhat_buf: T.Tensor((M, seq_len, d_padded), dtype),
-            alpha_buf: T.Tensor((M, seq_len), accum_dtype),
-            rrms_h_buf: T.Tensor((M, seq_len), accum_dtype),
-            rrms_k_buf: T.Tensor((M, seq_len), accum_dtype),
-            rrms_v_buf: T.Tensor((M, seq_len), accum_dtype),
-        ):
-            _gate_fwd(
-                H,
-                k,
-                v,
-                rms_w_h,
-                rms_w_v,
-                conv_w,
-                Y,
-                vhat_buf,
-                alpha_buf,
-                rrms_h_buf,
-                rrms_k_buf,
-                rrms_v_buf,
-            )
 
         return main
 
@@ -201,10 +178,7 @@ class EngramGateConvFwdKernel(Kernel, EngramGateConvFwdInterface):
         config: dict | None = None,
     ):
         super().__init__()
-        self.M = M
-        self.seq_len = seq_len
         self.d = d
-        self.eps = eps
         self.dtype = dtype
         self.d_padded = align_up(d, ALIGNMENT)
         self.kernel = _engram_gate_conv_fwd_kernel(

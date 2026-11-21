@@ -117,3 +117,16 @@ class TestBase(WorkloadBase):
 def smoke_first(cases: list) -> list:
     """*cases* with the smoke ones first, the order the tier check requires."""
     return sorted(cases, key=lambda case: case.marks[0].name != "smoke")
+
+
+def check_strided_in_place(test: TestBase, op) -> None:
+    """Check *op* against *test*'s reference on its strided view, then that an in-place call
+    writes only the view's elements of the wider tensor and returns the view itself."""
+    test.check(op, *test.gen_inputs())
+    (x,) = test.gen_inputs()
+    wide = x._base
+    before = wide.clone()
+    assert op(x)[2] is x
+    kept = torch.ones_like(wide, dtype=torch.bool)
+    kept[test.index] = False
+    assert torch.equal(wide[kept], before[kept])

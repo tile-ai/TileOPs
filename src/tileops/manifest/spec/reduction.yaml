@@ -1,5 +1,3 @@
-# reduction.yaml -- manifest entries for the reduction family (docs/design/manifest.md).
-
 SoftmaxFwdOp:
   ref_api: quack.softmax
   family: reduction

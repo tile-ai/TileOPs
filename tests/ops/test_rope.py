@@ -105,8 +105,13 @@ def _reference(name, params, positions, query, key, offsets=None):
 
 @pytest.mark.smoke
 @pytest.mark.packaging(family="rope")
-@pytest.mark.parametrize("name", sorted(_PARAMS))
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize(
+    ("name", "dtype"),
+    # The ops differ only in the cache they compute, so one dtype covers each; RoPEFwdOp
+    # covers the other dtypes.
+    [(name, torch.float16) for name in sorted(_PARAMS)]
+    + [("RoPEFwdOp", torch.bfloat16), ("RoPEFwdOp", torch.float32)],
+)
 def test_rope_matches_the_reference_at_positions_past_0(name, dtype) -> None:
     op, params = _op(name, dtype)
     positions, query, key = _inputs(name, params, 37, 4, 2, dtype, first=1000)
@@ -187,20 +192,14 @@ def test_longrope_reads_the_row_positions_plus_offsets_name() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
 @pytest.mark.parametrize(
     ("dtype", "bad"),
     [(torch.int32, 8), (torch.int64, 2**32 + 1), (torch.int64, -(2**32) + 1)],
     ids=["int32", "int64-past-int32", "int64-negative"],
 )
-def test_rope_validate_inputs_rejects_a_position_outside_the_cache(neox, dtype, bad) -> None:
-    op, params = _op(
-        "RoPEFwdOp",
-        torch.float16,
-        max_position_embeddings=8,
-        is_neox_style=neox,
-        validate_inputs=True,
-    )
+def test_rope_validate_inputs_rejects_a_position_outside_the_cache(dtype, bad) -> None:
+    # The check runs before either rotation convention's kernel, so one convention covers it.
+    op, params = _op("RoPEFwdOp", torch.float16, max_position_embeddings=8, validate_inputs=True)
     positions = torch.zeros(2, device=run_device(), dtype=dtype)
     positions[-1] = bad
     query = torch.randn(2, 64, device=run_device(), dtype=torch.float16)
@@ -209,8 +208,8 @@ def test_rope_validate_inputs_rejects_a_position_outside_the_cache(neox, dtype, 
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
-def test_partial_neox_query_clamps_both_table_edges():
+def test_rope_partial_neox_query_reads_both_table_edges() -> None:
+    """Positions -1 and P on heads that copy columns read rows 0 and P - 1; no key comes back."""
     op, params = _op(
         "RoPEFwdOp", torch.bfloat16, head_size=80, rotary_dim=32, max_position_embeddings=64
     )
@@ -411,8 +410,8 @@ def test_rope_rotates_one_unit_a_thread_where_heads_copy_columns(name, neox, dty
     ],
 )
 def test_rope_takes_a_key_of_no_heads(name, changes, tokens) -> None:
-    """A 0-column key failed to reshape; it comes back empty, shaped as the key, and the query
-    rotates. 16384 tokens of heads with copied columns take the staged program."""
+    """A key of no heads comes back empty, shaped as the key, and the query rotates. 16384
+    tokens of heads with copied columns take the staged program."""
     dtype = torch.float16
     op, params = _op(name, dtype, **changes)
     positions, query, key = _inputs(name, params, tokens, 3, 0, dtype)
@@ -506,8 +505,13 @@ def _vllm_class(vllm_rope, name: str, params: dict):
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("name", ["RoPEFwdOp", "RoPELlama31FwdOp", "YaRNFwdOp"])
-@pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
+@pytest.mark.parametrize(
+    ("name", "neox"),
+    # The ops differ only in the cache they compute, so one convention covers each; RoPEFwdOp
+    # covers the other convention.
+    [("RoPEFwdOp", True), ("RoPEFwdOp", False), ("RoPELlama31FwdOp", True), ("YaRNFwdOp", True)],
+    ids=["RoPEFwdOp-neox", "RoPEFwdOp-gptj", "RoPELlama31FwdOp-neox", "YaRNFwdOp-neox"],
+)
 def test_rope_matches_vllm_at_positions_past_0(name, neox) -> None:
     """Decode at position p > 0: the rows vLLM reads for each token, not rows 0..S-1."""
     dtype = torch.bfloat16
@@ -794,8 +798,13 @@ def test_rope_cos_sin_int64_offset_at_its_maximum_reads_the_last_row(row) -> Non
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-@pytest.mark.parametrize("extreme", [2**63 - 1, -(2**63)], ids=["max", "min"])
+@pytest.mark.parametrize(
+    "extreme",
+    [
+        pytest.param(2**63 - 1, marks=_SMOKE, id="max"),
+        pytest.param(-(2**63), marks=_FULL, id="min"),
+    ],
+)
 def test_rope_cos_sin_kernel_int_offset_at_its_extremes_reads_the_end_rows(extreme) -> None:
     """The op takes an int offset in [0, P - S]; the kernel clamps any other to the rows it
     reaches, so an int64 extreme reads the rows P - 1 or -S read, without a wrapping sum."""

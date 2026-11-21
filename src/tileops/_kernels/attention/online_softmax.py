@@ -16,7 +16,6 @@ __all__ = [
     "make_apply_softcap",
     "make_dense_sink_scale",
     "make_dense_split_sink_merge",
-    "make_log2e_scale",
     "make_online_softmax",
     "make_online_softmax_with_mask_guard",
     "make_online_softmax_with_score_scale",
@@ -59,18 +58,6 @@ def make_sink_scale(scale, accum_dtype, block_rows, rows_per_head=0, head_group=
             )
 
     return sink_scale
-
-
-# log2(e) -- used to convert exp(x) into exp2(x * log2(e))
-# which allows the compiler to fuse the multiply into an ffma instruction.
-
-
-def make_log2e_scale(dim):
-    """Compute softmax scale with log2(e) factor pre-multiplied.
-
-    Returns (1/sqrt(dim)) * log2(e) for use with exp2-based softmax.
-    """
-    return (1.0 / dim) ** 0.5 * LOG2E
 
 
 def make_dense_sink_scale(scale, block_rows, head_of=None):
@@ -217,9 +204,6 @@ def make_online_softmax_with_mask_guard(scale, accum_dtype, block_rows, block_co
       subtracts the two maxima before scaling, so after two fully-masked blocks it is
       exactly ``exp2(0)``; scaling each side first lets fast math fuse one product
       into an FMA whose rounding error (about ``2**99`` at ``-1e38``) overflows exp2.
-
-    Note: These extra T.Parallel loops may conflict with WGMMA pipeline stage
-    constraints in some kernels — always verify with tests after adopting.
 
     Args:
         scale: Pre-computed scale factor (should include LOG2E multiplication)

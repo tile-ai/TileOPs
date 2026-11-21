@@ -16,9 +16,6 @@ class MLADecodeFixture(FixtureBase):
         (
             "batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype, tune",
             [
-                pytest.param(
-                    32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.smoke
-                ),
                 # The KV gather walks dim in 128-column steps; D = 128 takes one.
                 pytest.param(
                     2,
@@ -42,8 +39,11 @@ class MLADecodeFixture(FixtureBase):
                     64,
                     torch.float16,
                     False,
-                    marks=pytest.mark.smoke,
+                    marks=pytest.mark.full,
                     id="tail-heads",
+                ),
+                pytest.param(
+                    32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.full
                 ),
                 pytest.param(
                     1,
@@ -80,16 +80,15 @@ def test_mla_decode(
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "seq_len_kv",
     [
-        # The cache ends inside a tile.
-        pytest.param(300, id="ragged-tail"),
         # One key: the first tile holds it, and every later key position is masked.
-        pytest.param(1, id="empty-split"),
+        pytest.param(1, marks=pytest.mark.smoke, id="empty-split"),
         # No keys at all: the output is the empty sum.
-        pytest.param(0, id="no-keys"),
+        pytest.param(0, marks=pytest.mark.smoke, id="no-keys"),
+        # The cache ends inside a tile.
+        pytest.param(300, marks=pytest.mark.full, id="ragged-tail"),
     ],
 )
 def test_mla_decode_masks_keys_past_the_cache_end(seq_len_kv: int) -> None:

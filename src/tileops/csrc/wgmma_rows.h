@@ -61,10 +61,6 @@ __device__ __forceinline__ void store_acc_rows(const float* acc, T* out,
   }
 }
 
-}  // namespace tileops
-
-namespace tileops {
-
 // One warp stores its 16 x 64 slice of a 16-bit WGMMA accumulator fragment
 // (pair i at row 8 (i % 2) + lane / 4, columns 8 (i / 2) + 2 (lane % 4)) into a
 // 128-byte-swizzled [rows, 64] tile at `tile` (the slice's first row) with

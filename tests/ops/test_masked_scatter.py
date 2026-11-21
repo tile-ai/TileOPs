@@ -23,7 +23,14 @@ _FULL = pytest.mark.full
 # vector, broadcasts, and an elementwise mask past 4 * block_runs * run_len * itemsize runs
 # (4 * 2048 * 1 * 2 = 16384 for bf16), which reads the block offset from a count pass.
 _CASES = (
-    pytest.param([96, 2560], [96, 1], [96, 2560], "bfloat16", marks=_SMOKE, id="bf16-rows"),
+    pytest.param(
+        [96, 2560],
+        [96, 1],
+        [96, 2560],
+        "bfloat16",
+        marks=[_SMOKE, pytest.mark.packaging(family="indexing")],
+        id="bf16-rows",
+    ),
     pytest.param([40, 4096], [40, 1], [50, 4096], "float16", marks=_SMOKE, id="fp16-rows"),
     pytest.param([33, 4096], [33, 1], [33 * 4096], "float32", marks=_SMOKE, id="fp32-rows"),
     pytest.param([16385], [16385], [16385], "bfloat16", marks=_FULL, id="counted-elements"),

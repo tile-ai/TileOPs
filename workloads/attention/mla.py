@@ -1,9 +1,15 @@
 import torch
-import torch.nn.functional as F
-from einops import einsum, rearrange
 
 from workloads.attention.gqa.call_metadata import _dtype, _segments
 from workloads.device import run_device
+from workloads.numerics import (
+    Custom,
+    Exact,
+    assert_close,
+    assert_normalized_error,
+    reference_tolerance,
+    zeroed_input,
+)
 from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
@@ -69,57 +75,21 @@ class MLADecodeWorkload(WorkloadBase):
     def ref_program(
         self, q: torch.Tensor, q_pe: torch.Tensor, kv: torch.Tensor, k_pe: torch.Tensor
     ) -> torch.Tensor:
+        """``q || q_pe`` over ``kv || k_pe`` per KV head, the value ``kv``, in float32.
+
+        Query head ``i`` reads KV head ``i // (heads // heads_kv)``; the scores divide by
+        ``sqrt(dim + dim_pe)``. The output ``[batch, heads, dim]`` rounds once to q's dtype.
         """
-        Inputs:
-        - q (Tensor): [batch, heads, dim]
-        - q_pe (Tensor): [batch, heads, dim_pe]
-        - kv (Tensor): [batch, seqlen_kv, heads_kv, dim]
-        - k_pe (Tensor): [batch, seqlen_kv, heads_kv, dim_pe]
-        Outputs:
-        - output (Tensor): [batch, heads, dim]
-
-        Computed in float32 and rounded once to the input dtype.
-        """
-        dtype = q.dtype
-        q, q_pe, kv, k_pe = (t.float() for t in (q, q_pe, kv, k_pe))
-        dim = q.shape[-1]
-        dim_pe = q_pe.shape[-1]
-        num_head_groups = q.shape[1] // kv.shape[2]
-        scale = (dim + dim_pe) ** 0.5
-        Q = rearrange(
-            q, "b (h g) d -> b g h d", g=num_head_groups
-        )  # [batch_size, num_head_groups, groups, dim]
-
-        Q_pe = rearrange(
-            q_pe, "b (h g) d -> b g h d", g=num_head_groups
-        )  # [batch_size, num_head_groups, groups, dim_pe]
-
-        KV = rearrange(kv, "b n h d -> b h n d")  # [batch_size, groups, seqlen_kv, dim]
-
-        K_pe = rearrange(
-            k_pe, "b n h d -> b h n d"
-        )  # [batch_size, num_head_groups, groups, dim_pe]
-
-        query = torch.concat([Q, Q_pe], dim=-1)
-        key = torch.concat([KV, K_pe], dim=-1)
-
-        scores = einsum(
-            query, key, "b g h d, b h s d -> b g h s"
-        )  # [batch_size, num_head_groups, groups, seqlen_kv]
-
-        attention = F.softmax(
-            scores / scale, dim=-1
-        )  # [batch_size, num_head_groups, groups, seqlen_kv]
-
-        out = einsum(
-            attention, KV, "b g h s, b h s d -> b g h d"
-        )  # [batch_size, num_head_groups, groups, dim]
-        out = rearrange(out, "b g h d -> b (h g) d")  # [batch_size, heads, dim]
-        return out.to(dtype)
+        batch, heads, _ = q.shape
+        heads_kv = kv.shape[2]
+        # [B, H_kv, group, D + PE]: each KV head's queries, without expanding the keys.
+        query = torch.cat([q, q_pe], dim=-1).float().view(batch, heads_kv, heads // heads_kv, -1)
+        key = torch.cat([kv, k_pe], dim=-1).float()
+        scores = torch.einsum("bhgd,bshd->bhgs", query, key) / query.shape[-1] ** 0.5
+        out = torch.einsum("bhgs,bshd->bhgd", scores.softmax(-1), kv.float())
+        return out.reshape(batch, heads, -1).to(q.dtype)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, zeroed_input
-
         # The kernel rounds the probabilities to the input dtype before the PV GEMM,
         # one relative eps on outputs below 1; split-K tail tiles add a second.
         eps = torch.finfo(self.dtype).eps
@@ -232,8 +202,6 @@ class MLAPagedWorkload(WorkloadBase):
         return o, lse
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, assert_close, assert_normalized_error
-
         # The probabilities are rounded to the query dtype before the value product, one
         # relative step on outputs below 1, and the output lands once in that dtype.
         eps = torch.finfo(self.dtype).eps
@@ -289,56 +257,20 @@ def mla_varlen_inputs(seq_lens, heads, dim_nope, dim_pe, dim_v, dtype):
         torch.randn(total, heads, dim_nope, dtype=dtype, device=device),
         torch.randn(total, dim_pe, dtype=dtype, device=device),
         torch.randn(total, heads, dim_v, dtype=dtype, device=device),
-        torch.tensor(
-            [0, *torch.tensor(seq_lens).cumsum(0).tolist()],
-            dtype=torch.int32,
-            device=device,
-        ),
+        make_cu_seqlens(seq_lens),
     )
 
 
-def mla_varlen_reference(q, k_nope, k_pe, v, cu_seqlens, *, is_causal, dim_v, sm_scale=None):
+def mla_varlen_reference(q, k_nope, k_pe, v, cu_seqlens, *, is_causal, sm_scale=None):
     """Expand the shared rope half to every head, then attend per request in float32.
 
-    The score block of a whole request is quadratic in its length, so query rows
-    and heads are taken a slab at a time; each row still sees its whole key
-    axis, so the numbers are those of the unsplit form.
+    Returns the output in q's dtype and the head-major float32 ``lse``.
     """
-    # Bound the temporary score tensor's memory without changing the reference result.
-    heads_per_chunk = 8
-    rows_per_chunk = 1024
-    heads = q.shape[1]
-    scale = sm_scale if sm_scale is not None else q.shape[-1] ** -0.5
+    key = torch.cat([k_nope, k_pe[:, None].expand(-1, q.shape[1], -1)], dim=-1)
     bounds = cu_seqlens.tolist()
-    out = torch.empty_like(q[..., :dim_v])
-    lse = torch.empty(heads, q.shape[0], dtype=torch.float32, device=q.device)
-    for start, end in zip(bounds, bounds[1:], strict=False):
-        span = end - start
-        key = torch.cat(
-            [k_nope[start:end], k_pe[start:end, None].expand(-1, heads, -1)], dim=-1
-        ).float()
-        value = v[start:end].float()
-        rows = torch.arange(span, device=q.device)
-        for h0 in range(0, heads, heads_per_chunk):
-            h1 = min(h0 + heads_per_chunk, heads)
-            for r0 in range(0, span, rows_per_chunk):
-                r1 = min(r0 + rows_per_chunk, span)
-                scores = (
-                    torch.einsum(
-                        "shd,nhd->hsn",
-                        q[start + r0 : start + r1, h0:h1].float(),
-                        key[:, h0:h1],
-                    )
-                    * scale
-                )
-                if is_causal:
-                    visible = rows[None, :] <= rows[r0:r1, None]
-                    scores = scores.masked_fill(~visible[None], float("-inf"))
-                out[start + r0 : start + r1, h0:h1] = torch.einsum(
-                    "hsn,nhd->shd", scores.softmax(-1), value[:, h0:h1]
-                ).to(q.dtype)
-                lse[h0:h1, start + r0 : start + r1] = scores.logsumexp(-1)
-    return out, lse
+    scale = sm_scale if sm_scale is not None else q.shape[-1] ** -0.5
+    o, lse = _mla_forward(q, key, v, bounds, bounds, is_causal=is_causal, scale=scale)
+    return o.to(q.dtype), lse
 
 
 class MLAVarlenWorkload(WorkloadBase):
@@ -357,13 +289,9 @@ class MLAVarlenWorkload(WorkloadBase):
         )
 
     def ref_program(self, *inputs):
-        return mla_varlen_reference(
-            *inputs, is_causal=self.is_causal, dim_v=self.dim_v, sm_scale=self.sm_scale
-        )
+        return mla_varlen_reference(*inputs, is_causal=self.is_causal, sm_scale=self.sm_scale)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, assert_close
-
         tolerance = 2e-2 if inputs[0].dtype == torch.bfloat16 else 4e-3
 
         def validate(got, expected):
@@ -520,8 +448,6 @@ class MLADenseBwdWorkload(WorkloadBase):
         return tuple(g.reshape(t.shape).to(q.dtype) for g, t in zip(grads, (q, k, v), strict=True))
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, reference_tolerance, zeroed_input
-
         # The dtype rtol covers one stored step of a large gradient, the 5e-3 floor the
         # float32 accumulation error near zero.
         tolerance = reference_tolerance(inputs[0].dtype)

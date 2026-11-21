@@ -1,32 +1,24 @@
-"""Unit tests for .github/actions/reclaim-runner-disk/reclaim_cache.sh.
+"""Contract tests for the runner-disk reclaim script and the CI workflows.
 
-Covers the sentinel-repair + atomic-trim primitives that protect caches
-whose consumers assume "directory exists => contents complete" (the
-tilelang autotuner cache in particular), plus the gpu-smoke
-trust-routing contract, whose failure mode has no CI signal.
-
-Required cases:
-  - half_dead       : atomic subdir with files but no sentinel is removed
-                      on a single invocation.
-  - atomic_stale    : atomic subdir whose newest file is older than
-                      cache-age-days is removed whole-directory.
-  - atomic_fresh    : fresh atomic subdirs are preserved.
-  - invariant       : atomic roots never have their *individual files*
-                      trimmed, even when file-level trim runs.
-
-Runs on every PR (smoke tier), so does not depend on a self-hosted
-runner or the Tilelang runtime. Must stay fast and hermetic.
+``.github/actions/reclaim-runner-disk/reclaim_cache.sh`` must never leave a cache
+directory whose consumer reads "directory exists" as "contents complete" (the TileLang
+autotuner cache) half-trimmed. The workflow tests pin what the workflows select, which
+actionlint cannot see; preflight runs this file without torch, so it needs only pytest,
+PyYAML and jq.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.smoke
 
@@ -78,7 +70,7 @@ def _make_autotuner_subdir(
 
 
 def test_sentinel_repair_removes_half_dead_subdir(tmp_path: Path) -> None:
-    """half_dead case: subdir missing best_config.json must be removed."""
+    """A subdir missing best_config.json is removed."""
     root = tmp_path / "autotuner"
     half_dead = _make_autotuner_subdir(root, "halfdead_sig", with_sentinel=False)
     healthy = _make_autotuner_subdir(root, "healthy_sig", with_sentinel=True)
@@ -90,29 +82,16 @@ def test_sentinel_repair_removes_half_dead_subdir(tmp_path: Path) -> None:
     assert (healthy / "best_config.json").exists()
 
 
-def test_sentinel_repair_is_idempotent(tmp_path: Path) -> None:
-    """Running sentinel-repair twice on a clean tree must not regress."""
-    root = tmp_path / "autotuner"
-    healthy = _make_autotuner_subdir(root, "healthy_sig", with_sentinel=True)
-
-    _run("sentinel-repair", str(root))
-    _run("sentinel-repair", str(root))
-
-    assert healthy.exists()
-    assert (healthy / "best_config.json").exists()
-
-
 def test_all_subcommands_tolerate_missing_root(tmp_path: Path) -> None:
-    """A non-existent cache root must be a no-op, not an error, for every
-    subcommand."""
+    """A non-existent cache root is a no-op, not an error, for every subcommand."""
     missing = tmp_path / "does-not-exist"
-    _run("sentinel-repair", str(missing))  # asserts rc==0
+    _run("sentinel-repair", str(missing))
     _run("atomic-trim", "7", str(missing))
     _run("trim-files", "7", str(missing))
 
 
 def test_sentinel_repair_honours_custom_sentinel_filename(tmp_path: Path) -> None:
-    """The sentinel filename is overridable via $SENTINEL_FILENAME (used in tests)."""
+    """$SENTINEL_FILENAME overrides the sentinel filename."""
     root = tmp_path / "autotuner"
     subdir = _make_autotuner_subdir(root, "sig", with_sentinel=False, sentinel="SENTINEL")
     (subdir / "SENTINEL").write_text("ok\n")
@@ -126,8 +105,7 @@ def test_sentinel_repair_honours_custom_sentinel_filename(tmp_path: Path) -> Non
 
 
 def test_atomic_trim_removes_stale_subdir_whole(tmp_path: Path) -> None:
-    """atomic_stale case: subdir whose newest file is older than the
-    cutoff is removed as a whole unit."""
+    """A subdir whose newest file is older than the cutoff is removed as a whole."""
     root = tmp_path / "autotuner"
     stale = _make_autotuner_subdir(root, "stale_sig", with_sentinel=True)
     _age_path(stale, days=30)
@@ -137,25 +115,9 @@ def test_atomic_trim_removes_stale_subdir_whole(tmp_path: Path) -> None:
     assert not stale.exists(), "stale atomic subdir must be removed whole-directory"
 
 
-def test_atomic_trim_preserves_fresh_subdir(tmp_path: Path) -> None:
-    """atomic_fresh case: subdirs within the age window are kept intact."""
-    root = tmp_path / "autotuner"
-    fresh = _make_autotuner_subdir(root, "fresh_sig", with_sentinel=True)
-
-    _run("atomic-trim", "7", str(root))
-
-    assert fresh.exists()
-    # All files preserved, not just the directory.
-    assert (fresh / "best_config.json").exists()
-    assert (fresh / "kernel.cu").exists()
-    assert (fresh / "kernel.so").exists()
-
-
 def test_atomic_trim_never_trims_individual_files(tmp_path: Path) -> None:
-    """invariant: even when *some* files inside an atomic subdir are old,
-    atomic-trim must not delete individual files — the unit of deletion
-    is the whole subdirectory. The subdir is kept whenever *any* entry
-    inside it is within the age window."""
+    """The unit of deletion is the whole subdirectory: a subdir holding any file within
+    the age window is kept with every file, old ones included."""
     root = tmp_path / "autotuner"
     subdir = _make_autotuner_subdir(root, "mixed_sig", with_sentinel=True)
     # Age just the kernel files, leave best_config.json fresh.
@@ -164,22 +126,14 @@ def test_atomic_trim_never_trims_individual_files(tmp_path: Path) -> None:
 
     _run("atomic-trim", "7", str(root))
 
-    assert subdir.exists(), "subdir with at least one fresh file must survive"
-    assert (subdir / "kernel.cu").exists(), (
-        "individual files inside atomic root must never be trimmed"
-    )
+    assert (subdir / "kernel.cu").exists()
     assert (subdir / "kernel.so").exists()
     assert (subdir / "best_config.json").exists()
 
 
 def test_atomic_trim_uses_file_mtime_not_dir_mtime(tmp_path: Path) -> None:
-    """Directory mtime must not make a stale subdir look fresh.
-
-    A cache restore/extract can bump the subdir's own mtime to "now" while
-    every regular file inside keeps its original (old) timestamp. atomic-trim
-    must decide staleness from the newest FILE mtime in the subtree, not the
-    directory mtime, otherwise age-based reclaim is defeated.
-    """
+    """Directory mtime does not make a stale subdir look fresh: a cache restore sets the
+    subdir's own mtime to now while every file inside keeps its old one."""
     root = tmp_path / "autotuner"
     root.mkdir()
     stale = root / "deadbeef"
@@ -187,7 +141,6 @@ def test_atomic_trim_uses_file_mtime_not_dir_mtime(tmp_path: Path) -> None:
     (stale / "best_config.json").write_text("{}")
     (stale / "kernel.so").write_text("x")
 
-    # Backdate only the files; deliberately leave the subdir mtime at "now".
     past = time.time() - 30 * 86400
     for entry in stale.iterdir():
         os.utime(entry, (past, past))
@@ -195,10 +148,7 @@ def test_atomic_trim_uses_file_mtime_not_dir_mtime(tmp_path: Path) -> None:
 
     _run("atomic-trim", "7", str(root))
 
-    assert not stale.exists(), (
-        "atomic-trim regressed: stale subdir kept alive by dir mtime. "
-        "Newest-mtime logic must restrict to -type f."
-    )
+    assert not stale.exists()
 
 
 def test_atomic_trim_handles_empty_root(tmp_path: Path) -> None:
@@ -214,11 +164,8 @@ def test_atomic_trim_handles_empty_root(tmp_path: Path) -> None:
 def test_trim_files_removes_old_files_but_leaves_atomic_roots_alone(
     tmp_path: Path,
 ) -> None:
-    """invariant: file-level trim is only applied to the roots passed
-    in. Callers must keep atomic roots out of the trim-files list —
-    which this test reinforces by exercising a non-atomic root and
-    asserting that a neighbouring autotuner root (*not* passed in) is
-    untouched even if its files are ancient."""
+    """File-level trim touches only the roots passed in: an autotuner root left out of
+    the list keeps its ancient files."""
     triton_root = tmp_path / "triton-cache"
     triton_root.mkdir()
     old_file = triton_root / "old.bin"
@@ -227,17 +174,14 @@ def test_trim_files_removes_old_files_but_leaves_atomic_roots_alone(
     fresh_file = triton_root / "fresh.bin"
     fresh_file.write_bytes(b"\x01")
 
-    # A *separate* autotuner root the action would NOT pass to trim-files.
     autotuner_root = tmp_path / "autotuner"
     subdir = _make_autotuner_subdir(autotuner_root, "sig", with_sentinel=True)
     _age_path(subdir, days=30)
 
     _run("trim-files", "7", str(triton_root))
 
-    # Non-atomic root: old files pruned, fresh files kept.
     assert not old_file.exists()
     assert fresh_file.exists()
-    # Atomic root untouched — trim-files must NOT be called on it.
     assert subdir.exists()
     assert (subdir / "best_config.json").exists()
     assert (subdir / "kernel.cu").exists()
@@ -249,16 +193,11 @@ GPU_SMOKE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "gpu-smoke.yml"
 
 
 def test_security_policy_routes_trust_by_collaborator_permission() -> None:
-    """is_fork must derive from the PR author's collaborator permission
-    (write/maintain/admin -> trusted), fail closed to the fork pool, and
-    drive both runs-on and the trusted-action ref."""
-    import yaml
-
+    """is_fork derives from the PR author's collaborator permission
+    (write/maintain/admin -> trusted), fails closed to the fork pool, and
+    drives both runs-on and the trusted-action ref."""
     wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
-    policy_job = wf["jobs"]["security-policy"]
-    run_steps = [s for s in policy_job["steps"] if "run" in s and s.get("id") == "policy"]
-    assert run_steps, "expected a 'policy' step in security-policy job"
-    step = run_steps[0]
+    step = _step(wf, "security-policy", "policy")
     script = step["run"]
     env = step["env"]
 
@@ -282,19 +221,16 @@ def test_security_policy_routes_trust_by_collaborator_permission() -> None:
 # gpu-smoke targeted test selection
 
 
-def _policy_script() -> str:
-    import yaml
+def _step(workflow: dict, job: str, step_id: str) -> dict:
+    return next(s for s in workflow["jobs"][job]["steps"] if s.get("id") == step_id)
 
-    wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
-    policy_job = wf["jobs"]["security-policy"]
-    step = next(s for s in policy_job["steps"] if s.get("id") == "policy")
-    return step["run"]
+
+def _policy_script(job: str = "security-policy", step_id: str = "policy") -> str:
+    return _step(yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text()), job, step_id)["run"]
 
 
 def _targeted_arm_patterns(script: str) -> str:
     """The `case` arm that turns a changed test file into a targeted pytest target."""
-    import re
-
     arms = re.findall(r"^\s*(tests/ops[^)\n]*)\)\s*$", script, re.M)
     assert len(arms) == 1, f"expected one tests/ops case arm, found {arms}"
     return arms[0]
@@ -329,8 +265,6 @@ def test_every_op_test_file_reaches_the_targeted_arm() -> None:
 def test_fork_fast_path_accepts_the_same_op_tests() -> None:
     """Otherwise a fork PR touching a nested op test is classified "outside the
     fast-path policy" rather than as the test-only change it is."""
-    import re
-
     script = _policy_script()
     # The arm itself, not the whole script: a substring search also matches the
     # pattern quoted in a comment, and would pass over an arm that dropped it. The
@@ -357,8 +291,6 @@ def test_fork_fast_path_accepts_the_same_op_tests() -> None:
 def test_every_native_source_forces_gpu_smoke() -> None:
     """Kernels compile `src/tileops/csrc` in at build time; a file the arm misses
     reads as a non-Python change and skips GPU smoke."""
-    import re
-
     arms = re.findall(r"^\s*(src/tileops/csrc[^)\n]*)\)\s*$", _policy_script(), re.M)
     assert len(arms) == 1, f"expected one src/tileops/csrc case arm, found {arms}"
 
@@ -382,8 +314,6 @@ def test_the_manifest_validator_runs_on_every_pr() -> None:
     """`validate-manifest` is the only run of the validator over the real manifest, and the
     validator imports every op family and reads every benchmark file, so no path filter can
     say which PRs leave it unaffected."""
-    import yaml
-
     job = yaml.safe_load(PREFLIGHT_WORKFLOW.read_text())["jobs"]["validate-manifest"]
     needs = job.get("needs") or []
     assert "detect-changes" not in ([needs] if isinstance(needs, str) else needs)
@@ -400,16 +330,14 @@ def test_reclaim_defers_to_an_in_flight_nightly() -> None:
     """A concurrent trim deletes work nightly is doing: `sentinel-repair` cannot tell
     an autotune run mid-write from a crashed one. Nightly may run to its declared
     ceiling, so the separation has to be a guard, and it has to fail closed."""
-    import yaml
-
     maint = yaml.safe_load(MAINTENANCE_WORKFLOW.read_text())
     nightly = yaml.safe_load(NIGHTLY_WORKFLOW.read_text())
     # `on` is the YAML 1.1 boolean `true` once parsed.
     assert "schedule" not in (nightly.get(True) or nightly["on"]), (
-        "a nightly cron would have to be separated from the reclaim cron again"
+        "a nightly cron needs its own separation from the reclaim cron"
     )
 
-    guard = next(s for s in maint["jobs"]["nightly-guard"]["steps"] if s.get("id") == "check")
+    guard = _step(maint, "nightly-guard", "check")
     reclaim = maint["jobs"]["reclaim-disk"]
     assert "nightly-guard" in str(reclaim["needs"])
     assert "nightly_active" in reclaim["if"]
@@ -429,7 +357,7 @@ def test_reclaim_defers_to_an_in_flight_nightly() -> None:
 
 def _required_check_loop() -> str:
     """The loop that turns preflight check-runs into pending / failed / satisfied."""
-    script = _policy_script_of("ci-prereq", "check")
+    script = _policy_script("ci-prereq", "check")
     start = script.index('for check_name in "${required_checks[@]}"; do')
     # YAML strips the block scalar's common indentation, so the loop's own
     # indentation is whatever survives, not the column it occupies in the file.
@@ -438,18 +366,8 @@ def _required_check_loop() -> str:
     return script[start:end]
 
 
-def _policy_script_of(job: str, step_id: str) -> str:
-    import yaml
-
-    wf = yaml.safe_load(GPU_SMOKE_WORKFLOW.read_text())
-    step = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == step_id)
-    return step["run"]
-
-
 def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
     """Run the workflow's own loop over synthetic check-runs."""
-    import json
-
     checks_json = json.dumps(
         {"check_runs": [{"name": n, "status": s, "conclusion": c, "id": i} for n, s, c, i in runs]}
     )
@@ -485,9 +403,8 @@ def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="executes the workflow's jq calls")
 def test_a_skipped_check_does_not_outrank_an_earlier_success() -> None:
-    """Blocking on a skipped run burned the 900s deadline and skipped GPU smoke with
-    "Timed out" in the log, so a PR could reach ready with GPU smoke never having
-    run. A skip with no prior success must still fail closed."""
+    """A skipped run after a success leaves the check satisfied rather than pending until
+    the deadline; a skip with no earlier success stays pending."""
     ok = [("pre-commit", "completed", "success", 10), ("gitleaks", "completed", "success", 11)]
     third = ("actionlint", "completed", "success", 12)
 

@@ -285,13 +285,13 @@ class MoEGroupedGEMMKernel(Kernel, MGroupedGEMMFwdInterface):
             return f"fuses only {sorted(ACTIVATIONS)}, got {call.activation}"
         if call.k % 8:
             return f"steps K by 8, got K = {call.k}"
-        n_step = 8 if call.activation is None else 16
+        n_step = 8 if call.activation in (None, "none") else 16
         if call.n % n_step:
             return f"needs N a multiple of {n_step} here, got N = {call.n}"
         return None
 
     def __init__(self, call: MGroupedGEMMCall) -> None:
-        device_index = call.device.index if call.device is not None else None
+        device_index = call.device_index
         super().__init__(device_index=device_index)
         self.call = call
         self.inner = GEMMTemplate(
@@ -323,7 +323,7 @@ class MoEGroupedGEMMMMAKernel(MoEGroupedGEMMKernel):
     preferred_over = frozenset()
 
     def __init__(self, call: MGroupedGEMMCall) -> None:
-        device_index = call.device.index if call.device is not None else None
+        device_index = call.device_index
         Kernel.__init__(self, device_index=device_index)
         self.call = call
         self.kernel = _moe_grouped_gemm_mma_kernel(

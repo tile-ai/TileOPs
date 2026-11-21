@@ -10,6 +10,7 @@ from tilelang.layout import make_swizzled_layout
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.constants import SETMAXNREG_GRANULARITY, SM90_REGISTERS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
 
 __all__ = [
@@ -300,10 +301,10 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
     def refusal(cls, call: FP8LightningIndexerCall) -> str | None:
         """Why the call cannot fit the device's shared memory at one query a block, or ``None``."""
         if not call.smem_budget:
-            return None
+            return super().refusal(call)
         need = cls._shared_bytes(1, call.heads, call.index_dim, call.kv_group)
         if need <= call.smem_budget:
-            return None
+            return super().refusal(call)
         return (
             f"needs {need} bytes of shared memory per block at {call.heads} heads of dim "
             f"{call.index_dim} in {call.kv_group} groups; the device gives {call.smem_budget}"
@@ -405,27 +406,12 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_N = [32, 64, 128]
-        num_stages = [0, 1, 2]
-        threads = [128, 256]
-        block_Q = [1, 2, 4]
         # block_Q == 1 runs unpipelined (above), so it is tried at num_stages 0 alone.
-        _configs = [
-            c
-            for c in itertools.product(block_N, num_stages, threads, block_Q)
-            if c[3] >= self._MIN_PIPELINED_BLOCK_Q or c[1] == 0
+        return [
+            {"block_N": n, "num_stages": st, "threads": t, "block_Q": q}
+            for n, st, t, q in itertools.product((32, 64, 128), (0, 1, 2), (128, 256), (1, 2, 4))
+            if q >= self._MIN_PIPELINED_BLOCK_Q or st == 0
         ]
-
-        configs = [
-            {
-                "block_N": c[0],
-                "num_stages": c[1],
-                "threads": c[2],
-                "block_Q": c[3],
-            }
-            for c in _configs
-        ]
-        return configs
 
     def forward(
         self,
@@ -464,19 +450,8 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         )
         return CompiledProgram(main), clean
 
-    def supply_prog(
-        self, *args, **kwargs
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-    ]:
-        # TileLang invokes supply_prog with the candidate JIT params during autotuning;
-        # ignore them and build benchmark inputs from the kernel's shape attributes.
+    def supply_prog(self, *args, **kwargs) -> tuple[torch.Tensor, ...]:
+        # TileLang passes the candidate's JIT parameters, which the inputs do not depend on.
         batch, seq_len, heads, index_dim = self.batch, self.seq_len, self.heads, self.index_dim
         seq_len_kv = self.seq_len_kv
         accum_dtype = torch.float32
@@ -503,8 +478,6 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
 
     @property
     def autotune_supply_prog(self):
-        # The kernel has scalar (int32) params; the default tensor-only input
-        # generation cannot build them, so supply benchmark inputs explicitly.
         return self.supply_prog
 
     def autotune(self, warmup=10, rep=10):
@@ -552,8 +525,9 @@ def _fp8_lightning_indexer_ws_kernel(
     serving_regs = 24  # the serving warpgroup only issues TMA
     # setmaxnreg moves registers within the CTA's launch allocation: what the serving
     # warpgroup gives back goes to the two consumer warpgroups, in steps of 8.
-    launch_regs = 65536 // 384 // 8 * 8
-    consumer_regs = (launch_regs + (launch_regs - serving_regs) // 2) // 8 * 8
+    step = SETMAXNREG_GRANULARITY
+    launch_regs = SM90_REGISTERS // 384 // step * step
+    consumer_regs = (launch_regs + (launch_regs - serving_regs) // 2) // step * step
     seq_len = T.dynamic("seq_len")
     seq_len_kv = T.dynamic("seq_len_kv")
     epilogue = "indexer_tile_epilogue_doubled" if mixed else "indexer_tile_epilogue"
@@ -794,7 +768,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
             return "requires index dimension 64 or 128"
         if call.seq_len_kv % 4:
             return "requires seq_len_kv a multiple of 4, the TMA stride of a logit row"
-        return None
+        return super().refusal(call)
 
     @classmethod
     def splits_for(cls, call: FP8LightningIndexerCall) -> int:
@@ -828,7 +802,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
     def entry_for(cls, call: FP8LightningIndexerCall) -> Entry:
         splits = cls.splits_for(call)
         partial_wave = cls.partial_wave_for(call)
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (call, splits, partial_wave, index), lambda: cls(
             call.batch,
             call.seq_len,

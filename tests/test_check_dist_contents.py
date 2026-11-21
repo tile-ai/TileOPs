@@ -112,19 +112,6 @@ def test_complete_dist_passes(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize(
-    "dropped",
-    [NESTED_HEADER, PERF_PROFILE, MANIFEST_YAMLS[1], SOURCES[1]],
-    ids=["nested-package-header", "perf-profile", "manifest-yaml", "module"],
-)
-def test_wheel_missing_any_tracked_file_fails(tmp_path, dropped):
-    """Every tracked file is required, module or resource, whatever its subpackage."""
-    repo, dist = build_dist(tmp_path, [e for e in WHEEL_OK if e != dropped], SDIST_OK)
-    result = run_check(repo, dist)
-    assert result.returncode == 1
-    assert dropped in result.stdout
-
-
 def test_wheel_without_its_license_fails(tmp_path):
     repo = make_repo(tmp_path)
     dist = tmp_path / "dist"
@@ -135,9 +122,9 @@ def test_wheel_without_its_license_fails(tmp_path):
     assert "licenses/LICENSE" in result.stdout
 
 
-def test_all_missing_resources_are_reported(tmp_path):
-    """A wheel short several resources names each one, not just the first."""
-    dropped = [NESTED_HEADER, PERF_PROFILE]
+def test_every_missing_tracked_file_is_reported(tmp_path):
+    """A wheel short several tracked files, module or resource, names each one."""
+    dropped = [NESTED_HEADER, PERF_PROFILE, SOURCES[1]]
     repo, dist = build_dist(tmp_path, [e for e in WHEEL_OK if e not in dropped], SDIST_OK)
     result = run_check(repo, dist)
     assert result.returncode == 1
@@ -193,11 +180,7 @@ def test_sdist_with_extra_top_level_fails(tmp_path, leaked, named):
     ids=["tooling-tree", "foreign-dist-info"],
 )
 def test_wheel_with_extra_top_level_fails(tmp_path, leaked, named):
-    """Only the package and its own metadata may install into site-packages.
-
-    Under the previous flat layout every top-level directory was a package
-    candidate, so tooling trees reached the wheel and became importable names.
-    """
+    """Only the package and its own metadata may install into site-packages."""
     repo, dist = build_dist(tmp_path, WHEEL_OK + [leaked], SDIST_OK)
     result = run_check(repo, dist)
     assert result.returncode == 1

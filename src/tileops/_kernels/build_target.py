@@ -1,4 +1,4 @@
-"""Target identity and target-aware kernel builder caching."""
+"""Target identity, target-aware kernel builder caching, and shared CUDA build options."""
 
 import contextlib
 import functools
@@ -9,7 +9,29 @@ import torch
 
 from tileops._utils.device import current_device, device_context, on_current_index
 
-__all__ = ["BuildTarget", "building_on", "current_target", "target_cache", "target_of"]
+__all__ = [
+    "CUDA_COMPILE_FLAGS",
+    "BuildTarget",
+    "building_on",
+    "chain_cuda_postproc",
+    "current_target",
+    "target_cache",
+    "target_of",
+]
+
+# nvcc flags for generated CUDA that uses the half and bfloat16 operators and conversions,
+# constexpr functions on the device and extended lambdas, with asserts compiled out.
+CUDA_COMPILE_FLAGS: tuple[str, ...] = (
+    "-O3",
+    "-Wno-deprecated-declarations",
+    "-U__CUDA_NO_HALF_OPERATORS__",
+    "-U__CUDA_NO_HALF_CONVERSIONS__",
+    "-U__CUDA_NO_HALF2_OPERATORS__",
+    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    "--expt-relaxed-constexpr",
+    "--expt-extended-lambda",
+    "-DNDEBUG",
+)
 
 
 class BuildTarget(NamedTuple):
@@ -86,3 +108,22 @@ def target_cache(maxsize: int | None = 128) -> Callable[[Callable], Callable]:
         return keyed
 
     return decorate
+
+
+def chain_cuda_postproc(rewrite: Callable[[str], str]) -> None:
+    """Run *rewrite* on generated CUDA after whatever holds TileLang's one post-processing slot.
+
+    TileLang keeps a single CUDA post-processing callback, so each rewrite wraps the one
+    registered before it instead of replacing it.
+    """
+    import tilelang
+    import tvm_ffi
+
+    previous = tvm_ffi.get_global_func("tilelang_callback_cuda_postproc", allow_missing=True)
+
+    def postproc(code: str, target: Any) -> str:
+        if previous is not None:
+            code = previous(code, target)
+        return rewrite(code)
+
+    tilelang.register_cuda_postproc(postproc)

@@ -1,4 +1,4 @@
-"""Manifest call workload for n-gram hashing."""
+"""Call workloads of the ngram_hash family."""
 
 from workloads.sequence_modeling.ngram_hash import NGramHashWorkloadCall
 

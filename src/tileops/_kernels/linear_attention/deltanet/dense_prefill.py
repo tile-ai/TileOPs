@@ -69,11 +69,13 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
             )
             if present
         ]
-        return "does not support " + ", ".join(unsupported) if unsupported else None
+        if unsupported:
+            return "does not support " + ", ".join(unsupported)
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: DeltaNetCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         arguments = dict(
             batch=call.batch,
             heads=call.heads,
@@ -123,9 +125,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
                 f"max_local_chunks must be at least 4, got {self.config['max_local_chunks']}"
             )
         # A zero gate is the ungated delta rule; held across calls so no call pays a memset.
-        device = (
-            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
-        )
+        device = self._build_device
         self.zero_gate = torch.zeros(
             (1, batch * seq_len, heads), dtype=torch.float32, device=device
         )
@@ -286,7 +286,6 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         beta_dtype: torch.dtype,
         state_dtype: torch.dtype | None,
         partitions: int,
-        device_index: int | None,
     ) -> tuple:
         """The block solve, the partition pass, the partition scan and the forward a launch
         runs, ``None`` for a pass it skips.
@@ -402,7 +401,6 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
             beta.dtype,
             None if initial_state is None else initial_state.dtype,
             0 if split is None else split[1].shape[0] - 1,
-            q.device.index,
         )
         solve_program, states_program, _, forward_program = programs
         inverse, k_rnorm = prefill_blocksolve_A_bthd(

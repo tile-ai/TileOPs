@@ -154,10 +154,14 @@ class INT4QuantPerGroupFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Quantize contiguous float16 ``w[call.rows, call.cols]`` without mutation.
+        """Quantize each group of ``call.group_size`` elements of *w*; nothing is written in place.
 
-        Return int8 packed codes ``[call.rows, call.cols // 2]`` and float32
-        scale/offset pairs ``[call.rows * call.cols // call.group_size, 2]``.
+        Args:
+            w: ``[call.rows, call.cols]``, contiguous, in ``float16`` on ``call.device``.
+
+        Returns:
+            New ``int8`` packed codes ``[call.rows, call.cols // 2]`` and new ``float32``
+            scale and offset pairs ``[call.rows * call.cols // call.group_size, 2]``.
         """
 
 

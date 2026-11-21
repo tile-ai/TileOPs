@@ -13,6 +13,7 @@ from tileops._kernels.linear_attention.call_spec import (
     head_count_refusal,
 )
 from tileops._kernels.linear_attention.delta_decode import decode_launch, delta_decode_tl
+from tileops._kernels.linear_attention.gdn.prefill_common import L2NORM_EPS
 
 __all__ = ["GDNColumnDecodeKernel", "GDNDenseDecodeFwdKernel"]
 
@@ -52,11 +53,13 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             )
             if present
         ]
-        return "does not support " + ", ".join(unsupported) if unsupported else None
+        if unsupported:
+            return "does not support " + ", ".join(unsupported)
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GDNCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         # A packed call's token count is runtime data; an equal-length one's is built in.
         tokens = 1 if call.varlen else call.seq_len
         identity = (
@@ -142,9 +145,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         self.drafts = drafts
         self.init_config()
         self.program(self._compile)
-        device = (
-            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
-        )
+        device = self._build_device
         # The parameters this build leaves unread are declared one element wide.
         self._unread = torch.empty(1, dtype=torch.float32, device=device)
         self._unread_offsets = torch.empty(1, dtype=torch.int64, device=device)
@@ -229,7 +230,9 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
 
 @target_cache(maxsize=32)
 @tilelang.jit(out_idx=[6, 7], pass_configs={"tl.enable_fast_math": True})
-def _gdn_decode_columns(batch_size, heads, scale, neg_eigval):
+def _gdn_decode_column_kernel(batch_size, heads, scale, neg_eigval):
+    # A block keeps a 16-column tile of the 128-row state in registers; a thread owns
+    # pairs of adjacent columns.
     width, threads = 16, 64
     vector = 2
 
@@ -272,8 +275,8 @@ def _gdn_decode_columns(batch_size, heads, scale, neg_eigval):
             T.reduce_sum(qs, qn, dim=0)
             T.reduce_sum(ks, kn, dim=0)
             for i in T.Parallel(128):
-                q[i] *= T.rsqrt(qn[0] + 1e-6)
-                k[i] *= T.rsqrt(kn[0] + 1e-6)
+                q[i] *= T.rsqrt(qn[0] + L2NORM_EPS)
+                k[i] *= T.rsqrt(kn[0] + L2NORM_EPS)
             for i, j in T.Parallel(128, width):
                 state[i, j] = S[batch, h, i, tile * width + j] * decay
                 products[i, j] = state[i, j] * k[i]
@@ -322,19 +325,19 @@ class GDNColumnDecodeKernel(Kernel, GDNFwdInterface):
             or not 1 <= call.batch * call.heads <= 64
         ):
             return "requires at most 64 BF16 query/value heads across the batch with width 128"
-        return head_count_refusal(call.heads)
+        return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GDNCall) -> Entry:
         return call, lambda: cls(call)
 
     def __init__(self, call: GDNCall):
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.call = call
 
     def _compile(self, cfg):
         call = self.call
-        return _gdn_decode_columns(call.batch, call.heads, call.scale, call.allow_neg_eigval)
+        return _gdn_decode_column_kernel(call.batch, call.heads, call.scale, call.allow_neg_eigval)
 
     def forward(
         self,

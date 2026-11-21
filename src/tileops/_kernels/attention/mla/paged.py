@@ -166,14 +166,12 @@ class _MLAPagedBase(Kernel, MLAPagedFwdInterface):
             dtype=call.dtype,
             cache_dtype=call.cache_dtype,
         )
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*args.values(), index), lambda: cls(**args, device_index=index)
 
     def _setup(self, heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dtype, cache_dtype):
         self.heads, self.s_q, self.dim, self.dim_v = heads, s_q, dim, dim_v
-        self.page_size, self.is_causal, self.sm_scale = page_size, is_causal, sm_scale
-        self.dtype, self.cache_dtype = dtype, cache_dtype
-        self.quantized = cache_dtype == torch.float8_e4m3fn
+        self.page_size, self.dtype = page_size, dtype
         # A 16-bit cache passes no scale; the kernel still takes one and multiplies by it.
         device = (
             torch.device("cuda", self.device_index)

@@ -212,7 +212,6 @@ class Kernel(ABC):
     _AUTOTUNE_PARAM_ALIASES = {
         "threads_arg": "threads",
         "npt_arg": "num_per_thread",
-        "num_per_thread_arg": "num_per_thread",
     }
 
     @staticmethod
@@ -299,13 +298,18 @@ class Kernel(ABC):
     def config(self, config: dict[str, Any]) -> None:
         self._generation = _Generation(config)
 
-    @contextlib.contextmanager
-    def _pinning(self, generation: _Generation) -> Iterator[None]:
-        """Run this thread's launches inside the block under *generation*."""
+    def _own_pins(self) -> "dict[int, _Generation]":
+        """This instance's table of pinned generations, created on first use."""
         pinned = self.__dict__.get("_pinned")
         if pinned is None:
             # Threads pinning for the first time together keep one table.
             pinned = self.__dict__.setdefault("_pinned", {})
+        return pinned
+
+    @contextlib.contextmanager
+    def _pinning(self, generation: _Generation) -> Iterator[None]:
+        """Run this thread's launches inside the block under *generation*."""
+        pinned = self._own_pins()
         ident = threading.get_ident()
         outer = pinned.get(ident)
         pinned[ident] = generation
@@ -360,8 +364,7 @@ class Kernel(ABC):
         Returns:
             What *build* returned: the compiled program, or the programs of one launch.
         """
-        pinned = self._pinned
-        generation = (pinned and pinned.get(threading.get_ident())) or self._generation
+        generation = self._current()
         programs = generation.programs
         # Why id: hashing a code object hashes its whole body, and a code object lives as
         # long as the function or module defining it.
@@ -452,8 +455,6 @@ class Kernel(ABC):
         A call that names no device runs on the accelerator's current one; without an
         accelerator its device is unknown, and no implementation serves it.
         """
-        from tileops._utils.device import current_device
-
         device = getattr(call, "device", None) or current_device()
         if device is None:
             return "the call names no device, and this process has no accelerator"
@@ -561,10 +562,7 @@ class Kernel(ABC):
         raise NotImplementedError
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        pinned = self.__dict__.get("_pinned")
-        if pinned is None:
-            # Threads pinning for the first time together keep one table.
-            pinned = self.__dict__.setdefault("_pinned", {})
+        pinned = self._own_pins()
         ident = threading.get_ident()
         if ident in pinned:
             result = self.forward(*args, **kwargs)
@@ -609,7 +607,7 @@ class Kernel(ABC):
     ) -> dict[str, Any]:
         """Return initial JIT kwargs for TileLang autotuner binding.
 
-        TileLang 0.1.11 validates/binds the JIT signature before candidate
+        TileLang validates and binds the JIT signature before candidate
         configs are applied. Passing the kernel's default config keeps required
         tunable parameters bindable while the autotuner still overrides them
         with each candidate config during benchmarking.

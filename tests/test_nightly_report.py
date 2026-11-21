@@ -10,6 +10,7 @@ import subprocess
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 import pytest
 
@@ -40,6 +41,26 @@ def _history_run(busy_ms, name=_KEY, p10=None, p90=None, **counts):
         tileops["device_busy_p10_ms"] = p10
         tileops["device_busy_p90_ms"] = p90
     return {"ops": {_OP: {name: {"tileops": tileops}}}}
+
+
+def _row_xml(**properties: str) -> str:
+    """A benchmark report holding the FooFwdOp row read at 0.1 ms, with *properties* added."""
+    props = {"op": _OP, "tileops_device_busy_ms": "0.1", **properties}
+    rendered = "".join(
+        f"<property name={quoteattr(k)} value={quoteattr(v)}/>" for k, v in props.items()
+    )
+    return (
+        '<testsuites><testsuite name="bench"><testcase classname="benchmarks.test_foo"'
+        f' name="{_CONFIG}"><properties>{rendered}</properties></testcase></testsuite></testsuites>'
+    )
+
+
+def _history_reading(report, tmp_path, **properties: str) -> dict:
+    """The history entry's tileops reading of the row ``_row_xml`` writes."""
+    xml = tmp_path / "bench.xml"
+    xml.write_text(_row_xml(**properties))
+    ops = report.aggregate_bench_results(report.parse_bench_xml(str(xml)))
+    return report.build_history_entry(ops, _RUN)["ops"][_OP][_KEY]["tileops"]
 
 
 def _bench_ops(busy_ms, p10=None, p90=None, **counts):
@@ -83,17 +104,7 @@ def test_history_reading_after_another_l2_flush_is_not_a_baseline(report, histor
 
 def test_the_l2_flush_of_a_reading_reaches_the_history_entry(report, tmp_path):
     """The next night's comparison needs to know how this one was prepared."""
-    xml = tmp_path / "bench.xml"
-    xml.write_text(
-        '<testsuites><testsuite name="bench"><testcase classname="benchmarks.test_foo"'
-        f' name="{_CONFIG}"><properties>'
-        f'<property name="op" value="{_OP}"/>'
-        '<property name="tileops_device_busy_ms" value="0.1"/>'
-        '<property name="tileops_l2_flush" value="read-2x-l2"/>'
-        "</properties></testcase></testsuite></testsuites>"
-    )
-    ops = report.aggregate_bench_results(report.parse_bench_xml(str(xml)))
-    tileops = report.build_history_entry(ops, _RUN)["ops"][_OP][_KEY]["tileops"]
+    tileops = _history_reading(report, tmp_path, tileops_l2_flush="read-2x-l2")
     assert tileops["l2_flush"] == "read-2x-l2"
 
 
@@ -273,7 +284,7 @@ def test_history_is_keyed_by_case_id(report):
 
 
 def test_every_unchecked_tag_is_counted(report):
-    """A case timing five implementations publishes five rows, not two.
+    """A case timing three implementations without a ratio publishes three rows.
 
     The first baseline is written twice, under its own tag and under the unprefixed alias
     the perf keys read; counting both would double it.
@@ -302,35 +313,13 @@ def test_history_entry_records_the_percentiles(report):
     assert tileops["device_busy_p90_ms"] == 0.0101
 
 
-def test_roofline_data_terms_reach_the_history_entry(report, tmp_path):
-    """What decided a reading's bytes is kept with the reading, as a mapping."""
-    xml = tmp_path / "bench.xml"
-    xml.write_text(
-        '<testsuites><testsuite name="bench"><testcase classname="benchmarks.test_foo"'
-        f' name="{_CONFIG}"><properties>'
-        f'<property name="op" value="{_OP}"/>'
-        '<property name="tileops_device_busy_ms" value="0.1"/>'
-        '<property name="tileops_roofline_data_terms" value=\'{"active_experts": 12}\'/>'
-        "</properties></testcase></testsuite></testsuites>"
-    )
-    ops = report.aggregate_bench_results(report.parse_bench_xml(str(xml)))
-    tileops = report.build_history_entry(ops, _RUN)["ops"][_OP][_KEY]["tileops"]
-    assert tileops["roofline_data_terms"] == {"active_experts": 12}
-
-
-def test_a_snapshot_recording_data_terms_as_a_repr_still_parses(report, tmp_path):
-    """Snapshots written before the XML switched to JSON stay in the history window."""
-    xml = tmp_path / "bench.xml"
-    xml.write_text(
-        '<testsuites><testsuite name="bench"><testcase classname="benchmarks.test_foo"'
-        f' name="{_CONFIG}"><properties>'
-        f'<property name="op" value="{_OP}"/>'
-        '<property name="tileops_device_busy_ms" value="0.1"/>'
-        '<property name="tileops_roofline_data_terms" value="{\'active_experts\': 12}"/>'
-        "</properties></testcase></testsuite></testsuites>"
-    )
-    ops = report.aggregate_bench_results(report.parse_bench_xml(str(xml)))
-    tileops = report.build_history_entry(ops, _RUN)["ops"][_OP][_KEY]["tileops"]
+@pytest.mark.parametrize(
+    "terms", ['{"active_experts": 12}', "{'active_experts': 12}"], ids=["json", "python-repr"]
+)
+def test_roofline_data_terms_reach_the_history_entry(report, tmp_path, terms):
+    """What decided a reading's bytes is kept with the reading, as a mapping, whether the
+    snapshot recorded it as JSON or as a Python repr."""
+    tileops = _history_reading(report, tmp_path, tileops_roofline_data_terms=terms)
     assert tileops["roofline_data_terms"] == {"active_experts": 12}
 
 
@@ -443,13 +432,7 @@ def test_history_entry_records_the_sol_reading(report, profile):
 
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_perf_history.py"
 
-_BENCH_XML = (
-    '<testsuites><testsuite name="bench"><testcase classname="benchmarks.test_foo"'
-    f' name="{_CONFIG}"><properties>'
-    f'<property name="op" value="{_OP}"/>'
-    '<property name="tileops_device_busy_ms" value="0.1"/>'
-    "</properties></testcase></testsuite></testsuites>"
-)
+_BENCH_XML = _row_xml()
 
 
 _COVERAGE_XML = (
@@ -598,8 +581,6 @@ def test_the_summary_names_the_scale_rows_verbatim(report):
     assert "| **Kernels** | 272 |" in md
     assert "| **Specs** | 19 |" in md
     assert "| **Workloads** | 1135 |" in md
-    # An entry that is only a specification is not something the library offers.
-    assert "| **Operators** | 205 |" not in md
 
 
 def test_the_new_ops_section_and_summary_row_are_named_verbatim(report):
@@ -630,7 +611,7 @@ def test_no_new_op_adds_neither_section_nor_row(report):
 
 
 def test_a_manifest_that_will_not_load_drops_the_rows_not_the_report(report):
-    """Benchmark data stands on its own; an unreadable manifest costs two rows."""
+    """Benchmark data stands on its own; an unreadable manifest costs the four scale rows."""
     md = _summary_report(report, None)
     assert "**Operators**" not in md
     assert "**Kernels**" not in md
@@ -696,8 +677,7 @@ def test_ops_verified_unions_both_verifiers(report):
     assert report._ops_verified(
         {"A": {"passed": 0, "failed": 3, "compared": 0}}, None, implemented
     ) == (0, 2)
-    # Nor is a passing test that compared nothing. After ownership becomes a
-    # declaration, a constructor-rejection test carries the op name and no value.
+    # Nor is a passing test that compared nothing, such as a constructor-rejection test.
     rejection_only = {"A": {"passed": 4, "failed": 0, "compared": 0}}
     assert report._ops_verified(rejection_only, None, implemented) == (0, 2)
     # Nor is a benchmark row with no baseline to compare against.
@@ -767,22 +747,18 @@ def test_a_row_from_0_99_is_level_and_below_it_is_behind(report):
     assert [a["config"] for a in report.detect_baseline_alerts(bench_ops)] == ["behind"]
 
 
-def test_badge_share_rounds_down_so_a_row_behind_never_reads_full(report):
-    badge = report.baseline_badge(9999, 1)
-    assert badge["message"] == "99.9% ahead"
-    assert badge["color"] == "green"
-
-
-def test_badge_with_no_row_behind_reads_full_and_bright(report):
-    badge = report.baseline_badge(10, 0)
-    assert badge["message"] == "100% ahead"
-    assert badge["color"] == "brightgreen"
-
-
-def test_badge_below_the_green_share_reads_yellow(report):
-    badge = report.baseline_badge(90, 10)
-    assert badge["message"] == "90% ahead"
-    assert badge["color"] == "yellow"
+@pytest.mark.parametrize(
+    "ahead, behind, message, color",
+    [
+        pytest.param(9999, 1, "99.9% ahead", "green", id="rounds-down-below-full"),
+        pytest.param(10, 0, "100% ahead", "brightgreen", id="none-behind"),
+        pytest.param(90, 10, "90% ahead", "yellow", id="below-green-share"),
+    ],
+)
+def test_badge_share_and_color(report, ahead, behind, message, color):
+    """The share rounds down, so a row behind never reads full."""
+    badge = report.baseline_badge(ahead, behind)
+    assert (badge["message"], badge["color"]) == (message, color)
 
 
 def _bench_xml(tmp_path, name, cases):

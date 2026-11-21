@@ -5,7 +5,14 @@ import pytest
 import torch
 
 from benchmarks import api as bench
-from benchmarks.baselines import FLA_TAG, VLLM_TAG, baseline_module, private_inputs, vllm_op
+from benchmarks.baselines import (
+    FLA_TAG,
+    VLLM_TAG,
+    baseline_module,
+    private_inputs,
+    vllm_op,
+    vllm_state_lines,
+)
 from tileops.linear_attention import KDAFwdOp
 
 
@@ -89,14 +96,12 @@ def test_kda_fwd_bench(case) -> None:
     # vLLM keeps the state value-major, the layout of its pool, and reads the gate and the step
     # size transformed, as every pool row of the manifest has them.
     l2norm = params["use_qk_l2norm_in_kernel"]
-    # vLLM skips cache line 0, its null block, so pool slot i is line i + 1.
-    lines = torch.empty((pool.shape[0] + 1, *pool.shape[1:]), dtype=pool.dtype, device=pool.device)
-    line_of = slots + 1
+    lines, line_of, reset_lines = vllm_state_lines(pool, slots)
     # vLLM's chunked kernel overwrites the values and the gate, so it runs on copies.
     values, decay = v.clone(), g.clone()
 
     def reset() -> None:
-        lines[1:].copy_(pool)
+        reset_lines()
         values.copy_(v)
         decay.copy_(g)
 

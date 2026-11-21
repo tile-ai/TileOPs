@@ -2,6 +2,8 @@
 
 import tilelang.language as T
 
+from tileops._kernels.linear_attention.gdn.prefill_common import softplus
+
 
 def raw_gate_arguments(gate_in_kernel, a_log, dt_bias):
     """The tensors a raw-gate program takes after its other operands; none for a given gate.
@@ -25,12 +27,7 @@ def log_decay(raw, log_rate, bias, lower_bound):
         )
     # Below -20, softplus(x)/exp(x) differs from 1 by less than exp(-20)/2 < 2e-9.
     # Combining exponents preserves a small tail before a large rate scales it.
-    # Torch softplus uses the identity above 20.
-    return T.if_then_else(
-        shifted < -20.0,
-        -T.exp(log_rate + shifted),
-        -rate * T.if_then_else(shifted > 20.0, shifted, T.log1p(T.exp(shifted))),
-    )
+    return T.if_then_else(shifted < -20.0, -T.exp(log_rate + shifted), -rate * softplus(shifted))
 
 
 def raw_gate_prefix(chunk_size, dim_k, has_bias, lower_bound):
@@ -104,25 +101,36 @@ def exact_fma(a, b, c):
 
 
 @T.macro
-def group_sum8(values, part):
-    """Sums of eight per-lane partials over the eight lanes of a lane group; lane part ends with entry part."""
-    for m in T.unroll(4):
+def group_sum(values, part, entries):
+    """Sums of *entries* per-lane partials over the eight lanes of a lane group.
+
+    Each xor step (4, 2, 1) keeps the half of the partials its lane bit selects and adds
+    the partner lane's partial of the same entry, so lane ``part`` of the group ends with
+    the ``entries // 8`` entries from ``part * entries // 8``. The additions round like the
+    products' chains.
+    """
+    for m in T.unroll(entries // 2):
         values[m] = exact_fma(
             1.0,
-            T.if_then_else((part >> 2) & 1 == 1, values[m + 4], values[m]),
-            T.shfl_xor(T.if_then_else((part >> 2) & 1 == 1, values[m], values[m + 4]), 4),
+            T.if_then_else((part >> 2) & 1 == 1, values[m + entries // 2], values[m]),
+            T.shfl_xor(
+                T.if_then_else((part >> 2) & 1 == 1, values[m], values[m + entries // 2]), 4
+            ),
         )
-    for m in T.unroll(2):
+    for m in T.unroll(entries // 4):
         values[m] = exact_fma(
             1.0,
-            T.if_then_else((part >> 1) & 1 == 1, values[m + 2], values[m]),
-            T.shfl_xor(T.if_then_else((part >> 1) & 1 == 1, values[m], values[m + 2]), 2),
+            T.if_then_else((part >> 1) & 1 == 1, values[m + entries // 4], values[m]),
+            T.shfl_xor(
+                T.if_then_else((part >> 1) & 1 == 1, values[m], values[m + entries // 4]), 2
+            ),
         )
-    values[0] = exact_fma(
-        1.0,
-        T.if_then_else(part & 1 == 1, values[1], values[0]),
-        T.shfl_xor(T.if_then_else(part & 1 == 1, values[0], values[1]), 1),
-    )
+    for m in T.unroll(entries // 8):
+        values[m] = exact_fma(
+            1.0,
+            T.if_then_else(part & 1 == 1, values[m + entries // 8], values[m]),
+            T.shfl_xor(T.if_then_else(part & 1 == 1, values[m], values[m + entries // 8]), 1),
+        )
 
 
 def diagonal_row_gram(dim_k, dtype, qscale=None, unroll_columns=True):
@@ -149,7 +157,7 @@ def diagonal_row_gram(dim_k, dtype, qscale=None, unroll_columns=True):
     CH = SEGS * VEC
     BW = DIAGONAL_COLUMNS
     assert SEGS in (2, 4) and GROUP == 8 and 2 * BW == GROUP, (
-        "the widths group_sum8 and the segment sums take"
+        "the widths group_sum and the segment sums take"
     )
 
     def buffers():
@@ -218,7 +226,7 @@ def diagonal_row_gram(dim_k, dtype, qscale=None, unroll_columns=True):
                     acc[2 * j + 1] = exact_fma(1.0, sub[SEGS], sub[SEGS + 1])
                 acc[2 * j] = T.if_then_else(b * BW + j <= row, acc[2 * j], 0.0)
                 acc[2 * j + 1] = T.if_then_else(b * BW + j <= row, acc[2 * j + 1], 0.0)
-            group_sum8(acc, part)
+            group_sum(acc, part, 8)
             store(b * BW + part // 2, part, acc[0], *store_args)
 
     return buffers, row_gram

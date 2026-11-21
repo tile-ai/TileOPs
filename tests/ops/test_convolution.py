@@ -65,8 +65,8 @@ class Conv1dFixture(FixtureBase):
                     1,
                     torch.float16,
                     False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-padding-wider-than-row-fp16",
+                    marks=pytest.mark.full,
+                    id="full-padding-wider-than-row-fp16",
                 ),
                 pytest.param(
                     4,
@@ -401,10 +401,12 @@ def test_conv1d_dilation_matches_torch(dilation, use_bias: bool) -> None:
     compare_outputs(out, ref, convolution_verification(out.dtype))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "use_bias",
-    [pytest.param(False, id="no-bias"), pytest.param(True, id="bias")],
+    [
+        pytest.param(False, marks=pytest.mark.smoke, id="no-bias"),
+        pytest.param(True, marks=pytest.mark.full, id="bias"),
+    ],
 )
 def test_conv1d_same_padding_even_kernel_matches_torch(use_bias: bool) -> None:
     n, c_in, l_in, c_out, kernel_size = 1, 16, 129, 32, 2
@@ -518,7 +520,7 @@ class Conv2dFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-bf16-3x3",
                 ),
-                # MobileNetV2 depthwise 3x3 block, reduced spatial size for smoke cost.
+                # MobileNetV2 depthwise 3x3 block, reduced spatial size.
                 pytest.param(
                     1,
                     16,
@@ -532,8 +534,8 @@ class Conv2dFixture(FixtureBase):
                     16,
                     torch.float16,
                     False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-mobilenetv2-depthwise-small-fp16",
+                    marks=pytest.mark.full,
+                    id="full-mobilenetv2-depthwise-small-fp16",
                 ),
                 pytest.param(
                     1,
@@ -810,26 +812,6 @@ def test_conv2d_dispatches_1x1_kernel() -> None:
 
 
 @pytest.mark.smoke
-def test_conv2d_dispatches_3x3_kernel() -> None:
-    op = Conv2dFwdOp(padding=1)
-    x = torch.randn(1, 32, 32, 32, device=run_device(), dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 3, 3, device=run_device(), dtype=torch.float16).contiguous()
-    out = op(x, weight)
-    ref = F.conv2d(x, weight, bias=None, padding=1)
-    compare_outputs(out, ref.contiguous(), convolution_verification(out.dtype))
-
-
-@pytest.mark.smoke
-def test_conv2d_dispatches_5x5_kernel() -> None:
-    op = Conv2dFwdOp(padding=2)
-    x = torch.randn(1, 32, 32, 32, device=run_device(), dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 5, 5, device=run_device(), dtype=torch.float16).contiguous()
-    out = op(x, weight)
-    ref = F.conv2d(x, weight, bias=None, padding=2)
-    compare_outputs(out, ref.contiguous(), convolution_verification(out.dtype))
-
-
-@pytest.mark.smoke
 def test_conv2d_batch_with_partial_tile_leaves_the_symmetric_kernel() -> None:
     # out_h * out_w is 49 here, a multiple of no m tile the symmetric kernel builds,
     # so an m tile would span two images and its implicit GEMM would take the wrong
@@ -964,7 +946,7 @@ class Conv3dFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-3d-ndhwc-nonsymmetric-dilation-fp16",
                 ),
-                # Video depthwise 3D block, reduced size for smoke cost.
+                # Video depthwise 3D block, reduced size.
                 pytest.param(
                     1,
                     8,
@@ -979,8 +961,8 @@ class Conv3dFixture(FixtureBase):
                     8,
                     torch.float16,
                     False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-video-depthwise3d-small-fp16",
+                    marks=pytest.mark.full,
+                    id="full-video-depthwise3d-small-fp16",
                 ),
                 pytest.param(
                     1,
