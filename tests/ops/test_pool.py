@@ -1057,7 +1057,7 @@ def test_avg_pool1d_register_pairs_runs_of_narrow_stores(case: str) -> None:
     # runs a thread.
     covered_runs = 2 * facts.sm_count * 1024
     # Three rows whose runs total an odd count above covered_runs.
-    row_runs = covered_runs // 3 + 1 + (covered_runs // 3 + 1) % 2
+    row_runs = (covered_runs // 3 + 1) | 1
     # (dtype, kernel, stride, padding, runs in the one row): a run is 16 bytes.
     window = {
         # fp16, kernel 5, stride 4, padding 2: two outputs (4 bytes) a run of 8 elements.
