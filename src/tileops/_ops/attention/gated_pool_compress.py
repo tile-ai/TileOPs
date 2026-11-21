@@ -22,7 +22,8 @@ class GatedPoolCompressFwdOp(Op):
     (``ape`` indexed by the position's slot in the window) in float32, the weights and their
     products with ``kv`` rounded to ``kv``'s dtype and summed in float32, rounded once to
     bfloat16. A window of more than 16 positions with bfloat16 ``kv`` sums unrounded float32
-    products instead, within the entry's bfloat16 tolerance. With ``overlap`` a window also
+    products instead, within the entry's bfloat16 tolerance. The kernel flushes float32
+    subnormals to zero, a ring's ``score + ape`` rows among them. With ``overlap`` a window also
     pools the first ``D`` channels of the previous window's positions, its own giving the
     last ``D``; the first window has no previous one.
 

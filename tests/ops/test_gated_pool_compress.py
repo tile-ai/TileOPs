@@ -23,7 +23,7 @@ def _test(dtype, *, dim, ratio, overlap, seq_lens, positions, slots=8):
         "GatedPoolCompressFwdOp",
         {"T": str(dtype).removeprefix("torch.")},
         T_q=sum(seq_lens),
-        NS=slots,
+        NS=max(slots, len(seq_lens)),
         D=dim,
         ratio=ratio,
         overlap=overlap,
@@ -71,6 +71,42 @@ def _check(test):
             marks=pytest.mark.full,
             id="decode",
         ),
+        # One token a request over channels off the 4-wide vector: a lane's channels past the
+        # entry's are masked; the first window of a request at position ratio - 1.
+        pytest.param(
+            torch.bfloat16,
+            10,
+            3,
+            True,
+            [1, 1, 1, 1],
+            [2, 8, 13, 5],
+            marks=pytest.mark.full,
+            id="decode-dim10",
+        ),
+        # One token a request, a window over a block: closing and not. Forty requests of eight
+        # channel chunks fit one wave of 8-warp blocks on an SM90 part, not of 16-warp blocks.
+        pytest.param(
+            torch.float32,
+            512,
+            128,
+            False,
+            [1] * 40,
+            [128 * i + 127 if i % 4 else 128 * i + 5 for i in range(40)],
+            marks=pytest.mark.full,
+            id="decode-long",
+        ),
+        # One token a request, a block's window over two windows' positions: the ring rows
+        # offset by half the span, and the first window's previous positions masked.
+        pytest.param(
+            torch.float32,
+            64,
+            64,
+            True,
+            [1, 1, 1, 1],
+            [63, 127, 191, 100],
+            marks=pytest.mark.full,
+            id="decode-long-overlap",
+        ),
         # A window longer than the registers hold, pooled across the block online, with
         # bfloat16 kv; the second request resumes from its ring.
         pytest.param(
@@ -94,6 +130,18 @@ def _check(test):
             [0],
             marks=pytest.mark.full,
             id="ratio128-overlap-dim96",
+        ),
+        # A short window over two windows' positions whose request's ring rows take its row
+        # warps two batches; the second request resumes mid-window from its ring.
+        pytest.param(
+            torch.float32,
+            64,
+            8,
+            True,
+            [37, 5],
+            [0, 13],
+            marks=pytest.mark.full,
+            id="ratio8-overlap-two-row-batches",
         ),
         # Channels off the 4-wide vector, and a ratio off a power of two.
         pytest.param(
@@ -231,6 +279,51 @@ def test_gated_pool_compress_prefill_then_decode_equals_one_shot(
     assert sorted(pooled) == closing
     assert torch.equal(torch.stack([pooled[p] for p in closing]), once[0][closing])
     assert torch.equal(steps_kv[1], kv_state[1]) and torch.equal(steps_score[1], score_state[1])
+
+
+@pytest.mark.parametrize(
+    "n",
+    [
+        pytest.param(40, marks=pytest.mark.smoke, id="8-warp"),
+        pytest.param(4, marks=pytest.mark.full, id="16-warp"),
+    ],
+)
+def test_gated_pool_compress_long_window_decode_equals_prefill(n: int) -> None:
+    """A window over a block, closed by one token a request after a prefill of its other
+    positions, pools exactly what one prefill of them all pools, and leaves the same rings:
+    forty requests of eight channel chunks take the 8-warp program on an SM90 part."""
+    torch.manual_seed(0)
+    dim, ratio = 512, 128
+    kv = torch.randn(n, ratio, dim, device=run_device())
+    score = torch.randn(n, ratio, dim, device=run_device())
+    ape = torch.randn(ratio, dim, device=run_device())
+    op = GatedPoolCompressFwdOp(ratio)
+    slots = torch.arange(n, dtype=torch.int32, device=run_device())
+
+    def call(start, tokens, kv_state, score_state):
+        cu = torch.arange(0, n * tokens + 1, tokens, dtype=torch.int32, device=run_device())
+        position = torch.full((n,), start, dtype=torch.int32, device=run_device())
+        rows = slice(start, start + tokens)
+        return op(
+            kv[:, rows].reshape(-1, dim),
+            score[:, rows].reshape(-1, dim),
+            ape,
+            kv_state,
+            score_state,
+            cu,
+            position,
+            slots,
+        )
+
+    once_kv = torch.randn(n, ratio, dim, device=run_device())
+    once_score = torch.randn(n, ratio, dim, device=run_device())
+    steps_kv, steps_score = once_kv.clone(), once_score.clone()
+    entries, valid = call(0, ratio, once_kv, once_score)
+    call(0, ratio - 1, steps_kv, steps_score)
+    last = call(ratio - 1, 1, steps_kv, steps_score)
+    assert bool(valid[ratio - 1 :: ratio].all()) and bool(last[1].all())
+    assert torch.equal(last[0], entries[ratio - 1 :: ratio])
+    assert torch.equal(steps_kv, once_kv) and torch.equal(steps_score, once_score)
 
 
 @pytest.mark.smoke
