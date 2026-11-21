@@ -36,6 +36,11 @@ class LogicalAndFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
 
     @staticmethod
     def op_func(a, b):
+        if str(a.dtype) in ("float16", "bfloat16", "float32"):
+            # T.min lowers to __hmin / fminf, which return the other operand against a NaN,
+            # so min(|a|, |b|) is zero only where a or b is, and NaN where both are.
+            # One predicate keeps the body eligible for the two-round grid.
+            return ne_unordered(T.min(T.abs(a), T.abs(b)), T.cast(0, a.dtype))
         a_nonzero = ne_unordered(a, T.cast(0, a.dtype))
         b_nonzero = ne_unordered(b, T.cast(0, b.dtype))
         return a_nonzero & b_nonzero

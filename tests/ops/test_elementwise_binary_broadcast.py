@@ -337,18 +337,23 @@ _ROUNDS_CASES = [
 ]
 
 
+def _rounds_rows():
+    """Rows of a 4096-column broadcast whose 128-thread hinted blocks, two a row, fill three
+    quarters of the device's resident threads: the two-round grid's range."""
+    props = torch.cuda.get_device_properties(run_device())
+    return 3 * props.multi_processor_count * props.max_threads_per_multi_processor // (4 * 128 * 2)
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("op_name, a_shape, b_shape, dtype", _ROUNDS_CASES)
 def test_row_broadcast_rounds_match_torch(op_name, a_shape, b_shape, dtype):
     """Half the hinted blocks, each walking two of them in turn, with the bias on either side.
 
-    The row count, ``-1`` in the case, makes the grid of 128-thread hinted blocks, two a
-    4096-column row, three quarters of the device's resident threads. ``gt`` is ordered,
-    so a swapped operand would not cancel out. Equal pairs, signed zero pairs and NaNs in
-    both operands reach each op's true and false answers.
+    The row count, ``-1`` in the case, is ``_rounds_rows()``. ``gt`` is ordered, so a
+    swapped operand would not cancel out. Equal pairs, signed zero pairs and NaNs in both
+    operands reach each op's true and false answers.
     """
-    props = torch.cuda.get_device_properties(run_device())
-    rows = 3 * props.multi_processor_count * props.max_threads_per_multi_processor // (4 * 128 * 2)
+    rows = _rounds_rows()
     a_shape = tuple(rows if d == -1 else d for d in a_shape)
     b_shape = tuple(rows if d == -1 else d for d in b_shape)
     a, b = _with_nans(a_shape, b_shape, dtype)
@@ -356,6 +361,34 @@ def test_row_broadcast_rounds_match_torch(op_name, a_shape, b_shape, dtype):
     full[..., 5::13] = bias[..., 5::13]
     bias[..., 7::17] = 0.0
     full[..., 7::17] = -0.0
+    TestBase.check(ElementwiseWorkload(op_name, (a, b)), getattr(elementwise_mod, op_name)(), a, b)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "dtype", [torch.float16, torch.bfloat16, torch.float32], ids=["float16", "bfloat16", "float32"]
+)
+def test_logical_and_reads_every_float_kind(dtype):
+    """Every pair of NaN, signed zero, subnormal, normal and infinite operands, either sign.
+
+    With ``_rounds_rows()`` rows the 16-bit dtypes run half the hinted blocks, each walking
+    the two halves of one row in turn. Row ``r`` holds kind ``(r + c // kinds) % kinds`` at
+    column ``c`` and the bias row kind ``c % kinds``, so every pair of kinds meets in a row.
+    """
+    info = torch.finfo(dtype)
+    nan, inf = float("nan"), float("inf")
+    tiny = info.smallest_normal * info.eps
+    kinds = torch.tensor(
+        [nan, -nan, 0.0, -0.0, tiny, -tiny, 1.0, -1.0, info.max, -info.max, inf, -inf],
+        dtype=dtype,
+        device=run_device(),
+    )
+    cols = torch.arange(4096, device=run_device())
+    row_ids = torch.arange(_rounds_rows(), device=run_device())[:, None]
+    a = kinds[(row_ids + cols // kinds.numel()) % kinds.numel()]
+    b = kinds[cols % kinds.numel()][None, :]
+    op_name = "LogicalAndFwdOp"
     TestBase.check(ElementwiseWorkload(op_name, (a, b)), getattr(elementwise_mod, op_name)(), a, b)
 
 
