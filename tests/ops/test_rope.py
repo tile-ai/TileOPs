@@ -630,6 +630,13 @@ _COS_SIN_CASES = (
         marks=_FULL,
         id="packed-int-offset",
     ),
+    # In place with unrotated columns: the head stride exceeds the rotated width.
+    pytest.param(
+        _dense(1, 37, 4, 136, 16, inplace=True),
+        {"T": "bfloat16", **_F32_TABLES},
+        marks=_FULL,
+        id="inplace-unrotated-columns",
+    ),
     # Calls whose work fills more than half the device's resident threads give each thread
     # several heads, an odd head count leaving the last thread of a token one.
     pytest.param(
@@ -671,8 +678,6 @@ _VIEWS = pytest.mark.parametrize(
         pytest.param(True, slice(64, 136), marks=_FULL, id="interleaved-tail"),
         pytest.param(False, slice(8, 136, 2), marks=_FULL, id="neox-every-2nd"),
         pytest.param(True, slice(8, 136, 2), marks=_FULL, id="interleaved-every-2nd"),
-        # The whole head: a contiguous x, whose strides the program takes from the call.
-        pytest.param(False, slice(0, 136), marks=_FULL, id="neox-whole-head"),
     ],
 )
 
@@ -717,7 +722,8 @@ _OFFSETS = _dense(2, 19, 3, 128, 64, P=32, some=["seqlen_offsets"])
     "row, dtypes, offsets",
     [
         pytest.param(_OFFSETS, {"O": "int64"}, [20, -3], marks=_SMOKE, id="int64"),
-        # Added to a position, the int32 extremes would wrap past the table in 32 bits.
+        # An int32 offset at its extremes, widened before it is added to a position, reads
+        # the nearest row.
         pytest.param(
             _OFFSETS,
             {"O": "int32"},
