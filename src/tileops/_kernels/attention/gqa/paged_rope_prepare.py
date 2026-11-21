@@ -9,10 +9,13 @@ Under a left window the pages hold only the keys from the key tile where the req
 query's window starts: the attention reads no key tile before it.
 """
 
+import math
+
 import tilelang
 import tilelang.language as T
 
 from tileops._kernels.build_target import target_cache
+from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 
 __all__ = []
 
@@ -42,7 +45,10 @@ def _gqa_paged_rope_prepare_kernel(
 ):
     """Rotate Q into QR and live keys into KR's ``key_cols`` leading channels; with *values*,
     copy V into VR, else VR is a one-row placeholder. With *window_left*, keys start at the
-    *key_tile*-row tile holding the first query's window start."""
+    *key_tile*-row tile holding the first query's window start.
+
+    A thread owns one unit of a row: ``vec`` rotation pairs, read and written as two
+    ``vec``-element vectors, or ``2 * vec`` copied channels past the rotated width."""
     q_dtype = q_dtype or dtype
     kv_dtype = kv_dtype or dtype
     q_fp8 = q_dtype != dtype
@@ -53,32 +59,100 @@ def _gqa_paged_rope_prepare_kernel(
     pool_rows = T.dynamic("pool_rows")
     half = rotary_dim // 2
     key_cols = key_cols or dim
-    pairs = key_cols // 2
     capacity = page * output_width
-    # Four scalar pairs per thread fill a coalesced 1024-pair block.
-    threads, pairs_per_thread = 256, 4
-    block = threads * pairs_per_thread
-    q_pairs = dim // 2
-    q_blocks = T.ceildiv(total_q * heads * q_pairs, block)
-    # Fill the SM90 limit of 2048 resident threads per SM to hide gather latency.
-    # Workers loop over live pages, independently of padded table capacity.
+    # Rotation pairs a thread takes: at most one 16-byte vector of the 16-bit output, and a
+    # divisor of each rotated half and each copied tail, so every access is a whole vector.
+    vec = math.gcd(
+        VECTOR_ACCESS_BYTES // 2, half, (dim - rotary_dim) // 2, (key_cols - rotary_dim) // 2
+    )
+    rotated_units = half // vec
+    q_units = rotated_units + (dim - rotary_dim) // (2 * vec)
+    k_units = rotated_units + (key_cols - rotary_dim) // (2 * vec)
+    # Eight blocks of 256 threads fill the SM90 limit of 2048 resident threads per SM, which
+    # hides gather latency. Workers loop over live pages, independently of padded table capacity.
+    threads = 256
+    q_blocks = T.ceildiv(total_q * heads * q_units, threads)
     workers_per_sm = 2048 // threads
     kv_blocks = min(
-        tilelang.cdiv(capacity * heads_kv * pairs, block),
+        tilelang.cdiv(capacity * heads_kv * k_units, threads),
         tilelang.cdiv(sm_count * workers_per_sm, batch),
     )
 
-    def q_value(x, scale, request, head):
-        """A query element as float32, dequantized when FP8."""
-        x = T.cast(x, "float32")
-        return x * scale[request, head // group] if q_fp8 else x
-
-    def kv_value(x, scale, request, head):
-        """A cache element as float32, dequantized when FP8."""
-        x = T.cast(x, "float32")
+    def kv_scale(S, request, head):
+        """A cache tensor's dequantization scale for *request* and *head*: one over a 16-bit
+        cache."""
         if not kv_fp8:
-            return x
-        return x * (scale[request, head] if per_request_kv_scale else scale[0])
+            return 1.0
+        return S[request, head] if per_request_kv_scale else S[0]
+
+    def rotated_channels(unit):
+        """The first channels of a rotation unit's two vectors: its pairs' low and high
+        halves, adjacent runs when interleaved."""
+        if layout == "neox":
+            return unit * vec, half + unit * vec
+        return unit * 2 * vec, unit * 2 * vec + vec
+
+    def copied_channels(unit):
+        """The first channels of a copy unit's two adjacent vectors, past the rotated width."""
+        first = rotary_dim + (unit - rotated_units) * 2 * vec
+        return first, first + vec
+
+    @T.macro
+    def load(x, raw, Src, row, head, c0, c1, scale):
+        """Read two vectors of *Src* as float32 into *x*, multiplied by *scale*."""
+        for e in T.vectorized(vec):
+            raw[e] = Src[row, head, c0 + e]
+        for e in T.vectorized(vec):
+            raw[vec + e] = Src[row, head, c1 + e]
+        for e in T.unroll(2 * vec):
+            x[e] = T.cast(raw[e], "float32") * scale
+
+    @T.macro
+    def store(Dst, row, head, c0, c1, x, out):
+        """Write *x* as two vectors of *Dst*."""
+        for e in T.unroll(2 * vec):
+            out[e] = T.cast(x[e], dtype)
+        for e in T.vectorized(vec):
+            Dst[row, head, c0 + e] = out[e]
+        for e in T.vectorized(vec):
+            Dst[row, head, c1 + e] = out[vec + e]
+
+    @T.macro
+    def move(Dst, drow, Src, srow, head, unit, pos, scale, raw, regs, turn):
+        """Write one unit of row *srow* of *Src* to row *drow* of *Dst*; with *turn*, a
+        rotation unit's vec pairs are rotated by the angles of position *pos* on the way.
+        *regs* holds the thread's float32 values, output vector, angles and angle tables."""
+        x, out, cos, sin, Cos, Sin = regs
+        if unit < rotated_units:
+            load(x, raw, Src, srow, head, *rotated_channels(unit), scale)
+            if turn:
+                for e in T.vectorized(vec):
+                    cos[e] = Cos[pos, unit * vec + e]
+                    sin[e] = Sin[pos, unit * vec + e]
+                for p in T.unroll(vec):
+                    lo = p if layout == "neox" else 2 * p
+                    hi = vec + p if layout == "neox" else 2 * p + 1
+                    c = T.cast(cos[p], "float32")
+                    s = T.cast(sin[p], "float32")
+                    x0 = x[lo]
+                    x1 = x[hi]
+                    x[lo] = x0 * c - x1 * s
+                    x[hi] = x1 * c + x0 * s
+            store(Dst, drow, head, *rotated_channels(unit), x, out)
+        else:
+            load(x, raw, Src, srow, head, *copied_channels(unit), scale)
+            store(Dst, drow, head, *copied_channels(unit), x, out)
+
+    @T.macro
+    def clear(Dst, row, head, unit, regs):
+        """Write zeros to one unit of row *row* of *Dst*."""
+        x, out = regs[0], regs[1]
+        for e in T.unroll(2 * vec):
+            x[e] = 0.0
+        if unit < rotated_units:
+            store(Dst, row, head, *rotated_channels(unit), x, out)
+        else:
+            store(Dst, row, head, *copied_channels(unit), x, out)
 
     @T.prim_func
     def main(
@@ -98,41 +172,31 @@ def _gqa_paged_rope_prepare_kernel(
         VR: T.Tensor((batch * capacity if values else 1, heads_kv, dim), dtype),
     ):
         with T.Kernel(q_blocks + batch * kv_blocks, threads=threads) as bx:
+            tx = T.get_thread_binding()
+            raw_q = T.alloc_local([2 * vec], q_dtype)
+            raw_kv = T.alloc_local([2 * vec], kv_dtype)
+            x = T.alloc_local([2 * vec], "float32")
+            out = T.alloc_local([2 * vec], dtype)
+            cos = T.alloc_local([vec], dtype)
+            sin = T.alloc_local([vec], dtype)
+            regs = (x, out, cos, sin, Cos, Sin)
             if bx < q_blocks:
-                for lane, item in T.Parallel(threads, pairs_per_thread):
-                    idx = bx * block + lane * pairs_per_thread + item
-                    token = idx // (heads * q_pairs)
-                    head = idx // q_pairs % heads
-                    freq = idx % q_pairs
-                    if token < total_q:
-                        lo = T.alloc_var("int32", init=0)
-                        hi = T.alloc_var("int32", init=batch - 1)
-                        for _ in T.serial(max(1, (batch - 1).bit_length())):
-                            mid = (lo + hi) // 2
-                            if CuQ[mid + 1] <= token:
-                                lo = mid + 1
-                            else:
-                                hi = mid
-                        pos = token - CuQ[lo] + Lengths[lo] - (CuQ[lo + 1] - CuQ[lo])
-                        if freq < half:
-                            d0 = freq if layout == "neox" else freq * 2
-                            d1 = freq + half if layout == "neox" else freq * 2 + 1
-                            c = T.cast(Cos[pos, freq], "float32")
-                            s = T.cast(Sin[pos, freq], "float32")
-                            x0 = q_value(Q[token, head, d0], QS, lo, head)
-                            x1 = q_value(Q[token, head, d1], QS, lo, head)
-                            QR[token, head, d0] = x0 * c - x1 * s
-                            QR[token, head, d1] = x1 * c + x0 * s
-                        elif q_fp8:
-                            QR[token, head, freq * 2] = q_value(
-                                Q[token, head, freq * 2], QS, lo, head
-                            )
-                            QR[token, head, freq * 2 + 1] = q_value(
-                                Q[token, head, freq * 2 + 1], QS, lo, head
-                            )
+                idx = bx * threads + tx
+                token = idx // (heads * q_units)
+                head = idx // q_units % heads
+                unit = idx % q_units
+                if token < total_q:
+                    lo = T.alloc_var("int32", init=0)
+                    hi = T.alloc_var("int32", init=batch - 1)
+                    for _ in T.serial(max(1, (batch - 1).bit_length())):
+                        mid = (lo + hi) // 2
+                        if CuQ[mid + 1] <= token:
+                            lo = mid + 1
                         else:
-                            QR[token, head, freq * 2] = Q[token, head, freq * 2]
-                            QR[token, head, freq * 2 + 1] = Q[token, head, freq * 2 + 1]
+                            hi = mid
+                    pos = token - CuQ[lo] + Lengths[lo] - (CuQ[lo + 1] - CuQ[lo])
+                    qscale = QS[lo, head // group] if q_fp8 else 1.0
+                    move(QR, token, Q, token, head, unit, pos, qscale, raw_q, regs, True)
             else:
                 request = (bx - q_blocks) // kv_blocks
                 worker = (bx - q_blocks) % kv_blocks
@@ -151,48 +215,36 @@ def _gqa_paged_rope_prepare_kernel(
                             // key_tile
                             * key_tile,
                         )
-                    live_blocks = T.ceildiv((live_rows - first) * heads_kv * pairs, block)
-                    for step in T.serial(T.ceildiv(live_blocks, kv_blocks)):
-                        tile = step * kv_blocks + worker
-                        for lane, item in T.Parallel(threads, pairs_per_thread):
-                            idx = tile * block + lane * pairs_per_thread + item
-                            key = first + idx // (heads_kv * pairs)
-                            head = idx // pairs % heads_kv
-                            freq = idx % pairs
-                            if key < live_rows:
-                                dst = request * capacity + key
-                                if key < Lengths[request]:
-                                    src = Table[request, key // page] * page + key % page
-                                    if freq < half:
-                                        d0 = freq if layout == "neox" else freq * 2
-                                        d1 = freq + half if layout == "neox" else freq * 2 + 1
-                                        c = T.cast(Cos[key, freq], "float32")
-                                        s = T.cast(Sin[key, freq], "float32")
-                                        x0 = kv_value(K[src, head, d0], KS, request, head)
-                                        x1 = kv_value(K[src, head, d1], KS, request, head)
-                                        KR[dst, head, d0] = x0 * c - x1 * s
-                                        KR[dst, head, d1] = x1 * c + x0 * s
-                                    elif kv_fp8:
-                                        for e in T.unroll(2):
-                                            KR[dst, head, freq * 2 + e] = kv_value(
-                                                K[src, head, freq * 2 + e], KS, request, head
-                                            )
-                                    else:
-                                        KR[dst, head, freq * 2] = K[src, head, freq * 2]
-                                        KR[dst, head, freq * 2 + 1] = K[src, head, freq * 2 + 1]
-                                    if values and kv_fp8:
-                                        for e in T.unroll(2):
-                                            VR[dst, head, freq * 2 + e] = kv_value(
-                                                V[src, head, freq * 2 + e], VS, request, head
-                                            )
-                                    elif values:
-                                        VR[dst, head, freq * 2] = V[src, head, freq * 2]
-                                        VR[dst, head, freq * 2 + 1] = V[src, head, freq * 2 + 1]
-                                else:
-                                    KR[dst, head, freq * 2] = 0
-                                    KR[dst, head, freq * 2 + 1] = 0
-                                    if values:
-                                        VR[dst, head, freq * 2] = 0
-                                        VR[dst, head, freq * 2 + 1] = 0
+                    live_units = (live_rows - first) * heads_kv * k_units
+                    for step in T.serial(T.ceildiv(live_units, kv_blocks * threads)):
+                        slot = (step * kv_blocks + worker) * threads + tx
+                        key = first + slot // (heads_kv * k_units)
+                        kv_head = slot // k_units % heads_kv
+                        kv_unit = slot % k_units
+                        if key < live_rows:
+                            dst = request * capacity + key
+                            if key < Lengths[request]:
+                                src = Table[request, key // page] * page + key % page
+                                k = kv_scale(KS, request, kv_head)
+                                v = kv_scale(VS, request, kv_head)
+                                move(KR, dst, K, src, kv_head, kv_unit, key, k, raw_kv, regs, True)
+                                if values:
+                                    move(
+                                        VR,
+                                        dst,
+                                        V,
+                                        src,
+                                        kv_head,
+                                        kv_unit,
+                                        key,
+                                        v,
+                                        raw_kv,
+                                        regs,
+                                        False,
+                                    )
+                            else:
+                                clear(KR, dst, kv_head, kv_unit, regs)
+                                if values:
+                                    clear(VR, dst, kv_head, kv_unit, regs)
 
     return main

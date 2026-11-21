@@ -377,6 +377,47 @@ def test_gqa_paged_rope_window_prepares_from_the_first_window(cache_dtype: torch
     _check(op, workload, inputs)
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "rotary_dim, rope_layout, cache_dtype, dim",
+    [
+        pytest.param(40, "neox", torch.float16, 128, marks=pytest.mark.smoke, id="rotary-40-neox"),
+        pytest.param(
+            36,
+            "interleaved",
+            torch.float16,
+            128,
+            marks=pytest.mark.full,
+            id="rotary-36-interleaved",
+        ),
+        pytest.param(
+            36, "neox", torch.float8_e4m3fn, 128, marks=pytest.mark.full, id="rotary-36-fp8"
+        ),
+        pytest.param(
+            34, "interleaved", torch.float16, 256, marks=pytest.mark.full, id="rotary-34-dim256"
+        ),
+    ],
+)
+def test_gqa_paged_rope_prepares_whole_vectors(
+    rotary_dim: int, rope_layout: str, cache_dtype: torch.dtype, dim: int
+) -> None:
+    """On SM90, where dispatch selects the warp-specialized kernel for packings of whole
+    query tiles, RoPE serves rotated widths whose half and whose unrotated tails are not a
+    multiple of the widest vector access, in both layouts, over a 16-bit and an FP8 cache, and
+    at head dimension 256."""
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
+    semantics = {"pos_encoding_mode": "rope", "rotary_dim": rotary_dim, "rope_layout": rope_layout}
+    workload = _paged(
+        [300, 200], [1500, 1300], 64, torch.float16, dim=dim, cache_dtype=cache_dtype, **semantics
+    )
+    op = GQAPagedFwdOp(is_causal=True, **semantics)
+    inputs = workload.gen_inputs()
+    assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)
+    _check(op, workload, inputs)
+
+
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
