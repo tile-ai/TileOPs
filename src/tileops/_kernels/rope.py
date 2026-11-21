@@ -173,10 +173,12 @@ def _rope_positions_kernel(
     of one token, ``units`` a thread, and reads the token's position once; consecutive
     blocks walk a token's parts, then the next token's. Where a head has copied columns, a
     thread loads all its units before it stores any, and a thread of one unit loads it before
-    the token's position; otherwise it loads and stores one unit at a time. ``rot_vec`` and
-    ``tail_vec`` divide every column offset they start at, so each unit moves as vectors.
-    Each block clamps the token's position into the table once, before its table loads, so a
-    position outside the table reads the nearest row. The arithmetic is f32 and rounds once.
+    the token's position; in the ``wide`` program every thread loads its unit before the
+    position. Otherwise a thread loads and stores one unit at a time after the position.
+    ``rot_vec`` and ``tail_vec`` divide every column offset they start at, so each unit moves
+    as vectors. Each block clamps the token's position into the table once, before its table
+    loads, so a position outside the table reads the nearest row. The arithmetic is f32 and
+    rounds once.
 
     The staged program instead gives a block one token's query row or key row, the two
     alternating: its threads load the row into shared memory in ``row_vec``-column vectors,
@@ -197,7 +199,7 @@ def _rope_positions_kernel(
     sides = _staged_sides(key_heads)
 
     @tilelang.jit(out_idx=[6, 7] if offset_dtype else [5, 6] if key_heads else [4])
-    def kernel(threads, units, staged):
+    def kernel(threads, units, staged, wide):
         num_tokens = T.dynamic("num_tokens")
         query_shape = (num_tokens, query_heads * head_size)
         key_shape = (num_tokens, key_heads * head_size)
@@ -393,24 +395,28 @@ def _rope_positions_kernel(
                     stage_row(query, query_out, query_heads, *rows)
                 else:
                     stage_row(key, key_out, key_heads, *rows)
-            elif tail_units == 0:
+            elif tail_units == 0 and not wide:
+                # Other resident blocks of a throughput-bound call hide each block's wait on the
+                # position.
                 table_row(positions, offsets, token, row)
                 each_unit(row, None, True, True, *tensors)
             else:
-                # A warp can hold rotating and copying units, each path waiting out a load-to-store
-                # round trip a unit; a copied run takes a rotating unit's low-column registers.
+                # A copied run takes a rotating unit's low-column registers.
                 lo = T.alloc_local([units * run], dtype)
                 hi = T.alloc_local([units * width], dtype)
                 cs = T.alloc_local([units * table_width], dtype)
                 sn = T.alloc_local([units * table_width], dtype)
                 regs = (lo, hi, cs, sn, lo)
                 if units == 1:
-                    # A copying lane needs no position, so its columns load first: ptxas waits
-                    # out the position's load at its clamp, before any load issued after it.
+                    # A copying lane needs no position, and in a wide call no other block hides
+                    # the position's load, so the columns load first: ptxas waits out that load
+                    # at the clamp, ahead of any later load.
                     each_unit(None, regs, True, False, *tensors)
                     table_row(positions, offsets, token, row)
                     each_unit(row, regs, False, True, *tensors)
                 else:
+                    # A warp can hold rotating and copying units, each path waiting out a
+                    # load-to-store round trip a unit.
                     table_row(positions, offsets, token, row)
                     each_unit(row, regs, True, False, *tensors)
                     each_unit(None, regs, False, True, *tensors)
@@ -630,8 +636,8 @@ class _RoPEPositionsKernel(Kernel):
         """The program ``forward`` launches, compiled from *cfg*; *wide* gives a block a thread
         per unit of its token, whole warps, up to the block limit."""
         if wide:
-            return self.kernel(min(1024, -(-self._token_units // 32) * 32), 1, False)
-        return self.kernel(cfg["threads"], cfg["units"], False)
+            return self.kernel(min(1024, -(-self._token_units // 32) * 32), 1, False, True)
+        return self.kernel(cfg["threads"], cfg["units"], False, False)
 
 
 class RoPENeoxPositionIdsKernel(_RoPEPositionsKernel, RoPENeoxPositionIdsFwdInterface):
@@ -708,7 +714,7 @@ class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
     def _compile(self, cfg: dict, wide: bool | None):
         """The staged program for a *wide* of ``None``, else the positions kernel's."""
         if wide is None:
-            return self.kernel(self._staged_threads, 1, True)
+            return self.kernel(self._staged_threads, 1, True, False)
         return super()._compile(cfg, wide)
 
 
