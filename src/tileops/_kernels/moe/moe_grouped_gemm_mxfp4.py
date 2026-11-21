@@ -1040,6 +1040,13 @@ def _moe_grouped_gemm_mxfp4_kernel(
     return _moe_grouped_gemm_mxfp4_func
 
 
+def _shared_decode_depths(num_stages: int) -> tuple[int, int]:
+    """The packed-weight and decoded fp8 ring depths of a shared-decode config whose ring of
+    token rows is ``num_stages`` deep: the decode warps fill decoded stages as far ahead as the
+    token rows are loaded."""
+    return MoEGroupedGEMMMXFP4SharedDecodeKernel._PACKED_STAGES, num_stages
+
+
 def _shared_decode_smem_bytes(block_n: int, num_stages: int, scale_k: int) -> int:
     """Bytes of a shared-decode config: the ring of fp8 token rows, the packed-weight and
     decoded fp8 stages, two tasks' weight-code and token-code tables (1024 bytes of alignment),
@@ -1047,8 +1054,7 @@ def _shared_decode_smem_bytes(block_n: int, num_stages: int, scale_k: int) -> in
     barriers."""
     kernel = MoEGroupedGEMMMXFP4SharedDecodeKernel
     block_m = kernel._TILE_ROWS
-    # The decoded stages run as deep as the ring of token rows.
-    packed_stages, decoded_stages = kernel._PACKED_STAGES, num_stages
+    packed_stages, decoded_stages = _shared_decode_depths(num_stages)
     ring = num_stages * block_m * QUANT_SCALE_BLOCK
     packed = packed_stages * block_n * QUANT_SCALE_BLOCK // 2
     decoded = decoded_stages * block_n * QUANT_SCALE_BLOCK
@@ -1059,11 +1065,10 @@ def _shared_decode_smem_bytes(block_n: int, num_stages: int, scale_k: int) -> in
 
 
 def _shared_decode_unroll(num_stages: int) -> int:
-    """K steps the shared-decode loops unroll by: twice the least common multiple of the ring
-    depths (the decoded ring as deep as the token ring), so each ring makes an even number of
-    round trips in it and every stage and barrier phase of a step is a constant."""
-    kernel = MoEGroupedGEMMMXFP4SharedDecodeKernel
-    return 2 * math.lcm(num_stages, kernel._PACKED_STAGES)
+    """K steps the shared-decode loops unroll by: twice the least common multiple of the three
+    ring depths, so each ring makes an even number of round trips in it and every stage and
+    barrier phase of a step is a constant."""
+    return 2 * math.lcm(num_stages, *_shared_decode_depths(num_stages))
 
 
 @target_cache(maxsize=32)
@@ -1092,7 +1097,6 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
     scale_k = k // block_k
     table_row_bytes = scale_k * 4
     table_box = _table_box(scale_k)
-    packed_stages = MoEGroupedGEMMMXFP4SharedDecodeKernel._PACKED_STAGES
     # Columns of one output staging box: 128 bytes of bfloat16, the TMA store's 128B swizzle.
     store_box_cols = 64
 
@@ -1124,8 +1128,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
         )
         if reason is not None:
             raise ValueError(f"cannot build the MXFP4 grouped GEMM for {config}: {reason}")
-        # The decode warps fill decoded stages as far ahead as the token rows are loaded.
-        decoded_stages = num_stages
+        packed_stages, decoded_stages = _shared_decode_depths(num_stages)
         tasks = task_walk(
             num_groups=num_groups,
             block_m=block_m,
