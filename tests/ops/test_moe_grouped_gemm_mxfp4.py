@@ -822,8 +822,8 @@ def test_mxfp4_grouped_gemm_shared_decode_takes_the_modelled_shared_memory() -> 
 
     assert "shared memory" in refusal(need - 1)
     assert refusal(need) is None
-    # The tuning candidates at K = 2048 are the ring depths whose unrolled loop tiles its 16
-    # steps.
+    # The tuning candidates at K = 2048 are the ring depths that fit beside the tiles and whose
+    # unrolled loop tiles its 16 steps; depth 8 tiles them but does not fit.
     assert [c["num_stages"] for c in _aligned_kernel(2048).autotune_configs] == [2, 4]
     assert not isinstance(_aligned_kernel(16384), MoEGroupedGEMMMXFP4SharedDecodeKernel)
 
