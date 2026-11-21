@@ -708,11 +708,102 @@ def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(columns) -> None:
     assert torch.equal(wide, before)
 
 
-@pytest.mark.smoke
-def test_rope_cos_sin_unchecked_row_outside_the_tables_reads_its_nearest_row() -> None:
-    row = _dense(2, 19, 3, 128, 64, P=32, some=["seqlen_offsets"])
+_OFFSETS = _dense(2, 19, 3, 128, 64, P=32, some=["seqlen_offsets"])
+# A token fills two whole blocks of 128 threads, where TileLang keeps the 32-bit program's row
+# arithmetic in 32 bits; where a block splits tokens it widens the arithmetic to 64 bits.
+_WHOLE_BLOCKS = _dense(2, 4, 32, 128, 64, P=32, some=["seqlen_offsets"])
+
+
+@pytest.mark.parametrize(
+    "row, dtypes, offsets",
+    [
+        pytest.param(_OFFSETS, {"O": "int64"}, [20, -3], marks=_SMOKE, id="int64"),
+        # Added to a position, the int32 extremes would wrap past the table in 32 bits.
+        pytest.param(
+            _WHOLE_BLOCKS,
+            {"O": "int32"},
+            [2**31 - 1, -(2**31)],
+            marks=_SMOKE,
+            id="int32-extremes",
+        ),
+        pytest.param(
+            _packed([5, 0, 9], 3, 64, 32, P=24, some=["seqlen_offsets"]),
+            {"I": "int32", "O": "int32"},
+            [2**31 - 1, 0, -(2**31)],
+            marks=_FULL,
+            id="packed-int32-extremes",
+        ),
+    ],
+)
+def test_rope_cos_sin_unchecked_row_outside_the_tables_reads_its_nearest_row(
+    row, dtypes, offsets
+) -> None:
+    call = manifest_call("RoPECosSinFwdOp", {"T": "float16", **_F32_TABLES, **dtypes}, **row)
+    test = RoPECosSinTest(call)
+    x, cos, sin, cu_seqlens, seqlen_offsets = test.gen_inputs()
+    seqlen_offsets.copy_(torch.tensor(offsets))
+    test.check(RoPECosSinFwdOp(**test.arguments()), x, cos, sin, cu_seqlens, seqlen_offsets)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param(_OFFSETS, marks=_SMOKE, id="64-bit-row"),
+        # The offset must stay 64-bit until its clamp, here in 32-bit row arithmetic.
+        pytest.param(_WHOLE_BLOCKS, marks=_FULL, id="32-bit-row"),
+    ],
+)
+def test_rope_cos_sin_int64_offset_at_its_maximum_reads_the_last_row(row) -> None:
+    """Offset 2**63 - 1 plus a position past 0 would wrap below row 0 before its clamp. The op
+    on the int64 extremes reads the rows the reference reads on P - 1 and -S, which reach the
+    same rows without the wrapping sum the reference makes on the extremes."""
     call = manifest_call("RoPECosSinFwdOp", {"T": "float16", **_F32_TABLES, "O": "int64"}, **row)
     test = RoPECosSinTest(call)
-    x, cos, sin, cu_seqlens, offsets = test.gen_inputs()
-    offsets.copy_(torch.tensor([20, -3]))
-    test.check(RoPECosSinFwdOp(), x, cos, sin, cu_seqlens, offsets)
+    x, cos, sin, cu_seqlens, _ = test.gen_inputs()
+    op = RoPECosSinFwdOp(**test.arguments())
+    extreme = torch.tensor([2**63 - 1, -(2**63)], device=x.device)
+    nearest = torch.tensor([cos.shape[0] - 1, -x.shape[1]], device=x.device)
+
+    def on_extremes(x, cos, sin, cu_seqlens=None, seqlen_offsets=0):
+        return op(x, cos, sin, cu_seqlens, extreme)
+
+    test.check(op, x, cos, sin, cu_seqlens, nearest, runs=on_extremes)
+
+
+@pytest.mark.smoke
+def test_rope_cos_sin_in_place_leaves_the_memory_past_x_untouched() -> None:
+    """The 1332 units of 37 tokens fill 52 threads of the last block; its other threads touch
+    nothing, here the part of the buffer past x."""
+    row = _dense(1, 37, 4, 72, 36, inplace=True)
+    call = manifest_call("RoPECosSinFwdOp", {"T": "bfloat16", **_F32_TABLES}, **row)
+    test = RoPECosSinTest(call)
+    x, cos, sin, cu_seqlens, seqlen_offsets = test.gen_inputs()
+    op = RoPECosSinFwdOp(**test.arguments())
+    buffer = torch.randn(x.numel() + 128 * 4 * 72, dtype=x.dtype, device=x.device)
+    head = buffer[: x.numel()].view(x.shape)
+    rest = buffer[x.numel() :].clone()
+    assert op(head, cos, sin, cu_seqlens, seqlen_offsets) is head
+    assert torch.equal(buffer[x.numel() :], rest)
+
+
+@pytest.mark.parametrize(
+    "apart",
+    [
+        pytest.param(19 * 3 * 256, marks=_SMOKE, id="adjacent"),
+        # Element offsets past int32: the program takes 64-bit indexes.
+        pytest.param(2**31, marks=_FULL, id="past-int32"),
+    ],
+)
+def test_rope_cos_sin_rotates_sequences_far_apart(apart) -> None:
+    """Two sequences *apart* elements apart, every second column of 256-column heads:
+    one-column accesses."""
+    row = _dense(2, 19, 3, 128, 64, P=32)
+    call = manifest_call(
+        "RoPECosSinFwdOp", {"T": "float16", "C": "float16", "Cs": "float16"}, **row
+    )
+    test = RoPECosSinTest(call)
+    x, cos, sin, cu_seqlens, seqlen_offsets = test.gen_inputs()
+    storage = torch.zeros(apart + 19 * 3 * 256, dtype=x.dtype, device=x.device)
+    view = storage.as_strided(x.shape, (apart, 3 * 256, 256, 2))
+    view.copy_(x)
+    test.check(RoPECosSinFwdOp(), view, cos, sin, cu_seqlens, seqlen_offsets)
