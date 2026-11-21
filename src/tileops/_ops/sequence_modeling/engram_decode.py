@@ -8,6 +8,7 @@ from tileops._kernels.sequence_modeling.engram import (
     EngramDecodeCall,
     EngramDecodeFwdInterface,
     EngramDecodeKernel,
+    EngramDecodeSplitKernel,
 )
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -22,7 +23,10 @@ class EngramDecodeFwdOp(Op):
     accepts any conv_state length up to it without recompiling.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"engram_decode": EngramDecodeKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "engram_decode": EngramDecodeKernel,
+        "engram_decode_split": EngramDecodeSplitKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "engram_decode": EngramDecodeFwdInterface
     }

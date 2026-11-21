@@ -35,6 +35,7 @@ def _fused_topk_kernel(
     topk_group=1,
     routed_scaling_factor=1.0,
     with_expert_ids=False,
+    warp_select=False,
 ):
     """Build a fused TileLang kernel: scoring + top-k, zero __syncthreads().
 
@@ -239,6 +240,75 @@ def _fused_topk_kernel(
                     for g in T.unroll(num_expert_group):
                         if group_of(j, lane_id) == g and kept[g] == 0:
                             sel[j] = -T.infinity("float32")
+
+        if (
+            warp_select
+            and scoring_func == "softmax"
+            and renormalize
+            and not grouped
+            and not with_expert_ids
+            and not with_correction_bias
+            and input_dtype == "bfloat16"
+            and num_experts == 128
+            and top_k == 8
+        ):
+
+            @T.prim_func
+            def select_eight(
+                logits: T.Tensor((num_tokens, num_experts), input_dtype),
+                weights: T.Tensor((num_tokens, top_k), "float32"),
+                ids: T.Tensor((num_tokens, top_k), "int32"),
+            ):
+                with T.Kernel(num_blocks, threads=TOKENS_PER_BLOCK * WARP_SIZE) as block:
+                    thread = T.get_thread_binding()
+                    lane = thread % WARP_SIZE
+                    token = block * TOKENS_PER_BLOCK + thread // WARP_SIZE
+                    if token < num_tokens:
+                        scores = T.alloc_local((4,), "float32")
+                        keys = T.alloc_local((4,), "int32")
+                        for j in T.unroll(4):
+                            scores[j] = T.cast(logits[token, j * WARP_SIZE + lane], "float32")
+                        peak = T.warp_reduce_max(
+                            T.max(T.max(scores[0], scores[1]), T.max(scores[2], scores[3]))
+                        )
+                        # Nonnegative FP32 scores have the same order as their integer bits.
+                        # Compare scores after exp so underflow ties still choose the lowest ID.
+                        for j in T.unroll(4):
+                            value = T.exp(scores[j] - peak)
+                            keys[j] = T.if_then_else(value >= 0, T.reinterpret(value, "int32"), -1)
+                        selected = T.alloc_var("float32", init=0)
+                        expert = T.alloc_var("int32", init=-1)
+                        for rank in T.unroll(top_k):
+                            best = T.warp_reduce_max(
+                                T.max(T.max(keys[0], keys[1]), T.max(keys[2], keys[3]))
+                            )
+                            first = T.alloc_var("int32", init=num_experts)
+                            for j in T.unroll(4):
+                                first = T.min(
+                                    first,
+                                    T.if_then_else(
+                                        keys[j] == best, j * WARP_SIZE + lane, num_experts
+                                    ),
+                                )
+                            winner = -T.warp_reduce_max(-first)
+                            if lane == rank:
+                                selected = T.if_then_else(
+                                    best >= 0,
+                                    T.reinterpret(best, "float32"),
+                                    -T.infinity("float32"),
+                                )
+                                expert = T.if_then_else(best >= 0, winner, -1)
+                            for j in T.unroll(4):
+                                if j * WARP_SIZE + lane == winner:
+                                    keys[j] = -1
+                        total = T.warp_reduce_sum(selected)
+                        if lane < top_k:
+                            ids[token, lane] = expert
+                            weights[token, lane] = selected * (
+                                T.float32(routed_scaling_factor) / total
+                            )
+
+            return select_eight
 
         if with_expert_ids:
             # Lane l holds the given experts k = c * 32 + l; a slot past top_k holds -inf, which
@@ -695,6 +765,7 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             topk_group,
             self.routed_scaling_factor,
             with_expert_ids,
+            warp_select=self.build_target.arch == 90,
         )
         self.sm_count = self.build_target.sm_count
         self.init_config(config)

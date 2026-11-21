@@ -7,6 +7,7 @@ from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.linear_attention import (
     GDNCall,
     GDNChunkPrefillFwdKernel,
+    GDNColumnDecodeKernel,
     GDNDenseDecodeFwdKernel,
     GDNDensePrefillFwdKernel,
     GDNFwdInterface,
@@ -63,6 +64,7 @@ class GDNFwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gdn_dense_decode": GDNDenseDecodeFwdKernel,
+        "gdn_column_decode": GDNColumnDecodeKernel,
         "gdn_dense_prefill": GDNDensePrefillFwdKernel,
         "gdn_chunk_prefill": GDNChunkPrefillFwdKernel,
         "gdn_split_prefill": GDNSplitPrefillFwdKernel,
