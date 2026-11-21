@@ -83,6 +83,19 @@ _CASES = (
     # More rows than the grid's y extent holds, each a whole number of lines: a second launch
     # of column tiles takes the last row.
     pytest.param([[65536, 64], [65536, 64]], 1, [_BF16] * 2, marks=_FULL, id="rows-past-grid-y"),
+    # Rows of whole 16-byte vectors that end inside a line, past one resident wave, copied by
+    # CTAs over the flat output. A CTA holds at least one warp and each row takes one, so 16385
+    # rows pass one wave on any device of up to 256 SMs holding 64 warps each.
+    # Rows of one vector: a vector's row is its position.
+    pytest.param([[16385, 8]], 1, [_FP16], marks=_FULL, id="flat-one-vector-rows"),
+    # Runs that cross rows and all four inputs, the last run partial.
+    pytest.param(
+        [[16385, 4], [16385, 12], [16385, 8], [16385, 4]],
+        1,
+        [_FP32] * 4,
+        marks=_FULL,
+        id="flat-four-inputs",
+    ),
     # Rows that end inside a line, with more output elements than a 32-bit offset reaches: the
     # flat program's element addresses.
     pytest.param(
@@ -98,30 +111,6 @@ _CASES = (
 @pytest.mark.parametrize("S, dim, D", _CASES)
 def test_concat(S, dim, D) -> None:
     call = manifest_call("ConcatFwdOp", {"D": D}, S=S, dim=dim)
-    test = ConcatTest(call)
-    test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
-
-
-@pytest.mark.parametrize(
-    "widths, D",
-    [
-        # Rows of one vector: a vector's row is its position.
-        pytest.param([8], [_FP16], marks=_SMOKE, id="one-vector-rows"),
-        # Runs that cross rows and all four inputs, the last run partial.
-        pytest.param([4, 12, 8, 4], [_FP32] * 4, marks=_FULL, id="four-inputs"),
-    ],
-)
-def test_concat_flat_rows(widths, D) -> None:
-    """Rows of whole 16-byte vectors that end inside a line, past one resident wave, copied by
-    CTAs over the flat output.
-
-    A CTA holds at least one warp, and each row takes at least one CTA. One row more than the
-    warps all SMs hold at once therefore gives more CTAs than one resident wave, whatever the
-    CTA size.
-    """
-    props = torch.cuda.get_device_properties(run_device())
-    rows = props.multi_processor_count * props.max_threads_per_multi_processor // 32 + 1
-    call = manifest_call("ConcatFwdOp", {"D": D}, S=[[rows, w] for w in widths], dim=1)
     test = ConcatTest(call)
     test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
 
