@@ -7,14 +7,18 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.constants import SM_RESIDENT_BLOCKS
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.pool import (
     AdaptiveAvgPool2dKernel,
     AdaptiveAvgPool2dLanesKernel,
     AdaptiveMaxPool2dKernel,
     AdaptiveMaxPool2dRegisterKernel,
+    AvgPool1dKernel,
+    AvgPool1dRegisterKernel,
     AvgPool2dFwdInterface,
 )
+from tileops._kernels.pool.call_spec import AvgPoolCall
 from tileops._utils import device_facts
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -615,42 +619,413 @@ def test_avg_pool1d_staged_windows_match_the_reference(
     _run_avg_pool_case(1, (1, 1, l_in), kernel_l, stride_l, pad_l, False, True, None, dtype, False)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "l_in, kernel_l, stride_l, pad_l, dtype, offset",
+    "rows, l_in, kernel_l, stride_l, pad_l, ceil_mode, count_include_pad, dtype, offset",
     [
         pytest.param(
-            4096, 3, 2, 1, torch.float16, 0, id="s2-pad-before-fp16", marks=pytest.mark.smoke
+            (2, 3),
+            4096,
+            3,
+            2,
+            1,
+            False,
+            True,
+            torch.float16,
+            0,
+            id="s2-pad-before-fp16",
+            marks=pytest.mark.smoke,
         ),
         pytest.param(
-            1024, 3, 1, 1, torch.float32, 0, id="s1-pad-both-sides-fp32", marks=pytest.mark.smoke
+            (2, 3),
+            1024,
+            3,
+            1,
+            1,
+            False,
+            True,
+            torch.float32,
+            0,
+            id="s1-pad-both-sides-fp32",
+            marks=pytest.mark.smoke,
         ),
         pytest.param(
-            512, 4, 4, 0, torch.bfloat16, 0, id="s4-one-output-a-load-bf16", marks=pytest.mark.smoke
+            (2, 3),
+            512,
+            4,
+            4,
+            0,
+            False,
+            True,
+            torch.bfloat16,
+            0,
+            id="s4-one-output-a-load-bf16",
+            marks=pytest.mark.smoke,
         ),
-        pytest.param(4096, 3, 2, 1, torch.float16, 1, id="misaligned-fp16", marks=pytest.mark.full),
         pytest.param(
+            (2, 3),
+            2048,
+            4,
+            2,
+            1,
+            True,
+            False,
+            torch.bfloat16,
+            0,
+            id="uncounted-pad-both-edges-bf16",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 3),
+            8,
+            3,
+            2,
+            0,
+            True,
+            True,
+            torch.float32,
+            0,
+            id="ceil-window-past-the-row-fp32",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 3),
+            4096,
+            3,
+            2,
+            1,
+            False,
+            True,
+            torch.float16,
+            1,
+            id="misaligned-fp16",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 3),
             1024,
             5,
             4,
             0,
+            False,
+            True,
             torch.float32,
             0,
             id="s4-reach-past-the-load-fp32",
             marks=pytest.mark.full,
         ),
+        # Rows of 256 runs fill a row-grid block, so only the grid's y axis takes the launch
+        # off the row grid.
+        pytest.param(
+            (1, 65536),
+            1024,
+            3,
+            2,
+            1,
+            False,
+            True,
+            torch.float32,
+            0,
+            id="rows-past-the-grid-y-axis-fp32",
+            marks=pytest.mark.full,
+        ),
+        # 2**19 rows of 4096: 2**31 elements, an extent one past INT32_MAX. Costs 8 GiB.
+        pytest.param(
+            (1, 2**19),
+            4096,
+            3,
+            2,
+            1,
+            False,
+            True,
+            torch.float16,
+            0,
+            id="int32-max-plus-one-elements-fp16",
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_avg_pool1d_windows_read_into_registers(
-    l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: torch.dtype, offset: int
+    rows: tuple[int, int],
+    l_in: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_l: int,
+    ceil_mode: bool,
+    count_include_pad: bool,
+    dtype: torch.dtype,
+    offset: int,
 ) -> None:
     """Windows a 16-byte load covers whole outputs of, read with the elements they reach
     past it on either side and divided as torch divides, so the result matches it bit for
-    bit; an input starting ``offset`` elements into its storage is served too."""
-    storage = torch.randn(offset + 2 * 3 * l_in, device=run_device(), dtype=dtype)
-    x = storage[offset:].view(2, 3, l_in)
-    out = AvgPool1dFwdOp(kernel_size=kernel_l, stride=stride_l, padding=pad_l)(x)
-    expected = F.avg_pool1d(x, kernel_l, stride_l, pad_l)
+    bit: a window the row's edge cuts divides by the positions it counts. A thread past a
+    row's last run stores nothing; more rows than the grid's y axis holds, and an input of
+    2**31 elements, are served too, as is an input starting ``offset`` elements into its
+    storage."""
+    n, c_in = rows
+    storage = torch.randn(offset + n * c_in * l_in, device=run_device(), dtype=dtype)
+    x = storage[offset:].view(n, c_in, l_in)
+    op = AvgPool1dFwdOp(
+        kernel_size=kernel_l,
+        stride=stride_l,
+        padding=pad_l,
+        ceil_mode=ceil_mode,
+        count_include_pad=count_include_pad,
+        target=BUILTIN,
+    )
+    # Tuning compiles through TileLang's autotuner, which refuses a builder that closes over
+    # anything but scalars.
+    op.request_tune()
+    out = op(x)
+    expected = F.avg_pool1d(x, kernel_l, stride_l, pad_l, ceil_mode, count_include_pad)
+    assert [type(k) for k in op.iter_kernels()] == [AvgPool1dRegisterKernel]
     torch.testing.assert_close(out, expected, rtol=0, atol=0)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "shape, kernel_l, stride_l, pad_l, kernel_type",
+    [
+        # The fixture's fp16 smoke shape.
+        pytest.param(
+            (2, 64, 512),
+            3,
+            2,
+            1,
+            AvgPool1dRegisterKernel,
+            id="fixture-shape-register",
+            marks=pytest.mark.smoke,
+        ),
+        # One row of 2**31 elements: the last window ends at 2**31. Costs 6 GiB.
+        pytest.param(
+            (1, 1, 2**31),
+            3,
+            2,
+            1,
+            AvgPool1dRegisterKernel,
+            id="row-of-2-31-elements-register",
+            marks=pytest.mark.full,
+        ),
+        # A row past 2**31 elements: loads, windows and stores start past INT32_MAX. Costs 6 GiB.
+        pytest.param(
+            (1, 1, 2**31 + 16),
+            3,
+            2,
+            1,
+            AvgPool1dRegisterKernel,
+            id="row-past-2-31-elements-register",
+            marks=pytest.mark.full,
+        ),
+        # A window reaching two elements past a load is staged in shared memory. Costs 6 GiB.
+        pytest.param(
+            (1, 1, 2**31),
+            5,
+            2,
+            2,
+            AvgPool1dKernel,
+            id="row-of-2-31-elements-staged",
+            marks=pytest.mark.full,
+        ),
+        # Stride 1 and padding give each row one output more than its input: 2**31 outputs
+        # from fewer than 2**31 inputs, so the output alone takes int64 extents. Costs 8 GiB.
+        pytest.param(
+            (1, 2, 2**30 - 1),
+            2,
+            1,
+            1,
+            AvgPool1dKernel,
+            id="output-of-2-31-elements-staged",
+            marks=pytest.mark.full,
+        ),
+        # Stride 1 past 2**31 elements: output indices pass INT32_MAX. Costs 12 GiB.
+        pytest.param(
+            (1, 1, 2**31 + 8),
+            5,
+            1,
+            2,
+            AvgPool1dKernel,
+            id="row-past-2-31-elements-staged",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_avg_pool1d_divides_each_end_of_the_row(
+    shape: tuple[int, int, int],
+    kernel_l: int,
+    stride_l: int,
+    pad_l: int,
+    kernel_type: type,
+) -> None:
+    """The windows at each end of a row divide by the positions they count, also where the
+    last window's end passes INT32_MAX. torch pools a row of 2**31 elements to zeros, so
+    each end is checked against torch on a slice of at most 1024 elements, dropping the
+    windows the slice, not the row, cuts."""
+    edge = min(shape[-1], 1024)
+    x = torch.randn(*shape, device=run_device(), dtype=torch.float16)
+    op = AvgPool1dFwdOp(
+        kernel_size=kernel_l,
+        stride=stride_l,
+        padding=pad_l,
+        count_include_pad=False,
+        target=BUILTIN,
+    )
+    out = op(x)
+    assert [type(k) for k in op.iter_kernels()] == [kernel_type]
+
+    def pool(part: torch.Tensor) -> torch.Tensor:
+        return F.avg_pool1d(part, kernel_l, stride_l, pad_l, False, False)
+
+    # Head windows ending inside the slice; tail windows starting inside it.
+    head = pool(x[..., :edge])[..., : (edge + pad_l - kernel_l) // stride_l + 1]
+    tail = pool(x[..., -edge:])[..., -(-pad_l // stride_l) :]
+    torch.testing.assert_close(out[..., : head.shape[-1]], head, rtol=0, atol=0)
+    torch.testing.assert_close(out[..., -tail.shape[-1] :], tail, rtol=0, atol=0)
+
+
+@pytest.mark.smoke
+def test_avg_pool1d_refuses_an_output_row_of_2_31_from_a_shorter_input_row() -> None:
+    """Stride 1 and padding make a row of 2**31 - 1 inputs pool to 2**31 outputs, which
+    TileLang's int32 literals for the shorter input row cannot lower; no kernel serves it."""
+    call = AvgPoolCall(
+        n=1, c_in=1, size=(2**31 - 1,), window=(2,), stride=(1,), pad=(1,), dtype=torch.float16
+    )
+    assert "2**31" in AvgPool1dKernel.refusal(call)
+    assert AvgPool1dRegisterKernel.refusal(call) is not None
+
+
+@pytest.mark.smoke
+def test_avg_pool1d_register_refuses_groups_past_its_int32_thread_index() -> None:
+    """The register kernel's one-axis grid indexes a thread a group of outputs in int32, so
+    a call of more rows than grid y holds whose groups and one more block pass 2**31 - 1
+    goes to AvgPool1dKernel."""
+    # fp16, kernel 2, stride 2: four outputs a group, 16385 groups a row, 2**31 + 2**17 in all.
+    call = AvgPoolCall(
+        n=1,
+        c_in=131072,
+        size=(131080,),
+        window=(2,),
+        stride=(2,),
+        pad=(0,),
+        dtype=torch.float16,
+    )
+    assert "groups of outputs" in AvgPool1dRegisterKernel.refusal(call)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "case",
+    [
+        # The fixture's fp32 smoke shape.
+        pytest.param("fixture", id="fixture-shape", marks=pytest.mark.smoke),
+        pytest.param("sub-wave", id="sub-wave-one-block-an-sm", marks=pytest.mark.full),
+        pytest.param("widest", id="widest-blocks-one-an-sm", marks=pytest.mark.full),
+        pytest.param(
+            "past-one-block-an-sm", id="past-one-block-an-sm-row-grid", marks=pytest.mark.full
+        ),
+        pytest.param("short-rows", id="short-rows-one-axis", marks=pytest.mark.full),
+        pytest.param(
+            "short-rows-resident", id="short-rows-all-resident-row-grid", marks=pytest.mark.full
+        ),
+        pytest.param(
+            "full-rows-past-residency",
+            id="full-rows-past-residency-row-grid",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_avg_pool1d_register_launch_fills_each_sm_once(case: str) -> None:
+    """Where the row grid puts a second block on some SM, a launch that one block an SM of
+    at most 1024 threads covers runs as one block an SM of the fewest whole warps that cover
+    it. Another runs 128-thread blocks along each row,
+    unless the row grid has more blocks than the SMs hold at once and a row leaves so many
+    of a block's threads idle that the blocks an SM holds cannot fill it: then its blocks
+    span rows on one grid axis."""
+    facts = device_facts(run_device().index)
+    sm_count = facts.sm_count
+    # Row-grid blocks the SMs hold at once.
+    resident = sm_count * SM_RESIDENT_BLOCKS[facts.arch]
+    # fp32 input, kernel 2, stride 2: one thread a 16-byte run of four values, l_in // 4 runs
+    # a row.
+    shape = {
+        # 128 rows of 128 runs.
+        "fixture": (2, 64, 512),
+        # Rows of 64 runs; one block an SM covers both launches, so the row grid's fill does
+        # not decide them. Four rows an SM and one more: an SM's share is 8 warps and part of
+        # a ninth, which takes a whole warp.
+        "sub-wave": (1, sm_count * 4 + 1, 256),
+        "widest": (1, sm_count * 16, 256),
+        # Rows of 128 runs fill a row-grid block, so the blocks an SM holds fill it on every
+        # supported architecture.
+        "past-one-block-an-sm": (1, sm_count * 8 + 1, 512),
+        "full-rows-past-residency": (1, resident + 1, 512),
+        # Rows of 8 runs: past what one block an SM covers and the blocks the SMs hold at
+        # once, and as many rows as SMs.
+        "short-rows": (1, sm_count * 128 + 8, 32),
+        "short-rows-resident": (1, sm_count, 32),
+    }[case]
+    launch = {
+        "fixture": {},
+        "sub-wave": {"flat": True, "threads": 288},
+        "widest": {"flat": True, "threads": 1024},
+        "past-one-block-an-sm": {"flat": False, "threads": 128},
+        "short-rows": {"flat": True, "threads": 128},
+        "short-rows-resident": {"flat": False, "threads": 128},
+        "full-rows-past-residency": {"flat": False, "threads": 128},
+    }[case]
+    op = AvgPool1dFwdOp(kernel_size=2, stride=2, target=BUILTIN)
+    x = torch.randn(*shape, device=run_device(), dtype=torch.float32)
+    out = op(x)
+    (kernel,) = op.iter_kernels()
+    assert type(kernel) is AvgPool1dRegisterKernel
+    assert {key: kernel.config[key] for key in launch} == launch
+    torch.testing.assert_close(out, F.avg_pool1d(x, 2, 2), rtol=0, atol=0)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "rows, l_in, dtype",
+    [
+        # The fixture's fp16 smoke shape.
+        pytest.param((2, 64), 512, torch.float16, id="fixture-shape-fp16", marks=pytest.mark.smoke),
+        # 65536 rows: one more than the grid's y axis holds.
+        pytest.param(
+            (64, 1024),
+            64,
+            torch.float16,
+            id="rows-past-the-grid-y-axis-fp16",
+            marks=pytest.mark.full,
+        ),
+        # 32768 rows of 65536: 2**31 elements, an extent one past INT32_MAX, in rows the
+        # grid's y axis holds. Costs 8 GiB.
+        pytest.param(
+            (1, 32768),
+            65536,
+            torch.float16,
+            id="int32-max-plus-one-elements-fp16",
+            marks=pytest.mark.full,
+        ),
+        # 2**31 rows of one element: one block a row, one more than grid x holds. Costs 9 GiB.
+        pytest.param(
+            (2, 2**30),
+            1,
+            torch.float16,
+            id="blocks-past-the-grid-x-axis-fp16",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_avg_pool1d_staged_kernel_launch_limits(
+    rows: tuple[int, int], l_in: int, dtype: torch.dtype
+) -> None:
+    """A window reaching two elements past a load is staged in shared memory; more rows than
+    the grid's y axis holds, more tiles than grid x holds, and an input of 2**31 elements,
+    pool like torch. Torch is run a batch entry at a time, under its own int32 limit."""
+    x = torch.randn(*rows, l_in, device=run_device(), dtype=dtype)
+    op = AvgPool1dFwdOp(kernel_size=5, stride=2, padding=2, target=BUILTIN)
+    out = op(x)
+    assert [type(k) for k in op.iter_kernels()] == [AvgPool1dKernel]
+    for n in range(x.shape[0]):
+        torch.testing.assert_close(out[n], F.avg_pool1d(x[n], 5, 2, 2), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize(

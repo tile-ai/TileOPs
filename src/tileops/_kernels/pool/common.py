@@ -8,7 +8,7 @@ import torch
 
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.pool.call_spec import AdaptivePool2dCall
+from tileops._kernels.pool.call_spec import AdaptivePool2dCall, AvgPoolCall
 
 # Window sums promote to fp32 and cast back at the store: a narrow accumulator loses the
 # low bits of a window this wide.
@@ -136,6 +136,20 @@ class AvgPoolWindow(NamedTuple):
     ceil_mode: bool
     count_include_pad: bool
     divisor_override: int | None
+
+    @classmethod
+    def of(cls, call: AvgPoolCall) -> "AvgPoolWindow":
+        """The window of *call*."""
+        return cls(
+            rows=call.n * call.c_in,
+            size=call.size,
+            kernel=call.window,
+            stride=call.stride,
+            pad=call.pad,
+            ceil_mode=call.ceil_mode,
+            count_include_pad=call.count_include_pad,
+            divisor_override=call.divisor_override,
+        )
 
     @property
     def out(self) -> tuple[int, ...]:
