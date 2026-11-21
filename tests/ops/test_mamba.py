@@ -203,6 +203,26 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     compare_outputs(out, ref, workload.verification(x))
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+def test_ssd_chunk_state_fp16_tma_masks_packed_sequences():
+    from tileops.backend import BUILTIN
+
+    test = SSDChunkStateFwdTest(1, 16, 256, 48, 64, 128, 1, torch.float16, True)
+    x, bmat, dt, da, seq_idx = test.gen_inputs()
+    seq_idx[:, :256] = -1
+    seq_idx[:, 256:416] = 0
+    seq_idx[:, 416:] = 1
+    op = SSDChunkStateFwdOp(target=BUILTIN)
+    inputs = (x, bmat, dt, da, seq_idx)
+    out = op(*inputs)
+    compare_outputs(out, test.ref_program(*inputs), test.verification(*inputs))
+    (kernel,) = op.iter_kernels()
+    assert kernel._uses_tma_panels()
+    assert torch.count_nonzero(out[:, 0]) == 0
+
+
 class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):
     pass
 

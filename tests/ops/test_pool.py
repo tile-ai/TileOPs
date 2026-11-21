@@ -1506,28 +1506,44 @@ _MAX_POOL2D_PARAMS = [
 ]
 
 
-@pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-@pytest.mark.sm90
-@pytest.mark.parametrize(
-    "height,width",
-    [(33, 33), (33, 63), (47, 63)],
-    ids=["half-warp", "small-fallback", "warp-window"],
-)
-def test_warp_pool_odd_rectangle_and_nan(height, width):
-    from tileops._kernels.pool import MaxPool2dKernel, MaxPool2dWarpKernel
-
-    x = torch.randn(2, 3, height, width, device=run_device(), dtype=torch.bfloat16)
+def _check_max_pool2d_odd_rectangle_and_nan(height, width, dtype):
+    x = torch.randn(2, 3, height, width, device=run_device(), dtype=dtype)
     x[:, :, -1, -1] = float("nan")
     op = MaxPool2dFwdOp(3, stride=2, ceil_mode=True, target=BUILTIN)
     expected = F.max_pool2d(x, 3, stride=2, ceil_mode=True)
     torch.testing.assert_close(op(x), expected, rtol=0, atol=0, equal_nan=True)
     (kernel,) = op.iter_kernels()
-    if (height, width) == (33, 63):
-        assert type(kernel) is MaxPool2dKernel
-    else:
-        assert type(kernel) is MaxPool2dWarpKernel
-        assert kernel.half_warp == (height == 33)
+    return kernel
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "height,width,dtype,half_warp",
+    [
+        (33, 33, torch.bfloat16, True),
+        (47, 63, torch.bfloat16, False),
+        (55, 55, torch.float16, False),
+    ],
+    ids=["bf16-half-warp", "bf16-warp-window", "fp16-warp-window"],
+)
+def test_warp_pool_odd_rectangle_and_nan(height, width, dtype, half_warp):
+    from tileops._kernels.pool import MaxPool2dWarpKernel
+
+    kernel = _check_max_pool2d_odd_rectangle_and_nan(height, width, dtype)
+    assert type(kernel) is MaxPool2dWarpKernel
+    assert kernel.half_warp is half_warp
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+def test_max_pool2d_mixed_extents_use_fallback():
+    from tileops._kernels.pool import MaxPool2dKernel
+
+    kernel = _check_max_pool2d_odd_rectangle_and_nan(33, 63, torch.bfloat16)
+    assert type(kernel) is MaxPool2dKernel
 
 
 class MaxPool2dFixture(FixtureBase):

@@ -160,3 +160,21 @@ def test_indexer_signed_external_key_scales(queries, keys, groups) -> None:
     scales.fill_(1)
     scales[:, 1::2] = -1
     test.check(FP8LightningIndexerFwdOp(), q, k, weights, starts, ends, scales)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize("groups", [1, 2], ids=["single-group", "two-groups"])
+def test_indexer_assumes_nonnegative_external_scales(groups) -> None:
+    from tileops.backend import BUILTIN
+
+    test = FP8LightningIndexerTest(1, 8, 64, 128, 128, groups)
+    q, k, weights, starts, ends, scales = test.gen_weight_boundary_inputs()
+    q.fill_(1)
+    k.fill_(1)
+    weights.fill_(1)
+    scales.fill_(0.5)
+    scales[:, 1::2] = 0
+    op = FP8LightningIndexerFwdOp(assume_nonnegative_scale=True, target=BUILTIN)
+    test.check(op, q, k, weights, starts, ends, scales)

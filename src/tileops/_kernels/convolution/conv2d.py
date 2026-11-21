@@ -849,6 +849,8 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
                 and self.c_in >= 256
                 and self.out_h * self.out_w >= 8192
                 and 128 in self.block_m_candidates
+                and self.tile_stays_in_one_image(self.n, self.out_h * self.out_w, 128)
+                and self.c_in % 64 == 0
                 and self.build_target.smem_budget >= 147456
             ):
                 return {

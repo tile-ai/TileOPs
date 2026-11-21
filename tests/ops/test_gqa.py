@@ -421,6 +421,18 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             marks=pytest.mark.smoke,
             id="narrow-group-fp16",
         ),
+        pytest.param(
+            1,
+            (24, 3),
+            128,
+            torch.float16,
+            (4096,),
+            None,
+            None,
+            GQADecodeNarrowGroupKernel,
+            marks=pytest.mark.smoke,
+            id="narrow-group-128-key-parts",
+        ),
         # Every 64-key tile of both KV heads has its own CTA.
         pytest.param(
             1,

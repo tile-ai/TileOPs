@@ -142,6 +142,26 @@ def test_engram_decode(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+def test_engram_split_decode_left_pads_short_history():
+    from torch.nn import functional as F
+
+    from tileops._kernels.sequence_modeling.engram.decode import EngramDecodeSplitKernel
+    from tileops.backend import BUILTIN
+    from workloads.numerics import compare_outputs
+
+    test = EngramDecodeTest(1, 512, 256, 12, 4, 3, torch.float16, conv_len=5)
+    e_t, h_t, state, *weights = test.gen_inputs()
+    op = EngramDecodeFwdOp(12, 4, 3, target=BUILTIN)
+    inputs = (e_t, h_t, state, *weights)
+    expected_state = F.pad(state, (0, 0, 12 - state.shape[1], 0))
+    expected = test.ref_program(e_t, h_t, expected_state, *weights)
+    compare_outputs(op(*inputs), expected, test.verification(*inputs))
+    assert [type(k) for k in op.iter_kernels()] == [EngramDecodeSplitKernel]
+
+
+@pytest.mark.smoke
 def test_engram_decode_multi_step():
     """Multi-step decode with a growing conv_state and a dilated conv."""
     B, d_mem, d = 2, 256, 256
