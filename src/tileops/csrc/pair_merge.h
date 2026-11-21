@@ -56,4 +56,55 @@ __device__ __forceinline__ void merge_frag128(float* frag, const void* base,
   }
 }
 
+// send_frag128 into a peer buffer held as two 32 KiB halves: float4 q of thread
+// t at slot (q % 16) * 128 + t of `lo` for q < 16, of `hi` otherwise.
+__device__ __forceinline__ void send_frag128_halves(const float* frag, void* lo,
+                                                    void* hi, int t, void* bar,
+                                                    int peer) {
+  unsigned sl = static_cast<unsigned>(__cvta_generic_to_shared(lo));
+  unsigned sh = static_cast<unsigned>(__cvta_generic_to_shared(hi));
+  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
+  unsigned rl, rh, rm;
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;"
+               : "=r"(rl)
+               : "r"(sl), "r"(peer));
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;"
+               : "=r"(rh)
+               : "r"(sh), "r"(peer));
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;"
+               : "=r"(rm)
+               : "r"(m), "r"(peer));
+#pragma unroll
+  for (int q = 0; q < 32; ++q)
+    asm volatile(
+        "st.async.shared::cluster.mbarrier::complete_tx::bytes.v4.f32 "
+        "[%0], {%1, %2, %3, %4}, [%5];" ::"r"((q < 16 ? rl : rh) +
+                                              16u * (q % 16 * 128 + t)),
+        "f"(frag[4 * q]), "f"(frag[4 * q + 1]), "f"(frag[4 * q + 2]),
+        "f"(frag[4 * q + 3]), "r"(rm)
+        : "memory");
+}
+
+// merge_frag128 reading the peer's floats from the two halves
+// send_frag128_halves stored them in.
+__device__ __forceinline__ void merge_frag128_halves(float* frag,
+                                                     const void* lo,
+                                                     const void* hi, int t,
+                                                     const float* mine,
+                                                     const float* theirs) {
+  const float4* bl = static_cast<const float4*>(lo);
+  const float4* bh = static_cast<const float4*>(hi);
+  const int r = t / 32 * 16 + t % 32 / 4;
+  const float m0 = mine[r], m1 = mine[r + 8], t0 = theirs[r],
+              t1 = theirs[r + 8];
+#pragma unroll
+  for (int q = 0; q < 32; ++q) {
+    float4 v = (q < 16 ? bl : bh)[q % 16 * 128 + t];
+    frag[4 * q] = frag[4 * q] * m0 + v.x * t0;
+    frag[4 * q + 1] = frag[4 * q + 1] * m0 + v.y * t0;
+    frag[4 * q + 2] = frag[4 * q + 2] * m1 + v.z * t1;
+    frag[4 * q + 3] = frag[4 * q + 3] * m1 + v.w * t1;
+  }
+}
+
 }  // namespace tileops
