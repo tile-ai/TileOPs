@@ -3,6 +3,8 @@
 Covers L1 smoke correctness, multi-dtype coverage, and L4 edge cases.
 """
 
+import re
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -220,6 +222,37 @@ def test_tanh(n_total: int, dtype: torch.dtype) -> None:
     from tileops._ops.elementwise import TanhFwdOp
 
     _make_activation_test(n_total, dtype, _randn, TanhFwdOp)
+
+
+def _tanh_launch_bounds(dtype: torch.dtype) -> tuple[int, list[tuple[str, str]]]:
+    """The threads of a 1M-element ``TanhFwdOp`` program and its ``__launch_bounds__`` pairs."""
+    from tileops._ops.elementwise import TanhFwdOp
+
+    op = TanhFwdOp()
+    op(_randn(1_048_576, dtype))
+    (kernel,) = op._entries_built("elementwise").values()
+    source = kernel.program(kernel._compile).get_kernel_source()
+    return kernel.config["threads"], re.findall(r"__launch_bounds__\((\d+), (\d+)\)", source)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_tanh_keeps_an_sm_of_threads_resident_for_16bit_inputs(dtype: torch.dtype) -> None:
+    """A 16-bit input asks the compiler to fit as many blocks on an SM as the register file
+    holds threads at 32 registers each; nvcc left alone gives that body more, and fewer
+    resident threads keep fewer loads in flight. ``test_tanh`` checks the values."""
+    threads, bounds = _tanh_launch_bounds(dtype)
+    resident = torch.cuda.get_device_properties(run_device()).regs_per_multiprocessor // 32
+    assert bounds == [(str(threads), str(resident // threads))]
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_float32_tanh_leaves_the_register_budget_to_nvcc() -> None:
+    """A float32 input asks for one resident block, nvcc's default budget."""
+    threads, bounds = _tanh_launch_bounds(torch.float32)
+    assert bounds == [(str(threads), "1")]
 
 
 @ActivationFixture
