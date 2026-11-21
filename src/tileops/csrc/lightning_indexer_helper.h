@@ -8,6 +8,42 @@ __device__ __forceinline__ float relu_term(float x) {
   return DOUBLED ? x + fabsf(x) : fmaxf(x, 0.f);
 }
 
+template <int HEADS, int BQ, bool DOUBLED, bool SIGNED>
+__device__ __forceinline__ void indexer_head_sums(const float* acc,
+                                                  const float* wt, float scale0,
+                                                  float scale1, float* v) {
+  constexpr int N = 2 * BQ;
+  constexpr int JQ = HEADS / 8;
+  // Partial sums first, sum 2 q + h of query q at row half h.
+#pragma unroll
+  for (int q = 0; q < BQ; ++q) {
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+      // Two chains a sum below 16 sums a thread, so at least 16 FFMA chains run
+      // at once.
+      const unsigned sign = __float_as_uint(h ? scale1 : scale0) & 0x80000000u;
+      const auto score = [=](float x) {
+        if constexpr (SIGNED) return __uint_as_float(__float_as_uint(x) ^ sign);
+        return x;
+      };
+      float a = 0.f, b = 0.f;
+#pragma unroll
+      for (int jj = 0; jj < JQ; ++jj) {
+        const int j = q * JQ + jj;
+        a = fmaf(relu_term<DOUBLED>(score(acc[4 * j + 2 * h])), wt[2 * j], a);
+        if (N < 16) {
+          b = fmaf(relu_term<DOUBLED>(score(acc[4 * j + 2 * h + 1])),
+                   wt[2 * j + 1], b);
+        } else {
+          a = fmaf(relu_term<DOUBLED>(score(acc[4 * j + 2 * h + 1])),
+                   wt[2 * j + 1], a);
+        }
+      }
+      v[2 * q + h] = N < 16 ? a + b : a;
+    }
+  }
+}
+
 // The epilogue of one 64-key tile of the lightning indexer over its BQ queries,
 // for thread t of the consumer warpgroup that holds the tile's m64n(HEADS * BQ)
 // WGMMA accumulator.
@@ -16,50 +52,36 @@ __device__ __forceinline__ float relu_term(float x) {
 // (t % 32) / 4
 // + 8 h and query-head column 8 j + 2 (t % 4) + b. ``wt`` holds that column's
 // head weight at 2 j + b. Each (row, query) logit is the head sum of
-// relu(score) * weight, one FMNMX and one FFMA an element. The four lanes that
+// relu(score * sign(key_scale)) * weight. The four lanes that
 // share a row then reduce-scatter the 2 BQ sums, so lane t % 4 ends with the
 // (query q, row half h) of 2 q + h congruent to it, and stores them times the
-// key's scale. Outside its row's window a logit is -inf when CLEAN;
+// key scale magnitude. Outside its row's window a logit is -inf when CLEAN;
 // ``interior`` says the whole tile is inside every window and inside the
 // tensor.
 //
-// With DOUBLED each element costs one FADD and one FFMA, both on the FMA pipe:
+// With DOUBLED the rectification and weighted sum share the FMA pipe:
 // the sum is of (x + |x|) * weight, twice relu(x) * weight, halved before
 // ``key_scale_in``, the scale of this thread's stored row. The op docstring
 // states where this differs from the relu sum.
-template <int HEADS, int BQ, bool CLEAN, bool DOUBLED>
+template <int HEADS, int BQ, bool CLEAN, bool DOUBLED, bool CHECK_SCALE_SIGN>
 __device__ __forceinline__ void indexer_tile_epilogue_impl(
     const float* acc, const float* wt, const float* scale, float key_scale_in,
     float* logits, long long off, int s0, int k0, int seq_len, int seq_len_kv,
     const int* win, bool interior, int t) {
   constexpr int N = 2 * BQ;  // (query, row half) sums a thread holds
   static_assert(N % 4 == 0, "four lanes share a row's sums");
-  constexpr int JQ = HEADS / 8;  // column blocks of 8 a query
   const int lane4 = t % 4;
   const int row0 = 16 * (t / 32) + (t % 32) / 4;
-  // Partial sums first, sum 2 q + h of query q at row half h.
+  const int row = row0 + 8 * (lane4 % 2);
+  const float key_scale = DOUBLED ? key_scale_in : scale[row];
   float v[N];
-#pragma unroll
-  for (int q = 0; q < BQ; ++q) {
-#pragma unroll
-    for (int h = 0; h < 2; ++h) {
-      // Two chains a sum below 16 sums a thread, so at least 16 FFMA chains run
-      // at once.
-      float a = 0.f, b = 0.f;
-#pragma unroll
-      for (int jj = 0; jj < JQ; ++jj) {
-        const int j = q * JQ + jj;
-        a = fmaf(relu_term<DOUBLED>(acc[4 * j + 2 * h]), wt[2 * j], a);
-        if (N < 16) {
-          b = fmaf(relu_term<DOUBLED>(acc[4 * j + 2 * h + 1]), wt[2 * j + 1],
-                   b);
-        } else {
-          a = fmaf(relu_term<DOUBLED>(acc[4 * j + 2 * h + 1]), wt[2 * j + 1],
-                   a);
-        }
-      }
-      v[2 * q + h] = N < 16 ? a + b : a;
-    }
+  if (CHECK_SCALE_SIGN && __any_sync(0xffffffffu, key_scale < 0.f)) {
+    // Adjacent lanes own the two key rows for these accumulators.
+    const float scale0 = __shfl_sync(0xffffffffu, key_scale, 0, 2);
+    const float scale1 = __shfl_sync(0xffffffffu, key_scale, 1, 2);
+    indexer_head_sums<HEADS, BQ, DOUBLED, true>(acc, wt, scale0, scale1, v);
+  } else {
+    indexer_head_sums<HEADS, BQ, DOUBLED, false>(acc, wt, 0.f, 0.f, v);
   }
   // Reduce-scatter over lane bits 1 then 0: sum i stays with lane i % 4, in
   // slot i / 4.
@@ -86,12 +108,11 @@ __device__ __forceinline__ void indexer_tile_epilogue_impl(
   // locates the first, each next one is two queries further. A row past
   // seq_len gets an address but no store.
   float* out = logits + off + k0;
-  const int row = row0 + 8 * (lane4 % 2);
-  const float key_scale = DOUBLED ? key_scale_in : scale[row];
 #pragma unroll
   for (int m = 0; m < N / 4; ++m) {
-    float v_out = DOUBLED ? __fmul_rn(__fmul_rn(own[m], 0.5f), key_scale)
-                          : own[m] * key_scale;
+    const float magnitude = CHECK_SCALE_SIGN ? fabsf(key_scale) : key_scale;
+    float v_out = DOUBLED ? __fmul_rn(__fmul_rn(own[m], 0.5f), magnitude)
+                          : own[m] * magnitude;
     float* p = out + 2LL * m * seq_len_kv;
     if (interior) {
       *p = v_out;
@@ -108,22 +129,22 @@ __device__ __forceinline__ void indexer_tile_epilogue_impl(
   }
 }
 
-template <int HEADS, int BQ, bool CLEAN>
+template <int HEADS, int BQ, bool CLEAN, bool CHECK_SCALE_SIGN>
 __device__ __forceinline__ void indexer_tile_epilogue(
     const float* acc, const float* wt, const float* scale, float* logits,
     long long off, int s0, int k0, int seq_len, int seq_len_kv, const int* win,
     bool interior, int t) {
-  indexer_tile_epilogue_impl<HEADS, BQ, CLEAN, false>(
+  indexer_tile_epilogue_impl<HEADS, BQ, CLEAN, false, CHECK_SCALE_SIGN>(
       acc, wt, scale, 0.f, logits, off, s0, k0, seq_len, seq_len_kv, win,
       interior, t);
 }
 
-template <int HEADS, int BQ, bool CLEAN>
+template <int HEADS, int BQ, bool CLEAN, bool CHECK_SCALE_SIGN>
 __device__ __forceinline__ void indexer_tile_epilogue_doubled(
     const float* acc, const float* wt, float key_scale, float* logits,
     long long off, int s0, int k0, int seq_len, int seq_len_kv, const int* win,
     bool interior, int t) {
-  indexer_tile_epilogue_impl<HEADS, BQ, CLEAN, true>(
+  indexer_tile_epilogue_impl<HEADS, BQ, CLEAN, true, CHECK_SCALE_SIGN>(
       acc, wt, nullptr, key_scale, logits, off, s0, k0, seq_len, seq_len_kv,
       win, interior, t);
 }

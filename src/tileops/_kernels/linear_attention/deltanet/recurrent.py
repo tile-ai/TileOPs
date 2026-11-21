@@ -25,6 +25,7 @@ from tileops._kernels.linear_attention.call_spec import (
 )
 
 __all__ = [
+    "DeltaNetDecodeColumnKernel",
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeKernel",
     "DeltaNetDecodeWarpKernel",
@@ -36,6 +37,106 @@ def _k_tile_refusal(dim_k: int, k_tile: int) -> str | None:
     if dim_k % k_tile != 0:
         return f"requires dim_k a multiple of {k_tile}, got {dim_k}"
     return None
+
+
+@target_cache(maxsize=32)
+@tilelang.jit(out_idx=[5, 6])
+def _decode_columns(heads: int):
+    """Four warps share a 16-column stripe of one 128-row BF16 decode state."""
+    width, columns = 128, 16
+
+    @T.prim_func
+    def main(
+        q: T.Tensor((1, heads, width), "bfloat16"),
+        k: T.Tensor((1, heads, width), "bfloat16"),
+        v: T.Tensor((1, heads, width), "bfloat16"),
+        beta: T.Tensor((1, heads), "bfloat16"),
+        state: T.Tensor((1, heads, width, width), "bfloat16"),
+        out: T.Tensor((1, heads, width), "bfloat16"),
+        new_state: T.Tensor((1, heads, width, width), "bfloat16"),
+    ):
+        with T.Kernel(width // columns, heads, threads=128) as (tile, head):
+            stored = T.alloc_fragment((4, 32, columns), "bfloat16")
+            keys = T.alloc_fragment((4, 32), "bfloat16")
+            queries = T.alloc_fragment((4, 32), "bfloat16")
+            products = T.alloc_fragment((4, 32, columns), "float32")
+            partial = T.alloc_fragment((4, columns), "float32")
+            recall = T.alloc_shared((4, columns), "float32")
+            projection = T.alloc_shared((4, columns), "float32")
+            # Each lane holds eight rows of two adjacent columns, so the state is
+            # read once for both matvecs and the update uses packed BF16 stores.
+            layout = T.Fragment(
+                (4, 32, columns),
+                forward_thread_fn=lambda w, r, c: w * 32 + (r // 8) * 8 + c // 2,
+                forward_index_fn=lambda w, r, c: (r % 8) * 2 + c % 2,
+            )
+            vector_layout = T.Fragment(
+                (4, 32),
+                replicate=8,
+                forward_thread_fn=lambda w, r, replica: w * 32 + (r // 8) * 8 + replica,
+                forward_index_fn=lambda w, r: r % 8,
+            )
+            T.annotate_layout(
+                {stored: layout, products: layout, keys: vector_layout, queries: vector_layout}
+            )
+            for w, r in T.Parallel(4, 32):
+                keys[w, r] = k[0, head, w * 32 + r]
+                queries[w, r] = q[0, head, w * 32 + r]
+            for w, r, c in T.Parallel(4, 32, columns):
+                stored[w, r, c] = state[0, head, w * 32 + r, tile * columns + c]
+                products[w, r, c] = T.cast(stored[w, r, c], "float32") * T.cast(
+                    keys[w, r], "float32"
+                )
+            T.reduce_sum(products, partial, dim=1)
+            T.copy(partial, recall)
+            for w, r, c in T.Parallel(4, 32, columns):
+                total = (recall[0, c] + recall[1, c]) + (recall[2, c] + recall[3, c])
+                delta = T.cast(beta[0, head], "float32") * (
+                    T.cast(v[0, head, tile * columns + c], "float32") - total
+                )
+                updated = T.cast(stored[w, r, c], "float32") + T.cast(keys[w, r], "float32") * delta
+                new_state[0, head, w * 32 + r, tile * columns + c] = T.cast(updated, "bfloat16")
+                products[w, r, c] = updated * T.cast(queries[w, r], "float32")
+            T.reduce_sum(products, partial, dim=1)
+            T.copy(partial, projection)
+            for c in T.Parallel(columns):
+                out[0, head, tile * columns + c] = T.cast(
+                    (projection[0, c] + projection[1, c]) + (projection[2, c] + projection[3, c]),
+                    "bfloat16",
+                )
+
+    return main
+
+
+class DeltaNetDecodeColumnKernel(Kernel, DeltaNetDecodeFwdInterface):
+    """Use a four-warp column reduction for single-request BF16 Hopper decode."""
+
+    supported_archs = [90]
+    preferred_over = frozenset({"deltanet_decode_warp"})
+
+    @classmethod
+    def refusal(cls, call: DeltaNetDecodeCall) -> str | None:
+        if (
+            call.batch != 1
+            or call.dtype != torch.bfloat16
+            or (call.dim_k, call.dim_v) != (128, 128)
+        ):
+            return "requires one BF16 decode request with 128-dimensional keys and values"
+        return head_count_refusal(call.heads)
+
+    @classmethod
+    def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
+        return call, lambda: cls(call)
+
+    def __init__(self, call: DeltaNetDecodeCall):
+        super().__init__(device_index=call.device.index if call.device is not None else None)
+        self.heads = call.heads
+
+    def _compile(self, cfg):
+        return _decode_columns(self.heads)
+
+    def forward(self, q, k, v, beta, state):
+        return self.program(self._compile)(*(t.contiguous() for t in (q, k, v, beta, state)))
 
 
 @target_cache(maxsize=32)

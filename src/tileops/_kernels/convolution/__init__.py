@@ -9,6 +9,7 @@ from tileops._kernels.convolution.call_spec import (
     Conv3dFwdInterface,
 )
 from tileops._kernels.convolution.conv1d import (
+    Conv1dDirectKernel,
     Conv1dKernel,
     Conv1dPointwiseKernel,
     Conv1dUnitStrideKernel,
@@ -20,12 +21,14 @@ from tileops._kernels.convolution.conv2d import (
     Conv2dKernel,
     Conv2dSymmetricKernel,
     DepthwiseConv2dKernel,
+    DepthwiseConv2dWarpKernel,
     GroupConv2dKernel,
 )
 from tileops._kernels.convolution.conv3d import Conv3dKernel, Conv3dNdhwcKernel, GroupConv3dKernel
 
 __all__ = [
     "Conv1dCall",
+    "Conv1dDirectKernel",
     "Conv1dFwdInterface",
     "Conv1dKernel",
     "Conv1dPointwiseKernel",
@@ -41,6 +44,7 @@ __all__ = [
     "Conv3dNdhwcKernel",
     "DepthwiseConv1dKernel",
     "DepthwiseConv2dKernel",
+    "DepthwiseConv2dWarpKernel",
     "GroupConv1dKernel",
     "GroupConv2dKernel",
     "GroupConv3dKernel",

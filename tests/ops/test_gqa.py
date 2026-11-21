@@ -8,6 +8,7 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
+    GQADecodeNarrowGroupKernel,
     GQADecodeSplitKernel,
     GQADecodeWSKernel,
     GQADensePersistentWSKernel,
@@ -408,6 +409,18 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
 @pytest.mark.parametrize(
     "batch, head_shape, dim, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
     [
+        pytest.param(
+            1,
+            (24, 3),
+            128,
+            torch.float16,
+            (1024,),
+            None,
+            None,
+            GQADecodeNarrowGroupKernel,
+            marks=pytest.mark.smoke,
+            id="narrow-group-fp16",
+        ),
         # Every 64-key tile of both KV heads has its own CTA.
         pytest.param(
             1,

@@ -10,6 +10,7 @@ from tileops._kernels.attention.paged_cache_gather import (
     PagedKVCacheGatherCall,
     PagedKVCacheGatherFwdInterface,
     PagedKVCacheGatherKernel,
+    PagedKVCacheGatherShortKernel,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops.op_base import Op
@@ -31,7 +32,8 @@ class PagedKVCacheGatherFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "paged_cache_gather_kernel": PagedKVCacheGatherKernel
+        "paged_cache_gather_kernel": PagedKVCacheGatherKernel,
+        "paged_cache_gather_short_kernel": PagedKVCacheGatherShortKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "paged_cache_gather": PagedKVCacheGatherFwdInterface
@@ -93,6 +95,7 @@ class PagedKVCacheGatherFwdOp(Op):
             "paged_cache_gather",
             lambda: PagedKVCacheGatherCall(
                 batch=block_table.shape[0],
+                total_tokens=out.shape[0],
                 num_pages=kv_cache.shape[0],
                 page_size=kv_cache.shape[1],
                 table_width=block_table.shape[1],

@@ -1506,6 +1506,30 @@ _MAX_POOL2D_PARAMS = [
 ]
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "height,width",
+    [(33, 33), (33, 63), (47, 63)],
+    ids=["half-warp", "small-fallback", "warp-window"],
+)
+def test_warp_pool_odd_rectangle_and_nan(height, width):
+    from tileops._kernels.pool import MaxPool2dKernel, MaxPool2dWarpKernel
+
+    x = torch.randn(2, 3, height, width, device=run_device(), dtype=torch.bfloat16)
+    x[:, :, -1, -1] = float("nan")
+    op = MaxPool2dFwdOp(3, stride=2, ceil_mode=True, target=BUILTIN)
+    expected = F.max_pool2d(x, 3, stride=2, ceil_mode=True)
+    torch.testing.assert_close(op(x), expected, rtol=0, atol=0, equal_nan=True)
+    (kernel,) = op.iter_kernels()
+    if (height, width) == (33, 63):
+        assert type(kernel) is MaxPool2dKernel
+    else:
+        assert type(kernel) is MaxPool2dWarpKernel
+        assert kernel.half_warp == (height == 33)
+
+
 class MaxPool2dFixture(FixtureBase):
     PARAMS = [
         (

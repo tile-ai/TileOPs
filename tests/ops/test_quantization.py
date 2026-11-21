@@ -399,8 +399,8 @@ def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
         pytest.param(
             64, 1024, 128, _int4_special_groups, id="special-groups", marks=pytest.mark.smoke
         ),
-        # Two lanes to a group, and a partial last CTA.
-        pytest.param(37, 1024, 64, lambda w: w, id="group-64", marks=pytest.mark.full),
+        # A partial last CTA on the group-size-64 path.
+        pytest.param(37, 1024, 64, lambda w: w, id="group-64", marks=pytest.mark.smoke),
         # One CTA of two warps to a row, whose 68 chunks leave most slots of the second empty.
         pytest.param(
             19,
@@ -425,6 +425,22 @@ def test_int4_quant_per_group_edge_inputs(rows, cols, group_size, make) -> None:
     )
     (w,) = test.gen_inputs()
     test.check(INT4QuantPerGroupFwdOp(group_size), make(w))
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+def test_int4_group64_packed_words_preserve_rounding_and_nibble_order() -> None:
+    from tileops.backend import BUILTIN
+
+    test = type("QuantizeTest", (INT4QuantPerGroupWorkload, TestBase), {})(
+        512, 4096, torch.float16, 64
+    )
+    (w,) = test.gen_inputs()
+    op = INT4QuantPerGroupFwdOp(64, target=BUILTIN)
+    test.check(op, _int4_special_groups(w))
+    (kernel,) = op.iter_kernels()
+    assert kernel.pack_intrinsic
 
 
 @pytest.mark.parametrize(

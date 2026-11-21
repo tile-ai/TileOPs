@@ -9,6 +9,7 @@ from tileops._kernels.convolution._common import (
     conv_autotune_configs,
     grid_refusal,
     launch,
+    operand_refusal,
 )
 from tileops._kernels.convolution.call_spec import Conv2dCall, Conv2dFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -18,6 +19,7 @@ __all__ = [
     "Conv2dKernel",
     "Conv2dSymmetricKernel",
     "DepthwiseConv2dKernel",
+    "DepthwiseConv2dWarpKernel",
     "GroupConv2dKernel",
 ]
 
@@ -832,6 +834,31 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
     @property
     def default_config(self) -> dict:
         block_m, block_n, block_k = min(self.block_m_candidates), 256, 32
+        if self.build_target.arch == 90 and self.dtype in (torch.float16, torch.bfloat16):
+            if self.c_out <= 64:
+                return {
+                    "block_m": block_m,
+                    "block_n": 64,
+                    "block_k": 32,
+                    "num_stages": 3,
+                    "threads": 128,
+                    "enable_rasterization": True,
+                }
+            if (
+                self.c_out >= 256
+                and self.c_in >= 256
+                and self.out_h * self.out_w >= 8192
+                and 128 in self.block_m_candidates
+                and self.build_target.smem_budget >= 147456
+            ):
+                return {
+                    "block_m": 128,
+                    "block_n": 256,
+                    "block_k": 64,
+                    "num_stages": 3,
+                    "threads": 256,
+                    "enable_rasterization": False,
+                }
         # The output tile reuses the pipeline's shared memory, so the stages are all of
         # it: two where three do not fit (float32 on SM89's 99 KB).
         stage_bytes = (block_m + block_n) * block_k * self.dtype.itemsize
@@ -1245,7 +1272,9 @@ class DepthwiseConv2dKernel(GroupConv2dKernel):
             "block_m": 1,
             "block_n": 128,
             "threads": 128,
-            "enable_rasterization": True,
+            "enable_rasterization": not (
+                self.build_target.arch == 90 and self.out_h * self.out_w >= 4096
+            ),
         }
 
     @property
@@ -1253,6 +1282,133 @@ class DepthwiseConv2dKernel(GroupConv2dKernel):
         # One tile shape, since there is no GEMM to tile. The swizzle is still a
         # choice, so both ways are searched.
         return [{**self.default_config, "enable_rasterization": value} for value in (False, True)]
+
+
+@target_cache(maxsize=32)
+def _conv2d_depthwise_warp_kernel(
+    n: int, channels: int, h: int, w: int, dtype: str, has_bias: bool
+):
+    @tilelang.jit(out_idx=[2])
+    def build():
+        @T.macro
+        def convolve(x, weight, y, bias):
+            with T.Kernel(h // 8, channels, n, threads=128) as (band, channel, image):
+                thread = T.get_thread_binding()
+                column = thread % 32 * 2
+                row = band * 8 + thread // 32 * 2
+                even = T.alloc_local((4,), "float32")
+                odd = T.alloc_local((4,), "float32")
+                left = T.alloc_local((4,), "float32")
+                right = T.alloc_local((4,), "float32")
+                values = T.alloc_local((2, 2), "float32")
+                out = T.alloc_local((2, 2), dtype)
+                T.clear(values)
+
+                # Two output rows reuse four input rows. Adjacent lanes exchange the
+                # outer columns of their two-pixel strips.
+                for tap in T.unroll(4):
+                    ih = row + tap - 1
+                    if column < w and 0 <= ih < h:
+                        even[tap] = T.cast(x[image, channel, ih, column], "float32")
+                        odd[tap] = T.cast(x[image, channel, ih, column + 1], "float32")
+                    else:
+                        even[tap] = 0.0
+                        odd[tap] = 0.0
+                    left[tap] = T.shfl_up(odd[tap], 1)
+                    right[tap] = T.shfl_down(even[tap], 1)
+
+                for tap in T.unroll(3):
+                    wl = T.cast(weight[channel, 0, tap, 0], "float32")
+                    wc = T.cast(weight[channel, 0, tap, 1], "float32")
+                    wr = T.cast(weight[channel, 0, tap, 2], "float32")
+                    for j in T.unroll(2):
+                        i = j + tap
+                        if 0 <= row + i - 1 < h:
+                            values[j, 0] += T.if_then_else(column > 0, left[i] * wl, 0.0)
+                            values[j, 0] += even[i] * wc
+                            values[j, 0] += odd[i] * wr
+                            values[j, 1] += even[i] * wl
+                            values[j, 1] += odd[i] * wc
+                            values[j, 1] += T.if_then_else(column + 2 < w, right[i] * wr, 0.0)
+
+                if column < w:
+                    for j in T.unroll(2):
+                        for k in T.unroll(2):
+                            if has_bias:
+                                out[j, k] = T.cast(
+                                    values[j, k] + T.cast(bias[channel], "float32"), dtype
+                                )
+                            else:
+                                out[j, k] = T.cast(values[j, k], dtype)
+                        for k in T.vectorized(2):
+                            y[image, channel, row + j, column + k] = out[j, k]
+
+        if has_bias:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor[(n, channels, h, w), dtype],
+                weight: T.Tensor[(channels, 1, 3, 3), dtype],
+                y: T.Tensor[(n, channels, h, w), dtype],
+                bias: T.Tensor[(channels,), dtype],
+            ):
+                convolve(x, weight, y, bias)
+
+        else:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor[(n, channels, h, w), dtype],
+                weight: T.Tensor[(channels, 1, 3, 3), dtype],
+                y: T.Tensor[(n, channels, h, w), dtype],
+            ):
+                convolve(x, weight, y, None)
+
+        return main
+
+    return build
+
+
+class DepthwiseConv2dWarpKernel(Kernel, Conv2dFwdInterface):
+    """Reuse overlapping 3-by-3 depthwise windows across registers and warp lanes."""
+
+    supported_archs = [90]
+    preferred_over = frozenset({"depthwise_conv2d"})
+
+    @classmethod
+    def refusal(cls, call: Conv2dCall) -> str | None:
+        if not (
+            call.c_in == call.c_out == call.groups > 1
+            and call.kernel_h == call.kernel_w == 3
+            and call.stride == call.dilation == (1, 1)
+            and call.padding == (1, 1)
+            and call.padding_end in (None, (1, 1))
+        ):
+            return "requires a depthwise 3-by-3 window with one pixel of symmetric padding"
+        if not (call.h % 8 == 0 and 16 <= call.w <= 64 and call.w % 2 == 0):
+            return "requires full eight-row bands and an even width from 16 to 64"
+        if call.dtype not in (torch.float16, torch.bfloat16):
+            return "requires fp16 or bf16"
+        return (
+            super().refusal(call)
+            or grid_refusal(y=call.c_out, z=call.n)
+            or operand_refusal(call.n * call.c_in * call.h * call.w)
+        )
+
+    @classmethod
+    def entry_for(cls, call: Conv2dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = (call.n, call.c_in, call.h, call.w, call.dtype, call.has_bias)
+        return (*args, index), lambda: cls(*args, device_index=index)
+
+    def __init__(self, n, channels, h, w, dtype, has_bias, *, device_index=None):
+        super().__init__(device_index=device_index)
+        self.dtype = dtype
+        self.kernel = _conv2d_depthwise_warp_kernel(n, channels, h, w, self.dtype_str, has_bias)
+        self.init_config()
+
+    def forward(self, x, weight, bias=None):
+        return launch(self, x, weight, bias=bias)
 
 
 class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):

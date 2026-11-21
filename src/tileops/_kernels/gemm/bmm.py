@@ -70,6 +70,41 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
         num_stages: int = 3,
         threads: int = 128,
     ) -> Callable:
+        if (
+            (block_m, block_n, block_k, threads) == (16, 64, 64, 64)
+            and k == 128
+            and m % 16 == 0
+            and n % 64 == 0
+        ):
+
+            @T.prim_func
+            def two_panels(
+                a: T.Tensor((batch, m, k), dtype),
+                b: T.Tensor((batch, k, n), dtype),
+                c: T.Tensor((batch, m, n), dtype),
+            ):
+                with T.Kernel(n // block_n, m // block_m, batch, threads=threads) as (bx, by, bz):
+                    a0 = T.alloc_shared((block_m, block_k), dtype)
+                    b0 = T.alloc_shared((block_k, block_n), dtype)
+                    a1 = T.alloc_shared((block_m, block_k), dtype)
+                    b1 = T.alloc_shared((block_k, block_n), dtype)
+                    acc = T.alloc_fragment((block_m, block_n), "float32")
+                    T.async_copy(a[bz, by * block_m, 0], a0)
+                    T.async_copy(b[bz, 0, bx * block_n], b0)
+                    T.async_copy(a[bz, by * block_m, block_k], a1)
+                    T.async_copy(b[bz, block_k, bx * block_n], b1)
+                    T.clear(acc)
+                    # Issue both panels before computing the first one.
+                    T.ptx_wait_group(2)
+                    T.sync_threads()
+                    T.gemm(a0, b0, acc)
+                    T.ptx_wait_group(0)
+                    T.sync_threads()
+                    T.gemm(a1, b1, acc)
+                    T.copy(acc, c[bz, by * block_m, bx * block_n])
+
+            return two_panels
+
         @T.prim_func
         def _bmm_main(
             a: T.Tensor((batch, m, k), dtype),
@@ -704,6 +739,13 @@ class BMMKernel(Kernel, BMMFwdInterface):
 
     @property
     def default_config(self) -> dict:
+        if (
+            self.build_target.arch == 90
+            and self.dtype in (torch.float16, torch.bfloat16)
+            and (self.m, self.n, self.k) == (128, 128, 128)
+            and self.batch <= 8
+        ):
+            return {"block_m": 16, "block_n": 64, "block_k": 64, "num_stages": 2, "threads": 64}
         # 64x64x64, stages=2, one warpgroup: the tile the manifest shapes share.
         block_k = 64 if self.k % 64 == 0 else (32 if self.k % 32 == 0 else 16)
         return {
@@ -726,6 +768,8 @@ class BMMKernel(Kernel, BMMFwdInterface):
             for bk in block_k_options
             for ns in [2, 3, 4]
         ]
+        if self.default_config["threads"] == 64:
+            configs.append(self.default_config)
         return [c for c in configs if self.k % c["block_k"] == 0]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

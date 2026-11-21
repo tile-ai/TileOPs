@@ -93,10 +93,9 @@ def test_grouped_gemm(
     dtype: torch.dtype,
     trans_a: bool,
     trans_b: bool,
-    monkeypatch: pytest.MonkeyPatch,
+    fp32_gemm_reduction,
 ) -> None:
     # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     test = GroupedGEMMTest(batch_sum, batch_count, N, K, dtype, trans_a, trans_b)
     test.check(GroupedGEMMFwdOp(trans_a=trans_a, trans_b=trans_b), *test.gen_inputs())
 
@@ -111,14 +110,13 @@ def test_grouped_gemm(
     ],
 )
 def test_k_grouped_gemm_with_ragged_groups(
-    dtype: torch.dtype, trans_b: bool, monkeypatch: pytest.MonkeyPatch
+    dtype: torch.dtype, trans_b: bool, fp32_gemm_reduction
 ) -> None:
     """Groups split K: ragged group lengths, an empty group and output edges off the tile grid.
 
     A group whose length is not a multiple of 8 starts mid-vector, and the empty group's
     output block is zero.
     """
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     sizes = [100, 0, 300, 64, 7, 1]
     test = GroupedGEMMTest(sum(sizes), len(sizes), 200, 136, dtype, True, trans_b)
     test.batch_sizes_list = sizes

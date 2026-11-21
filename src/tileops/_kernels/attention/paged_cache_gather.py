@@ -11,7 +11,12 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 
-__all__ = ["PagedKVCacheGatherCall", "PagedKVCacheGatherFwdInterface", "PagedKVCacheGatherKernel"]
+__all__ = [
+    "PagedKVCacheGatherCall",
+    "PagedKVCacheGatherFwdInterface",
+    "PagedKVCacheGatherKernel",
+    "PagedKVCacheGatherShortKernel",
+]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -26,6 +31,7 @@ class PagedKVCacheGatherCall(CallSpec):
     dtype: torch.dtype | None = None
     out_dtype: torch.dtype | None = None
     has_starts: bool = False
+    total_tokens: int = 0
 
 
 class PagedKVCacheGatherFwdInterface(KernelInterface):
@@ -48,7 +54,7 @@ class PagedKVCacheGatherFwdInterface(KernelInterface):
 
 
 @target_cache(maxsize=32)
-def _paged_cache_gather_kernel(page_size, row_width, dtype, out_dtype, has_starts):
+def _paged_cache_gather_kernel(page_size, row_width, dtype, out_dtype, has_starts, small_batch):
     quantized = dtype == "float8_e4m3fn"
 
     @tilelang.jit(out_idx=[])
@@ -79,13 +85,17 @@ def _paged_cache_gather_kernel(page_size, row_width, dtype, out_dtype, has_start
                     row = bx * block_rows + r
                     if row < total:
                         lo = T.alloc_var("int32", init=0)
-                        hi = T.alloc_var("int32", init=batch)
-                        while lo < hi:
-                            mid = (lo + hi) // 2
-                            if Cu[mid + 1] <= row:
-                                lo = mid + 1
-                            else:
-                                hi = mid
+                        if small_batch:
+                            for b in T.unroll(1, small_batch):
+                                lo += T.cast(Cu[b] <= row, "int32")
+                        else:
+                            hi = T.alloc_var("int32", init=batch)
+                            while lo < hi:
+                                mid = (lo + hi) // 2
+                                if Cu[mid + 1] <= row:
+                                    lo = mid + 1
+                                else:
+                                    hi = mid
                         pos = T.cast(row - Cu[lo], "int64") + (Starts[lo] if has_starts else 0)
                         slots[r] = (
                             T.cast(Table[lo, pos // page_size], "int64") * page_size
@@ -106,8 +116,88 @@ def _paged_cache_gather_kernel(page_size, row_width, dtype, out_dtype, has_start
     return _func
 
 
+@target_cache(maxsize=32)
+def _paged_cache_gather_short_kernel(page_size: int, row_width: int, dtype: str, single_page: bool):
+    threads = ((row_width + 255) // 256) * 32
+    index_dtype = "int32"
+
+    @tilelang.jit
+    def build():
+        total = T.dynamic("total")
+        num_pages = T.dynamic("num_pages", "int64")
+        table_width = T.dynamic("table_width")
+
+        @T.prim_func
+        def gather(
+            dst: T.Tensor[(total, row_width), dtype],
+            cache: T.Tensor[(num_pages * page_size, row_width), dtype],
+            table: T.Tensor[(2, table_width), index_dtype],
+            offsets: T.Tensor[(3,), index_dtype],
+        ):
+            with T.Kernel(total, threads=threads) as row:
+                # With two requests, the first packed boundary identifies the owning row.
+                # For a single page of packed rows, every request fits on its first page.
+                boundary = offsets[1]
+                request = T.cast(row >= boundary, "int32")
+                start = T.if_then_else(row >= boundary, boundary, 0)
+                position = row - start
+                page = 0 if single_page else position // page_size
+                offset = position if single_page else position % page_size
+                slot = T.cast(table[request, page], "int64") * page_size + offset
+                lane = T.get_thread_binding()
+                if lane < row_width // 8:
+                    for i in T.vectorized(8):
+                        column = lane * 8 + i
+                        dst[row, column] = cache[slot, column]
+
+        return gather
+
+    return build
+
+
+class PagedKVCacheGatherShortKernel(Kernel, PagedKVCacheGatherFwdInterface):
+    """Gather two short requests by assigning one block and only one page lookup per row."""
+
+    supported_archs = [90]
+
+    @classmethod
+    def refusal(cls, call: PagedKVCacheGatherCall) -> str | None:
+        if call.batch != 2 or call.has_starts or not (0 < call.total_tokens <= 2 * call.page_size):
+            return "requires two zero-start requests packing at most two pages of rows"
+        if call.dtype not in (torch.float16, torch.bfloat16) or call.out_dtype != call.dtype:
+            return "serves same-dtype fp16 or bf16 copies"
+        if not (128 <= call.row_width <= 1024 and call.row_width % 8 == 0):
+            return "requires a row width of 128–1024 divisible by eight elements"
+        return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: PagedKVCacheGatherCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = (call.page_size, call.row_width, call.dtype, call.total_tokens <= call.page_size)
+        return (*args, index), lambda: cls(*args, device_index=index)
+
+    def __init__(self, page_size, row_width, dtype, single_page, *, device_index=None):
+        super().__init__(device_index=device_index)
+        self.row_width = row_width
+        self.dtype = dtype
+        self.kernel = _paged_cache_gather_short_kernel(
+            page_size, row_width, self.dtype_str, single_page
+        )
+        self.init_config()
+
+    def forward(self, dst, cache, block_table, cu_seq_lens, seq_starts=None, scale=None) -> None:
+        self.program(lambda config: self.kernel(**config))(
+            dst.view(dst.shape[0], self.row_width),
+            cache.view(cache.shape[0] * cache.shape[1], self.row_width),
+            block_table,
+            cu_seq_lens,
+        )
+
+
 class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
     """One gather and optional dequantization stage, tiled over packed output rows."""
+
+    general = True
 
     @classmethod
     def entry_for(cls, call: PagedKVCacheGatherCall) -> Entry:
@@ -117,6 +207,7 @@ class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
             dtype=call.dtype,
             out_dtype=call.out_dtype,
             has_starts=call.has_starts,
+            small_batch=call.batch if call.arch == 90 and 2 <= call.batch <= 8 else 0,
         )
         index = call.device.index if call.device is not None else None
         return (*args.values(), index), lambda: cls(**args, device_index=index)
@@ -130,16 +221,19 @@ class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
         has_starts=False,
         config=None,
         device_index=None,
+        small_batch=0,
     ):
         super().__init__(device_index=device_index)
         self.page_size, self.row_width = page_size, row_width
         self.dtype, self.out_dtype, self.has_starts = dtype, out_dtype, has_starts
+        self.small_batch = small_batch
         self.kernel = _paged_cache_gather_kernel(
             page_size,
             row_width,
             self.dtype_str,
             self.dtype_to_str(out_dtype),
             has_starts,
+            small_batch,
         )
         self.init_config(config)
 
@@ -147,6 +241,8 @@ class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
     def default_config(self):
         # Narrow column tiles avoid mostly padded CTAs on 576-wide MLA rows.
         # The same tile sustains the 16-bit copies at width 1024.
+        if self.small_batch == 2 and self.row_width >= 1024:
+            return {"block_rows": 4, "block_cols": 256, "threads": 128}
         return {"block_rows": 16, "block_cols": 128, "threads": 128}
 
     @property
@@ -171,7 +267,7 @@ class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
             device = torch.device("cuda", self.device_index)
             # Tune once on 131072 packed rows; runtime batch/pool/table extents do not
             # change the compiled program or trigger a new tuning problem.
-            batch, length = 8, 16384
+            batch, length = self.small_batch or 8, 16384
             table_width = (length + int(self.has_starts) + self.page_size - 1) // self.page_size
             num_pages = batch * table_width
             cache = torch.zeros(

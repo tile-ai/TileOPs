@@ -312,6 +312,78 @@ def _gemm_fp8_stream_kernel(
     return _gemm_fp8_stream_func
 
 
+@target_cache(maxsize=8)
+@tilelang.jit(out_idx=[4])
+def _short_block_scaled_gemm(n, out_dtype):
+    """Overlap four K panels with one consumer warpgroup per output tile."""
+    columns, threads = 64, 128
+
+    @T.prim_func
+    def kernel(
+        a: T.Tensor((8, 512), "float8_e4m3fn"),
+        b: T.Tensor((n, 512), "float8_e4m3fn"),
+        a_scale: T.Tensor((8, 4), "float32"),
+        b_scale: T.Tensor((n // 128, 4), "float32"),
+        output: T.Tensor((8, n), out_dtype),
+    ):
+        with T.Kernel(n // columns, threads=threads) as bx:
+            a0 = T.alloc_shared((8, 128), "float8_e4m3fn")
+            b0 = T.alloc_shared((columns, 128), "float8_e4m3fn")
+            a1 = T.alloc_shared((8, 128), "float8_e4m3fn")
+            b1 = T.alloc_shared((columns, 128), "float8_e4m3fn")
+            a2 = T.alloc_shared((8, 128), "float8_e4m3fn")
+            b2 = T.alloc_shared((columns, 128), "float8_e4m3fn")
+            a3 = T.alloc_shared((8, 128), "float8_e4m3fn")
+            b3 = T.alloc_shared((columns, 128), "float8_e4m3fn")
+            total = T.alloc_fragment((columns, 8), "float32")
+            dot0 = T.alloc_fragment((columns, 8), "float32")
+            dot1 = T.alloc_fragment((columns, 8), "float32")
+            dot2 = T.alloc_fragment((columns, 8), "float32")
+            dot3 = T.alloc_fragment((columns, 8), "float32")
+            T.clear(total)
+            T.async_copy(a[0:8, 0:128], a0)
+            T.async_copy(b[bx * columns, 0], b0)
+            T.async_copy(a[0:8, 128:256], a1)
+            T.async_copy(b[bx * columns, 128], b1)
+            T.async_copy(a[0:8, 256:384], a2)
+            T.async_copy(b[bx * columns, 256], b2)
+            T.async_copy(a[0:8, 384:512], a3)
+            T.async_copy(b[bx * columns, 384], b3)
+            T.ptx_wait_group(6)
+            T.sync_threads()
+            T.wgmma_gemm(b0, a0, dot0, transpose_B=True, clear_accum=True)
+            T.ptx_wait_group(4)
+            T.sync_threads()
+            T.wgmma_gemm(b1, a1, dot1, transpose_B=True, clear_accum=True)
+            T.ptx_wait_group(2)
+            T.sync_threads()
+            T.wgmma_gemm(b2, a2, dot2, transpose_B=True, clear_accum=True)
+            T.ptx_wait_group(0)
+            T.sync_threads()
+            T.wgmma_gemm(b3, a3, dot3, transpose_B=True, clear_accum=True)
+            T.wait_wgmma(0)
+            for col, row in T.Parallel(columns, 8):
+                total[col, row] += dot0[col, row] * (
+                    a_scale[row, 0] * b_scale[bx * columns // 128, 0]
+                )
+            for col, row in T.Parallel(columns, 8):
+                total[col, row] += dot1[col, row] * (
+                    a_scale[row, 1] * b_scale[bx * columns // 128, 1]
+                )
+            for col, row in T.Parallel(columns, 8):
+                total[col, row] += dot2[col, row] * (
+                    a_scale[row, 2] * b_scale[bx * columns // 128, 2]
+                )
+            for col, row in T.Parallel(columns, 8):
+                total[col, row] += dot3[col, row] * (
+                    a_scale[row, 3] * b_scale[bx * columns // 128, 3]
+                )
+            for col, row in T.Parallel(columns, 8):
+                output[row, bx * columns + col] = total[col, row]
+
+    return kernel
+
+
 class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
     """FP8 NT GEMM for ``m <= 16``, per-tensor or 1D2D scales, computed as ``(b @ a^T)^T``.
 
@@ -435,8 +507,22 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
             raise ValueError(f"{type(self).__name__} has no bias epilogue")
         return self.program(self._compile)(a, b, scale_a, scale_b)
 
+    def _uses_short_panels(self) -> bool:
+        return (
+            self.block_scaled
+            and self.out_dtype == torch.bfloat16
+            and (self.m, self.n, self.k) == (8, 4096, 512)
+        )
+
+    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
+        # The short program has a fixed consumer warpgroup and no streaming ring.
+        if not self._uses_short_panels():
+            super().autotune(warmup=warmup, rep=rep)
+
     def _compile(self, cfg: dict) -> Callable:
         """The stream program, with its split-K reduce where ``cfg`` splits K."""
+        if self._uses_short_panels():
+            return _short_block_scaled_gemm(self.n, self.dtype_to_str(self.out_dtype))
         split_k = cfg["split_k"]
         out_dtype = self.dtype_to_str(self.out_dtype)
         kernel = _gemm_fp8_stream_kernel(

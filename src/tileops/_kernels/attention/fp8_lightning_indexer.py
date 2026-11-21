@@ -31,6 +31,7 @@ class FP8LightningIndexerCall(CallSpec):
     seq_len_kv: int = 0
     kv_group: int = 0
     clean_logits: bool = True
+    check_scale_sign: bool = True
 
 
 class FP8LightningIndexerFwdInterface(KernelInterface):
@@ -51,7 +52,7 @@ class FP8LightningIndexerFwdInterface(KernelInterface):
         """Score each key inside its query's window; nothing is written in place.
 
         The logit of query ``s`` and key ``t`` of group ``g`` sums ``Weights[s, h]`` times
-        ``relu(IndexQ[s, h] . IndexK[t, g]) * IndexKScale[t, g]`` over the heads of group
+        ``relu((IndexQ[s, h] . IndexK[t, g]) * IndexKScale[t, g])`` over the heads of group
         ``g``. Where ``call.clean_logits``, a key outside ``[CuSeqLenKS[s], CuSeqLenKE[s])``
         is set to negative infinity; otherwise its slot holds whatever the scan left.
         Nothing is written in place, and the output aliases no input.
@@ -77,7 +78,7 @@ class FP8LightningIndexerFwdInterface(KernelInterface):
 
 @target_cache(maxsize=32)
 def _fp8_lightning_indexer_kernel(
-    batch, seq_len, heads, index_dim, seq_len_kv, kv_group, min_pipelined_block_q
+    batch, seq_len, heads, index_dim, seq_len_kv, kv_group, min_pipelined_block_q, check_scale_sign
 ):
     @tilelang.jit(
         pass_configs={
@@ -201,10 +202,17 @@ def _fp8_lightning_indexer_kernel(
                     for bn_i, bq_i, h_i, g in T.Parallel(
                         block_N, block_Q, heads_per_group, kv_group
                     ):
+                        score = s_reshaped[bn_i, bq_i, h_i, g]
+                        key_scale = index_k_scale_fragment[bn_i, g]
+                        signed_score = (
+                            T.if_then_else(key_scale < 0, -score, score)
+                            if check_scale_sign
+                            else score
+                        )
+                        scale = T.abs(key_scale) if check_scale_sign else key_scale
                         s_reshaped[bn_i, bq_i, h_i, g] = (
-                            T.max(s_reshaped[bn_i, bq_i, h_i, g], 0)
-                            * weights[bq_i, g * heads_per_group + h_i]
-                        ) * index_k_scale_fragment[bn_i, g]
+                            T.max(signed_score, 0) * weights[bq_i, g * heads_per_group + h_i]
+                        ) * scale
 
                     T.reduce_sum(s_reshaped, logits, dim=-2, clear=True)
 
@@ -323,6 +331,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
             call.seq_len_kv,
             call.kv_group,
             call.clean_logits,
+            check_scale_sign=call.check_scale_sign,
         )
 
     def __init__(
@@ -336,6 +345,8 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         clean_logits=True,
         dtype: torch.dtype = torch.float8_e4m3fn,
         config: dict | None = None,
+        *,
+        check_scale_sign: bool = True,
     ):
         super().__init__()
         if dtype != torch.float8_e4m3fn:
@@ -360,6 +371,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
             self.seq_len_kv,
             self.kv_group,
             self._MIN_PIPELINED_BLOCK_Q,
+            check_scale_sign,
         )
 
         self.init_config(config)
@@ -510,7 +522,15 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
     compile_flags=["-O3", "-DNDEBUG", *csrc_include("lightning_indexer_helper.h")],
 )
 def _fp8_lightning_indexer_ws_kernel(
-    batch, heads, index_dim, block_q, splits, clean_logits, prefetch_q, mixed=False
+    batch,
+    heads,
+    index_dim,
+    block_q,
+    splits,
+    clean_logits,
+    prefetch_q,
+    mixed=False,
+    check_scale_sign=True,
 ):
     """Warp-specialized logits over 64-key tiles.
 
@@ -537,6 +557,7 @@ def _fp8_lightning_indexer_ws_kernel(
     seq_len = T.dynamic("seq_len")
     seq_len_kv = T.dynamic("seq_len_kv")
     epilogue = "indexer_tile_epilogue_doubled" if mixed else "indexer_tile_epilogue"
+    check_sign = str(check_scale_sign).lower()
 
     def acc_layout(thread_offset):
         """The m64n``rows`` WGMMA accumulator as the PTX arranges it, which the helper reads.
@@ -595,7 +616,7 @@ def _fp8_lightning_indexer_ws_kernel(
                     k0 = T.alloc_var("int32", init=(c0 + wg + 2 * jj) * block_n)
                     T.call_extern(
                         "handle",
-                        f"tileops::{epilogue}<{heads}, {block_q}, {str(clean_logits).lower()}>",
+                        f"tileops::{epilogue}<{heads}, {block_q}, {str(clean_logits).lower()}, {check_sign}>",
                         T.address_of(acc[0, 0]), T.address_of(wt[0]),
                         key_scale if mixed else T.address_of(Ss[stage, 0]),
                         T.address_of(Logits[b, 0, 0]), off, s0, k0, seq_len, seq_len_kv,
@@ -818,6 +839,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
             splits,
             partial_wave,
             device_index=index,
+            check_scale_sign=call.check_scale_sign,
         )
 
     def __init__(
@@ -831,6 +853,8 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
         splits: int = 1,
         partial_wave: tuple[int, int] | None = None,
         device_index: int | None = None,
+        *,
+        check_scale_sign: bool = True,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dtype = torch.float8_e4m3fn
@@ -848,6 +872,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
             self.launch_args = (whole, pieces.bit_length() - 1, -(-tiles // pieces))
         self.splits = splits
         self.partial_wave = partial_wave
+        self.check_scale_sign = check_scale_sign
         self.program(self._compile)
 
     def _compile(self, cfg: dict):
@@ -861,6 +886,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
             self.clean_logits,
             prefetch_q=self.seq_len_kv <= 4096 * self.splits,
             mixed=self.partial_wave is not None,
+            check_scale_sign=self.check_scale_sign,
         )
         return kernel
 

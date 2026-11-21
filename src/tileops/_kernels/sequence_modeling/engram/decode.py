@@ -19,7 +19,7 @@ from tileops._kernels.sequence_modeling.engram.call_spec import (
 )
 from tileops._kernels.tiling import ALIGNMENT, align_up
 
-__all__ = ["EngramDecodeKernel"]
+__all__ = ["EngramDecodeKernel", "EngramDecodeSplitKernel"]
 
 
 @target_cache(maxsize=32)
@@ -415,3 +415,149 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
             cfg["block_m"], cfg["block_n"], cfg["block_k"], cfg["threads"], cfg["num_stages"]
         )
         return CompiledProgram(project), CompiledProgram(self.step_jit(cfg["step_threads"]))
+
+
+@target_cache(maxsize=32)
+@tilelang.jit(out_idx=[3])
+def _engram_project_parts():
+    """Reduce both 512-wide GEMVs over eight independent 64-row panels."""
+
+    @T.prim_func
+    def kernel(
+        E: T.Tensor((1, 512), "float16"),
+        K: T.Tensor((512, 256), "float16"),
+        V: T.Tensor((512, 256), "float16"),
+        P: T.Tensor((2, 8, 256), "float32"),
+    ):
+        with T.Kernel(8, 8, 2, threads=32) as (col, part, kind):
+            products = T.alloc_fragment((8, 32), "float32")
+            sums = T.alloc_fragment((32,), "float32")
+            T.clear(products)
+            for group in T.unroll(8):
+                if kind == 0:
+                    for r, c in T.Parallel(8, 32):
+                        products[r, c] += T.cast(
+                            E[0, part * 64 + group * 8 + r], "float32"
+                        ) * T.cast(K[part * 64 + group * 8 + r, col * 32 + c], "float32")
+                else:
+                    for r, c in T.Parallel(8, 32):
+                        products[r, c] += T.cast(
+                            E[0, part * 64 + group * 8 + r], "float32"
+                        ) * T.cast(V[part * 64 + group * 8 + r, col * 32 + c], "float32")
+            T.reduce_sum(products, sums, dim=0)
+            for c in T.Parallel(32):
+                P[kind, part, col * 32 + c] = sums[c]
+
+    return kernel
+
+
+@target_cache(maxsize=32)
+@tilelang.jit(out_idx=[6, 7])
+def _engram_finish_parts(history, taps, dilation, eps):
+    """Reduce the partial projections while independent CTAs shift the history."""
+
+    @T.prim_func
+    def kernel(
+        P: T.Tensor((2, 8, 256), "float32"),
+        H: T.Tensor((1, 256), "float16"),
+        S: T.Tensor((1, history, 256), "float16"),
+        WH: T.Tensor((256,), "float16"),
+        WV: T.Tensor((256,), "float16"),
+        W: T.Tensor((taps, 256), "float16"),
+        Y: T.Tensor((1, 256), "float16"),
+        N: T.Tensor((1, history, 256), "float16"),
+    ):
+        with T.Kernel(history, threads=128) as block:
+            k = T.alloc_fragment((256,), "float32")
+            v = T.alloc_fragment((256,), "float32")
+            hh = T.alloc_fragment((256,), "float32")
+            hh_sum = T.alloc_fragment((1,), "float32")
+            kk = T.alloc_fragment((256,), "float32")
+            kk_sum = T.alloc_fragment((1,), "float32")
+            hk = T.alloc_fragment((256,), "float32")
+            hk_sum = T.alloc_fragment((1,), "float32")
+            vv = T.alloc_fragment((256,), "float32")
+            vv_sum = T.alloc_fragment((1,), "float32")
+            if block == 0:
+                T.clear(k)
+                T.clear(v)
+                for p in T.unroll(8):
+                    for c in T.Parallel(256):
+                        k[c] += P[0, p, c]
+                        v[c] += P[1, p, c]
+                for c in T.Parallel(256):
+                    h = T.cast(H[0, c], "float32")
+                    w = T.cast(WH[c], "float32")
+                    hh[c] = h * h
+                    kk[c] = k[c] * k[c]
+                    hk[c] = h * k[c] * w * w
+                    vv[c] = v[c] * v[c]
+                T.reduce_sum(hh, hh_sum, dim=0)
+                T.reduce_sum(kk, kk_sum, dim=0)
+                T.reduce_sum(hk, hk_sum, dim=0)
+                T.reduce_sum(vv, vv_sum, dim=0)
+                alpha = 1.0 / (
+                    1.0
+                    + T.exp(
+                        -hk_sum[0]
+                        * 0.0625
+                        * T.rsqrt(hh_sum[0] / 256.0 + eps)
+                        * T.rsqrt(kk_sum[0] / 256.0 + eps)
+                    )
+                )
+                inv = T.rsqrt(alpha * alpha * vv_sum[0] / 256.0 + eps)
+                for c in T.Parallel(256):
+                    gated = alpha * v[c]
+                    norm = gated * inv * T.cast(WV[c], "float32")
+                    conv = T.alloc_var("float32", init=T.cast(W[taps - 1, c], "float32") * norm)
+                    for tap in T.serial(taps - 1):
+                        prev = history - (taps - 1 - tap) * dilation
+                        conv += T.cast(W[tap, c], "float32") * T.cast(S[0, prev, c], "float32")
+                    Y[0, c] = conv / (1.0 + T.exp(-conv)) + gated
+                    N[0, history - 1, c] = norm
+            else:
+                for c in T.Parallel(256):
+                    N[0, block - 1, c] = S[0, block, c]
+
+    return kernel
+
+
+class EngramDecodeSplitKernel(Kernel, EngramDecodeFwdInterface):
+    """One FP16 token with 512 memory features and 256 hidden features."""
+
+    supported_archs = [90]
+    preferred_over = frozenset({"engram_decode"})
+
+    @classmethod
+    def refusal(cls, call: EngramDecodeCall) -> str | None:
+        if (call.batch, call.d_mem, call.d) != (1, 512, 256) or call.dtype != torch.float16:
+            return "requires one FP16 token, memory width 512 and hidden width 256"
+        if call.max_conv_len < max(1, call.dilation * (call.conv_kernel_size - 1)):
+            return "the convolution must have enough history for every tap"
+        return None
+
+    @classmethod
+    def entry_for(cls, call: EngramDecodeCall) -> Entry:
+        return call, lambda: cls(call)
+
+    def __init__(self, call: EngramDecodeCall):
+        super().__init__(device_index=call.device.index if call.device is not None else None)
+        self.call = call
+
+    def _compile(self, cfg):
+        call = self.call
+        return (
+            CompiledProgram(_engram_project_parts()),
+            CompiledProgram(
+                _engram_finish_parts(
+                    call.max_conv_len, call.conv_kernel_size, call.dilation, call.eps
+                )
+            ),
+        )
+
+    def forward(self, e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
+        padding = self.call.max_conv_len - conv_state.shape[1]
+        if padding > 0:
+            conv_state = F.pad(conv_state, (0, 0, padding, 0))
+        project, step = self.program(self._compile)
+        return step(project(e_t, W_K, W_V), h_t, conv_state, rms_w_h, rms_w_v, conv_w)

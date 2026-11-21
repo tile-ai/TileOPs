@@ -835,3 +835,35 @@ def test_gdn_skips_the_states_of_negative_slots(
     layout = {key: value for key, value in flags.items() if key != "target"}
     inputs = _pooled(dtype, some=some, **row, **layout).gen_inputs()
     check_padded_slots_skipped(GDNFwdOp(**flags, validate_inputs=True), inputs, 5, 10, padded)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "batch,heads,allow_neg_eigval",
+    [(1, 8, False), (4, 2, True)],
+    ids=["one-request-eight-heads", "four-requests-two-heads"],
+)
+def test_gdn_column_decode_uses_the_call_gate_and_beta_shapes(batch, heads, allow_neg_eigval):
+    """The Hopper decode reads the given gate and beta for each request and head."""
+    from tileops._kernels.linear_attention import GDNColumnDecodeKernel
+
+    test = GDNFwdTest(
+        batch,
+        1,
+        heads,
+        128,
+        torch.bfloat16,
+        has_initial_state=True,
+        l2norm=True,
+        beta_sigmoid=True,
+        allow_neg_eigval=allow_neg_eigval,
+    )
+    op = GDNFwdOp(
+        use_qk_l2norm_in_kernel=True,
+        use_beta_sigmoid_in_kernel=True,
+        allow_neg_eigval=allow_neg_eigval,
+        target=BUILTIN,
+    )
+    test.check(op, *test.gen_inputs())
+    assert [type(kernel) for kernel in op.iter_kernels()] == [GDNColumnDecodeKernel]

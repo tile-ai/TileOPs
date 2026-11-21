@@ -1,8 +1,11 @@
 """Gated DeltaNet (GDN) inference decode: one token a sequence, or each sequence's tokens
 in turn when verifying drafts on a state pool."""
 
+import tilelang
+import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     GDNCall,
@@ -11,7 +14,7 @@ from tileops._kernels.linear_attention.call_spec import (
 )
 from tileops._kernels.linear_attention.delta_decode import decode_launch, delta_decode_tl
 
-__all__ = ["GDNDenseDecodeFwdKernel"]
+__all__ = ["GDNColumnDecodeKernel", "GDNDenseDecodeFwdKernel"]
 
 
 class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
@@ -174,6 +177,19 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
     @property
     def default_config(self) -> dict:
         """The block shape this call's grid and state layout call for."""
+        if (
+            self.build_target.arch == 90
+            and self.dtype == torch.bfloat16
+            and self.batch == 1
+            and self.value_heads == 16
+            and self.dim == 128
+            and not self.state_v_first
+            and not self.l2norm
+            and not self.pooled
+            and not self.varlen
+            and not self.rollback
+        ):
+            return {"threads": 64, "lane_group": 4}
         return decode_launch(
             self.batch, self.value_heads, self.dim, self.state_v_first, self.build_target.sm_count
         )
@@ -209,3 +225,130 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             # The pool is advanced in place and returned as the final state.
             return program(q, k, v, g, beta, *gate_params, state, state_indices), state
         return program(q, k, v, g, beta, *gate_params, state)
+
+
+@target_cache(maxsize=32)
+@tilelang.jit(out_idx=[6, 7], pass_configs={"tl.enable_fast_math": True})
+def _gdn_decode_columns(batch_size, heads, scale, neg_eigval):
+    width, threads = 16, 64
+    vector = 2
+
+    @T.prim_func
+    def kernel(
+        Q: T.Tensor((batch_size, 1, heads, 128), "bfloat16"),
+        K: T.Tensor((batch_size, 1, heads, 128), "bfloat16"),
+        V: T.Tensor((batch_size, 1, heads, 128), "bfloat16"),
+        G: T.Tensor((batch_size, 1, heads), "bfloat16"),
+        B: T.Tensor((batch_size, 1, heads), "bfloat16"),
+        S: T.Tensor((batch_size, heads, 128, 128), "float32"),
+        O: T.Tensor((batch_size, 1, heads, 128), "bfloat16"),
+        F: T.Tensor((batch_size, heads, 128, 128), "float32"),
+    ):
+        with T.Kernel(128 // width, batch_size * heads, threads=threads) as (tile, head):
+            q = T.alloc_fragment((128,), "float32")
+            k = T.alloc_fragment((128,), "float32")
+            qs = T.alloc_fragment((128,), "float32")
+            ks = T.alloc_fragment((128,), "float32")
+            qn = T.alloc_fragment((1,), "float32")
+            kn = T.alloc_fragment((1,), "float32")
+            state = T.alloc_fragment((128, width), "float32")
+            products = T.alloc_fragment((128, width), "float32")
+            projection = T.alloc_fragment((width,), "float32")
+            delta = T.alloc_fragment((width,), "float32")
+            matrix_layout = T.Fragment(
+                (128, width),
+                forward_thread_fn=lambda i, j: (i * (width // vector) + j // vector) % threads,
+            )
+            T.annotate_layout({state: matrix_layout, products: matrix_layout})
+            batch = head // heads
+            h = head % heads
+            decay = T.exp(T.cast(G[batch, 0, h], "float32"))
+            beta = T.sigmoid(T.cast(B[batch, 0, h], "float32")) * (2.0 if neg_eigval else 1.0)
+            for i in T.Parallel(128):
+                q[i] = Q[batch, 0, h, i]
+                k[i] = K[batch, 0, h, i]
+                qs[i] = q[i] * q[i]
+                ks[i] = k[i] * k[i]
+            T.reduce_sum(qs, qn, dim=0)
+            T.reduce_sum(ks, kn, dim=0)
+            for i in T.Parallel(128):
+                q[i] *= T.rsqrt(qn[0] + 1e-6)
+                k[i] *= T.rsqrt(kn[0] + 1e-6)
+            for i, j in T.Parallel(128, width):
+                state[i, j] = S[batch, h, i, tile * width + j] * decay
+                products[i, j] = state[i, j] * k[i]
+            T.reduce_sum(products, projection, dim=0, batch=vector)
+            for j in T.Parallel(width):
+                delta[j] = beta * (
+                    T.cast(V[batch, 0, h, tile * width + j], "float32") - projection[j]
+                )
+            for i, j in T.Parallel(128, width):
+                state[i, j] = state[i, j] + k[i] * delta[j]
+                F[batch, h, i, tile * width + j] = state[i, j]
+                products[i, j] = state[i, j] * q[i]
+            T.reduce_sum(products, projection, dim=0, batch=vector)
+            for j in T.Parallel(width):
+                O[batch, 0, h, tile * width + j] = projection[j] * scale
+
+    return kernel
+
+
+class GDNColumnDecodeKernel(Kernel, GDNFwdInterface):
+    """Keep a narrow column tile of the FP32 state in registers on Hopper."""
+
+    supported_archs = [90]
+    preferred_over = frozenset({"gdn_dense_decode"})
+
+    @classmethod
+    def refusal(cls, call: GDNCall) -> str | None:
+        if (
+            call.pooled
+            or call.varlen
+            or call.rollback
+            or call.state_v_first
+            or call.seq_len != 1
+            or not call.has_initial_state
+            or call.gate_in_kernel
+            or not call.l2norm
+            or not call.beta_sigmoid
+        ):
+            return (
+                "requires one dense token, batch-ordered K-major state, Q/K norm and beta sigmoid"
+            )
+        if (
+            call.dtype != torch.bfloat16
+            or (call.dim_k, call.dim_v) != (128, 128)
+            or call.heads != call.value_heads
+            or not 1 <= call.batch * call.heads <= 64
+        ):
+            return "requires at most 64 BF16 query/value heads across the batch with width 128"
+        return head_count_refusal(call.heads)
+
+    @classmethod
+    def entry_for(cls, call: GDNCall) -> Entry:
+        return call, lambda: cls(call)
+
+    def __init__(self, call: GDNCall):
+        super().__init__(device_index=call.device.index if call.device is not None else None)
+        self.call = call
+
+    def _compile(self, cfg):
+        call = self.call
+        return _gdn_decode_columns(call.batch, call.heads, call.scale, call.allow_neg_eigval)
+
+    def forward(
+        self,
+        q,
+        k,
+        v,
+        g,
+        beta,
+        initial_state=None,
+        cu_seqlens=None,
+        cu_seqlens_cpu=None,
+        A_log=None,
+        dt_bias=None,
+        state_indices=None,
+        num_accepted_tokens=None,
+    ):
+        return self.program(self._compile)(q, k, v, g, beta, initial_state)

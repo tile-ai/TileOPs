@@ -264,6 +264,23 @@ def test_conv1d(
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize("dtype,bias", [(torch.float16, False), (torch.bfloat16, True)])
+def test_conv1d_short_waveform(dtype, bias):
+    from tileops._kernels.convolution import Conv1dDirectKernel
+    from tileops.backend import BUILTIN
+
+    x = torch.randn(1, 1, 4103, device=run_device(), dtype=dtype)
+    weight = torch.randn(16, 1, 5, device=x.device, dtype=dtype)
+    offset = torch.randn(16, device=x.device, dtype=dtype) if bias else None
+    op = Conv1dFwdOp(target=BUILTIN)
+    args = (x, weight, offset)
+    compare_outputs(op(*args), F.conv1d(*args), convolution_verification(dtype, inputs=args))
+    assert [type(k) for k in op.iter_kernels()] == [Conv1dDirectKernel]
+
+
+@pytest.mark.smoke
 def test_conv1d_no_bias_matches_torch() -> None:
     op = Conv1dFwdOp(stride=2, padding=2)
     x = torch.randn(1, 32, 256, device=run_device(), dtype=torch.float16).contiguous()

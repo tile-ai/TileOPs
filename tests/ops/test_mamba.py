@@ -273,3 +273,16 @@ def test_ssd_state_passing_fwd_prefetched_scan(dtype):
     """A wide state over 16 chunks: four elements a thread, eight chunks loaded ahead."""
     test = SSDStatePassingFwdTest(1, 16, 4, 8192, dtype)
     test.check(SSDStatePassingFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_ssd_scan_retains_a_small_coefficient_on_a_large_value() -> None:
+    test = SSDChunkScanFwdTest(1, 1, 64, 4, 64, 32, 1, torch.bfloat16)
+    x, cb, decay, c, state, dt = test.gen_inputs()
+    x.zero_()
+    x[:, 0] = 1e8
+    cb.zero_()
+    cb[..., -1, 0] = 1
+    decay.zero_()
+    decay[..., 32:] = -20
+    test.check(SSDChunkScanFwdOp(), x, cb, decay, c.zero_(), state.zero_(), dt.fill_(1))

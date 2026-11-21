@@ -23,7 +23,7 @@ class FP8LightningIndexerFwdOp(Op):
     For query ``s`` and key ``t`` of group ``g``, the logit sums ``weights[s, h]`` times
     ``relu(q[s, h] . k[t, g])`` over the heads of group ``g``, for keys inside the query's
     window ``[starts[s], ends[s])``. A bf16 call is quantized to FP8 by the
-    op; an FP8 call passes the per-key scales in ``index_k_scale``.
+    op. For FP8 calls, ``k`` includes the signed per-key scale from ``index_k_scale``.
 
     On SM90, a one-batch-row call with one key group and 512 or more 64-key tiles whose query
     blocks leave a partial last wave sums ``(x + |x|) * weight``, twice the relu term, and
@@ -57,16 +57,20 @@ class FP8LightningIndexerFwdOp(Op):
         self,
         clean_logits: bool = True,
         *,
+        assume_nonnegative_scale: bool = False,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             clean_logits: Manifest ``params.clean_logits``, ``bool``, default ``True``.
+            assume_nonnegative_scale: Skip sign checks on externally supplied key scales.
+                Set this only when every supplied scale is nonnegative. Defaults to ``False``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.clean_logits = clean_logits
+        self.assume_nonnegative_scale = assume_nonnegative_scale
 
         super().__init__(target=target)
 
@@ -92,6 +96,7 @@ class FP8LightningIndexerFwdOp(Op):
         Returns:
             ``logits``, as the manifest declares.
         """
+        check_scale_sign = index_k_scale is not None and not self.assume_nonnegative_scale
         if index_k_scale is None:
             # A bf16 call is quantized here; the kernel indexes FP8 keys and their scales.
             index_q = index_q.to(torch.float8_e4m3fn)
@@ -114,6 +119,7 @@ class FP8LightningIndexerFwdOp(Op):
                 seq_len_kv=seq_len_kv,
                 kv_group=kv_group,
                 clean_logits=self.clean_logits,
+                check_scale_sign=check_scale_sign,
                 device=index_q.device,
             ),
         )

@@ -146,3 +146,17 @@ def test_indexer_empty_and_inverted_windows() -> None:
     ks[2::4], ke[2::4] = ke[2::4] + 7, ks[2::4]  # inverted
     ks[3::8] = 4096  # starts at the end of the keys
     test.check(FP8LightningIndexerFwdOp(), index_q, index_k, weights, ks, ke)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize("queries, keys, groups", [(8, 128, 1), (8, 128, 2), (532, 32768, 1)])
+def test_indexer_signed_external_key_scales(queries, keys, groups) -> None:
+    test = FP8LightningIndexerTest(1, queries, 64, 128, keys, groups)
+    q, k, weights, starts, ends, scales = test.gen_weight_boundary_inputs()
+    q.fill_(1)
+    k.fill_(1)
+    weights.fill_(1)
+    scales.fill_(1)
+    scales[:, 1::2] = -1
+    test.check(FP8LightningIndexerFwdOp(), q, k, weights, starts, ends, scales)

@@ -4,7 +4,8 @@ some row of each entry selects one.
 A row may declare a call no in-tree implementation serves yet, such as a pilot model's mode;
 every implementation's refusal then declines it, and the op raises ``OpNotAvailableError``.
 Any other error is a defect. Shapes and dtypes come from meta tensors; selection reads the
-run device, and nothing is built.
+run device, and nothing is built for that selection check. The focused SM90 cases below also run the selected
+kernels and compare their outputs against the workload references.
 """
 
 import pytest
@@ -60,3 +61,46 @@ def test_every_row_selects_an_implementation_or_is_refused(name, monkeypatch):
             except OpNotAvailableError:
                 outcomes.add("refused")
     assert outcomes != {"refused"}, f"{name}: every implementation refuses every row"
+
+
+@pytest.mark.parametrize(
+    "name,case_id,expected_kernel",
+    [
+        ("GDNFwdOp", "decode-beta-l2norm-bfloat16", "GDNColumnDecodeKernel"),
+        ("DeltaNetRecurrentFwdOp", "serving-b1-h8-bfloat16", "DeltaNetDecodeColumnKernel"),
+        ("GEMMFP8FwdOp", "qwen3-8b-o-tp8-b8-float8_e4m3fn-bfloat16", "GEMMFP8SwapABKernel"),
+        ("BMMFwdOp", "square-128-bfloat16", "BMMKernel"),
+        ("BMMFwdOp", "square-128-float16", "BMMKernel"),
+        ("SSDChunkStateFwdOp", "mamba2-780m-bfloat16-float32", "SSDChunkStateFwdKernel"),
+        ("Conv2dFwdOp", "mbv2-depthwise-float16", "DepthwiseConv2dWarpKernel"),
+        ("EngramDecodeFwdOp", "serving-b1-float16", "EngramDecodeSplitKernel"),
+    ],
+)
+def test_sm90_workload_selects_and_runs_its_specialized_kernel(name, case_id, expected_kernel):
+    from tileops.backend import BUILTIN
+    from workloads.calls import call_workload
+    from workloads.numerics import compare_outputs
+
+    entry = _MANIFEST[name]
+    plan = entry_plan(name, entry, load_adts())
+    calls = (
+        instantiate(plan, row, dtype_case)
+        for row in entry["workloads"]
+        for dtype_case in row.get("dtype_cases") or [{}]
+    )
+    call = next(c for c in calls if c.case_id == case_id)
+    workload = call_workload(name)(call)
+    arguments = workload.arguments() if hasattr(workload, "arguments") else call.arguments()
+    op = op_class(name, entry)(**arguments, target=BUILTIN)
+    inputs = workload.gen_inputs()
+    expected = workload.ref_program(*inputs)
+    args, keywords = call.signature.forward_arguments(inputs)
+    compare_outputs(op(*args, **keywords), expected, workload.verification(*inputs))
+    (kernel,) = op.iter_kernels()
+    assert type(kernel).__name__ == expected_kernel
+    if name == "SSDChunkStateFwdOp":
+        assert kernel._uses_tma_panels()
+    elif name == "GEMMFP8FwdOp":
+        assert kernel._uses_short_panels()
+    elif name == "BMMFwdOp":
+        assert (kernel.config["block_k"], kernel.config["threads"]) == (64, 64)

@@ -29,7 +29,12 @@ from tileops._kernels.reduction.call_spec import (
 from tileops._kernels.tiling import align_up
 from tileops._utils import WARP_LANES
 
-__all__ = ["CumulativeKernel", "CumulativeParallelScanKernel", "CumulativeRowScanKernel"]
+__all__ = [
+    "CumsumClusterScanKernel",
+    "CumulativeKernel",
+    "CumulativeParallelScanKernel",
+    "CumulativeRowScanKernel",
+]
 
 
 def _identity_and_combine(op_kind: str) -> tuple[float, Callable]:
@@ -728,6 +733,147 @@ class CumulativeParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cu
             return scan(x, totals(x))
 
         return launch
+
+
+@target_cache(maxsize=32)
+def _cumsum_cluster_scan_kernel(rows: int, width: int, aligned: bool):
+    blocks = 8
+    warps = 8
+    elements = 4
+    warp_items = WARP_LANES * elements
+    chunk = width // blocks
+    stripes = chunk // (warps * warp_items)
+    stages = WARP_LANES.bit_length() - 1
+    dtype = "float32"
+
+    @tilelang.jit(
+        out_idx=[1], pass_configs={tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True}
+    )
+    def build():
+        @T.prim_func
+        def scan(
+            x: T.Tensor[(rows, width), dtype],
+            y: T.Tensor[(rows, width), dtype],
+        ):
+            with T.ClusterKernel(blocks, rows, threads=warps * WARP_LANES, cluster_dims=blocks) as (
+                segment,
+                row,
+            ):
+                tid = T.get_thread_binding()
+                lane = tid % WARP_LANES
+                warp = tid // WARP_LANES
+                start = segment * chunk + warp * stripes * warp_items + lane * elements
+                values = T.alloc_local((stripes, elements), "float32")
+                stripe_sums = T.alloc_local((stripes,), "float32")
+                stripe_prefix = T.alloc_local((stripes,), "float32")
+                stripe_total = T.alloc_local((stripes,), "float32")
+                warp_prefix = T.alloc_shared((warps,), "float32", scope="shared")
+                outgoing = T.alloc_shared((blocks,), "float32", scope="shared")
+                incoming = T.alloc_shared((blocks,), "float32", scope="shared")
+                total = T.alloc_var("float32", init=0.0)
+                value = T.alloc_var("float32")
+                other = T.alloc_var("float32")
+                carry = T.alloc_var("float32")
+                exclusive = T.alloc_var("float32")
+
+                # Every peer CTA must exist before a cluster store addresses its shared memory.
+                T.cluster_arrive_relaxed()
+                for stripe in T.unroll(stripes):
+                    if aligned:
+                        for i in T.vectorized(elements):
+                            values[stripe, i] = x[row, start + stripe * warp_items + i]
+                    else:
+                        for i in T.unroll(elements):
+                            values[stripe, i] = x[row, start + stripe * warp_items + i]
+                    stripe_sums[stripe] = (values[stripe, 0] + values[stripe, 1]) + (
+                        values[stripe, 2] + values[stripe, 3]
+                    )
+                    total += stripe_sums[stripe]
+                for step in T.unroll(stages):
+                    total += T.shfl_xor(total, WARP_LANES // 2 >> step)
+                if lane == 0:
+                    warp_prefix[warp] = total
+                T.sync_threads()
+                T.cluster_wait()
+
+                # The first warp scans the per-warp totals. Send this block's sum to
+                # every later block in the row's cluster, in a slot owned by this block.
+                if warp == 0:
+                    value = T.if_then_else(lane < warps, warp_prefix[T.min(lane, warps - 1)], 0.0)
+                    for step in T.unroll(warps.bit_length() - 1):
+                        other = T.shfl_up(value, 1 << step)
+                        if lane >= 1 << step:
+                            value += other
+                    exclusive = T.shfl_up(value, 1)
+                    if lane < warps:
+                        warp_prefix[lane] = T.if_then_else(lane == 0, 0.0, exclusive)
+                    total = T.shfl_sync(value, warps - 1)
+                    if segment < lane < blocks:
+                        outgoing[lane] = total
+                        T.copy_cluster(
+                            outgoing[lane : lane + 1],
+                            incoming[segment : segment + 1],
+                            dst_block=lane,
+                            coalesced_width=1,
+                        )
+                T.cluster_arrive()
+
+                # Finish the lane-local scan while the other blocks publish their totals.
+                for stripe in T.unroll(stripes):
+                    value = stripe_sums[stripe]
+                    for step in T.unroll(stages):
+                        other = T.shfl_up(value, 1 << step)
+                        if lane >= 1 << step:
+                            value += other
+                    exclusive = T.shfl_up(value, 1)
+                    stripe_prefix[stripe] = T.if_then_else(lane == 0, 0.0, exclusive)
+                    stripe_total[stripe] = T.shfl_sync(value, WARP_LANES - 1)
+
+                T.cluster_wait()
+                carry = 0.0
+                if lane < segment:
+                    carry = incoming[lane]
+                for step in T.unroll(blocks.bit_length() - 1):
+                    carry += T.shfl_xor(carry, blocks // 2 >> step)
+                carry = T.shfl_sync(carry, 0) + warp_prefix[warp]
+                for stripe in T.unroll(stripes):
+                    base = carry + stripe_prefix[stripe]
+                    for i in T.unroll(1, elements):
+                        values[stripe, i] += values[stripe, i - 1]
+                    for i in T.vectorized(elements):
+                        y[row, start + stripe * warp_items + i] = values[stripe, i] + base
+                    carry += stripe_total[stripe]
+
+        return scan
+
+    return build
+
+
+class CumsumClusterScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
+    """Scan a few long FP32 rows in one launch using block clusters."""
+
+    supported_archs = [90]
+    preferred_over = frozenset({"cumulative_parallel_scan"})
+
+    @classmethod
+    def refusal(cls, call: CumulativeCall) -> str | None:
+        if call.dtype != torch.float32 or call.out_dtype != torch.float32:
+            return "requires FP32 input and output"
+        if not (1 <= call.m <= 24 and call.n == 65536):
+            return "requires at most twenty-four rows of 64K elements"
+        if call.sm_count < 128:
+            return "requires a full-size Hopper grid for eight-block clusters"
+        return super().refusal(call)
+
+    def _program(self) -> None:
+        return None
+
+    def _scan_rows(self, x: torch.Tensor) -> torch.Tensor:
+        aligned = x.storage_offset() % 4 == 0
+        # The storage view may change between calls with the same input shape.
+        return self.program(
+            lambda cfg, aligned: _cumsum_cluster_scan_kernel(self.M, self.N, aligned)(), aligned
+        )(x)
 
 
 class CumulativeKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInterface):

@@ -6,6 +6,7 @@ import torch
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.linear_attention import (
     DeltaNetDecodeCall,
+    DeltaNetDecodeColumnKernel,
     DeltaNetDecodeFP32Kernel,
     DeltaNetDecodeFwdInterface,
     DeltaNetDecodeKernel,
@@ -35,6 +36,7 @@ class DeltaNetRecurrentFwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_decode": DeltaNetDecodeKernel,
+        "deltanet_decode_columns": DeltaNetDecodeColumnKernel,
         "deltanet_decode_fp32": DeltaNetDecodeFP32Kernel,
         "deltanet_decode_warp": DeltaNetDecodeWarpKernel,
     }

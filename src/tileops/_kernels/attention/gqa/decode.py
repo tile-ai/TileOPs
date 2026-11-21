@@ -17,7 +17,135 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
-__all__ = ["GQADecodeKernel"]
+__all__ = ["GQADecodeKernel", "GQADecodeNarrowGroupKernel"]
+
+
+@target_cache(maxsize=32)
+@tilelang.jit(out_idx=[3])
+def _narrow_group_decode(groups: int, parts: int, score_scale: float, keys_per_part: int):
+    head_dim = 128
+    heads_per_group = 8
+    heads = groups * heads_per_group
+    cache_length = parts * keys_per_part
+    dtype = "float16"
+
+    @T.prim_func
+    def attend(
+        query: T.Tensor((1, 1, heads, head_dim), dtype),
+        key: T.Tensor((1, cache_length, groups, head_dim), dtype),
+        value: T.Tensor((1, cache_length, groups, head_dim), dtype),
+        output: T.Tensor((1, 1, heads, head_dim), dtype),
+    ):
+        partial = T.alloc_global((heads, parts, head_dim), "float32")
+        stats = T.alloc_global((heads, parts, 2), "float32")
+        with T.Kernel(parts, groups, threads=64) as (part, group):
+            q = T.alloc_shared((heads_per_group, head_dim), dtype)
+            k = T.alloc_shared((keys_per_part, head_dim), dtype)
+            v = T.alloc_shared((keys_per_part, head_dim), dtype)
+            scores = T.alloc_fragment((keys_per_part, heads_per_group), "float32")
+            probabilities = T.alloc_shared((keys_per_part, heads_per_group), dtype)
+            product = T.alloc_fragment((head_dim, heads_per_group), "float32")
+            peaks = T.alloc_fragment((heads_per_group,), "float32")
+            sums = T.alloc_fragment((heads_per_group,), "float32")
+            for h, d in T.Parallel(heads_per_group, head_dim):
+                q[h, d] = query[0, 0, group * heads_per_group + h, d]
+            for i, d in T.Parallel(keys_per_part, head_dim):
+                k[i, d] = key[0, part * keys_per_part + i, group, d]
+                v[i, d] = value[0, part * keys_per_part + i, group, d]
+            # Put the eight query heads on the narrow axis of both MMA products.
+            T.gemm(k, q, scores, transpose_B=True, clear_accum=True)
+            for i, h in T.Parallel(keys_per_part, heads_per_group):
+                scores[i, h] *= score_scale
+            T.reduce_max(scores, peaks, dim=0)
+            for i, h in T.Parallel(keys_per_part, heads_per_group):
+                scores[i, h] = T.exp2(scores[i, h] - peaks[h])
+                probabilities[i, h] = T.cast(scores[i, h], dtype)
+            T.reduce_sum(scores, sums, dim=0)
+            T.gemm(v, probabilities, product, transpose_A=True, clear_accum=True)
+            for d, h in T.Parallel(head_dim, heads_per_group):
+                partial[group * heads_per_group + h, part, d] = product[d, h]
+            for h in T.Parallel(heads_per_group):
+                stats[group * heads_per_group + h, part, 0] = peaks[h]
+                stats[group * heads_per_group + h, part, 1] = sums[h]
+
+        with T.Kernel(heads, threads=128) as head:
+            peaks = T.alloc_fragment((parts,), "float32")
+            sums = T.alloc_fragment((parts,), "float32")
+            peak = T.alloc_fragment((1,), "float32")
+            denom = T.alloc_fragment((1,), "float32")
+            acc = T.alloc_fragment((head_dim,), "float32")
+            weights = T.alloc_shared((parts,), "float32")
+            for part in T.Parallel(parts):
+                peaks[part] = stats[head, part, 0]
+            T.reduce_max(peaks, peak, dim=0)
+            for part in T.Parallel(parts):
+                sums[part] = T.exp2(peaks[part] - peak[0])
+                weights[part] = sums[part]
+                sums[part] *= stats[head, part, 1]
+            T.reduce_sum(sums, denom, dim=0)
+            T.clear(acc)
+            for part in T.serial(parts):
+                for d in T.Parallel(head_dim):
+                    acc[d] += weights[part] * partial[head, part, d]
+            for d in T.Parallel(head_dim):
+                output[0, 0, head, d] = T.cast(acc[d] / denom[0], dtype)
+
+    return attend
+
+
+class GQADecodeNarrowGroupKernel(Kernel, GQADenseFwdInterface):
+    """Decode eight FP16 heads per KV head with transposed score tiles."""
+
+    supported_archs: list[int] = [90]
+    preferred_over = frozenset({"gqa_dense_decode_split"})
+
+    @classmethod
+    def refusal(cls, call: AttentionCall) -> str | None:
+        """Serve single-query decode when the KV tiles fill half to one SM90 wave."""
+        if call.dense_decode_program != "split" or call.return_lse or call.batch != 1:
+            return "requires single-request split decode with output only"
+        if call.dtype != torch.float16 or call.dim != 128 or call.heads != 8 * call.heads_kv:
+            return "requires eight FP16 query heads of width 128 per KV head"
+        if (
+            call.fuse_rope
+            or call.has_sinks
+            or call.softcap
+            or call.sm_scale not in (None, 128**-0.5)
+        ):
+            return "serves plain attention at the default scale"
+        parts, tail = divmod(call.seqlen_kv, 128 if call.seqlen_kv >= 2048 else 32)
+        if (
+            tail
+            or parts not in (16, 32)
+            or not call.sm_count // 2 <= parts * call.heads_kv <= call.sm_count
+        ):
+            return "requires a half to one wave of whole short context tiles"
+        return super().refusal(call)
+
+    def __init__(self, call: AttentionCall) -> None:
+        super().__init__(device_index=call.device.index if call.device is not None else None)
+        self.groups = call.heads_kv
+        self.keys_per_part = 128 if call.seqlen_kv >= 2048 else 32
+        self.parts = call.seqlen_kv // self.keys_per_part
+        self.scale = call.dim**-0.5 * LOG2E
+
+    def _compile(self, _config: dict):
+        return _narrow_group_decode(self.groups, self.parts, self.scale, self.keys_per_part)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        self._require_devices(q=q, k=k, v=v)
+        return self.program(self._compile)(q, k, v)
 
 
 # JIT kernel: no-split variant

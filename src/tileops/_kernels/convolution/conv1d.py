@@ -18,6 +18,7 @@ from tileops._kernels.convolution.call_spec import Conv1dCall, Conv1dFwdInterfac
 from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = [
+    "Conv1dDirectKernel",
     "Conv1dKernel",
     "Conv1dPointwiseKernel",
     "Conv1dUnitStrideKernel",
@@ -752,6 +753,122 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
         return launch(self, x, weight_2d, bias=bias)
 
 
+@target_cache(maxsize=64)
+def _conv1d_short_filter_kernel(
+    l_in: int,
+    c_out: int,
+    kernel_l: int,
+    dtype: str,
+    has_bias: bool,
+):
+    out_l = l_in - kernel_l + 1
+    positions, threads = 6, 64
+
+    @tilelang.jit(out_idx=[2])
+    def build():
+        @T.macro
+        def convolve(x, weight, out, bias):
+            with T.Kernel(T.ceildiv(out_l, threads * positions), c_out // 2, threads=threads) as (
+                bx,
+                by,
+            ):
+                time = (bx * threads + T.get_thread_binding()) * positions
+                samples = T.alloc_local((positions + kernel_l - 1,), "float32")
+                acc = T.alloc_local((positions,), "float32")
+                values = T.alloc_local((positions,), dtype)
+                for i in T.unroll(positions + kernel_l - 1):
+                    samples[i] = T.if_then_else(
+                        time + i < l_in, T.cast(x[0, 0, time + i], "float32"), 0.0
+                    )
+                for c in T.unroll(2):
+                    channel = by * 2 + c
+                    for i in T.unroll(positions):
+                        acc[i] = 0.0
+                    for tap in T.unroll(kernel_l):
+                        factor = T.cast(weight[channel, 0, tap], "float32")
+                        for i in T.unroll(positions):
+                            acc[i] += samples[i + tap] * factor
+                    for i in T.unroll(positions):
+                        if has_bias:
+                            values[i] = T.cast(acc[i] + T.cast(bias[channel], "float32"), dtype)
+                        else:
+                            values[i] = T.cast(acc[i], dtype)
+                    if out_l % 2 == 0:
+                        for pair in T.unroll(positions // 2):
+                            if time + pair * 2 < out_l:
+                                for i in T.vectorized(2):
+                                    out[0, channel, time + pair * 2 + i] = values[pair * 2 + i]
+                    else:
+                        for i in T.unroll(positions):
+                            if time + i < out_l:
+                                out[0, channel, time + i] = values[i]
+
+        if has_bias:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor[(1, 1, l_in), dtype],
+                weight: T.Tensor[(c_out, 1, kernel_l), dtype],
+                out: T.Tensor[(1, c_out, out_l), dtype],
+                bias: T.Tensor[(c_out,), dtype],
+            ):
+                convolve(x, weight, out, bias)
+
+        else:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor[(1, 1, l_in), dtype],
+                weight: T.Tensor[(c_out, 1, kernel_l), dtype],
+                out: T.Tensor[(1, c_out, out_l), dtype],
+            ):
+                convolve(x, weight, out, None)
+
+        return main
+
+    return build
+
+
+class Conv1dDirectKernel(Kernel, Conv1dFwdInterface):
+    """Short, single-channel filters reuse overlapping samples in registers."""
+
+    supported_archs = [90]
+
+    @classmethod
+    def refusal(cls, call: Conv1dCall) -> str | None:
+        if not (
+            call.n == call.c_in == call.groups == call.stride_l == call.dilation_l == 1
+            and call.pad_left == call.pad_right == 0
+            and 3 <= call.kernel_l <= 7
+        ):
+            return "serves one unpadded single-channel waveform with a unit-stride short filter"
+        if not (16 <= call.c_out <= 64 and call.c_out % 2 == 0 and call.out_l >= 2048):
+            return "requires 16–64 even output channels and at least 2048 output positions"
+        if call.dtype not in (torch.float16, torch.bfloat16):
+            return "requires fp16 or bf16"
+        return super().refusal(call) or operand_refusal(call.c_out * call.out_l)
+
+    @classmethod
+    def entry_for(cls, call: Conv1dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = (call.l_in, call.c_out, call.kernel_l, call.dtype, call.has_bias)
+        return (*args, index), lambda: cls(*args, device_index=index)
+
+    def __init__(self, l_in, c_out, kernel_l, dtype, has_bias, *, device_index=None):
+        super().__init__(device_index=device_index)
+        self.dtype = dtype
+        self.kernel = _conv1d_short_filter_kernel(l_in, c_out, kernel_l, self.dtype_str, has_bias)
+        self.init_config()
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return launch(self, x, weight, bias=bias)
+
+
 class Conv1dKernel(Kernel, Conv1dFwdInterface):
     """Dense Conv1d over the full kernel window; serves every ungrouped call no narrower kernel does."""
 
@@ -831,6 +948,8 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
     @property
     def default_config(self) -> dict:
         block_m, block_n, block_k = 64, 128, 128
+        if self.build_target.arch == 90 and self.k_total <= 32 and self.stride_l > 1:
+            block_k = 32
         num_stages = conv_num_stages(self.build_target.arch)
         cap = self.build_target.smem_budget
         while num_stages > 1 and self._shared_bytes(block_m, block_n, block_k, num_stages) > cap:
@@ -900,6 +1019,27 @@ class Conv1dUnitStrideKernel(Conv1dKernel):
 
     @property
     def default_config(self) -> dict:
+        if self.build_target.arch == 90 and self.dtype in (torch.float16, torch.bfloat16):
+            if self.out_l <= 640 and self.kernel_l >= 7 and self.c_in >= 128:
+                return dict(
+                    block_m=64,
+                    block_n=32,
+                    block_k=128,
+                    num_stages=2,
+                    threads=128,
+                    enable_rasterization=False,
+                    taps=1,
+                )
+            if self.out_l >= 2048 and self.kernel_l == 3 and self.c_out >= 1024:
+                return dict(
+                    block_m=128,
+                    block_n=128,
+                    block_k=64,
+                    num_stages=2,
+                    threads=256,
+                    enable_rasterization=False,
+                    taps=1,
+                )
         return {**super().default_config, "taps": 1}
 
     def _x_copied_per_stage(self, block_n: int, block_k: int) -> bool:

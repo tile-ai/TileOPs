@@ -846,3 +846,14 @@ def test_sigmoid_bias_cancellation_keeps_the_absolute_routing_tolerance() -> Non
         some=["correction_bias"],
     )
     TestBase.check(FusedTopKWorkload(call), FusedTopKFwdOp(1, "sigmoid"), gating, bias)
+
+
+@pytest.mark.smoke
+def test_underflowed_softmax_experts_tie_on_the_transformed_score() -> None:
+    gating = torch.full((16, 128), -500.0, device=run_device(), dtype=torch.bfloat16)
+    gating[:, 126] = 0
+    gating[:, 127] = -256
+    weights, ids = FusedTopKFwdOp(8, "softmax", renormalize=True)(gating)
+    expected_ids = ids.new_tensor([0, 1, 2, 3, 4, 5, 6, 126]).expand_as(ids)
+    assert torch.equal(ids.sort(dim=-1).values, expected_ids)
+    assert torch.equal(weights, (ids == 126).to(weights.dtype))

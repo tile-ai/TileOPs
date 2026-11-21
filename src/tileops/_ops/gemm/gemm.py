@@ -29,6 +29,7 @@ from tileops._kernels.gemm import (
     GEMMW4A16FwdInterface,
     GEMMW4A16Kernel,
     GEMMW4A16MMAKernel,
+    GEMMW4A16TwoGroupKernel,
     GemvKernel,
     W4A8RepackCall,
     W4A8RepackFwdInterface,
@@ -347,6 +348,7 @@ class GEMMW4A16FwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_w4a16": GEMMW4A16Kernel,
+        "gemm_w4a16_two_group": GEMMW4A16TwoGroupKernel,
         "gemm_w4a16_mma": GEMMW4A16MMAKernel,
         "w4a16_repack": W4A16RepackKernel,
     }
