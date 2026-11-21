@@ -410,6 +410,10 @@ def _shared_decode_op(workload: MoEGroupedGEMMMXFP4Workload, inputs: tuple):
         pytest.param("per_row", 328, 2048, marks=pytest.mark.smoke, id="per-row-n328-k2048"),
         # 128-byte code-table rows; experts found from their physical row ends.
         pytest.param("physical_psum", 256, 4096, marks=pytest.mark.full, id="psum-k4096"),
+        # Code tables that leave room for three token and decoded stages (48 steps).
+        pytest.param("per_row", 256, 6144, marks=pytest.mark.full, id="per-row-k6144"),
+        # The largest K whose shallowest ring, two stages, fits beside its code tables.
+        pytest.param("per_row", 256, 10240, marks=pytest.mark.full, id="per-row-k10240"),
     ],
 )
 def test_mxfp4_grouped_gemm_decodes_aligned_rows_into_shared_memory(
@@ -608,6 +612,20 @@ def test_mxfp4_grouped_gemm_tune_picks_a_correct_config() -> None:
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_tune_picks_a_correct_config() -> None:
+    """Tuning aligned rows under e8m0 scales, which decode into shared memory, picks a config
+    that computes the GEMM correctly."""
+    workload = _aligned_workload(256, 2048)
+    inputs = workload.gen_inputs()
+    op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
+    op.request_tune()
+    run_into_guarded_out(op, workload, *inputs)
+    assert isinstance(next(op.iter_kernels()), MoEGroupedGEMMMXFP4SharedDecodeKernel)
+
+
 @pytest.mark.smoke
 def test_mxfp4_grouped_gemm_rejects_scales_of_two_dtypes() -> None:
     """Both scales take one dtype: an e8m0 a_scale beside a float32 b_scale is refused."""
@@ -804,7 +822,32 @@ def test_mxfp4_grouped_gemm_shared_decode_takes_the_modelled_shared_memory() -> 
 
     assert "shared memory" in refusal(need - 1)
     assert refusal(need) is None
+    # The tuning candidates at K = 2048 are the ring depths that fit beside the tiles and whose
+    # unrolled loop tiles its 16 steps; depth 8 tiles them but does not fit.
+    assert [c["num_stages"] for c in _aligned_kernel(2048).autotune_configs] == [2, 4]
     assert not isinstance(_aligned_kernel(16384), MoEGroupedGEMMMXFP4SharedDecodeKernel)
+
+
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_refuses_a_ring_its_unrolled_loop_cannot_tile() -> None:
+    """Each task of the shared decode starts every ring at its first stage, which holds while its
+    K loop, unrolled by twice the ring depths' least common multiple, tiles the K steps: a token
+    ring 3 deep at K = 2048 (16 steps, an unroll of 12) is refused, the refusal naming the
+    unroll, and rings 2 and 4 deep are taken."""
+    config = {"block_m": 128, "block_n": 128, "num_stages": 3, "num_sms": 132}
+
+    def refusal(stages: int) -> str | None:
+        return MoEGroupedGEMMMXFP4SharedDecodeKernel.config_refusal(
+            {**config, "num_stages": stages},
+            sm_count=132,
+            smem_limit=232448 - 2048,
+            scale_k=2048 // 128,
+            alignment=128,
+        )
+
+    assert "unrolls the K steps by 12" in refusal(3)
+    assert refusal(2) is None
+    assert refusal(4) is None
 
 
 @pytest.mark.smoke

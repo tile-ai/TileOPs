@@ -611,9 +611,9 @@ __device__ __forceinline__ void mxfp4_decode_luts(void const* table,
 // rows of 128 bytes under the 128B swizzle an SS WGMMA descriptor reads
 // (16-byte chunk c of row r at chunk c ^ (r % 8)), from the packed stage's rows
 // of 64 bytes, which the calling warp releases on ``packed_release`` once it
-// has read them; ``luts`` from mxfp4_decode_luts. Each thread takes the same
-// number of whole units and the units left over go out as 16-value halves to
-// threads [0, kHalves). With 512 units on 224 threads, warps 0-3 take 2.5
+// has converted them; ``luts`` from mxfp4_decode_luts. Each thread takes the
+// same number of whole units and the units left over go out as 16-value halves
+// to threads [0, kHalves). With 512 units on 224 threads, warps 0-3 take 2.5
 // units a lane and warps 4-6 take 2.
 template <int BlockN, int Threads>
 __device__ __forceinline__ void mxfp4_decode_shared(void const* packed_stage,
@@ -639,7 +639,6 @@ __device__ __forceinline__ void mxfp4_decode_shared(void const* packed_stage,
         static_cast<uint8_t const*>(packed_stage) + kWhole * Threads * 16 +
         thread * 8);
   }
-  mxfp4_warp_arrive(packed_release);
   // 0x80808080 (``thread`` < 2 ** 31) held in a per-thread register: as a
   // uniform constant, NVCC rebuilds it with a copy before each of the eight
   // prmts that read it a unit. This depends on the compiler (seen in the SASS
@@ -682,6 +681,7 @@ __device__ __forceinline__ void mxfp4_decode_shared(void const* packed_stage,
                               (((2 * (unit & 3) + half) ^ (row & 7)) << 4)) =
         make_uint4(out[0], out[1], out[2], out[3]);
   }
+  mxfp4_warp_arrive(packed_release);
 }
 
 // K32 slice ``slice`` of a warp-group's 64 x BlockN x 128 fp8 product,
@@ -752,16 +752,27 @@ __device__ __forceinline__ void mxfp4_publish_stage(void* barrier) {
   mxfp4_warp_arrive(barrier);
 }
 
-// The two token scales of a math thread's accumulator rows for K step ``kk``.
-// Under a folded task, whose codes are 0 or in [64, 190], ``code << 23`` as a
-// float: 2 ** (code - 127), and 0.0 at code 0, which the promotion treats like
-// mxfp4_e8m0_value's 2 ** -127 because --use_fast_math flushes that subnormal
-// to zero. mxfp4_e8m0_value otherwise.
-__device__ __forceinline__ void mxfp4_token_scales(uint8_t const* tokens,
-                                                   int row0, int steps, int kk,
+// The token codes of a math thread's accumulator rows ``row0`` and
+// ``row0 + 8`` for K steps ``kk`` .. ``kk + 3`` (``kk`` a multiple of 4), a
+// byte a step, from ``tokens``' rows of ``steps`` codes back to back
+// (``steps`` a multiple of 16).
+__device__ __forceinline__ void mxfp4_token_words(uint8_t const* tokens,
+                                                  int row0, int steps, int kk,
+                                                  uint32_t* words) {
+  words[0] = *reinterpret_cast<uint32_t const*>(tokens + row0 * steps + kk);
+  words[1] =
+      *reinterpret_cast<uint32_t const*>(tokens + (row0 + 8) * steps + kk);
+}
+
+// The two token scales of a math thread's accumulator rows at step ``j`` of
+// mxfp4_token_words' words. Under a folded task, whose codes are 0 or in [64,
+// 190], ``code << 23`` as a float: 2 ** (code - 127), and 0.0 at code 0, which
+// the promotion treats like mxfp4_e8m0_value's 2 ** -127 because
+// --use_fast_math flushes that subnormal to zero. mxfp4_e8m0_value otherwise.
+__device__ __forceinline__ void mxfp4_token_scales(uint32_t const* words, int j,
                                                    bool fold, float* out) {
-  uint32_t const c0 = tokens[row0 * steps + kk];
-  uint32_t const c1 = tokens[(row0 + 8) * steps + kk];
+  uint32_t const c0 = (words[0] >> (8 * j)) & 0xffu;
+  uint32_t const c1 = (words[1] >> (8 * j)) & 0xffu;
   if (fold) {
     out[0] = __uint_as_float(c0 << 23);
     out[1] = __uint_as_float(c1 << 23);
