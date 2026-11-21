@@ -65,11 +65,11 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             return "does not support K and V other than matching 64 or 128"
         if call.seq_len < 1 or (call.seq_len == 1 and not call.varlen):
             return "serves prefill, which is more than one token per sequence"
-        return None
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GDNCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         arguments = dict(
             batch=call.batch,
             heads=call.heads,

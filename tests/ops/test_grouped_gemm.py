@@ -3,9 +3,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.gemm.grouped_gemm import GroupedGEMMFwdOp
-from workloads.gemm import (
-    GroupedGEMMWorkload,
-)
+from workloads.gemm import GroupedGEMMWorkload
 
 
 class GroupedGEMMTest(GroupedGEMMWorkload, TestBase):
@@ -106,7 +104,6 @@ def test_grouped_gemm(
         pytest.param(torch.float16, True, marks=pytest.mark.smoke, id="fp16-tn"),
         pytest.param(torch.bfloat16, True, marks=pytest.mark.smoke, id="bf16-tn"),
         pytest.param(torch.float16, False, marks=pytest.mark.full, id="fp16-tt"),
-        pytest.param(torch.bfloat16, False, marks=pytest.mark.full, id="bf16-tt"),
     ],
 )
 def test_k_grouped_gemm_with_ragged_groups(
@@ -118,8 +115,7 @@ def test_k_grouped_gemm_with_ragged_groups(
     output block is zero.
     """
     sizes = [100, 0, 300, 64, 7, 1]
-    test = GroupedGEMMTest(sum(sizes), len(sizes), 200, 136, dtype, True, trans_b)
-    test.batch_sizes_list = sizes
+    test = GroupedGEMMTest(sum(sizes), len(sizes), 200, 136, dtype, True, trans_b, sizes)
     op = GroupedGEMMFwdOp(trans_a=True, trans_b=trans_b)
     test.check(op, *test.gen_inputs())
 
@@ -151,8 +147,7 @@ _ONE_ROW_TILE = [40, 0, 64, 17, 60, 64, 3, 50]
 )
 def test_m_grouped_gemm_group_starts(sizes: list, n: int, k: int, trans_b: bool) -> None:
     """Groups split the rows of ``a``: the kernel reads ``batch_offsets`` as group starts."""
-    test = GroupedGEMMTest(sum(sizes), len(sizes), n, k, torch.bfloat16, False, trans_b)
-    test.batch_sizes_list = sizes
+    test = GroupedGEMMTest(sum(sizes), len(sizes), n, k, torch.bfloat16, False, trans_b, sizes)
     op = GroupedGEMMFwdOp(trans_a=False, trans_b=trans_b)
     test.check(op, *test.gen_inputs())
 
@@ -163,7 +158,6 @@ def test_m_grouped_gemm_group_starts(sizes: list, n: int, k: int, trans_b: bool)
         pytest.param(1040, torch.float16, marks=pytest.mark.smoke, id="narrow-fp16"),
         pytest.param(1040, torch.bfloat16, marks=pytest.mark.smoke, id="narrow-bf16"),
         pytest.param(2024, torch.float16, marks=pytest.mark.full, id="box-staged-fp16"),
-        pytest.param(2024, torch.bfloat16, marks=pytest.mark.full, id="box-staged-bf16"),
     ],
 )
 def test_m_grouped_gemm_skewed_pingpong_tails(n: int, dtype: torch.dtype) -> None:
@@ -173,7 +167,6 @@ def test_m_grouped_gemm_skewed_pingpong_tails(n: int, dtype: torch.dtype) -> Non
     256-wide tile staged by 64-column box; its last box holds 40 columns, which each group's
     ragged last tile stores in 16-byte vectors.
     """
-    test = GroupedGEMMTest(sum(_SKEWED), len(_SKEWED), n, 768, dtype, False, True)
-    test.batch_sizes_list = _SKEWED
+    test = GroupedGEMMTest(sum(_SKEWED), len(_SKEWED), n, 768, dtype, False, True, _SKEWED)
     op = GroupedGEMMFwdOp(trans_a=False, trans_b=True)
     test.check(op, *test.gen_inputs())

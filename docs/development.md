@@ -72,7 +72,7 @@ A test that needs CUDA carries `cuda_only("cuda-graph")`, `cuda_only("cuda-kerne
 ```bash
 python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
 python -m pytest -q -p tests.privateuse1.target --tileops-device=tileops_test --tileops-target=tileops_test \
-  -m smoke tests/ops tests/test_privateuse1_target.py
+  -m smoke tests/ops tests/test_privateuse1.py
 python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test --tileops-cuda-only-must-fail tests --ignore=tests/ops
 python -m pytest -q -p tests.privateuse1.target --tileops-device=tileops_test --tileops-target=tileops_test \
   --tileops-cuda-only-must-fail tests/ops

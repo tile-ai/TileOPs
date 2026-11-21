@@ -58,8 +58,9 @@ class FP8LightningIndexerFixture(FixtureBase):
             [
                 pytest.param(1, 4096, 32, 64, 8192, 1, True, False, marks=pytest.mark.smoke),
                 # The SM90 warp-specialized kernel's other instance: four queries of 64 heads
-                # of dim 128 a block, where 32 heads of dim 64 take eight.
-                pytest.param(1, 2048, 64, 128, 4096, 1, True, False, marks=pytest.mark.smoke),
+                # of dim 128 a block, where 32 heads of dim 64 take eight. Smoke checks it
+                # through the window tests below.
+                pytest.param(1, 2048, 64, 128, 4096, 1, True, False, marks=pytest.mark.full),
                 # Two batches, a partial last query block and key tile; the 65 blocks of eight
                 # queries fall short of any SM90 part's multiprocessors, so each block's keys
                 # split over several CTAs.

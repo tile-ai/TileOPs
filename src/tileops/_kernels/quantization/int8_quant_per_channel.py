@@ -60,7 +60,7 @@ def _quantize_rows(
     outside that range is divided again with IEEE division.
     """
     n = rows * k
-    vec = VECTOR_ACCESS_BYTES // torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    vec = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     aligned = k % vec == 0
     # The storage may end inside the last vector.
     ragged_end = n % vec != 0
@@ -396,7 +396,7 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
 def _smooth_quant_kernel(rows: int, k: int, dtype: str):
     """Build the smoothing and quantization of ``rows`` rows of ``k`` contiguous elements."""
     n = rows * k
-    vec = VECTOR_ACCESS_BYTES // torch.empty((), dtype=getattr(torch, dtype)).element_size()
+    vec = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
 
     @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _smooth_quant_func(
@@ -462,7 +462,7 @@ class _INT8QuantPerRowKernel(Kernel):
         return reason
 
     def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.dtype = call.dtype
         self.rows = call.rows
         self.cols = call.cols

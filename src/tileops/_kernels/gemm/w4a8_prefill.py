@@ -285,9 +285,9 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
         consumers = LAYOUT.consumer_threads
         # The first warp of the last consumer warpgroup issues the output stores.
         store_warp = (threads - WARPGROUP_THREADS) // WARP_LANES
-        # A single M tile needs only whole eight-token MMA groups covering m.
-        # Multiple M tiles retain the full width. Keep physical activation/output
-        # layouts and workspace pitch; transport only the live accumulator prefix.
+        # A single M tile runs only the whole eight-token MMA groups covering m; several M
+        # tiles run the full width. The activation, output and workspace keep the full
+        # tile's pitch; only the live accumulator prefix moves.
         active_tokens = min(block_m, -(-m // 8) * 8)
         active_regs = active_tokens // 2
         mma = f"tileops::w4a8_decode_mma<{active_tokens}>"
@@ -856,7 +856,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
 
     @classmethod
     def entry_for(cls, call: GEMMW4A8Call) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m, call.n, call.k, call.group_size, index)
         return identity, lambda: cls(call.m, call.n, call.k, device_index=index)
 
@@ -880,10 +880,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
         """A legal tile and schedule for this shape and device."""
         m, n, k = self.m, self.n, self.k
         hardware_sms = self.build_target.sm_count
-        block_m = next(
-            (t for t in GEMMW4A8PrefillKernel.token_tiles if m <= t),
-            GEMMW4A8PrefillKernel.token_tiles[-1],
-        )
+        block_m = next((t for t in self.token_tiles if m <= t), self.token_tiles[-1])
         if m > 128 and -(-m // 192) == -(-m // 256):
             block_m = 192
         # Up to K = 3584 a tile has few K steps, so an extra segment or a
@@ -901,7 +898,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
             and _balanced_wave(balanced, hardware_sms)
             and not one_segment
         ):
-            trial = next((t for t in GEMMW4A8PrefillKernel.token_tiles if -(-m // 2) <= t), 256)
+            trial = next((t for t in self.token_tiles if -(-m // 2) <= t), 256)
             if trial <= 128 and -(-m // trial) == 2:
                 block_m, short_dp = trial, True
         # Larger token tiles leave shared memory for fewer stages.
@@ -938,8 +935,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
             if 3 * sms <= 4 * tiles < 4 * sms and idle_groups <= idle_group_bound:
                 stream_k = 0
         else:
-            # A worker owns one CTA, or a pair of CTAs for cluster 2. Use the same
-            # units as _schedule for both the grid and the hardware capacity.
+            # A worker is one CTA, or the pair of a 2-CTA cluster, as in _schedule.
             workers = hardware_sms // cluster
             tiles = -(-m // block_m) * (-(-n // LAYOUT.block_n) // cluster)
             waves, tail = divmod(tiles, workers)

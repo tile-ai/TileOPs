@@ -26,23 +26,15 @@ from tileops._ops.elementwise import (
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
     AddBroadcastWorkload,
-    AddSameShapeCase,
     BinaryPositiveCase,
     BinarySameShapeCase,
     ElementwiseWorkload,
     Float16DivisorClassesWorkload,
-    FloorDivideCase,
     LerpCancellationWorkload,
     LerpCase,
     PowPositiveWorkload,
-    RemainderCase,
 )
 from workloads.numerics import compare_outputs
-
-
-class AddSameShapeTest(AddSameShapeCase, TestBase):
-    pass
-
 
 # coalesce_broadcast_dims unit tests
 
@@ -92,12 +84,12 @@ class AddSameShapeFixture(FixtureBase):
 
 @AddSameShapeFixture
 def test_add_same_shape(n_total: int, dtype: torch.dtype) -> None:
-    test = AddSameShapeTest(n_total, dtype)
+    test = BinarySameShapeTest(n_total, dtype, "AddFwdOp")
     op = AddFwdOp()
     test.check(op, *test.gen_inputs())
 
 
-# Broadcast pattern tests (L3)
+# Broadcast pattern tests
 
 
 class AddBroadcastFixture(FixtureBase):
@@ -274,10 +266,6 @@ class BinaryPositiveTest(BinaryPositiveCase, TestBase):
 # Same-shape correctness for simple binary arith ops
 
 
-class RemainderTest(RemainderCase, TestBase):
-    pass
-
-
 class PowPositiveTest(PowPositiveWorkload, TestBase):
     """Pow needs positive base and small exponent to avoid overflow in fp16."""
 
@@ -294,7 +282,11 @@ class BinaryArithOpFixture(FixtureBase):
                     MulFwdOp, lambda n, d: BinarySameShapeTest(n, d, "MulFwdOp"), id="mul"
                 ),
                 pytest.param(DivFwdOp, lambda n, d: BinaryPositiveTest(n, d, "DivFwdOp"), id="div"),
-                pytest.param(RemainderFwdOp, RemainderTest, id="remainder"),
+                pytest.param(
+                    RemainderFwdOp,
+                    lambda n, d: BinaryPositiveTest(n, d, "RemainderFwdOp"),
+                    id="remainder",
+                ),
                 pytest.param(PowFwdOp, PowPositiveTest, id="pow"),
                 pytest.param(
                     MaximumFwdOp,
@@ -339,13 +331,9 @@ class FloorDivideFixture(FixtureBase):
     ]
 
 
-class FloorDivideTest(FloorDivideCase, TestBase):
-    pass
-
-
 @FloorDivideFixture
 def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
-    test = FloorDivideTest(n_total, dtype)
+    test = BinaryPositiveTest(n_total, dtype, "FloorDivideFwdOp")
     op = FloorDivideFwdOp()
     test.check(op, *test.gen_inputs())
 
@@ -986,9 +974,6 @@ def test_max_min_optimized_large(op_cls, torch_ref, n_total: int, dtype: torch.d
     with torch.no_grad():
         out = op(a, b)
     compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (a, b)).verification(*(a, b)))
-
-
-# register_copy broadcast downgrade
 
 
 # request_tune() reaches the autotuner

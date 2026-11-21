@@ -1,9 +1,33 @@
-"""Unit tests for ``scripts/lint/bench_baseline_lint.py``."""
+"""The baseline lints: a bench file imports no baseline library itself, and compares against one."""
 
-import bench_baseline_lint as lint
+import baseline_import_lint
+import bench_baseline_lint
 import pytest
 
 pytestmark = pytest.mark.smoke
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import flashinfer\n",
+        "from fla.ops.gla import chunk_gla\n",
+        "def f():\n    try:\n        from vllm import _custom_ops\n    except ImportError:\n        pass\n",
+    ],
+    ids=["module", "from-submodule", "guarded-in-function"],
+)
+def test_an_import_of_a_baseline_library_is_flagged(source: str) -> None:
+    assert len(baseline_import_lint.findings(source)) == 1
+
+
+def test_the_harness_tools_and_the_resolvers_pass() -> None:
+    source = (
+        "import torch\nimport triton\n"
+        "from benchmarks.baselines import optional_baseline\n"
+        'chunk_gla = optional_baseline("fla.ops.gla", "fla", "chunk_gla")\n'
+    )
+    assert baseline_import_lint.findings(source) == []
+
 
 # Concatenated so this file does not carry the marker it tests.
 MARKER = "FIXME" + "(staged-rollout)"
@@ -37,9 +61,9 @@ BASELINED = [
 
 @pytest.mark.parametrize("source", UNBASELINED)
 def test_a_comparison_with_only_ours_is_reported(source: str) -> None:
-    assert lint.unbaselined_comparisons(source), source
+    assert bench_baseline_lint.unbaselined_comparisons(source), source
 
 
 @pytest.mark.parametrize("source", BASELINED)
 def test_a_comparison_with_a_baseline_or_a_marker_is_left_alone(source: str) -> None:
-    assert lint.unbaselined_comparisons(source) == [], source
+    assert bench_baseline_lint.unbaselined_comparisons(source) == [], source

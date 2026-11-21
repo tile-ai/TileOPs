@@ -383,12 +383,12 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         """
         reason = head_count_refusal(call.heads) or extent_refusal(call, reduces_v=False)
         if reason is not None or not call.smem_budget:
-            return reason
+            return reason or super().refusal(call)
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
         state_passes = (True, False) if cls._may_walk(c, k) else (False,)
         need = min(cls._lower_bound(c, k, v, elem, walk) for walk in state_passes)
         if need <= call.smem_budget:
-            return None
+            return super().refusal(call)
         return (
             f"needs at least {need} bytes of shared memory per block at chunk {c}, head dims "
             f"{k} / {v} in {call.dtype}; the device gives {call.smem_budget}"
@@ -453,7 +453,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             call.dim_v,
             cls.dtype_to_str(call.dtype),
         )
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*arguments, index), lambda: cls(*arguments)
 
     def __init__(
@@ -613,15 +613,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             return
         from tileops._kernels.autotune import autotune as tl_autotune
 
-        shape = (
-            self.batch,
-            self.head,
-            self.seq_len,
-            self.chunk_size,
-            self.dim_k,
-            self.dim_v,
-            self.dtype_str,
-        )
+        shape = self._shape
         default = self.default_config
         fused_configs, output_configs = chunk_gemm_configs(
             self.chunk_size, self.dim_v, self.dim_k, self.wgmma, walk=True
@@ -662,9 +654,10 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             }
         )
 
-    def _programs(self, cfg: dict):
-        """The w/u preparation, the state pass and the output pass *cfg* states."""
-        args = (
+    @property
+    def _shape(self) -> tuple:
+        """The leading arguments of every sub-kernel builder."""
+        return (
             self.batch,
             self.head,
             self.seq_len,
@@ -673,6 +666,10 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             self.dim_v,
             self.dtype_str,
         )
+
+    def _programs(self, cfg: dict):
+        """The w/u preparation, the state pass and the output pass *cfg* states."""
+        args = self._shape
         walk = self._walk
         fused_fn = fused_prepare_compute_w_u_tl(
             *args, late_v=self._fused_late_v, walk_operands=walk

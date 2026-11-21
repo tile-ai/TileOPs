@@ -338,7 +338,7 @@ def aggregate_bench_results(results: list[dict]) -> dict:
     return dict(ops)
 
 
-def _case_id(name: str) -> str:
+def case_id(name: str) -> str:
     """The parametrized part of a testcase name, which is the workload's own id and keys the
     row's history: renaming a test function keeps it. It is unique per op, which
     ``scripts/check_bench_coverage.py`` holds."""
@@ -349,7 +349,7 @@ def _case_id(name: str) -> str:
 
 def _dtypes_of(name: str) -> tuple[str, ...]:
     """The dtype names in a row's case id, in order."""
-    return tuple(t for t in _case_id(name).split("-") if _DTYPE_TOKEN.fullmatch(t))
+    return tuple(t for t in case_id(name).split("-") if _DTYPE_TOKEN.fullmatch(t))
 
 
 def count_bench_outcome(results: list[dict], outcome: str) -> int:
@@ -548,7 +548,7 @@ def _reportable(delta_ms: float, base: _Reading, curr_spread: float | None) -> b
 def _verdict_inputs(bench_ops: dict, history_runs: list[dict]):
     """Yield one verdict input per config with a positive reading and history."""
     for op, data in bench_ops.items():
-        current = frozenset(_case_id(cfg["name"]) for cfg in data["configs"])
+        current = frozenset(case_id(cfg["name"]) for cfg in data["configs"])
         for cfg in data["configs"]:
             lat, key = _conclusion(cfg)
             if lat is None or lat <= 0:
@@ -556,7 +556,7 @@ def _verdict_inputs(bench_ops: dict, history_runs: list[dict]):
             props = {k.removeprefix("tileops_"): v for k, v in cfg.items()}
             work = _work_counts(props, lat)
             readings = _config_readings(
-                history_runs, op, _case_id(cfg["name"]), key, work, current, props.get("l2_flush")
+                history_runs, op, case_id(cfg["name"]), key, work, current, props.get("l2_flush")
             )
             if readings:
                 yield op, cfg, lat, _spread(props), readings
@@ -896,7 +896,7 @@ def build_history_entry(bench_ops: dict, run: dict, coverage: list[dict] | None 
                 if bl_entry:
                     entry[btag] = bl_entry
             if entry:
-                cfg_data[_case_id(cfg["name"])] = entry
+                cfg_data[case_id(cfg["name"])] = entry
         if cfg_data:
             ops_data[op] = cfg_data
     entry = {

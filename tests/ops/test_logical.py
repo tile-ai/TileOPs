@@ -194,12 +194,7 @@ def test_logical_not_near_one_wave(tail: int, dtype: torch.dtype) -> None:
     test.check(LogicalNotFwdOp(), *test.gen_inputs())
 
 
-# Per-dtype correctness across the manifest dtype union for binary logical
-# ops. The manifest declares
-# ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``
-# for both LogicalAndFwdOp and LogicalOrFwdOp; the float path is covered
-# above. The int / bool cells exercise the kernel's non-zero truthiness
-# path on every manifest-declared integral dtype.
+# The integral and bool dtypes of the binary logical ops; the float ones are covered above.
 
 _INT_DTYPES = [torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64]
 _LOGICAL_OP_CASES = [

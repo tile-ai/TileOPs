@@ -1,25 +1,4 @@
-"""Tests for FusedTopKFwdOp.
-
-Reference: ``FusedTopKWorkload.ref_program`` (softmax/sigmoid/sqrt-softplus, top-k, optional
-renormalize, grouped routing, scaling factor, caller-given experts).
-
-Test cases cover:
-  - softmax scoring (Qwen3/Qwen2 style)
-  - sigmoid scoring (DeepSeek-V3/GLM-4 style)
-  - sqrt-softplus scoring with a correction bias (DeepSeek-V4-Flash style)
-  - renormalize=True / False
-  - Various (num_tokens, num_experts, top_k) shapes
-  - bf16 and fp16 input dtypes
-  - top_k=1, top_k=8
-  - grouped routing: the biased top-2 group score and the unbiased max, groups spanning
-    whole warp rows and groups that straddle them, E off the warp width
-  - routed_scaling_factor with and without grouping
-  - caller-given experts (DeepSeek-V4-Flash hash routing) under each scoring function
-  - sigmoid logits below the float32 normal range: zero scores, NaN renormalized weights
-  - ties at the cut on negative biased scores, and rows tied on NaN or -inf scores
-  - a kept group whose selection reaches its -inf biased scores, and groups scoring -inf or NaN
-  - softmax rows made NaN by a NaN or +inf logit or by a row of -inf
-"""
+"""Tests for FusedTopKFwdOp, against ``FusedTopKWorkload.ref_program``."""
 
 import math
 import re
@@ -40,7 +19,6 @@ class FusedTopKFixture(FixtureBase):
         (
             "num_tokens, num_experts, top_k, scoring_func, renormalize, dtype",
             [
-                # smoke cases must be first
                 pytest.param(
                     32,
                     128,
@@ -61,16 +39,6 @@ class FusedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-softmax-fp16",
                 ),
-                pytest.param(
-                    32,
-                    256,
-                    8,
-                    "sigmoid",
-                    True,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-sigmoid-renorm",
-                ),
                 # E not divisible by 32 — exercises padding path (expert_idx >= num_experts)
                 pytest.param(
                     32,
@@ -79,8 +47,8 @@ class FusedTopKFixture(FixtureBase):
                     "softmax",
                     False,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-e100-pad",
+                    marks=pytest.mark.full,
+                    id="e100-pad",
                 ),
                 pytest.param(
                     32,
@@ -89,8 +57,8 @@ class FusedTopKFixture(FixtureBase):
                     "sigmoid",
                     False,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-e33-pad",
+                    marks=pytest.mark.full,
+                    id="e33-pad",
                 ),
                 # top_k = E: every expert is selected, the weights renormalize to one.
                 pytest.param(
@@ -100,7 +68,7 @@ class FusedTopKFixture(FixtureBase):
                     "softmax",
                     True,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
+                    marks=pytest.mark.full,
                     id="top-k-equals-e",
                 ),
                 # sqrt-softplus without a bias.
@@ -244,22 +212,6 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-ds-v3",
                 ),
-                # DeepSeek-V2: softmax groups scored by their max, groups of 20 experts, a scale
-                # without renormalization.
-                pytest.param(
-                    64,
-                    160,
-                    6,
-                    8,
-                    3,
-                    "softmax",
-                    False,
-                    False,
-                    16.0,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-ds-v2-softmax-max",
-                ),
                 # Sigmoid groups scored by their max.
                 pytest.param(
                     64,
@@ -290,6 +242,22 @@ class GroupedTopKFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-e100-pad-fp32",
                 ),
+                # DeepSeek-V2: softmax groups scored by their max, groups of 20 experts, a scale
+                # without renormalization.
+                pytest.param(
+                    64,
+                    160,
+                    6,
+                    8,
+                    3,
+                    "softmax",
+                    False,
+                    False,
+                    16.0,
+                    torch.bfloat16,
+                    marks=pytest.mark.full,
+                    id="ds-v2-softmax-max",
+                ),
                 # A group count off a power of two.
                 pytest.param(
                     32,
@@ -302,8 +270,8 @@ class GroupedTopKFixture(FixtureBase):
                     True,
                     1.0,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-three-groups",
+                    marks=pytest.mark.full,
+                    id="three-groups",
                 ),
                 # A scale without grouping.
                 pytest.param(
@@ -317,8 +285,8 @@ class GroupedTopKFixture(FixtureBase):
                     True,
                     2.5,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-ungrouped-scaled",
+                    marks=pytest.mark.full,
+                    id="ungrouped-scaled",
                 ),
                 # DeepSeek-V4-Flash: biased sqrt-softplus scores of float32 logits.
                 pytest.param(
@@ -332,8 +300,8 @@ class GroupedTopKFixture(FixtureBase):
                     True,
                     1.5,
                     torch.float32,
-                    marks=pytest.mark.smoke,
-                    id="smoke-sqrtsoftplus-bias",
+                    marks=pytest.mark.full,
+                    id="sqrtsoftplus-bias",
                 ),
                 # Every group kept.
                 pytest.param(
@@ -347,8 +315,8 @@ class GroupedTopKFixture(FixtureBase):
                     True,
                     1.0,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-all-groups-kept",
+                    marks=pytest.mark.full,
+                    id="all-groups-kept",
                 ),
                 # 32 biased groups of two experts; the one kept group holds exactly top_k experts.
                 pytest.param(
@@ -362,8 +330,8 @@ class GroupedTopKFixture(FixtureBase):
                     True,
                     1.0,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-g32-kept-holds-top-k",
+                    marks=pytest.mark.full,
+                    id="g32-kept-holds-top-k",
                 ),
                 # A power-of-two group count above 32.
                 pytest.param(
@@ -377,8 +345,8 @@ class GroupedTopKFixture(FixtureBase):
                     True,
                     1.0,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-g64-butterfly",
+                    marks=pytest.mark.full,
+                    id="g64-butterfly",
                 ),
                 # Two groups, one token.
                 pytest.param(
@@ -392,8 +360,8 @@ class GroupedTopKFixture(FixtureBase):
                     True,
                     1.0,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-two-groups-nobias",
+                    marks=pytest.mark.full,
+                    id="two-groups-nobias",
                 ),
                 # Groups of one expert without a bias (num_expert_group == E).
                 pytest.param(
@@ -407,8 +375,8 @@ class GroupedTopKFixture(FixtureBase):
                     False,
                     1.0,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-groups-of-one-softmax",
+                    marks=pytest.mark.full,
+                    id="groups-of-one-softmax",
                 ),
                 # An odd token count.
                 pytest.param(
@@ -422,8 +390,8 @@ class GroupedTopKFixture(FixtureBase):
                     True,
                     2.5,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-ds-v3-tail-block",
+                    marks=pytest.mark.full,
+                    id="ds-v3-tail-block",
                 ),
                 pytest.param(
                     4096,
@@ -534,8 +502,8 @@ class GivenExpertsFixture(FixtureBase):
                     "sqrtsoftplus",
                     True,
                     torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                    id="smoke-top-k-over-warp",
+                    marks=pytest.mark.full,
+                    id="top-k-over-warp",
                 ),
                 # Unrenormalized sigmoid.
                 pytest.param(

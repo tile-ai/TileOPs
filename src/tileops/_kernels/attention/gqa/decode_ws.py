@@ -16,6 +16,8 @@ from tileops._kernels.attention.call_spec import AttentionCall, GQADenseFwdInter
 from tileops._kernels.attention.gqa.decode import GQADecodeKernel
 from tileops._kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
+    allocate_partials,
+    balanced_split,
     make_gqa_decode_bs1_combine,
 )
 from tileops._kernels.attention.online_softmax import make_apply_softcap, make_dense_sink_scale
@@ -212,14 +214,7 @@ def _gqa_decode_ws_kernel(
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
 
-                # Whole KV tiles split as evenly as possible: the first ``extra_tiles``
-                # splits take one tile more than the rest.
-                num_tiles = T.ceildiv(seqlen_kv, block_n)
-                base_tiles = num_tiles // num_split
-                extra_tiles = num_tiles % num_split
-                tiles_this_split = base_tiles + T.if_then_else(sid < extra_tiles, 1, 0)
-                base = (sid * base_tiles + T.min(sid, extra_tiles)) * block_n
-                this_len = T.max(T.min(seqlen_kv - base, tiles_this_split * block_n), 0)
+                base, this_len = balanced_split(seqlen_kv, block_n, num_split, sid)
                 loop_range = T.ceildiv(this_len, block_n)
 
                 tx = T.get_thread_binding()
@@ -578,10 +573,7 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         rows = self.seq_len_q * self.heads
         query = q.view(self.batch, rows, self.dim)
         num_split, overlap = self.plan(k.shape[1])
-        glse = torch.empty((self.batch, rows, num_split), dtype=torch.float32, device=q.device)
-        partial = torch.empty(
-            (self.batch, rows, num_split, self.dim), dtype=torch.float32, device=q.device
-        )
+        glse, partial = allocate_partials(q, self.batch, rows, self.dim, num_split)
         program = self.program(self._compile, num_split, overlap)
         output = program(query, k, v, glse, partial, sinks if self.has_sinks else query)
         return output.view_as(q)

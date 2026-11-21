@@ -21,6 +21,8 @@ The fragment may be wider than the row: columns past the row load zero and are n
 stored, and the mean divides by N.
 """
 
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -40,10 +42,10 @@ from tileops._kernels.norm.call_spec import (
 )
 from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._kernels.tiling import ALIGNMENT, align_up
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import (
     RESIDENT_CTAS,
     WARP_LANES,
-    WARP_SHUFFLE_STAGES,
 )
 
 __all__ = ["RMSNormKernel", "RMSNormPairedKernel", "RMSNormTwoPassKernel"]
@@ -185,8 +187,7 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec, blocks=1, *, zero_cent
             for p in T.unroll(held_n // 2):
                 part[0] += _square(held, p, 0, dtype)
                 part[0] += _square(held, p, 1, dtype)
-            for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                part[0] += T.shfl_xor(part[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES)
+            warp_reduce(part, operator.add, high_first=True)
             if tx % WARP_LANES == 0:
                 warp_sum[tx // WARP_LANES] = part[0]
             if has_weight:
@@ -267,18 +268,14 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tre
                 for p in T.unroll(width // 2):
                     part[0] += _square(held, p, 0, dtype)
                     part[0] += _square(held, p, 1, dtype)
-            for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                part[0] += T.shfl_xor(part[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES)
+            warp_reduce(part, operator.add, high_first=True)
             if tx % WARP_LANES == 0:
                 warp_sum[tx // WARP_LANES] = part[0]
             T.sync_threads()
             if tree:
                 # Lane l holds warp l's sum; the warps are a power of two of at most 32.
                 part[0] = warp_sum[tx % num_warps]
-                for stage in T.unroll(num_warps.bit_length() - 1):
-                    part[0] += T.shfl_xor(
-                        part[0], T.int32(num_warps // 2) >> stage, width=WARP_LANES
-                    )
+                warp_reduce(part, operator.add, lanes=num_warps, high_first=True)
             else:
                 part[0] = warp_sum[0]
                 for w in T.unroll(1, num_warps):
@@ -321,7 +318,6 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps, rows, zero_
     vec = N // (lanes * per_lane)
     held_n = per_lane * vec
     groups = WARP_LANES // lanes * warps
-    stages = lanes.bit_length() - 1
 
     @T.prim_func
     def main(
@@ -355,9 +351,7 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps, rows, zero_
                     part[r] += _square(held, r * held_n // 2 + p, 0, dtype)
                     part[r] += _square(held, r * held_n // 2 + p, 1, dtype)
             # The rows' shuffles interleave, so one row's latency hides behind the next's.
-            for s in T.unroll(stages):
-                for r in T.unroll(rows):
-                    part[r] += T.shfl_xor(part[r], T.shift_left(1, s))
+            warp_reduce(part, operator.add, rows, lanes=lanes)
             for r in T.unroll(rows):
                 part[r] = T.rsqrt(part[r] / float(N) + eps)
                 for p in T.unroll(held_n // 2):

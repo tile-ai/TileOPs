@@ -16,17 +16,15 @@ from tileops._kernels.constants import (
 )
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
-    DEFAULT_ALIGNMENT,
     restore_same_shape,
     rows_for_axes,
-    torch_dtype_nbytes,
 )
 from tileops._kernels.reduction.call_spec import (
     CumprodFwdInterface,
     CumsumFwdInterface,
     CumulativeCall,
 )
-from tileops._kernels.tiling import align_up
+from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES
 
 __all__ = [
@@ -128,10 +126,7 @@ def _chunk_vec(chunk_len: int, dtype: str) -> int:
 
     The staging pad is whole vectors, so every chunk then starts on one.
     """
-    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
-    while chunk_len % vec:
-        vec //= 2
-    return vec
+    return math.gcd(chunk_len, VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize)
 
 
 @target_cache(maxsize=32)
@@ -186,8 +181,8 @@ def _row_scan_kernel(
     # The totals ahead are combined over a fragment, and a fragment's layout gives every
     # thread the same number of its elements.
     n_ahead = -(-n_seg // threads) * threads
-    pad = _row_scan_pad(chunk_len, torch_dtype_nbytes(dtype))
-    out_pad = _row_scan_pad(chunk_len, torch_dtype_nbytes(out_dtype))
+    pad = _row_scan_pad(chunk_len, getattr(torch, dtype).itemsize)
+    out_pad = _row_scan_pad(chunk_len, getattr(torch, out_dtype).itemsize)
     vec = _chunk_vec(chunk_len, dtype)
     out_vec = _chunk_vec(chunk_len, out_dtype)
     # Shuffle steps to scan one warp's lanes, and the warps a block holds.
@@ -362,18 +357,12 @@ def _segment_totals_kernel(M: int, N: int, op_kind: str, dtype: str, threads: in
 
 @target_cache(maxsize=32)
 def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str, out_dtype: str, smem_pad: int):
-    """Build a TileLang inclusive prefix scan kernel.
+    """Build an inclusive prefix scan, ``block_m`` rows a block walked over ``block_n`` tiles.
 
-    Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
-    ``block_n`` (which must divide ``N_padded``), the last tile uses
-    element-wise ``T.if_then_else`` loads that substitute the identity
-    element (0 for sum, 1 for prod) for out-of-bounds columns.  Preceding
-    tiles use the fast vectorized ``T.copy`` path since their columns are
-    fully in-bounds.
-
-    Uses a tiled approach: the N dimension is divided into tiles of
-    ``block_n`` elements. Each tile is loaded via shared memory, scanned
-    sequentially with the running accumulator, and written back.
+    Each tile is staged through shared memory, scanned serially with the running
+    accumulator, and written back. When ``N`` is not a multiple of ``block_n`` (which must
+    divide ``N_padded``), the last tile is read element-wise, the identity (0 for sum, 1
+    for prod) standing in for the columns past the row end.
 
     Args:
         M: Number of rows (product of all leading dimensions).
@@ -381,165 +370,77 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str, out_dtype: str,
         op_kind: One of "sum", "prod".
         dtype: TileLang dtype string of the input (e.g. "float16", "bfloat16", "float32").
         out_dtype: TileLang dtype string of the output.
+        smem_pad: Columns padding each row of a shared tile.
 
     Returns:
         A TileLang JIT-compiled kernel factory accepting (block_m, block_n, threads).
     """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    _identity = 0.0 if op_kind == "sum" else 1.0
+    N_padded = align_up(N, ALIGNMENT)
+    identity, combine = _identity_and_combine(op_kind)
 
-    if op_kind == "sum":
+    @tilelang.jit(out_idx=[1])
+    def _func(block_m, block_n, threads):
+        n_tiles = N_padded // block_n
+        needs_mask = n_tiles * block_n > N
 
-        @tilelang.jit(out_idx=[1])
-        def _func(block_m, block_n, threads):
-            n_tiles = N_padded // block_n
-            # The last tile may have out-of-bounds columns when N is not
-            # a multiple of block_n.
-            _needs_mask = (n_tiles * block_n) > N
+        @T.macro
+        def staged_tile(x, shared_in, tile_f32, pid_m, tile_idx):
+            for i, j in T.Parallel(block_m, block_n):
+                with T.If(pid_m * block_m + i < M):  # noqa: SIM117
+                    with T.Then():
+                        shared_in[i, j] = x[pid_m * block_m + i, tile_idx * block_n + j]
+            for i, j in T.Parallel(block_m, block_n):
+                tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
 
-            @T.prim_func
-            def main(
-                x: T.Tensor[(M, N), dtype],
-                y: T.Tensor[(M, N_padded), out_dtype],
-            ):
-                with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    shared_in = T.alloc_shared((block_m, block_n + smem_pad), dtype)
-                    shared_out = T.alloc_shared((block_m, block_n + smem_pad), out_dtype)
-                    tile_f32 = T.alloc_fragment((block_m, block_n), "float32")
-                    out_f32 = T.alloc_fragment((block_m, block_n), "float32")
-                    acc = T.alloc_fragment((block_m,), "float32")
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            y: T.Tensor[(M, N_padded), out_dtype],
+        ):
+            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                shared_in = T.alloc_shared((block_m, block_n + smem_pad), dtype)
+                shared_out = T.alloc_shared((block_m, block_n + smem_pad), out_dtype)
+                tile_f32 = T.alloc_fragment((block_m, block_n), "float32")
+                out_f32 = T.alloc_fragment((block_m, block_n), "float32")
+                acc = T.alloc_fragment((block_m,), "float32")
 
-                    for i in T.Parallel(block_m):
-                        acc[i] = T.float32(0)
+                for i in T.Parallel(block_m):
+                    acc[i] = T.float32(identity)
 
-                    for tile_idx in T.Serial(n_tiles):
-                        if _needs_mask:
-                            with T.If((tile_idx + 1) * block_n <= N):
-                                with T.Then():
-                                    for i, j in T.Parallel(block_m, block_n):
-                                        with T.If(pid_m * block_m + i < M):  # noqa: SIM117
-                                            with T.Then():
-                                                shared_in[i, j] = x[
-                                                    pid_m * block_m + i, tile_idx * block_n + j
-                                                ]
-                                    for i, j in T.Parallel(block_m, block_n):
-                                        tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
-                                with T.Else():
-                                    for i, j in T.Parallel(block_m, block_n):
-                                        tile_f32[i, j] = T.if_then_else(
-                                            T.And(
-                                                pid_m * block_m + i < M,
-                                                tile_idx * block_n + j < N,
-                                            ),
-                                            T.cast(
-                                                x[pid_m * block_m + i, tile_idx * block_n + j],
-                                                "float32",
-                                            ),
-                                            T.cast(_identity, "float32"),
-                                        )
-                        else:
-                            for i, j in T.Parallel(block_m, block_n):
-                                with T.If(pid_m * block_m + i < M):  # noqa: SIM117
-                                    with T.Then():
-                                        shared_in[i, j] = x[
-                                            pid_m * block_m + i, tile_idx * block_n + j
-                                        ]
-                            for i, j in T.Parallel(block_m, block_n):
-                                tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
-
-                        for i in T.Parallel(block_m):
-                            for j in T.Serial(block_n):
-                                acc[i] = acc[i] + tile_f32[i, j]
-                                out_f32[i, j] = acc[i]
-
-                        # Cast back to shared_out (padded) then write to global with M bounds check
-                        for i, j in T.Parallel(block_m, block_n):
-                            shared_out[i, j] = T.cast(out_f32[i, j], out_dtype)
-                        for i, j in T.Parallel(block_m, block_n):
-                            # TileLang requires T.If/T.Then as nested context managers
-                            with T.If(pid_m * block_m + i < M):  # noqa: SIM117
-                                with T.Then():
-                                    y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[
-                                        i, j
-                                    ]
-
-            return main
-
-    else:  # prod
-
-        @tilelang.jit(out_idx=[1])
-        def _func(block_m, block_n, threads):
-            n_tiles = N_padded // block_n
-            _needs_mask = (n_tiles * block_n) > N
-
-            @T.prim_func
-            def main(
-                x: T.Tensor[(M, N), dtype],
-                y: T.Tensor[(M, N_padded), out_dtype],
-            ):
-                with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                    shared_in = T.alloc_shared((block_m, block_n + smem_pad), dtype)
-                    shared_out = T.alloc_shared((block_m, block_n + smem_pad), out_dtype)
-                    tile_f32 = T.alloc_fragment((block_m, block_n), "float32")
-                    out_f32 = T.alloc_fragment((block_m, block_n), "float32")
-                    acc = T.alloc_fragment((block_m,), "float32")
+                for tile_idx in T.Serial(n_tiles):
+                    if needs_mask:
+                        with T.If((tile_idx + 1) * block_n <= N):
+                            with T.Then():
+                                staged_tile(x, shared_in, tile_f32, pid_m, tile_idx)
+                            with T.Else():
+                                for i, j in T.Parallel(block_m, block_n):
+                                    tile_f32[i, j] = T.if_then_else(
+                                        T.And(
+                                            pid_m * block_m + i < M,
+                                            tile_idx * block_n + j < N,
+                                        ),
+                                        T.cast(
+                                            x[pid_m * block_m + i, tile_idx * block_n + j],
+                                            "float32",
+                                        ),
+                                        T.cast(identity, "float32"),
+                                    )
+                    else:
+                        staged_tile(x, shared_in, tile_f32, pid_m, tile_idx)
 
                     for i in T.Parallel(block_m):
-                        acc[i] = T.float32(1)
+                        for j in T.Serial(block_n):
+                            acc[i] = combine(acc[i], tile_f32[i, j])
+                            out_f32[i, j] = acc[i]
 
-                    # Process N dimension in tiles
-                    for tile_idx in T.Serial(n_tiles):
-                        if _needs_mask:
-                            with T.If((tile_idx + 1) * block_n <= N):
-                                with T.Then():
-                                    for i, j in T.Parallel(block_m, block_n):
-                                        with T.If(pid_m * block_m + i < M):  # noqa: SIM117
-                                            with T.Then():
-                                                shared_in[i, j] = x[
-                                                    pid_m * block_m + i, tile_idx * block_n + j
-                                                ]
-                                    for i, j in T.Parallel(block_m, block_n):
-                                        tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
-                                with T.Else():
-                                    for i, j in T.Parallel(block_m, block_n):
-                                        tile_f32[i, j] = T.if_then_else(
-                                            T.And(
-                                                pid_m * block_m + i < M,
-                                                tile_idx * block_n + j < N,
-                                            ),
-                                            T.cast(
-                                                x[pid_m * block_m + i, tile_idx * block_n + j],
-                                                "float32",
-                                            ),
-                                            T.cast(_identity, "float32"),
-                                        )
-                        else:
-                            for i, j in T.Parallel(block_m, block_n):
-                                with T.If(pid_m * block_m + i < M):  # noqa: SIM117
-                                    with T.Then():
-                                        shared_in[i, j] = x[
-                                            pid_m * block_m + i, tile_idx * block_n + j
-                                        ]
-                            for i, j in T.Parallel(block_m, block_n):
-                                tile_f32[i, j] = T.cast(shared_in[i, j], "float32")
+                    for i, j in T.Parallel(block_m, block_n):
+                        shared_out[i, j] = T.cast(out_f32[i, j], out_dtype)
+                    for i, j in T.Parallel(block_m, block_n):
+                        with T.If(pid_m * block_m + i < M):  # noqa: SIM117
+                            with T.Then():
+                                y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[i, j]
 
-                        for i in T.Parallel(block_m):
-                            for j in T.Serial(block_n):
-                                acc[i] = acc[i] * tile_f32[i, j]
-                                out_f32[i, j] = acc[i]
-
-                        # Cast back to shared_out (padded) then write to global with M bounds check
-                        for i, j in T.Parallel(block_m, block_n):
-                            shared_out[i, j] = T.cast(out_f32[i, j], out_dtype)
-                        for i, j in T.Parallel(block_m, block_n):
-                            # TileLang requires T.If/T.Then as nested context managers
-                            with T.If(pid_m * block_m + i < M):  # noqa: SIM117
-                                with T.Then():
-                                    y[pid_m * block_m + i, tile_idx * block_n + j] = shared_out[
-                                        i, j
-                                    ]
-
-            return main
+        return main
 
     return _func
 
@@ -563,8 +464,8 @@ class _CumulativeKernelBase(Kernel):
         N_padded: int, dtype: torch.dtype, out_dtype: torch.dtype, smem_budget: int
     ) -> bool:
         """Whether a row of *N_padded* can be scanned by one thread block."""
-        out_bytes = torch_dtype_nbytes(out_dtype)
-        narrow = min(torch_dtype_nbytes(dtype), out_bytes)
+        out_bytes = out_dtype.itemsize
+        narrow = min(dtype.itemsize, out_bytes)
         threads = _row_scan_threads(N_padded, narrow, out_bytes)
         if N_padded % threads:
             return False
@@ -572,7 +473,7 @@ class _CumulativeKernelBase(Kernel):
         # The input's staging tile and the output's never live at once, so they share
         # one allocation.
         staged = max(
-            threads * (chunk + _row_scan_pad(chunk, torch_dtype_nbytes(t))) * torch_dtype_nbytes(t)
+            threads * (chunk + _row_scan_pad(chunk, t.itemsize)) * t.itemsize
             for t in (dtype, out_dtype)
         )
         return staged <= smem_budget and _row_scan_chunk_ok(chunk, narrow, out_bytes, threads)
@@ -582,7 +483,7 @@ class _CumulativeKernelBase(Kernel):
     @classmethod
     def stages_whole_row(cls, call: CumulativeCall) -> bool:
         """Whether one thread block stages the whole row, aligned, in shared memory."""
-        n_padded = align_up(call.n, DEFAULT_ALIGNMENT)
+        n_padded = align_up(call.n, ALIGNMENT)
         return n_padded == call.n and cls.row_scan_fits(
             n_padded, call.dtype, call.out_dtype, call.smem_budget
         )
@@ -596,11 +497,11 @@ class _CumulativeKernelBase(Kernel):
         idle while each walks a long chunk, and spreading the row over segments pays for
         the segmented scan's second launch.
         """
-        row_bytes = call.n * max(torch_dtype_nbytes(call.dtype), torch_dtype_nbytes(call.out_dtype))
+        row_bytes = call.n * max(call.dtype.itemsize, call.out_dtype.itemsize)
         return row_bytes >= 64 * 1024 and call.m * 4096 <= row_bytes
 
     def __init__(self, call: CumulativeCall, config: dict | None = None):
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         if call.op_kind not in ("sum", "prod"):
             raise ValueError(
                 f"Unsupported op_kind '{call.op_kind}'. Expected one of 'sum', 'prod'."
@@ -611,9 +512,9 @@ class _CumulativeKernelBase(Kernel):
         self.dtype = call.dtype
         self.out_dtype_str = self.dtype_to_str(call.out_dtype)
         self.scan_axis = call.axis
-        self.N_padded = align_up(self.N, DEFAULT_ALIGNMENT)
-        self._elem_bytes = torch_dtype_nbytes(self.dtype)
-        self._out_elem_bytes = torch_dtype_nbytes(call.out_dtype)
+        self.N_padded = align_up(self.N, ALIGNMENT)
+        self._elem_bytes = self.dtype.itemsize
+        self._out_elem_bytes = call.out_dtype.itemsize
         self.kernel = self._program()
         self.init_config(config)
 
@@ -894,7 +795,7 @@ class CumulativeKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInte
 
     @property
     def default_config(self) -> dict:
-        # A multiple of DEFAULT_ALIGNMENT, so T.copy keeps the shared tile aligned.
+        # A multiple of ALIGNMENT, so T.copy keeps the shared tile aligned.
         block_n = 128
         # The input's and the output's shared tile.
         smem_per_row = (block_n + self._SMEM_PAD) * (self._elem_bytes + self._out_elem_bytes)
@@ -914,10 +815,8 @@ class CumulativeKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInte
     def autotune_configs(self) -> list[dict]:
         configs = []
         for block_n in [128, 256]:
-            # block_n must evenly divide N_padded
             if self.N_padded % block_n != 0:
                 continue
-            # Account for padding in shared memory budget calculation
             smem_per_row = (block_n + self._SMEM_PAD) * (self._elem_bytes + self._out_elem_bytes)
             max_block_m = STATIC_SHARED_BYTES // smem_per_row
             block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]

@@ -253,7 +253,7 @@ def _dense_entry(cls: type, call: GEMMCall) -> Entry:
 
     The device is in the identity: its SM count and name pick the config.
     """
-    index = call.device.index if call.device is not None else None
+    index = call.device_index
     identity = (
         call.m,
         call.n,
@@ -310,7 +310,7 @@ class _GEMMFP8Kernel(Kernel, GEMMFP8FwdInterface):
 
     @classmethod
     def entry_for(cls, call: GEMMFP8Call) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (
             call.m,
             call.n,
@@ -4476,7 +4476,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
 
         The device is in the identity: the ``lhs_rows`` band's config reads its SM count.
         """
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         band = cls.band_for(call)
         identity = (band, call.m, call.n, call.k, call.dtype, call.out_dtype, index)
         return identity, lambda: cls(

@@ -147,7 +147,8 @@ def fill_with_ties(x: torch.Tensor, group: int, ties: tuple[float, ...], octaves
     rows[1::5] = 0
 
 
-# Midpoints between adjacent e2m1 magnitudes 0, 0.5, 1, 1.5, 2, 3, 4, 6.
+# Midpoints between adjacent e2m1 magnitudes 0, 0.5, 1, 1.5, 2, 3, 4, 6: the rounding
+# reference and the ties workload must agree on them.
 _E2M1_MIDPOINTS = (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0)
 
 
@@ -177,9 +178,7 @@ def unpack_e2m1(packed: torch.Tensor) -> torch.Tensor:
 
 
 def fp4_quant_per_group(
-    x: torch.Tensor,
-    block_size: int = 32,
-    inplace: bool = False,
+    x: torch.Tensor, block_size: int, inplace: bool
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     """``FP4QuantPerGroupFwdOp``'s reference, DeepSeek-V4-Flash ``inference/kernel.py``
     ``fp4_act_quant``: per *block_size* elements along the last axis the scale is
@@ -332,38 +331,6 @@ class FP4QuantViewWorkload(StridedInput, FP4QuantWorkload):
     """``FP4QuantWorkload`` on a strided ``x``."""
 
 
-# The e2m1 midpoints under a scale of 1, which a block whose maximum is 6 has, each tie
-# going to the even code; signed zeros; and values below the first midpoint.
-_E2M1_TIES = (
-    6.0,
-    0.25,
-    0.75,
-    1.25,
-    1.75,
-    2.5,
-    3.5,
-    5.0,
-    -0.25,
-    -0.75,
-    -1.25,
-    -1.75,
-    -2.5,
-    -3.5,
-    -5.0,
-    -6.0,
-    0.0,
-    -0.0,
-    0.1875,
-    -0.1875,
-    0.3125,
-    4.5,
-    5.5,
-    -5.5,
-    1e-3,
-    -1e-3,
-)
-
-
 class FP4QuantTiesWorkload(FP4QuantWorkload):
     """The workload on rows of e2m1 rounding ties, each row scaled by its own power of two
     from ``2 ** -126``, where the smaller ties are ``bfloat16`` subnormals, to ``2 ** 125``,
@@ -371,7 +338,25 @@ class FP4QuantTiesWorkload(FP4QuantWorkload):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         (x,) = super().gen_inputs()
-        fill_with_ties(x, self.block_size, _E2M1_TIES, 252)
+        # The e2m1 midpoints under a scale of 1, which a block whose maximum is 6 has, each
+        # tie going to the even code; signed zeros; and values below the first midpoint.
+        ties = (
+            6.0,
+            *_E2M1_MIDPOINTS,
+            *(-m for m in _E2M1_MIDPOINTS),
+            -6.0,
+            0.0,
+            -0.0,
+            0.1875,
+            -0.1875,
+            0.3125,
+            4.5,
+            5.5,
+            -5.5,
+            1e-3,
+            -1e-3,
+        )
+        fill_with_ties(x, self.block_size, ties, 252)
         return (x,)
 
 

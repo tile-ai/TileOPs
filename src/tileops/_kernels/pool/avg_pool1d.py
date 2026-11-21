@@ -16,7 +16,6 @@ from tileops._kernels.pool.common import (
     ACCUM_DTYPE,
     AvgPoolWindow,
     WindowSpan,
-    dtype_itemsize,
     window_span,
 )
 
@@ -69,10 +68,10 @@ class _WindowStaging:
 
     def widths(self) -> list[int]:
         """The tile widths whose span fits the static shared budget, widest first."""
-        budget = STATIC_SHARED_BYTES // dtype_itemsize(self._dtype)
+        budget = STATIC_SHARED_BYTES // getattr(torch, self._dtype).itemsize
         fitting = [width for width in self._TILE_CHOICES if self._span(width).span <= budget]
         if not fitting:
-            need = self._span(1).span * dtype_itemsize(self._dtype)
+            need = self._span(1).span * getattr(torch, self._dtype).itemsize
             raise ValueError(
                 f"avg_pool1d stages the pooling window in shared memory: kernel_size="
                 f"{self._kernel_l} needs {need} B for a single output, over the "
@@ -268,7 +267,7 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
     @classmethod
-    def refusal(cls, call: AvgPoolCall) -> "str | None":
+    def refusal(cls, call: AvgPoolCall) -> str | None:
         if len(call.size) == 1:
             (l_in,) = call.size
             (out_l,) = AvgPoolWindow.of(call).out

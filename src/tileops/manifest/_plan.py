@@ -29,6 +29,7 @@ from tileops.manifest._expr import (
     member_kind,
     names,
     parse,
+    value_names,
 )
 from tileops.manifest._kinds import (
     BOOL,
@@ -49,6 +50,7 @@ from tileops.manifest._signature import (
     branch,
     call_scalar_lets,
     complete_point,
+    components,
     discriminant_groups,
     dtype_kind,
     elementwise,
@@ -72,6 +74,7 @@ __all__ = [
     "check_entry",
     "effect_errors",
     "entry_plan",
+    "parse_call",
     "roofline_plan",
     "signature_schema_errors",
 ]
@@ -143,7 +146,8 @@ def _formula_reads(node: ast.expr) -> set[str]:
     return names(Unpresent().visit(_Unbytes().visit(copy.deepcopy(node))))
 
 
-def _call_or_none(text: object) -> ast.Call | None:
+def parse_call(text: object) -> ast.Call | None:
+    """The call `text` writes; None when it does not parse to a call."""
     try:
         node = parse(text)
     except SignatureError:
@@ -201,13 +205,13 @@ class EntryPlan:
             if t.name not in b.shapes:
                 continue
             # A call that is not well formed is `check_workloads`' to report.
-            if (call := _call_or_none(t.values)) is not None:
+            if (call := parse_call(t.values)) is not None:
                 generators[t.name] = [
                     fold(a, point, f"tensor {t.name!r} values") for a in call.args
                 ]
                 relevant |= set().union(set(), *(names(a) for a in generators[t.name])) - tensors
             requires[t.name] = []
-            for call in filter(None, map(_call_or_none, t.requires)):
+            for call in filter(None, map(parse_call, t.requires)):
                 call.args = [fold(a, point, f"tensor {t.name!r} requires") for a in call.args]
                 requires[t.name].append(call)
             relevant |= set().union(set(), *(names(r) for r in requires[t.name])) - tensors
@@ -259,12 +263,7 @@ def roofline_plan(
         errors.append("roofline gives either `flops` (and optional `bytes`) or `func`")
     if "func" in roofline:
         path, fn = roofline["func"], None
-        parts = path.split(".") if isinstance(path, str) else []
-        if not (
-            len(parts) > 1
-            and all(p.isidentifier() for p in parts)
-            and path.startswith("tileops._perf.formulas.")
-        ):
+        if not (_qualified(path) and path.startswith("tileops._perf.formulas.")):
             errors.append(f"roofline.func {path!r} is not tileops._perf.formulas.<name>")
         elif resolve:
             module, _, attr = path.rpartition(".")
@@ -547,10 +546,8 @@ def _family_env(formals: dict, sig: Signature) -> KindEnv:
 
 def _case_facts(spec: dict, case: dict) -> dict:
     """What a case's pattern fixes: each ADT formal's constructor, as `w`, and its fields, `w.f`."""
-    keys = spec["match"] if isinstance(spec["match"], list) else [spec["match"]]
-    patterns = case["when"] if isinstance(case["when"], list) else [case["when"]]
     facts = {}
-    for k, p in zip(keys, patterns, strict=False):
+    for k, p in zip(components(spec["match"]), components(case["when"]), strict=False):
         if isinstance(p, dict) and len(p) == 1:
             ((ctor, fields),) = p.items()
             facts[k] = ctor
@@ -575,7 +572,7 @@ def _family_errors(fam: str, spec: object, sig: Signature) -> list[str]:
         for p in formals
         if not (isinstance(p, str) and p.isidentifier()) or p not in env.kinds
     ]
-    keys = spec["match"] if isinstance(spec["match"], list) else [spec["match"]]
+    keys = components(spec["match"])
     kinds = []
     for key in keys:
         where = f"type family {fam} match {key!r}"
@@ -606,7 +603,7 @@ def _family_errors(fam: str, spec: object, sig: Signature) -> list[str]:
         if not isinstance(case, dict) or set(case) != {"when", "is"}:
             errors.append(f"{where}: needs exactly `when` and `is`")
             continue
-        patterns = case["when"] if isinstance(case["when"], list) else [case["when"]]
+        patterns = components(case["when"])
         if len(patterns) != len(keys):
             errors.append(f"{where}: {len(patterns)} components, `match` has {len(keys)}")
             continue
@@ -698,13 +695,6 @@ def _shape_errors(node: ast.expr | None, env: KindEnv, where: str, families: dic
     return [f"{where}: {ast.unparse(node)!r} is not a list or a type-family application"]
 
 
-# The effect declarations, which a tensor sequence and an argument with a scalar member do not
-# take.
-_EFFECTS = {"mutated": "mutated", "write_only": "write_only", "overlaps": "overlaps"}
-# The declarations on one tensor's contents and device, which a tensor sequence does not take.
-_CONTENTS = {"cpu": "device", "values": "values", "requires": "requires"}
-
-
 def _argument_errors(sig: Signature) -> list[str]:
     """Diagnostics of each input's argument type.
 
@@ -713,6 +703,10 @@ def _argument_errors(sig: Signature) -> list[str]:
     scalar member, no contents or device declaration sits on a sequence, and no operator slot
     takes another argument's name.
     """
+    # `Tensor` attribute -> manifest key. A tensor sequence takes neither group; an argument
+    # with a scalar member takes no effect.
+    effects = {"mutated": "mutated", "write_only": "write_only", "overlaps": "overlaps"}
+    contents = {"cpu": "device", "values": "values", "requires": "requires"}
     errors, each = [], elementwise(sig)
     for t in sig.inputs.values():
         where, found = f"tensor {t.name!r}", t.members
@@ -720,7 +714,7 @@ def _argument_errors(sig: Signature) -> list[str]:
             errors.append(f"{where}: type {t.type!r} holds no tensor; a scalar is a parameter")
         if t.sequence and len(found) > 1:
             errors.append(f"{where}: `list[Tensor]` is not yet a member of a union")
-        barred = {**_EFFECTS, **_CONTENTS} if t.sequence else _EFFECTS if t.scalars else {}
+        barred = {**effects, **contents} if t.sequence else effects if t.scalars else {}
         keys = [k for a, k in barred.items() if getattr(t, a)]
         if keys:
             errors.append(f"{where}: {keys} apply to one tensor, not to type {t.type!r}")
@@ -847,7 +841,7 @@ def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str
             if key.startswith("type family ")
             else set()
         )
-        read = names(Unpresent().visit(copy.deepcopy(node))) - formals
+        read = value_names(node) - formals
         refining = key.startswith("shape_rules") or key[len("let ") :] in scalar_lets
         values = scalar_inputs if refining else set()
         errors += [

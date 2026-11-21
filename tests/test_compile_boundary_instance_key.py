@@ -6,6 +6,7 @@ whose fakes agree, and a key must resolve to the one instance it was made for.
 """
 
 import dataclasses
+import weakref
 
 import pytest
 import torch
@@ -38,6 +39,18 @@ def test_a_key_resolves_to_its_own_instance():
     assert ka.startswith(f"{__name__}._Marker#")
     odd = type("Odd#-Name", (), {})()
     assert get_instance(instance_key(register_instance(odd), (1,))) is odd
+
+
+def test_a_collected_instances_key_is_never_handed_out_again():
+    """An op reaching a used key would inherit that op's compiled shapes."""
+    keys = set()
+    for _ in range(50):
+        op = _Marker()
+        keys.add(instance_key(register_instance(op), ()))
+        ref = weakref.ref(op)
+        del op
+        assert ref() is None
+    assert len(keys) == 50
 
 
 def test_a_value_edited_in_place_changes_its_key():
@@ -118,9 +131,9 @@ def _keys(member_value: int) -> list[str]:
 
 
 def test_two_processes_share_a_key_exactly_when_the_state_agrees():
-    """The failure this guards: `MaxPool1dFwdOp#3` named a stride-2 instance in one run and
-    a stride-1 instance in the next, so the second run loaded the first run's artifact and
-    asserted on its output shape."""
+    """A key names the same fake in every process: an ordinal alone could name instances
+    of different params in two runs, and the second would load the first's compiled
+    artifact."""
     first, second, other = _keys(1), _keys(1), _keys(2)
     stable = 6
     assert first[:stable] == second[:stable]

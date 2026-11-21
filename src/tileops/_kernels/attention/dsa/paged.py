@@ -15,24 +15,11 @@ from tilelang.layout import make_swizzled_layout
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import DSAPagedCall, DSAPagedFwdInterface
 from tileops._kernels.attention.dsa.decode_ws import ROLE_INDEX_CALL
-from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import LOG2E
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
+from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 
 __all__ = ["DSAPagedClusterKernel", "DSAPagedKernelBase", "DSAPagedWSKernel"]
-
-# Both the attention kernel and the split merge compile with these flags.
-_COMPILE_FLAGS = [
-    "-O3",
-    "-Wno-deprecated-declarations",
-    "-U__CUDA_NO_HALF_OPERATORS__",
-    "-U__CUDA_NO_HALF_CONVERSIONS__",
-    "-U__CUDA_NO_HALF2_OPERATORS__",
-    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-    "--expt-relaxed-constexpr",
-    "--expt-extended-lambda",
-    "-DNDEBUG",
-]
 
 
 def _pair(bf16: bool, split: int) -> bool:
@@ -52,7 +39,7 @@ def _pair(bf16: bool, split: int) -> bool:
         tilelang.PassConfigKey.TL_DISABLE_SHARED_MEMORY_REUSE: True,
     },
     compile_flags=[
-        *_COMPILE_FLAGS,
+        *CUDA_COMPILE_FLAGS,
         *csrc_include("warp_uniform.h", "row_gather.h", "cluster_partials.h", "pair_merge.h"),
     ],
 )
@@ -102,7 +89,7 @@ def _dsa_paged_kernel(
     row_threads = 128 // rows_mine  # warpgroup 1 threads gathering one row's latent
     chunk = 8  # values a lane dequantizes per row and half: 32 lanes cover 256 columns
     tail_lanes = rope // vec  # the rope tile's 16-byte vectors per row
-    warpgroup = 128
+    warpgroup = WARPGROUP_THREADS
     consumer_threads = 2 * warpgroup  # tx < 256; the producer warpgroup follows
     producer_threads = warpgroup
     # 384 threads launch at 168 registers; the producer's spare 64 fund the scorer's 56.
@@ -627,9 +614,9 @@ def _dsa_paged_kernel(
 @target_cache(maxsize=32)
 def _dsa_paged_combine_kernel(batch, seq_len, heads, split, target="sm_90", sink=False):
     """Cache the merge by its explicit compilation target as well as its shape."""
-    builder = tilelang.jit(target={"kind": "cuda", "arch": target}, compile_flags=_COMPILE_FLAGS)(
-        _dsa_paged_combine
-    )
+    builder = tilelang.jit(
+        target={"kind": "cuda", "arch": target}, compile_flags=list(CUDA_COMPILE_FLAGS)
+    )(_dsa_paged_combine)
     return builder(batch, seq_len, heads, split, sink)
 
 
@@ -710,7 +697,7 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
 
     @classmethod
     def entry_for(cls, call: DSAPagedCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         bf16 = call.cache_dtype == torch.bfloat16
         ctas = call.batch * call.seq_len * (call.heads // 64)
         split = (

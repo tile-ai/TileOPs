@@ -46,11 +46,11 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         wanted = call.sm_count if call.arch == 89 and call.dim_k == 128 else call.sm_count * 3 // 4
         if blocks < wanted:
             return f"fuses the scan into {blocks} blocks, fewer than the {wanted} it needs"
-        return None
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: KDACall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         compact = call.arch == 89 and call.dim_k == 128
         # A second SM90 launch amortizes its switch cost above this per-SM workload. A state
         # pool takes the one-launch program: the second launch restarts a pair from its

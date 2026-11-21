@@ -72,7 +72,7 @@ def _check(workload, op):
             FP16,
             FP8,
             [63, 0],
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="fp8-fp16-page-boundary",
         ),
         # 20 + 6 columns are off the 8-element vector, so the columns move narrower.

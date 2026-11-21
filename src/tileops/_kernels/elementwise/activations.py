@@ -5,7 +5,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import GELU_TANH_COEFF, LOG2E, SQRT_2_OVER_PI
+from tileops._kernels.constants import LOG2E
 from tileops._kernels.elementwise._base import (
     FloatUnaryKernel,
     FusedGatedKernel,
@@ -57,6 +57,11 @@ __all__ = [
     "TanhFwdKernel",
 ]
 
+# sqrt(2/pi) and the cubic coefficient of torch's tanh-approximate GELU, which the plain and
+# the gated tanh-GELU kernels must both match.
+_SQRT_2_OVER_PI = 0.7978845608028654
+_GELU_TANH_COEFF = 0.044715
+
 
 def _approx_exp2(exponent):
     """exp2 of a float32 *exponent* without ``exp2f``'s subnormal guard (``approx_math.h``)."""
@@ -88,6 +93,13 @@ def _wide_silu(wide, dtype, float16_divide):
     return float16_divide(wide, den)
 
 
+def _approximate_refusal(call, approximate: str, form: str) -> "str | None":
+    """The refusal of a GELU kernel that evaluates *form*, the ``approximate`` it names."""
+    if call.approximate != approximate:
+        return f"evaluates {form}, not approximate={call.approximate!r}"
+    return None
+
+
 class ReLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """ReLU: y = max(x, 0), NaN where x is NaN."""
 
@@ -109,9 +121,7 @@ class GELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     @classmethod
     def refusal(cls, call: GELUCall) -> str | None:
-        if call.approximate != "none":
-            return f"evaluates the erf form, not approximate={call.approximate!r}"
-        return super().refusal(call)
+        return _approximate_refusal(call, "none", "the erf form") or super().refusal(call)
 
     @staticmethod
     def op_func(x):
@@ -130,14 +140,12 @@ class GELUTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     @classmethod
     def refusal(cls, call: GELUCall) -> str | None:
-        if call.approximate != "tanh":
-            return f"evaluates the tanh approximation, not approximate={call.approximate!r}"
-        return super().refusal(call)
+        return _approximate_refusal(call, "tanh", "the tanh approximation") or super().refusal(call)
 
     @staticmethod
     def op_func(x):
-        sqrt_2_over_pi = T.cast(SQRT_2_OVER_PI, "float32")
-        coeff = T.cast(GELU_TANH_COEFF, "float32")
+        sqrt_2_over_pi = T.cast(_SQRT_2_OVER_PI, "float32")
+        coeff = T.cast(_GELU_TANH_COEFF, "float32")
         half = T.cast(0.5, "float32")
         one = T.cast(1.0, "float32")
         x_f32 = T.cast(x, "float32")
@@ -255,23 +263,22 @@ class HardsigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 class MishFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise Mish: x * tanh(softplus(x)) = x * tanh(log(1 + exp(x)))."""
 
-    # Where Mish's tanh factor reaches 1 in fp32, and below where ``e**2`` overflows.
-    _SATURATION: float = 20.0
-
     @staticmethod
     def op_func(x):
         """One transcendental where the definition spells out three.
 
         With ``e = exp(x)``, ``tanh(log(1 + e))`` is exactly ``(e^2 + 2e)/(e^2 + 2e + 2)``:
         this avoids extra transcendentals and keeps the small values ``log(1 + e)``
-        rounds away. Past ``_SATURATION`` the ratio is 1 to every bit fp32 carries,
+        rounds away. Past ``saturation`` the ratio is 1 to every bit fp32 carries,
         so clamping the exponent's argument there returns ``x`` on its own and keeps
         ``e^2`` finite. Clamping rather than selecting on it also keeps the element
         loop vectorised, which ``T.if_then_else`` does not.
         """
+        # Where Mish's tanh factor reaches 1 in fp32, and below where ``e**2`` overflows.
+        saturation = 20.0
         two = T.cast(2.0, "float32")
         wide = T.cast(x, "float32")
-        e = T.exp(T.min(wide, T.cast(MishFwdKernel._SATURATION, "float32")))
+        e = T.exp(T.min(wide, T.cast(saturation, "float32")))
         saturated = e * e + two * e
         return wide * saturated / (saturated + two)
 
@@ -510,9 +517,7 @@ class GELUAndMulFwdKernel(FusedGatedKernel):
 
     @classmethod
     def refusal(cls, call: GELUAndMulCall) -> str | None:
-        if call.approximate != "none":
-            return f"evaluates the erf form, not approximate={call.approximate!r}"
-        return super().refusal(call)
+        return _approximate_refusal(call, "none", "the erf form") or super().refusal(call)
 
     @staticmethod
     def activation_func(x):
@@ -529,14 +534,12 @@ class GELUTanhAndMulFwdKernel(FusedGatedKernel):
 
     @classmethod
     def refusal(cls, call: GELUAndMulCall) -> str | None:
-        if call.approximate != "tanh":
-            return f"evaluates the tanh approximation, not approximate={call.approximate!r}"
-        return super().refusal(call)
+        return _approximate_refusal(call, "tanh", "the tanh approximation") or super().refusal(call)
 
     @staticmethod
     def activation_func(x):
-        sqrt_2_over_pi = T.cast(SQRT_2_OVER_PI, "float32")  # sqrt(2/pi)
-        coeff = T.cast(GELU_TANH_COEFF, "float32")  # GELU tanh approx coefficient
+        sqrt_2_over_pi = T.cast(_SQRT_2_OVER_PI, "float32")
+        coeff = T.cast(_GELU_TANH_COEFF, "float32")
         half = T.cast(0.5, x.dtype)
         one = T.cast(1.0, x.dtype)
         x_f32 = T.Cast("float32", x)

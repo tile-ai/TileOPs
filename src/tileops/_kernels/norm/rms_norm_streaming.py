@@ -5,6 +5,9 @@ to normalize and write it, the second time from the far end: the tiles it read l
 the likeliest still in L2.
 """
 
+import math
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -20,6 +23,7 @@ from tileops._kernels.norm.call_spec import (
     whole_row_scale_refusal,
 )
 from tileops._kernels.tiling import ALIGNMENT, align_up
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 
 __all__ = ["RMSNormStreamingKernel"]
@@ -28,9 +32,7 @@ __all__ = ["RMSNormStreamingKernel"]
 @target_cache(maxsize=32)
 def _rms_norm_streaming_kernel(M, N, eps, dtype, has_weight, ctas):
     # The widest access that divides the row, so every row starts on one.
-    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
-    while N % vec:
-        vec //= 2
+    vec = math.gcd(N, VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8))
 
     @tilelang.jit(out_idx=[2])
     def build(threads, accesses):
@@ -73,8 +75,7 @@ def _rms_norm_streaming_kernel(M, N, eps, dtype, has_weight, ctas):
                         for j in T.unroll(accesses * vec):
                             v = T.cast(held[j], "float32")
                             acc[0] += v * v
-                    for k in T.unroll(WARP_LANES.bit_length() - 1):
-                        acc[0] += T.shfl_xor(acc[0], T.shift_left(1, k))
+                    warp_reduce(acc, operator.add)
                     if tx % WARP_LANES == 0:
                         warp_sums[step % 2, tx // WARP_LANES] = acc[0]
                     T.sync_threads()
@@ -140,6 +141,7 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
         return [self.default_config]
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
+        self._require_devices(x=x, weight=weight)
         rows = x.reshape(-1, self.n)
         has_weight = weight is not None
         weight = weight.reshape(self.n) if has_weight else rows.new_empty(1)

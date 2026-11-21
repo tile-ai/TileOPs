@@ -401,6 +401,41 @@ def gla_varlen_causal_kernel(
     return _fn
 
 
+@T.macro
+def stage_chunk_operands(q, v, g_cumsum, causal, q_gated, values, weights, start, end, i_h):
+    """Stage a chunk's gated query, its values and its causal weights for the output
+    contractions; rows past the sequence's *end* repeat its last row."""
+    # The query and its gate are read into the gated query and not staged: each is read
+    # once, and the two tiles they would occupy bound the block's shared footprint.
+    for i, d in T.Parallel(CHUNK_TOKENS, q_gated.shape[1]):
+        q_gated[i, d] = T.cast(
+            T.cast(q[0, T.min(start + i, end - 1), i_h, d], "float32")
+            * T.exp2(g_cumsum[0, T.min(start + i, end - 1), i_h, d] * LOG2E),
+            q_gated.dtype,
+        )
+    for i, d in T.Parallel(CHUNK_TOKENS, values.shape[1]):
+        values[i, d] = v[0, T.min(start + i, end - 1), i_h, d]
+    # The causal pass launches only the sub-block pairs at or below the diagonal, so the
+    # product above the diagonal is read as the zero it is.
+    for i, j in T.Parallel(CHUNK_TOKENS, CHUNK_TOKENS):
+        weights[i, j] = T.if_then_else(
+            j <= i, causal[0, T.min(start + i, end - 1), i_h, j], T.cast(0, weights.dtype)
+        )
+
+
+@T.macro
+def contract_chunk(q_gated, state, weights, values, acc, o, start, end, i_h, scale):
+    """Store ``scale * q_gated @ state + weights @ values`` for the chunk's rows before *end*."""
+    T.fill(acc, 0.0)
+    T.gemm(q_gated, state, acc)
+    for i, j in T.Parallel(CHUNK_TOKENS, values.shape[1]):
+        acc[i, j] *= scale
+    T.gemm(weights, values, acc)
+    for i, j in T.Parallel(CHUNK_TOKENS, values.shape[1]):
+        if start + i < end:
+            o[0, start + i, i_h, j] = T.cast(acc[i, j], o.dtype)
+
+
 @target_cache(maxsize=32)
 def gla_varlen_output_kernel(
     total_tokens: int,
@@ -445,33 +480,12 @@ def gla_varlen_output_kernel(
                     start = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
                     end = T.cast(cu_seqlens[seq[0] + 1], "int32")
 
-                    # The query and its gate are read into the gated query and not staged:
-                    # each is read once, and the two tiles they would occupy are what holds
-                    # this block's shared footprint to one that keeps three blocks resident.
-                    for i, d in T.Parallel(CHUNK_TOKENS, dim_k):
-                        q_gated[i, d] = T.cast(
-                            T.cast(q[0, T.min(start + i, end - 1), i_h, d], "float32")
-                            * T.exp2(g_cumsum[0, T.min(start + i, end - 1), i_h, d] * LOG2E),
-                            dtype,
-                        )
-                    for i, d in T.Parallel(CHUNK_TOKENS, dim_v):
-                        values[i, d] = v[0, T.min(start + i, end - 1), i_h, d]
-                    # The causal pass launches only the sub-block pairs at or below the
-                    # diagonal, so the product above the diagonal is read as the zero it is.
-                    for i, j in T.Parallel(CHUNK_TOKENS, CHUNK_TOKENS):
-                        weights[i, j] = T.if_then_else(
-                            j <= i, causal[0, T.min(start + i, end - 1), i_h, j], T.cast(0, dtype)
-                        )
+                    stage_chunk_operands(
+                        q, v, g_cumsum, causal, q_gated, values, weights, start, end, i_h
+                    )
                     for d, j in T.Parallel(dim_k, dim_v):
                         state[d, j] = chunk_state[chunk, i_h, d, j]
-                    T.fill(acc, 0.0)
-                    T.gemm(q_gated, state, acc)
-                    for i, j in T.Parallel(CHUNK_TOKENS, dim_v):
-                        acc[i, j] *= scale
-                    T.gemm(weights, values, acc)
-                    for i, j in T.Parallel(CHUNK_TOKENS, dim_v):
-                        if start + i < end:
-                            o[0, start + i, i_h, j] = T.cast(acc[i, j], dtype)
+                    contract_chunk(q_gated, state, weights, values, acc, o, start, end, i_h, scale)
 
         return _main
 

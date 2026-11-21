@@ -74,8 +74,6 @@ def partition_scan_program(
     state_dtype: torch.dtype,
     buffer_dtype: torch.dtype,
     has_initial_state: bool,
-    block_dv: int = 16,
-    num_stages: int = 2,
 ):
     """The program :func:`partition_scan` launches.
 
@@ -85,14 +83,13 @@ def partition_scan_program(
         state_dtype: Dtype of the initial and starting states, float32 without an initial one.
         buffer_dtype: Dtype of each partition's state and transition.
         has_initial_state: Read an initial state rather than start from zero.
-        block_dv: State columns one CTA carries.
-        num_stages: Partitions the pipeline fetches ahead of the product.
     """
+    # A CTA carries 16 state columns; the pipeline fetches two partitions ahead of the product.
     return _partition_scan_kernel(
         heads,
         dim,
-        block_dv,
-        num_stages,
+        16,
+        2,
         has_initial_state,
         str(state_dtype).removeprefix("torch."),
         str(buffer_dtype).removeprefix("torch."),

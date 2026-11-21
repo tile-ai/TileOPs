@@ -112,7 +112,7 @@ class MergeAttentionStatesKernel(Kernel, MergeAttentionStatesFwdInterface):
 
     @classmethod
     def entry_for(cls, call: MergeAttentionStatesCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (call.dim, call.dtype, call.lse_base, index), lambda: cls(
             call.dim, call.dtype, call.lse_base, device_index=index
         )

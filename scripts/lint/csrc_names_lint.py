@@ -12,7 +12,7 @@ import re
 import sys
 from pathlib import Path
 
-from common import files, relative, report
+from common import lint_files, relative
 
 SCANNED = ("src/tileops/csrc",)
 
@@ -95,8 +95,7 @@ def findings(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    paths = files(argv, SCANNED, (".h", ".cuh", ".hpp"))
-    return report(e for p in paths for e in findings(p))
+    return lint_files(argv, __doc__, SCANNED, (".h", ".cuh", ".hpp"), findings)
 
 
 if __name__ == "__main__":

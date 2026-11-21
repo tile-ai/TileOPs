@@ -253,15 +253,20 @@ def _dim_legal(op_name: str, dim) -> bool:
     return True
 
 
+# Smoke takes ``dim=None`` of each op; the other forms run in the full tier.
 _SCALAR_ROOFLINE_CASES = [
-    pytest.param(op_name, dim, id=f"{dim_id}-{op_name}")
+    pytest.param(
+        op_name,
+        dim,
+        id=f"{dim_id}-{op_name}",
+        marks=pytest.mark.smoke if dim is None else pytest.mark.full,
+    )
     for dim, dim_id in zip(_SCALAR_ROOFLINE_DIMS, _SCALAR_ROOFLINE_DIM_IDS, strict=True)
     for op_name in sorted(_SCALAR_WRITE_BYTES)
     if _dim_legal(op_name, dim)
 ]
 
 
-@pytest.mark.smoke
 @pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning")
 @pytest.mark.parametrize("op_name, dim", _SCALAR_ROOFLINE_CASES)
 def test_the_scalar_path_prices_one_element_whatever_dim_names(op_name, dim) -> None:

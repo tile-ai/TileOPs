@@ -41,19 +41,12 @@ def _vllm_rope(case: bench.Case, cache: torch.Tensor) -> bench.Implementation:
     positions, query, key, *rest = (*case.inputs, None)[:4]
     index = (positions if not rest or rest[0] is None else positions + rest[0]).long()
     params = case.arguments
-    query_i = query.clone()
-    key_i = None if key is None else key.clone()
-
-    def reset() -> None:
-        query_i.copy_(query)
-        if key_i is not None:
-            key_i.copy_(key)
 
     def run(index_i, q, k):
         fn(index_i, q, k, params["head_size"], cache, params["is_neox_style"])
         return q, k
 
-    return bench.Implementation(run=run, args=(index, query_i, key_i), reset=reset)
+    return private_inputs(run, (index, query, key), 1, 2)
 
 
 def _bench_rope(op_cls, case: bench.Case) -> None:

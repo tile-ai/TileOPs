@@ -568,7 +568,7 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
     def entry_for(cls, call: FusedTopKCall) -> Entry:
         """One build per routing shape, scoring and grouping semantics, bias presence, dtype
         and device; caller-given experts build without the bias and grouping they skip."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         selects = not call.with_expert_ids
         with_correction_bias = call.with_correction_bias and selects
         num_expert_group, topk_group = (

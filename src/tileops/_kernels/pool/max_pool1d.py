@@ -14,13 +14,17 @@ from tileops._kernels.pool.call_spec import (
     MaxPool1dIndicesFwdInterface,
     MaxPoolCall,
 )
-from tileops._kernels.pool.common import dtype_itemsize, pool_output_dim, window_span
+from tileops._kernels.pool.common import (
+    ACCUM_DTYPE,
+    EVICT_HINT_MAX_BYTES,
+    pool_output_dim,
+    window_span,
+)
 
 __all__ = ["MaxPool1dKernel", "MaxPool1dWithIndicesKernel"]
 
 _NEG_INF = float("-inf")
 _NAN = float("nan")
-_ACCUM_DTYPE = "float"
 _JIT_FLAGS = ["-O3", "-DENABLE_BF16"]
 
 # Taps one row-reduce block may hold. It bounds the two f32 fragments together: 8192
@@ -42,7 +46,7 @@ class _Shape(NamedTuple):
 
     @property
     def itemsize(self) -> int:
-        return dtype_itemsize(self.dtype)
+        return getattr(torch, self.dtype).itemsize
 
 
 class _SignaturePlan(NamedTuple):
@@ -138,72 +142,58 @@ def _windowed_builder(shape: _Shape, plan: _SignaturePlan):
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
     total_output = rows * out_l
-    # Use evict-first L2 loads for rows up to 128 MiB, matching MaxPool2d tuning.
-    evict_first = rows * l_in * dtype_itemsize(dtype) <= 128 << 20
+    evict_first = rows * l_in * getattr(torch, dtype).itemsize <= EVICT_HINT_MAX_BYTES
 
     @tilelang.jit(out_idx=[1], compile_flags=[*_JIT_FLAGS, *csrc_include("streaming_load.h")])
     def _build(block_ol: int, threads: int):
-        def _windowed_scan(
-            l_in: int,
-            kernel_w: int,
-            stride_w: int,
-            pad_w: int,
-            dilation_w: int,
-            dtype: str,
-            always_in_bounds: bool,
-        ):
-            """The windowed body's scan over one output, reading each tap where it lies.
+        @T.macro
+        def scan(x, out, row, ol, idx):
+            """Store output ``ol``'s maximum, reading each tap where it lies.
 
             ``T.max`` drops NaN, so PyTorch's propagation is spelled two ways: a flag where no
             tap is bounds-tested, a select per tap where one is. Both are kept because which is
             cheaper follows the bounds test.
             """
-
-            @T.macro
-            def _store(x, out, row, ol, idx):
-                max_val = T.alloc_var(T.float32)
-                max_val = T.cast(_NEG_INF, _ACCUM_DTYPE)
-                if always_in_bounds:
-                    has_nan = T.alloc_var(T.bool)
-                    has_nan = False
-                    for kw in T.serial(kernel_w):
-                        at = ol * stride_w - pad_w + kw * dilation_w
+            max_val = T.alloc_var(T.float32)
+            max_val = T.cast(_NEG_INF, ACCUM_DTYPE)
+            if in_bounds:
+                has_nan = T.alloc_var(T.bool)
+                has_nan = False
+                for kw in T.serial(kernel_w):
+                    at = ol * stride_w - pad_w + kw * dilation_w
+                    if evict_first:
+                        val = T.cast(
+                            T.call_extern(
+                                dtype, "tileops::load_evict_first", T.address_of(x[row, at])
+                            ),
+                            ACCUM_DTYPE,
+                        )
+                    else:
+                        val = T.cast(x[row, at], ACCUM_DTYPE)
+                    has_nan = has_nan | T.isnan(val)
+                    max_val = T.max(max_val, val)
+                out[idx] = T.cast(
+                    T.if_then_else(has_nan, T.cast(_NAN, ACCUM_DTYPE), max_val), dtype
+                )
+            else:
+                for kw in T.serial(kernel_w):
+                    iw = ol * stride_w - pad_w + kw * dilation_w
+                    if (iw >= 0) and (iw < l_in):
                         if evict_first:
                             val = T.cast(
                                 T.call_extern(
-                                    dtype, "tileops::load_evict_first", T.address_of(x[row, at])
+                                    dtype,
+                                    "tileops::load_evict_first",
+                                    T.address_of(x[row, iw]),
                                 ),
-                                _ACCUM_DTYPE,
+                                ACCUM_DTYPE,
                             )
                         else:
-                            val = T.cast(x[row, at], _ACCUM_DTYPE)
-                        has_nan = has_nan | T.isnan(val)
-                        max_val = T.max(max_val, val)
-                    out[idx] = T.cast(
-                        T.if_then_else(has_nan, T.cast(_NAN, _ACCUM_DTYPE), max_val), dtype
-                    )
-                else:
-                    for kw in T.serial(kernel_w):
-                        iw = ol * stride_w - pad_w + kw * dilation_w
-                        if (iw >= 0) and (iw < l_in):
-                            if evict_first:
-                                val = T.cast(
-                                    T.call_extern(
-                                        dtype,
-                                        "tileops::load_evict_first",
-                                        T.address_of(x[row, iw]),
-                                    ),
-                                    _ACCUM_DTYPE,
-                                )
-                            else:
-                                val = T.cast(x[row, iw], _ACCUM_DTYPE)
-                            max_val = T.if_then_else(T.isnan(val) or (val > max_val), val, max_val)
-                    out[idx] = T.cast(max_val, dtype)
-
-            return _store
+                            val = T.cast(x[row, iw], ACCUM_DTYPE)
+                        max_val = T.if_then_else(T.isnan(val) or (val > max_val), val, max_val)
+                out[idx] = T.cast(max_val, dtype)
 
         tail_free = total_output % block_ol == 0
-        scan = _windowed_scan(l_in, kernel_w, stride_w, pad_w, dilation_w, dtype, in_bounds)
 
         @T.prim_func
         def _main(
@@ -229,71 +219,57 @@ def _windowed_indices_builder(shape: _Shape, plan: _SignaturePlan):
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
     total_output = rows * out_l
-    # Retain small inputs in L1/L2; use the value-only path's 128 MiB cutoff.
-    evict_last = rows * l_in * dtype_itemsize(dtype) <= 128 << 20
+    evict_last = rows * l_in * getattr(torch, dtype).itemsize <= EVICT_HINT_MAX_BYTES
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=[*_JIT_FLAGS, *csrc_include("streaming_load.h")])
     def _build(block_ol: int, threads: int):
-        def _windowed_indices_scan(
-            l_in: int,
-            kernel_w: int,
-            stride_w: int,
-            pad_w: int,
-            dilation_w: int,
-            dtype: str,
-            always_in_bounds: bool,
-        ):
-            """The windowed body's scan over one output, with the tap that won it."""
+        @T.macro
+        def scan(x, out, indices, row, ol, idx):
+            """Store output ``ol``'s maximum and the tap that won it."""
+            max_val = T.alloc_var(T.float32)
+            max_idx = T.alloc_var(T.int32)
+            # -1 until a NaN is seen, so it is also the flag saying one was.
+            nan_idx = T.alloc_var(T.int32)
+            max_val = T.cast(_NEG_INF, ACCUM_DTYPE)
+            nan_idx = -1
+            if in_bounds:
+                # Why an expression and not a variable: a variable is opaque to the range
+                # analysis, and every tap would load under a bounds check it rules out.
+                iw0 = ol * stride_w - pad_w
+                max_idx = iw0
+            else:
+                iw0 = T.alloc_var(T.int32)
+                iw0 = ol * stride_w - pad_w
+                # The first tap the row holds, which is what PyTorch reports for a window
+                # whose every in-row tap is -inf.
+                max_idx = iw0 + dilation_w * T.ceildiv(T.max(-iw0, 0), dilation_w)
+            for kw in T.serial(kernel_w):
+                iw = iw0 + kw * dilation_w
+                if in_bounds or ((iw >= 0) and (iw < l_in)):
+                    if evict_last:
+                        val = T.cast(
+                            T.call_extern(
+                                dtype, "tileops::load_evict_last", T.address_of(x[row, iw])
+                            ),
+                            ACCUM_DTYPE,
+                        )
+                    else:
+                        val = T.cast(x[row, iw], ACCUM_DTYPE)
+                    # Strict `>` reports the first of equal maxima, as PyTorch does, and
+                    # rejects NaN without a separate test.
+                    take = val > max_val
+                    max_val = T.if_then_else(take, val, max_val)
+                    max_idx = T.if_then_else(take, iw, max_idx)
+                    nan_idx = T.if_then_else(T.isnan(val), iw, nan_idx)
 
-            @T.macro
-            def _store(x, out, indices, row, ol, idx):
-                max_val = T.alloc_var(T.float32)
-                max_idx = T.alloc_var(T.int32)
-                # -1 until a NaN is seen, so it is also the flag saying one was.
-                nan_idx = T.alloc_var(T.int32)
-                max_val = T.cast(_NEG_INF, _ACCUM_DTYPE)
-                nan_idx = -1
-                if always_in_bounds:
-                    # Why an expression and not a variable: a variable is opaque to the range
-                    # analysis, and every tap would load under a bounds check it rules out.
-                    iw0 = ol * stride_w - pad_w
-                    max_idx = iw0
-                else:
-                    iw0 = T.alloc_var(T.int32)
-                    iw0 = ol * stride_w - pad_w
-                    # The first tap the row holds, which is what PyTorch reports for a window
-                    # whose every in-row tap is -inf.
-                    max_idx = iw0 + dilation_w * T.ceildiv(T.max(-iw0, 0), dilation_w)
-                for kw in T.serial(kernel_w):
-                    iw = iw0 + kw * dilation_w
-                    if always_in_bounds or ((iw >= 0) and (iw < l_in)):
-                        if evict_last:
-                            val = T.cast(
-                                T.call_extern(
-                                    dtype, "tileops::load_evict_last", T.address_of(x[row, iw])
-                                ),
-                                _ACCUM_DTYPE,
-                            )
-                        else:
-                            val = T.cast(x[row, iw], _ACCUM_DTYPE)
-                        # Strict `>` reports the first of equal maxima, as PyTorch does, and
-                        # rejects NaN without a separate test.
-                        take = val > max_val
-                        max_val = T.if_then_else(take, val, max_val)
-                        max_idx = T.if_then_else(take, iw, max_idx)
-                        nan_idx = T.if_then_else(T.isnan(val), iw, nan_idx)
-
-                # PyTorch reports the last NaN a window visited.
-                out[idx] = T.cast(
-                    T.if_then_else(nan_idx >= 0, T.cast(_NAN, _ACCUM_DTYPE), max_val), dtype
-                )
-                indices[idx] = T.cast(T.if_then_else(nan_idx >= 0, nan_idx, max_idx), "int64")
-
-            return _store
+            # PyTorch reports the last NaN a window visited.
+            out[idx] = T.cast(
+                T.if_then_else(nan_idx >= 0, T.cast(_NAN, ACCUM_DTYPE), max_val), dtype
+            )
+            indices[idx] = T.cast(T.if_then_else(nan_idx >= 0, nan_idx, max_idx), "int64")
 
         tail_free = total_output % block_ol == 0
         per_thread = block_ol // threads
-        scan = _windowed_indices_scan(l_in, kernel_w, stride_w, pad_w, dilation_w, dtype, in_bounds)
 
         @T.prim_func
         def _main(
@@ -367,29 +343,24 @@ def _staged_builder(shape: _Shape, plan: _SignaturePlan):
 
     @tilelang.jit(out_idx=[1], compile_flags=_JIT_FLAGS)
     def _build(block_ol: int, threads: int):
-        def _staged_scan(kernel_w: int, stride_w: int, dilation_w: int, base: int, dtype: str):
-            """The staged body's scan over one output, every tap read off the tile."""
+        @T.macro
+        def scan(tile, out, r, row, ol):
+            """Store output ``ol``'s maximum, every tap read off the tile."""
+            max_val = T.alloc_var(T.float32)
+            has_nan = T.alloc_var(T.bool)
+            max_val = T.cast(_NEG_INF, ACCUM_DTYPE)
+            has_nan = False
+            for kw in T.serial(kernel_w):
+                val = T.cast(tile[r, base + ol * stride_w + kw * dilation_w], ACCUM_DTYPE)
+                has_nan = has_nan | T.isnan(val)
+                max_val = T.max(max_val, val)
 
-            @T.macro
-            def _store(tile, out, r, row, ol):
-                max_val = T.alloc_var(T.float32)
-                has_nan = T.alloc_var(T.bool)
-                max_val = T.cast(_NEG_INF, _ACCUM_DTYPE)
-                has_nan = False
-                for kw in T.serial(kernel_w):
-                    val = T.cast(tile[r, base + ol * stride_w + kw * dilation_w], _ACCUM_DTYPE)
-                    has_nan = has_nan | T.isnan(val)
-                    max_val = T.max(max_val, val)
-
-                out[row, ol] = T.cast(
-                    T.if_then_else(has_nan, T.cast(_NAN, _ACCUM_DTYPE), max_val), dtype
-                )
-
-            return _store
+            out[row, ol] = T.cast(
+                T.if_then_else(has_nan, T.cast(_NAN, ACCUM_DTYPE), max_val), dtype
+            )
 
         stage_rows, row_stride = _stage_rows(rows, out_l, span, itemsize, threads)
         stage = _stage_macro(head, staged, tail, stage_rows, dtype)
-        scan = _staged_scan(kernel_w, stride_w, dilation_w, base, dtype)
 
         @T.prim_func
         def _main(
@@ -418,39 +389,33 @@ def _staged_indices_builder(shape: _Shape, plan: _SignaturePlan):
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=_JIT_FLAGS)
     def _build(block_ol: int, threads: int):
-        def _staged_indices_scan(
-            kernel_w: int, stride_w: int, pad_w: int, dilation_w: int, base: int, dtype: str
-        ):
-            """The staged body's scan over one output, with the tap that won it."""
+        @T.macro
+        def scan(tile, out, indices, r, row, ol):
+            """Store output ``ol``'s maximum and the tap that won it, every tap read off the
+            tile."""
+            max_val = T.alloc_var(T.float32)
+            max_idx = T.alloc_var(T.int32)
+            nan_idx = T.alloc_var(T.int32)
+            max_val = T.cast(_NEG_INF, ACCUM_DTYPE)
+            nan_idx = -1
+            iw0 = ol * stride_w - pad_w
+            # The first tap the row holds, which is what PyTorch reports for a window whose
+            # every in-row tap is -inf.
+            max_idx = iw0 + dilation_w * T.ceildiv(T.max(-iw0, 0), dilation_w)
+            for kw in T.serial(kernel_w):
+                val = T.cast(tile[r, base + ol * stride_w + kw * dilation_w], ACCUM_DTYPE)
+                take = val > max_val
+                max_val = T.if_then_else(take, val, max_val)
+                max_idx = T.if_then_else(take, iw0 + kw * dilation_w, max_idx)
+                nan_idx = T.if_then_else(T.isnan(val), iw0 + kw * dilation_w, nan_idx)
 
-            @T.macro
-            def _store(tile, out, indices, r, row, ol):
-                max_val = T.alloc_var(T.float32)
-                max_idx = T.alloc_var(T.int32)
-                nan_idx = T.alloc_var(T.int32)
-                max_val = T.cast(_NEG_INF, _ACCUM_DTYPE)
-                nan_idx = -1
-                iw0 = ol * stride_w - pad_w
-                # The first tap the row holds, which is what PyTorch reports for a window whose
-                # every in-row tap is -inf.
-                max_idx = iw0 + dilation_w * T.ceildiv(T.max(-iw0, 0), dilation_w)
-                for kw in T.serial(kernel_w):
-                    val = T.cast(tile[r, base + ol * stride_w + kw * dilation_w], _ACCUM_DTYPE)
-                    take = val > max_val
-                    max_val = T.if_then_else(take, val, max_val)
-                    max_idx = T.if_then_else(take, iw0 + kw * dilation_w, max_idx)
-                    nan_idx = T.if_then_else(T.isnan(val), iw0 + kw * dilation_w, nan_idx)
-
-                out[row, ol] = T.cast(
-                    T.if_then_else(nan_idx >= 0, T.cast(_NAN, _ACCUM_DTYPE), max_val), dtype
-                )
-                indices[row, ol] = T.cast(T.if_then_else(nan_idx >= 0, nan_idx, max_idx), "int64")
-
-            return _store
+            out[row, ol] = T.cast(
+                T.if_then_else(nan_idx >= 0, T.cast(_NAN, ACCUM_DTYPE), max_val), dtype
+            )
+            indices[row, ol] = T.cast(T.if_then_else(nan_idx >= 0, nan_idx, max_idx), "int64")
 
         stage_rows, row_stride = _stage_rows(rows, out_l, span, itemsize, threads)
         stage = _stage_macro(head, staged, tail, stage_rows, dtype)
-        scan = _staged_indices_scan(kernel_w, stride_w, pad_w, dilation_w, base, dtype)
 
         @T.prim_func
         def _main(
@@ -485,12 +450,12 @@ def _rowreduce_builder(shape: _Shape, plan: _SignaturePlan):
             out: T.Tensor((rows, 1), dtype),  # type: ignore
         ):
             with T.Kernel(rows // block_rows, threads=threads) as bx:
-                taps = T.alloc_fragment((block_rows, kernel_w), _ACCUM_DTYPE)
-                nans = T.alloc_fragment((block_rows, kernel_w), _ACCUM_DTYPE)
-                best = T.alloc_fragment((block_rows,), _ACCUM_DTYPE)
-                seen = T.alloc_fragment((block_rows,), _ACCUM_DTYPE)
+                taps = T.alloc_fragment((block_rows, kernel_w), ACCUM_DTYPE)
+                nans = T.alloc_fragment((block_rows, kernel_w), ACCUM_DTYPE)
+                best = T.alloc_fragment((block_rows,), ACCUM_DTYPE)
+                seen = T.alloc_fragment((block_rows,), ACCUM_DTYPE)
                 for r, kw in T.Parallel(block_rows, kernel_w):
-                    taps[r, kw] = T.cast(x[bx * block_rows + r, kw], _ACCUM_DTYPE)
+                    taps[r, kw] = T.cast(x[bx * block_rows + r, kw], ACCUM_DTYPE)
                 # `T.reduce_max` drops NaN, so which taps were NaN is reduced too.
                 for r, kw in T.Parallel(block_rows, kernel_w):
                     nans[r, kw] = T.if_then_else(T.isnan(taps[r, kw]), 1.0, 0.0)
@@ -498,7 +463,7 @@ def _rowreduce_builder(shape: _Shape, plan: _SignaturePlan):
                 T.reduce_max(nans, seen, dim=1, clear=True)
                 for r in T.Parallel(block_rows):
                     out[bx * block_rows + r, 0] = T.cast(
-                        T.if_then_else(seen[r] > 0.0, T.cast(_NAN, _ACCUM_DTYPE), best[r]),
+                        T.if_then_else(seen[r] > 0.0, T.cast(_NAN, ACCUM_DTYPE), best[r]),
                         dtype,
                     )
 
@@ -544,7 +509,7 @@ def _max_pool1d_kernel(
     pad_w: int,
     dilation_w: int,
     ceil_mode: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
     return _build_kernel(
         n, c_in, l_in, kernel_w, stride_w, pad_w, dilation_w, ceil_mode, dtype, False
@@ -561,7 +526,7 @@ def _max_pool1d_with_indices_kernel(
     pad_w: int,
     dilation_w: int,
     ceil_mode: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
     return _build_kernel(
         n, c_in, l_in, kernel_w, stride_w, pad_w, dilation_w, ceil_mode, dtype, True

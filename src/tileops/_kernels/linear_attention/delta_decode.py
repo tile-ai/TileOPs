@@ -16,6 +16,7 @@ import tilelang.language as T
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, MAX_BLOCK_THREADS
+from tileops._kernels.linear_attention.gdn.prefill_common import L2NORM_EPS, softplus
 from tileops._kernels.state_pool import state_row
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -144,10 +145,6 @@ def delta_decode_tl(
     heads_ratio = value_heads // heads
     lane_group_stages = lane_group.bit_length() - 1
     beta_gain = 2.0 if allow_neg_eigval else 1.0
-    l2norm_eps = 1e-6
-    # Above this `softplus(x)` is `x` to within float32, which is also what keeps `exp(x)`
-    # from overflowing. torch and FLA take the same guard.
-    softplus_linear_above = 20.0
 
     # A rollback build stages this many tokens of a sequence at once: their query and key
     # rows, values, decays and step sizes, so its tokens run with no global load and no
@@ -208,9 +205,7 @@ def delta_decode_tl(
             log_decay = T.cast(g[row, col, head_idx], "float32")
             if gate_in_kernel:
                 shifted = log_decay + dt_bias[head_idx]
-                log_decay = -T.exp2(A_log[head_idx] * LOG2E) * T.if_then_else(
-                    shifted > softplus_linear_above, shifted, T.log1p(T.exp(shifted))
-                )
+                log_decay = -T.exp2(A_log[head_idx] * LOG2E) * softplus(shifted)
             return beta_value, T.exp2(log_decay * LOG2E)
 
         @T.macro
@@ -256,8 +251,8 @@ def delta_decode_tl(
                     for stage in T.unroll(WARP_SHUFFLE_STAGES):
                         q_square += T.shfl_xor(q_square, 1 << stage, width=WARP_LANES)
                         k_square += T.shfl_xor(k_square, 1 << stage, width=WARP_LANES)
-                    q_gain = T.rsqrt(q_square + l2norm_eps) * scale
-                    k_gain = T.rsqrt(k_square + l2norm_eps)
+                    q_gain = T.rsqrt(q_square + L2NORM_EPS) * scale
+                    k_gain = T.rsqrt(k_square + L2NORM_EPS)
                     for i in T.serial(T.ceildiv(dim, threads)):
                         kk = tx + i * threads
                         if kk < dim:
@@ -399,8 +394,8 @@ def delta_decode_tl(
                         for stage in T.unroll(WARP_SHUFFLE_STAGES):
                             q_square += T.shfl_xor(q_square, 1 << stage, width=WARP_LANES)
                             k_square += T.shfl_xor(k_square, 1 << stage, width=WARP_LANES)
-                        q_gain = T.rsqrt(q_square + l2norm_eps) * scale
-                        k_gain = T.rsqrt(k_square + l2norm_eps)
+                        q_gain = T.rsqrt(q_square + L2NORM_EPS) * scale
+                        k_gain = T.rsqrt(k_square + L2NORM_EPS)
                         for i in T.serial(T.ceildiv(dim, WARP_LANES)):
                             kk = lane + i * WARP_LANES
                             q_rows[tt, kk] *= q_gain

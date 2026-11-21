@@ -53,11 +53,13 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             )
             if present
         ]
-        return "does not support " + ", ".join(unsupported) if unsupported else None
+        if unsupported:
+            return "does not support " + ", ".join(unsupported)
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GDNCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         # A packed call's token count is runtime data; an equal-length one's is built in.
         tokens = 1 if call.varlen else call.seq_len
         identity = (
@@ -143,9 +145,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         self.drafts = drafts
         self.init_config()
         self.program(self._compile)
-        device = (
-            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
-        )
+        device = self._build_device
         # The parameters this build leaves unread are declared one element wide.
         self._unread = torch.empty(1, dtype=torch.float32, device=device)
         self._unread_offsets = torch.empty(1, dtype=torch.int64, device=device)

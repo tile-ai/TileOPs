@@ -167,7 +167,7 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         widest = max(d.itemsize for d in (*call.dtypes, call.out_dtype))
         vec = math.gcd(*call.widths, VECTOR_ACCESS_BYTES // widest)
         args = (call.dim, vec, call.dtypes, call.out_dtype)
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         resident = call.threads_per_sm // _THREADS
         return (*args, index), lambda: cls(
             *args, device_index=index, sm_count=call.sm_count, resident_ctas=resident

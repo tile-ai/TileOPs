@@ -8,13 +8,12 @@ Exempt: ``lint: code-ref allow: <reason>`` on the line. Default scan: ``src/tile
 ``tests/``, ``benchmarks/``, ``workloads/``, ``scripts/``.
 """
 
-import argparse
 import re
 import sys
 from pathlib import Path
 
 from comment_lines import allowed_lines, prose_lines
-from common import files, relative, report
+from common import lint_files, relative
 
 SCANNED = ("src/tileops", "tests", "benchmarks", "workloads", "scripts")
 
@@ -49,10 +48,7 @@ def findings(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("files", nargs="*", type=Path)
-    args = parser.parse_args(argv)
-    return report(e for p in files(args.files, SCANNED, (".py",)) for e in findings(p))
+    return lint_files(argv, __doc__, SCANNED, (".py",), findings)
 
 
 if __name__ == "__main__":

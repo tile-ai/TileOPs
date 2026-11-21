@@ -3,31 +3,12 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from workloads.attention.gqa.call_metadata import _dtype
+from workloads.attention.gqa.dense import dense_gqa_logits
 from workloads.device import run_device
+from workloads.numerics import Exact, reference_tolerance, zeroed_input
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = ["GQABwdCall", "GQABwdWorkload"]
-
-
-def _compute_gqa_square_lse(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    *,
-    heads: int,
-    heads_kv: int,
-    dim: int,
-    is_causal: bool,
-) -> torch.Tensor:
-    groups = heads // heads_kv
-    seq_len = q.shape[1]
-    q_bhsd = q.transpose(1, 2).float()
-    k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-    scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * (dim**-0.5)
-    if is_causal:
-        pos = torch.arange(seq_len, device=q.device)
-        mask = pos[None, :] <= pos[:, None]
-        scores = scores.masked_fill(~mask.view(1, 1, seq_len, seq_len), float("-inf"))
-    return torch.logsumexp(scores, dim=-1)
 
 
 class GQABwdWorkload(WorkloadBase):
@@ -40,6 +21,7 @@ class GQABwdWorkload(WorkloadBase):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
+        sm_scale: float | None = None,
     ) -> None:
         self.batch = batch
         self.heads = heads
@@ -48,7 +30,7 @@ class GQABwdWorkload(WorkloadBase):
         self.dim = dim
         self.is_causal = is_causal
         self.dtype = dtype
-        self.sm_scale = None
+        self.sm_scale = sm_scale
 
     def gen_inputs(
         self,
@@ -91,20 +73,21 @@ class GQABwdWorkload(WorkloadBase):
                     k.float().transpose(1, 2),
                     v.float().transpose(1, 2),
                     is_causal=self.is_causal,
+                    scale=self.sm_scale,
                     enable_gqa=True,
                 )
                 .transpose(1, 2)
                 .to(self.dtype)
                 .contiguous()
             )
-            lse = _compute_gqa_square_lse(
+            lse = dense_gqa_logits(
                 q,
                 k,
                 heads=self.heads,
                 heads_kv=self.heads_kv,
-                dim=self.dim,
                 is_causal=self.is_causal,
-            )
+                sm_scale=self.sm_scale,
+            ).logsumexp(-1)
 
         return grad_output, q, k, v, o, lse
 
@@ -129,8 +112,6 @@ class GQABwdWorkload(WorkloadBase):
             return tuple(grad.to(dtype) for grad in gradients)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, reference_tolerance, zeroed_input
-
         # Gradients reach |g| ~ 8, where one stored step exceeds any fixed atol: the dtype
         # rtol covers that step, the 5e-3 floor the FP32 accumulation error near zero.
         tolerance = reference_tolerance(inputs[0].dtype)
@@ -156,8 +137,8 @@ class GQABwdCall(CallWorkload, GQABwdWorkload):
             indices["D"],
             indices["is_causal"],
             _dtype(call, "q"),
+            call.params["sm_scale"],
         )
-        self.sm_scale = call.params["sm_scale"]
 
     gen_inputs = GQABwdWorkload.gen_inputs
 

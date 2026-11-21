@@ -253,7 +253,7 @@ def _dh_walk_tl(
                 op_s = T.alloc_shared([dim_k, dim_k], dtype)
                 local_s = T.alloc_shared([dim_k, block_v], accum_dtype)
                 # Held transposed, so the matmul reads it K-major. Why: held MN-major, the
-                # 16-column walk returned wrong dh under TileLang 0.1.12.
+                # 16-column walk returns wrong dh under TileLang 0.1.12.
                 dh_s = T.alloc_shared([block_v, dim_k], dtype)
                 dh_frag = T.alloc_fragment([dim_k, block_v], accum_dtype)
                 v0 = vid * block_v
@@ -331,7 +331,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             call.dim_v,
             cls.dtype_to_str(call.dtype),
         )
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*arguments, index), lambda: cls(*arguments)
 
     @classmethod
@@ -345,7 +345,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         """
         reason = head_count_refusal(call.heads) or extent_refusal(call, reduces_v=True)
         if reason is not None or not call.smem_budget:
-            return reason
+            return reason or super().refusal(call)
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
         need = max(
             cls._parallel_live_bytes(c, k, v, elem),
@@ -353,7 +353,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             cls._wu_live_bytes(c, k, v, elem, reuse=k == v),
         )
         if need <= call.smem_budget:
-            return None
+            return super().refusal(call)
         return (
             f"needs at least {need} bytes of shared memory per block at chunk {c}, head dims "
             f"{k} / {v} in {call.dtype}; the device gives {call.smem_budget}"

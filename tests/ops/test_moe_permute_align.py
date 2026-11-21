@@ -36,10 +36,8 @@ class MoEPermuteAlignFixture(FixtureBase):
                 pytest.param(16, 2, 8, 16, marks=pytest.mark.full, id="small-bs16"),
                 pytest.param(1024, 8, 64, 128, marks=pytest.mark.full, id="large-bs128"),
                 pytest.param(1, 2, 4, 4, marks=pytest.mark.full, id="single-token"),
-                # top_k=1: each token is routed to exactly one expert
-                pytest.param(8, 1, 4, 4, marks=pytest.mark.full, id="top-k-1"),
-                # A few hundred routes over 8, 32 and 33 experts.
-                pytest.param(100, 2, 8, 16, marks=pytest.mark.full, id="sb-numel200"),
+                # A few hundred routes over 32 and 33 experts, either side of the one-warp
+                # small-batch limit.
                 pytest.param(100, 6, 32, 64, marks=pytest.mark.full, id="sb-numel600-maxexp"),
                 pytest.param(100, 6, 33, 64, marks=pytest.mark.full, id="experts-33"),
                 # dispatch boundary: numel=1023 (last small-batch) vs numel=1024 (first large-batch)

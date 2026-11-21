@@ -1,13 +1,16 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
+from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call, GEMMW4A8PrefillKernel
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
 from tileops._kernels.gemm.heuristics import best_config, int8_pingpong_grid
+from tileops._kernels.gemm.w4a8_decode import _select_config as select_w4a8_decode_config
 from tileops._kernels.gemm.w4a16 import (
     _cross_tile_wgmma,
     _drained_ring,
@@ -1296,7 +1299,23 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> Non
     test.check(op, a_off, b_off, a_scale, b_scale)
 
 
-@pytest.mark.in_tree_kernels
+def _h200_w4a8_call(m: int, n: int, k: int) -> GEMMW4A8Call:
+    """A W4A8 call stating the facts of a 132-SM H200, the board its selection is calibrated
+    for, so that selection runs on any host."""
+    device = torch.device("cuda", 0)  # lint: device-literal allow: facts are stated
+    return GEMMW4A8Call(
+        m=m,
+        n=n,
+        k=k,
+        group_size=128,
+        arch=90,
+        sm_count=132,
+        calibration="h200",
+        smem_budget=BLOCK_SHARED_BYTES_OPT_IN[90],
+        device=device,
+    )
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k, key",
@@ -1318,51 +1337,37 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> Non
     ],
 )
 def test_w4a8_forty_token_dispatch(m: int, n: int, k: int, key: str) -> None:
-    """The 40-token selection is calibrated for a 132-SM H200."""
-    op = GEMMW4A8FwdOp(target=BUILTIN)
-    call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
-    if call.calibration != "h200" or call.sm_count != 132:
-        pytest.skip("the 40-token selection is calibrated for a 132-SM H200")
-    assert op.key_for("gemm_w4a8", call) == key
+    """The 40-token selection on a 132-SM H200."""
+    assert GEMMW4A8FwdOp(target=BUILTIN).key_for("gemm_w4a8", _h200_w4a8_call(m, n, k)) == key
 
 
-@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k, grid",
     [
         # One CTA per 64-row tile. Nine 256-K items over two units, five on the busier one;
         # a sixth ring stage would push the partial sums out of shared memory.
-        pytest.param(32, 7168, 2304, (1, 112, 5), marks=pytest.mark.smoke, id="k-off-512"),
+        pytest.param(32, 7168, 2304, (1, 112, 5), id="k-off-512"),
         # Eight 512-K items: 2048 K a unit at the limit, 2560 one item past it.
-        pytest.param(16, 4096, 4096, (1, 64, 3), marks=pytest.mark.full, id="unit-k-at-limit"),
-        pytest.param(16, 4096, 4608, (2, 132, 3), marks=pytest.mark.full, id="unit-k-past-limit"),
-        pytest.param(1, 4096, 4096, (1, 64, 4), marks=pytest.mark.full, id="eight-token-tile"),
+        pytest.param(16, 4096, 4096, (1, 64, 3), id="unit-k-at-limit"),
+        pytest.param(16, 4096, 4608, (2, 132, 3), id="unit-k-past-limit"),
+        pytest.param(1, 4096, 4096, (1, 64, 4), id="eight-token-tile"),
         # The 8-token tile meets the same limit: a rule exempting it fails only this case.
-        pytest.param(
-            8, 4096, 4608, (1, 132, 4), marks=pytest.mark.full, id="eight-token-unit-k-past-limit"
-        ),
+        pytest.param(8, 4096, 4608, (1, 132, 4), id="eight-token-unit-k-past-limit"),
         # 132 row tiles are one wave; 133 are not, and split tiles across CTAs.
-        pytest.param(
-            32, 132 * 64, 2048, (1, 132, 2), marks=pytest.mark.full, id="one-wave-of-row-tiles"
-        ),
-        pytest.param(
-            32, 133 * 64, 2048, (1, 132, 2), marks=pytest.mark.full, id="row-tiles-past-a-wave"
-        ),
+        pytest.param(32, 132 * 64, 2048, (1, 132, 2), id="one-wave-of-row-tiles"),
+        pytest.param(32, 133 * 64, 2048, (1, 132, 2), id="row-tiles-past-a-wave"),
     ],
 )
 def test_w4a8_decode_exchange_free_grid(m: int, n: int, k: int, grid: tuple[int, int, int]) -> None:
     """One CTA per 64-row tile with the partial sums in shared memory; ``grid`` is the
-    dispatched unit warpgroups, CTAs and ring stages on 132 SMs."""
-    op = GEMMW4A8FwdOp(target=BUILTIN)
-    call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
-    if call.sm_count != 132:
-        pytest.skip("the expected grids count 132 SMs")
-    assert op.key_for("gemm_w4a8", call) == "gemm_w4a8_decode"
-    cfg = op.kernel_for("gemm_w4a8", lambda: call).config
+    dispatched unit warpgroups, CTAs and ring stages on a 132-SM H200."""
+    call = _h200_w4a8_call(m, n, k)
+    assert GEMMW4A8FwdOp(target=BUILTIN).key_for("gemm_w4a8", call) == "gemm_w4a8_decode"
+    cfg = select_w4a8_decode_config(m, n, k, call.smem_budget, call.sm_count)
     assert (cfg["unit_warpgroups"], cfg["num_ctas"], cfg["num_stages"]) == grid
 
 
-@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k, stream_k",
@@ -1381,12 +1386,13 @@ def test_gemm_w4a8_prefill_runs_a_full_one_wave_grid_a_tile_a_cta(
 ) -> None:
     """The cases count row tiles and idle K groups against the 132 SMs of an H200, the board
     the schedule selection is calibrated for."""
-    op = GEMMW4A8FwdOp(target=BUILTIN)
-    call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
-    if call.calibration != "h200" or call.sm_count != 132:
-        pytest.skip("the one-wave grids above are counted on a 132-SM H200")
-    assert op.key_for("gemm_w4a8", call) == "gemm_w4a8_prefill"
-    assert op.kernel_for("gemm_w4a8", lambda: call).config["stream_k"] == stream_k
+    call = _h200_w4a8_call(m, n, k)
+    assert GEMMW4A8FwdOp(target=BUILTIN).key_for("gemm_w4a8", call) == "gemm_w4a8_prefill"
+    # The default config reads only the shape and the SM count; building the kernel compiles it.
+    kernel = object.__new__(GEMMW4A8PrefillKernel)
+    kernel.m, kernel.n, kernel.k = m, n, k
+    kernel.build_target = SimpleNamespace(sm_count=call.sm_count)
+    assert kernel.default_config["stream_k"] == stream_k
 
 
 @GEMMW4A16Fixture
@@ -1435,8 +1441,14 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
 
 
 @pytest.mark.sm89
-@pytest.mark.smoke
-@pytest.mark.parametrize("scale_mode", ["per_tensor", "block128", "block128x128"])
+@pytest.mark.parametrize(
+    "scale_mode",
+    [
+        pytest.param("per_tensor", marks=pytest.mark.smoke),
+        pytest.param("block128", marks=pytest.mark.full),
+        pytest.param("block128x128", marks=pytest.mark.full),
+    ],
+)
 def test_gemm_fp8_without_tma_or_wgmma(scale_mode: str) -> None:
     """SM89 has FP8 tensor cores but no TMA or WGMMA, so every scale grid runs without them."""
     test = GEMMFP8Test(256, 512, 1024, torch.float8_e4m3fn, scale_mode)
@@ -3582,13 +3594,13 @@ def test_gemm_w4a8_repack_refuses_an_empty_axis(n: int, k: int) -> None:
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize(
-    "m,n",
+    "m, n, dtype",
     [
-        pytest.param(64, 64, marks=pytest.mark.smoke),
-        pytest.param(63, 65, marks=pytest.mark.full),
-        pytest.param(65, 63, marks=pytest.mark.full),
+        pytest.param(64, 64, torch.float16, marks=pytest.mark.smoke),
+        pytest.param(64, 64, torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(63, 65, torch.float16, marks=pytest.mark.full),
+        pytest.param(65, 63, torch.float16, marks=pytest.mark.full),
     ],
 )
 def test_gemm_tn_single_contraction(m: int, n: int, dtype: torch.dtype) -> None:
@@ -3659,9 +3671,15 @@ def test_gemm_offset_operand_runs_as_an_aligned_one(case, shifted: int) -> None:
 
 
 @pytest.mark.sm89
-@pytest.mark.smoke
-@pytest.mark.parametrize("reduce_threads,block_n", [(64, 16), (128, 8), (256, 4)])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize(
+    "reduce_threads, block_n, dtype",
+    [
+        pytest.param(64, 16, torch.float16, marks=pytest.mark.smoke),
+        pytest.param(64, 16, torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(128, 8, torch.float16, marks=pytest.mark.full),
+        pytest.param(256, 4, torch.float16, marks=pytest.mark.full),
+    ],
+)
 def test_gemv_largest_tuning_ring(reduce_threads: int, block_n: int, dtype: torch.dtype) -> None:
     """The largest admitted staged ring compiles and preserves GEMV outputs."""
     test = GEMMWorkload(1, 256, 16384, dtype, trans_b=True)
@@ -3684,10 +3702,16 @@ def test_gemv_largest_tuning_ring(reduce_threads: int, block_n: int, dtype: torc
 
 
 @pytest.mark.sm89
-@pytest.mark.smoke
-@pytest.mark.parametrize("lhs_row", [True, False])
-@pytest.mark.parametrize("operand", [0, 1])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize(
+    "lhs_row, operand, dtype",
+    [
+        pytest.param(True, 0, torch.float16, marks=pytest.mark.smoke),
+        pytest.param(True, 0, torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(True, 1, torch.float16, marks=pytest.mark.full),
+        pytest.param(False, 0, torch.float16, marks=pytest.mark.full),
+        pytest.param(False, 1, torch.float16, marks=pytest.mark.full),
+    ],
+)
 def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype) -> None:
     """Contiguous inputs with an element offset retain the public GEMV contract."""
     m, n = (1, 3001) if lhs_row else (3001, 1)

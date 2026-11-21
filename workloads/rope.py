@@ -91,7 +91,7 @@ def rope_tables(name: str, params: dict, query: torch.Tensor) -> tuple[torch.Ten
     )
 
 
-def _rotate_pairs(part: torch.Tensor, c: torch.Tensor, s: torch.Tensor, neox: bool) -> torch.Tensor:
+def rotate_pairs(part: torch.Tensor, c: torch.Tensor, s: torch.Tensor, neox: bool) -> torch.Tensor:
     """*part* rotated by cosines *c* and sines *s*: its halves against each other with *neox*,
     else each adjacent pair."""
     if neox:
@@ -117,7 +117,7 @@ def _rotate(
     tokens = index.numel()
     heads = x.reshape(tokens, -1, head_size)
     c, s = cos[index.reshape(-1)].unsqueeze(1).float(), sin[index.reshape(-1)].unsqueeze(1).float()
-    rotated = _rotate_pairs(heads[..., :rotary_dim].float(), c, s, neox)
+    rotated = rotate_pairs(heads[..., :rotary_dim].float(), c, s, neox)
     out = torch.cat((rotated.to(x.dtype), heads[..., rotary_dim:]), dim=-1)
     return out.reshape(x.shape)
 
@@ -181,7 +181,7 @@ def rope_cos_sin_reference(
         offset = max(low, min(high, offset))
     rows = (s + offset).clamp(0, cos.shape[0] - 1)
     c, s = cos[rows][..., None, :].float(), sin[rows][..., None, :].float()
-    rotated = _rotate_pairs(x[..., :r].float(), c, s, not interleaved)
+    rotated = rotate_pairs(x[..., :r].float(), c, s, not interleaved)
     out = x if inplace else x.clone()
     out[..., :r] = rotated.to(x.dtype)
     return out

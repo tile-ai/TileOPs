@@ -15,9 +15,6 @@ from workloads.workload_base import CallWorkload
 
 _INF = float("inf")
 _MASK = 0xFFFFFFFF
-# Philox4x32 round multipliers and Weyl key increments (Salmon et al., SC'11).
-_M0, _M1 = 0xD2511F53, 0xCD9E8D57
-_W0, _W1 = 0x9E3779B9, 0xBB67AE85
 
 
 def _mulhilo(a: torch.Tensor, m: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -35,6 +32,9 @@ def philox_uniform(seed: torch.Tensor, offset: torch.Tensor, rows: int, draws: i
     ``(seed_lo, seed_hi)`` and counter ``(j, r, offset_lo, offset_hi)``, its top 24 bits
     scaled by ``2**-24``.
     """
+    # Philox4x32 round multipliers and Weyl key increments (Salmon et al., SC'11).
+    m0, m1 = 0xD2511F53, 0xCD9E8D57
+    w0, w1 = 0x9E3779B9, 0xBB67AE85
     device = seed.device
     s, o = seed.reshape(()), offset.reshape(()).to(device)
     shape = (rows, draws)
@@ -45,9 +45,9 @@ def philox_uniform(seed: torch.Tensor, offset: torch.Tensor, rows: int, draws: i
     k0, k1 = s & _MASK, (s >> 32) & _MASK
     for step in range(10):
         if step:
-            k0, k1 = (k0 + _W0) & _MASK, (k1 + _W1) & _MASK
-        hi0, lo0 = _mulhilo(c0, _M0)
-        hi1, lo1 = _mulhilo(c2, _M1)
+            k0, k1 = (k0 + w0) & _MASK, (k1 + w1) & _MASK
+        hi0, lo0 = _mulhilo(c0, m0)
+        hi1, lo1 = _mulhilo(c2, m1)
         c0, c1, c2, c3 = hi1 ^ c1 ^ k0, lo1, hi0 ^ c3 ^ k1, lo0
     return (c0 >> 8).to(torch.float32) * 2.0**-24
 
@@ -255,9 +255,8 @@ class SamplingFromProbsWorkload(CallWorkload):
                 vocab, device=probs.device, generator=self.rng("distribution", device=probs.device)
             )
             weights[::4] = 0
-            share = (weights / weights.sum()).double()
-            trial = (weights / weights.sum()).expand(draws, vocab).contiguous()
-            tokens = draw(trial, seed, offset)
+            share = weights / weights.sum()
+            tokens = draw(share.expand(draws, vocab).contiguous(), seed, offset)
             assert tokens.shape == (draws,) and tokens.dtype == torch.int32
             assert ((tokens >= 0) & (tokens < vocab)).all()
             _assert_follows(tokens, share)

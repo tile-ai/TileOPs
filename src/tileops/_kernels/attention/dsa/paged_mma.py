@@ -142,7 +142,7 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
         return (call, split), lambda: cls(call, split)
 
     def __init__(self, call, split=1):
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         Kernel.__init__(self, device_index=index)
         self.call = call
         self.split = split

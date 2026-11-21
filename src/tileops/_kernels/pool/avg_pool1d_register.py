@@ -213,7 +213,7 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
     _FLAT_UNITS_MAX: ClassVar[int] = 2**31 - 1 - MAX_BLOCK_THREADS
 
     @classmethod
-    def refusal(cls, call: AvgPoolCall) -> "str | None":
+    def refusal(cls, call: AvgPoolCall) -> str | None:
         if call.dtype not in (torch.float16, torch.bfloat16, torch.float32):
             return f"requires float16, bfloat16 or float32, got {call.dtype}"
         if len(call.size) != 1:

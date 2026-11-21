@@ -4,10 +4,11 @@
 `_infer_output_shapes` and `eval_roofline`; `install_compile_boundary` registers, when the entry
 has a call-time tensor input and no composition, one compile-boundary operator per effect
 branch. Each check is emitted as Python source when the class is created, one per discriminant
-point, so a call parses no expression string and a traced call only looks its check up. What construction can decide is checked there, once; the
-call check continues from what construction solved. Under SymInt the emitted code lowers
-`and`, `or`, `not`, conditionals and sequence equality to their symbolic forms, and a
-refinement becomes `torch._check`. A failure names the declaration it came from.
+point, so a call parses no expression string and a traced call only looks its check up. What
+construction can decide is checked there, once; the call check continues from what
+construction solved. Under SymInt the emitted code lowers `and`, `or`, `not`, conditionals
+and sequence equality to their symbolic forms, and a refinement becomes `torch._check`. A
+failure names the declaration it came from.
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ from torch.fx.experimental.symbolic_shapes import sym_and, sym_or
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._ops._naming import operator_name
-from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 from tileops._ops.compile_boundary import get_instance, instance_key
 from tileops._utils.device import current_device
 from tileops.backend import OpNotAvailableError
@@ -69,7 +69,6 @@ from tileops.manifest._signature import (
     member_at,
     member_of,
     output_emitted,
-    param_kind,
     parse_signature,
     rejecting_rule,
     tensor_passed,
@@ -80,19 +79,22 @@ from tileops.manifest._workload import CallView, Elements, check_workloads, equa
 from tileops.manifest.primitives import namespace
 
 __all__ = [
+    "PARAM_NAMES_ATTRIBUTE",
     "CheckError",
     "SignatureCall",
-    "has_compile_boundary",
     "in_tree",
     "install",
     "install_compile_boundary",
+    "install_param_names",
     "leaves",
     "maybe_install_signature",
     "op_entry",
 ]
 
 
-_SCHEMA_TYPES = {int: "SymInt", float: "float", bool: "bool", str: "str"}
+# Attached to a class when its manifest entry declares ``signature.params``. The empty
+# tuple is a real answer: plenty of ops take no params.
+PARAM_NAMES_ATTRIBUTE = "__manifest_param_names__"
 
 
 # ---------------------------------------------------------------- run-time helpers
@@ -198,8 +200,7 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple):
 def tensorless_device(op):
     """The call device of a call with no tensor on its device, the rule's last steps.
 
-    Also what ``Op._device_without_call_tensors`` answers, so a call the generated checks
-    never see is placed by the same rule.
+    ``Op._traced_device`` places a call the generated checks never see by the same rule.
     """
     declared = (
         getattr(op, "device", None) if "device" in getattr(op, PARAM_NAMES_ATTRIBUTE, ()) else None
@@ -517,8 +518,8 @@ class _Construction:
 
     def source(self, sig: Signature) -> str:
         e = _Emitter(sig)
-        for p, decl in sig.params.items():
-            dtype = param_kind(decl.get("type"), sig.adts).payload().tag == "DType"
+        for p in sig.params:
+            dtype = sig.kind(p).payload().tag == "DType"
             e.emit(f"{p} = {f'_dname(self.{p})' if dtype else f'_dnames(self.{p})'}")
         if self.rejected is not None:
             e.emit(f"raise CheckError({f'{sig.name}: refinement fails: {self.rejected}'!r})")
@@ -1727,13 +1728,10 @@ def _overlaps(extent: tuple | None, others: list) -> bool:
 
 
 def _construction_check(plan: _SignaturePlan):
-    """`_check_construction`: parameter values against their `type`, then what the construction point decides; it returns the index values solved."""
+    """`_check_construction`: parameter values against their `type`, then what the
+    construction point decides; it returns the index values solved."""
     sig = plan.sig
-    dtypes = {
-        p
-        for p, d in sig.params.items()
-        if param_kind(d.get("type"), sig.adts).payload().tag == "DType"
-    }
+    dtypes = {p for p in sig.params if sig.kind(p).payload().tag == "DType"}
 
     def check(self) -> dict:
         for p, decl in sig.params.items():
@@ -1761,6 +1759,7 @@ def _counts(name: str, result) -> tuple[int, int]:
 
 
 def _completed_call(op) -> SignatureCall:
+    """*op*'s last completed call; *op* need not be an ``Op``, so ``last_call`` may be absent."""
     record = getattr(op, "_last_call", None)
     if record is None:
         raise RuntimeError(f"{type(op).__name__}: eval_roofline needs a completed call")
@@ -2147,15 +2146,16 @@ def _eager_state_plain() -> bool:
 
 def _schema_type(cls: type, parameter: inspect.Parameter) -> str:
     """The operator-schema type of one execution parameter, from its annotation."""
+    kinds = {int: "SymInt", float: "float", bool: "bool", str: "str"}
     annotation = parameter.annotation
     if isinstance(annotation, str):
-        annotation = {"int": int, "float": float, "bool": bool, "str": str}.get(annotation)
-    if annotation not in _SCHEMA_TYPES:
+        annotation = {t.__name__: t for t in kinds}.get(annotation)
+    if annotation not in kinds:
         raise TypeError(
             f"{cls.__name__}.forward: execution parameter {parameter.name!r} needs an int, "
             "float, bool or str annotation to cross the compile boundary"
         )
-    return _SCHEMA_TYPES[annotation]
+    return kinds[annotation]
 
 
 # ---------------------------------------------------------------- installation
@@ -2211,19 +2211,14 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
     return True
 
 
-def has_compile_boundary(entry: dict) -> bool:
-    """Whether an op class with *entry* gets a compile boundary: the entry has a call-time
-    tensor input and no composition. Such an op must compile cold with `fullgraph=True`."""
-    return bool((entry.get("signature") or {}).get("inputs")) and not entry.get("composition")
-
-
 def install_compile_boundary(cls: type, entry: dict) -> None:
     """Register the compile-boundary operators of `cls`, which :func:`install` gave its
-    entry's methods, when the entry calls for them (:func:`has_compile_boundary`).
+    entry's methods, when the entry has a call-time tensor input and no composition. Such an
+    op must compile cold with `fullgraph=True`.
 
     A class without them names no operator, whatever a base class it inherits names.
     """
-    if not has_compile_boundary(entry):
+    if not (entry.get("signature") or {}).get("inputs") or entry.get("composition"):
         cls.compile_op_names = ()
         cls._instance_key_names = ()
         return
@@ -2237,10 +2232,6 @@ def install_compile_boundary(cls: type, entry: dict) -> None:
 def in_tree(cls: type) -> bool:
     """Whether *cls* is defined in a module of the ``tileops`` package."""
     return cls.__module__.partition(".")[0] == "tileops"
-
-
-# The fields of an op class's own `spec`: those of one manifest entry that describe the op.
-_SPEC_FIELDS = frozenset({"family", "signature", "roofline", "workloads"})
 
 
 def op_entry(cls: type) -> dict | None:
@@ -2259,13 +2250,15 @@ def op_entry(cls: type) -> dict | None:
     if spec is None:
         return None
     name = cls.__name__
+    # The fields of one manifest entry that describe the op.
+    fields = frozenset({"family", "signature", "roofline", "workloads"})
     if not isinstance(spec, Mapping):
         raise TypeError(
             f"{name}.spec is a {type(spec).__name__}; it is a mapping with the fields of one "
-            f"manifest entry: {sorted(_SPEC_FIELDS)}"
+            f"manifest entry: {sorted(fields)}"
         )
     entry = copy.deepcopy(dict(spec))
-    errors = [f"unknown field {k!r}" for k in sorted(set(entry) - _SPEC_FIELDS, key=repr)]
+    errors = [f"unknown field {k!r}" for k in sorted(set(entry) - fields, key=repr)]
     errors += [f"missing field {k!r}" for k in ("family", "signature") if k not in entry]
     family = entry.get("family")
     if family is not None and not (isinstance(family, str) and family.isidentifier()):
@@ -2296,3 +2289,21 @@ def maybe_install_signature(cls: type, entry: dict | None) -> bool:
         return False
     install_compile_boundary(cls, entry)
     return True
+
+
+def install_param_names(cls: type, entry: dict | None) -> None:
+    """Attach the param names of *entry*, the op's manifest entry, to *cls*, the names
+    ``Op._manifest_params`` calls a backend's ``build_kernel`` with; a name in the class body
+    wins.
+
+    Every class gets its own answer, never an inherited one: params are exactly this op's
+    ``signature.params``, and a class with no entry hands a backend nothing. A param
+    ``forward`` takes, such as a caller-supplied ``out`` buffer, belongs to one call and
+    reaches the kernel with it, so it is not among them.
+    """
+    if PARAM_NAMES_ATTRIBUTE in cls.__dict__:
+        return
+    params = (entry.get("signature") or {}).get("params") if entry is not None else None
+    per_call = set(inspect.signature(cls.forward).parameters)
+    names = tuple(p for p in params if p not in per_call) if isinstance(params, dict) else ()
+    setattr(cls, PARAM_NAMES_ATTRIBUTE, names)

@@ -24,13 +24,11 @@ __all__ = ["PagedKVCacheWriteKernel"]
 
 @target_cache(maxsize=32)
 def _paged_cache_write_kernel(
-    heads_kv: int,
-    dim: int,
+    row_width: int,
     physical_tokens: int,
     in_dtype: str,
     cache_dtype: str,
 ) -> Callable:
-    row_width = heads_kv * dim
     quantized = cache_dtype == "float8_e4m3fn"
 
     @tilelang.jit(out_idx=[])
@@ -109,7 +107,7 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
             dtype=call.dtype,
             cache_dtype=call.cache_dtype,
         )
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (*args.values(), index), lambda: cls(**args, device_index=index)
 
     def __init__(
@@ -136,15 +134,12 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
             device_index: The device the program is built for, or None for the current one.
         """
         super().__init__(device_index=device_index)
-        self.heads_kv, self.dim = heads_kv, dim
-        self.num_pages, self.page_size = num_pages, page_size
         self.dtype, self.cache_dtype = dtype, cache_dtype
         self.row_width = heads_kv * dim
         self.physical_tokens = num_pages * page_size
         self.quantized = cache_dtype == torch.float8_e4m3fn
         self.kernel = _paged_cache_write_kernel(
-            heads_kv,
-            dim,
+            self.row_width,
             self.physical_tokens,
             self.dtype_str,
             self.dtype_to_str(cache_dtype),

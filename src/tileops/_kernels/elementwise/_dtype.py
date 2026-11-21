@@ -23,7 +23,6 @@ FLOAT_DTYPES = (
     torch.bfloat16,
     torch.float32,
 )
-LOGICAL_DTYPES = BITWISE_DTYPES + FLOAT_DTYPES
 BINARY_FULL_DTYPES = BITWISE_DTYPES + FLOAT_DTYPES
 BINARY_NO_BOOL_DTYPES = tuple(dt for dt in BINARY_FULL_DTYPES if dt is not torch.bool)
 
@@ -33,9 +32,11 @@ def log_for_output_precision(value, wide):
     return T.log(wide) if value.dtype == "float32" else T.__log(wide)
 
 
-def torch_dtype_nbytes(dtype: torch.dtype) -> int:
-    """Return the byte width of a torch dtype."""
-    return torch.empty(0, dtype=dtype).element_size()
+def dtype_refusal(supported, dtype) -> "str | None":
+    """``None`` where *supported* holds *dtype*, else the refusal that names what it holds."""
+    if dtype in supported:
+        return None
+    return f"serves dtypes [{', '.join(str(dt) for dt in supported)}], not {dtype}"
 
 
 def clamp_to_dtype_range(value, dtype: torch.dtype):

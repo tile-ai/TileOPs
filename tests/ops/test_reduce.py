@@ -623,10 +623,15 @@ def _check_variance(op_cls, ref_fn, x, dim, keepdim, correction) -> None:
         compare_outputs(g, w, reduction_verification(w.dtype))
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("op_cls, ref_fn", _VARIANCE_OPS)
 @pytest.mark.parametrize("dim", _VARIANCE_DIMS)
-@pytest.mark.parametrize("keepdim", [False, True], ids=["keepdim=False", "keepdim=True"])
+@pytest.mark.parametrize(
+    "keepdim",
+    [
+        pytest.param(False, id="keepdim=False", marks=pytest.mark.smoke),
+        pytest.param(True, id="keepdim=True", marks=pytest.mark.full),
+    ],
+)
 def test_the_variance_output_shape_matches_torch(op_cls, ref_fn, dim, keepdim) -> None:
     """The two axes that pick branches, crossed: ``dim=None, keepdim=False`` is 0-D."""
     shape = (4, 8, 256)

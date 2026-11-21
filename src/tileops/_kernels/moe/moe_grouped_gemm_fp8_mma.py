@@ -6,6 +6,7 @@ import tilelang
 import tilelang.language as T
 
 from tileops._kernels.build_target import target_cache
+from tileops._kernels.constants import QUANT_SCALE_BLOCK
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import MGroupedGEMMFP8Call
 from tileops._kernels.moe.layout import aligned_group
@@ -16,7 +17,7 @@ __all__ = ["MoEGroupedGEMMFP8MMAKernel"]
 
 @target_cache(maxsize=32)
 def _moe_grouped_gemm_fp8_mma_kernel(groups: int, rows: int | None, n: int, k: int):
-    scale_block = 128
+    scale_block = QUANT_SCALE_BLOCK
     contiguous = rows is None
 
     @tilelang.jit(pass_configs={"tl.disable_warp_specialized": True})
@@ -109,6 +110,7 @@ class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
 
     supported_archs: list[int] = [89]
     _BLOCK_M = (32, 64)
+    _BLOCK_N = (64, 128)
 
     @classmethod
     def refusal(cls, call: MGroupedGEMMFP8Call) -> str | None:
@@ -122,10 +124,10 @@ class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
         return super().refusal(call)
 
     def __init__(self, call: MGroupedGEMMFP8Call) -> None:
-        device_index = call.device.index if call.device is not None else None
+        device_index = call.device_index
         Kernel.__init__(self, device_index=device_index)
         self.call = call
-        self.scale_k = call.k // 128
+        self.scale_k = call.k // QUANT_SCALE_BLOCK
         self.alignment = call.alignment if call.packing == "aligned" else 0
         self.kernel = _moe_grouped_gemm_fp8_mma_kernel(call.num_groups, call.max_m, call.n, call.k)
         self.init_config()
@@ -138,7 +140,7 @@ class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
     def autotune_configs(self) -> list[dict]:
         return [
             {"block_m": m, "block_n": n}
-            for m, n in itertools.product(self._BLOCK_M, (64, 128))
+            for m, n in itertools.product(self._BLOCK_M, self._BLOCK_N)
             if self.alignment % m == 0
         ]
 
@@ -147,8 +149,10 @@ class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
             raise ValueError("FP8 MMA takes only block_m and block_n")
         if not all(type(value) is int for value in config.values()):
             raise ValueError("FP8 MMA tile sizes must be integers")
-        if config["block_m"] not in self._BLOCK_M or config["block_n"] not in (64, 128):
-            raise ValueError("FP8 MMA needs block_m in (32, 64), block_n in (64, 128)")
+        if config["block_m"] not in self._BLOCK_M or config["block_n"] not in self._BLOCK_N:
+            raise ValueError(
+                f"FP8 MMA needs block_m in {self._BLOCK_M}, block_n in {self._BLOCK_N}"
+            )
         if self.alignment % config["block_m"]:
             raise ValueError("FP8 MMA block_m must divide the aligned layout's alignment")
 

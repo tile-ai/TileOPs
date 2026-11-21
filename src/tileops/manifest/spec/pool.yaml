@@ -488,8 +488,9 @@ AdaptiveMaxPool2dIndicesFwdOp:
 
 MeanPoolingFwdOp:
   # A chunked mean over the sequence axis, along ragged boundaries when `cu_seqlens` and
-  # `chunk_indices` are passed; torch has no such API. The limits are declared, not the
-  # kernel's: a block bounds-tests a power-of-two share of `H * D` that does not divide it.
+  # `chunk_indices` are passed; torch has no such API. The `chunk_size` and `D` shape rules
+  # are the op's contract, not the kernel's limits: the kernel bounds-tests a block whose
+  # power-of-two share of `H * D` does not divide it.
   family: pool
   status: implemented
   ref_api: fla.ops.utils.pooling.mean_pooling_fwd

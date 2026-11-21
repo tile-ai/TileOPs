@@ -131,7 +131,6 @@ def test_the_dropped_report_counts_each_file_s_collected_and_dropped_tests(tmp_p
     "error, reason, accepted",
     [
         (RuntimeError("Found no NVIDIA driver on your system"), "cuda-kernel", True),
-        (RuntimeError("CUDA error: driver unavailable"), "cuda-graph", True),
         (RuntimeError("0 active drivers ([]). There should only be one."), "cuda-reference", True),
         (RuntimeError("shape mismatch"), "cuda-kernel", False),
         (

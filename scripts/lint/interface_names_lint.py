@@ -12,7 +12,7 @@ import re
 import sys
 from pathlib import Path
 
-from common import files, relative, report
+from common import lint_files, relative
 
 SCANNED = ("src/tileops/_kernels",)
 NAME = re.compile(r"[A-Z][A-Za-z0-9]*(Fwd|Bwd)Interface")
@@ -39,7 +39,7 @@ def findings(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    return report(e for p in files(argv, SCANNED, (".py",)) for e in findings(p))
+    return lint_files(argv, __doc__, SCANNED, (".py",), findings)
 
 
 if __name__ == "__main__":

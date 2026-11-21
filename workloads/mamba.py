@@ -4,49 +4,8 @@ import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
-from workloads.workload_base import CallWorkload, FixtureBase, WorkloadBase
-
-
-class SSDChunkCumsumFwdFixture(FixtureBase):
-    @classmethod
-    def get_params(cls):
-        import pytest
-
-        return [
-            (
-                "batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune",
-                [
-                    # feature: no bias, no softplus (baseline path)
-                    pytest.param(
-                        1, 2, 64, 4, False, False, torch.float16, False, marks=pytest.mark.smoke
-                    ),
-                    # feature: bias only (has_dt_bias branch, no softplus)
-                    pytest.param(
-                        1, 2, 64, 4, True, False, torch.bfloat16, False, marks=pytest.mark.smoke
-                    ),
-                    # feature: softplus only (no bias, dt_softplus branch)
-                    pytest.param(
-                        1, 2, 64, 4, False, True, torch.float16, False, marks=pytest.mark.smoke
-                    ),
-                    # feature: bias + softplus (full pipeline)
-                    pytest.param(
-                        1, 2, 64, 4, True, True, torch.bfloat16, False, marks=pytest.mark.full
-                    ),
-                    # shape: larger batch and chunk count
-                    pytest.param(
-                        2, 4, 64, 8, False, False, torch.float16, False, marks=pytest.mark.full
-                    ),
-                    # shape: larger chunk_len tile
-                    pytest.param(
-                        1, 2, 128, 4, False, False, torch.bfloat16, False, marks=pytest.mark.full
-                    ),
-                    # shape + feature: large shape with full pipeline
-                    pytest.param(
-                        2, 4, 128, 16, True, True, torch.float16, False, marks=pytest.mark.full
-                    ),
-                ],
-            ),
-        ]
+from workloads.numerics import Exact
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 class SSDChunkCumsumFwdWorkload(WorkloadBase):
@@ -75,8 +34,7 @@ class SSDChunkCumsumFwdWorkload(WorkloadBase):
     def gen_inputs(self):
         b, C, Q, h = self.batch, self.num_chunks, self.chunk_len, self.n_heads
         seq_len = C * Q
-        # Raw dt values; softplus maps R -> R+, so randn covers both sides of the nonlinearity.
-        # A <= 0 (negative decay)
+        # Raw dt values on both sides of the softplus; a non-positive decay A.
         dt_raw = torch.randn(b, seq_len, h, dtype=torch.float32, device=run_device())
         A = -torch.rand(h, dtype=torch.float32, device=run_device())
         # Absent means None: the op builds the kernel without that branch, and a
@@ -100,32 +58,6 @@ class SSDChunkCumsumFwdWorkload(WorkloadBase):
             dt_max=self.dt_max,
             dtype=self.dtype,
         )
-
-
-class SSDChunkScanFwdFixture(FixtureBase):
-    @classmethod
-    def get_params(cls):
-        import pytest
-
-        return [
-            (
-                "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune",
-                [
-                    pytest.param(
-                        1, 2, 64, 4, 64, 32, 1, torch.float16, False, marks=pytest.mark.smoke
-                    ),
-                    pytest.param(
-                        1, 2, 128, 4, 128, 32, 1, torch.bfloat16, False, marks=pytest.mark.smoke
-                    ),
-                    pytest.param(
-                        2, 4, 64, 8, 64, 64, 2, torch.float16, False, marks=pytest.mark.full
-                    ),
-                    pytest.param(
-                        2, 2, 64, 4, 64, 32, 2, torch.bfloat16, False, marks=pytest.mark.full
-                    ),
-                ],
-            ),
-        ]
 
 
 class SSDChunkScanFwdWorkload(WorkloadBase):
@@ -160,8 +92,6 @@ class SSDChunkScanFwdWorkload(WorkloadBase):
             self.n_groups,
         )
         S = c * L
-
-        # Official layouts (aligned with _chunk_scan_fwd in mamba_ssm)
         x = torch.randn(b, S, h, p, dtype=self.dtype, device=run_device()) * 0.1
         cb = torch.randn(b, c, g, L, L, dtype=self.dtype, device=run_device()) * 0.1
         dA_cumsum = -torch.rand(b, h, c, L, dtype=torch.float32, device=run_device()).cumsum(-1)
@@ -174,103 +104,8 @@ class SSDChunkScanFwdWorkload(WorkloadBase):
         return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, self.n_groups)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         atol = 1e-3 if inputs[0].dtype == torch.float16 else 2e-3
         return Exact(atol=atol, rtol=1e-5)
-
-
-class SSDChunkStateFwdFixture(FixtureBase):
-    @classmethod
-    def get_params(cls):
-        import pytest
-
-        return [
-            (
-                "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune, has_seq_idx",
-                [
-                    pytest.param(
-                        1,
-                        2,
-                        64,
-                        4,
-                        64,
-                        32,
-                        1,
-                        torch.float16,
-                        False,
-                        False,
-                        marks=pytest.mark.smoke,
-                    ),
-                    pytest.param(
-                        1,
-                        2,
-                        128,
-                        4,
-                        128,
-                        32,
-                        1,
-                        torch.bfloat16,
-                        False,
-                        False,
-                        marks=pytest.mark.smoke,
-                    ),
-                    pytest.param(
-                        2,
-                        4,
-                        64,
-                        8,
-                        64,
-                        64,
-                        2,
-                        torch.float16,
-                        False,
-                        False,
-                        marks=pytest.mark.full,
-                    ),
-                    pytest.param(
-                        2,
-                        2,
-                        64,
-                        4,
-                        64,
-                        32,
-                        2,
-                        torch.bfloat16,
-                        False,
-                        False,
-                        marks=pytest.mark.full,
-                    ),
-                    pytest.param(
-                        2,
-                        4,
-                        64,
-                        8,
-                        64,
-                        64,
-                        2,
-                        torch.float16,
-                        False,
-                        True,
-                        marks=pytest.mark.full,
-                    ),
-                    # A d_state that is not a whole number of 16-column GEMM steps.
-                    pytest.param(
-                        1,
-                        2,
-                        64,
-                        4,
-                        64,
-                        24,
-                        1,
-                        torch.float16,
-                        False,
-                        False,
-                        marks=pytest.mark.full,
-                    ),
-                ],
-            ),
-        ]
 
 
 class SSDChunkStateFwdWorkload(WorkloadBase):
@@ -309,12 +144,11 @@ class SSDChunkStateFwdWorkload(WorkloadBase):
         seq_len = c * Q
         x = torch.randn(b, seq_len, h, p, dtype=self.dtype, device=run_device()) * 0.1
         Bmat = torch.randn(b, seq_len, g, n, dtype=self.dtype, device=run_device()) * 0.1
-        # dA_cumsum: monotonically non-increasing (negative values, cumsum of negatives)
         dA_cumsum = -torch.rand(b, h, c, Q, dtype=torch.float32, device=run_device()).cumsum(-1)
         dt = torch.rand(b, h, c, Q, dtype=torch.float32, device=run_device()) * 0.1 + 0.01
         seq_idx = None
         if self.has_seq_idx:
-            # simulate two packed sequences per batch row, split at midpoint
+            # Two packed sequences per batch row, split at the midpoint.
             seq_idx = torch.zeros(b, seq_len, dtype=torch.int32, device=run_device())
             seq_idx[:, seq_len // 2 :] = 1
         return x, Bmat, dt, dA_cumsum, seq_idx
@@ -323,64 +157,8 @@ class SSDChunkStateFwdWorkload(WorkloadBase):
         return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.n_groups, seq_idx=seq_idx)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         atol = 1e-3 if inputs[0].dtype == torch.float16 else 1.6e-2
         return Exact(atol=atol, rtol=1e-3)
-
-
-class SSDDecodeFixture(FixtureBase):
-    @classmethod
-    def get_params(cls):
-        import pytest
-
-        return [
-            (
-                "batch, n_heads, d_head, d_state, n_groups, dtype, tune",
-                [
-                    pytest.param(
-                        1,
-                        4,
-                        64,
-                        16,
-                        1,
-                        torch.float16,
-                        False,
-                        marks=pytest.mark.smoke,
-                    ),
-                    pytest.param(
-                        1,
-                        4,
-                        64,
-                        16,
-                        1,
-                        torch.bfloat16,
-                        False,
-                        marks=pytest.mark.smoke,
-                    ),
-                    pytest.param(
-                        2,
-                        8,
-                        64,
-                        32,
-                        2,
-                        torch.float16,
-                        False,
-                        marks=pytest.mark.full,
-                    ),
-                    pytest.param(
-                        2,
-                        8,
-                        128,
-                        64,
-                        4,
-                        torch.bfloat16,
-                        False,
-                        marks=pytest.mark.full,
-                    ),
-                ],
-            ),
-        ]
 
 
 class SSDDecodeWorkload(WorkloadBase):
@@ -408,7 +186,7 @@ class SSDDecodeWorkload(WorkloadBase):
             self.d_state,
             self.n_groups,
         )
-        # A <= 0 (negative decay), dt > 0 (post-softplus)
+        # A non-positive decay and a positive, post-softplus step.
         A = -torch.rand(h, p, n, dtype=torch.float32, device=run_device())
         dt = torch.rand(b, h, p, dtype=torch.float32, device=run_device()) * 0.1 + 0.01
         x = torch.randn(b, h, p, dtype=self.dtype, device=run_device()) * 0.1
@@ -422,27 +200,7 @@ class SSDDecodeWorkload(WorkloadBase):
         return output, state
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         return Exact(atol=1e-3, rtol=1e-3)
-
-
-class SSDStatePassingFwdFixture(FixtureBase):
-    @classmethod
-    def get_params(cls):
-        import pytest
-
-        return [
-            (
-                "batch, num_chunks, n_heads, d_state, dtype, tune",
-                [
-                    pytest.param(1, 2, 4, 32, torch.float16, False, marks=pytest.mark.smoke),
-                    pytest.param(1, 2, 4, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
-                    pytest.param(2, 4, 8, 64, torch.float16, False, marks=pytest.mark.full),
-                    pytest.param(2, 4, 8, 64, torch.bfloat16, False, marks=pytest.mark.full),
-                ],
-            ),
-        ]
 
 
 class SSDStatePassingFwdWorkload(WorkloadBase):
@@ -478,8 +236,6 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
         return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         atol = 1e-3 if inputs[0].dtype == torch.float16 else 1.6e-2
         return Exact(atol=atol, rtol=1e-3)
 
@@ -519,8 +275,6 @@ class SSDStatePassingUnitWorkload(SSDStatePassingFwdWorkload):
         return previous, final
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         return Exact(atol=0, rtol=0)
 
 
@@ -553,73 +307,44 @@ def ssd_chunk_cumsum_fwd_ref(
     if dt_softplus:
         dt_val = F.softplus(dt_val)
     dt_val = torch.clamp(dt_val, min=dt_min, max=dt_max)
-    dt_chunked = dt_val.reshape(b, C, Q, h)  # (b, C, Q, h)
-    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous().to(dtype)  # (b, h, C, Q) in target dtype
-    dA = dt_chunked * A.float()  # (b, C, Q, h)
-    dA_cumsum = dA.cumsum(dim=2).permute(0, 3, 1, 2).contiguous()  # (b, h, C, Q)
+    dt_chunked = dt_val.reshape(b, C, Q, h)
+    dt_out = dt_chunked.permute(0, 3, 1, 2).contiguous().to(dtype)
+    dA_cumsum = (dt_chunked * A.float()).cumsum(dim=2).permute(0, 3, 1, 2).contiguous()
     return dt_out, dA_cumsum
 
 
 def ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, n_groups):
-    """Official-aligned PyTorch reference for chunk scan.
+    """Float32 chunk scan in mamba_ssm's ``_chunk_scan_fwd`` layouts.
 
-    Inputs (official layouts):
-      x:           [B, S, H, P]        dtype
-      cb:          [B, C, G, L, L]     dtype    group-owned
-      dA_cumsum:   [B, H, C, L]        float32
-      C:           [B, S, G, N]        dtype    group-owned
-      prev_states: [B, C, H, P, N]     float32  P before N
-      dt:          [B, H, C, L]        dtype
+    ``out[l] = exp(dA[l]) * C[l] @ prev_state + sum_{s<=l} cb[l, s] * exp(dA[l] - dA[s])
+    * dt[s] * x[s]`` within each chunk, ``cb`` and ``C`` read through each head's group.
 
-    Output: [B, S, H, P]  float32
+    Inputs:
+      x:           [B, S, H, P]
+      cb:          [B, C, G, L, L]
+      dA_cumsum:   [B, H, C, L]     float32
+      C:           [B, S, G, N]
+      prev_states: [B, C, H, P, N]  float32
+      dt:          [B, H, C, L]
+
+    Output: [B, S, H, P] float32
     """
     b, S, h, p = x.shape
     _, _, c, L = dA_cumsum.shape
     n = C.shape[-1]
-    g = n_groups
-    heads_per_group = h // g
-
-    x_chunked = x.float().reshape(b, c, L, h, p)  # [B, C, L, H, P]
-    C_chunked = C.float().reshape(b, c, L, g, n)  # [B, C, L, G, N]
-    # broadcast C from groups to heads: [B, C, L, H, N]
-    C_heads = C_chunked[:, :, :, torch.arange(h, device=x.device) // heads_per_group, :]
-
-    # dA_cumsum: [B, H, C, L] -> [B, C, L, H] for broadcast
-    dA = dA_cumsum.float().permute(0, 2, 3, 1)  # [B, C, L, H]
-
-    # --- History path: exp(dA_l) * C[l] @ prev_states[p, n] ---
-    # prev_states: [B, C, H, P, N]
-    # C_heads:     [B, C, L, H, N] -> einsum over n: [B, C, L, H, P]
+    group_of_head = torch.arange(h, device=x.device) // (h // n_groups)
+    x_chunked = x.float().reshape(b, c, L, h, p)
+    C_heads = C.float().reshape(b, c, L, n_groups, n)[:, :, :, group_of_head, :]
+    dA = dA_cumsum.float().permute(0, 2, 3, 1)
     y_off = torch.einsum("bclhn,bchpn->bclhp", C_heads, prev_states.float())
-    y_off = y_off * torch.exp(dA).unsqueeze(-1)  # scale by exp(dA_l)
-
-    # --- Intra-chunk path: sum_{s<=l} cb[l,s] * exp(dA_l - dA_s) * dt[s] * x[s] ---
-    # cb: [B, C, G, L, L]; broadcast to heads [B, C, H, L, L]
-    cb_chunked = cb.float()  # [B, C, G, L, L]
-    cb_heads = cb_chunked[:, :, torch.arange(h, device=x.device) // heads_per_group, :, :]
-
-    # decay[b,c,h,l,s] = exp(dA_cumsum[l] - dA_cumsum[s])
-    dA_l = dA_cumsum.float().unsqueeze(-1)  # [B, H, C, L, 1]
-    dA_s = dA_cumsum.float().unsqueeze(-2)  # [B, H, C, 1, L]
-    decay = torch.exp(dA_l - dA_s)  # [B, H, C, L, L]
-
-    # causal mask
+    y_off = y_off * torch.exp(dA).unsqueeze(-1)
+    cb_heads = cb.float()[:, :, group_of_head, :, :]
+    decay = torch.exp(dA_cumsum.float().unsqueeze(-1) - dA_cumsum.float().unsqueeze(-2))
     mask = torch.tril(torch.ones(L, L, device=x.device, dtype=torch.bool))
-    decay = decay.masked_fill(~mask.unsqueeze(0).unsqueeze(0).unsqueeze(0), 0.0)
-    decay = decay.permute(0, 2, 1, 3, 4)  # [B, C, H, L, L]
-
-    # dt: [B, H, C, L] -> [B, C, H, 1, L]
-    dt_s = dt.float().permute(0, 2, 1, 3).unsqueeze(-2)  # [B, C, H, 1, L]
-
-    # lcb[b,c,h,l,s] = cb[l,s] * decay[l,s] * dt[s]
-    lcb = cb_heads * decay * dt_s  # [B, C, H, L, L]
-
-    # y_diag[b,c,l,h,p] = sum_s lcb[b,c,h,l,s] * x[b,c,s,h,p]
-    y_diag = torch.einsum("bchls,bcshp->bclhp", lcb, x_chunked)
-
-    # combine and reshape to [B, S, H, P]
-    out = (y_off + y_diag).reshape(b, S, h, p)
-    return out
+    decay = decay.masked_fill(~mask, 0.0).permute(0, 2, 1, 3, 4)
+    dt_s = dt.float().permute(0, 2, 1, 3).unsqueeze(-2)
+    y_diag = torch.einsum("bchls,bcshp->bclhp", cb_heads * decay * dt_s, x_chunked)
+    return (y_off + y_diag).reshape(b, S, h, p)
 
 
 def ssd_chunk_state_fwd_ref(
@@ -630,33 +355,28 @@ def ssd_chunk_state_fwd_ref(
     n_groups: int,
     seq_idx=None,
 ) -> torch.Tensor:
-    """PyTorch reference for ssd_chunk_state_fwd."""
+    """Float32 state each chunk leaves from a zero start, ``[B, C, H, P, N]``.
+
+    ``sum_l exp(dA[end] - dA[l]) * dt[l] * x[l] B[l]^T``, ``B`` read through each head's
+    group. With ``seq_idx``, only the tokens of the sequence the chunk ends in, when that id
+    is not negative, contribute.
+    """
     b, seq_len, h, p = x.shape
     _, _, c, Q = dt.shape
     n = Bmat.shape[-1]
-    heads_per_group = h // n_groups
-
     x_chunked = x.float().reshape(b, c, Q, h, p)
-    B_chunked = Bmat.float().reshape(b, c, Q, n_groups, n)
-    B_heads = B_chunked[:, :, :, torch.arange(h) // heads_per_group, :]
-
+    group_of_head = torch.arange(h, device=x.device) // (h // n_groups)
+    B_heads = Bmat.float().reshape(b, c, Q, n_groups, n)[:, :, :, group_of_head, :]
     dA = dA_cumsum.float().permute(0, 2, 1, 3)
-    dA_end = dA[:, :, :, -1:]
-    decay = torch.exp(torch.clamp(dA_end - dA, max=0.0))
-
-    dt_chunked = dt.float().permute(0, 2, 1, 3)
-    weight = decay * dt_chunked
-
+    decay = torch.exp(torch.clamp(dA[:, :, :, -1:] - dA, max=0.0))
+    weight = decay * dt.float().permute(0, 2, 1, 3)
     if seq_idx is not None:
         seq_chunked = seq_idx.reshape(b, c, Q)
         seq_end = seq_chunked[..., -1:]
-        same = ((seq_end >= 0) & (seq_chunked == seq_end)).unsqueeze(3)
-        weight = weight * same.permute(0, 1, 3, 2)
-
-    w = weight.permute(0, 1, 3, 2).unsqueeze(-1).unsqueeze(-1)
-    contrib = w * B_heads.unsqueeze(-1) * x_chunked.unsqueeze(-2)
-    out = contrib.sum(dim=2)
-    return out.permute(0, 1, 2, 4, 3)
+        same = (seq_end >= 0) & (seq_chunked == seq_end)
+        weight = weight * same.unsqueeze(2)
+    wx = x_chunked * weight.permute(0, 1, 3, 2).unsqueeze(-1)
+    return torch.einsum("bcqhp,bcqhn->bchpn", wx, B_heads)
 
 
 def ssd_state_passing_fwd_ref(
@@ -664,78 +384,54 @@ def ssd_state_passing_fwd_ref(
     dA_chunk_cumsum: torch.Tensor,
     initial_states: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """PyTorch reference for the inter-chunk recurrent scan.
+    """Float32 inter-chunk scan over ``states [B, C, H, ...]``: ``(prev_states, final)``.
 
-    Matches mamba convention: out[:,c] = state *before* processing chunk c,
-    so out[:,0] = initial_states and final_states = state after chunk C-1.
+    Matches mamba convention: ``prev_states[:, c]`` is the state before chunk ``c``, so
+    ``prev_states[:, 0]`` is ``initial_states`` (zero when omitted) and ``final`` the state
+    after the last chunk.
     """
-    b, c, h, d = states.shape
-    # out[:,0] = s_{-1} = initial_states, or zero when the call omits it.
+    b, c, h = states.shape[:3]
     s = (
-        torch.zeros(b, h, d, dtype=torch.float32, device=states.device)
+        torch.zeros(states[:, 0].shape, dtype=torch.float32, device=states.device)
         if initial_states is None
         else initial_states.float()
     )
     out = [s.clone()]
-
     for ci in range(c):
-        scale = torch.exp(dA_chunk_cumsum[:, :, ci]).unsqueeze(-1)
-        u = states[:, ci, :, :].float()
-        s = scale * s + u
+        decay = torch.exp(dA_chunk_cumsum[:, :, ci]).view(b, h, *(1,) * (s.dim() - 2))
+        s = decay * s + states[:, ci].float()
         if ci < c - 1:
             out.append(s.clone())
-
     return torch.stack(out, dim=1), s
 
 
 def ssd_decode_ref(
-    A: torch.Tensor,  # (H, P, N)     float32
-    dt: torch.Tensor,  # (B, H, P)     float32
-    x: torch.Tensor,  # (B, H, P)     any dtype
-    B_in: torch.Tensor,  # (B, G, N)     any dtype
-    C_in: torch.Tensor,  # (B, G, N)     any dtype
-    state: torch.Tensor,  # (B, H, P, N)  float32  -- updated in-place
+    A: torch.Tensor,
+    dt: torch.Tensor,
+    x: torch.Tensor,
+    B_in: torch.Tensor,
+    C_in: torch.Tensor,
+    state: torch.Tensor,
 ) -> torch.Tensor:
-    """PyTorch reference for ssd_decode.
+    """One Mamba-2 ``selective_state_update`` step in float32; updates *state* in place.
 
-    Matches the official Mamba-2 selective_state_update interface:
-      A:  (nheads, headdim, d_state)   — repeated from (nheads,) in mamba2.step()
-      dt: (batch,  nheads,  headdim)   — repeated from (batch, nheads) in mamba2.step()
+    ``A [H, P, N]`` and ``dt [B, H, P]`` are float32, as ``mamba2.step()`` repeats them from
+    ``[H]`` and ``[B, H]``; ``x`` is ``[B, H, P]``, ``B_in`` and ``C_in`` ``[B, G, N]`` and
+    ``state`` ``[B, H, P, N]``. Head ``h`` reads group ``h // (H // G)``::
 
-    Returns:
-      y_out: (B, H, P)  float32
+        state <- exp(dt * A) * state + dt * x * B
+        y      = state @ C
 
-    Semantics:
-      g                = h // (n_heads // n_groups)
-      dA[b, h, p, n]   = exp(dt[b,h,p] * A[h,p,n])
-      state[b,h,p,n]  <- dA[b,h,p,n] * state[b,h,p,n]
-                         + dt[b,h,p] * B_in[b,g,n] * x[b,h,p]   (in-place)
-      y_out[b, h, p]   = sum_n  state[b, h, p, n] * C_in[b, g, n]
+    Returns ``y [B, H, P]`` in float32.
     """
-    B, H, P = dt.shape
-    G = B_in.shape[1]
-    heads_per_group = H // G
-
-    # Expand B/C from groups to heads: (B, H, N)
-    head_idx = torch.arange(H, device=B_in.device) // heads_per_group
-    B_heads = B_in.float()[:, head_idx, :]  # (B, H, N)
-    C_heads = C_in.float()[:, head_idx, :]  # (B, H, N)
-
-    # dA[b, h, p, n] = exp(dt[b,h,p] * A[h,p,n])
-    dA = torch.exp(dt.float()[:, :, :, None] * A.float()[None, :, :, :])  # (B, H, P, N)
-
-    # dBx[b, h, p, n] = dt[b,h,p] * B[b,h,n] * x[b,h,p]
-    dBx = (
-        dt.float()[:, :, :, None] * x.float()[:, :, :, None] * B_heads[:, :, None, :]
-    )  # (B, H, P, N)
-
-    # Update state in-place
-    new_state = dA * state.float() + dBx
-    state.copy_(new_state)
-
-    # y_out[b, h, p] = sum_n state[b, h, p, n] * C[b, h, n]
-    y_out = torch.einsum("bhpn,bhn->bhp", state.float(), C_heads)
-    return y_out
+    heads = dt.shape[1]
+    group_of_head = torch.arange(heads, device=B_in.device) // (heads // B_in.shape[1])
+    B_heads = B_in.float()[:, group_of_head, :]
+    C_heads = C_in.float()[:, group_of_head, :]
+    dA = torch.exp(dt.float()[:, :, :, None] * A.float()[None, :, :, :])
+    dBx = dt.float()[:, :, :, None] * x.float()[:, :, :, None] * B_heads[:, :, None, :]
+    state.copy_(dA * state.float() + dBx)
+    return torch.einsum("bhpn,bhn->bhp", state.float(), C_heads)
 
 
 def ssd_chunk_coupling_fwd_ref(
@@ -881,93 +577,24 @@ def mamba2_fwd_ref(
     dt_softplus: bool,
     initial_states: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pure-PyTorch reference for the Mamba-2 State-Space Dual (SSD) forward pass.
+    """Float32 Mamba-2 State-Space Dual (SSD) forward, ``mamba_chunk_scan_combined``'s result.
 
-    Computes the same result as mamba_chunk_scan_combined from mamba_ssm:
-      out[l,p] = exp(dA[l]) * C[l] @ prev_state
-               + sum_{s<=l} (C[l]@B[s]) * exp(dA[l]-dA[s]) * dt[s] * x[s,p]
-
-    Inputs:
-        x:              (B, S, H, P)     dtype
-        dt:             (B, S, H)        float32
-        A:              (H,)             float32  (log-space, <= 0)
-        B:              (B, S, G, N)     dtype
-        C:              (B, S, G, N)     dtype
-        dt_bias:        (H,)             float32, optional
-        chunk_size:     int
-        dt_softplus:    bool
-        initial_states: (B, H, P, N)     float32, optional
-
-    Returns:
-        y:            (B, S, H, P)  float32
-        final_states: (B, H, P, N)  float32
+    The five chunked steps in order: cumulative decay, the ``C @ B`` coupling, each chunk's
+    state, the inter-chunk scan, and the chunk scan. ``x`` is ``[B, S, H, P]``, ``dt``
+    ``[B, S, H]``, ``A [H]`` (log-space, <= 0), ``B`` and ``C`` ``[B, S, G, N]``, ``dt_bias``
+    ``[H]`` and ``initial_states`` ``[B, H, P, N]``. Returns ``y [B, S, H, P]`` and the final
+    states ``[B, H, P, N]``.
     """
-    b, S, h, p = x.shape
-    n = B.shape[-1]
-    g = B.shape[2]
-    hpg = h // g
-    Q = chunk_size
-    num_chunks = S // Q
-
-    # Step 1: SSDChunkCumsum
-    dt_val = dt.float()
-    if dt_bias is not None:
-        dt_val = dt_val + dt_bias.float()
-    if dt_softplus:
-        dt_val = F.softplus(dt_val)
-    dt_val = torch.clamp(dt_val, min=0.0)
-    dt_chunked = dt_val.reshape(b, num_chunks, Q, h).permute(0, 3, 1, 2)
-    dA = dt_chunked * A.float().view(1, h, 1, 1)
-    dA_cumsum = dA.cumsum(dim=-1)
-
-    # Step 2: CB = C[l] @ B[s]^T per chunk, lower-triangular, group-owned.
-    B_c = B.float().reshape(b, num_chunks, Q, g, n)
-    C_c = C.float().reshape(b, num_chunks, Q, g, n)
-    cb = torch.einsum("bcqgn,bcsgn->bcgqs", C_c, B_c)
-    mask = torch.ones(Q, Q, device=x.device, dtype=torch.bool).tril()
-    cb = cb * mask.view(1, 1, 1, Q, Q)
-
-    # Step 3: SSDChunkState
-    decay = torch.exp(dA_cumsum[:, :, :, -1:] - dA_cumsum)
-    decay_c = decay.permute(0, 2, 3, 1)
-    dt_c = dt_chunked.permute(0, 2, 3, 1)
-    x_c = x.float().reshape(b, num_chunks, Q, h, p)
-    B_heads = B_c[:, :, :, torch.arange(h, device=x.device) // hpg, :]
-    wx = x_c * (decay_c * dt_c).unsqueeze(-1)
-    chunk_states = torch.einsum("bcqhp,bcqhn->bchpn", wx, B_heads)
-
-    # Step 4: SSDStatePassing
-    exp_dA_chunk = torch.exp(dA_cumsum[:, :, :, -1])
-    s = (
-        torch.zeros(b, h, p, n, device=x.device, dtype=torch.float32)
-        if initial_states is None
-        else initial_states.float().clone()
+    num_chunks, groups = x.shape[1] // chunk_size, B.shape[2]
+    dt, dA_cumsum = ssd_chunk_cumsum_fwd_ref(
+        dt, A, num_chunks, chunk_size, dt_bias=dt_bias, dt_softplus=dt_softplus
     )
-    prev_states_list = []
-    for ci in range(num_chunks):
-        prev_states_list.append(s.unsqueeze(1))
-        scale = exp_dA_chunk[:, :, ci].view(b, h, 1, 1)
-        s = scale * s + chunk_states[:, ci]
-    prev_states = torch.cat(prev_states_list, dim=1)
-
-    # Step 5: SSDChunkScan
-    dA_c = dA_cumsum.permute(0, 2, 3, 1)
-    C_heads = C_c[:, :, :, torch.arange(h, device=x.device) // hpg, :]
-
-    y_hist = torch.einsum("bcqhn,bchpn->bcqhp", C_heads, prev_states.float())
-    y_hist = y_hist * torch.exp(dA_c).unsqueeze(-1)
-
-    dA_l = dA_cumsum.unsqueeze(-1)
-    dA_s = dA_cumsum.unsqueeze(-2)
-    decay_ls = (
-        torch.exp(dA_l - dA_s).masked_fill(~mask.view(1, 1, 1, Q, Q), 0.0).permute(0, 2, 1, 3, 4)
+    cb = ssd_chunk_coupling_fwd_ref(C, B, num_chunks, chunk_size, torch.float32)
+    chunk_states = ssd_chunk_state_fwd_ref(x, B, dt, dA_cumsum, groups)
+    prev_states, final_states = ssd_state_passing_fwd_ref(
+        chunk_states, dA_cumsum[..., -1], initial_states
     )
-    cb_heads = cb[:, :, torch.arange(h, device=x.device) // hpg, :, :]
-    lcb = cb_heads * decay_ls * dt_c.permute(0, 1, 3, 2).unsqueeze(-2)
-    wx_t = x_c.permute(0, 1, 3, 2, 4)
-    y_intra = torch.einsum("bchls,bchsp->bchlp", lcb, wx_t).permute(0, 1, 3, 2, 4)
-
-    return (y_hist + y_intra).reshape(b, S, h, p), s
+    return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, groups), final_states
 
 
 class Mamba2FwdCall(CallWorkload):
@@ -996,14 +623,10 @@ class Mamba2FwdCall(CallWorkload):
 
 
 def coupling_verification():
-    from workloads.numerics import Exact
-
     return Exact(atol=1e-3, rtol=1e-3)
 
 
 def mamba2_verification(dtype):
-    from workloads.numerics import Exact
-
     atol = 1e-2 if dtype == torch.float16 else 2e-2
     return Exact(atol=atol, rtol=1e-3)
 

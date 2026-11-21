@@ -5,6 +5,8 @@
 
 #include <cstring>
 
+#include "cluster_partials.h"
+
 namespace tileops {
 
 __device__ __forceinline__ __half2 w4a16_half2_from_bits(unsigned int bits) {
@@ -70,38 +72,6 @@ __device__ __forceinline__ cutlass::half_t w4a16_dequant_word_one_shift(
   }
   const __half r = v == 0 ? __low2half(out) : __high2half(out);
   return cutlass::half_t(r);
-}
-
-}  // namespace tileops
-
-namespace tileops {
-
-// A K-split cluster pair sums one consumer warpgroup's R FP32 accumulators per
-// thread: the warpgroup that sends stores them into the peer's ``landing``, the
-// warpgroup that keeps them adds the peer's. Thread t's i-th float4 lands at
-// float4 index i * 128 + t, so the add reads the layout the send wrote.
-template <int R>
-__device__ __forceinline__ void w4a16_pair_send(float const* acc,
-                                                float* landing, void* bar,
-                                                int peer, int t) {
-#pragma unroll
-  for (int i = 0; i < R / 4; ++i) {
-    send_partial4(landing + (i * 128 + t) * 4, bar, peer, acc[i * 4 + 0],
-                  acc[i * 4 + 1], acc[i * 4 + 2], acc[i * 4 + 3]);
-  }
-}
-
-template <int R>
-__device__ __forceinline__ void w4a16_pair_add(float* acc, float const* landing,
-                                               int t) {
-#pragma unroll
-  for (int i = 0; i < R / 4; ++i) {
-    float4 const v = reinterpret_cast<float4 const*>(landing)[i * 128 + t];
-    acc[i * 4 + 0] += v.x;
-    acc[i * 4 + 1] += v.y;
-    acc[i * 4 + 2] += v.z;
-    acc[i * 4 + 3] += v.w;
-  }
 }
 
 // Initializes ``bar`` for one arrival, makes the init visible to the cluster,

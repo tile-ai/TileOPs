@@ -6,12 +6,16 @@ failure names its case.
 
 import collections
 import contextlib
+import dataclasses
 import functools
 import gc
 import itertools
+import threading
+import time
 import types
 import unittest.mock
 import weakref
+from abc import abstractmethod
 
 import pytest
 import torch
@@ -19,7 +23,14 @@ import torch._functorch.config
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from tileops._ops._signature_codegen import install, install_compile_boundary
+from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops._signature_codegen import (
+    PARAM_NAMES_ATTRIBUTE,
+    install,
+    install_compile_boundary,
+)
+from tileops._ops.compile_boundary import get_instance
 from tileops._ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
@@ -204,7 +215,6 @@ def test_a_target_kernel_is_built_again_for_a_changed_param():
     """A target builds its kernel from the op's params, so a changed param, or a list param
     edited in place, builds another; a return to earlier params runs the kernel built from
     them."""
-    from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
     from tileops.backend import _registry as registry
 
     state, built = registry.snapshot(), []
@@ -573,31 +583,6 @@ def test_a_composite_runs_the_sub_op_built_for_its_specialization():
     holder.table = earlier
     assert holder(x).tolist() == [4.0, 4.0]
     assert launched[-1] in holder._held_delegates(), "a plan ran a sub-op tuning cannot reach"
-    # A call whose sub-op another thread replaces before it runs still records it.
-    import threading
-
-    ran, resume = threading.Event(), threading.Event()
-
-    def pausing(self, x):
-        leaf = self.delegate_for("leaf", None, table=self.table)
-        if threading.current_thread().name == "paused":
-            ran.set()
-            resume.wait()
-        return leaf(x)
-
-    pauser = _probe(
-        pausing, params=table, boundary=False, attributes={"delegate_types": leaf_table}
-    )(table=[2.0, 2.0])
-    pauser(x)
-    results = []
-    paused = threading.Thread(target=lambda: results.append(pauser(x).tolist()), name="paused")
-    paused.start()
-    ran.wait()
-    pauser.table = [6.0, 6.0]
-    assert pauser(x).tolist() == [6.0, 6.0]
-    resume.set()
-    paused.join()
-    assert results == [[2.0, 2.0]]
     torch._dynamo.reset()
     compiled = torch.compile(parent, fullgraph=True, backend="eager")
     assert compiled(x).tolist() == parent(x).tolist()
@@ -612,9 +597,8 @@ def test_a_composite_runs_the_sub_op_built_for_its_specialization():
 
 
 def test_a_call_records_its_sub_op_however_many_times_another_thread_replaces_it():
-    """Each replaced sub-op keeps its stage while a call still runs on it."""
-    import threading
-
+    """A call whose sub-op other threads replace before it runs, once or more, still records
+    it: each replaced sub-op keeps its stage while a call still runs on it."""
     table = {"table": {"type": "list[float]"}}
 
     def construct(self, **params):
@@ -657,11 +641,6 @@ def test_a_call_records_its_sub_op_however_many_times_another_thread_replaces_it
 def test_calls_resolving_one_plan_together_hold_each_request_once():
     """Threads making the first calls of one specialization together resolve its plan once,
     and leave it one request per position, so each request keeps its own call spec."""
-    import dataclasses
-    import threading
-    import time
-
-    from tileops._kernels.call_spec import CallSpec
 
     @dataclasses.dataclass(frozen=True)
     class Scale(CallSpec):
@@ -704,8 +683,6 @@ def test_calls_resolving_one_plan_together_hold_each_request_once():
 def test_only_a_call_holding_a_scalar_member_builds_its_spec_on_every_request():
     """The plan holds the spec of a call whose union argument holds a tensor; a scalar
     member's value is in no plan key, so that call builds its spec on each request."""
-    from tileops._kernels.call_spec import CallSpec
-
     built = []
 
     def forward(self, x, off=0):
@@ -725,13 +702,6 @@ def test_only_a_call_holding_a_scalar_member_builds_its_spec_on_every_request():
 def test_calls_missing_one_entry_together_build_the_entry_tuning_reaches():
     """Threads whose first calls miss one entry together build it once, so the entry every
     call launches is the one the op holds and tuning reaches."""
-    import dataclasses
-    import threading
-    import time
-    from abc import abstractmethod
-
-    from tileops._kernels.call_spec import CallSpec
-    from tileops._kernels.kernel_base import Kernel, KernelInterface
 
     @dataclasses.dataclass(frozen=True)
     class Rows(CallSpec):
@@ -790,9 +760,6 @@ def test_calls_missing_one_entry_together_build_the_entry_tuning_reaches():
 def test_calls_of_several_plans_missing_one_sub_op_together_build_it_once():
     """Threads whose calls resolve different plans of a composite and miss one sub-op
     together build it once, the one the composite holds and tuning reaches."""
-    import threading
-    import time
-
     built = []
 
     def construct(self, **params):
@@ -823,8 +790,6 @@ def test_calls_of_several_plans_missing_one_sub_op_together_build_it_once():
 
 
 def test_a_compiled_call_whose_op_was_collected_says_the_op_must_outlive_it():
-    from tileops._ops.compile_boundary import get_instance
-
     op = _probe(lambda self, x: x.clone())()
     key = op._instance_key
     assert get_instance(key) is op
@@ -870,9 +835,9 @@ def _offset(values: list, at: int = 1) -> torch.Tensor:
 
 
 def test_an_implementation_receives_call_tensors_on_a_16_byte_boundary():
-    """The direct, dispatched and composite routes hand the implementation aligned copies of misaligned tensors, copies the
-    written ones back, keeps what the implementation leaves unwritten and returns the
-    caller's `out` and written inputs."""
+    """The direct, dispatched and composite routes hand the implementation aligned copies of
+    misaligned tensors, copy the written ones back, keep what the implementation leaves
+    unwritten and return the caller's `out` and written inputs."""
     seen = []
 
     def into_out(self, x, *, out=None):
@@ -1004,9 +969,9 @@ def test_a_written_tensor_sharing_a_byte_with_another_call_tensor_is_rejected_be
 
 def test_a_written_tensor_overlapping_itself_is_rejected_before_the_call():
     """A written input whose elements share an address raises before the implementation
-    runs: an expanded view, and one with more elements than the addresses it spans. A strided view with holes runs, as
-    does one whose strides interleave without sharing an address, and an empty expanded view
-    returns as passed."""
+    runs: an expanded view, and one with more elements than the addresses it spans. A strided
+    view with holes runs, as does one whose strides interleave without sharing an address,
+    and an empty expanded view returns as passed."""
     matrix = {"dtype": "T", "shape": "[A, M]"}
     signature = {
         "forall": {"A": "Dim", "M": "Dim", "T": "DType[float32]"},

@@ -13,12 +13,11 @@ import tilelang.language as T
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.reduction._primitives import (
-    DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     FRAGMENT_ELEMS_PER_THREAD,
-    ceildiv_int,
 )
-from tileops._kernels.tiling import align_up
+from tileops._kernels.tiling import ALIGNMENT, align_up
+from tileops.manifest.primitives import ceil_div
 
 __all__ = [
     "SPLIT_BLOCKS_PER_SM",
@@ -49,15 +48,31 @@ def split_seg_n(M: int, N: int, block_m: int, sm_count: int) -> int:
     # the extra blocks.
     split_min_amortized_cols = 16384
     target_blocks = SPLIT_BLOCKS_PER_SM * sm_count
-    if align_up(N, DEFAULT_ALIGNMENT) < split_min_amortized_cols:
+    if align_up(N, ALIGNMENT) < split_min_amortized_cols:
         return 0
-    if ceildiv_int(M, block_m) >= target_blocks:
+    if ceil_div(M, block_m) >= target_blocks:
         return 0
-    num_segs = max(1, ceildiv_int(target_blocks, M))
-    seg_n = min(align_up(ceildiv_int(N, num_segs), DEFAULT_ALIGNMENT), _SPLIT_MAX_SEG_COLS)
-    if ceildiv_int(N, seg_n) < 2:
+    num_segs = max(1, ceil_div(target_blocks, M))
+    seg_n = min(align_up(ceil_div(N, num_segs), ALIGNMENT), _SPLIT_MAX_SEG_COLS)
+    if ceil_div(N, seg_n) < 2:
         return 0
     return seg_n
+
+
+@T.macro
+def _segment_stats(values, cols: int, seg_max, seg_sum, shift):
+    """The ``(max, sum)`` of a ``(1, cols)`` fp32 fragment, overwriting it with its terms.
+
+    A segment whose max is infinite sums ``exp(x)`` instead, torch.logsumexp's shift.
+    """
+    T.fill(seg_max, -T.infinity("float32"))
+    T.reduce_max(values, seg_max, dim=1, clear=False)
+    shift[0] = T.if_then_else(
+        T.abs(seg_max[0]) == T.infinity("float32"), T.cast(0.0, "float32"), seg_max[0]
+    )
+    for _, j in T.Parallel(1, cols):
+        values[0, j] = T.exp(values[0, j] - shift[0])
+    T.reduce_sum(values, seg_sum, dim=1)
 
 
 @target_cache(maxsize=64)
@@ -66,12 +81,11 @@ def softmax_split_partials_kernel(M: int, N: int, seg_n: int, dtype: str, thread
 
     One block owns one ``seg_n``-column segment of one row and writes the
     segment's max and its sum of ``exp(x - max)``; a masked lane contributes
-    ``exp(-inf) = 0``. A segment whose max is infinite sums ``exp(x)``
-    instead, torch.logsumexp's shift: an all--inf segment then sums to zero
-    rather than the NaN of ``exp(-inf - -inf)``, and a segment holding +inf
-    sums to +inf, or to NaN when it also holds one.
+    ``exp(-inf) = 0``. Through `_segment_stats`'s shift an all--inf segment sums to
+    zero rather than the NaN of ``exp(-inf - -inf)``, and a segment holding +inf sums
+    to +inf, or to NaN when it also holds one.
     """
-    num_segs = ceildiv_int(N, seg_n)
+    num_segs = ceil_div(N, seg_n)
 
     @tilelang.jit(out_idx=[1, 2])
     def _func():
@@ -93,14 +107,7 @@ def softmax_split_partials_kernel(M: int, N: int, seg_n: int, dtype: str, thread
                         T.cast(x[pid_m, pid_s * seg_n + j], "float32"),
                         -T.infinity("float32"),
                     )
-                T.fill(m_s, -T.infinity("float32"))
-                T.reduce_max(x_f32, m_s, dim=1, clear=False)
-                shift[0] = T.if_then_else(
-                    T.abs(m_s[0]) == T.infinity("float32"), T.cast(0.0, "float32"), m_s[0]
-                )
-                for _, j in T.Parallel(1, seg_n):
-                    x_f32[0, j] = T.exp(x_f32[0, j] - shift[0])
-                T.reduce_sum(x_f32, s_s, dim=1)
+                _segment_stats(x_f32, seg_n, m_s, s_s, shift)
 
                 seg_max[pid_m * num_segs + pid_s] = m_s[0]
                 seg_sum[pid_m * num_segs + pid_s] = s_s[0]
@@ -133,7 +140,7 @@ def make_block_split_fold(num_segs: int, threads: int, keep_inf: bool = False):
     all--inf row sums to 0 and a row holding +inf to the +inf its segment
     sums to, each still NaN when a NaN is present.
     """
-    rounds = ceildiv_int(num_segs, threads)
+    rounds = ceil_div(num_segs, threads)
     last = num_segs - 1
 
     @T.macro
@@ -216,14 +223,7 @@ def edge_split_partials_kernel(outer: int, kept: int, inner: int, dtype: str, th
 
                 for _, i in T.Parallel(1, inner):
                     x_f32[0, i] = T.cast(x[pid_s, pid_m, i], "float32")
-                T.fill(m_s, -T.infinity("float32"))
-                T.reduce_max(x_f32, m_s, dim=1, clear=False)
-                shift[0] = T.if_then_else(
-                    T.abs(m_s[0]) == T.infinity("float32"), T.cast(0.0, "float32"), m_s[0]
-                )
-                for _, i in T.Parallel(1, inner):
-                    x_f32[0, i] = T.exp(x_f32[0, i] - shift[0])
-                T.reduce_sum(x_f32, s_s, dim=1)
+                _segment_stats(x_f32, inner, m_s, s_s, shift)
 
                 seg_max[pid_m * outer + pid_s] = m_s[0]
                 seg_sum[pid_m * outer + pid_s] = s_s[0]

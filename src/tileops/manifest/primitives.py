@@ -97,7 +97,10 @@ def concat(shapes: Sequence[Sequence[int]], dim: int) -> tuple[int, ...]:
 def reduced(
     shape: Sequence[int], dim: int | Sequence[int] | None, keepdim: bool, mode: str
 ) -> tuple[int, ...]:
-    """The shape after reducing `dim`; `None` reduces every axis, an empty sequence follows `mode` (all, none, raise)."""
+    """The shape after reducing `dim`; `None` reduces every axis, an empty sequence follows `mode`.
+
+    `mode` is `'full'` (reduce every axis), `'noop'` (reduce none) or `'reject'` (raise).
+    """
     rank = len(shape)
     if dim is None:
         axes = set(range(rank))
@@ -500,19 +503,26 @@ def topk_ids(rng: random.Random, rows: int, k: int, experts: int) -> list[list[i
     return [rng.sample(range(experts), k) for _ in range(rows)]
 
 
+def _nest(shape: Sequence[int], leaf: Callable[[], Any]) -> Any:
+    """A nested list of `shape` holding what `leaf()` returns, called in row-major order."""
+    if not shape:
+        return leaf()
+    return [_nest(shape[1:], leaf) for _ in range(shape[0])]
+
+
+def _padded_sample(rng: random.Random, visible: int, k: int, pad: int) -> list[int]:
+    """Up to `k` distinct random values in `[0, visible)`, padded to `k` with `pad`."""
+    picked = rng.sample(range(visible), min(k, visible))
+    return picked + [pad] * (k - len(picked))
+
+
 def random_ints(rng: random.Random, shape: Sequence[int], lo: int, hi: int) -> Any:
     """Independent integers in [lo, hi), nested to `shape`: a scalar at rank 0."""
     if lo >= hi and math.prod(shape) > 0:
         raise ValueError(f"random_ints needs lo < hi, got [{lo}, {hi})")
     if any(n < 0 for n in shape):
         raise ValueError(f"random_ints: shape {shape} has a negative extent")
-
-    def draw(axes: tuple[int, ...]) -> Any:
-        if not axes:
-            return rng.randrange(lo, hi)
-        return [draw(axes[1:]) for _ in range(axes[0])]
-
-    return draw(tuple(shape))
+    return _nest(tuple(shape), lambda: rng.randrange(lo, hi))
 
 
 def sample_indices(rng: random.Random, n: int, hi: int) -> list[int]:
@@ -526,15 +536,8 @@ def distinct_ids(rng: random.Random, shape: Sequence[int], hi: int) -> object:
     """Distinct random values in `[0, hi)` filling `shape` in row-major order."""
     if any(n < 0 for n in shape):
         raise ValueError(f"distinct_ids needs non-negative extents, got {shape}")
-    flat = sample_indices(rng, math.prod(shape), hi)
-
-    def fill(axes: list[int], at: int) -> object:
-        if not axes:
-            return flat[at]
-        step = math.prod(axes[1:])
-        return [fill(axes[1:], at + i * step) for i in range(axes[0])]
-
-    return fill(list(shape), 0)
+    values = iter(sample_indices(rng, math.prod(shape), hi))
+    return _nest(tuple(shape), lambda: next(values))
 
 
 def causal_topk_indices(
@@ -557,11 +560,7 @@ def causal_topk_indices(
         per_token = []
         for t in range(seq):
             visible = min(max(1, (t + start) // stride), extent)
-            per_head = []
-            for _ in range(heads_kv):
-                picked = rng.sample(range(visible), min(k, visible))
-                per_head.append(picked + [extent] * (k - len(picked)))
-            per_token.append(per_head)
+            per_token.append([_padded_sample(rng, visible, k, extent) for _ in range(heads_kv)])
         rows.append(per_token)
     return rows
 
@@ -579,9 +578,7 @@ def sparse_topk_positions(
     for n in lengths:
         per_query = []
         for s in range(queries):
-            visible = n - queries + s + 1
-            picked = rng.sample(range(visible), min(k, visible))
-            per_query.append(picked + [-1] * (k - len(picked)))
+            per_query.append(_padded_sample(rng, n - queries + s + 1, k, -1))
         rows.append(per_query)
     return rows
 
@@ -610,11 +607,7 @@ def full(shape: Sequence[int], value: int) -> object:
     """A nested list of `shape` holding `value`."""
     if any(n < 0 for n in shape):
         raise ValueError(f"full needs non-negative extents, got {shape}")
-
-    def fill(axes):
-        return value if not axes else [fill(axes[1:]) for _ in range(axes[0])]
-
-    return fill(list(shape))
+    return _nest(tuple(shape), lambda: value)
 
 
 def _segment_ids(sizes, scale=1):
@@ -905,9 +898,9 @@ def token_rows_of(x: Sequence[Sequence[int]], offsets: Sequence[int]) -> bool:
 
 def paged_fits(x: Sequence[int], cu: Sequence[int], cap: int) -> bool:
     """Element `i` of `x` plus segment `i` of `cu` is at most `cap`."""
-    flat = all(isinstance(v, int) for v in (*x, *cu))
+    scalars = all(isinstance(v, int) for v in (*x, *cu))
     return (
-        flat
+        scalars
         and len(cu) == len(x) + 1
         and all(c + (cu[i + 1] - cu[i]) <= cap for i, c in enumerate(x))
     )

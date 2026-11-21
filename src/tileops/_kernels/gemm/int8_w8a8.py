@@ -982,33 +982,34 @@ def _gemm_int8_simple_kernel(
     return _gemm_int8_simple_func
 
 
-def _int8_entry(cls: type, call: GEMMINT8W8A8Call) -> Entry:
-    """The entry for a kernel taking every fact of the call; the device picks the config."""
-    index = call.device.index if call.device is not None else None
-    identity = (
-        call.m,
-        call.n,
-        call.k,
-        call.per_token,
-        call.per_channel,
-        call.out_dtype,
-        call.has_bias,
-        index,
-    )
-    return identity, lambda: cls(
-        call.m,
-        call.n,
-        call.k,
-        call.per_token,
-        call.per_channel,
-        call.out_dtype,
-        call.has_bias,
-        device_index=index,
-    )
-
-
 class _GEMMINT8Kernel(Kernel, GEMMINT8W8A8FwdInterface):
-    """The facts both INT8 kernels hold, and the stand-in for an absent bias."""
+    """The facts every INT8 kernel holds, its entry and launch, and the stand-in for an
+    absent bias."""
+
+    @classmethod
+    def entry_for(cls, call: GEMMINT8W8A8Call) -> Entry:
+        """The entry takes every fact of the call; the device picks the config."""
+        index = call.device_index
+        identity = (
+            call.m,
+            call.n,
+            call.k,
+            call.per_token,
+            call.per_channel,
+            call.out_dtype,
+            call.has_bias,
+            index,
+        )
+        return identity, lambda: cls(
+            call.m,
+            call.n,
+            call.k,
+            call.per_token,
+            call.per_channel,
+            call.out_dtype,
+            call.has_bias,
+            device_index=index,
+        )
 
     def __init__(
         self,
@@ -1046,30 +1047,6 @@ class _GEMMINT8Kernel(Kernel, GEMMINT8W8A8FwdInterface):
             self._unused_bias = torch.zeros(1, dtype=self.out_dtype, device=like.device)
         return self._unused_bias
 
-
-class _GEMMINT8TMAKernel(_GEMMINT8Kernel):
-    """The alignment both TMA kernels need, and the call they take."""
-
-    supported_archs: list[int] = [90]
-
-    @classmethod
-    def refusal(cls, call: GEMMINT8W8A8Call) -> "str | None":
-        if call.k == 0 or call.k % 16:
-            return (
-                f"k={call.k}: TMA addresses a row of a and b in 16-byte units, so k must be a "
-                f"positive multiple of 16"
-            )
-        if call.n % 8:
-            return (
-                f"n={call.n}: the output tile is stored through TMA, whose 16-byte row pitch "
-                f"needs n a multiple of 8 in a 16-bit dtype"
-            )
-        return super().refusal(call)
-
-    @classmethod
-    def entry_for(cls, call: GEMMINT8W8A8Call) -> Entry:
-        return _int8_entry(cls, call)
-
     @abstractmethod
     def _builder(self) -> Callable:
         """The kernel's ``@tilelang.jit`` factory, which ``self.config`` parameterizes."""
@@ -1088,6 +1065,26 @@ class _GEMMINT8TMAKernel(_GEMMINT8Kernel):
     def _compile(self, cfg: dict) -> Callable:
         """The program ``forward`` launches, compiled from *cfg*."""
         return self._builder()(**cfg)
+
+
+class _GEMMINT8TMAKernel(_GEMMINT8Kernel):
+    """The alignment both TMA kernels need."""
+
+    supported_archs: list[int] = [90]
+
+    @classmethod
+    def refusal(cls, call: GEMMINT8W8A8Call) -> "str | None":
+        if call.k == 0 or call.k % 16:
+            return (
+                f"k={call.k}: TMA addresses a row of a and b in 16-byte units, so k must be a "
+                f"positive multiple of 16"
+            )
+        if call.n % 8:
+            return (
+                f"n={call.n}: the output tile is stored through TMA, whose 16-byte row pitch "
+                f"needs n a multiple of 8 in a 16-bit dtype"
+            )
+        return super().refusal(call)
 
 
 class GEMMINT8W8A8Kernel(_GEMMINT8TMAKernel):
@@ -1171,27 +1168,11 @@ class GEMMINT8W8A8SimpleKernel(_GEMMINT8Kernel):
     supported_archs: list[int] = [89, 90]
     general = True
 
-    @classmethod
-    def entry_for(cls, call: GEMMINT8W8A8Call) -> Entry:
-        return _int8_entry(cls, call)
-
     @property
     def default_config(self) -> dict:
         return {"block_m": 128, "block_n": 128, "block_k": 64, "num_stages": 3, "threads": 256}
 
-    def forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-        bias: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        program = self.program(self._compile)
-        return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))
-
-    def _compile(self, cfg: dict) -> Callable:
-        """The program ``forward`` launches, compiled from *cfg*."""
+    def _builder(self) -> Callable:
         return _gemm_int8_simple_kernel(
             self.m,
             self.n,
@@ -1200,4 +1181,4 @@ class GEMMINT8W8A8SimpleKernel(_GEMMINT8Kernel):
             self.per_token,
             self.per_channel,
             self.has_bias,
-        )(**cfg)
+        )

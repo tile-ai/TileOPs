@@ -12,56 +12,18 @@ import yaml
 
 _PROFILES_DIR = Path(__file__).parent / "profiles"
 
-# Keys whose values are numeric but arrive as strings from PyYAML
-# (scientific notation like 4800e9 is not YAML-native float syntax).
-_NUMERIC_KEYS = frozenset(
-    {"theoretical", "calibration", "calibration_sustained", "calibration_burst", "effective"}
-)
-
-
-# Tensor-core dtype keys, by the dtype the contraction consumes. fp32 maps to
-# tf32 because that is the unit an fp32 contraction runs on when tensor cores
-# serve it. Encode side of the roof-key format; ``resolve_roof`` is the decode.
-_TENSOR_CORE_DTYPE_KEYS = {
-    "float16": "fp16",
-    "bfloat16": "bf16",
-    "float32": "tf32",
-    "float8_e4m3fn": "fp8",
-    "float8_e5m2": "fp8",
-    "int8": "int8",
-}
-
-
-def get_profile_path(gpu_name: str) -> Path:
-    """Return the path to a GPU profile YAML.
-
-    Args:
-        gpu_name: Profile name without extension (e.g. "h200").
-
-    Returns:
-        Path to the YAML file.
-
-    Raises:
-        FileNotFoundError: If no profile exists for the given name.
-    """
-    path = _PROFILES_DIR / f"{gpu_name}.yaml"
-    if not path.exists():
-        available = [p.stem for p in _PROFILES_DIR.glob("*.yaml")]
-        raise FileNotFoundError(f"No GPU profile '{gpu_name}'. Available: {available}")
-    return path
-
 
 def _coerce_numeric_strings(obj, key=None):
-    """Recursively convert known numeric string values to floats.
+    """Recursively convert the numeric values PyYAML reads as strings to floats.
 
-    Only converts values whose dict key is in ``_NUMERIC_KEYS``, avoiding
-    unintended coercion of string fields like ``compute_capability``.
+    Scientific notation without a sign in the exponent, such as ``4800e9``, is not YAML 1.1
+    float syntax. Only the values of the keys below convert, so a string field such as
+    ``compute_capability`` stays a string.
     """
+    numeric_keys = ("theoretical", "calibration", "calibration_sustained", "calibration_burst")
     if isinstance(obj, dict):
         return {k: _coerce_numeric_strings(v, key=k) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_coerce_numeric_strings(v) for v in obj]
-    if isinstance(obj, str) and key in _NUMERIC_KEYS:
+    if isinstance(obj, str) and key in numeric_keys:
         try:
             return float(obj)
         except ValueError:
@@ -79,7 +41,7 @@ def _inject_effective(profile):
     for group in ("tensor_core", "cuda_core"):
         sections.extend(profile.get(group, {}).values())
     for section in sections:
-        if isinstance(section, dict) and "effective" not in section and "calibration" in section:
+        if isinstance(section, dict) and "calibration" in section:
             section["effective"] = section["theoretical"] * section["calibration"]
 
 
@@ -97,12 +59,20 @@ def tensor_core_roof(dtype) -> str:
         ValueError: If *dtype* has no tensor-core section in the profile
             schema (including ``None`` — the op has not bound a dtype yet).
     """
-    name = str(dtype).removeprefix("torch.") if dtype is not None else None
-    key = _TENSOR_CORE_DTYPE_KEYS.get(name) if name is not None else None
+    # Keyed by the dtype the contraction consumes. fp32 maps to tf32, the unit an fp32
+    # contraction runs on when tensor cores serve it. ``resolve_roof`` decodes the key.
+    profile_keys = {
+        "float16": "fp16",
+        "bfloat16": "bf16",
+        "float32": "tf32",
+        "float8_e4m3fn": "fp8",
+        "float8_e5m2": "fp8",
+        "int8": "int8",
+    }
+    key = profile_keys.get(str(dtype).removeprefix("torch.")) if dtype is not None else None
     if key is None:
         raise ValueError(
-            f"no tensor-core roof for dtype {dtype!r}; known dtypes: "
-            f"{sorted(_TENSOR_CORE_DTYPE_KEYS)}"
+            f"no tensor-core roof for dtype {dtype!r}; known dtypes: {sorted(profile_keys)}"
         )
     return f"tensor_core.{key}"
 
@@ -153,8 +123,14 @@ def load_profile(gpu_name: str) -> dict:
     Returns:
         Dict with keys: gpu, compute_capability, hbm, tensor_core.
         Each hbm/tensor_core section includes a computed ``effective`` field.
+
+    Raises:
+        FileNotFoundError: If no profile exists for the given name.
     """
-    path = get_profile_path(gpu_name)
+    path = _PROFILES_DIR / f"{gpu_name}.yaml"
+    if not path.exists():
+        available = [p.stem for p in _PROFILES_DIR.glob("*.yaml")]
+        raise FileNotFoundError(f"No GPU profile '{gpu_name}'. Available: {available}")
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     data = _coerce_numeric_strings(data)

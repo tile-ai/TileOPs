@@ -114,7 +114,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
     @classmethod
     def entry_for(cls, call: SharedExpertMLPCall) -> Entry:
         """One build per token count, width, expert width, dtype and device."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.num_tokens, call.hidden_size, call.ffn_size, call.dtype, index)
         return identity, lambda: cls(
             num_tokens=call.num_tokens,
@@ -171,7 +171,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
             )
             for n, k in ((ffn_size * 2, hidden_size), (hidden_size, ffn_size))
         )
-        # The defaults above are the SM90 template's tiles: a dense kernel picks its own
+        # The default config holds the SM90 template's tiles: a dense kernel picks its own
         # unless the caller set one.
         gemm_config = dict(cfg) if pinned else None
         # The template's fused epilogue stores S columns a row, which TMA takes in whole

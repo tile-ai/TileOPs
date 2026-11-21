@@ -15,6 +15,7 @@ from tileops._kernels.linear_attention.gdn.prefill_common import (
     INVERSE_BLOCK,
     L2NORM_EPS,
     block_inverse_macro,
+    softplus,
     step_size,
 )
 from tileops._kernels.state_pool import state_row
@@ -43,8 +44,6 @@ def prefill_chunk_local_cumsum_bthd_tl(
     """
     tiling = GroupTiling(num_sequences, chunk_size)
     num_chunks = tiling.tile_upper_bound(total_tokens)
-    # Above this, softplus is the identity to float32 precision; torch's default.
-    softplus_threshold = 20.0
     # The staged chunk dominates the block's shared memory; the tile holds it at 16 KiB
     # for a 64-row chunk whatever the head count.
     head_tile = min(head, 64)
@@ -101,9 +100,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
                         )
                         if gate_in_kernel:
                             biased = raw + shift_s[hid]
-                            chunk_s[i, hid] = rate_s[hid] * T.if_then_else(
-                                biased > softplus_threshold, biased, T.log1p(T.exp(biased))
-                            )
+                            chunk_s[i, hid] = rate_s[hid] * softplus(biased)
                         else:
                             chunk_s[i, hid] = raw
 

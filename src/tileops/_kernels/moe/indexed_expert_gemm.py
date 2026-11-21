@@ -13,6 +13,7 @@ from tileops._kernels.moe.call_spec import (
     IndexedExpertGateUpFwdInterface,
     IndexedRouteStatsFwdInterface,
     IndexedWeightedReduceFwdInterface,
+    route_metadata_size,
 )
 
 __all__ = [
@@ -22,11 +23,6 @@ __all__ = [
     "IndexedRouteStatsKernel",
     "IndexedWeightedReduceKernel",
 ]
-
-
-def _route_metadata_size(num_experts: int, num_routes: int, num_tokens: int) -> int:
-    """Per-expert route counts, per-route ranks, then up to num_tokens routes listed per expert."""
-    return num_experts + num_routes + num_experts * num_tokens
 
 
 @target_cache(maxsize=32)
@@ -40,9 +36,7 @@ def _route_stats(num_tokens: int, top_k: int, num_experts: int):
         @T.prim_func
         def main(
             expert_ids: T.Tensor((num_tokens, top_k), "int32"),
-            metadata: T.Tensor(
-                (_route_metadata_size(num_experts, num_routes, num_tokens),), "int32"
-            ),
+            metadata: T.Tensor((route_metadata_size(num_experts, num_tokens, top_k),), "int32"),
         ):
             with T.Kernel(1, threads=threads):
                 for expert in T.Parallel(num_experts):
@@ -77,9 +71,7 @@ def _indexed_expert_gemm(
     weight_n = 2 * n if gated else n
     a_shape = (num_tokens, top_k, k) if route_input else (num_tokens, k)
     metadata_size = (
-        _route_metadata_size(num_experts, num_routes, num_tokens)
-        if dispatch_mode == "grouped"
-        else 1
+        route_metadata_size(num_experts, num_tokens, top_k) if dispatch_mode == "grouped" else 1
     )
     rank_base = num_experts
     list_base = num_experts + num_routes
@@ -257,7 +249,7 @@ class IndexedRouteStatsKernel(Kernel, IndexedRouteStatsFwdInterface):
     @classmethod
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
         """One build per route extents and device."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.num_tokens, call.top_k, call.num_experts, index)
         return identity, lambda: cls(
             call.num_tokens, call.top_k, call.num_experts, device_index=index
@@ -286,7 +278,7 @@ class IndexedRouteStatsKernel(Kernel, IndexedRouteStatsFwdInterface):
         expected = (self.num_tokens, self.top_k)
         if tuple(expert_ids.shape) != expected or expert_ids.dtype is not torch.int32:
             raise ValueError(f"expert_ids must be {expected} int32")
-        size = _route_metadata_size(self.num_experts, self.num_tokens * self.top_k, self.num_tokens)
+        size = route_metadata_size(self.num_experts, self.num_tokens, self.top_k)
         if tuple(out.shape) != (size,) or out.dtype is not torch.int32:
             raise ValueError(f"out must be ({size},) int32")
         self.program(self._compile)(expert_ids, out)
@@ -402,7 +394,7 @@ class IndexedExpertGEMMTemplate(Kernel):
                 raise ValueError("route_metadata is required for grouped dispatch")
             route_metadata = expert_ids.reshape(-1)[:1]
         expected_metadata = (
-            _route_metadata_size(self.num_experts, self.num_tokens * self.top_k, self.num_tokens)
+            route_metadata_size(self.num_experts, self.num_tokens, self.top_k)
             if self.dispatch_mode == "grouped"
             else 1
         )
@@ -432,7 +424,7 @@ class IndexedWeightedReduceKernel(Kernel, IndexedWeightedReduceFwdInterface):
     @classmethod
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
         """One build per token count, route width, hidden width, scale, dtype and device."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (
             call.num_tokens,
             call.top_k,
@@ -507,7 +499,7 @@ class IndexedExpertGateUpKernel(IndexedExpertGEMMTemplate, IndexedExpertGateUpFw
 
         ``grouped_dispatch`` decides whether the program reads route metadata.
         """
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (
             call.num_tokens,
             call.num_experts,
@@ -537,7 +529,7 @@ class IndexedExpertDownKernel(IndexedExpertGEMMTemplate, IndexedExpertDownFwdInt
     @classmethod
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
         """One build per route extents, projection widths, dtype and device."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (
             call.num_tokens,
             call.num_experts,

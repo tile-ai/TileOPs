@@ -2,7 +2,7 @@
 
 ``GQADecodeBs1Kernel`` dispatches on the runtime K/V sequence extent.  RoPE calls always
 use the context-only warp-specialized split; plain calls retain the generic single-kernel
-path below their measured crossover.
+path below a fixed cache length.
 The split path has a TMA producer feeding a four-warp WGMMA consumer, exp2-domain online
 softmax, and FP32 partial reduction through a combine kernel.  Full-dimensional RoPE
 expands the producer into a warpgroup so lookup-table loads and K rotation overlap the
@@ -20,335 +20,16 @@ from tileops._kernels.attention.gqa.decode import (
 )
 from tileops._kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
+    RING_DEPTH,
     allocate_partials,
     make_gqa_decode_bs1_combine,
+    make_gqa_decode_bs1_split,
 )
-from tileops._kernels.attention.online_softmax import make_apply_softcap
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GQADecodeBs1Kernel"]
-
-
-def _make_dense_decode_split(
-    batch: int,
-    groups: int,
-    block_m: int,
-    block_n: int,
-    dim: int,
-    dtype: str,
-    scale: float,
-    score_scale: float,
-    softcap: float,
-    kv_group_num: int,
-    ctx_splits: int,
-    threads: int,
-    accum_dtype: str,
-    real_seqlen_is_buffer: bool,
-    load_kv,
-    ring_depth: int,
-    fuse_rope: bool = False,
-    rotary_dim: int = 0,
-    rope_layout: str = "neox",
-):
-    """Create the Dense context-split schedule."""
-    consumer_threads = 128
-    # TileLang gives each thread range it inserts a sync for its own named barrier, counting from 3
-    # per kernel; this kernel's producer and consumer ranges take 3 and 4.
-    consumer_barrier = 5
-    tma_threads = 32
-    apply_softcap = (
-        make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
-        if softcap > 0.0
-        else None
-    )
-
-    @T.macro
-    def consumer(
-        Q,
-        bid,
-        hid,
-        sid,
-        this_len,
-        base,
-        seqlen_kv,
-        loop_range,
-        rope_cos,
-        rope_sin,
-        Qs,
-        Ks,
-        Vs,
-        Ps,
-        ready,
-        free,
-        acc_s,
-        acc_o,
-        sm,
-        smp,
-        alpha,
-        ss,
-        logsum,
-        glse,
-        Output_partial,
-    ):
-        T.fill(acc_o, 0)
-        T.fill(logsum, 0)
-        T.fill(sm, -T.infinity(accum_dtype))
-        if fuse_rope:
-            for i, j in T.Parallel(block_m, dim):
-                if i < kv_group_num:
-                    if j < rotary_dim:
-                        if rope_layout == "neox":
-                            freq = T.if_then_else(j < rotary_dim // 2, j, j - rotary_dim // 2)
-                            partner = T.if_then_else(
-                                j < rotary_dim // 2,
-                                j + rotary_dim // 2,
-                                j - rotary_dim // 2,
-                            )
-                            sign = T.if_then_else(j < rotary_dim // 2, -1.0, 1.0)
-                        else:
-                            freq = j // 2
-                            partner = T.if_then_else(j % 2 == 0, j + 1, j - 1)
-                            sign = T.if_then_else(j % 2 == 0, -1.0, 1.0)
-                        x = Q[bid, hid * kv_group_num + i, j]
-                        x_partner = Q[bid, hid * kv_group_num + i, partner]
-                        cos = rope_cos[seqlen_kv - 1, freq]
-                        sin = rope_sin[seqlen_kv - 1, freq]
-                        Qs[i, j] = x * cos + sign * x_partner * sin
-                    else:
-                        Qs[i, j] = Q[bid, hid * kv_group_num + i, j]
-                else:
-                    Qs[i, j] = 0
-            T.sync_threads(consumer_barrier, consumer_threads)
-        else:
-            T.copy(
-                Q[bid, hid * kv_group_num : hid * kv_group_num + kv_group_num, :],
-                Qs[0:kv_group_num, :],
-            )
-        for k in T.serial(loop_range):
-            T.mbarrier_wait_parity(ready[k % ring_depth], (k // ring_depth) % ring_depth)
-            if fuse_rope and rotary_dim != dim:
-                # Every row is rotated: TileLang places a consumer barrier inside this
-                # loop, so a row guard would leave the tail tile's barrier short of
-                # threads. Rows past the end are masked from the scores, and TileLang
-                # reads zero for their positions past the tables.
-                for i, freq in T.Parallel(block_n, rotary_dim // 2):
-                    d0 = freq if rope_layout == "neox" else 2 * freq
-                    d1 = freq + rotary_dim // 2 if rope_layout == "neox" else 2 * freq + 1
-                    position = base + k * block_n + i
-                    x0 = Ks[k % ring_depth, i, d0]
-                    x1 = Ks[k % ring_depth, i, d1]
-                    cos = rope_cos[position, freq]
-                    sin = rope_sin[position, freq]
-                    Ks[k % ring_depth, i, d0] = x0 * cos - x1 * sin
-                    Ks[k % ring_depth, i, d1] = x1 * cos + x0 * sin
-                T.sync_threads(consumer_barrier, consumer_threads)
-            T.wgmma_gemm(
-                Qs,
-                Ks[k % ring_depth, :, :],
-                acc_s,
-                transpose_B=True,
-                policy=T.GemmWarpPolicy.FullRow,
-                clear_accum=True,
-            )
-            T.wait_wgmma(0)
-            if softcap > 0.0:
-                apply_softcap(acc_s)
-            for i, j in T.Parallel(block_m, block_n):
-                acc_s[i, j] = T.if_then_else(
-                    k * block_n + j < this_len,
-                    acc_s[i, j],
-                    -T.infinity(accum_dtype),
-                )
-            T.copy(sm, smp)
-            T.reduce_max(acc_s, sm, dim=1, clear=False)
-            for i in T.Parallel(block_m):
-                alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
-            for i, j in T.Parallel(block_m, block_n):
-                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-            T.reduce_sum(acc_s, ss, dim=1)
-            for i in T.Parallel(block_m):
-                logsum[i] = logsum[i] * alpha[i] + ss[i]
-            for i, j in T.Parallel(block_m, dim):
-                acc_o[i, j] *= alpha[i]
-            T.copy(acc_s, Ps)
-            T.wgmma_gemm(
-                Ps,
-                Vs[k % ring_depth, :, :],
-                acc_o,
-                policy=T.GemmWarpPolicy.FullRow,
-                clear_accum=False,
-            )
-            T.wait_wgmma(0)
-            T.mbarrier_arrive(free[k % ring_depth])
-        for i, j in T.Parallel(block_m, dim):
-            acc_o[i, j] /= T.if_then_else(this_len > 0, logsum[i], 1.0)
-        for i in T.Parallel(block_m):
-            if i < kv_group_num:
-                glse[bid, hid * kv_group_num + i, sid] = T.if_then_else(
-                    this_len > 0,
-                    T.log2(logsum[i]) + sm[i] * scale,
-                    -T.infinity(accum_dtype),
-                )
-        for i, j in T.Parallel(block_m, dim):
-            if i < kv_group_num:
-                Output_partial[bid, hid * kv_group_num + i, sid, j] = T.if_then_else(
-                    this_len > 0,
-                    acc_o[i, j],
-                    0.0,
-                )
-
-    @T.macro
-    def split(
-        Q,
-        K,
-        V,
-        kv_layout,
-        real_seqlen_kv,
-        rope_cos,
-        rope_sin,
-        glse,
-        output_partial,
-    ):
-        with T.Kernel(batch, groups, ctx_splits, threads=threads) as (bid, hid, sid):
-            qs = T.alloc_shared([block_m, dim], dtype)
-            ks = T.alloc_shared([ring_depth, block_n, dim], dtype)
-            vs = T.alloc_shared([ring_depth, block_n, dim], dtype)
-            ps = T.alloc_shared([block_m, block_n], dtype)
-            # Full-dimensional RoPE has enough work to justify a producer
-            # warpgroup.  TMA stages the lookup tables with K/V, then all 128
-            # producer threads rotate K while the consumer computes the other
-            # ring slot.  Partial RoPE keeps the smaller 32-thread TMA producer.
-            tma_rope_pipeline = fuse_rope and rotary_dim == dim
-            if tma_rope_pipeline:
-                rope_cos_s = T.alloc_shared([block_n, rotary_dim // 2], dtype)
-                rope_sin_s = T.alloc_shared([block_n, rotary_dim // 2], dtype)
-            T.annotate_layout(
-                {
-                    qs: tilelang.layout.make_swizzled_layout(qs),
-                    ks: tilelang.layout.make_swizzled_layout(ks),
-                    vs: tilelang.layout.make_swizzled_layout(vs),
-                    ps: tilelang.layout.make_swizzled_layout(ps),
-                }
-            )
-            producer_threads = threads - consumer_threads
-            ready = T.alloc_barrier([producer_threads] * ring_depth)
-            free = T.alloc_barrier([consumer_threads] * ring_depth)
-            if tma_rope_pipeline:
-                loaded = T.alloc_barrier([tma_threads] * ring_depth)
-            load_ready = loaded if tma_rope_pipeline else ready
-            acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
-            acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
-            sm = T.alloc_fragment([block_m], accum_dtype)
-            smp = T.alloc_fragment([block_m], accum_dtype)
-            alpha = T.alloc_fragment([block_m], accum_dtype)
-            ss = T.alloc_fragment([block_m], accum_dtype)
-            logsum = T.alloc_fragment([block_m], accum_dtype)
-
-            seqlen_kv_b = real_seqlen_kv[bid] if real_seqlen_is_buffer else real_seqlen_kv
-            # Partition whole KV tiles as evenly as possible: the first
-            # ``extra_tiles`` splits take one tile more than the rest.
-            num_tiles = T.ceildiv(seqlen_kv_b, block_n)
-            base_tiles = num_tiles // ctx_splits
-            extra_tiles = num_tiles % ctx_splits
-            tiles_this_split = base_tiles + T.if_then_else(sid < extra_tiles, 1, 0)
-            tile_begin = sid * base_tiles + T.min(sid, extra_tiles)
-            base = tile_begin * block_n
-            this_len = T.max(
-                T.min(seqlen_kv_b - base, tiles_this_split * block_n),
-                0,
-            )
-            loop_range = T.ceildiv(this_len, block_n)
-            tx = T.get_thread_binding()
-
-            if tx >= consumer_threads:
-                for k in T.serial(loop_range):
-                    T.mbarrier_wait_parity(
-                        free[k % ring_depth],
-                        ((k // ring_depth) % ring_depth) ^ 1,
-                    )
-                    if tx < consumer_threads + tma_threads:
-                        load_kv(
-                            K,
-                            V,
-                            kv_layout,
-                            bid,
-                            hid,
-                            base,
-                            k,
-                            ks,
-                            vs,
-                            load_ready,
-                        )
-                        if tma_rope_pipeline:
-                            T.tma_copy(
-                                rope_cos[
-                                    base + k * block_n : base + (k + 1) * block_n,
-                                    :,
-                                ],
-                                rope_cos_s,
-                                barrier=loaded[k % ring_depth],
-                            )
-                            T.tma_copy(
-                                rope_sin[
-                                    base + k * block_n : base + (k + 1) * block_n,
-                                    :,
-                                ],
-                                rope_sin_s,
-                                barrier=loaded[k % ring_depth],
-                            )
-                        T.mbarrier_arrive(load_ready[k % ring_depth])
-                    if tma_rope_pipeline:
-                        T.mbarrier_wait_parity(
-                            loaded[k % ring_depth],
-                            (k // ring_depth) % ring_depth,
-                        )
-                        for i, freq in T.Parallel(block_n, rotary_dim // 2):
-                            if i < this_len - k * block_n:
-                                d0 = freq if rope_layout == "neox" else 2 * freq
-                                d1 = (
-                                    freq + rotary_dim // 2
-                                    if rope_layout == "neox"
-                                    else 2 * freq + 1
-                                )
-                                x0 = ks[k % ring_depth, i, d0]
-                                x1 = ks[k % ring_depth, i, d1]
-                                cos = rope_cos_s[i, freq]
-                                sin = rope_sin_s[i, freq]
-                                ks[k % ring_depth, i, d0] = x0 * cos - x1 * sin
-                                ks[k % ring_depth, i, d1] = x1 * cos + x0 * sin
-                        T.mbarrier_arrive(ready[k % ring_depth])
-            else:
-                consumer(
-                    Q,
-                    bid,
-                    hid,
-                    sid,
-                    this_len,
-                    base,
-                    seqlen_kv_b,
-                    loop_range,
-                    rope_cos,
-                    rope_sin,
-                    qs,
-                    ks,
-                    vs,
-                    ps,
-                    ready,
-                    free,
-                    acc_s,
-                    acc_o,
-                    sm,
-                    smp,
-                    alpha,
-                    ss,
-                    logsum,
-                    glse,
-                    output_partial,
-                )
-
-    return split
 
 
 @target_cache(maxsize=32)
@@ -366,12 +47,9 @@ def gqa_decode_bs1_ctx_kernel(
     rope_layout="neox",
     has_sinks=False,
 ):
-    score_scale = dim**-0.5 if sm_scale is None else sm_scale
-    scale = LOG2E if softcap > 0.0 else score_scale * LOG2E
+    scale = LOG2E if softcap > 0.0 else sm_scale * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // groups
-    # Barrier parity assumes this double-buffered schedule.
-    ring_depth = 2
 
     @tilelang.jit(
         out_idx=[-1],
@@ -393,16 +71,16 @@ def gqa_decode_bs1_ctx_kernel(
         def load_kv(K, V, unused_layout, bid, hid, base, k, Ks, Vs, ready):
             T.tma_copy(
                 K[bid, base + k * block_N : base + (k + 1) * block_N, hid, :],
-                Ks[k % ring_depth, :, :],
-                barrier=ready[k % ring_depth],
+                Ks[k % RING_DEPTH, :, :],
+                barrier=ready[k % RING_DEPTH],
             )
             T.tma_copy(
                 V[bid, base + k * block_N : base + (k + 1) * block_N, hid, :],
-                Vs[k % ring_depth, :, :],
-                barrier=ready[k % ring_depth],
+                Vs[k % RING_DEPTH, :, :],
+                barrier=ready[k % RING_DEPTH],
             )
 
-        split = _make_dense_decode_split(
+        split = make_gqa_decode_bs1_split(
             batch,
             groups,
             block_M,
@@ -410,18 +88,17 @@ def gqa_decode_bs1_ctx_kernel(
             dim,
             dtype,
             scale,
-            score_scale,
-            softcap,
             kv_group_num,
             ctx_splits,
             threads,
             accum_dtype,
-            False,
             load_kv,
-            ring_depth,
-            fuse_rope,
-            rotary_dim,
-            rope_layout,
+            paged=False,
+            score_scale=sm_scale,
+            softcap=softcap,
+            fuse_rope=fuse_rope,
+            rotary_dim=rotary_dim,
+            rope_layout=rope_layout,
         )
         combine = make_gqa_decode_bs1_combine(
             batch,

@@ -5,9 +5,9 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.elementwise._dtype import FLOAT_DTYPES
+from tileops._kernels.elementwise._base import GeneratorKernel
 from tileops._kernels.elementwise.call_spec import AlibiCall, AlibiFwdInterface
-from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.kernel_base import Entry
 
 __all__ = [
     "AlibiFwdKernel",
@@ -18,7 +18,7 @@ __all__ = [
 def _make_alibi_kernel(seq_len, num_heads, dtype):
     """Build ALiBi kernel: bias[h, i, j] = -slope_h * |i - j|.
 
-    Slopes: slope_h = 2^(-8*h/H) for head h in [0, H).
+    Slopes: slope_h = 2^(-8*(h+1)/H) for head h in [0, H).
     Output shape: (num_heads, seq_len, seq_len).
     Total elements: num_heads * seq_len * seq_len.
     """
@@ -39,7 +39,6 @@ def _make_alibi_kernel(seq_len, num_heads, dtype):
                         rem = flat % S2
                         row = rem // seq_len
                         col = rem % seq_len
-                        # slope = 2^(-8 * (h+1) / num_heads)
                         exp_val = (
                             T.cast(-8.0, "float32")
                             * T.cast(h + 1, "float32")
@@ -47,7 +46,6 @@ def _make_alibi_kernel(seq_len, num_heads, dtype):
                         )
                         slope = T.exp2(exp_val)
                         dist = T.cast(row - col, "float32")
-                        # Use abs via if_then_else since T.abs may not handle int
                         abs_dist = T.if_then_else(dist > T.cast(0, "float32"), dist, -dist)
                         out[flat] = T.Cast(dtype, -slope * abs_dist)
 
@@ -56,7 +54,7 @@ def _make_alibi_kernel(seq_len, num_heads, dtype):
     return kernel
 
 
-class AlibiFwdKernel(Kernel, AlibiFwdInterface):
+class AlibiFwdKernel(GeneratorKernel, AlibiFwdInterface):
     """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|.
 
     Generates the full (num_heads, seq_len, seq_len) bias tensor.
@@ -69,20 +67,9 @@ class AlibiFwdKernel(Kernel, AlibiFwdInterface):
         config: Optional config dict.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    SUPPORTED_DTYPES = FLOAT_DTYPES
-
-    @classmethod
-    def refusal(cls, call: AlibiCall) -> "str | None":
-        if call.dtype in cls.SUPPORTED_DTYPES:
-            return None
-        supported = ", ".join(str(dt) for dt in cls.SUPPORTED_DTYPES)
-        return f"serves dtypes [{supported}], not {call.dtype}"
-
     @classmethod
     def entry_for(cls, call: AlibiCall) -> Entry:
-        index = None if call.device is None else call.device.index
+        index = call.device_index
         return call, lambda: cls(call.seq_len, call.num_heads, call.dtype, device_index=index)
 
     def __init__(self, seq_len, num_heads, dtype, config=None, device_index=None):
@@ -98,20 +85,9 @@ class AlibiFwdKernel(Kernel, AlibiFwdInterface):
     def default_config(self):
         return {"threads": 256, "num_per_thread": 4 if self.dtype == torch.float32 else 8}
 
-    def init_config(self, config=None):
-        """Set the config and compile the program ``forward`` launches from it."""
-        super().init_config(config)
-        self.program(self._compile)
-
     def _compile(self, cfg: dict):
         return self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self):
         """Return the bias in the shape the interface publishes."""
-        compiled = self.program(self._compile)
-        if self.device_index is None:
-            out = compiled()
-        else:
-            with torch.cuda.device(self.device_index):
-                out = compiled()
-        return out.reshape(self.num_heads, self.seq_len, self.seq_len)
+        return self._generate().reshape(self.num_heads, self.seq_len, self.seq_len)

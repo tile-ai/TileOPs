@@ -46,12 +46,9 @@ ROW_STORE_VECTOR = 8
 class _HeuristicPolicy:
     """The constants the selector reads, in three kinds a reader must tell apart.
 
-    Hardware facts describe an SM90 device. Fitted values are only as good as
-    the measurement behind them; refitting one means forcing every legal config
-    of a descriptor through ``spec_from_config``, checking it against a
-    reference, and timing the candidate set interleaved in one repeat loop in a
-    fresh order each round -- medians of seven rounds on an idle device. The
-    exclusion is neither: it patches a tile the cost function misprices.
+    Hardware facts describe an SM90 device. A fitted value is refitted by forcing every
+    legal config of a descriptor through ``spec_from_config`` and timing the candidate
+    set. The exclusion is neither: it patches a tile the cost function misprices.
     """
 
     # Hardware, SM90.
@@ -85,7 +82,7 @@ class _HeuristicPolicy:
 
 @dataclasses.dataclass(frozen=True)
 class _CalibratedBands:
-    """Selection bands fitted on one calibrated board; refit them as `_HeuristicPolicy` describes."""
+    """Selection bands fitted on one calibrated board, refitted as `_HeuristicPolicy`'s are."""
 
     # Depth to reach, depth past which not to bother, wave count past which the store
     # rounds are all that is left.
@@ -488,9 +485,6 @@ class GEMMDesc:
         if self.num_sms < 1:
             raise ValueError("the persistent grid needs at least one SM")
 
-    def get_expected_m(self) -> int:
-        return self.expected_m if self.expected_m > 0 else self.m
-
 
 @dataclasses.dataclass(frozen=True)
 class _Layout:
@@ -614,9 +608,6 @@ def _spec(
     pingpong: bool = False,
     a_box_rows: int = 0,
 ) -> GroupedGEMMSpec:
-    def _num_math_threads(block_m: int) -> int:
-        return 128 if block_m <= 64 else 256
-
     return GroupedGEMMSpec(
         gemm_type=desc.gemm_type,
         major_a=desc.major_a,
@@ -632,7 +623,7 @@ def _spec(
         block_k=layout.block_k,
         num_stages=num_stages,
         num_math_threads=(
-            128 * num_math_wgs if num_math_wgs else _num_math_threads(layout.block_m)
+            128 * num_math_wgs if num_math_wgs else (128 if layout.block_m <= 64 else 256)
         ),
         num_sms=desc.num_sms,
         activation=desc.activation,
@@ -662,7 +653,7 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             else:
                 rows_per_group = desc.m / max(1, desc.num_groups)
             return desc.num_groups * math.ceil(rows_per_group / block_m)
-        return math.ceil(desc.get_expected_m() / block_m)
+        return math.ceil((desc.expected_m if desc.expected_m > 0 else desc.m) / block_m)
 
     def _layout_features(desc: GEMMDesc, layout: _Layout) -> _LayoutFeatures:
         """What ``layout`` makes this call do. Counted, not priced: nothing here is fitted."""
@@ -683,8 +674,8 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         elem_ab = desc.policy.element_bytes
         elem_cd = 4 if desc.cd_dtype == "float32" else 2
         c_width = layout.block_n // 2 if desc.fused else layout.block_n
-        bytes_l2_ab = effective_k * (layout.block_m + layout.block_n) * elem_ab
-        bytes_l1_ab = effective_k * (layout.block_m + layout.block_n) * elem_ab
+        # The operands cross L2 and L1 once each.
+        bytes_ab = effective_k * (layout.block_m + layout.block_n) * elem_ab
         bytes_l1_tc = effective_k * (max(desc.policy.wgmma_m, layout.block_m) + layout.block_n)
         bytes_l1_tc *= elem_ab
         bytes_l1_tc += layout.block_m * c_width * elem_cd
@@ -695,8 +686,8 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             num_waves=num_waves,
             wave_efficiency=num_blocks / (num_waves * desc.num_sms) if num_blocks else 0.0,
             tiles_per_sm=num_blocks / desc.num_sms,
-            l1_bytes=(bytes_l1_ab + bytes_l1_tc + bytes_cd) * num_blocks,
-            l2_bytes=(bytes_l2_ab + bytes_cd) * num_blocks,
+            l1_bytes=(bytes_ab + bytes_l1_tc + bytes_cd) * num_blocks,
+            l2_bytes=(bytes_ab + bytes_cd) * num_blocks,
             num_stages=_num_stages(desc, layout),
         )
 

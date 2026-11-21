@@ -17,7 +17,7 @@ from tileops._kernels.moe import (
     MoEGroupedGEMMFP8Kernel,
     MoEGroupedGEMMFP8MMAKernel,
 )
-from tileops._ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec
+from tileops._ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec, layout_call_fields
 from tileops._ops.moe.staged import MoELayoutRowsRoofline
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
@@ -113,17 +113,11 @@ class MoEGroupedGEMMFP8FwdOp(MoELayoutRowsRoofline, Op):
         """
         a_scale, b_scale = a_scale.contiguous(), b_scale.contiguous()
         num_experts, n, k = b.shape
-        layout = self.layout
-        contiguous = layout.kind == "contiguous"
         kernel = self.kernel_for(
             "grouped_gemm_fp8",
             lambda: MGroupedGEMMFP8Call(
                 device=a.device,
-                kind=layout.kind,
-                packing=layout.packing.value if contiguous else None,
-                metadata_kind=layout.metadata_kind.value if contiguous else None,
-                alignment=layout.alignment if contiguous else 1,
-                max_m=layout.max_m,
+                **layout_call_fields(self.layout),
                 ab_dtype=a.dtype,
                 num_groups=num_experts,
                 m=a.numel() // k,

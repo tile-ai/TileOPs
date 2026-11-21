@@ -5,8 +5,13 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
+from tileops._kernels.attention.gqa.decode_bs1_common import (
+    COMPILE_FLAGS,
+    allocate_partials,
+    balanced_split,
+    make_gqa_decode_bs1_combine,
+)
 from tileops._kernels.attention.gqa.dense_fp8 import validate_fa3_gqa_descales
-from tileops._kernels.attention.online_softmax import make_dense_split_sink_merge
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -34,28 +39,16 @@ def _gqa_dense_fp8_decode_ctx_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[
-            "-O3",
-            "--use_fast_math",
-            "-Wno-deprecated-declarations",
-            "-U__CUDA_NO_HALF_OPERATORS__",
-            "-U__CUDA_NO_HALF_CONVERSIONS__",
-            "-U__CUDA_NO_HALF2_OPERATORS__",
-            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-            "--expt-relaxed-constexpr",
-            "--expt-extended-lambda",
-            "-DNDEBUG",
-        ],
+        compile_flags=COMPILE_FLAGS,
     )
     def build(block_m: int, block_n: int, ctx_splits: int, threads: int):
-        sink_merge = make_dense_split_sink_merge(accum_dtype)
         seq_len_kv = T.dynamic("seq_len_kv")
         q_shape = [batch, 1, heads, dim]
         kv_shape = [batch, seq_len_kv, heads_kv, dim]
         scale_shape = [batch, heads_kv]
         lse_shape = [batch, heads, ctx_splits]
         partial_shape = [batch, heads, ctx_splits, dim]
-        output_shape = [batch, 1, heads, dim]
+        output_shape = [batch, heads, dim]
         ring_depth = 2
 
         @T.macro
@@ -92,16 +85,7 @@ def _gqa_dense_fp8_decode_ctx_kernel(
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
 
-                num_tiles = T.ceildiv(seq_len_kv, block_n)
-                base_tiles = num_tiles // ctx_splits
-                extra_tiles = num_tiles % ctx_splits
-                tiles_this_split = base_tiles + T.if_then_else(sid < extra_tiles, 1, 0)
-                tile_begin = sid * base_tiles + T.min(sid, extra_tiles)
-                base = tile_begin * block_n
-                this_len = T.max(
-                    T.min(seq_len_kv - base, tiles_this_split * block_n),
-                    0,
-                )
+                base, this_len = balanced_split(seq_len_kv, block_n, ctx_splits, sid)
                 loop_range = T.ceildiv(this_len, block_n)
                 tx = T.get_thread_binding()
 
@@ -203,34 +187,9 @@ def _gqa_dense_fp8_decode_ctx_kernel(
                             0.0,
                         )
 
-        @T.macro
-        def combine(glse, output_partial, output, sinks):
-            with T.Kernel(heads, batch, threads=128) as (hq, bid):
-                lse_vec = T.alloc_fragment([ctx_splits], accum_dtype)
-                lse_max = T.alloc_fragment([1], accum_dtype)
-                lse_sum = T.alloc_local([1], accum_dtype)
-                o_accum = T.alloc_fragment([dim], accum_dtype)
-                for sid in T.Parallel(ctx_splits):
-                    lse_vec[sid] = glse[bid, hq, sid]
-                T.fill(lse_max, -T.infinity(accum_dtype))
-                T.reduce_max(lse_vec, lse_max, dim=0, clear=False)
-                lse_sum[0] = 0.0
-                if has_sinks:
-                    sink_merge(sinks[hq], lse_max, lse_sum)
-                for sid in T.serial(ctx_splits):
-                    lse_sum[0] += T.exp2(glse[bid, hq, sid] - lse_max[0])
-                if not has_sinks:
-                    lse_sum[0] = T.log2(lse_sum[0]) + lse_max[0]
-                T.clear(o_accum)
-                for sid in T.serial(ctx_splits):
-                    if has_sinks:
-                        weight = T.exp2(glse[bid, hq, sid] - lse_max[0]) / lse_sum[0]
-                    else:
-                        weight = T.exp2(glse[bid, hq, sid] - lse_sum[0])
-                    for j in T.Parallel(dim):
-                        o_accum[j] += output_partial[bid, hq, sid, j] * weight
-                for j in T.Parallel(dim):
-                    output[bid, 0, hq, j] = T.cast(o_accum[j], out_dtype)
+        combine = make_gqa_decode_bs1_combine(
+            batch, heads, ctx_splits, dim, out_dtype, accum_dtype, has_sinks=has_sinks
+        )
 
         @T.prim_func
         def main(
@@ -298,7 +257,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
             sm_scale=call.sm_scale,
             softcap=call.softcap,
             has_sinks=call.has_sinks,
-            device_index=call.device.index if call.device is not None else None,
+            device_index=call.device_index,
         )
         return tuple(args.values()), lambda: cls(**args)
 
@@ -315,9 +274,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
         *,
         has_sinks: bool = False,
         device_index: int | None = None,
-        **unused,
     ) -> None:
-        del unused
         super().__init__(device_index=device_index)
         self.has_sinks = has_sinks
         self.batch = batch
@@ -373,17 +330,11 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
             q.device,
         )
         ctx_splits = self._ctx_splits_for(k.shape[1])
-        glse = torch.empty(
-            (self.batch, self.heads, ctx_splits), dtype=torch.float32, device=q.device
-        )
-        output_partial = torch.empty(
-            (self.batch, self.heads, ctx_splits, self.dim),
-            dtype=torch.float32,
-            device=q.device,
-        )
-        return self.program(self._compile, ctx_splits)(
+        glse, output_partial = allocate_partials(q, self.batch, self.heads, self.dim, ctx_splits)
+        output = self.program(self._compile, ctx_splits)(
             q, k, v, q_scale, k_scale, v_scale, glse, output_partial, sinks if self.has_sinks else q
         )
+        return output.view(self.batch, 1, self.heads, self.dim)
 
     def _compile(self, cfg: dict, ctx_splits: int):
         """The context-split program for *cfg* over *ctx_splits* splits."""

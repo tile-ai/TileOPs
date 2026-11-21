@@ -1,6 +1,7 @@
 import torch
 
 from workloads.device import run_device
+from workloads.numerics import Custom
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
@@ -39,10 +40,7 @@ class TopKSelectWorkload(WorkloadBase):
             device=run_device(),
         )
         starts = torch.zeros(self.batch, self.seq_len, dtype=self.out_dtype, device=run_device())
-        ends = (
-            torch.ones(self.batch, self.seq_len, dtype=self.out_dtype, device=run_device())
-            * self.seq_len_kv
-        )
+        ends = torch.full_like(starts, self.seq_len_kv)
         return logits, starts, ends
 
     def ref_program(
@@ -60,8 +58,6 @@ class TopKSelectWorkload(WorkloadBase):
         return indexes.permute(0, 1, 3, 2).to(self.out_dtype)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         def validate(got, expected):
             assert got.shape == expected.shape and got.dtype == expected.dtype
             scores, starts, ends = inputs

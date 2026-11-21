@@ -9,7 +9,7 @@ from tileops._kernels.elementwise._base import (
     Uint8StorageBinaryKernel,
     Uint8StorageUnaryKernel,
 )
-from tileops._kernels.elementwise._dtype import LOGICAL_DTYPES
+from tileops._kernels.elementwise._dtype import BINARY_FULL_DTYPES
 from tileops._kernels.elementwise._nan import HALF_COMPARE_HEADER, lane_compare, ne_unordered
 from tileops._kernels.elementwise.call_spec import (
     BinaryPredicateFwdInterface,
@@ -29,7 +29,7 @@ __all__ = [
 class LogicalAndFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
     """Element-wise logical AND with non-zero truthiness; a NaN is nonzero."""
 
-    SUPPORTED_DTYPES = LOGICAL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
     CSRC_HEADERS = (HALF_COMPARE_HEADER,)
     lane_mask_func = staticmethod(lane_compare("and"))
@@ -54,7 +54,7 @@ class LogicalAndBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFw
 class LogicalOrFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
     """Element-wise logical OR with non-zero truthiness; a NaN is nonzero."""
 
-    SUPPORTED_DTYPES = LOGICAL_DTYPES
+    SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
     CSRC_HEADERS = (HALF_COMPARE_HEADER,)
     lane_mask_func = staticmethod(lane_compare("or"))

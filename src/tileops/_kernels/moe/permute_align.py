@@ -475,7 +475,7 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
     @classmethod
     def entry_for(cls, call: PermuteAlignCall) -> Entry:
         """One build per routed count, expert count, tile height and device."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.num_routes, call.num_experts, call.block_size, index)
         return identity, lambda: cls(
             call.num_routes, call.num_experts, call.block_size, device_index=index

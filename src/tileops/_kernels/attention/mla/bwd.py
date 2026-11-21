@@ -292,7 +292,7 @@ class _MLABwdKernelBase(Kernel):
             is_causal=call.is_causal,
             sm_scale=call.sm_scale,
             dtype=call.dtype,
-            device_index=call.device.index if call.device is not None else None,
+            device_index=call.device_index,
         )
         return tuple(args.items()), lambda: cls(**args)
 

@@ -194,7 +194,8 @@ class _Fingerprint:
                 self.module(value.__name__)
         elif callable(value) and not hasattr(value, "__dict__"):
             # A builtin or C function: its name is all there is to read.
-            self._add("callable", getattr(value, "__module__", None), _qualname(value))
+            qualname = getattr(value, "__qualname__", None) or type(value).__qualname__
+            self._add("callable", getattr(value, "__module__", None), qualname)
         else:
             self.instance(value)
 
@@ -307,10 +308,6 @@ def _tensor_contents(tensor: torch.Tensor) -> str:
     except (RuntimeError, NotImplementedError):  # a meta tensor, or one without storage
         return "no contents"
     return hashlib.sha256(data.numpy().tobytes()).hexdigest()
-
-
-def _qualname(value: object) -> str:
-    return getattr(value, "__qualname__", None) or type(value).__qualname__
 
 
 def supply_fingerprint(supply_prog: Callable | None) -> str:

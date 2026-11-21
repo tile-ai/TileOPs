@@ -29,11 +29,7 @@ from tileops._kernels.tiling import ALIGNMENT, align_up
 __all__ = ["AdaLayerNormKernel", "AdaLayerNormZeroKernel"]
 
 
-def _should_use_cp_async(
-    n: int,
-    dtype: torch.dtype,
-    has_gate: bool = False,
-) -> bool:
+def _should_use_cp_async(n: int, dtype: torch.dtype, has_gate: bool) -> bool:
     """Select async prefetch when lowering and shared-memory limits allow it."""
     n_padded = align_up(n, ALIGNMENT)
     row_bytes = n * dtype.itemsize
@@ -43,14 +39,14 @@ def _should_use_cp_async(
 
 
 @target_cache(maxsize=32)
-def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False):
+def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate, use_cp_async):
     N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N
     # The async policy guarantees that each source row is a whole number of
     # 4-byte cp.async transactions.
     async_copy_elems = 1 if dtype == "float32" else 2
 
-    @tilelang.jit(out_idx=[4] if not has_gate else [5])
+    @tilelang.jit(out_idx=[4] if has_gate else [3])
     def _func(block_m, threads):
         @T.macro
         def load_x_padded(x, shared_buf, x_f32, shift, pid_m):
@@ -195,12 +191,9 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
                 x: T.Tensor[(M, N), dtype],
                 scale: T.Tensor[(M, N), dtype],
                 shift: T.Tensor[(M, N), dtype],
-                # _dummy keeps the output tensor at index 4 so that out_idx=[4]
-                # is consistent between the non-gated and gated variants.
-                _dummy: T.Tensor[(1,), dtype],
                 y: T.Tensor[(M, N), dtype],
             ):
-                kernel_body(x, scale, shift, _dummy, y)
+                kernel_body(x, scale, shift, None, y)
 
             return main
 
@@ -210,7 +203,6 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
             scale: T.Tensor[(M, N), dtype],
             shift: T.Tensor[(M, N), dtype],
             gate: T.Tensor[(M, N), dtype],
-            _dummy: T.Tensor[(1,), dtype],
             y: T.Tensor[(M, N), dtype],
         ):
             kernel_body(x, scale, shift, gate, y)
@@ -313,13 +305,11 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
         scale = scale.reshape(-1, self.N)
         shift = shift.reshape(-1, self.N)
 
-        # ``_dummy`` keeps the output at the index ``out_idx`` names; see the prim_func.
-        dummy = torch.empty(1, dtype=x.dtype, device=x.device)
         program = self.program(self._compile, rows.shape[0])
         if self.has_gate:
-            y = program(rows, scale, shift, gate.reshape(-1, self.N), dummy)
+            y = program(rows, scale, shift, gate.reshape(-1, self.N))
         else:
-            y = program(rows, scale, shift, dummy)
+            y = program(rows, scale, shift)
         return y.reshape(original_shape)
 
     def _compile(self, cfg: dict, m: int):
@@ -329,8 +319,8 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
             self.N,
             self.eps,
             self.dtype_str,
-            has_gate=self.has_gate,
-            use_cp_async=self.use_cp_async,
+            self.has_gate,
+            self.use_cp_async,
         )
         return kernel(cfg["block_m"], cfg["threads"])
 

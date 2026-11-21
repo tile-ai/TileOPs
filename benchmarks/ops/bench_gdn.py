@@ -1,8 +1,6 @@
 """Benchmark Gated DeltaNet (GDN) inference, one case per manifest call, against FLA, FlashInfer
 and, on a state pool, vLLM."""
 
-import dataclasses
-
 import pytest
 import torch
 import torch.nn.functional as F
@@ -17,19 +15,9 @@ from benchmarks.baselines import (
     flashinfer_op,
     private_inputs,
     vllm_op,
+    vllm_state_lines,
 )
 from tileops.linear_attention import GDNFwdOp
-
-
-def _vllm_lines(pool: torch.Tensor, slots: torch.Tensor):
-    """vLLM's cache lines for *pool*, their indices for *slots*, and the reset that loads the
-    pool into them. vLLM skips cache line 0, its null block, so pool slot i is line i + 1."""
-    lines = torch.empty((pool.shape[0] + 1, *pool.shape[1:]), dtype=pool.dtype, device=pool.device)
-
-    def reset() -> None:
-        lines[1:].copy_(pool)
-
-    return lines, slots + 1, reset
 
 
 def _raw_logits(g: torch.Tensor, beta: torch.Tensor):
@@ -57,7 +45,7 @@ def _draft_verification(case) -> dict:
         implementations[TORCH_COMPILE_TAG] = compiled_reference(case.torch)
     scale = q.shape[-1] ** -0.5 if params["scale"] is None else params["scale"]
     l2norm = params["use_qk_l2norm_in_kernel"]
-    lines, line_of, reset_lines = _vllm_lines(pool, slots)
+    lines, line_of, reset_lines = vllm_state_lines(pool, slots)
     raw_gate, step = _raw_logits(g, beta)
     rates = biases = torch.zeros(v.shape[2], device=q.device, dtype=torch.float32)
 
@@ -264,9 +252,8 @@ def test_gdn_fwd_bench(case) -> None:
                 pool[slots] = final
                 return o, pool
 
-            return dataclasses.replace(
-                private_inputs(call, inputs, 5),
-                noncomparable_reason=implementation.noncomparable_reason,
+            return private_inputs(
+                call, inputs, 5, noncomparable_reason=implementation.noncomparable_reason
             )
 
         implementations = {tag: gathered(impl) for tag, impl in implementations.items()}
@@ -279,7 +266,7 @@ def test_gdn_fwd_bench(case) -> None:
             # kernel reads Q, K and V as one row a token and the gate and step size as raw logits
             # formed outside the timed call.
             q, k, v, g, beta, pool, cu = inputs[:7]
-            lines, line_of, reset = _vllm_lines(pool, slots)
+            lines, line_of, reset = vllm_state_lines(pool, slots)
             scale = q.shape[-1] ** -0.5 if params["scale"] is None else params["scale"]
             l2norm = params["use_qk_l2norm_in_kernel"]
 

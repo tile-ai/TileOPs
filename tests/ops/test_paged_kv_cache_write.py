@@ -68,7 +68,7 @@ class PagedKVCacheWriteTest(PagedKVCacheWriteWorkload, TestBase):
             torch.float8_e4m3fn,
             [63, 0],
             False,
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="fp8-fp16-page-boundary",
         ),
         pytest.param(

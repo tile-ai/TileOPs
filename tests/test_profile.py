@@ -1,25 +1,56 @@
+"""GPU profiles and the roof keys an op prices against (docs/design/roofline.md §1.4)."""
+
+from types import SimpleNamespace
+
 import pytest
+import torch
 
-from tileops._perf.profile import get_profile_path, load_profile
+from tileops._perf.profile import load_profile, tensor_core_roof
 
-
-class TestGetProfilePath:
-    @pytest.mark.smoke
-    def test_h200_exists(self):
-        path = get_profile_path("h200")
-        assert path.exists()
-        assert path.suffix == ".yaml"
-
-    @pytest.mark.smoke
-    def test_unknown_gpu_raises(self):
-        with pytest.raises(FileNotFoundError):
-            get_profile_path("nonexistent_gpu")
+pytestmark = pytest.mark.smoke
 
 
 class TestLoadProfile:
-    @pytest.mark.smoke
     def test_h200_top_level_keys(self):
         profile = load_profile("h200")
         assert profile["gpu"] == "NVIDIA H200"
         assert "hbm" in profile
         assert "tensor_core" in profile
+
+    def test_unknown_gpu_raises(self):
+        with pytest.raises(FileNotFoundError, match="No GPU profile 'nonexistent_gpu'"):
+            load_profile("nonexistent_gpu")
+
+
+class TestTensorCoreRoof:
+    def test_maps_torch_dtypes_to_profile_keys(self):
+        assert tensor_core_roof(torch.float16) == "tensor_core.fp16"
+        assert tensor_core_roof(torch.bfloat16) == "tensor_core.bf16"
+        assert tensor_core_roof(torch.float32) == "tensor_core.tf32"
+        assert tensor_core_roof(torch.float8_e4m3fn) == "tensor_core.fp8"
+        assert tensor_core_roof(torch.float8_e5m2) == "tensor_core.fp8"
+
+    def test_unbound_or_unknown_dtype_raises(self):
+        with pytest.raises(ValueError, match="no tensor-core roof"):
+            tensor_core_roof(None)
+        with pytest.raises(ValueError, match="no tensor-core roof"):
+            tensor_core_roof(torch.int32)
+
+
+class TestComputeRoofContract:
+    # __new__ bypasses kernel construction so the smoke stays CUDA-free;
+    # only the state each override reads is bound.
+
+    def test_base_default_is_cuda_core_fp32(self):
+        from tileops._ops.elementwise.arithmetic import AddFwdOp
+
+        op = AddFwdOp.__new__(AddFwdOp)
+        assert op.roof_key() == "cuda_core.fp32"
+
+    def test_matmul_op_prices_on_the_bound_dtype(self):
+        from tileops._ops.gemm.gemm import GEMMFwdOp
+
+        op = GEMMFwdOp.__new__(GEMMFwdOp)
+        call = SimpleNamespace(indices={"T": "bfloat16"})
+        op._last_call = SimpleNamespace(materialize=lambda: call)
+        assert op.roof_key() == "tensor_core.bf16"

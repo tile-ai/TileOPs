@@ -14,6 +14,7 @@ import math
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.attention.varlen_rope import rope_channel_pair
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 
@@ -127,8 +128,7 @@ def _gqa_paged_rope_prepare_kernel(
                     cos[e] = Cos[pos, unit * vec + e]
                     sin[e] = Sin[pos, unit * vec + e]
                 for p in T.unroll(vec):
-                    lo = p if layout == "neox" else 2 * p
-                    hi = vec + p if layout == "neox" else 2 * p + 1
+                    lo, hi = rope_channel_pair(layout, vec, p)
                     c = T.cast(cos[p], "float32")
                     s = T.cast(sin[p], "float32")
                     x0 = x[lo]

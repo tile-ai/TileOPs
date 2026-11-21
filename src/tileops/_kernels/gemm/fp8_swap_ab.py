@@ -417,7 +417,7 @@ class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
 
     @classmethod
     def entry_for(cls, call: GEMMFP8Call) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         # Two (1, 1) scales are one scale per tensor under either grid.
         block_scaled = (call.scale_a_shape, call.scale_b_shape) != ((1, 1), (1, 1))
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, block_scaled, index)

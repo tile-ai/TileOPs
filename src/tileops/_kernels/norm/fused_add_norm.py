@@ -22,6 +22,8 @@ interleaved; the chunk a CTA writes waits in shared memory in between. Its rows 
 to 256 elements, so a 16-byte access always divides the row across a warp.
 """
 
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -44,7 +46,6 @@ from tileops._kernels.norm._config import (
     rms_scale,
     select_row_config,
     select_row_configs,
-    warp_sum,
 )
 from tileops._kernels.norm.call_spec import (
     AdaLayerNormFwdInterface,
@@ -56,7 +57,8 @@ from tileops._kernels.norm.call_spec import (
     RMSNormCall,
 )
 from tileops._kernels.tiling import ALIGNMENT, align_up
-from tileops._utils import WARP_LANES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
     "AdaLayerNormHeldKernel",
@@ -306,7 +308,7 @@ def _held_layer_norm_kernel(
             steps * -(-vec // 4)
             # The pairwise fold of the four chains.
             + 2
-            + (WARP_LANES.bit_length() - 1)
+            + WARP_SHUFFLE_STAGES
             + (warps - 1).bit_length()
             + (cluster - 1).bit_length()
         )
@@ -342,7 +344,7 @@ def _held_layer_norm_kernel(
             acc[0] = fold_chains(partial)
             acc[1] = fold_chains(partial, 4)
             if across_warp:
-                warp_sum(acc, 2)
+                warp_reduce(acc, operator.add, 2)
 
         @T.macro
         def send(slots, received, tx, rank, word, phase, first, second):
@@ -466,7 +468,7 @@ def _held_layer_norm_kernel(
                             for i in T.vectorized(vec):
                                 residual_out[cta, base + i] = a[k * vec + i]
 
-                warp_sum(acc, 2)
+                warp_reduce(acc, operator.add, 2)
                 if warps > 1:
                     if tx % WARP_LANES == 0:
                         slots[raw_words + warp] = acc[0]
@@ -542,7 +544,7 @@ def _held_layer_norm_kernel(
                         stats[1] = acc[0] * inverse
                         stats[2] = acc[1] - stats[1] * (acc[0] * (1.0 / N))
                         stats[3] = count
-                        for st in T.unroll(WARP_LANES.bit_length() - 1):
+                        for st in T.unroll(WARP_SHUFFLE_STAGES):
                             other_centre = T.shfl_xor(stats[0], T.shift_left(1, st))
                             other_mean = T.shfl_xor(stats[1], T.shift_left(1, st))
                             other_square = T.shfl_xor(stats[2], T.shift_left(1, st))
@@ -653,7 +655,7 @@ def _held_layer_norm_kernel(
                         offset = stats[1] - (centre - stats[0])
                     else:
                         # Queued: two passes, fewer registers.
-                        warp_sum(acc, 1)
+                        warp_reduce(acc, operator.add)
                         stats[0] = lead
                         if warps > 1:
                             if tx % WARP_LANES == 0:
@@ -1129,7 +1131,7 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits, vec, zero_centered):
         @T.macro
         def block_rsqrt(tx, acc, warp_sums, rrms):
             """Fold one fp32 partial per thread into ``rrms[0]``."""
-            for step in T.serial(WARP_LANES.bit_length() - 1):
+            for step in T.serial(WARP_SHUFFLE_STAGES):
                 acc[0] += T.shfl_xor(acc[0], T.shift_left(1, step))
             if tx % WARP_LANES == 0:
                 warp_sums[tx // WARP_LANES] = acc[0]

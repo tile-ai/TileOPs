@@ -90,9 +90,9 @@ def _moe_grouped_gemm_fp8_kernel(
     max_m: int | None,
     sm_count: int,
     smem_limit: int,
-    packing: str | None = None,
-    metadata_kind: str | None = None,
-    alignment: int = 1,
+    packing: str | None,
+    metadata_kind: str | None,
+    alignment: int,
 ) -> Callable:
     """Build a persistent FP8 grouped GEMM for the given layout.
 
@@ -742,7 +742,7 @@ class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8Fwd
         return super().refusal(call)
 
     def __init__(self, call: MGroupedGEMMFP8Call) -> None:
-        device_index = call.device.index if call.device is not None else None
+        device_index = call.device_index
         super().__init__(device_index=device_index)
         self.call = call
         self.scale_k = call.k // QUANT_SCALE_BLOCK

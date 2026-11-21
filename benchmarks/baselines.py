@@ -50,6 +50,7 @@ __all__ = [
     "private_inputs",
     "quack_op",
     "vllm_op",
+    "vllm_state_lines",
 ]
 
 QUACK_TAG = "quack"
@@ -343,10 +344,11 @@ def backward_of(output: torch.Tensor) -> Any:
     return getattr(node, "apply", None) or node
 
 
-def private_inputs(run: Callable, inputs: tuple, *positions: int) -> Implementation:
+def private_inputs(run: Callable, inputs: tuple, *positions: int, **kwargs: Any) -> Implementation:
     """*run* on *inputs*, with the ones at *positions* replaced by copies it may overwrite.
 
     The copies are restored from *inputs* before every round, outside the timed call.
+    *kwargs* go to the :class:`Implementation`.
     """
     args = list(inputs)
     owned = [i for i in positions if inputs[i] is not None]
@@ -357,7 +359,19 @@ def private_inputs(run: Callable, inputs: tuple, *positions: int) -> Implementat
         for i in owned:
             args[i].copy_(inputs[i])
 
-    return Implementation(run=run, args=tuple(args), reset=reset)
+    return Implementation(run=run, args=tuple(args), reset=reset, **kwargs)
+
+
+def vllm_state_lines(pool: torch.Tensor, slots: torch.Tensor):
+    """vLLM's cache lines for *pool*, the line of each of *slots*, and the reset that loads
+    the pool into them. vLLM skips cache line 0, its null block, so pool slot i is line i + 1.
+    """
+    lines = torch.empty((pool.shape[0] + 1, *pool.shape[1:]), dtype=pool.dtype, device=pool.device)
+
+    def reset() -> None:
+        lines[1:].copy_(pool)
+
+    return lines, slots + 1, reset
 
 
 def private_float32_logits(

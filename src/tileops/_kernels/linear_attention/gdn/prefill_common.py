@@ -3,8 +3,8 @@
 import tilelang.language as T
 
 # What the comparator's L2 normalization adds under the square root before taking the
-# reciprocal, from `fla.modules.l2norm.l2norm_fwd`. The block solve and the forward both
-# form a reciprocal norm and must add the same thing.
+# reciprocal, from `fla.modules.l2norm.l2norm_fwd`. Every GDN, DeltaNet and KDA program that
+# normalizes rows must add the same thing.
 L2NORM_EPS: float = 1e-6
 
 # The edge of the blocks the chunk inverse works in; the solve that stages them and the
@@ -32,6 +32,15 @@ def step_size(raw, beta_sigmoid: bool, allow_neg_eigval: bool):
         return raw
     scaled = T.sigmoid(T.cast(raw, "float32")) * (2.0 if allow_neg_eigval else 1.0)
     return T.Cast(raw.dtype, scaled)
+
+
+def softplus(x):
+    """``log(1 + exp(x))`` of a float32 expression, *x* itself above 20 as torch takes it.
+
+    Above 20 ``softplus(x)`` is ``x`` to within float32, which is also what keeps ``exp(x)``
+    from overflowing.
+    """
+    return T.if_then_else(x > 20.0, x, T.log1p(T.exp(x)))
 
 
 def block_inverse_macro(accum_dtype: str, solve_dtype: str):

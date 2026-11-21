@@ -181,7 +181,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
 
         @T.macro
         def load_lone(
-            l_sc, l_kv, u, w, q, h, col, base, first, slot, kv, score, ape, kv_state, score_state
+            l_sc, l_kv, u, w, q, h, col, base, slot, kv, score, ape, kv_state, score_state
         ):
             # load_slot for a window whose closing position is the request's first token: its
             # last slot is that token, the others the ring's rows (masked below 0 after). Each
@@ -274,7 +274,6 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
                         head_of(u),
                         col,
                         base,
-                        first,
                         slot,
                         kv,
                         score,
@@ -368,7 +367,6 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype):
                             head_of((warp * N_BATCH + b) * BATCH + u),
                             col,
                             base,
-                            first,
                             slot,
                             kv,
                             score,

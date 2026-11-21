@@ -12,7 +12,7 @@ import ast
 import sys
 from pathlib import Path
 
-from common import files, relative, report
+from common import lint_files, relative
 
 SCANNED = ("benchmarks/ops",)
 
@@ -72,8 +72,8 @@ def findings(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    return report(e for p in files(argv, SCANNED, (".py",)) for e in findings(p))
+    return lint_files(argv, __doc__, SCANNED, (".py",), findings)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    sys.exit(main(sys.argv[1:]))

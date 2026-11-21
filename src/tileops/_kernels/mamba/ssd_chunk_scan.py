@@ -29,8 +29,8 @@ def _ssd_chunk_scan_fwd_kernel(
     d_head: int,
     d_state: int,
     n_groups: int,
-    dtype: str = "float16",
-    diagonal_microtile_size: int = 32,  # 32 takes the micro-blocks when block_l=block_s=64
+    dtype: str,
+    diagonal_microtiles: bool,
 ) -> Callable:
     accum_dtype = "float"
 
@@ -53,27 +53,19 @@ def _ssd_chunk_scan_fwd_kernel(
         threads: int,
         num_stages: int,
     ):
-        x_shape = (B, S, H, P)
-        cb_shape = (B, C, G, Q, Q)
-        dA_shape = (B, H, C, Q)
-        c_shape = (B, S, G, N)
-        states_shape = (B, C, H, P, N)
-        dt_shape = (B, H, C, Q)
-        out_shape = (B, S, H, P)
-
         scan_annotations = {"pragma_unroll_explicit": True}
         if num_stages > 0:
             scan_annotations["num_stages"] = T.int32(num_stages)
 
         @T.prim_func
         def main(
-            x: T.Tensor(x_shape, dtype),  # type: ignore
-            cb: T.Tensor(cb_shape, dtype),  # type: ignore
-            dA_cumsum: T.Tensor(dA_shape, accum_dtype),  # type: ignore
-            C_mat: T.Tensor(c_shape, dtype),  # type: ignore
-            prev_states: T.Tensor(states_shape, accum_dtype),  # type: ignore
-            dt: T.Tensor(dt_shape, dtype),  # type: ignore
-            out: T.Tensor(out_shape, accum_dtype),  # type: ignore
+            x: T.Tensor((B, S, H, P), dtype),  # type: ignore
+            cb: T.Tensor((B, C, G, Q, Q), dtype),  # type: ignore
+            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),  # type: ignore
+            C_mat: T.Tensor((B, S, G, N), dtype),  # type: ignore
+            prev_states: T.Tensor((B, C, H, P, N), accum_dtype),  # type: ignore
+            dt: T.Tensor((B, H, C, Q), dtype),  # type: ignore
+            out: T.Tensor((B, S, H, P), accum_dtype),  # type: ignore
         ):
             # Grid: (L_tiles × P_tiles, B × C, H).
             with T.Kernel(
@@ -269,7 +261,7 @@ def _ssd_chunk_scan_fwd_kernel(
                             )
                     else:
                         T.sync_threads()
-                        if diagonal_microtile_size == 32 and block_l == 64 and block_s == 64:
+                        if diagonal_microtiles and block_l == 64 and block_s == 64:
                             # 2×2 micro-blocks; only the strict-lower block (1,0) is factored.
                             M = 32
                             row_factor = T.alloc_shared((M,), accum_dtype)
@@ -419,13 +411,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         config: dict | None = None,
     ) -> None:
         super().__init__()
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.chunk_len = chunk_len
-        self.n_heads = n_heads
-        self.d_head = d_head
         self.d_state = d_state
-        self.n_groups = n_groups
         self.dtype = dtype
         self.arch = self.build_target.arch
         self.kernel = _ssd_chunk_scan_fwd_kernel(
@@ -439,7 +425,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
             self.dtype_str,
             # The diagonal micro-blocks write quadrants of an MMA operand fragment, whose loop
             # layout TileLang infers only for the SM90 fragment.
-            diagonal_microtile_size=32 if self.arch == 90 else 0,
+            self.arch == 90,
         )
         self.init_config(config)
 
@@ -509,14 +495,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         prev_states: torch.Tensor,
         dt: torch.Tensor,
     ) -> torch.Tensor:
-        return self.program(self._compile)(
-            x.contiguous(),
-            cb.contiguous(),
-            dA_cumsum.contiguous(),
-            C.contiguous(),
-            prev_states.contiguous(),
-            dt.contiguous(),
-        )
+        return self.program(self._compile)(x, cb, dA_cumsum, C, prev_states, dt)
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""

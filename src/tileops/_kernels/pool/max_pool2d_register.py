@@ -22,6 +22,11 @@ from tileops._kernels.pool.call_spec import (
     MaxPool2dIndicesFwdInterface,
     MaxPoolCall,
 )
+from tileops._kernels.pool.common import (
+    ACCUM_DTYPE,
+    EVICT_HINT_MAX_BYTES,
+    register_plane_refusal,
+)
 
 __all__ = ["MaxPool2dIndicesRegisterKernel", "MaxPool2dRegisterKernel"]
 
@@ -39,7 +44,6 @@ def _max_pool2d_register_kernel(
     pad_w,
     dtype,
     with_indices,
-    threads,
     load_policy,
 ):
     """Build the program for ``planes`` planes of ``h_in`` x ``w_in`` elements.
@@ -53,7 +57,6 @@ def _max_pool2d_register_kernel(
     L2 policy of the 16-byte row loads: ``evict_first``, ``evict_last`` or ``default``.
     """
     run = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
-    accum_dtype = "float32"
     index_dtype = "int64"
     outputs = run // stride_w
     out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
@@ -64,6 +67,9 @@ def _max_pool2d_register_kernel(
     # Positions one 16-byte store holds; a 32-byte sector holds two such halves.
     half = VECTOR_ACCESS_BYTES // getattr(torch, index_dtype).itemsize
     sectors = outputs // (2 * half)
+    # Four warps a block: a block shares nothing between its threads but the shuffle of a
+    # lane pair, so its width only sets how finely the grid divides.
+    threads = 128
 
     @tilelang.jit(
         out_idx=[1, 2] if with_indices else [1],
@@ -85,8 +91,8 @@ def _max_pool2d_register_kernel(
             plane = index // (groups * out_h)
             start = group * run
             values = T.alloc_local([run], dtype)
-            window = T.alloc_local([pad_w + run + after], accum_dtype)
-            peaks = T.alloc_local([outputs], accum_dtype)
+            window = T.alloc_local([pad_w + run + after], ACCUM_DTYPE)
+            peaks = T.alloc_local([outputs], ACCUM_DTYPE)
             maxima = T.alloc_local([outputs], dtype)
             if with_indices:
                 at = T.alloc_local([outputs], "int32")
@@ -103,14 +109,14 @@ def _max_pool2d_register_kernel(
                     for i in T.vectorized(run):
                         values[i] = x[plane, row, start + i]
                 for i in T.unroll(run):
-                    window[pad_w + i] = T.cast(values[i], accum_dtype)
+                    window[pad_w + i] = T.cast(values[i], ACCUM_DTYPE)
                 if pad_w:
                     for i in T.unroll(pad_w):
-                        window[i] = T.cast(x[plane, row, column(start, i)], accum_dtype)
+                        window[i] = T.cast(x[plane, row, column(start, i)], ACCUM_DTYPE)
                 if after:
                     for i in T.unroll(after):
                         window[pad_w + run + i] = T.cast(
-                            x[plane, row, column(start, pad_w + run + i)], accum_dtype
+                            x[plane, row, column(start, pad_w + run + i)], ACCUM_DTYPE
                         )
                 # Taps in torch's order, row by row, left to right. Strict > keeps the
                 # first maximum; a NaN takes the position and holds it, so the last NaN
@@ -215,47 +221,21 @@ class _MaxPool2dRegisterKernelBase(Kernel):
         """The L2 policy of the row loads for an input of ``input_bytes``.
 
         With positions, rows are read evict-last at every size. The maxima alone read
-        inputs up to 128 MiB evict-first, so a read line is replaced before a dirty one
-        and fewer lines are written back during the kernel; larger inputs use the default.
+        inputs up to ``EVICT_HINT_MAX_BYTES`` evict-first, so a read line is replaced before
+        a dirty one and fewer lines are written back during the kernel; larger inputs use
+        the default.
         """
         if cls._with_indices:
             return "evict_last"
-        return "evict_first" if input_bytes <= 128 << 20 else "default"
+        return "evict_first" if input_bytes <= EVICT_HINT_MAX_BYTES else "default"
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
     @classmethod
-    def refusal(cls, call: MaxPoolCall) -> "str | None":
-        # The window-row loop is unrolled, so a window of more than 16 rows stays on the
-        # one-output-a-thread kernel. A thread reads at most one element past its load on
-        # either side of a row, each a load of its own.
-        max_rows, max_reach = 16, 1
-        if call.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            return f"requires float16, bfloat16 or float32, got {call.dtype}"
-        if len(call.size) != 2:
-            return "serves a 2-d window"
-        (h_in, w_in), (kernel_h, kernel_w) = call.size, call.window
-        (stride_h, stride_w), (pad_h, pad_w) = call.stride, call.pad
-        run = VECTOR_ACCESS_BYTES // call.dtype.itemsize
+    def refusal(cls, call: MaxPoolCall) -> str | None:
         if call.ceil_mode or any(d != 1 for d in call.dilation):
             return "does not serve ceil_mode or dilation"
-        if run % stride_w:
-            return f"requires a stride dividing the {run}-element load, got {stride_w}"
-        out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
-        out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
-        if kernel_h > max_rows:
-            return f"unrolls at most {max_rows} window rows, got {kernel_h}"
-        if pad_w > max_reach or kernel_w - stride_w - pad_w > max_reach:
-            return f"reads at most {max_reach} element past a load"
-        if not (
-            out_h > 0
-            and out_w > 0
-            and out_w % (run // stride_w) == 0
-            and out_w * stride_w <= w_in
-            and w_in % run == 0
-        ):
-            return f"requires whole {run}-element loads along the row"
-        return super().refusal(call)
+        return register_plane_refusal(call) or super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: MaxPoolCall) -> Entry:
@@ -306,7 +286,6 @@ class _MaxPool2dRegisterKernelBase(Kernel):
             pad_w,
             self.dtype_str,
             type(self)._with_indices,
-            threads=128,
             load_policy=load_policy,
         )
         self.init_config()
@@ -348,7 +327,7 @@ class MaxPool2dIndicesRegisterKernel(_MaxPool2dRegisterKernelBase, MaxPool2dIndi
     preferred_over = frozenset({"max_pool2d_with_indices_kernel"})
 
     @classmethod
-    def refusal(cls, call: MaxPoolCall) -> "str | None":
+    def refusal(cls, call: MaxPoolCall) -> str | None:
         reason = super().refusal(call)
         # A position is held in int32.
         if reason is None and call.size[0] * call.size[1] > 1 << 31:

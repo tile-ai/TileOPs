@@ -1,310 +1,128 @@
-"""Tests for smoke-param tier validation in conftest.py.
-
-Verifies:
-- Zero smoke params still fail.
-- Multiple smoke params pass validation.
-- Smoke params must appear as first N non-xfail cases; ordering
-  violation raises pytest.UsageError.
-- tune=False and no-xfail constraints apply to every smoke case.
-- Per-dtype smoke coverage and the full-not-dtype-only rule.
-"""
+"""The smoke-tier rules collection holds every parametrized ops test to: at least one smoke
+case, smoke cases first, smoke cases untuned and not xfail, one smoke case per dtype, and no
+full case that differs from a smoke case only by dtype."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 import torch
 
 from tests.conftest import _freeze_value, pytest_collection_modifyitems
 
+pytestmark = pytest.mark.smoke
 
-def _make_item(
-    *,
-    name: str = "test_op",
-    originalname: str = "test_op",
-    path: str = "tests/ops/test_foo.py",
-    markers: list[str] | None = None,
-    dtype: object | None = None,
-    tune: bool | None = None,
-) -> MagicMock:
-    """Build a lightweight mock pytest.Item for tier validation tests."""
-    markers = markers or []
-    item = MagicMock(
-        spec=[
-            "nodeid",
-            "path",
-            "name",
-            "originalname",
-            "get_closest_marker",
-            "iter_markers",
-            "callspec",
-            "user_properties",
-        ]
+
+def _item(
+    index: int, *markers: str, tune: bool | None = False, dtype: torch.dtype | None = None
+) -> SimpleNamespace:
+    """The ``index``-th case of ``tests/ops/test_foo.py::test_op``, carrying *markers*."""
+    params = {k: v for k, v in (("dtype", dtype), ("tune", tune)) if v is not None}
+    path = "tests/ops/test_foo.py"
+    return SimpleNamespace(
+        nodeid=f"{path}::test_op[{index}]",
+        path=Path(path),
+        name=f"test_op[{index}]",
+        originalname="test_op",
+        iter_markers=lambda name=None: iter(()),
+        user_properties=[],
+        get_closest_marker=lambda name: True if name in markers else None,
+        callspec=SimpleNamespace(params=params) if params else None,
     )
-    item.nodeid = f"{path}::{name}"
-    item.path = Path(path)
-    item.name = name
-    item.originalname = originalname
-
-    marker_set = set(markers)
-
-    item.iter_markers = lambda name=None: iter(())
-    item.user_properties = []
-
-    def _get_closest_marker(marker_name: str):
-        if marker_name in marker_set:
-            return True  # truthy sentinel
-        return None
-
-    item.get_closest_marker = _get_closest_marker
-
-    params: dict[str, object] = {}
-    if dtype is not None:
-        params["dtype"] = dtype
-    if tune is not None:
-        params["tune"] = tune
-
-    if params:
-        item.callspec = SimpleNamespace(params=params)
-    else:
-        item.callspec = None
-
-    return item
 
 
-@pytest.mark.full
-class TestFreezeValue:
-    """Signatures built from set values must sort stably across non-comparable types."""
-
-    def test_set_with_non_comparable_values_is_sorted_stably(self):
-        frozen = _freeze_value({torch.float16, None, 1})
-        assert frozen == tuple(sorted((torch.float16, None, 1), key=str))
+def test_set_with_non_comparable_values_is_sorted_stably():
+    """Signatures built from set values sort stably across non-comparable types."""
+    frozen = _freeze_value({torch.float16, None, 1})
+    assert frozen == tuple(sorted((torch.float16, None, 1), key=str))
 
 
-@pytest.mark.full
-class TestSmokeCount:
-    """At least one smoke param is required per ops test function."""
+def test_several_smoke_cases_at_the_front_pass():
+    pytest_collection_modifyitems([_item(0, "smoke"), _item(1, "smoke"), _item(2, "full")])
 
-    def test_zero_smoke_raises(self):
-        items = [
-            _make_item(markers=["full"], tune=False),
-            _make_item(markers=["full"], tune=False),
-        ]
-        with pytest.raises(pytest.UsageError, match="smoke"):
-            pytest_collection_modifyitems(items)
 
-    def test_multiple_smoke_params_pass(self):
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[1]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[2]", markers=["full"], tune=False),
-        ]
+def test_a_test_with_no_smoke_case_fails():
+    with pytest.raises(pytest.UsageError, match="smoke"):
+        pytest_collection_modifyitems([_item(0, "full"), _item(1, "full")])
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        pytest.param(lambda: [_item(0, "full"), _item(1, "smoke")], id="smoke-after-full"),
+        pytest.param(
+            lambda: [_item(0, "smoke"), _item(1, "full"), _item(2, "smoke")], id="smoke-split"
+        ),
+    ],
+)
+def test_smoke_cases_out_of_position_fail(items):
+    with pytest.raises(pytest.UsageError, match="smoke"):
+        pytest_collection_modifyitems(items())
+
+
+def test_an_xfail_case_before_the_smoke_cases_is_ignored_for_ordering():
+    items = [_item(0, "full", "xfail"), _item(1, "smoke"), _item(2, "full")]
+    pytest_collection_modifyitems(items)
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        pytest.param(lambda: [_item(0, "smoke", tune=True), _item(1, "full")], id="first"),
+        pytest.param(
+            lambda: [_item(0, "smoke"), _item(1, "smoke", tune=True), _item(2, "full")],
+            id="not-first",
+        ),
+    ],
+)
+def test_every_smoke_case_is_untuned(items):
+    with pytest.raises(pytest.UsageError, match="tune=False"):
+        pytest_collection_modifyitems(items())
+
+
+@pytest.mark.parametrize(
+    "items, also",
+    [
+        pytest.param(
+            lambda: [_item(0, "smoke", "xfail"), _item(1, "full")],
+            "at least one smoke case",
+            id="no-valid-smoke-case-left",
+        ),
+        pytest.param(
+            lambda: [_item(0, "smoke", "xfail"), _item(1, "smoke"), _item(2, "full")],
+            None,
+            id="valid-smoke-case-at-front",
+        ),
+        pytest.param(
+            lambda: [_item(0, "smoke", "xfail", tune=None), _item(1, "smoke", "xfail", tune=None)],
+            None,
+            id="no-tune-param",
+        ),
+    ],
+)
+def test_an_xfail_smoke_case_fails_without_an_ordering_error(items, also):
+    with pytest.raises(pytest.UsageError) as exc_info:
+        pytest_collection_modifyitems(items())
+    message = str(exc_info.value)
+    assert "must not be xfail" in message
+    assert also is None or also in message
+    assert "must appear as the first" not in message
+
+
+def test_one_smoke_case_per_dtype_and_a_tuned_full_case_pass():
+    items = [
+        _item(0, "smoke", dtype=torch.float16),
+        _item(1, "smoke", dtype=torch.bfloat16),
+        _item(2, "full", dtype=torch.float16, tune=True),
+    ]
+    pytest_collection_modifyitems(items)
+
+
+def test_a_dtype_whose_only_case_is_full_fails_both_dtype_rules():
+    items = [_item(0, "smoke", dtype=torch.float16), _item(1, "full", dtype=torch.bfloat16)]
+    with pytest.raises(pytest.UsageError) as exc_info:
         pytest_collection_modifyitems(items)
-
-
-@pytest.mark.full
-class TestSmokeOrdering:
-    """Smoke cases must be contiguous at the front of non-xfail items."""
-
-    def test_smoke_out_of_position_raises(self):
-        """Smoke after full, or smoke split by a full param, is invalid."""
-        item_sets = [
-            # A smoke param appearing after a non-xfail full param.
-            [
-                _make_item(name="test_op[0]", markers=["full"], tune=False),
-                _make_item(name="test_op[1]", markers=["smoke"], tune=False),
-            ],
-            # Smoke params with a full param in between.
-            [
-                _make_item(name="test_op[0]", markers=["smoke"], tune=False),
-                _make_item(name="test_op[1]", markers=["full"], tune=False),
-                _make_item(name="test_op[2]", markers=["smoke"], tune=False),
-            ],
-        ]
-        for items in item_sets:
-            with pytest.raises(pytest.UsageError, match="smoke"):
-                pytest_collection_modifyitems(items)
-
-    def test_xfail_before_smoke_ok(self):
-        """xfail items before smoke are ignored for ordering purposes."""
-        items = [
-            _make_item(name="test_op[0]", markers=["full", "xfail"], tune=False),
-            _make_item(name="test_op[1]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[2]", markers=["full"], tune=False),
-        ]
-        # Should not raise -- the xfail item is excluded from ordering check
-        pytest_collection_modifyitems(items)
-
-
-@pytest.mark.full
-class TestSmokeConstraints:
-    """Every smoke case must have tune=False and must not be xfail."""
-
-    def test_smoke_tune_true_raises(self):
-        """The tune=False constraint applies to ALL smoke cases, not just first."""
-        item_sets = [
-            [
-                _make_item(name="test_op[0]", markers=["smoke"], tune=True),
-                _make_item(name="test_op[1]", markers=["full"], tune=False),
-            ],
-            [
-                _make_item(name="test_op[0]", markers=["smoke"], tune=False),
-                _make_item(name="test_op[1]", markers=["smoke"], tune=True),
-                _make_item(name="test_op[2]", markers=["full"], tune=False),
-            ],
-        ]
-        for items in item_sets:
-            with pytest.raises(pytest.UsageError, match="tune=False"):
-                pytest_collection_modifyitems(items)
-
-    def test_smoke_xfail_raises(self):
-        """The no-xfail constraint applies to ALL smoke cases, with or
-        without a tune param."""
-        item_sets = [
-            [
-                _make_item(name="test_op[0]", markers=["smoke", "xfail"], tune=False),
-                _make_item(name="test_op[1]", markers=["full"], tune=False),
-            ],
-            [
-                _make_item(name="test_op[0]", markers=["smoke"], tune=False),
-                _make_item(name="test_op[1]", markers=["smoke", "xfail"], tune=False),
-                _make_item(name="test_op[2]", markers=["full"], tune=False),
-            ],
-            [
-                _make_item(name="test_op[0]", markers=["smoke", "xfail"], tune=None),
-                _make_item(name="test_op[1]", markers=["smoke", "xfail"], tune=None),
-            ],
-        ]
-        for items in item_sets:
-            with pytest.raises(pytest.UsageError, match="xfail"):
-                pytest_collection_modifyitems(items)
-
-    def test_smoke_xfail_reports_only_xfail_error(self):
-        """A smoke+xfail case must raise the xfail rejection without a
-        spurious ordering error, both when it leaves the group with no
-        valid smoke case and when a valid smoke case sits at the front."""
-        # No valid smoke case remains: xfail + missing-smoke errors only.
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke", "xfail"], tune=False),
-            _make_item(name="test_op[1]", markers=["full"], tune=False),
-        ]
-        with pytest.raises(pytest.UsageError, match="xfail") as exc_info:
-            pytest_collection_modifyitems(items)
-        assert "must not be xfail" in str(exc_info.value)
-        assert "at least one smoke case" in str(exc_info.value)
-        assert "must appear as the first" not in str(exc_info.value)
-
-        # Valid smoke correctly at front: only the xfail rejection fires.
-        items = [
-            _make_item(name="test_op[0]", markers=["smoke", "xfail"], tune=False),
-            _make_item(name="test_op[1]", markers=["smoke"], tune=False),
-            _make_item(name="test_op[2]", markers=["full"], tune=False),
-        ]
-        with pytest.raises(pytest.UsageError, match="xfail") as exc_info:
-            pytest_collection_modifyitems(items)
-        assert "must not be xfail" in str(exc_info.value)
-        assert "must appear as the first" not in str(exc_info.value)
-
-
-@pytest.mark.smoke
-class TestPerDtypeSmokeCoverage:
-    """Every dtype present in parametrized ops tests must have a smoke case."""
-
-    def test_each_dtype_has_smoke_case(self):
-        items = [
-            _make_item(
-                name="test_op[fp16]",
-                markers=["smoke"],
-                dtype=torch.float16,
-                tune=False,
-            ),
-            _make_item(
-                name="test_op[bf16]",
-                markers=["smoke"],
-                dtype=torch.bfloat16,
-                tune=False,
-            ),
-            _make_item(
-                name="test_op[fp32]",
-                markers=["smoke"],
-                dtype=torch.float32,
-                tune=False,
-            ),
-            _make_item(
-                name="test_op[fp16-full]",
-                markers=["full"],
-                dtype=torch.float16,
-                tune=True,
-            ),
-        ]
-        pytest_collection_modifyitems(items)
-
-    def test_missing_dtype_smoke_raises(self):
-        items = [
-            _make_item(
-                name="test_op[fp16]",
-                markers=["smoke"],
-                dtype=torch.float16,
-                tune=False,
-            ),
-            _make_item(
-                name="test_op[bf16]",
-                markers=["full"],
-                dtype=torch.bfloat16,
-                tune=False,
-            ),
-        ]
-        with pytest.raises(pytest.UsageError, match="each dtype must have at least one smoke"):
-            pytest_collection_modifyitems(items)
-
-
-@pytest.mark.smoke
-class TestFullNotDtypeOnly:
-    """A full case cannot duplicate a smoke case except for dtype."""
-
-    def test_full_with_same_signature_except_dtype_raises(self):
-        items = [
-            _make_item(
-                name="test_op[fp16]",
-                markers=["smoke"],
-                dtype=torch.float16,
-                tune=False,
-            ),
-            _make_item(
-                name="test_op[bf16]",
-                markers=["full"],
-                dtype=torch.bfloat16,
-                tune=False,
-            ),
-        ]
-        with pytest.raises(
-            pytest.UsageError,
-            match="must not differ from a smoke case only by dtype",
-        ):
-            pytest_collection_modifyitems(items)
-
-    def test_full_with_distinct_non_dtype_params_passes(self):
-        items = [
-            _make_item(
-                name="test_op[fp16-typical]",
-                markers=["smoke"],
-                dtype=torch.float16,
-                tune=False,
-            ),
-            _make_item(
-                name="test_op[bf16-typical]",
-                markers=["smoke"],
-                dtype=torch.bfloat16,
-                tune=False,
-            ),
-            _make_item(
-                name="test_op[fp16-tuned]",
-                markers=["full"],
-                dtype=torch.float16,
-                tune=True,
-            ),
-        ]
-        pytest_collection_modifyitems(items)
+    assert "each dtype must have at least one smoke case" in str(exc_info.value)
+    assert "must not differ from a smoke case only by dtype" in str(exc_info.value)

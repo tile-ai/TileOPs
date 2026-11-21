@@ -23,7 +23,6 @@ from tileops.manifest._expr import (
     KindEnv,
     SignatureError,
     Substitute,
-    Unpresent,
     bind,
     callee,
     fold,
@@ -32,6 +31,7 @@ from tileops.manifest._expr import (
     names,
     parse,
     value_at,
+    value_names,
 )
 from tileops.manifest._kinds import (
     BOOL,
@@ -46,7 +46,7 @@ from tileops.manifest._kinds import (
     split_union,
     union,
 )
-from tileops.manifest.primitives import PRIMITIVE_KINDS, PRIMITIVES
+from tileops.manifest.primitives import DETERMINING_PREDICATES, PRIMITIVE_KINDS, PRIMITIVES
 
 __all__ = [
     "ITEM",
@@ -63,6 +63,7 @@ __all__ = [
     "branch",
     "call_scalar_lets",
     "complete_point",
+    "components",
     "discriminant_axes",
     "discriminant_groups",
     "dtype_kind",
@@ -192,8 +193,6 @@ class Tensor:
     @property
     def derived(self) -> bool:
         """Whether a determining predicate fixes this tensor's contents from other tensors."""
-        from tileops.manifest.primitives import DETERMINING_PREDICATES
-
         return any(r.split("(", 1)[0].strip() in DETERMINING_PREDICATES for r in self.requires)
 
 
@@ -427,7 +426,7 @@ def call_scalar_lets(sig: Signature) -> set[str]:
     reads = {}
     for n, e in sig.let.items():
         try:
-            reads[n] = names(Unpresent().visit(parse(e)))
+            reads[n] = value_names(parse(e))
         except SignatureError:
             reads[n] = set()
     found: set[str] = set()
@@ -468,9 +467,7 @@ def kind_env(
         frozenset(sig.types),
         frozenset({*sig.inputs, *sig.outputs})
         | ({"out"} if any(t.buffer for t in sig.outputs.values()) else set()),
-        frozenset(
-            p for p in sig.params if param_kind(sig.params[p].get("type"), sig.adts).tag == "Maybe"
-        ),
+        frozenset(p for p in sig.params if sig.kind(p).tag == "Maybe"),
         tags=tags,
     )
     errors: list[str] = []
@@ -604,9 +601,8 @@ def discriminant_axes(sig: Signature) -> dict[str, tuple[str | None, list]]:
     A key of None marks an ADT axis whose values are partial points.
     """
     axes: dict[str, tuple[str | None, list]] = {}
-    for p, decl in sig.params.items():
-        kind = param_kind(decl.get("type"), sig.adts)
-        if (axis := _finite_axis(p, kind, sig.adts)) is not None:
+    for p in sig.params:
+        if (axis := _finite_axis(p, sig.kind(p), sig.adts)) is not None:
             axes[p] = axis
     for t in sig.inputs.values():
         if len(t.members) > 1:
@@ -686,10 +682,14 @@ def _invariant_fails(adts: dict, p: str, kind: Kind, point: dict) -> str | None:
     if invariant is None:
         return None
     fields = {k[len(p) + 1 :]: v for k, v in point.items() if k.startswith(f"{p}.")}
-    node = parse(invariant)
-    if not names(bind(node, fields)) and value_at(node, fields, f"{p} invariant") is False:
+    if _closed_value(parse(invariant), fields, f"{p} invariant") is False:
         return f"{p}: {invariant}"
     return None
+
+
+def _closed_value(node: ast.expr, point: dict, where: str):
+    """The value of `node` at `point`, or `OPEN` when it reads a name `point` does not fix."""
+    return OPEN if names(bind(node, point)) else value_at(node, point, where)
 
 
 def rejecting_rule(sig: Signature, point: dict) -> str | None:
@@ -698,11 +698,10 @@ def rejecting_rule(sig: Signature, point: dict) -> str | None:
     What a refinement reads is judged with the `let`s it reads inlined.
     """
     for i, text in enumerate(sig.rules):
-        rule = _inlined(sig, parse(text))
-        if not names(bind(rule, point)) and value_at(rule, point, f"shape_rules[{i}]") is False:
+        if _closed_value(_inlined(sig, parse(text)), point, f"shape_rules[{i}]") is False:
             return text
-    for p, decl in sig.params.items():
-        failed = _invariant_fails(sig.adts, p, param_kind(decl.get("type"), sig.adts), point)
+    for p in sig.params:
+        failed = _invariant_fails(sig.adts, p, sig.kind(p), point)
         if failed is not None:
             return failed
     return None
@@ -712,8 +711,7 @@ def holds(expr: bool | str | None, point: dict) -> bool:
     """A presence or effect condition at `point`; it must read only discriminants."""
     if expr is None or isinstance(expr, bool):
         return expr is not False
-    node = parse(expr)
-    value = OPEN if names(bind(node, point)) else value_at(node, point, repr(expr))
+    value = _closed_value(parse(expr), point, repr(expr))
     if value is OPEN:
         raise SignatureError(f"{expr!r} reads more than discriminants")
     return bool(value)
@@ -753,15 +751,14 @@ def complete_point(sig: Signature, point: dict, strict: bool = True) -> dict:
                 settled[name] = value
                 del lets[name]
         for name, cond in pending.items():
-            node = _inlined(sig, parse(cond)) if isinstance(cond, str) else None
             if cond is True:
                 value = OPEN  # its own discriminant axis, which `point` lacks
-            elif node is None:
+            elif not isinstance(cond, str):
                 value = True
-            elif names(bind(node, point)):
-                value = OPEN
             else:
-                value = value_at(node, point, f"tensor {name!r} presence")
+                value = _closed_value(
+                    _inlined(sig, parse(cond)), point, f"tensor {name!r} presence"
+                )
             if value is not OPEN:
                 settled[f"present({name})"] = bool(value)
         if not settled and not pending:
@@ -794,6 +791,11 @@ def output_emitted(tensor: Tensor, point: dict) -> bool:
 # ---------------------------------------------------------------- type families
 
 
+def components(value: object) -> list:
+    """A family's `match` or a case's `when` as its list of components."""
+    return value if isinstance(value, list) else [value]
+
+
 def _matches(pattern, value) -> bool:
     if pattern == "_":
         return True
@@ -823,9 +825,8 @@ def _discriminant(node: ast.expr, point: dict):
 
 def _case(fam: str, family: dict, sub: dict, point: dict) -> str:
     """The `is` of the one case of *family* whose pattern matches its `match` at *point*."""
-    keys = family["match"] if isinstance(family["match"], list) else [family["match"]]
     got = []
-    for k in keys:
+    for k in components(family["match"]):
         node = Substitute(sub).visit(parse(k))
         absent = isinstance(node, ast.Name) and point.get(f"present({node.id})") is False
         # An absent payload has no value; only `_` matches it.
@@ -833,7 +834,7 @@ def _case(fam: str, family: dict, sub: dict, point: dict) -> str:
     got = tuple(got)
     hits = []
     for case in family.get("cases", []) or []:
-        pattern = case["when"] if isinstance(case["when"], list) else [case["when"]]
+        pattern = components(case["when"])
         if len(pattern) != len(got):
             raise SignatureError(
                 f"{fam}: case {pattern} has {len(pattern)} components, match has {len(got)}"

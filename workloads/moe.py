@@ -1,9 +1,13 @@
+import bisect
 import itertools
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 import torch
 
+from workloads.gemm import fp8_matmul_verification
+from workloads.numerics import Custom, Exact, NegativeControl, assert_normalized_error
+from workloads.quantization.quantize import unpack_e2m1
 from workloads.workload_base import CallWorkload
 
 
@@ -32,8 +36,6 @@ class FusedTopKWorkload(CallWorkload):
         )
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         gating_output, *optional = inputs
         correction_bias = optional[0] if optional else None
         expert_ids = optional[1] if len(optional) > 1 else None
@@ -67,9 +69,7 @@ class FusedTopKWorkload(CallWorkload):
             ordered = ids.sort(-1).values
             assert (ordered[:, 1:] != ordered[:, :-1]).all(), "duplicate expert"
             router.assert_admissible(ids)
-            selected = router.scores.gather(1, ids.long())
-            if router.renormalize:
-                selected = selected / selected.sum(-1, keepdim=True)
+            selected = _topk_weights(router.scores, ids, router.renormalize)
             torch.testing.assert_close(weights, selected * scale, rtol=1e-4, atol=0)
 
         return Custom(
@@ -99,8 +99,6 @@ class MoEPermuteAlignWorkload(CallWorkload):
 
     def verification(self, *inputs):
         """Exact up to route order within each expert and the value past the padded length."""
-        from workloads.numerics import Custom
-
         num_experts = self.call.params["num_experts"]
         block_size = self.call.params["block_size"]
         flat = inputs[0].flatten().long()
@@ -160,8 +158,6 @@ class MoEPrePermuteWorkload(CallWorkload):
         return expert_input, ends, inverse
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         hidden_states, local_ids = inputs
 
         def validate(got, expected):
@@ -185,6 +181,16 @@ class MoEPrePermuteWorkload(CallWorkload):
         return Custom(validate, "route permutation and expert segment ownership")
 
 
+def _aligned_segments(ends: list[int], alignment: int) -> Iterator[tuple[int, int, int]]:
+    """``(expert, start, end)`` of each expert's rows in a contiguous psum layout: expert ``g``
+    starts at the first multiple of *alignment* at or past ``ends[g - 1]``."""
+    start = 0
+    for g, end in enumerate(ends):
+        start = -(-start // alignment) * alignment
+        yield g, start, end
+        start = end
+
+
 def valid_rows(layout, layout_metadata: torch.Tensor, rows: int, num_experts: int) -> torch.Tensor:
     """Bool mask over the flat materialized rows a grouped GEMM defines an output for."""
     meta = layout_metadata.tolist()
@@ -195,11 +201,8 @@ def valid_rows(layout, layout_metadata: torch.Tensor, rows: int, num_experts: in
         for g, count in enumerate(meta):
             valid[g * layout.max_m : g * layout.max_m + count] = True
     else:
-        start = 0
-        for end in meta:
-            start = -(-start // layout.alignment) * layout.alignment
+        for _, start, end in _aligned_segments(meta, layout.alignment):
             valid[start:end] = True
-            start = end
     return valid.to(layout_metadata.device)
 
 
@@ -237,11 +240,8 @@ def ref_moe_grouped_gemm(
             selected = ids == g
             out[selected] = product(a[selected], g)
     else:
-        start = 0
-        for g, end in enumerate(meta):
-            start = -(-start // layout.alignment) * layout.alignment
+        for g, start, end in _aligned_segments(meta, layout.alignment):
             out[start:end] = product(a[start:end], g)
-            start = end
     if activation is not None:
         out = gated_activation(out, activation)
     return out.to(out_dtype)
@@ -258,8 +258,6 @@ def ref_moe_grouped_gemm_mxfp4(
     """``MoEGroupedGEMMMXFP4FwdOp``'s reference: :func:`ref_moe_grouped_gemm` in float32 over
     ``a`` under its per-128 scales and the e2m1 pairs of ``b`` under their per-32 scales,
     rounded once to bfloat16 (DeepSeek-V4-Flash ``inference/kernel.py`` ``fp4_gemm``)."""
-    from workloads.quantization.quantize import unpack_e2m1
-
     a_f = a.float() * a_scale.float().repeat_interleave(128, dim=-1)
     b_f = unpack_e2m1(b) * b_scale.float().repeat_interleave(32, dim=-1)
     return ref_moe_grouped_gemm(a_f, b_f, layout_metadata, layout, torch.bfloat16)
@@ -294,8 +292,6 @@ class MoEGroupedGEMMWorkload(CallWorkload):
         )
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         x, b, metadata = inputs[:3]
         mask = valid_rows(
             self.call.params["layout"], metadata, x.numel() // x.shape[-1], b.shape[0]
@@ -343,9 +339,6 @@ class MoEGroupedGEMMFP8Workload(CallWorkload):
         )
 
     def verification(self, *inputs):
-        from workloads.gemm import fp8_matmul_verification
-        from workloads.numerics import Custom
-
         a, metadata = inputs[0], inputs[-1]
         tolerance = fp8_matmul_verification(a.shape[-1])
         mask = valid_rows(
@@ -432,8 +425,6 @@ class MoEExpertMLPWorkload(CallWorkload):
         return ref_moe_grouped_gemm(activated, w_down, layout_metadata, p["layout"], bias=b_down)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         x, _, w_down, metadata = inputs[:4]
         mask = valid_rows(
             self.call.params["layout"], metadata, x.numel() // x.shape[-1], w_down.shape[0]
@@ -483,8 +474,6 @@ class MoEPostPermuteWorkload(CallWorkload):
 
 def post_permute_verification(routed_scaling_factor=1.0):
     """Routing reduction error scales with the public epilogue multiplier."""
-    from workloads.numerics import Exact
-
     return Exact(atol=2e-2 * routed_scaling_factor, rtol=2e-2)
 
 
@@ -504,6 +493,22 @@ def gated_activation(gate_up: torch.Tensor, activation: str) -> torch.Tensor:
     if activation == "gelu_and_mul":
         return torch.nn.functional.gelu(gate) * up
     raise ValueError(f"unknown gated activation: {activation}")
+
+
+def _expert_mlp(
+    rows: torch.Tensor,
+    w_gate_up: torch.Tensor,
+    w_down: torch.Tensor,
+    activation: str,
+    b_gate_up: torch.Tensor | None = None,
+    b_down: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """``down(act(rows @ w_gate_up^T + b_gate_up)) + b_down`` of one expert in fp32."""
+    gate_up = rows.float() @ w_gate_up.float().T
+    if b_gate_up is not None:
+        gate_up = gate_up + b_gate_up.float()
+    down = gated_activation(gate_up, activation) @ w_down.float().T
+    return down if b_down is None else down + b_down.float()
 
 
 def _sample(rows: torch.Tensor) -> torch.Tensor:
@@ -568,12 +573,14 @@ def ref_routed_experts(
         t_idx, k_idx = (ids == e).nonzero(as_tuple=True)
         if t_idx.numel() == 0:
             continue
-        gate_up = hidden[t_idx].float() @ w_gate_up[e].float().T
-        if b_gate_up is not None:
-            gate_up = gate_up + b_gate_up[e].float()
-        down = gated_activation(gate_up, activation) @ w_down[e].float().T
-        if b_down is not None:
-            down = down + b_down[e].float()
+        down = _expert_mlp(
+            hidden[t_idx],
+            w_gate_up[e],
+            w_down[e],
+            activation,
+            None if b_gate_up is None else b_gate_up[e],
+            None if b_down is None else b_down[e],
+        )
         output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
     return (output * scale).to(hidden.dtype)
 
@@ -650,6 +657,12 @@ def ref_router_scores(gating_output: torch.Tensor, scoring_func: str) -> torch.T
     return torch.nn.functional.softplus(logits).sqrt()
 
 
+def _topk_weights(scores: torch.Tensor, ids: torch.Tensor, renormalize: bool) -> torch.Tensor:
+    """The scores of each token's experts *ids*, renormalized to sum to one when asked."""
+    weights = scores.gather(-1, ids.long())
+    return weights / weights.sum(dim=-1, keepdim=True) if renormalize else weights
+
+
 def ref_fused_topk(
     gating_output: torch.Tensor,
     correction_bias: torch.Tensor | None,
@@ -669,10 +682,8 @@ def ref_fused_topk(
     """
     scores = ref_router_scores(gating_output, scoring_func)
     if expert_ids is not None:
-        topk_weights = scores.gather(1, expert_ids.long())
-        if renormalize:
-            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-        return topk_weights * routed_scaling_factor, expert_ids.clone()
+        weights = _topk_weights(scores, expert_ids, renormalize)
+        return weights * routed_scaling_factor, expert_ids.clone()
     select = scores if correction_bias is None else scores + correction_bias
     if num_expert_group > 1:
         group_scores = ref_group_scores(select, num_expert_group, correction_bias is not None)
@@ -682,9 +693,7 @@ def ref_fused_topk(
         expert_mask = group_mask.repeat_interleave(select.shape[-1] // num_expert_group, dim=-1)
         select = select.masked_fill(~expert_mask, float("-inf"))
     topk_ids = torch.topk(select, top_k, dim=-1, sorted=False).indices
-    topk_weights = scores.gather(1, topk_ids)
-    if renormalize:
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    topk_weights = _topk_weights(scores, topk_ids, renormalize)
     if routed_scaling_factor != 1.0:
         topk_weights = topk_weights * routed_scaling_factor
     return topk_weights, topk_ids.int()
@@ -819,8 +828,7 @@ class _Router:
 
     def weights(self, row: int, ids: torch.Tensor) -> torch.Tensor:
         """The unbiased scores of *ids*, renormalized when the call renormalizes."""
-        weights = self.scores[row, ids]
-        return weights / weights.sum() if self.renormalize else weights
+        return _topk_weights(self.scores[row], ids, self.renormalize)
 
     def assert_admissible(self, ids: torch.Tensor) -> None:
         returned, canonical = ids.long().sort(-1).values, self.canonical.sort(-1).values
@@ -841,16 +849,17 @@ def _routed_reference_rows(router, rows, inputs, activation, scale):
     for row in rows:
         routings = router.routings(row)
         experts = sorted({e for ids in routings for e in ids.tolist()})
-        token = hidden[row : row + 1].float()
-        outputs = {}
-        for e in experts:
-            gate_up = token @ w_gate_up[e].float().T
-            if b_gate_up is not None:
-                gate_up = gate_up + b_gate_up[e].float()
-            down = gated_activation(gate_up, activation) @ w_down[e].float().T
-            if b_down is not None:
-                down = down + b_down[e].float()
-            outputs[e] = down[0]
+        outputs = {
+            e: _expert_mlp(
+                hidden[row : row + 1],
+                w_gate_up[e],
+                w_down[e],
+                activation,
+                None if b_gate_up is None else b_gate_up[e],
+                None if b_down is None else b_down[e],
+            )[0]
+            for e in experts
+        }
         refs = []
         for ids in routings:
             total = torch.zeros_like(outputs[experts[0]])
@@ -866,15 +875,12 @@ def _routed_reference_rows(router, rows, inputs, activation, scale):
 
 def _moe_close(got, expected, tol, bound):
     """Elementwise ``atol = rtol = tol`` and normalized squared error at most *bound*."""
-    from workloads.numerics import assert_normalized_error
-
     torch.testing.assert_close(got, expected, rtol=tol, atol=tol)
     assert_normalized_error(got, expected, bound=bound)
 
 
 def _gate_up_swapped(gate_up_index):
     """The reference with gate and up rows exchanged: a gate-order fault."""
-    from workloads.numerics import NegativeControl
 
     def swapped(reference, inputs):
         changed = list(inputs)
@@ -920,8 +926,6 @@ def routed_verification(router, inputs, activation, scale, gate_up_index, shared
     The output is accepted exactly when some admissible routing of every token yields a
     reference within the bounds.
     """
-    from workloads.numerics import Custom
-
     # Why: the same bounds as moe_verification; only the reference differs.
     tol, bound = 1e-2, 1e-4
 
@@ -1102,63 +1106,43 @@ class SharedExpertMLPWorkload(CallWorkload):
 
 def ref_shared_expert(hidden, gate_up, down):
     """Shared expert MLP in FP32, narrowed once to the token dtype."""
-    act = gated_activation(hidden.float() @ gate_up.float().T, "silu_and_mul")
-    return (act @ down.float().T).to(hidden.dtype)
+    return _expert_mlp(hidden, gate_up, down, "silu_and_mul").to(hidden.dtype)
 
 
 def ref_permute_align(
     topk_ids: torch.Tensor, block_size: int, num_experts: int
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Pure-Python reference for permute_align."""
+    """``(sorted_token_ids, expert_ids, num_tokens_post_pad)`` of permute_align, in Python.
+
+    Each expert's routes, in ascending index order, fill a range padded to a whole number of
+    blocks; padding holds ``numel``. Each block names the expert whose range holds it.
+    """
     numel = topk_ids.numel()
     flat = topk_ids.flatten().tolist()
-
     counts = [0] * num_experts
     for eid in flat:
         counts[eid] += 1
-
-    cumsum = [0] * (num_experts + 1)
-    for i in range(num_experts):
-        padded = math.ceil(counts[i] / block_size) * block_size
-        cumsum[i + 1] = cumsum[i] + padded
-
+    cumsum = [0, *itertools.accumulate(math.ceil(n / block_size) * block_size for n in counts)]
     total_padded = cumsum[num_experts]
     sorted_token_ids = [numel] * total_padded
-
-    slot = list(cumsum[:-1])
+    slot = cumsum[:-1]
     for flat_idx, eid in enumerate(flat):
         sorted_token_ids[slot[eid]] = flat_idx
         slot[eid] += 1
-
-    num_blocks = total_padded // block_size
-    expert_ids_list = []
-    for b in range(num_blocks):
-        block_start = b * block_size
-        lo, hi = 0, num_experts - 1
-        eid = num_experts - 1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            if cumsum[mid] <= block_start < cumsum[mid + 1]:
-                eid = mid
-                break
-            elif block_start < cumsum[mid]:
-                hi = mid - 1
-            else:
-                lo = mid + 1
-        expert_ids_list.append(eid)
-
+    expert_ids = [
+        bisect.bisect_right(cumsum, block_start) - 1
+        for block_start in range(0, total_padded, block_size)
+    ]
     device = topk_ids.device
     return (
         torch.tensor(sorted_token_ids, dtype=torch.int32, device=device),
-        torch.tensor(expert_ids_list, dtype=torch.int32, device=device),
+        torch.tensor(expert_ids, dtype=torch.int32, device=device),
         torch.tensor([total_padded], dtype=torch.int32, device=device),
     )
 
 
 def moe_verification(gate_up_index):
     """Check both individual errors and scale-independent energy, including gate order."""
-    from workloads.numerics import Custom
-
     tol, bound = 1e-2, 1e-4
 
     def validate(got, expected):

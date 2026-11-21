@@ -2,6 +2,9 @@
 
 Rows are padded to 256 elements; padded values are excluded from statistics."""
 
+import math
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -17,11 +20,11 @@ from tileops._kernels.norm._config import (
     pairwise_sum,
     select_row_config,
     select_row_configs,
-    warp_sum,
 )
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._kernels.norm.fused_add_norm import LayerNormHeldKernel
 from tileops._kernels.tiling import ALIGNMENT, align_up
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["LayerNormKernel"]
@@ -45,12 +48,12 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
 
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
+        # A tail row block runs past the end unless every index is guarded.
+        row_guard = M % block_m != 0
         # A partial per thread trades the fp32 fragment's N/threads registers,
         # which cap the resident warps, for a serial walk of shared memory. Only
         # a grid that oversubscribes the device is paid back for the walk, and
         # only once a thread owns 64 elements: twice RMSNorm's, for two walks.
-        # A tail row block runs past the end unless every index is guarded.
-        row_guard = M % block_m != 0
         per_thread_partial = (
             # The walk holds one row a block, which is all autotuning offers.
             block_m == 1
@@ -67,9 +70,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
             and N_padded // threads % 2 == 0
         )
 
-        walk_vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
-        while (N_padded // threads) % walk_vec:
-            walk_vec //= 2
+        walk_vec = math.gcd(N_padded // threads, VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8))
         walk_steps = N_padded // (threads * walk_vec)
         warps = threads // WARP_LANES
         warp_ranks = list(range(warps))
@@ -123,7 +124,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                         )
                         sums[1] += pairwise_sum(terms)
                         sums[2] += pairwise_sum([t * t for t in terms])
-                    warp_sum(sums, 2, 1)
+                    warp_reduce(sums, operator.add, 2, 1)
                     if tx % WARP_LANES == 0:
                         slots[3 * warps + warp] = sums[1]
                         slots[4 * warps + warp] = sums[2]
@@ -153,7 +154,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                                     width,
                                 )
                             )
-                        warp_sum(sums, 1)
+                        warp_reduce(sums, operator.add)
                         if tx % WARP_LANES == 0:
                             slots[warp] = sums[0]
                         T.sync_threads()
@@ -175,7 +176,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                             )
                             sums[1] += pairwise_sum(terms)
                             sums[2] += pairwise_sum([t * (t * (1.0 / N)) for t in terms])
-                        warp_sum(sums, 2, 1)
+                        warp_reduce(sums, operator.add, 2, 1)
                         if tx % WARP_LANES == 0:
                             slots[warps + warp] = sums[1]
                             slots[2 * warps + warp] = sums[2]

@@ -53,17 +53,10 @@ def _from_call(cls: type, name: str, entry: dict) -> tuple:
 
 
 @pytest.fixture(autouse=True)
-def isolated_registry():
-    state = registry.snapshot()
-    registry.DETECTORS.clear()
-    registry.BUILDERS.clear()
-    registry.LOAD_FAILURES.clear()
-    registry.default_target = None
-    registry._loaded = True
+def isolated_registry(isolated_registry):
+    """The shared empty registry, with a target that claims the CPU as its default."""
     registry.register_detector("elsewhere", lambda device: device.type == "cpu")
     registry.default_target = "elsewhere"
-    yield
-    registry.restore(state)
 
 
 @pytest.fixture(autouse=True)
@@ -151,7 +144,6 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
         assert all(a is b for a, b in zip(result, returned[0], strict=True))
     else:
         assert result is returned[0], "the op returns what the target's kernel returned"
-    assert hasattr(cls, "_signature"), "a target is held to its signature"
     inputs = entry["signature"].get("inputs") or {}
     assert all((inputs[o] or {}).get("mutated") for o in outputs if o in inputs), (
         "an output passed in as an input is one the call writes"

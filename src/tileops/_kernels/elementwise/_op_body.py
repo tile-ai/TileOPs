@@ -71,33 +71,15 @@ def op_func_for(name: str) -> Callable:
     return _OP_FUNCS[name]
 
 
-def _store_bool_as_int8(op_func, arity: int):
-    if arity == 1:
+def store_bool_as_int8(op_func):
+    """*op_func* with its bool result stored as one int8 per element."""
 
-        def wrapped(x):
-            return T.if_then_else(
-                op_func(x),
-                T.cast(1, BOOL_STORAGE_DTYPE),
-                T.cast(0, BOOL_STORAGE_DTYPE),
-            )
-    else:
-
-        def wrapped(a, b):
-            return T.if_then_else(
-                op_func(a, b),
-                T.cast(1, BOOL_STORAGE_DTYPE),
-                T.cast(0, BOOL_STORAGE_DTYPE),
-            )
+    def wrapped(*operands):
+        return T.if_then_else(
+            op_func(*operands), T.cast(1, BOOL_STORAGE_DTYPE), T.cast(0, BOOL_STORAGE_DTYPE)
+        )
 
     return wrapped
-
-
-def store_unary_bool_as_int8(op_func):
-    return _store_bool_as_int8(op_func, arity=1)
-
-
-def store_binary_bool_as_int8(op_func):
-    return _store_bool_as_int8(op_func, arity=2)
 
 
 _SIMPLE_UNARY_NODES = (

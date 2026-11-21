@@ -1753,7 +1753,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         return super().refusal(call)
 
     def __init__(self, call: MGroupedGEMMMXFP4Call) -> None:
-        device_index = call.device.index if call.device is not None else None
+        device_index = call.device_index
         super().__init__(device_index=device_index)
         self.call = call
         self.scale_bytes = 1 if call.scale_dtype == torch.float8_e8m0fnu else 4
@@ -1990,7 +1990,7 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
         return super().refusal(call)
 
     def __init__(self, call: MGroupedGEMMMXFP4Call) -> None:
-        Kernel.__init__(self, device_index=call.device.index if call.device is not None else None)
+        Kernel.__init__(self, device_index=call.device_index)
         self.call = call
         self.scale_k = call.k // QUANT_SCALE_BLOCK
         self.sm_count = self.build_target.sm_count

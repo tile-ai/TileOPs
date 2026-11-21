@@ -35,6 +35,13 @@ from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GEMMFP8Block128WaveFwdKernel", "GEMMFP81D2DFwdKernel"]
 
+# The 1D2D program's A-scale staging, which its shared-memory model must count the same way.
+# K-steps one staging covers, the most that divides ``ceil(K/128)``: eight fp32 of a
+# row-major ``scale_a`` row fill one 32-byte sector, four are TMA's 16-byte unit.
+_SCALE_A_GROUPS = (16, 8, 4)
+# Buffers of the A-scale ring, so one group is written while the other is read.
+_SCALE_A_BUFFERS = 2
+
 
 @target_cache(maxsize=32)
 def _gemm_fp8_1d2d_kernel(
@@ -46,8 +53,6 @@ def _gemm_fp8_1d2d_kernel(
     *,
     sm_count: int,
     shared_epilogue: bool = False,
-    scale_a_groups: tuple[int, ...],
-    scale_a_buffers: int,
 ) -> Callable:
     """Build the persistent 1D2D GEMM; the returned factory takes the tile config.
 
@@ -59,7 +64,8 @@ def _gemm_fp8_1d2d_kernel(
     block_k = 128
     accum_dtype = "float"
     scale_k = (k + block_k - 1) // block_k
-    scale_a_group = next(g for g in scale_a_groups if scale_k % g == 0)
+    scale_a_group = next(g for g in _SCALE_A_GROUPS if scale_k % g == 0)
+    scale_a_buffers = _SCALE_A_BUFFERS
 
     @tilelang.jit(
         out_idx=[-1],
@@ -1036,7 +1042,7 @@ def _gemm_fp8_block128_wave_kernel(
                 c_smem0 = T.alloc_shared((wave_m, block_n), "bfloat16")
                 c_smem1 = T.alloc_shared((wave_m, block_n), "bfloat16") if waves == 2 else None
                 if k_split == 2:
-                    # The peer's partial of this CTA's 64 rows; see ``fp8_wave_send_half``.
+                    # The peer's partial of this CTA's 64 rows; see ``send_partials``.
                     landing = T.alloc_shared((block_n // 8, consumer_threads // 2, 4), "float32")
                 partial = T.alloc_fragment((wave_m, block_n), "float32")
                 final0 = T.alloc_fragment((wave_m, block_n), "float32")
@@ -1368,7 +1374,59 @@ def _gemm_fp8_block128_wave_kernel(
     return _gemm_fp8_block128_wave_func
 
 
-class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
+class _Block128Kernel(Kernel, GEMMFP8FwdInterface):
+    """What both block128 programs share: FP8 operands, a bfloat16 output and no bias."""
+
+    supported_archs = [90]
+
+    @staticmethod
+    def _dtype_refusal(call: GEMMFP8Call) -> "str | None":
+        if call.dtype != torch.float8_e4m3fn:
+            return f"requires float8_e4m3fn operands, got {call.dtype}"
+        if call.out_dtype != torch.bfloat16:
+            return f"writes bfloat16, not {call.out_dtype}"
+        if call.has_bias:
+            return "does not serve a bias"
+        return None
+
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+        out_dtype: torch.dtype,
+        device_index: int | None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        if dtype != torch.float8_e4m3fn:
+            raise NotImplementedError(f"{type(self).__name__} takes float8_e4m3fn, got {dtype}")
+        if out_dtype != torch.bfloat16:
+            raise NotImplementedError(f"{type(self).__name__} writes bfloat16, got {out_dtype}")
+        self.m = m
+        self.n = n
+        self.k = k
+        self.dtype = dtype
+        self.out_dtype = out_dtype
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if bias is not None:
+            raise ValueError(f"{type(self).__name__} has no bias epilogue")
+        return self.program(self._compile)(a, b, scale_a, scale_b)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
+
+
+class GEMMFP81D2DFwdKernel(_Block128Kernel):
     """FP8 NT GEMM for 1D2D scales, bfloat16 output, no bias.
 
     ``scale_a`` is ``[M, ceil(K/128)]`` and ``scale_b`` is
@@ -1385,12 +1443,6 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
         shared_epilogue: Whether to stage the tile through shared memory and store
             it with TMA. ``None`` takes the calibrated choice for this shape.
     """
-
-    # K-steps one A-scale staging covers, the most that divides ``ceil(K/128)``: eight fp32
-    # of a row-major ``scale_a`` row fill one 32-byte sector, four are TMA's 16-byte unit.
-    _SCALE_A_GROUPS = (16, 8, 4)
-    # Buffers of the A-scale ring, so one group is written while the other is read.
-    _SCALE_A_BUFFERS = 2
 
     # Schedules per (m, n, k), by calibrated board (``tileops._utils.calibration_key``);
     # any other board or shape takes the analytic ``block_n`` band of ``default_config``.
@@ -1477,19 +1529,13 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
             return None
         return "; ".join(offenders)
 
-    supported_archs = [90]
-
     @classmethod
     def refusal(cls, call: GEMMFP8Call) -> "str | None":
         if cls.block_scale_grid(call) != "1d2d":
             return "requires 1d2d block scales"
-        if call.dtype != torch.float8_e4m3fn:
-            return f"requires float8_e4m3fn operands, got {call.dtype}"
-        if call.out_dtype != torch.bfloat16:
-            return f"writes bfloat16, not {call.out_dtype}"
-        if call.has_bias:
-            return "does not serve a bias"
-
+        reason = cls._dtype_refusal(call)
+        if reason is not None:
+            return reason
         reason = cls._shape_refusal(
             call.m,
             call.n,
@@ -1500,7 +1546,7 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
 
     @classmethod
     def entry_for(cls, call: GEMMFP8Call) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, index)
         return identity, lambda: cls(
             call.m,
@@ -1522,17 +1568,7 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
         device_index: int | None = None,
         shared_epilogue: bool | None = None,
     ) -> None:
-        super().__init__(device_index=device_index)
-        if dtype != torch.float8_e4m3fn:
-            raise NotImplementedError(f"{type(self).__name__} takes float8_e4m3fn, got {dtype}")
-        if out_dtype != torch.bfloat16:
-            raise NotImplementedError(f"{type(self).__name__} writes bfloat16, got {out_dtype}")
-
-        self.m = m
-        self.n = n
-        self.k = k
-        self.dtype = dtype
-        self.out_dtype = out_dtype
+        super().__init__(m, n, k, dtype, out_dtype, device_index)
         self.sm_count = self.build_target.sm_count
         calibration = self.build_target.calibration
         self._calibrated = self._FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
@@ -1556,8 +1592,6 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
             self.out_dtype_str,
             sm_count=self.sm_count,
             shared_epilogue=self.shared_epilogue,
-            scale_a_groups=self._SCALE_A_GROUPS,
-            scale_a_buffers=self._SCALE_A_BUFFERS,
         )
         self.init_config(config)
 
@@ -1604,35 +1638,19 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
         block_k = 128
         align = SHARED_BUFFER_ALIGN_BYTES
         scale_k = -(-self.k // block_k)
-        scale_a_group = next(g for g in self._SCALE_A_GROUPS if scale_k % g == 0)
+        scale_a_group = next(g for g in _SCALE_A_GROUPS if scale_k % g == 0)
         per_stage = (block_m + block_n) * block_k
         # The mbarriers' unit, the two ``scale_a`` buffers and the ``scale_b`` row, each
         # rounded up to whole units.
         fixed = align
-        fixed += -(-self._SCALE_A_BUFFERS * block_m * scale_a_group * 4 // align) * align
+        fixed += -(-_SCALE_A_BUFFERS * block_m * scale_a_group * 4 // align) * align
         fixed += -(-scale_k * 4 // align) * align
         if self.shared_epilogue:
             fixed += -(-block_m * block_n * 2 // align) * align
         return max(1, min(scale_k, (BLOCK_SHARED_BYTES_OPT_IN[90] - fixed) // per_stage))
 
-    def forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-        bias: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if bias is not None:
-            raise ValueError(f"{type(self).__name__} has no bias epilogue")
-        return self.program(self._compile)(a, b, scale_a, scale_b)
 
-    def _compile(self, cfg: dict) -> Callable:
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)
-
-
-class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
+class GEMMFP8Block128WaveFwdKernel(_Block128Kernel):
     """FP8 NT GEMM for block128 scales on calibrated shapes, in tiles of 128-row waves.
 
     ``scale_a`` is ``[M, ceil(K/128)]``; ``scale_b`` is per 128x128 block,
@@ -1652,7 +1670,6 @@ class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
         scale_b_per_row: Whether ``scale_b`` is per 1x128 block rather than per 128x128.
     """
 
-    supported_archs = [90]
     preferred_over = frozenset({"gemm_fp8_1d2d", "gemm_fp8_block_scale"})
 
     # Wave schedules per (m, n, k), by calibrated board; this kernel
@@ -1763,13 +1780,9 @@ class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
     def refusal(cls, call: GEMMFP8Call) -> "str | None":
         if cls.block_scale_grid(call) is None:
             return "requires block128 scales"
-        if call.dtype != torch.float8_e4m3fn:
-            return f"requires float8_e4m3fn operands, got {call.dtype}"
-        if call.out_dtype != torch.bfloat16:
-            return f"writes bfloat16, not {call.out_dtype}"
-        if call.has_bias:
-            return "does not serve a bias"
-
+        reason = cls._dtype_refusal(call)
+        if reason is not None:
+            return reason
         configs = cls._configs(cls.block_scale_grid(call) == "1d1d")
         if (call.m, call.n, call.k) not in configs.get(call.calibration, {}):
             return f"has no wave config for {(call.m, call.n, call.k)} on this board"
@@ -1784,7 +1797,7 @@ class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
 
     @classmethod
     def entry_for(cls, call: GEMMFP8Call) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         per_row = cls.block_scale_grid(call) == "1d1d"
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, index, per_row)
         return identity, lambda: cls(
@@ -1808,17 +1821,7 @@ class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
         device_index: int | None = None,
         scale_b_per_row: bool = False,
     ) -> None:
-        super().__init__(device_index=device_index)
-        if dtype != torch.float8_e4m3fn:
-            raise NotImplementedError(f"{type(self).__name__} takes float8_e4m3fn, got {dtype}")
-        if out_dtype != torch.bfloat16:
-            raise NotImplementedError(f"{type(self).__name__} writes bfloat16, got {out_dtype}")
-
-        self.m = m
-        self.n = n
-        self.k = k
-        self.dtype = dtype
-        self.out_dtype = out_dtype
+        super().__init__(m, n, k, dtype, out_dtype, device_index)
         self.scale_b_per_row = scale_b_per_row
         calibration = self.build_target.calibration
         self._calibrated = self._configs(scale_b_per_row).get(calibration, {}).get((m, n, k))
@@ -1835,19 +1838,3 @@ class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
     @property
     def default_config(self) -> dict:
         return dict(self._calibrated["kernel"])
-
-    def forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-        bias: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if bias is not None:
-            raise ValueError(f"{type(self).__name__} has no bias epilogue")
-        return self.program(self._compile)(a, b, scale_a, scale_b)
-
-    def _compile(self, cfg: dict) -> Callable:
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)

@@ -8,12 +8,11 @@ characters with at least one letter is a CSS color and passes; an all-digit toke
 Default scan: ``src/tileops/``, ``tests/``, ``benchmarks/``, ``scripts/``, ``workloads/``.
 """
 
-import argparse
 import re
 import sys
 from pathlib import Path
 
-from common import files, relative, report
+from common import lint_files, relative
 
 # The whole hex token, so the color test reads all of it.
 _HASH_TOKEN = re.compile(r"(?<![0-9A-Za-z])#([0-9a-fA-F]+)\b")
@@ -63,12 +62,9 @@ def findings(path: Path) -> list[str]:
     return [f"{relative(path)}:{lineno}: {message}" for lineno, message in lint_text(text)]
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("files", nargs="*", type=Path)
-    args = parser.parse_args(argv)
-    return report(e for p in files(args.files, SCANNED, None) for e in findings(p))
+def main(argv: list[str]) -> int:
+    return lint_files(argv, __doc__, SCANNED, None, findings)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

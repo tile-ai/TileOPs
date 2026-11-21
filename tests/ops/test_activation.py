@@ -1,6 +1,6 @@
 """Tests for unary activation elementwise ops.
 
-Covers L1 smoke correctness, multi-dtype coverage, and L4 edge cases.
+Covers correctness on every supported dtype and edge values.
 """
 
 import pytest
@@ -152,7 +152,7 @@ class ActivationFixture(FixtureBase):
 
 
 class ActivationEdgeFixture(FixtureBase):
-    """L4 edge-case fixture: fp32, 4K elements."""
+    """Edge values: fp32, 4K elements."""
 
     PARAMS = [
         (
@@ -291,7 +291,7 @@ def test_selu(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _randn, SELUFwdOp)
 
 
-# L4 edge-case tests (fp32, 4K)
+# Edge values
 
 
 @ActivationEdgeFixture

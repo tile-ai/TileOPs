@@ -37,14 +37,16 @@ from tileops.pool import (
     MaxPool2dIndicesFwdOp,
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
+    MeanPoolingFwdOp,
 )
-from workloads.device import run_device, run_device_available
+from workloads.device import run_device, run_device_available, run_device_is_cuda
 from workloads.numerics import compare_outputs
 from workloads.pool import (
     AdaptiveAvgPool2dWorkload,
     AdaptiveMaxPool2dWorkload,
     AvgPoolWorkload,
     MaxPoolWorkload,
+    MeanPoolingWorkload,
     max_pool_ref,
     pool_verification,
 )
@@ -311,57 +313,6 @@ class AvgPool3dFixture(FixtureBase):
         (
             "n, c_in, d_in, h_in, w_in, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override, dtype, tune",
             [
-                pytest.param(
-                    1,
-                    32,
-                    16,
-                    28,
-                    28,
-                    (2, 2, 2),
-                    None,
-                    (0, 0, 0),
-                    False,
-                    True,
-                    None,
-                    torch.float16,
-                    False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
-                    id="smoke-2x2x2-default-stride-fp16",
-                ),
-                pytest.param(
-                    1,
-                    32,
-                    16,
-                    28,
-                    28,
-                    (2, 2, 2),
-                    None,
-                    (0, 0, 0),
-                    False,
-                    True,
-                    None,
-                    torch.bfloat16,
-                    False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-2x2x2-default-stride-bf16",
-                ),
-                pytest.param(
-                    1,
-                    16,
-                    8,
-                    14,
-                    14,
-                    (2, 2, 2),
-                    None,
-                    (0, 0, 0),
-                    False,
-                    True,
-                    None,
-                    torch.float32,
-                    False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-2x2x2-default-stride-fp32",
-                ),
                 # Windows past the rows the wide kernel holds, and padded windows past the taps
                 # it unrolls: both keep a serial loop.
                 pytest.param(
@@ -395,7 +346,7 @@ class AvgPool3dFixture(FixtureBase):
                     5,
                     torch.float16,
                     False,
-                    marks=pytest.mark.smoke,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="pool")],
                     id="smoke-4x4x3-padded-serial-fp16",
                 ),
                 pytest.param(
@@ -415,6 +366,23 @@ class AvgPool3dFixture(FixtureBase):
                     # A padded window with a fixed divisor and at most 32 taps: the clamped taps.
                     marks=pytest.mark.smoke,
                     id="smoke-divisor-override-clamped-bf16",
+                ),
+                pytest.param(
+                    1,
+                    32,
+                    16,
+                    28,
+                    28,
+                    (2, 2, 2),
+                    None,
+                    (0, 0, 0),
+                    False,
+                    True,
+                    None,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-2x2x2-default-stride-fp16",
                 ),
                 pytest.param(
                     1,
@@ -2904,3 +2872,124 @@ def test_max_pool2d_indices_windows_read_into_registers(
     expected, expected_indices = F.max_pool2d(x, kernel, stride, padding, return_indices=True)
     torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
     assert torch.equal(indices, expected_indices)
+
+
+class MeanPoolingTest(MeanPoolingWorkload, TestBase):
+    pass
+
+
+class MeanPoolingFixture(FixtureBase):
+    PARAMS = [
+        (
+            "batch, seq_len, heads, dim, chunk_size, dtype, tune, seq_lens",
+            [
+                pytest.param(
+                    1, 8192, 64, 128, 64, torch.float16, False, None, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    1, 8192, 64, 128, 64, torch.float16, True, None, marks=pytest.mark.full
+                ),
+                pytest.param(
+                    2, 2048, 64, 128, 64, torch.float16, False, None, marks=pytest.mark.full
+                ),
+                # Ragged, every sequence ending mid-chunk: the case that divides by a short
+                # count.
+                pytest.param(
+                    1,
+                    1000,
+                    64,
+                    128,
+                    32,
+                    torch.float16,
+                    False,
+                    [100, 200, 300, 400],
+                    marks=pytest.mark.full,
+                ),
+                pytest.param(
+                    2,
+                    2048,
+                    64,
+                    128,
+                    64,
+                    torch.float16,
+                    False,
+                    [1024, 1024],
+                    marks=pytest.mark.full,
+                ),
+            ],
+        ),
+    ]
+
+
+@MeanPoolingFixture
+def test_mean_pooling_op(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    dim: int,
+    chunk_size: int,
+    dtype: torch.dtype,
+    tune: bool,
+    seq_lens: list[int] | None,
+) -> None:
+    test = MeanPoolingTest(
+        batch=batch,
+        seq_len=seq_len,
+        heads=heads,
+        dim=dim,
+        chunk_size=chunk_size,
+        dtype=dtype,
+        seq_lens=seq_lens,
+    )
+    op = MeanPoolingFwdOp(chunk_size=chunk_size, accum_dtype=torch.float32)
+    if tune:
+        op.request_tune()
+    inputs = list(test.gen_inputs())
+    if seq_lens is not None:
+        # Output rows follow the caller's chunk order, not the canonical one.
+        inputs[2] = inputs[2].flip(0).contiguous()
+    if seq_lens is not None and run_device_is_cuda():
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            op(*inputs)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = op(*inputs)
+        graph.replay()
+        test.check(op, *inputs, runs=lambda *args: output)
+    else:
+        test.check(op, *inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dim", [100, 256])
+def test_mean_pooling_dim_not_one_full_tile(dim: int) -> None:
+    """`dim` values the manifest allows but no workload row carries.
+
+    A block takes a power-of-two share of `heads * dim`: `dim` 100 gives a width of 200
+    that no share divides, so the last block is bounds-tested; 256 gives 512 that they
+    divide. The range the manifest rules out between them is a contract bound, not a shape
+    the kernel cannot read.
+    """
+    test = MeanPoolingTest(
+        batch=1,
+        seq_len=64,
+        heads=2,
+        dim=dim,
+        chunk_size=32,
+        dtype=torch.float16,
+    )
+    op = MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_mean_pooling_reads_its_shapes_off_the_call() -> None:
+    """One op, two shapes, two chunk counts — what taking shapes from the call buys."""
+    op = MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32, validate_inputs=True)
+    short = torch.randn(1, 64, 2, 64, device=run_device(), dtype=torch.float16)
+    assert tuple(op(short).shape) == (1, 2, 2, 64)
+    tall = torch.randn(3, 128, 2, 64, device=run_device(), dtype=torch.float16)
+    assert tuple(op(tall).shape) == (3, 4, 2, 64)

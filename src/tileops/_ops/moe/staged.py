@@ -20,7 +20,12 @@ from tileops._kernels.moe import (
     PrePermuteCall,
     PrePermuteFwdInterface,
 )
-from tileops._ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec, RoutingEpilogueSpec
+from tileops._ops.moe.contracts import (
+    ContiguousLayoutSpec,
+    MaskedLayoutSpec,
+    RoutingEpilogueSpec,
+    layout_call_fields,
+)
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 
@@ -223,19 +228,13 @@ class MoEGroupedGEMMFwdOp(MoELayoutRowsRoofline, Op):
         Returns:
             ``[M, N]`` or ``[E, max_m, N]`` in the operand dtype, or fp32 when asked for.
         """
-        layout = self.layout
-        masked = isinstance(layout, MaskedLayoutSpec)
         num_experts, n, k = b.shape
         device = a.device
         kernel = self.kernel_for(
             "grouped_gemm",
             lambda: MGroupedGEMMCall(
                 device=device,
-                kind=layout.kind,
-                packing=None if masked else layout.packing.value,
-                metadata_kind=None if masked else layout.metadata_kind.value,
-                alignment=getattr(layout, "alignment", 1),
-                max_m=layout.max_m,
+                **layout_call_fields(self.layout),
                 activation=self.activation,
                 has_bias=bias is not None,
                 ab_dtype=a.dtype,

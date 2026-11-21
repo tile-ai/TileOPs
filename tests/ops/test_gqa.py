@@ -20,7 +20,7 @@ from tileops._kernels.attention.call_spec import AttentionCall
 from tileops._kernels.kernel_base import Kernel
 from tileops.attention import GQADenseBwdOp, GQADenseFwdOp, GQADenseWithLSEFwdOp, GQAVarlenFwdOp
 from tileops.backend import BUILTIN, OpNotAvailableError
-from workloads.attention.gqa.bwd import GQABwdWorkload
+from workloads.attention.gqa.bwd import GQABwdCall, GQABwdWorkload
 from workloads.attention.gqa.dense import (
     GQADensePrefillWorkload,
     GQADenseWithLSECall,
@@ -197,6 +197,86 @@ def test_gqa_dense_fp8_prefill_under_tuning() -> None:
     )
     op.request_tune()
     TestBase.check(workload, op, *workload.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "heads, has_sinks",
+    [
+        pytest.param(4, True, marks=pytest.mark.smoke, id="group4-sinks"),
+        pytest.param(8, False, marks=pytest.mark.full, id="group8"),
+    ],
+)
+def test_gqa_dense_fp8_long_causal_tails(heads: int, has_sinks: bool) -> None:
+    """A causal call over 4097 keys overlaps softmax with PV, with partial Q and KV tiles."""
+    workload = GQADensePrefillWorkload(
+        1,
+        129,
+        4097,
+        heads,
+        1,
+        128,
+        torch.float8_e4m3fn,
+        out_dtype=torch.float16,
+        is_causal=True,
+        has_sinks=has_sinks,
+    )
+    inputs = workload.gen_inputs()
+    op = GQADenseFwdOp(is_causal=True, out_dtype=torch.float16)
+    compare_outputs(op(*inputs), workload.ref_program(*inputs), workload.verification(*inputs))
+
+
+def _quantize_fa3(x: torch.Tensor, heads_kv: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize ``x [B, S, H, D]`` to e4m3 with one descale per batch and KV head, the
+    ``[B, H_kv]`` FA3 contract; the query heads of a KV head share its descale."""
+    batch, seq_len, heads, dim = x.shape
+    grouped = x.reshape(batch, seq_len, heads_kv, heads // heads_kv, dim)
+    descale = grouped.abs().amax(dim=(1, 3, 4)).clamp(min=1e-4) / 448.0
+    x_fp8 = torch.clamp(grouped / descale[:, None, :, None, None], -448.0, 448.0).to(
+        torch.float8_e4m3fn
+    )
+    return x_fp8.reshape(batch, seq_len, heads, dim).contiguous(), descale.float().contiguous()
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "seq_len, out_dtype, is_causal",
+    [
+        pytest.param(897, torch.float16, False, marks=pytest.mark.smoke, id="s897-fp16-tail"),
+        pytest.param(896, torch.bfloat16, False, marks=pytest.mark.smoke, id="s896-bf16"),
+        pytest.param(897, torch.float16, True, marks=pytest.mark.full, id="s897-fp16-causal"),
+    ],
+)
+def test_gqa_dense_fp8_matches_dequantized_reference(
+    seq_len: int, out_dtype: torch.dtype, is_causal: bool
+) -> None:
+    """FP8 Q/K/V with ``[B, H_kv]`` descales match attention over their dequantized values."""
+    batch, heads, heads_kv, dim = 1, 8, 2, 128
+    torch.manual_seed(123)
+    q, k, v = (
+        torch.randn(batch, seq_len, h, dim, device=run_device(), dtype=torch.float16) * 0.25
+        for h in (heads, heads_kv, heads_kv)
+    )
+    (q_fp8, q_scale), (k_fp8, k_scale), (v_fp8, v_scale) = (
+        _quantize_fa3(q, heads_kv),
+        _quantize_fa3(k, heads_kv),
+        _quantize_fa3(v, heads_kv),
+    )
+    workload = GQADensePrefillWorkload(
+        batch,
+        seq_len,
+        seq_len,
+        heads,
+        heads_kv,
+        dim,
+        torch.float8_e4m3fn,
+        out_dtype=out_dtype,
+        is_causal=is_causal,
+    )
+    inputs = (q_fp8, k_fp8, v_fp8, q_scale, k_scale, v_scale)
+    output = GQADenseFwdOp(out_dtype=out_dtype, is_causal=is_causal)(*inputs)
+    assert output.dtype == out_dtype
+    compare_outputs(output, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
 @pytest.mark.in_tree_kernels
@@ -1363,6 +1443,26 @@ def test_gqa_bwd(
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_gqa_bwd_call_builds_o_and_lse_at_its_sm_scale() -> None:
+    """A call's ``sm_scale`` reaches the forward ``o`` and ``lse`` its inputs carry."""
+    torch.manual_seed(0)
+    call = manifest_call(
+        "GQADenseBwdOp",
+        {"T": "bfloat16"},
+        B=1,
+        S=256,
+        H=8,
+        H_kv=2,
+        D=128,
+        is_causal=True,
+        sm_scale=0.05,
+    )
+    workload = GQABwdCall(call)
+    op = GQADenseBwdOp(**workload.arguments())
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels

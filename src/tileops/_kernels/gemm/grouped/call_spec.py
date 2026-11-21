@@ -74,7 +74,7 @@ def grouped_gemm_entry(cls: type, call: GroupedGEMMCall) -> Entry:
     The device index is in the identity because the kernel is compiled for the
     architecture it is built on.
     """
-    index = call.device.index if call.device is not None else None
+    index = call.device_index
     identity = (
         call.numel,
         call.num_experts,

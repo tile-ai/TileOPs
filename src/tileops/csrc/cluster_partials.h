@@ -61,4 +61,33 @@ __device__ __forceinline__ void expect_partials(void* bar, unsigned bytes) {
       : "memory");
 }
 
+// Stores R floats per thread of a 128-thread warpgroup into peer CTA
+// ``peer``'s ``landing`` as float4s and completes their bytes on its ``bar``.
+// Thread t's i-th float4 lands at float4 index i * 128 + t, so one float4 read
+// per thread is conflict-free.
+template <int R>
+__device__ __forceinline__ void send_partials(float const* acc, float* landing,
+                                              void* bar, int peer, int t) {
+#pragma unroll
+  for (int i = 0; i < R / 4; ++i) {
+    send_partial4(landing + (i * 128 + t) * 4, bar, peer, acc[i * 4 + 0],
+                  acc[i * 4 + 1], acc[i * 4 + 2], acc[i * 4 + 3]);
+  }
+}
+
+// Adds the R floats per thread that the peer's send_partials<R> stored into
+// ``landing`` to ``acc``.
+template <int R>
+__device__ __forceinline__ void add_partials(float* acc, float const* landing,
+                                             int t) {
+#pragma unroll
+  for (int i = 0; i < R / 4; ++i) {
+    float4 const v = reinterpret_cast<float4 const*>(landing)[i * 128 + t];
+    acc[i * 4 + 0] += v.x;
+    acc[i * 4 + 1] += v.y;
+    acc[i * 4 + 2] += v.z;
+    acc[i * 4 + 3] += v.w;
+  }
+}
+
 }  // namespace tileops

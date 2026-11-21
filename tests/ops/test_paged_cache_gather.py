@@ -55,7 +55,7 @@ from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
             None,
             [1, 0],
             False,
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="scalar-rows",
         ),
         pytest.param(

@@ -8,6 +8,7 @@ from tileops._kernels.attention import (
     DSADecodeKernel,
     DSADecodeWSKernel,
     DSAPagedClusterKernel,
+    DSAPagedMMAKernel,
     DSAPagedWSKernel,
 )
 from tileops._kernels.attention.call_spec import (
@@ -16,7 +17,6 @@ from tileops._kernels.attention.call_spec import (
     DSAPagedFwdInterface,
     SparseMLADecodeFwdInterface,
 )
-from tileops._kernels.attention.dsa.paged_mma import DSAPagedMMAKernel
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
@@ -93,37 +93,8 @@ class DSADenseFwdOp(Op):
         self.stride_kv = stride_kv
         self.sm_scale = sm_scale
         self.is_causal = is_causal
-
         self.q_start_index_s = q_start_index_s
         super().__init__(target=target)
-
-    def _dsa_decode_call(
-        self,
-        q: torch.Tensor,
-        kv: torch.Tensor,
-        indices: torch.Tensor,
-        attn_sink: torch.Tensor | None,
-    ) -> DSADecodeCall:
-        """State what one call is, for selection to filter against."""
-        batch, seq_len, heads, q_dim = q.shape
-        _, seq_len_kv, heads_kv, _ = kv.shape
-        return DSADecodeCall(
-            batch=batch,
-            seq_len=seq_len,
-            seq_len_kv=seq_len_kv,
-            heads=heads,
-            dim=q_dim - self.dim_tail,
-            tail_dim=self.dim_tail,
-            dtype=q.dtype,
-            topk=indices.shape[3],
-            kv_stride=self.stride_kv,
-            q_start_index_s=self.q_start_index_s,
-            kv_group=heads_kv,
-            sm_scale=self.sm_scale,
-            is_causal=self.is_causal,
-            has_attn_sink=attn_sink is not None,
-            device=q.device,
-        )
 
     def forward(
         self,
@@ -149,8 +120,26 @@ class DSADenseFwdOp(Op):
             torch.Tensor: The result of applying the sparse attention
                             operation on the input tensors.
         """
+        batch, seq_len, heads, q_dim = q.shape
         kernel = self.kernel_for(
-            "dsa_decode", lambda: self._dsa_decode_call(q, kv, indices, attn_sink)
+            "dsa_decode",
+            lambda: DSADecodeCall(
+                batch=batch,
+                seq_len=seq_len,
+                seq_len_kv=kv.shape[1],
+                heads=heads,
+                dim=q_dim - self.dim_tail,
+                tail_dim=self.dim_tail,
+                dtype=q.dtype,
+                topk=indices.shape[3],
+                kv_stride=self.stride_kv,
+                q_start_index_s=self.q_start_index_s,
+                kv_group=kv.shape[2],
+                sm_scale=self.sm_scale,
+                is_causal=self.is_causal,
+                has_attn_sink=attn_sink is not None,
+                device=q.device,
+            ),
         )
         return kernel(q, kv, indices, attn_sink)
 

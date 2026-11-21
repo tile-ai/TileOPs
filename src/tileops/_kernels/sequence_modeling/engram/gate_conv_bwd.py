@@ -26,6 +26,7 @@ from tileops._kernels.sequence_modeling.engram.call_spec import (
     EngramGateConvBwdInterface,
     EngramGateConvCall,
 )
+from tileops._kernels.sequence_modeling.engram.gate_conv_fwd import causal_conv
 from tileops._kernels.tiling import ALIGNMENT, align_up
 
 __all__ = ["EngramGateConvBwdKernel"]
@@ -44,8 +45,8 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, dtype, run_len):
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads):
-        @T.macro
-        def _gate_conv_bwd(
+        @T.prim_func
+        def main(
             dY: T.Tensor((M, seq_len, d_padded), dtype),
             H: T.Tensor((M, seq_len, d_padded), dtype),
             k: T.Tensor((M, seq_len, d_padded), dtype),
@@ -86,24 +87,8 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, dtype, run_len):
                 for j in T.Parallel(d_padded):
                     dy_local[j] = T.cast(dY[bid, tid, j], accum_dtype)
 
-                # Recompute conv_out.
-                for j in T.Parallel(d_padded):
-                    conv_out[j] = 0.0
-                for p in T.serial(KS):
-                    src_t = tid - (KS - 1) + p
-                    for j in T.Parallel(d_padded):
-                        raw_val = T.if_then_else(
-                            src_t >= 0,
-                            T.cast(vhat[bid, src_t, j], accum_dtype),
-                            0.0,
-                        )
-                        src_rrms = T.if_then_else(
-                            src_t >= 0,
-                            rrms_v[bid, src_t],
-                            0.0,
-                        )
-                        normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
-                        conv_out[j] += T.cast(conv_w[p, j], accum_dtype) * normed
+                # The forward pass does not save conv_out, so it is recomputed.
+                causal_conv(conv_out, vhat, rrms_v, rms_w_v, conv_w, bid, tid, d_padded)
 
                 # Y = SiLU(conv_out) + vhat
                 # d_silu = dY * silu'(conv_out)
@@ -293,52 +278,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, dtype, run_len):
                     dk[bid, tid, j] = T.cast(dk_local[j], dtype)
                     dv[bid, tid, j] = T.cast(dv_local[j], dtype)
 
-        @T.prim_func
-        def main(
-            dY: T.Tensor((M, seq_len, d_padded), dtype),
-            H: T.Tensor((M, seq_len, d_padded), dtype),
-            k: T.Tensor((M, seq_len, d_padded), dtype),
-            v: T.Tensor((M, seq_len, d_padded), dtype),
-            rms_w_h: T.Tensor((d_padded,), dtype),
-            rms_w_v: T.Tensor((d_padded,), dtype),
-            conv_w: T.Tensor((KS, d_padded), dtype),
-            vhat: T.Tensor((M, seq_len, d_padded), dtype),
-            alpha: T.Tensor((M, seq_len), accum_dtype),
-            rrms_h: T.Tensor((M, seq_len), accum_dtype),
-            rrms_k: T.Tensor((M, seq_len), accum_dtype),
-            rrms_v: T.Tensor((M, seq_len), accum_dtype),
-            dH: T.Tensor((M, seq_len, d_padded), dtype),
-            dk: T.Tensor((M, seq_len, d_padded), dtype),
-            dv: T.Tensor((M, seq_len, d_padded), dtype),
-            drms_w_h: T.Tensor((d_padded,), accum_dtype),
-            drms_w_v: T.Tensor((d_padded,), accum_dtype),
-            dconv_w: T.Tensor((KS, d_padded), accum_dtype),
-            dvhat_buf: T.Tensor((M, seq_len, d_padded), accum_dtype),
-            dvhat_out: T.Tensor((M, seq_len, d_padded), accum_dtype),
-        ):
-            _gate_conv_bwd(
-                dY,
-                H,
-                k,
-                v,
-                rms_w_h,
-                rms_w_v,
-                conv_w,
-                vhat,
-                alpha,
-                rrms_h,
-                rrms_k,
-                rrms_v,
-                dH,
-                dk,
-                dv,
-                drms_w_h,
-                drms_w_v,
-                dconv_w,
-                dvhat_buf,
-                dvhat_out,
-            )
-
         return main
 
     return _func
@@ -351,25 +290,19 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
 
     @classmethod
     def entry_for(cls, call: EngramGateConvCall) -> Entry:
-        return call, lambda: cls(
-            call.m, call.seq_len, call.d, call.eps, call.dtype, sm_count=call.sm_count
-        )
+        return call, lambda: cls(call.m, call.seq_len, call.d, call.dtype, sm_count=call.sm_count)
 
     def __init__(
         self,
         M: int,
         seq_len: int,
         d: int,
-        eps: float,
         dtype: torch.dtype,
         sm_count: int,
         config: dict | None = None,
     ):
         super().__init__()
-        self.M = M
-        self.seq_len = seq_len
         self.d = d
-        self.eps = eps
         self.dtype = dtype
         self.d_padded = align_up(d, ALIGNMENT)
         self.kernel = _engram_gate_conv_bwd_kernel(

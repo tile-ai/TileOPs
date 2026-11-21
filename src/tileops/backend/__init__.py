@@ -23,8 +23,9 @@ A target serves the whole op. ``build_kernel`` takes one positional description 
 tensor, a tuple of them for a tensor sequence, the Python type of a call-time scalar, and
 ``None`` for an input holding None. The construction params follow under
 ``signature.params`` names. The kernel it returns is called with the call's arguments in
-the same order, plus a caller-supplied output buffer such as ``out`` by keyword. Every tensor is on one device, every input the call does not write is contiguous,
-and the call meets the input dtypes and shape rules the manifest states.
+the same order, plus a caller-supplied output buffer such as ``out`` by keyword. Every
+tensor is on one device, every input the call does not write is contiguous, and the call
+meets the input dtypes and shape rules the manifest states.
 
 Choosing among its own kernels, constructing, caching and compiling all happen inside it, so
 nothing here names a kernel class, a specialization axis, a priority or a fallback: this layer

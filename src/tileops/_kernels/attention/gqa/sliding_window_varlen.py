@@ -18,65 +18,15 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.attention.online_softmax import (
-    make_log2e_scale,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
 from tileops._kernels.attention.varlen import VarlenKernel
 from tileops._kernels.build_target import target_cache
+from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 
-__all__ = [
-    "GQASlidingWindowVarlenFwdWGMMAPipelinedKernel",
-]
-
-
-class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
-    """Shared base for variable-length GQA sliding window forward kernels.
-
-    Dimension 256 stays on the general kernel: the 128-row, two-stage tiles would need
-    385 KB of shared memory, more than the 227 KB an SM90 block may use.
-    """
-
-    def _make_supply_prog(self) -> Callable:
-        return super()._make_supply_prog(with_sink_input=False)
-
-    @classmethod
-    def refusal(cls, call) -> "str | None":
-        if not call.uses_sliding_window:
-            return "serves a sliding window only"
-        if call.dim > 128:
-            return f"requires head dimension at most 128, got {call.dim}"
-        # The score GEMM contracts the head dim in MMA steps of 16.
-        if call.dim % 16:
-            return f"requires a head dim that is a multiple of 16, got {call.dim}"
-        if call.is_fp8:
-            return "does not serve FP8"
-        if call.has_sinks:
-            return "does not apply sink normalization"
-        if call.fuse_rope:
-            return "does not serve fused RoPE"
-        if call.sm_scale is not None:
-            return "requires the default softmax scale"
-        if call.softcap != 0.0:
-            return "does not serve softcap"
-        return super().refusal(call)
-
-    def _make_kernel(self) -> Callable:
-        return _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
-            self.batch,
-            self.heads,
-            self.heads_kv,
-            self.dim,
-            self.is_causal,
-            self.window_size_left,
-            self.window_size_right,
-            self.dtype_str,
-            self.dtype_to_str(self.accum_dtype),
-        )
-
-
-# ── WGMMA Pipelined (SM90) ────────────────────────────────────────────────────
+__all__ = ["GQASlidingWindowVarlenFwdWGMMAPipelinedKernel"]
 
 
 @target_cache(maxsize=None)
@@ -88,14 +38,11 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     is_causal: bool,
     window_size_left: int,
     window_size_right: int,
-    dtype: str = "float16",
-    accum_dtype: str = "float",
+    dtype: str,
 ) -> Callable:
-    scale = make_log2e_scale(dim)
-    if heads % heads_kv != 0:
-        raise ValueError("heads must be divisible by heads_kv")
+    scale = dim**-0.5 * LOG2E
     groups = heads // heads_kv
-    has_window = window_size_left >= 0 or window_size_right >= 0
+    accum_dtype = "float"
 
     @tilelang.jit(
         out_idx=[5],
@@ -103,116 +50,46 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _gqa_sw_fwd_varlen_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
-        def _make_apply_mask(
-            is_causal,
-            has_window,
-            window_size_left,
-            window_size_right,
-            accum_dtype,
-            block_m,
-            block_n,
-        ):
-            """Create a masked attention score initialization macro.
-
-            All parameters are compile-time constants baked into the macro via closure.
-            The macro writes 0 or ``-infinity`` into ``acc_s`` depending on the mask
-            conditions, using four compile-time paths:
-
-            - causal + window (left only)
-            - causal only
-            - window only (left and/or right)
-            - no masking (OOB guard only)
-
-            Args:
-                is_causal: Whether causal masking is applied.
-                has_window: Whether any window constraint is active.
-                window_size_left: Left window size (-1 = unlimited).
-                window_size_right: Right window size (-1 = unlimited).
-                accum_dtype: Accumulator data type string (e.g. "float").
-                block_m: Tile size along the Q dimension.
-                block_n: Tile size along the KV dimension.
-
-            Returns:
-                apply_mask: A ``T.macro`` that fills ``acc_s`` with mask values.
-            """
-
-            @T.macro
-            def mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset):
-                if is_causal and has_window:
-                    for i, j in T.Parallel(block_m, block_n):
-                        causal_mask = k_idx * block_n + j > bx * block_m + i + offset
-                        left_mask = (window_size_left >= 0) and (
-                            k_idx * block_n + j < bx * block_m + i + offset - window_size_left
-                        )
-                        q_oob = bx * block_m + i >= q_len
-                        k_oob = k_idx * block_n + j >= kv_len
-                        acc_s[i, j] = T.if_then_else(
-                            causal_mask or left_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                        )
-                elif is_causal:
-                    for i, j in T.Parallel(block_m, block_n):
-                        causal_mask = k_idx * block_n + j > bx * block_m + i + offset
-                        q_oob = bx * block_m + i >= q_len
-                        k_oob = k_idx * block_n + j >= kv_len
-                        acc_s[i, j] = T.if_then_else(
-                            causal_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                        )
-                elif has_window:
-                    for i, j in T.Parallel(block_m, block_n):
-                        left_mask = (window_size_left >= 0) and (
-                            k_idx * block_n + j < bx * block_m + i + offset - window_size_left
-                        )
-                        right_mask = (window_size_right >= 0) and (
-                            k_idx * block_n + j > bx * block_m + i + offset + window_size_right
-                        )
-                        q_oob = bx * block_m + i >= q_len
-                        k_oob = k_idx * block_n + j >= kv_len
-                        acc_s[i, j] = T.if_then_else(
-                            left_mask or right_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                        )
-                else:
-                    for i, j in T.Parallel(block_m, block_n):
-                        q_oob = bx * block_m + i >= q_len
-                        k_oob = k_idx * block_n + j >= kv_len
-                        acc_s[i, j] = T.if_then_else(q_oob or k_oob, -T.infinity(accum_dtype), 0)
-
-            def inside(k_idx, bx, q_len, kv_len, offset):
-                # Whether no mask condition reaches the tile, so it needs zeros only.
-                q_first = bx * block_m
-                q_last = q_first + block_m - 1
-                k_first = k_idx * block_n
-                k_last = k_first + block_n - 1
-                cond = (q_last < q_len) & (k_last < kv_len)
+        @T.macro
+        def mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset):
+            for i, j in T.Parallel(block_m, block_n):
+                q_pos = bx * block_m + i
+                k_pos = k_idx * block_n + j
+                masked = (q_pos >= q_len) | (k_pos >= kv_len)
                 if is_causal:
-                    cond = cond & (k_last <= q_first + offset)
+                    masked = masked | (k_pos > q_pos + offset)
                 elif window_size_right >= 0:
-                    cond = cond & (k_last <= q_first + offset + window_size_right)
+                    masked = masked | (k_pos > q_pos + offset + window_size_right)
                 if window_size_left >= 0:
-                    cond = cond & (k_first >= q_last + offset - window_size_left)
-                return cond
+                    masked = masked | (k_pos < q_pos + offset - window_size_left)
+                acc_s[i, j] = T.if_then_else(masked, -T.infinity(accum_dtype), 0)
 
-            @T.macro
-            def apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset):
-                if inside(k_idx, bx, q_len, kv_len, offset):
-                    T.clear(acc_s)
-                else:
-                    mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset)
+        def inside(k_idx, bx, q_len, kv_len, offset):
+            # Whether no mask condition reaches the tile, so it needs zeros only.
+            q_first = bx * block_m
+            q_last = q_first + block_m - 1
+            k_first = k_idx * block_n
+            k_last = k_first + block_n - 1
+            cond = (q_last < q_len) & (k_last < kv_len)
+            if is_causal:
+                cond = cond & (k_last <= q_first + offset)
+            elif window_size_right >= 0:
+                cond = cond & (k_last <= q_first + offset + window_size_right)
+            if window_size_left >= 0:
+                cond = cond & (k_first >= q_last + offset - window_size_left)
+            return cond
 
-            return apply_mask
+        @T.macro
+        def apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset):
+            if inside(k_idx, bx, q_len, kv_len, offset):
+                T.clear(acc_s)
+            else:
+                mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset)
 
         total_q = T.dynamic("total_q")
         total_k = T.dynamic("total_k")
         q_shape = (total_q, heads, dim)
         kv_shape = (total_k, heads_kv, dim)
-        apply_mask = _make_apply_mask(
-            is_causal,
-            has_window,
-            window_size_left,
-            window_size_right,
-            accum_dtype,
-            block_m,
-            block_n,
-        )
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
         rescale = make_rescale(block_m, dim)
         q_tiling = GroupTiling(batch, block_m)
@@ -307,7 +184,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
 
                     if is_causal:
                         k_end = T.ceildiv(T.min(kv_len, offset + q_row + block_m), block_n)
-                    elif has_window and window_size_right >= 0:
+                    elif window_size_right >= 0:
                         k_end = T.ceildiv(
                             T.min(kv_len, offset + q_row + block_m + window_size_right),
                             block_n,
@@ -315,7 +192,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                     else:
                         k_end = T.ceildiv(kv_len, block_n)
 
-                    if has_window and window_size_left >= 0:
+                    if window_size_left >= 0:
                         k_start = T.max(0, offset + q_row - window_size_left) // block_n
                     else:
                         k_start = 0
@@ -363,10 +240,50 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_varlen_wgmma_pipelined_func
 
 
-class GQASlidingWindowVarlenFwdWGMMAPipelinedKernel(_GQASlidingWindowVarlenFwdKernelBase):
-    """Variable-length GQA sliding window forward kernel, WGMMA pipelined (sm90)."""
+class GQASlidingWindowVarlenFwdWGMMAPipelinedKernel(VarlenKernel):
+    """Variable-length GQA sliding window forward kernel, WGMMA pipelined (sm90).
+
+    Dimension 256 stays on the general kernel: the 128-row, two-stage tiles would need
+    385 KB of shared memory, more than the 227 KB an SM90 block may use.
+    """
 
     supported_archs: list[int] = [90]
+
+    def _make_supply_prog(self) -> Callable:
+        return super()._make_supply_prog(with_sink_input=False)
+
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        if not call.uses_sliding_window:
+            return "serves a sliding window only"
+        if call.dim > 128:
+            return f"requires head dimension at most 128, got {call.dim}"
+        # The score GEMM contracts the head dim in MMA steps of 16.
+        if call.dim % 16:
+            return f"requires a head dim that is a multiple of 16, got {call.dim}"
+        if call.is_fp8:
+            return "does not serve FP8"
+        if call.has_sinks:
+            return "does not apply sink normalization"
+        if call.fuse_rope:
+            return "does not serve fused RoPE"
+        if call.sm_scale is not None:
+            return "requires the default softmax scale"
+        if call.softcap != 0.0:
+            return "does not serve softcap"
+        return super().refusal(call)
+
+    def _make_kernel(self) -> Callable:
+        return _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.is_causal,
+            self.window_size_left,
+            self.window_size_right,
+            self.dtype_str,
+        )
 
     @property
     def default_config(self) -> dict:

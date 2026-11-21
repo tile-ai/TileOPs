@@ -26,13 +26,3 @@ def make_fragmented_block_table(
             [torch.randperm(pool_pages, generator=generator)[:pages_per_req] for _ in range(batch)]
         )
     return table.to(device=run_device(), dtype=torch.int32).contiguous()
-
-
-def paged_cache_row(
-    block_table: torch.Tensor, batch_idx: int, logical_pos: int, page_size: int
-) -> int:
-    """Row of the page pool holding logical position *logical_pos* of *batch_idx*."""
-    logical_page = logical_pos // page_size
-    page_offset = logical_pos % page_size
-    physical_page = int(block_table[batch_idx, logical_page].item())
-    return physical_page * page_size + page_offset

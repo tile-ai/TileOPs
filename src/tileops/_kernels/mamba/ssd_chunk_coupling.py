@@ -43,15 +43,11 @@ def _ssd_chunk_coupling_kernel(
         block_n: int,
         threads: int,
     ):
-        C_shape = (B, S, G, N)
-        B_shape = (B, S, G, N)
-        cb_shape = (B, C, G, Q, Q)
-
         @T.prim_func
         def main(
-            C_mat: T.Tensor(C_shape, dtype),  # type: ignore
-            B_mat: T.Tensor(B_shape, dtype),  # type: ignore
-            cb: T.Tensor(cb_shape, dtype),  # type: ignore
+            C_mat: T.Tensor((B, S, G, N), dtype),  # type: ignore
+            B_mat: T.Tensor((B, S, G, N), dtype),  # type: ignore
+            cb: T.Tensor((B, C, G, Q, Q), dtype),  # type: ignore
         ):
             with T.Kernel(
                 T.ceildiv(Q, block_l),  # l tiles
@@ -59,9 +55,8 @@ def _ssd_chunk_coupling_kernel(
                 B * C * G,  # batch * chunks * groups
                 threads=threads,
             ) as (bl, bs, bcg):
-                bcg_tmp = bcg
-                bb = bcg_tmp // (C * G)
-                cg = bcg_tmp % (C * G)
+                bb = bcg // (C * G)
+                cg = bcg % (C * G)
                 bc = cg // G
                 bg = cg % G
 
@@ -165,11 +160,7 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
         config: dict | None = None,
     ) -> None:
         super().__init__()
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.n_groups = n_groups
         self.chunk_len = chunk_len
-        self.d_state = d_state
         self.dtype = dtype
 
         self.kernel = _ssd_chunk_coupling_kernel(
@@ -209,8 +200,6 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
         C_mat: torch.Tensor,
         B_mat: torch.Tensor,
     ) -> torch.Tensor:
-        C_mat = C_mat.contiguous()
-        B_mat = B_mat.contiguous()
         return self.program(self._compile)(C_mat, B_mat)
 
     def _compile(self, cfg: dict):

@@ -32,11 +32,11 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
             # The step reads one token and one state a row; packed offsets that leave a
             # sequence empty would pair the states with the wrong tokens.
             return "serves one token a sequence"
-        return None
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: KDACall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (
             call.batch,
             call.heads,

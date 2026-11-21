@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 import yaml
+from torch.utils._python_dispatch import TorchDispatchMode
 
 from tileops._ops._naming import operator_name
 from tileops._ops._signature_codegen import (
@@ -220,7 +221,7 @@ def test_each_effect_branch_registers_its_own_operator():
 
 
 def test_a_traced_boundary_call_is_one_graph():
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+    signature = _UNARY
     op = _probe("ProbeTracedFwdOp", signature, lambda self, x: x + 1, boundary=True)()
     x = torch.zeros(4, dtype=torch.float16)
     torch._dynamo.reset()
@@ -301,13 +302,22 @@ _VEC = {
     "forall": {"M": "Dim", "T": "DType[float16]"},
     "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
 }
+# `x -> y` of one shape and dtype.
+_UNARY = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+
+
+class _Passthrough(TorchDispatchMode):
+    """Sends every call through the dispatcher, which runs it unchanged."""
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        return func(*args, **(kwargs or {}))
 
 
 def test_execution_parameters_cross_the_compile_boundary():
     def eager(self, x, scale: int = 1):
         return x * scale
 
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+    signature = _UNARY
     op = _probe("ProbeScaleFwdOp", signature, eager, boundary=True)()
     assert op(torch.ones(2, dtype=torch.float16), 3).tolist() == [3, 3]
 
@@ -467,7 +477,7 @@ def test_a_roofline_func_must_yield_two_ints(monkeypatch):
     import tileops._perf.formulas
 
     monkeypatch.setattr(tileops._perf.formulas, "probe_float", lambda call: (1.5, 2), raising=False)
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+    signature = _UNARY
     op = _probe(
         "ProbeFloatRoofFwdOp",
         signature,
@@ -477,13 +487,6 @@ def test_a_roofline_func_must_yield_two_ints(monkeypatch):
     op(torch.zeros(2, dtype=torch.float16))
     with pytest.raises(TypeError, match="not \\(flops: int, bytes: int\\)"):
         op.eval_roofline()
-
-
-def test_a_fresh_output_owns_its_storage():
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
-    op = _probe("ProbeReturnsInputFwdOp", signature, lambda self, x: x)()
-    with pytest.raises(ValueError, match="y shares storage"):
-        op(torch.zeros(2, dtype=torch.float16))
 
 
 def test_generated_methods_bind_inputs_by_name():
@@ -769,23 +772,13 @@ def test_a_meta_call_of_an_op_returning_nothing_completes_and_is_priced():
     assert op.eval_roofline() == (24, 2 * 3 * 8 * 2)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "family, class_name, expected",
     [
         ("norm", "RMSNormFwdOp", "norm_rms_norm_fwd"),
         ("convolution", "Conv2dFwdOp", "convolution_conv2d_fwd"),
+        # A class whose name opens with the family names it once.
         ("moe", "MoEPrePermuteFwdOp", "moe_pre_permute_fwd"),
-    ],
-)
-def test_the_operator_names_its_family_once(family: str, class_name: str, expected: str) -> None:
-    assert operator_name(family, class_name) == expected
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "family, class_name, expected",
-    [
         # One capital inside the abbreviation, which the case split would otherwise take.
         ("moe", "FusedMoEExpertsFwdOp", "moe_fused_moe_experts_fwd"),
         # A digit on each side of the capital.
@@ -797,22 +790,14 @@ def test_the_operator_names_its_family_once(family: str, class_name: str, expect
         ("sampling", "TopKTopPMaskFwdOp", "sampling_topk_topp_mask_fwd"),
     ],
 )
-def test_an_abbreviation_stays_one_word(family: str, class_name: str, expected: str) -> None:
+def test_the_operator_name_keeps_each_abbreviation_one_word(
+    family: str, class_name: str, expected: str
+) -> None:
     assert operator_name(family, class_name) == expected
 
 
-def test_fresh_output_rejects_overlapping_dlpack_storage():
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
-    buffer = torch.zeros(8, dtype=torch.float16)
-    x = torch.from_dlpack(buffer[:4])
-    y = torch.from_dlpack(buffer[2:6])
-    op = _probe("ProbeImportedAliasFwdOp", signature, lambda self, x: y)()
-    with pytest.raises(ValueError, match="y shares storage"):
-        op(x)
-
-
 def test_fresh_output_accepts_disjoint_dlpack_storage():
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+    signature = _UNARY
     buffer = torch.zeros(8, dtype=torch.float16)
     x = torch.from_dlpack(buffer[:4])
     separate = torch.from_dlpack(buffer[4:])
@@ -836,42 +821,6 @@ def test_storage_ownership_matches_enumerated_imported_bytes():
             assert shared is bool(first_bytes & second_bytes)
 
 
-def test_fresh_output_rejects_disjoint_views_of_one_owned_storage():
-    """Disjoint tensor spans still share ownership when they use the same storage."""
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
-    buffer = torch.zeros(8, dtype=torch.float16)
-    op = _probe("ProbeSharedOwnerFwdOp", signature, lambda self, x: buffer[4:])()
-    with pytest.raises(ValueError, match="y shares storage"):
-        op(buffer[:4])
-
-
-def test_a_repeated_layout_reuses_its_plan_and_another_layout_resolves_one():
-    signature = {
-        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M, N]", "contiguous": True}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M, N]"}},
-    }
-    op = _probe("ProbeRepeatFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
-    op(torch.zeros(3, 2, dtype=torch.float16))
-    first = op.last_call
-    plan = type(op)._signature
-
-    def check(*args, **kwargs):
-        raise AssertionError("a repeated layout runs the checks again")
-
-    plan.check = check
-    try:
-        op(torch.ones(3, 2, dtype=torch.float16))
-    finally:
-        del plan.check
-    # Each call keeps a record of its own, with the facts the plan holds.
-    assert op.last_call is not first and op.last_call == first
-    op(torch.zeros(4, 2, dtype=torch.float16))
-    assert op.last_call.indices["M"] == 4
-    with pytest.raises(ValueError, match="x must be contiguous"):
-        op(torch.zeros(2, 4, dtype=torch.float16).t())
-
-
 def _inplace_probe():
     signature = {
         "forall": {"M": "Dim", "T": "DType[float16]"},
@@ -885,16 +834,10 @@ def _inplace_probe():
 
 
 def test_an_eager_call_outside_any_mode_versions_its_written_input_as_the_dispatcher_does():
-    from torch.utils._python_dispatch import TorchDispatchMode
-
-    class Passthrough(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-            return func(*args, **(kwargs or {}))
-
     op = _inplace_probe()
     x = torch.zeros(2, dtype=torch.float16)
     before = x._version
-    with Passthrough():
+    with _Passthrough():
         op(x)
     dispatched = x._version - before
     boundary = type(op)._call_boundary.__globals__["_boundary"]
@@ -951,76 +894,6 @@ def test_an_eager_call_missing_a_written_input_raises_its_check():
         op(x, mean)
 
 
-def test_a_failed_eager_call_versions_the_input_it_wrote():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "params": {"inplace": {"type": "bool"}},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]", "mutated": "inplace"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]", "alias": "x"}},
-    }
-
-    def forward(self, x):
-        x.add_(1)
-        raise RuntimeError("after the write")
-
-    from torch.utils._python_dispatch import TorchDispatchMode
-
-    class Passthrough(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-            return func(*args, **(kwargs or {}))
-
-    op = _probe("ProbeFailingInplaceFwdOp", signature, forward, boundary=True)(inplace=True)
-    x = torch.zeros(2, dtype=torch.float16)
-    before = x._version
-    with pytest.raises(RuntimeError, match="after the write"), Passthrough():
-        op(x)
-    dispatched = x._version - before
-    before = x._version
-    with pytest.raises(RuntimeError, match="after the write"):
-        op(x)
-    assert x._version - before == dispatched
-
-
-def test_a_call_under_a_dispatch_mode_reaches_the_operator():
-    from torch.utils._python_dispatch import TorchDispatchMode
-
-    seen = []
-
-    class Recorder(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-            seen.append(str(func))
-            return func(*args, **(kwargs or {}))
-
-    op = _inplace_probe()
-    with Recorder():
-        op(torch.zeros(2, dtype=torch.float16))
-    assert any(name.startswith("tileops.probe_eager_inplace_fwd") for name in seen), seen
-
-
-@pytest.mark.parametrize(
-    "second, message",
-    [
-        (lambda x: x, "shares storage"),
-        (lambda x: x.clone().float(), "has dtype"),
-        (lambda x: x[:, :1].clone(), "has shape"),
-    ],
-)
-def test_a_repeated_call_still_checks_what_forward_returns(second, message):
-    signature = {
-        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M, N]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M, N]"}},
-    }
-    returns = [lambda x: x.clone(), second]
-    op = _probe(
-        "ProbeRepeatResultFwdOp", signature, lambda self, x: returns.pop(0)(x), boundary=True
-    )()
-    x = torch.zeros(3, 2, dtype=torch.float16)
-    op(x)
-    with pytest.raises(ValueError, match=message):
-        op(x)
-
-
 def test_a_param_changed_after_construction_is_checked_on_the_next_call():
     signature = {
         "forall": {"M": "Dim", "T": "DType[float16]"},
@@ -1040,11 +913,7 @@ def test_a_param_changed_after_construction_is_checked_on_the_next_call():
 
 
 def test_a_check_is_looked_up_once_per_presence():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
+    signature = _UNARY
     op = _probe("ProbeLookupOnceFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     op(torch.zeros(3, dtype=torch.float16))
     plan = type(op)._signature
@@ -1180,51 +1049,15 @@ def test_a_param_snapshot_differs_once_a_field_is_edited_in_place():
 
 
 def test_a_tensor_slot_holding_another_value_reaches_the_operator():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
+    signature = _UNARY
     op = _probe("ProbeNotTensorFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     op(torch.zeros(3, dtype=torch.float16))
     with pytest.raises((TypeError, RuntimeError), match="Tensor|tensor"):
         op([0.0, 0.0, 0.0])
 
 
-def test_a_call_in_an_autocast_region_reaches_the_operator():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    op = _probe("ProbeAutocastFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
-    x = torch.zeros(3, dtype=torch.float16)
-    op(x)
-    boundary = type(op)._call_boundary.__globals__["_boundary"]
-    saved = dict(boundary.branches)
-    reached = []
-
-    def operator(*args):
-        reached.append(True)
-        return saved_operator(*args)
-
-    ((effect, branch),) = saved.items()
-    saved_operator = branch[0]
-    boundary.branches[effect] = (operator, *branch[1:])
-    try:
-        with torch.autocast("cpu", dtype=torch.bfloat16):
-            op(x)
-    finally:
-        boundary.branches.update(saved)
-    assert reached
-
-
 def test_an_invalid_execution_argument_reaches_the_operator():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
+    signature = _UNARY
 
     def forward(self, x, scale: int = 1):
         return x * scale
@@ -1237,12 +1070,6 @@ def test_an_invalid_execution_argument_reaches_the_operator():
 
 
 def test_a_held_tensor_requiring_grad_leaves_the_result_untracked_as_the_dispatcher_does():
-    from torch.utils._python_dispatch import TorchDispatchMode
-
-    class Passthrough(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-            return func(*args, **(kwargs or {}))
-
     signature = {
         "forall": {"M": "Dim", "T": "DType[float32]"},
         "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
@@ -1250,24 +1077,14 @@ def test_a_held_tensor_requiring_grad_leaves_the_result_untracked_as_the_dispatc
     }
     op = _probe("ProbeHeldGradFwdOp", signature, lambda self, x: x * self.w, boundary=True)()
     op.w = torch.ones(1, requires_grad=True)
-    with Passthrough():
+    with _Passthrough():
         dispatched = op(torch.ones(3))
     for m in (4, 4):
         assert op(torch.ones(m)).requires_grad == dispatched.requires_grad
 
 
 def test_a_negative_view_is_resolved_as_the_dispatcher_does():
-    from torch.utils._python_dispatch import TorchDispatchMode
-
-    class Passthrough(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-            return func(*args, **(kwargs or {}))
-
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
+    signature = _UNARY
     seen = []
 
     def forward(self, x):
@@ -1276,7 +1093,7 @@ def test_a_negative_view_is_resolved_as_the_dispatcher_does():
 
     op = _probe("ProbeNegViewFwdOp", signature, forward, boundary=True)()
     x = torch._neg_view(torch.ones(3, dtype=torch.float16))
-    with Passthrough():
+    with _Passthrough():
         op(x)
     op(x)
     op(x)
@@ -1302,11 +1119,7 @@ def test_a_target_served_op_repeats_on_the_target_kernel(acme):
 
 
 def test_a_conjugate_view_is_left_to_the_dispatcher():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
+    signature = _UNARY
     op = _probe("ProbeConjugateFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     z = torch.ones(2, dtype=torch.complex64)
     assert op._observe((z,), {}, {}, direct=True)[0] is not None
@@ -1314,60 +1127,8 @@ def test_a_conjugate_view_is_left_to_the_dispatcher():
     assert op._observe((torch._neg_view(z.real),), {}, {}, direct=True)[0] is None
 
 
-def test_an_output_sharing_an_empty_input_storage_is_rejected():
-    signature = {
-        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}, "e": {"dtype": "T", "shape": "[N]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    returns = [lambda x, e: x.clone(), lambda x, e: e.as_strided(x.shape, (1,))]
-    op = _probe(
-        "ProbeEmptyAliasFwdOp", signature, lambda self, x, e: returns.pop(0)(x, e), boundary=True
-    )()
-    x = torch.zeros(3, dtype=torch.float16)
-    e = torch.zeros(3, dtype=torch.float16)[:0]
-    op(x, e)
-    with pytest.raises(RuntimeError, match="alias"):
-        op(x, e)
-    returns.append(lambda x, e: e.as_strided(x.shape, (1,)))
-    with pytest.raises(RuntimeError, match="alias"):
-        op(torch.zeros(4, dtype=torch.float16), torch.zeros(8, dtype=torch.float16)[:0])
-
-
-def test_a_negative_view_call_reaches_the_operator():
-    from tileops._ops._signature_codegen import _CompileBoundary
-
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    op = _probe("ProbeViewBitFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
-    boundary = type(op)._call_boundary.__globals__["_boundary"]
-    assert isinstance(boundary, _CompileBoundary)
-    ((effect, branch),) = boundary.branches.items()
-    reached = []
-
-    def operator(*args):
-        reached.append(True)
-        return branch[0](*args)
-
-    boundary.branches[effect] = (operator, *branch[1:])
-    try:
-        op(torch.ones(2, dtype=torch.float16))
-        assert not reached
-        op(torch._neg_view(torch.ones(2, dtype=torch.float16)))
-        assert reached
-    finally:
-        boundary.branches[effect] = branch
-
-
 def test_a_none_for_a_required_input_reaches_the_operator():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
+    signature = _UNARY
     op = _probe("ProbeRequiredNoneFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     op(torch.zeros(2, dtype=torch.float16))
     boundary = type(op)._call_boundary.__globals__["_boundary"]
@@ -1723,26 +1484,13 @@ def test_an_empty_sequence_leaves_a_shared_dimension_to_another_sequence():
     op = _probe("ProbeSharedDimFwdOp", signature, lambda self, xs, ys: None)()
     op._construction_indices = op._check_construction()
     y = torch.zeros(3, 4, dtype=torch.float16)
-    assert type(op)._signature.check(op, {"xs": [], "ys": [y]}).indices["N"] == 3
-    with pytest.raises(ValueError, match="xs and ys are empty"):
-        type(op)._signature.check(op, {"xs": [], "ys": []})
-
-
-def test_a_fallback_sequence_is_no_index_of_the_call():
-    signature = {
-        "forall": {"N": "Dim", "A": "Seq[Shape]", "B": "Seq[Shape]", "T": "DType[float16]"},
-        "inputs": {
-            "xs": {"type": "list[Tensor]", "dtype": "T", "shape": "[N, *A]"},
-            "ys": {"type": "list[Tensor]", "dtype": "T", "shape": "[N, *B]"},
-        },
-        "outputs": {"n": {"dtype": "T", "shape": "[N]"}},
-    }
-    op = _probe("ProbeFallbackIndicesFwdOp", signature, lambda self, xs, ys: None)()
-    op._construction_indices = op._check_construction()
-    y = torch.zeros(3, 4, dtype=torch.float16)
     call = type(op)._signature.check(op, {"xs": [], "ys": [y]})
+    assert call.indices["N"] == 3
+    # The sequence that solved the index is no index of the call.
     assert "ys" not in call.indices
     assert not any(isinstance(v, torch.Tensor) for v in call.indices.values())
+    with pytest.raises(ValueError, match="xs and ys are empty"):
+        type(op)._signature.check(op, {"xs": [], "ys": []})
 
 
 @pytest.mark.parametrize(

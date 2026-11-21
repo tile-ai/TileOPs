@@ -7,9 +7,10 @@ finding exits 1. A lint that honours an allow marker spells it
 ``lint: <rule> allow: <reason>``; a marker without a reason exempts nothing.
 """
 
+import argparse
 import re
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -65,3 +66,21 @@ def report(findings: Iterable[str]) -> int:
         print(finding)
         found = True
     return 1 if found else 0
+
+
+def lint_files(
+    argv: list[str],
+    description: str | None,
+    trees: Iterable[str],
+    suffixes: Iterable[str] | None,
+    findings: Callable[[Path], Iterable[str]],
+) -> int:
+    """Run *findings* over the files *argv* names, or the files under *trees*, and report.
+
+    *description* is the lint's ``--help`` text; *trees* and *suffixes* are as :func:`files`
+    takes them.
+    """
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("files", nargs="*", type=Path)
+    paths = files(parser.parse_args(argv).files, trees, suffixes)
+    return report(e for p in paths for e in findings(p))

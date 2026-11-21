@@ -26,9 +26,9 @@ _CORRECTNESS_CASES = (
         marks=[pytest.mark.smoke, pytest.mark.packaging(family="fft")],
         id="tiny-lower",
     ),
-    pytest.param(64, torch.complex64, (), marks=pytest.mark.smoke, id="warp8-lower"),
     pytest.param(4096, torch.complex128, (), marks=pytest.mark.smoke, id="three-pass-upper-c128"),
-    pytest.param(32768, torch.complex64, (3,), marks=pytest.mark.smoke, id="two-factor-lower"),
+    pytest.param(64, torch.complex64, (), marks=pytest.mark.full, id="warp8-lower"),
+    pytest.param(32768, torch.complex64, (3,), marks=pytest.mark.full, id="two-factor-lower"),
     pytest.param(32, torch.complex128, (3,), marks=pytest.mark.full, id="tiny-upper-c128"),
     pytest.param(128, torch.complex128, (3,), marks=pytest.mark.full, id="warp8-upper-c128"),
     pytest.param(256, torch.complex64, (2, 4), marks=pytest.mark.full, id="packed-16x16"),
@@ -134,7 +134,7 @@ def test_fft_n1_is_an_out_of_place_identity() -> None:
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression: a decomposed plan tuned nothing and silently kept its defaults."""
+    """Tuning a decomposed plan configures each of its factor kernels."""
     tuned: list = []
 
     def fake_tune(self, _builder, candidates, seed_config, **_kwargs):

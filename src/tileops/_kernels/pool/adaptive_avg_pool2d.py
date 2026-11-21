@@ -1,3 +1,5 @@
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -10,9 +12,9 @@ from tileops._kernels.pool.common import (
     ACCUM_DTYPE,
     AdaptivePool2dKernelBase,
     adaptive_bin,
-    dtype_itemsize,
     max_adaptive_bin_extent,
 )
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 
 __all__ = ["AdaptiveAvgPool2dKernel", "AdaptiveAvgPool2dLanesKernel"]
@@ -26,9 +28,8 @@ def _adaptive_avg_pool2d_kernel(
     w_in: int,
     out_h: int,
     out_w: int,
-    dtype: str = "float16",
+    dtype: str,
 ):
-    accum_dtype = "float"
     total_output = n * c_in * out_h * out_w
     max_kh = max_adaptive_bin_extent(h_in, out_h)
     max_kw = max_adaptive_bin_extent(w_in, out_w)
@@ -55,7 +56,7 @@ def _adaptive_avg_pool2d_kernel(
                         iw_start, iw_end = adaptive_bin(ow, w_in, out_w)
 
                         sum_val = T.alloc_var(T.float32)
-                        sum_val = T.cast(0.0, accum_dtype)
+                        sum_val = T.cast(0.0, ACCUM_DTYPE)
                         # Static-bound loops (TileLang rejects dynamic T.serial
                         # bounds); guard skips lanes outside this output's bin.
                         for kh in T.serial(max_kh):
@@ -63,12 +64,12 @@ def _adaptive_avg_pool2d_kernel(
                                 if ih_start + kh < ih_end and iw_start + kw < iw_end:
                                     sum_val += T.cast(
                                         x[batch, c_idx, ih_start + kh, iw_start + kw],
-                                        accum_dtype,
+                                        ACCUM_DTYPE,
                                     )
 
                         bin_size = (ih_end - ih_start) * (iw_end - iw_start)
                         out[batch, c_idx, oh, ow] = T.cast(
-                            sum_val / T.cast(bin_size, accum_dtype),
+                            sum_val / T.cast(bin_size, ACCUM_DTYPE),
                             dtype,
                         )
 
@@ -119,14 +120,14 @@ def _adaptive_avg_pool2d_lanes_kernel(
     w_in: int,
     out_h: int,
     out_w: int,
-    dtype: str = "float16",
+    dtype: str,
 ):
     rows = n * c_in
     total_output = rows * out_h * out_w
     max_kh = max_adaptive_bin_extent(h_in, out_h)
     max_kw = max_adaptive_bin_extent(w_in, out_w)
     # Elements one load of a bin row takes: the widest access every bin edge lands on.
-    vector = VECTOR_ACCESS_BYTES // dtype_itemsize(dtype)
+    vector = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     edges = {e for o in range(out_w) for e in adaptive_bin(o, w_in, out_w)}
     while vector > 1 and any(e % vector for e in edges):
         vector //= 2
@@ -191,8 +192,7 @@ def _adaptive_avg_pool2d_lanes_kernel(
                                 iw, iw_end - vector
                             )
                             _add(acc, held, x, at, ih < ih_end and iw < iw_end)
-                for level in T.unroll(lanes.bit_length() - 1):
-                    acc[0] += T.shfl_xor(acc[0], T.shift_left(1, level))
+                warp_reduce(acc, operator.add, lanes=lanes)
                 if o_raw < total_output and lane == 0:
                     count = (ih_end - ih_start) * (iw_end - iw_start)
                     # A division, not a multiply by the reciprocal: torch divides, and the
@@ -213,7 +213,7 @@ class AdaptiveAvgPool2dLanesKernel(AdaptivePool2dKernelBase, AdaptiveAvgPool2dFw
     preferred_over = frozenset({"adaptive_avg_pool2d_kernel"})
 
     @classmethod
-    def refusal(cls, call: AdaptivePool2dCall) -> "str | None":
+    def refusal(cls, call: AdaptivePool2dCall) -> str | None:
         if call.dtype not in (torch.float16, torch.bfloat16):
             return f"requires float16 or bfloat16, got {call.dtype}"
         if _bin_lanes(call) == 1:

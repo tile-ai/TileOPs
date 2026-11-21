@@ -29,11 +29,11 @@ class SiLUAndMulFixture(FixtureBase):
                 pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
                 # A row ending one 16-byte vector past a power-of-two width.
-                pytest.param(1024, 1032, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(1024, 1032, torch.bfloat16, marks=pytest.mark.full),
                 # Tile boundary: the second 1024-column block is half past N.
-                pytest.param(1024, 1536, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(1024, 1536, torch.bfloat16, marks=pytest.mark.full),
                 # More rows than a grid's y dimension holds.
-                pytest.param(65537, 128, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(65537, 128, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
             ],
         ),

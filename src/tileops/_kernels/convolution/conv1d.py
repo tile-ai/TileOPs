@@ -8,11 +8,13 @@ import torch
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.convolution._common import (
+    SWIZZLE_PANEL,
     conv_autotune_configs,
     conv_num_stages,
     grid_refusal,
     launch,
     operand_refusal,
+    stage_output_tile,
 )
 from tileops._kernels.convolution.call_spec import Conv1dCall, Conv1dFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -39,11 +41,8 @@ def _conv1d_kernel(
     pad_right: int,
     dilation_l: int,
     has_bias: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
-    # Swizzle panel: a power of two so the block remap divides by shift, and the
-    # narrowest one because long grids lose as it widens.
-    swizzle_panel = 2
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     k_total = c_in * kernel_l
@@ -70,7 +69,7 @@ def _conv1d_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
+                T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 tile_ol_start = bx * block_n
@@ -105,21 +104,19 @@ def _conv1d_kernel(
 
                     T.gemm(weight_shared, data_shared, out_local)
 
-                for i, j in T.Parallel(block_m, block_n):
-                    oc = by * block_m + i
-                    ol = bx * block_n + j
-                    if has_bias:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (ol < out_l),
-                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                            T.cast(0.0, dtype),
-                        )
-                    else:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (ol < out_l),
-                            T.cast(out_local[i, j], dtype),
-                            T.cast(0.0, dtype),
-                        )
+                stage_output_tile(
+                    out_local,
+                    out_shared,
+                    bias,
+                    block_m,
+                    block_n,
+                    by * block_m,
+                    c_out,
+                    bx * block_n,
+                    out_l,
+                    0,
+                    dtype,
+                )
 
                 T.copy(out_shared, out[bz, by * block_m, bx * block_n])
 
@@ -161,15 +158,12 @@ def _conv1d_unit_stride_kernel(
     pad_right: int,
     dilation_l: int,
     has_bias: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
-    # Swizzle panel: a power of two so the block remap divides by shift, and the
-    # narrowest one because long grids lose as it widens.
-    swizzle_panel = 2
     if stride_l != 1:
         raise ValueError(f"_conv1d_unit_stride_kernel serves stride 1, got {stride_l}")
     accum_dtype = "float"
-    element_bytes = torch.tensor([], dtype=getattr(torch, dtype)).element_size()
+    element_bytes = getattr(torch, dtype).itemsize
     out_l = l_in + pad_left + pad_right - dilation_l * (kernel_l - 1)
     k_total = c_in * kernel_l
 
@@ -229,7 +223,7 @@ def _conv1d_unit_stride_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
+                T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 # A k tile is `taps` taps over block_k input channels each; each tap's x
@@ -273,21 +267,19 @@ def _conv1d_unit_stride_kernel(
                         )
                     T.gemm(weight_shared, data_shared, out_local)
 
-                for i, j in T.Parallel(block_m, block_n):
-                    oc = by * block_m + i
-                    ol = bx * block_n + j
-                    if has_bias:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (ol < out_l),
-                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                            T.cast(0.0, dtype),
-                        )
-                    else:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (ol < out_l),
-                            T.cast(out_local[i, j], dtype),
-                            T.cast(0.0, dtype),
-                        )
+                stage_output_tile(
+                    out_local,
+                    out_shared,
+                    bias,
+                    block_m,
+                    block_n,
+                    by * block_m,
+                    c_out,
+                    bx * block_n,
+                    out_l,
+                    0,
+                    dtype,
+                )
 
                 T.copy(out_shared, out[bz, by * block_m, bx * block_n])
 
@@ -329,11 +321,8 @@ def _conv1d_depthwise_kernel(
     pad_right: int,
     dilation_l: int,
     has_bias: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
-    # Swizzle panel: a power of two so the block remap divides by shift, and the
-    # narrowest one because long grids lose as it widens.
-    swizzle_panel = 2
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
 
@@ -353,7 +342,7 @@ def _conv1d_depthwise_kernel(
                 threads=threads,
             ) as (bx, by, bz):
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
+                T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for kw in T.serial(kernel_l):
@@ -419,18 +408,13 @@ def _conv1d_group_kernel(
     pad_right: int,
     dilation_l: int,
     has_bias: bool,
-    dtype: str = "float16",
-    groups: int = 1,
-    c_in_g: int = 0,
-    c_out_g: int = 0,
+    dtype: str,
+    groups: int,
+    c_in_g: int,
+    c_out_g: int,
 ):
-    # Swizzle panel: a power of two so the block remap divides by shift, and the
-    # narrowest one because long grids lose as it widens.
-    swizzle_panel = 2
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-    c_in_g = c_in_g if c_in_g > 0 else c_in // groups
-    c_out_g = c_out_g if c_out_g > 0 else c_out // groups
     k_total = c_in_g * kernel_l
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -455,7 +439,7 @@ def _conv1d_group_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
+                T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
@@ -492,22 +476,19 @@ def _conv1d_group_kernel(
 
                     T.gemm(weight_shared, data_shared, out_local)
 
-                for i, j in T.Parallel(block_m, block_n):
-                    oc_g = by * block_m + i
-                    oc = group_id * c_out_g + oc_g
-                    ol = bx * block_n + j
-                    if has_bias:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc_g < c_out_g) & (ol < out_l),
-                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                            T.cast(0.0, dtype),
-                        )
-                    else:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc_g < c_out_g) & (ol < out_l),
-                            T.cast(out_local[i, j], dtype),
-                            T.cast(0.0, dtype),
-                        )
+                stage_output_tile(
+                    out_local,
+                    out_shared,
+                    bias,
+                    block_m,
+                    block_n,
+                    by * block_m,
+                    c_out_g,
+                    bx * block_n,
+                    out_l,
+                    group_id * c_out_g,
+                    dtype,
+                )
 
                 if c_out_g % block_m == 0:
                     # The tile ends on this group's last channel, so the copy cannot spill
@@ -554,11 +535,8 @@ def _conv1d_pointwise_kernel(
     l_in: int,
     c_out: int,
     has_bias: bool,
-    dtype: str = "float16",
+    dtype: str,
 ):
-    # Swizzle panel: a power of two so the block remap divides by shift, and the
-    # narrowest one because long grids lose as it widens.
-    swizzle_panel = 2
     accum_dtype = "float"
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -583,7 +561,7 @@ def _conv1d_pointwise_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
+                T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 tile_l_end = bx * block_n + block_n - 1
@@ -605,21 +583,19 @@ def _conv1d_pointwise_kernel(
 
                     T.gemm(weight_shared, data_shared, out_local)
 
-                for i, j in T.Parallel(block_m, block_n):
-                    oc = by * block_m + i
-                    l_idx = bx * block_n + j
-                    if has_bias:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (l_idx < l_in),
-                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                            T.cast(0.0, dtype),
-                        )
-                    else:
-                        out_shared[i, j] = T.if_then_else(
-                            (oc < c_out) & (l_idx < l_in),
-                            T.cast(out_local[i, j], dtype),
-                            T.cast(0.0, dtype),
-                        )
+                stage_output_tile(
+                    out_local,
+                    out_shared,
+                    bias,
+                    block_m,
+                    block_n,
+                    by * block_m,
+                    c_out,
+                    bx * block_n,
+                    l_in,
+                    0,
+                    dtype,
+                )
 
                 T.copy(out_shared, out[bz, by * block_m, bx * block_n])
 
@@ -649,6 +625,26 @@ def _conv1d_pointwise_kernel(
     return _conv1d_pointwise_func
 
 
+def _staged_default_config(
+    kernel: "Conv1dPointwiseKernel | Conv1dKernel", block_k: int = 128
+) -> dict:
+    """A 64x128x*block_k* tile with as many stages, down to one, as *kernel*'s shared memory
+    holds."""
+    block_m, block_n = 64, 128
+    num_stages = conv_num_stages(kernel.build_target.arch)
+    cap = kernel.build_target.smem_budget
+    while num_stages > 1 and kernel._shared_bytes(block_m, block_n, block_k, num_stages) > cap:
+        num_stages -= 1
+    return {
+        "block_m": block_m,
+        "block_n": block_n,
+        "block_k": block_k,
+        "num_stages": num_stages,
+        "threads": 128,
+        "enable_rasterization": True,
+    }
+
+
 class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
     """Dense 1x1 Conv1d, which lowers to a pointwise GEMM over the channel axis."""
 
@@ -673,7 +669,7 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = dict(n=call.n, c_in=call.c_in, l_in=call.l_in, c_out=call.c_out, dtype=call.dtype)
         identity = (*args.values(), call.has_bias, index)
         return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
@@ -691,14 +687,9 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
         device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        self.n = n
         self.c_in = c_in
         self.l_in = l_in
-        self.c_out = c_out
         self.dtype = dtype
-        self.has_bias = has_bias
-        self.out_l = l_in
-        self.k_total = c_in
         self.kernel = _conv1d_pointwise_kernel(
             n,
             c_in,
@@ -711,20 +702,7 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        block_m, block_n, block_k = 64, 128, 128
-        # Fewer stages where shared memory cannot hold them, down to one.
-        num_stages = conv_num_stages(self.build_target.arch)
-        cap = self.build_target.smem_budget
-        while num_stages > 1 and self._shared_bytes(block_m, block_n, block_k, num_stages) > cap:
-            num_stages -= 1
-        return {
-            "block_m": block_m,
-            "block_n": block_n,
-            "block_k": block_k,
-            "num_stages": num_stages,
-            "threads": 128,
-            "enable_rasterization": True,
-        }
+        return _staged_default_config(self)
 
     def _shared_bytes(self, block_m: int, block_n: int, block_k: int, num_stages: int) -> int:
         """Upper bound on the program's shared memory. The pipeline buffers each weight
@@ -886,7 +864,7 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = dict(
             n=call.n,
             c_in=call.c_in,
@@ -918,19 +896,14 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
         device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        self.n = n
-        self.c_in = c_in
         self.l_in = l_in
         self.c_out = c_out
         self.kernel_l = kernel_l
         self.stride_l = stride_l
-        self.pad_l = pad_l
-        self.pad_left, self.pad_right = pad_l
+        self.pad_left, pad_right = pad_l
         self.dilation_l = dilation_l
         self.dtype = dtype
-        self.has_bias = has_bias
         self.out_l = (l_in + sum(pad_l) - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-        self.m = n * self.out_l
         self.k_total = c_in * kernel_l
         self.kernel = self._builder(
             n,
@@ -940,7 +913,7 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
             kernel_l,
             stride_l,
             self.pad_left,
-            self.pad_right,
+            pad_right,
             dilation_l,
             has_bias,
             self.dtype_str,
@@ -949,21 +922,10 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        block_m, block_n, block_k = 64, 128, 128
+        block_k = 128
         if self.build_target.arch == 90 and self.k_total <= 32 and self.stride_l > 1:
             block_k = 32
-        num_stages = conv_num_stages(self.build_target.arch)
-        cap = self.build_target.smem_budget
-        while num_stages > 1 and self._shared_bytes(block_m, block_n, block_k, num_stages) > cap:
-            num_stages -= 1
-        return {
-            "block_m": block_m,
-            "block_n": block_n,
-            "block_k": block_k,
-            "num_stages": num_stages,
-            "threads": 128,
-            "enable_rasterization": True,
-        }
+        return _staged_default_config(self, block_k)
 
     def _shared_bytes(self, block_m: int, block_n: int, block_k: int, num_stages: int) -> int:
         """Upper bound on the program's shared memory. The pipeline buffers each weight
@@ -1100,7 +1062,7 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
 
     @classmethod
     def entry_for(cls, call: Conv1dCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = dict(
             n=call.n,
             c_in=call.c_in,
@@ -1130,11 +1092,11 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         dtype: torch.dtype,
         dilation_l: int = 1,
         has_bias: bool = False,
-        groups: int = 1,
-        c_in_g: int | None = None,
-        c_out_g: int | None = None,
         config: dict | None = None,
         *,
+        groups: int,
+        c_in_g: int,
+        c_out_g: int,
         device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -1144,12 +1106,11 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
         self.c_out = c_out
         self.kernel_l = kernel_l
         self.stride_l = stride_l
-        self.pad_l = pad_l
         self.pad_left, self.pad_right = pad_l
         self.dilation_l = dilation_l
         self.groups = groups
-        self.c_in_g = c_in_g if c_in_g is not None else c_in // groups
-        self.c_out_g = c_out_g if c_out_g is not None else c_out // groups
+        self.c_in_g = c_in_g
+        self.c_out_g = c_out_g
         self.dtype = dtype
         self.has_bias = has_bias
         if self.groups <= 1:
@@ -1234,7 +1195,7 @@ class DepthwiseConv1dKernel(GroupConv1dKernel):
     preferred_over = frozenset({"group_conv1d"})
 
     @classmethod
-    def refusal(cls, call) -> "str | None":
+    def refusal(cls, call: Conv1dCall) -> str | None:
         if call.c_in_g != 1 or call.c_out_g != 1:
             return "serves one input and one output channel per group"
         return super().refusal(call)

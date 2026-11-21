@@ -6,6 +6,7 @@ import torch
 
 from workloads.device import run_device
 from workloads.numerics import Custom, Exact
+from workloads.rope import rotate_pairs
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
@@ -159,9 +160,7 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
         if positions is not None:
             # Each pair rotated in float32 and rounded once to k_pe's dtype.
             cos, sin = cos_sin_cache[positions[written]].float().chunk(2, -1)
-            a, b = _split_pairs(pe.float(), self.rope_layout)
-            pe = _join_pairs(a * cos - b * sin, b * cos + a * sin, self.rope_layout)
-            pe = pe.to(k_pe.dtype)
+            pe = rotate_pairs(pe.float(), cos, sin, self.rope_layout == "neox").to(k_pe.dtype)
         stored = torch.cat([kv_c[written], pe], -1)
         if kv_scale is not None:
             # Express saturation explicitly: some torch FP8 casts turn overflow into NaN.
@@ -181,11 +180,11 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
         written = (slot_mapping >= 0).nonzero().squeeze(1)
         rows = slot_mapping[written]
         layout, dtype, cache_dtype = self.rope_layout, self.dtype, self.cache_dtype
+        neox = layout == "neox"
         latent = self.latent_dim
         table = cos_sin_cache[positions[written]]
         cos, sin = table.double().chunk(2, -1)
-        a, b = _split_pairs(k_pe[written].double(), layout)
-        exact = _join_pairs(a * cos - b * sin, b * cos + a * sin, layout)
+        exact = rotate_pairs(k_pe[written].double(), cos, sin, neox)
 
         def stored(value):
             landed = value.to(dtype).float()
@@ -202,6 +201,7 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
         bits = sum(round(-math.log2(torch.finfo(t).eps)) + 1 for t in (dtype, table.dtype))
         slack = exact.abs()
         if bits > 24:
+            a, b = _split_pairs(k_pe[written].double(), layout)
             slack = slack + _join_pairs(
                 (a * cos).abs() + (b * sin).abs(), (b * cos).abs() + (a * sin).abs(), layout
             )
@@ -215,8 +215,7 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
         in_dtype = None
         if table.dtype == dtype:
             c, s = table.chunk(2, -1)
-            x, y = _split_pairs(k_pe[written], layout)
-            in_dtype = stored(_join_pairs(x * c - y * s, y * c + x * s, layout).float())
+            in_dtype = stored(rotate_pairs(k_pe[written], c, s, neox).float())
 
         def within_rotation_rounding(got, expected):
             def raw(t):

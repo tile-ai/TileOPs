@@ -16,14 +16,19 @@ Values past R pass through normalized; the v heads are not touched. The arithmet
 and each value rounds once to the qkv dtype.
 """
 
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops._kernels.build_target import target_cache
+from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.norm._config import rms_scale, warp_sum
+from tileops._kernels.norm._config import rms_scale
 from tileops._kernels.norm.call_spec import FusedQKNormRoPECall, FusedQKNormRoPEFwdInterface
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 
 __all__ = ["FusedQKNormRoPEKernel"]
 
@@ -31,7 +36,7 @@ __all__ = ["FusedQKNormRoPEKernel"]
 def _vector(dim: int, rot: int, dtype: torch.dtype) -> int:
     """Values a lane moves per access: the widest of one 16-byte vector, 4, 2 or 1 whose pairs
     tile both the rotated and the passed-through values. Needs an even ``dim``."""
-    widest = 16 // torch.empty((), dtype=dtype).element_size()
+    widest = VECTOR_ACCESS_BYTES // dtype.itemsize
     return next(v for v in (widest, 4, 2, 1) if dim % (2 * v) == 0 and rot % (2 * v) == 0)
 
 
@@ -186,7 +191,7 @@ def _fused_qk_norm_rope_kernel(
                     x[v] = T.cast(va[v], "float32")
                     x[vec + v] = T.cast(vb[v], "float32")
                     ss[0] += x[v] * x[v] + x[vec + v] * x[vec + v]
-                warp_sum(ss, 1, lanes=group)
+                warp_reduce(ss, operator.add, lanes=group)
                 scale = T.rsqrt(ss[0] / T.float32(dim) + T.float32(eps))
                 for v in T.unroll(vec):
                     x[v] = x[v] * scale * rms_scale(T.cast(wa[v], "float32"), zero_centered)
@@ -247,7 +252,7 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
         if call.dim % 2:
             return f"a lane holds pairs of values, so the head dim must be even, not {call.dim}"
         lanes = call.dim // (2 * _vector(call.dim, call.rot, call.dtype))
-        if lanes > 32:
+        if lanes > WARP_LANES:
             return (
                 f"a head of {call.dim} values with {call.rot} rotated needs {lanes} lanes; "
                 "its sum of squares is reduced inside one warp of 32"
@@ -271,7 +276,7 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
             "zero_centered": call.zero_centered,
             "mrope_ends": None if sections is None else (3 * sections[1], 3 * sections[2]),
         }
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         key = (*args, *options.values(), index)
         return key, lambda: cls(*args, **options, device_index=index)
 

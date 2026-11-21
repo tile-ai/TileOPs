@@ -127,8 +127,13 @@ def test_kda_sm90_given_gate_lean_preparation_matches_reference(monkeypatch) -> 
     assert built == [(True, True)]
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("batch", [1, 8], ids=["b1", "b8"])
+@pytest.mark.parametrize(
+    "batch",
+    [
+        pytest.param(8, marks=pytest.mark.smoke, id="b8"),
+        pytest.param(1, marks=pytest.mark.full, id="b1"),
+    ],
+)
 def test_kda_decode_matches_reference(batch: int) -> None:
     torch.manual_seed(42)
     _check(batch, 1, 4, 128, torch.bfloat16)
@@ -796,7 +801,7 @@ def _strong_decays(dtype):
             id="unnormalized-64-fp16",
         ),
         pytest.param(
-            torch.bfloat16, 16, 16, 16, 128, False, 9.0, marks=pytest.mark.smoke, id="fused-bf16"
+            torch.bfloat16, 16, 16, 16, 128, False, 9.0, marks=pytest.mark.full, id="fused-bf16"
         ),
         pytest.param(
             torch.float16, 16, 16, 16, 128, True, 1.5, marks=pytest.mark.full, id="fused-fp16"
@@ -928,15 +933,25 @@ def _pooled(dtype: torch.dtype, *, some: tuple[str, ...] = (), **row) -> KDAFwdC
     return KDAFwdCallTest(call)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("dtype", "dim", "flags"),
     [
-        (torch.float16, 128, {}),
-        (torch.bfloat16, 128, {"state_v_first": True, "use_qk_l2norm_in_kernel": True}),
-        (torch.bfloat16, 64, {"state_v_first": True}),
+        pytest.param(torch.float16, 128, {}, marks=pytest.mark.smoke, id="fp16-key-major"),
+        pytest.param(
+            torch.bfloat16,
+            128,
+            {"state_v_first": True, "use_qk_l2norm_in_kernel": True},
+            marks=pytest.mark.smoke,
+            id="bf16-value-major",
+        ),
+        pytest.param(
+            torch.bfloat16,
+            64,
+            {"state_v_first": True},
+            marks=pytest.mark.full,
+            id="bf16-value-major-64",
+        ),
     ],
-    ids=["fp16-key-major", "bf16-value-major", "bf16-value-major-64"],
 )
 def test_kda_decode_updates_its_slots_of_a_state_pool(
     dtype: torch.dtype, dim: int, flags: dict
@@ -987,22 +1002,33 @@ _EVEN = [100, 70, 120, 66]
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("state_v_first", [False, True], ids=["key-major", "value-major"])
 @pytest.mark.parametrize(
-    ("dtype", "chunked"),
+    ("state_v_first", "dtype", "chunked"),
     [
         pytest.param(
-            torch.bfloat16, False,
-            marks=[pytest.mark.sm89, pytest.mark.smoke], id="uneven-chunks-sm89",
+            False, torch.bfloat16, False,
+            marks=[pytest.mark.sm89, pytest.mark.smoke], id="uneven-chunks-sm89-key-major",
         ),
         pytest.param(
-            torch.bfloat16, True,
-            marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-sm90",
+            False, torch.bfloat16, True,
+            marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-sm90-key-major",
         ),
         # fp16 chunks take the split preparation on SM90, which the one-CTA walk outruns.
         pytest.param(
-            torch.float16, False,
-            marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-fp16-sm90",
+            False, torch.float16, False,
+            marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-fp16-sm90-key-major",
+        ),
+        pytest.param(
+            True, torch.bfloat16, False,
+            marks=[pytest.mark.sm89, pytest.mark.full], id="uneven-chunks-sm89-value-major",
+        ),
+        pytest.param(
+            True, torch.bfloat16, True,
+            marks=[pytest.mark.sm90, pytest.mark.full], id="uneven-chunks-sm90-value-major",
+        ),
+        pytest.param(
+            True, torch.float16, False,
+            marks=[pytest.mark.sm90, pytest.mark.full], id="uneven-chunks-fp16-sm90-value-major",
         ),
     ],
 )  # fmt: skip
@@ -1046,13 +1072,22 @@ def test_kda_raw_gate_prefill_updates_its_slots_of_a_value_major_pool() -> None:
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
 
 
-@pytest.mark.parametrize("pooled", [False, True], ids=["batch-order", "pool"])
 @pytest.mark.parametrize(
-    ("length", "heads"),
+    ("length", "heads", "pooled"),
     [
         # Only the SM90 walk forms the outputs itself.
-        pytest.param(65, 4, marks=[pytest.mark.sm90, pytest.mark.smoke], id="outputs-in-walk"),
-        pytest.param(1200, 2, marks=pytest.mark.full, id="output-launch"),
+        pytest.param(
+            65, 4, True, marks=[pytest.mark.sm90, pytest.mark.smoke], id="outputs-in-walk-pool"
+        ),
+        pytest.param(
+            65,
+            4,
+            False,
+            marks=[pytest.mark.sm90, pytest.mark.full],
+            id="outputs-in-walk-batch-order",
+        ),
+        pytest.param(1200, 2, False, marks=pytest.mark.full, id="output-launch-batch-order"),
+        pytest.param(1200, 2, True, marks=pytest.mark.full, id="output-launch-pool"),
     ],
 )
 def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, heads: int) -> None:

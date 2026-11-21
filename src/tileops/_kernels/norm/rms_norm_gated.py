@@ -11,6 +11,7 @@ arithmetic is float32 and ``y`` rounds once to the dtype of ``x``.
 """
 
 import math
+import operator
 
 import tilelang
 import tilelang.language as T
@@ -20,8 +21,8 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.norm._config import warp_sum
 from tileops._kernels.norm.call_spec import RMSNormGatedCall, RMSNormGatedFwdInterface
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 
 __all__ = ["RMSNormGatedKernel"]
@@ -152,7 +153,7 @@ def _rms_norm_gated_kernel(
                         if not norm_before_gate:
                             h[j] = h[j] * gate[j]
                     ss[0] += h[j] * h[j]
-                warp_sum(ss, 1, lanes=warp_lanes)
+                warp_reduce(ss, operator.add, lanes=warp_lanes)
                 if group_warps > 1:
                     if tx % WARP_LANES == 0:
                         part[tx // WARP_LANES] = ss[0]

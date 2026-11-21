@@ -32,8 +32,6 @@ from tileops._kernels.constants import (
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 from tileops._utils import WARP_LANES
 
-_FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-
 __all__ = [
     "RoPECall",
     "RoPECosSinCall",
@@ -516,7 +514,6 @@ class _RoPEPositionsKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
     _NEOX: bool
 
     @classmethod
@@ -566,14 +563,8 @@ class _RoPEPositionsKernel(Kernel):
             raise ValueError(f"position_dtype must be int32 or int64, got {position_dtype}")
         if offset_dtype not in (None, torch.int32, torch.int64):
             raise ValueError(f"offset_dtype must be int32, int64 or None, got {offset_dtype}")
-        self.query_heads = query_heads
         self.key_heads = key_heads
-        self.head_size = head_size
-        self.rotary_dim = rotary_dim
-        self.max_position = max_position
         self.dtype = dtype
-        self.position_dtype = position_dtype
-        self.offset_dtype = offset_dtype
         lanes = VECTOR_ACCESS_BYTES // dtype.itemsize
         span = rotary_dim // 2 if self._NEOX else rotary_dim
         rot_vec = math.gcd(lanes, head_size, span)
@@ -1112,7 +1103,6 @@ class RoPECosSinKernel(Kernel, RoPECosSinFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @classmethod
     def entry_for(cls, call: RoPECosSinCall) -> Entry:

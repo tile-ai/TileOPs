@@ -4,8 +4,6 @@ Workload shapes and dtypes come from the ops manifest; roofline FLOP and
 byte counts come from the op's ``eval_roofline()``.
 """
 
-import dataclasses
-
 import pytest
 
 from benchmarks import api as bench
@@ -28,14 +26,15 @@ def test_min_p_mask_bench(case) -> None:
     vllm_min_p.min_p_count = 1
     vllm_min_p.min_p = min_p[:, None]
 
-    # vllm masks the logits in place.
-    vllm_mask = private_inputs(lambda logits, _min_p: vllm_min_p.apply(logits), case.inputs, 0)
     bench.Runner(op, case).compare(
         {
             "torch-ref": case.reference,
             TORCH_COMPILE_TAG: compiled_reference(case.reference),
-            VLLM_TAG: dataclasses.replace(
-                vllm_mask,
+            # vllm masks the logits in place.
+            VLLM_TAG: private_inputs(
+                lambda logits, _min_p: vllm_min_p.apply(logits),
+                case.inputs,
+                0,
                 noncomparable_reason=(
                     "vendor approximates the mask boundary beyond the workload contract"
                 ),

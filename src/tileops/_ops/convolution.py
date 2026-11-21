@@ -72,7 +72,10 @@ def _out_dim(size: int, kernel: int, stride: int, before: int, after: int, dilat
 
 
 class Conv1dFwdOp(Op):
-    """1D convolution over an NCL input, as ``torch.nn.functional.conv1d``."""
+    """1D convolution over an NCL input, as ``torch.nn.functional.conv1d``.
+
+    Float32 operands multiply in TF32, as cuDNN does by default.
+    """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "conv1d_pointwise": Conv1dPointwiseKernel,
@@ -129,13 +132,7 @@ class Conv1dFwdOp(Op):
         c_out, c_in_g, kernel_l = weight.shape
         (stride,) = per_axis_values(self.stride, 1)
         (dilation,) = per_axis_values(self.dilation, 1)
-        if self.padding == "same":
-            total = dilation * (kernel_l - 1)
-            pad_left, pad_right, out_l = total // 2, total - total // 2, l_in
-        else:
-            (pad,) = (0,) if self.padding == "valid" else per_axis_values(self.padding, 1)
-            pad_left = pad_right = pad
-            out_l = _out_dim(l_in, kernel_l, stride, pad, pad, dilation)
+        (pad_left,), (pad_right,) = _padding(self.padding, (kernel_l,), (dilation,))
         # A kernel is handed contiguous tensors, in the manifest's ``signature.inputs`` order;
         # a bias this call did not pass is ``None`` there.
         input = input.contiguous()
@@ -156,7 +153,7 @@ class Conv1dFwdOp(Op):
                 pad_right=pad_right,
                 dilation_l=dilation,
                 groups=self.groups,
-                out_l=out_l,
+                out_l=_out_dim(l_in, kernel_l, stride, pad_left, pad_right, dilation),
                 dtype=input.dtype,
                 has_bias=bias is not None,
                 device=input.device,
@@ -172,7 +169,7 @@ class Conv1dFwdOp(Op):
 class Conv2dFwdOp(Op):
     """2D convolution over an NCHW input, as ``torch.nn.functional.conv2d``.
 
-    They multiply float32 operands in TF32, as cuDNN does by default.
+    Float32 operands multiply in TF32, as cuDNN does by default.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -268,7 +265,7 @@ class Conv2dFwdOp(Op):
 class Conv3dFwdOp(Op):
     """3D convolution over an NCDHW input, as ``torch.nn.functional.conv3d``.
 
-    They multiply float32 operands in TF32, as cuDNN does by default.
+    Float32 operands multiply in TF32, as cuDNN does by default.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

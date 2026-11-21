@@ -2,7 +2,6 @@
 
 import tilelang.language as T
 
-from tileops._kernels.constants import INV_SQRT2
 from tileops._kernels.elementwise._nan import bound, keep_nan
 
 __all__ = ["erf", "gelu"]
@@ -93,11 +92,12 @@ def gelu(x, out_dtype):
     Returns:
         GELU(x) in float32.
     """
+    inv_sqrt2 = 0.7071067811865476  # erf takes x / sqrt(2)
     wide = T.cast(x, "float32")
     half_x = T.cast(0.5, "float32") * wide
     one = T.cast(1.0, "float32")
     if out_dtype == "float32":
-        return half_x * (one + T.erf(wide * T.cast(INV_SQRT2, "float32")))
+        return half_x * (one + T.erf(wide * T.cast(inv_sqrt2, "float32")))
 
     def one_plus_erf(s):
         w = one - s * s
@@ -106,5 +106,5 @@ def gelu(x, out_dtype):
             acc = acc * w + T.cast(coeff * _CLAMP, "float32")
         return T.max(s * acc + one, T.cast(0.0, "float32"))
 
-    scaled = wide * T.cast(INV_SQRT2 / _CLAMP, "float32")
+    scaled = wide * T.cast(inv_sqrt2 / _CLAMP, "float32")
     return half_x * bound(T.min(T.max(scaled, -one), one), one_plus_erf)

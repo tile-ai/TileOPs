@@ -10,9 +10,9 @@ import importlib
 
 from tileops.manifest._dtype_rules import DTYPE_BITS
 from tileops.manifest._expr import evaluate, parse
-from tileops.manifest._kinds import _commas, split_union
+from tileops.manifest._kinds import split_commas, split_union
 
-__all__ = ["ADTValue", "convert", "is_integer", "python_class"]
+__all__ = ["ADTValue", "convert", "element_types", "is_integer", "python_class"]
 
 
 class ADTValue:
@@ -104,17 +104,26 @@ def _member(member: str, value, adts: dict):
     return value
 
 
+def element_types(container: str, length: int) -> list[str] | None:
+    """The type of each of `length` elements of a `list[...]` or `tuple[...]` type.
+
+    None when a fixed-length tuple has another arity.
+    """
+    inner = container[container.index("[") + 1 : -1]
+    if container.startswith("list["):
+        return [inner] * length
+    items = split_commas(inner)
+    if items[-1] == "...":
+        return [items[0]] * length
+    return items if len(items) == length else None
+
+
 def _sequence(member: str, head: str, value, adts: dict):
     if not isinstance(value, (list, tuple)):
         return _REJECT
-    inner = member[len(head) : -1]
-    items = [inner] * len(value)
-    if head == "tuple[" and not inner.endswith(",..."):
-        items = _commas(inner)
-        if len(items) != len(value):
-            return _REJECT
-    elif head == "tuple[":
-        items = [inner.removesuffix(",...")] * len(value)
+    items = element_types(member, len(value))
+    if items is None:
+        return _REJECT
     out = []
     for text, item in zip(items, value, strict=True):
         converted = next(

@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from itertools import accumulate
 from typing import Any
 
 import torch
@@ -172,28 +172,21 @@ class GEMMFP8Workload(WorkloadBase):
         )
 
     def _scale_shapes(self) -> tuple[tuple[int, int], tuple[int, int]]:
-        if self.scale_mode in ("per_tensor", "tensor"):
+        if self.scale_mode == "per_tensor":
             return (1, 1), (1, 1)
-        if self.scale_mode == "block128":
-            if self.k % 128 != 0:
-                raise ValueError("block128 FP8 workloads require k divisible by 128")
-            return (self.m, self.k // 128), (self.n, self.k // 128)
-        if self.scale_mode == "block128x128":
-            if self.k % 128 != 0:
-                raise ValueError("block128x128 FP8 workloads require k divisible by 128")
-            return (self.m, self.k // 128), (-(-self.n // 128), self.k // 128)
-        raise ValueError(f"unknown FP8 GEMM scale_mode {self.scale_mode!r}")
+        if self.scale_mode not in ("block128", "block128x128"):
+            raise ValueError(f"unknown FP8 GEMM scale_mode {self.scale_mode!r}")
+        if self.k % 128 != 0:
+            raise ValueError(f"{self.scale_mode} FP8 workloads require k divisible by 128")
+        b_rows = self.n if self.scale_mode == "block128" else -(-self.n // 128)
+        return (self.m, self.k // 128), (b_rows, self.k // 128)
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        a = (torch.randn(self.m, self.k, device=run_device()) * 0.25).to(self.dtype).contiguous()
-        b = (torch.randn(self.n, self.k, device=run_device()) * 0.25).to(self.dtype).contiguous()
+        a = (torch.randn(self.m, self.k, device=run_device()) * 0.25).to(self.dtype)
+        b = (torch.randn(self.n, self.k, device=run_device()) * 0.25).to(self.dtype)
         scale_a_shape, scale_b_shape = self._scale_shapes()
-        a_scale = (
-            0.5 + torch.rand(*scale_a_shape, device=run_device(), dtype=torch.float32)
-        ).contiguous()
-        b_scale = (
-            0.5 + torch.rand(*scale_b_shape, device=run_device(), dtype=torch.float32)
-        ).contiguous()
+        a_scale = 0.5 + torch.rand(*scale_a_shape, device=run_device(), dtype=torch.float32)
+        b_scale = 0.5 + torch.rand(*scale_b_shape, device=run_device(), dtype=torch.float32)
         if self.bias:
             bias = torch.randn(self.n, device=run_device(), dtype=self.out_dtype)
             return a, b, a_scale, b_scale, bias
@@ -492,47 +485,14 @@ class GEMMW4A16Workload(WorkloadBase):
         return Exact(atol=7e-2, rtol=5e-2)
 
 
-@dataclass(frozen=True)
-class _W4A8Packing:
-    """Extents of the W4A8 weight order the reference repack and the input sampler share.
-
-    Attributes:
-        bits: Bits of one signed INT4 value; two share a uint8 byte.
-        unit_rows: Rows of one 512-byte unit.
-        block_rows: Rows of one tile, the SM90 FP8 WGMMA M extent.
-        group_k: K of one tile.
-        warp_lanes: Lanes of one warp.
-    """
-
-    bits: int = torch.iinfo(torch.uint8).bits // 2
-    unit_rows: int = 16
-    block_rows: int = 64
-    group_k: int = 128
-    warp_lanes: int = 32
-
-
-# The reference repack and the input sampler must encode the same signed INT4 order.
-_W4A8_PACKING = _W4A8Packing()
-
-
 def unpack_signed_int4(packed: torch.Tensor) -> torch.Tensor:
     """The ``[N, K]`` INT4 values of a row-major ``[N, K // 2]`` uint8 packing.
 
     Byte ``(n, j)`` holds ``k = 2j`` in its low nibble and ``k = 2j + 1`` in its high nibble,
     each a signed two's-complement value in ``[-8, 7]``.
     """
-    bits = _W4A8_PACKING.bits
-    sign, mask = 1 << (bits - 1), (1 << bits) - 1
-    nibbles = torch.stack((packed & mask, packed >> bits), dim=-1).to(torch.int16)
-    return ((nibbles ^ sign) - sign).reshape(packed.shape[0], 2 * packed.shape[1])
-
-
-def _w4a8_row_blocks(n: int, rows: int) -> list[tuple[int, int]]:
-    """``(first row, extent)`` of each ``rows``-wide block, with an unpadded final block."""
-    blocks = [(start, rows) for start in range(0, n - n % rows, rows)]
-    if n % rows:
-        blocks.append((n - n % rows, n % rows))
-    return blocks
+    nibbles = torch.stack((packed & 0xF, packed >> 4), dim=-1).to(torch.int16)
+    return ((nibbles ^ 8) - 8).reshape(packed.shape[0], 2 * packed.shape[1])
 
 
 def repack_w4a8_weight(packed: torch.Tensor) -> torch.Tensor:
@@ -555,33 +515,24 @@ def repack_w4a8_weight(packed: torch.Tensor) -> torch.Tensor:
     n, k = packed.shape[0], 2 * packed.shape[1]
     if n <= 0 or k <= 0:
         raise ValueError(f"N and K must be positive, got N={n}, K={k}")
-    layout = _W4A8_PACKING
-    if n % layout.unit_rows or k % layout.group_k:
-        raise ValueError(
-            f"N={n} must be a multiple of {layout.unit_rows} and K={k} of {layout.group_k}"
-        )
-    sign = 1 << (layout.bits - 1)
+    # A 512-byte unit holds 16 rows; a block is 64 rows, the SM90 FP8 WGMMA M extent; a
+    # tile spans 128 K.
+    unit_rows, block_rows, group_k = 16, 64, 128
+    if n % unit_rows or k % group_k:
+        raise ValueError(f"N={n} must be a multiple of {unit_rows} and K={k} of {group_k}")
     q = unpack_signed_int4(packed)
-    code = torch.where(q > 0, q - 1, torch.where(q == 0, sign - 1, sign | (-q - 1)))
-    row_pair = layout.unit_rows // 2
-    # Each lane's four FP8 values occupy one 32-bit fragment register.
-    fragment_values = torch.int32.itemsize
+    code = torch.where(q > 0, q - 1, torch.where(q == 0, 7, 8 | (-q - 1)))
     parts = []
-    for start, rows in _w4a8_row_blocks(n, layout.block_rows):
-        # Source axes w, hr, r, g, h, p, s, t, i; target g, h, w, r, t, p, hr, s, i.
+    for start in range(0, n, block_rows):
+        rows = min(block_rows, n - start)
+        # Source axes w, hr, r, g, h, p, s, t, i; target g, h, w, r, t, p, hr, s, i. The
+        # 32 lanes of a warp are 8 row pairs r by 4 column groups t, and each lane's four
+        # FP8 values i fill one 32-bit fragment register.
         block = code[start : start + rows].reshape(
-            rows // layout.unit_rows,
-            2,
-            row_pair,
-            k // layout.group_k,
-            2,
-            2,
-            2,
-            layout.warp_lanes // row_pair,
-            fragment_values,
+            rows // unit_rows, 2, 8, k // group_k, 2, 2, 2, 4, 4
         )
         nibbles = block.permute(3, 4, 0, 2, 7, 5, 1, 6, 8).reshape(-1, 2)
-        parts.append((nibbles[:, 0] | (nibbles[:, 1] << layout.bits)).to(torch.uint8))
+        parts.append((nibbles[:, 0] | (nibbles[:, 1] << 4)).to(torch.uint8))
     return torch.cat(parts).reshape(n, k // 2)
 
 
@@ -663,10 +614,8 @@ class GEMMW4A8Workload(WorkloadBase):
         """
         device = run_device()
         activation = (torch.randn(self.m, self.k, device=device) * 0.25).to(torch.float8_e4m3fn)
-        bits = _W4A8_PACKING.bits
-        sign, mask = 1 << (bits - 1), (1 << bits) - 1
-        q = torch.randint(-sign, sign, (self.n, self.k), device=device, dtype=torch.int16)
-        packed = ((q[:, 0::2] & mask) | ((q[:, 1::2] & mask) << bits)).to(torch.uint8)
+        q = torch.randint(-8, 8, (self.n, self.k), device=device, dtype=torch.int16)
+        packed = ((q[:, 0::2] & 0xF) | ((q[:, 1::2] & 0xF) << 4)).to(torch.uint8)
         groups = self.k // self.group_size
         group_scale = (0.03 + 0.05 * torch.rand(self.n, groups, device=device)).to(
             torch.float8_e4m3fn
@@ -674,7 +623,7 @@ class GEMMW4A8Workload(WorkloadBase):
         scale_lower = 0.5
         channel_scale = scale_lower + torch.rand(self.n, device=device)
         token_scale = scale_lower + torch.rand(self.m, device=device)
-        return activation, packed.contiguous(), group_scale, channel_scale, token_scale
+        return activation, packed, group_scale, channel_scale, token_scale
 
     def ref_program(
         self,
@@ -831,49 +780,26 @@ class BMMFP8Workload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         init_scale = 0.25  # Keep FP8 products in range for this fixture.
-        a = (
-            (torch.randn(self.batch, self.m, self.k, device=run_device()) * init_scale)
-            .to(self.dtype)
-            .contiguous()
+        a = (torch.randn(self.batch, self.m, self.k, device=run_device()) * init_scale).to(
+            self.dtype
         )
-        b = (
-            (torch.randn(self.batch, self.k, self.n, device=run_device()) * init_scale)
-            .to(self.dtype)
-            .contiguous()
+        b = (torch.randn(self.batch, self.k, self.n, device=run_device()) * init_scale).to(
+            self.dtype
         )
         if self.trans_b:
             b = b.transpose(-2, -1).contiguous()
-        a_scale = (0.5 + torch.rand((), device=run_device(), dtype=torch.float32)).contiguous()
-        b_scale = (0.5 + torch.rand((), device=run_device(), dtype=torch.float32)).contiguous()
+        a_scale = 0.5 + torch.rand((), device=run_device(), dtype=torch.float32)
+        b_scale = 0.5 + torch.rand((), device=run_device(), dtype=torch.float32)
         return a, b, a_scale, b_scale
 
     def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
         a, b, a_scale, b_scale = inputs
         if self.trans_b:
             b = b.transpose(-2, -1)
-        a_f = a.float() * a_scale
-        b_f = b.float() * b_scale
-        out = torch.bmm(a_f, b_f)
-        return out.to(self.out_dtype)
+        return torch.bmm(a.float() * a_scale, b.float() * b_scale).to(self.out_dtype)
 
     def verification(self, *inputs):
         return fp8_matmul_verification(self.k)
-
-
-def _generate_batch_sizes(batch_sum: int, batch_count: int):
-    base_size = batch_sum // batch_count
-    remainder = batch_sum % batch_count
-    batch_sizes = [base_size] * batch_count
-    for i in range(remainder):
-        batch_sizes[i] += 1
-    return batch_sizes
-
-
-def _generate_offsets(batch_sizes_list):
-    batch_offsets_list = [0]
-    for size in batch_sizes_list[:-1]:
-        batch_offsets_list.append(batch_offsets_list[-1] + size)
-    return batch_offsets_list
 
 
 class GroupedGEMMWorkload(WorkloadBase):
@@ -895,9 +821,11 @@ class GroupedGEMMWorkload(WorkloadBase):
         self.dtype = dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
-        self.batch_sizes_list = (
-            _generate_batch_sizes(batch_sum, batch_count) if batch_sizes is None else batch_sizes
-        )
+        if batch_sizes is None:
+            # Even groups, the first ``batch_sum % batch_count`` one row longer.
+            base, extra = divmod(batch_sum, batch_count)
+            batch_sizes = [base + (i < extra) for i in range(batch_count)]
+        self.batch_sizes_list = batch_sizes
 
     @classmethod
     def from_call(cls, call: Any) -> "GroupedGEMMWorkload":
@@ -915,35 +843,22 @@ class GroupedGEMMWorkload(WorkloadBase):
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        batch_sizes_list = self.batch_sizes_list
+        sizes = self.batch_sizes_list
         N, K = self.N, self.K
-        device = run_device()
-        dtype = self.dtype
-        batch_sum = sum(batch_sizes_list)
-        batch_count = len(batch_sizes_list)
-        batch_offsets_list = _generate_offsets(batch_sizes_list)
-
+        batch_sum, batch_count = sum(sizes), len(sizes)
         if not self.trans_a:
-            # NT / NN: A is (batch_sum, K)
-            A = torch.randn(batch_sum, K, device=device, dtype=dtype)
-            if self.trans_b:
-                # NT: B is (batch_count, N, K)
-                B = torch.randn(batch_count, N, K, device=device, dtype=dtype)
-            else:
-                # NN: B is (batch_count, K, N)
-                B = torch.randn(batch_count, K, N, device=device, dtype=dtype)
+            # NT: B is (batch_count, N, K); NN: (batch_count, K, N).
+            a_shape = (batch_sum, K)
+            b_shape = (batch_count, N, K) if self.trans_b else (batch_count, K, N)
         else:
-            # TN / TT: A is (batch_sum, N)
-            A = torch.randn(batch_sum, N, device=device, dtype=dtype)
-            if self.trans_b:
-                # TT: B is (K, batch_sum)
-                B = torch.randn(K, batch_sum, device=device, dtype=dtype)
-            else:
-                # TN: B is (batch_sum, K)
-                B = torch.randn(batch_sum, K, device=device, dtype=dtype)
-
-        batch_sizes = torch.tensor(batch_sizes_list, device=device, dtype=torch.int32)
-        batch_offsets = torch.tensor(batch_offsets_list, device=device, dtype=torch.int32)
+            # TT: B is (K, batch_sum); TN: (batch_sum, K).
+            a_shape = (batch_sum, N)
+            b_shape = (K, batch_sum) if self.trans_b else (batch_sum, K)
+        device = run_device()
+        A = torch.randn(a_shape, device=device, dtype=self.dtype)
+        B = torch.randn(b_shape, device=device, dtype=self.dtype)
+        batch_sizes = torch.tensor(sizes, device=device, dtype=torch.int32)
+        batch_offsets = torch.tensor([0, *accumulate(sizes[:-1])], device=device, dtype=torch.int32)
         return A, B, batch_sizes, batch_offsets
 
     def ref_program(
@@ -968,61 +883,23 @@ class GroupedGEMMWorkload(WorkloadBase):
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
     ) -> torch.Tensor:
+        sizes = batch_sizes.tolist()
+        offsets = [0, *accumulate(sizes)]
+        bounds = list(zip(offsets[:-1], offsets[1:], strict=True))
         if not self.trans_a:
-            # NT / NN: output is (batch_sum, N)
-            if self.trans_b:
-                # NT: A @ B^T
-                assert A.shape[0] == sum(batch_sizes)
-                assert B.shape[0] == len(batch_sizes)
-                output = torch.empty((sum(batch_sizes), B.shape[1]), device=A.device, dtype=A.dtype)
-                start = 0
-                for i, size in enumerate(batch_sizes):
-                    size = int(size.item())
-                    end = start + size
-                    output[start:end] = torch.mm(A[start:end], B[i].transpose(0, 1).contiguous())
-                    start = end
-            else:
-                # NN: A @ B
-                assert A.shape[0] == sum(batch_sizes)
-                assert B.shape[0] == len(batch_sizes)
-                output = torch.empty((sum(batch_sizes), B.shape[2]), device=A.device, dtype=A.dtype)
-                start = 0
-                for i, size in enumerate(batch_sizes):
-                    size = int(size.item())
-                    end = start + size
-                    output[start:end] = torch.mm(A[start:end], B[i])
-                    start = end
+            # NT: A @ B^T; NN: A @ B. The output is (batch_sum, N).
+            n = B.shape[1] if self.trans_b else B.shape[2]
+            output = torch.empty((sum(sizes), n), device=A.device, dtype=A.dtype)
+            for i, (start, end) in enumerate(bounds):
+                b = B[i].transpose(0, 1).contiguous() if self.trans_b else B[i]
+                output[start:end] = torch.mm(A[start:end], b)
         else:
-            # TN / TT: output is (batch_count, N, K)
-            total_batch = int(batch_sizes.sum().item())
-            assert A.shape[0] == total_batch
-            N = A.shape[1]
-            batch_count = len(batch_sizes)
-
-            if self.trans_b:
-                # TT: A^T @ B^T
-                K = B.shape[0]
-                assert B.shape[1] == total_batch
-                output = torch.zeros((batch_count, N, K), device=A.device, dtype=A.dtype)
-                start = 0
-                for i, size in enumerate(batch_sizes):
-                    size = int(size.item())
-                    end = start + size
-                    output[i] = torch.mm(
-                        A[start:end].transpose(0, 1), B[:, start:end].transpose(0, 1)
-                    )
-                    start = end
-            else:
-                # TN: A^T @ B
-                K = B.shape[1]
-                assert B.shape[0] == total_batch
-                output = torch.zeros((batch_count, N, K), device=A.device, dtype=A.dtype)
-                start = 0
-                for i, size in enumerate(batch_sizes):
-                    size = int(size.item())
-                    end = start + size
-                    output[i] = torch.mm(A[start:end].transpose(0, 1), B[start:end])
-                    start = end
+            # TT: A^T @ B^T; TN: A^T @ B. The output is (batch_count, N, K).
+            k = B.shape[0] if self.trans_b else B.shape[1]
+            output = torch.zeros((len(sizes), A.shape[1], k), device=A.device, dtype=A.dtype)
+            for i, (start, end) in enumerate(bounds):
+                b = B[:, start:end].transpose(0, 1) if self.trans_b else B[start:end]
+                output[i] = torch.mm(A[start:end].transpose(0, 1), b)
         return output
 
 
@@ -1045,15 +922,15 @@ class GEMMW4A16BasisWorkload(GEMMW4A16Workload):
         self.k_index = k_index
 
     def gen_inputs(self):
-        n, k = 35, 384
+        n, k, groups = self.n, self.k, self.k // self.group_size
         rows = torch.arange(n)[:, None]
         quantized = torch.randint(0, 16, (n, k), generator=self.rng("packed-weight"))
-        zero = ((3 * rows + torch.arange(k // 128)[None, :]) % 16).to(torch.uint8)
+        zero = ((3 * rows + torch.arange(groups)[None, :]) % 16).to(torch.uint8)
         scale = (
-            0.03137 + torch.arange(n * (k // 128), dtype=torch.float32).reshape(n, -1) * 0.001147
+            0.03137 + torch.arange(n * groups, dtype=torch.float32).reshape(n, -1) * 0.001147
         ).to(torch.float16)
         packed = (quantized[:, 0::2] | (quantized[:, 1::2] << 4)).to(torch.uint8)
-        group = self.k_index // 128
+        group = self.k_index // self.group_size
         centered = quantized[:, self.k_index].float() - zero[:, group].float()
         self.expected = (centered * scale[:, group].float()).half()[None, :]
         activation = torch.zeros((1, k), device=run_device(), dtype=torch.float16)

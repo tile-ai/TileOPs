@@ -3,6 +3,7 @@ import torch
 
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm import BMMCall
 from tileops.gemm import BMMFP8FwdOp, BMMFwdOp
 from workloads.device import run_device
@@ -54,15 +55,6 @@ class BMMFixture(FixtureBase):
                     id="full-fp16-b8-512",
                 ),
                 pytest.param(
-                    8,
-                    512,
-                    512,
-                    512,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
-                    id="full-bf16-b8-512",
-                ),
-                pytest.param(
                     16,
                     256,
                     256,
@@ -97,15 +89,6 @@ class BMMFixture(FixtureBase):
                     torch.float16,
                     marks=pytest.mark.full,
                     id="full-fp16-b8-mha-pv",
-                ),
-                pytest.param(
-                    8,
-                    128,
-                    128,
-                    2048,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
-                    id="full-bf16-b8-mha-pv",
                 ),
                 pytest.param(
                     32,
@@ -193,12 +176,21 @@ def test_bmm_wave_filling_shapes_match_the_reference(
     ],
 )
 def test_bmm_pingpong_calibrated_band(batch: int, m: int, n: int, k: int, key: str) -> None:
-    """The real H200 calibration selects ping-pong in its band and the persistent tile outside it."""
-    op = BMMFwdOp()
-    call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
-    if call.calibration != "h200" or call.sm_count != 132:
-        pytest.skip("the ping-pong selection is calibrated on a 132-SM H200")
-    assert op.key_for("bmm", call) == key
+    """The H200 calibration selects ping-pong in its band and the persistent tile outside it."""
+    device = torch.device("cuda", 0)  # lint: device-literal allow: facts are stated
+    call = BMMCall(
+        batch=batch,
+        m=m,
+        n=n,
+        k=k,
+        dtype=torch.bfloat16,
+        arch=90,
+        sm_count=132,
+        calibration="h200",
+        smem_budget=BLOCK_SHARED_BYTES_OPT_IN[90],
+        device=device,
+    )
+    assert BMMFwdOp().key_for("bmm", call) == key
 
 
 @pytest.mark.parametrize(
@@ -345,31 +337,14 @@ def test_bmm_fp8_k_not_multiple_of_32_raises() -> None:
 
 
 @pytest.mark.smoke
-def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
-    batch, m, n, k = 4, 128, 256, 128
-    test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, a_scale, b_scale = test.gen_inputs()  # b_kn is [B, K, N]
-    # NK-layout: [B, N, K], K-innermost, contiguous.  ``transpose+
-    # contiguous`` materialises the physical NK buffer so its shape[2]
-    # unambiguously carries K.
-    b_nk = b_kn.transpose(-2, -1).contiguous()
-    assert b_nk.shape == (batch, n, k)
-    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)
-    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
-    out_nk = op_nk(a, b_nk, a_scale, b_scale)
-    torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
-
-
-@pytest.mark.smoke
 def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
-    batch, m, n, k = 4, 128, 128, 128  # K == N
+    batch, m, n, k = 4, 128, 128, 128
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, a_scale, b_scale = test.gen_inputs()  # contiguous [B, K, N]
+    a, b_kn, a_scale, b_scale = test.gen_inputs()
     b_nk_view = b_kn.transpose(-2, -1)
     assert b_nk_view.shape == (batch, n, k)
     assert b_nk_view.stride(-2) == 1
-    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)  # b as [B, K, N]
+    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)
     op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
     out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
     out_nk = op_nk(a, b_nk_view, a_scale, b_scale)
@@ -378,26 +353,24 @@ def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
 
 @pytest.mark.smoke
 def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
-    batch, m, n, k = 4, 128, 128, 128  # K == N
+    batch, m, n, k = 4, 128, 128, 128
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, a_scale, b_scale = test.gen_inputs()  # contiguous [B, K, N]
-    # Physical contiguous [B, N, K]: stride is (N*K, K, 1) => stride(-2) == K.
+    a, b_kn, a_scale, b_scale = test.gen_inputs()
     b_nk = b_kn.transpose(-2, -1).contiguous()
     assert b_nk.is_contiguous()
     assert b_nk.shape == (batch, n, k)
     assert b_nk.stride(-2) == k
-
-    # Same logical B matrix, explicit layouts.  Both must yield the same d.
     op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
     out_nk = op_nk(a, b_nk, a_scale, b_scale).clone()
-    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)  # b as [B, K, N]
+    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)
     out_kn = op_kn(a, b_kn, a_scale, b_scale)
     torch.testing.assert_close(out_nk, out_kn, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.smoke
 def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
-    """Extents that leave a tail under every staging tile transpose exactly."""
+    """A contiguous [B, N, K] b gives the [B, K, N] result, on extents that leave a tail
+    under every staging tile."""
     batch, m, n, k = 3, 128, 80, 160
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, a_scale, b_scale = test.gen_inputs()

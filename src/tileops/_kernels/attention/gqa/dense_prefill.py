@@ -41,7 +41,7 @@ def _plan(call: AttentionCall):
 
 
 class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
-    """Dense SM89 prefill using the existing packed attention program."""
+    """Dense SM89 prefill on the packed varlen prefill programs, one sequence a batch entry."""
 
     supported_archs = [89]
 
@@ -88,7 +88,7 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
         return identity, lambda: cls(call)
 
     def __init__(self, call: AttentionCall) -> None:
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.call = call
         self.dtype = call.dtype
         # The packed ABI keeps this input even when sink arithmetic is disabled.
@@ -131,8 +131,7 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        call = self.call
-        plan = _plan(call)
+        plan = _plan(self.call)
         if plan is None:
             raise ValueError("no prefill tile fits the device shared-memory budget")
         return plan

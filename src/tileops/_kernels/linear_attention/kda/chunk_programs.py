@@ -28,7 +28,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.linear_attention.chunk_plan import fp32_exponent_range
-from tileops._kernels.linear_attention.gdn.prefill_common import step_size
+from tileops._kernels.linear_attention.gdn.prefill_common import L2NORM_EPS, step_size
 from tileops._kernels.linear_attention.kda.gate import (
     DIAGONAL_LANES,
     diagonal_row_gram,
@@ -49,9 +49,6 @@ __all__ = [
 # 8 increments rather than a whole chunk, and `centred_bounds` states when that suffices.
 # The fused program and the split preparation share it.
 REFERENCE_BLOCK = 16
-# Added under the square root of each row norm before taking its reciprocal. The
-# fused program normalizes the same rows, so it imports this value.
-L2_EPS = 1e-6
 
 
 class CentredBounds(NamedTuple):
@@ -655,12 +652,12 @@ def chunk_prepare_program(
                             )
                     if referenced and l2norm:
                         for i in T.Parallel(BT):
-                            inverse_norms[i] = T.rsqrt(rowsum[i] + L2_EPS)
+                            inverse_norms[i] = T.rsqrt(rowsum[i] + L2NORM_EPS)
                     else:
                         for i, j in T.Parallel(BT, K):
                             qa_s[i, j] = T.cast(
                                 T.cast(qa_s[i, j], accum)
-                                * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0)
+                                * (T.rsqrt(rowsum[i] + L2NORM_EPS) if l2norm else 1.0)
                                 * scale,
                                 dtype,
                             )
@@ -678,12 +675,12 @@ def chunk_prepare_program(
                     # layout, and one thread in eight. The barrier after the bound tests
                     # publishes them.
                     for i in T.Parallel(BT):
-                        inverse_norms[BT + i] = T.rsqrt(rowsum[i] + L2_EPS)
+                        inverse_norms[BT + i] = T.rsqrt(rowsum[i] + L2NORM_EPS)
                 elif l2norm or not centred:
                     for i, j in T.Parallel(BT, K):
                         ka_s[i, j] = T.cast(
                             T.cast(ka_s[i, j], accum)
-                            * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0),
+                            * (T.rsqrt(rowsum[i] + L2NORM_EPS) if l2norm else 1.0),
                             dtype,
                         )
                 if centred:

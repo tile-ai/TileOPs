@@ -14,8 +14,13 @@ from tileops._kernels.constants import (
 )
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sampling.call_spec import SamplingCall, SamplingFromProbsFwdInterface
-from tileops._kernels.sampling.philox import UNIFORM_BITS, mix
-from tileops._kernels.sampling.row_tiles import load_vector, row_split, vector_width
+from tileops._kernels.sampling.philox import draw, uniform_of
+from tileops._kernels.sampling.row_tiles import (
+    gather_part_totals,
+    load_vector,
+    row_split,
+    vector_width,
+)
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["SamplingFromProbsFwdKernel"]
@@ -196,46 +201,19 @@ def _sampling_from_probs_kernel(
                                 )
                 T.sync_threads()
 
-                # The row's uniform: Philox4x32-10 keyed by the seed and counted by the row
-                # alone, so it is the same value however the launch splits the row.
-                key[0] = T.cast(seed[0] & T.int64(0xFFFFFFFF), "uint32")
-                key[1] = T.cast((seed[0] >> T.int64(32)) & T.int64(0xFFFFFFFF), "uint32")
-                counter[0] = T.uint32(0)
-                counter[1] = T.cast(line, "uint32")
-                counter[2] = T.cast(offset[0] & T.int64(0xFFFFFFFF), "uint32")
-                counter[3] = T.cast((offset[0] >> T.int64(32)) & T.int64(0xFFFFFFFF), "uint32")
-                mix(counter, key, bump)
-                aim[1] = T.cast(
-                    T.cast(counter[0] >> T.uint32(32 - UNIFORM_BITS), "float32")
-                    * T.float32(2.0**-UNIFORM_BITS),
-                    "float64",
-                )
+                # The row's uniform, counted by the row alone, so it is the same value however
+                # the launch splits the row.
+                draw(counter, key, bump, seed, offset, T.uint32(0), line)
+                aim[1] = T.cast(uniform_of(counter[0]), "float64")
 
                 if parts == 1:
                     if tx == 0:
                         owner[0] = 0
                     aim[0] = T.cast(0, "float64")
                 else:
-                    # The chunk total, summed exactly as ``locate`` sums the same entries,
-                    # so the prefix a block takes from the barrier and the prefix it then
-                    # descends agree entry for entry.
-                    if tx < WARP_LANES:
-                        acc[0] = T.cast(0, "float64")
-                        for i in T.serial(leaf_span):
-                            if tx * leaf_span + i < leaves:
-                                acc[0] = acc[0] + seg[tx * leaf_span + i]
-                        lane[tx] = acc[0]
-                    T.sync_threads()
-                    if tx == 0:
-                        acc[0] = T.cast(0, "float64")
-                        for l in T.serial(WARP_LANES):
-                            acc[0] = acc[0] + lane[l]
-                        partial[bx] = acc[0]
-                    T.sync_grid()
-                    for i in T.serial(-(-parts // threads)):
-                        if i * threads + tx < parts:
-                            chunks[i * threads + tx] = partial[line * parts + i * threads + tx]
-                    T.sync_threads()
+                    gather_part_totals(
+                        seg, lane, partial, chunks, acc, bx, line, leaves, leaf_span, parts, threads
+                    )
                     locate(
                         chunks,
                         parts,
@@ -366,14 +344,14 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
         return None
 
     def __init__(self, call: SamplingCall, config: dict | None = None) -> None:
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.call = call
         self.dtype = call.dtype
-        self._vec, self._parts, _leaves = self._plan(
+        vec, self._parts, _leaves = self._plan(
             call.vocab, call.dtype.itemsize, call.batch, call.sm_count
         )
         self.kernel = _sampling_from_probs_kernel(
-            call.batch, call.vocab, self._vec, self._THREADS, self._parts, self._PACE
+            call.batch, call.vocab, vec, self._THREADS, self._parts, self._PACE
         )
         self.init_config(config)
 

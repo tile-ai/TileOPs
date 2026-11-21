@@ -181,9 +181,7 @@ class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
         self.has_initial_state = has_initial_state
         self.init_config()
         self.program(self._compile)
-        device = (
-            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
-        )
+        device = self._build_device
         self._unread_gate = torch.empty(1, dtype=dtype, device=device)
         self._unread_state = torch.empty(1, dtype=torch.float32, device=device)
 

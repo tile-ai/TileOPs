@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
+from workloads.rope import rotate_pairs
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
@@ -51,7 +52,6 @@ class LayerNormWorkload(WorkloadBase):
     def ref_program(
         self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
     ) -> torch.Tensor:
-        # Reference uses torch.nn.functional.layer_norm
         return _norm_reference(
             "LayerNormFwdOp", (x, weight, bias), dict(eps=self.eps, normalized_shape=(self.n,))
         )
@@ -493,8 +493,8 @@ class InstanceNormOutlierWorkload(ShiftedFloat64Reference, InstanceNormWorkload)
         return x, mean, torch.ones_like(mean), weight, bias
 
 
-def _make_tensors(N, C, spatial, dtype, device=None):
-    device = device or run_device()
+def _make_tensors(N, C, spatial, dtype):
+    device = run_device()
     shape = (N, C, *spatial)
     x = torch.randn(*shape, device=device, dtype=dtype)
     weight = torch.randn(C, device=device, dtype=torch.float32)
@@ -544,16 +544,7 @@ class BatchNormBwdWorkload(WorkloadBase):
             self.N, self.C, self.spatial, self.dtype
         )
         grad_out = torch.randn_like(x)
-        # Need mean/rstd from a forward pass.
-        x32 = x.float()
-        # Compute mean and rstd via native batch norm internals.
-        C = self.C
-        L = x32.numel() // C
-        x_cl = x32.permute(1, 0, *range(2, x32.ndim)).reshape(C, L).contiguous()
-        mean = x_cl.mean(dim=1)
-        var = x_cl.var(dim=1, unbiased=False)
-        rstd = 1.0 / torch.sqrt(var + 1e-5)
-        return grad_out, x, mean, rstd, weight
+        return grad_out, x, *_batch_statistics(x), weight
 
     def ref_program(self, grad_out, x, mean, rstd, weight=None):
         return batch_norm_backward(grad_out, x, mean, rstd, weight)
@@ -653,9 +644,7 @@ class BatchNormBwdCall(NormCall):
 
     def gen_inputs(self) -> tuple:
         grad_out, x, _mean, _rstd, weight = super().gen_inputs()
-        axes = [0, *range(2, x.ndim)]
-        var, mean = torch.var_mean(x.float(), dim=axes, correction=0)
-        return grad_out, x, mean, torch.rsqrt(var + 1e-5), weight
+        return grad_out, x, *_batch_statistics(x), weight
 
     # No single torch call takes the saved statistics; the benchmark names its own baselines.
     torch_program = None
@@ -665,6 +654,13 @@ class BatchNormBwdCall(NormCall):
 
     def verification(self, *inputs):
         return batch_norm_backward_verification(inputs[0].dtype)
+
+
+def _batch_statistics(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The per-channel float32 mean and ``rsqrt(var + 1e-5)`` of ``x`` that a training
+    forward saves."""
+    var, mean = torch.var_mean(x.float(), dim=[0, *range(2, x.ndim)], correction=0)
+    return mean, torch.rsqrt(var + 1e-5)
 
 
 def batch_norm_backward_verification(dtype):
@@ -886,6 +882,7 @@ def fused_qk_norm_rope_heads(
     if mrope_section is not None:
         cos, sin = (mrope_rows(x, mrope_section, mrope_interleaved) for x in (cos, sin))
     cos, sin = cos[:, None, :], sin[:, None, :]
+    neox = rope_layout == "neox"
     heads = []
     for first, count, weight in (
         (0, num_heads, q_weight),
@@ -894,14 +891,8 @@ def fused_qk_norm_rope_heads(
         x = qkv[:, first * dim : (first + count) * dim].float().view(tokens, count, dim)
         scale = weight.float() + 1 if zero_centered else weight.float()
         y = x * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps) * scale
-        rot, rest = y[..., : 2 * half], y[..., 2 * half :]
-        if rope_layout == "neox":
-            a, b = rot[..., :half], rot[..., half:]
-            rotated = torch.cat([a * cos - b * sin, b * cos + a * sin], -1)
-        else:
-            a, b = rot[..., 0::2], rot[..., 1::2]
-            rotated = torch.stack([a * cos - b * sin, b * cos + a * sin], -1).flatten(-2)
-        heads.append(torch.cat([rotated, rest], -1).reshape(tokens, count * dim))
+        rotated = rotate_pairs(y[..., : 2 * half], cos, sin, neox)
+        heads.append(torch.cat([rotated, y[..., 2 * half :]], -1).reshape(tokens, count * dim))
     return torch.cat(heads, -1).to(qkv.dtype)
 
 

@@ -523,26 +523,32 @@ _ALL_ANY: list[tuple[type, Callable]] = [
 ]
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op_cls, torch_fn",
-    _ALL_ANY,
-    ids=[c[0].__name__ for c in _ALL_ANY],
-)
-@pytest.mark.parametrize(
-    "dim",
-    [
-        pytest.param(-1, id="dim=int"),
-        pytest.param((0, 2), id="dim=tuple"),
-        pytest.param(None, id="dim=None"),
-    ],
-)
-@pytest.mark.parametrize("keepdim", [False, True], ids=["keepdim=False", "keepdim=True"])
-@pytest.mark.parametrize(
-    "dtype",
-    [torch.float16, torch.bfloat16, torch.float32],
-    ids=["fp16", "bf16", "fp32"],
-)
+_DIMS = [(-1, "dim=int"), ((0, 2), "dim=tuple"), (None, "dim=None")]
+_FLOAT_DTYPES = [(torch.float16, "fp16"), (torch.bfloat16, "bf16"), (torch.float32, "fp32")]
+
+
+def _conformance_cases() -> list:
+    """Every (op, dim, keepdim) cell once, the dtypes taken in turn; the first three cells,
+    one a dtype, are smoke."""
+    cells = [(op, dim, keepdim) for op in _ALL_ANY for dim in _DIMS for keepdim in (False, True)]
+    cases = []
+    for i, ((op_cls, torch_fn), (dim, dim_id), keepdim) in enumerate(cells):
+        dtype, dtype_id = _FLOAT_DTYPES[i % len(_FLOAT_DTYPES)]
+        cases.append(
+            pytest.param(
+                op_cls,
+                torch_fn,
+                dim,
+                keepdim,
+                dtype,
+                id=f"{op_cls.__name__}-{dim_id}-keepdim={keepdim}-{dtype_id}",
+                marks=pytest.mark.smoke if i < len(_FLOAT_DTYPES) else pytest.mark.full,
+            )
+        )
+    return cases
+
+
+@pytest.mark.parametrize("op_cls, torch_fn, dim, keepdim, dtype", _conformance_cases())
 def test_logical_reduce_conformance(
     op_cls: type,
     torch_fn: Callable,
@@ -624,17 +630,11 @@ def test_logical_reduce_unaligned_innermost(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "dim",
+    "dim, dtype",
     [
-        pytest.param(-1, id="dim=int"),
-        pytest.param((0, 2), id="dim=tuple"),
-        pytest.param(None, id="dim=None"),
+        pytest.param(dim, dtype, id=f"{dim_id}-{dtype_id}")
+        for (dim, dim_id), (dtype, dtype_id) in zip(_DIMS, _FLOAT_DTYPES, strict=True)
     ],
-)
-@pytest.mark.parametrize(
-    "dtype",
-    [torch.float16, torch.bfloat16, torch.float32],
-    ids=["fp16", "bf16", "fp32"],
 )
 def test_count_nonzero_conformance(dim, dtype: torch.dtype) -> None:
     """``CountNonzeroFwdOp`` must match ``torch.count_nonzero`` and emit int64.

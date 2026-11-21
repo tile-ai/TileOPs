@@ -333,15 +333,16 @@ class Sample(NamedTuple):
     """SM 0's clock across the call, or None when the timer did not read it."""
 
 
-def _kernel_span_us(kernels: list[dict]) -> float:
+def _kernel_span_ms(kernels: list[dict]) -> float:
+    """Earliest start to latest end of these kernels."""
     if not kernels:
         return 0.0
     start_ns = min(int(kernel["start_ns"]) for kernel in kernels)
     end_ns = max(int(kernel["end_ns"]) for kernel in kernels)
-    return (end_ns - start_ns) / 1000.0
+    return (end_ns - start_ns) / 1e6
 
 
-def _kernel_busy_us(kernels: list[dict]) -> float:
+def _kernel_busy_ms(kernels: list[dict]) -> float:
     """Total time the device spent executing these kernels, overlaps counted once."""
     if not kernels:
         return 0.0
@@ -354,7 +355,7 @@ def _kernel_busy_us(kernels: list[dict]) -> float:
             current_start, current_end = start, end
         else:
             current_end = max(current_end, end)
-    return (total + current_end - current_start) / 1000.0
+    return (total + current_end - current_start) / 1e6
 
 
 def attributed_samples(
@@ -394,7 +395,7 @@ def attributed_samples(
             copies = [k for k in group if k.get("is_copy")]
             if not copies:
                 continue
-            uncounted[iteration] = _kernel_busy_us(copies) * 1e-3
+            uncounted[iteration] = _kernel_busy_ms(copies)
             kept = [k for k in group if not k.get("is_copy")]
             # An iteration that only copied has nothing left to time.
             if kept:
@@ -432,8 +433,8 @@ def attributed_samples(
 
     return [
         Sample(
-            device_busy_ms=_kernel_busy_us(claimed[i]) * 1e-3,
-            latency_ms=_kernel_span_us(claimed[i]) * 1e-3,
+            device_busy_ms=_kernel_busy_ms(claimed[i]),
+            latency_ms=_kernel_span_ms(claimed[i]),
             n_kernels=len(claimed[i]),
             uncounted_copy_ms=uncounted.get(i, 0.0),
         )

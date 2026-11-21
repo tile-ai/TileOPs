@@ -36,6 +36,10 @@ __all__ = [
     "zeroed_input",
 ]
 
+# Elements per block of a whole-output reduction or comparison: its float64 temporaries
+# stay one block wide, and every result is the same as for the whole tensor at once.
+_BLOCK = 1 << 20
+
 
 def assert_normalized_error(got: Any, expected: Any, bound: float = 1e-3) -> None:
     """Bound squared error / combined energy, with identical nonfinite values.
@@ -52,19 +56,13 @@ def assert_normalized_error(got: Any, expected: Any, bound: float = 1e-3) -> Non
             the normalized squared error exceeds *bound*.
     """
     if isinstance(got, (tuple, list)) or isinstance(expected, (tuple, list)):
-        outputs = got if isinstance(got, (tuple, list)) else (got,)
-        targets = expected if isinstance(expected, (tuple, list)) else (expected,)
-        for output, target in zip(outputs, targets, strict=True):
+        for output, target in zip(_outputs(got), _outputs(expected), strict=True):
             assert_normalized_error(output, target, bound)
         return
     assert got.shape == expected.shape and got.dtype == expected.dtype
     error = torch.zeros((), device=got.device, dtype=torch.float64)
     energy = torch.zeros_like(error)
-    # Reduced a megabyte of elements at a time: a long attention output reduced
-    # whole holds an FP64 temporary the size of the input, and the sum is the
-    # same either way.
-    chunk = 1 << 20
-    for a, b in zip(got.reshape(-1).split(chunk), expected.reshape(-1).split(chunk), strict=True):
+    for a, b in zip(got.reshape(-1).split(_BLOCK), expected.reshape(-1).split(_BLOCK), strict=True):
         a, b = a.double(), b.double()
         finite = torch.isfinite(a)
         assert torch.equal(finite, torch.isfinite(b)), "nonfinite mask mismatch"
@@ -116,9 +114,7 @@ def assert_quantized(got: Any, expected: Any, scale_rtol: float = 1e-6) -> None:
     on neighbouring codes. What the caller decides is how close the scales must
     be, which is *scale_rtol*.
     """
-    outputs = got if isinstance(got, (tuple, list)) else (got,)
-    targets = expected if isinstance(expected, (tuple, list)) else (expected,)
-    for output, target in zip(outputs, targets, strict=True):
+    for output, target in zip(_outputs(got), _outputs(expected), strict=True):
         if output is None and target is None:
             continue
         assert output.shape == target.shape and output.dtype == target.dtype
@@ -201,10 +197,7 @@ class Partial:
                 "reaches is Noncomparable or ReferenceInfeasible"
             )
 
-    def tolerance(self, default: dict) -> dict:
-        """Use explicit tolerances, or the dtype defaults."""
-        named = {k: v for k, v in (("rtol", self.rtol), ("atol", self.atol)) if v is not None}
-        return {"rtol": 0.0, "atol": 0.0} | named if named else default
+    tolerance = Exact.tolerance
 
 
 @dataclasses.dataclass(frozen=True)
@@ -318,13 +311,12 @@ def _assert_close_in_blocks(got: torch.Tensor, target: torch.Tensor, **tolerance
     within one block, or not contiguous, is compared whole; a failure names the first
     failing block.
     """
-    block = 1 << 20
-    if got.numel() <= block or not (got.is_contiguous() and target.is_contiguous()):
+    if got.numel() <= _BLOCK or not (got.is_contiguous() and target.is_contiguous()):
         torch.testing.assert_close(got, target, equal_nan=True, **tolerance)
         return
     flat_got, flat_target = got.view(-1), target.view(-1)
-    for start in range(0, got.numel(), block):
-        stop = min(start + block, got.numel())
+    for start in range(0, got.numel(), _BLOCK):
+        stop = min(start + _BLOCK, got.numel())
         try:
             torch.testing.assert_close(
                 flat_got[start:stop], flat_target[start:stop], equal_nan=True, **tolerance
@@ -384,7 +376,7 @@ def compare_outputs(produced: Any, expected: Any, evidence: Evidence) -> CheckRe
                 continue
             dtype = torch.complex128 if got.is_complex() else torch.float64
             for a, b in zip(
-                got.reshape(-1).split(1 << 20), target.reshape(-1).split(1 << 20), strict=True
+                got.reshape(-1).split(_BLOCK), target.reshape(-1).split(_BLOCK), strict=True
             ):
                 a, b = a.to(dtype), b.to(dtype)
                 finite = torch.isfinite(a) & torch.isfinite(b)
@@ -449,24 +441,18 @@ def _restore(tensors: list, snapshot: list) -> None:
             target.copy_(source)
 
 
-def _unchanged(tensors: list, snapshot: list) -> bool:
-    try:
-        for tensor, source in zip(tensors, snapshot, strict=True):
-            torch.testing.assert_close(tensor, source, rtol=0, atol=0, equal_nan=True)
-    except AssertionError:
-        return False
-    return True
-
-
 def _unique(value: Any) -> list:
     return list({id(t): t for t in _tensors(value)}.values())
 
 
 def _require_unchanged(shared: list, pristine: list) -> None:
-    if not _unchanged(shared, pristine):
+    try:
+        for tensor, source in zip(shared, pristine, strict=True):
+            torch.testing.assert_close(tensor, source, rtol=0, atol=0, equal_nan=True)
+    except AssertionError:
         raise AssertionError(
             "overwrote the shared inputs; run it on private arguments restored by a reset"
-        )
+        ) from None
 
 
 def check_inputs_preserved(request: Request, inputs: tuple) -> None:

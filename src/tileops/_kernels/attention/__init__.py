@@ -7,6 +7,7 @@ from tileops._kernels.attention.call_spec import (
 from tileops._kernels.attention.dsa.decode import DSADecodeBasicKernel, DSADecodeKernel
 from tileops._kernels.attention.dsa.decode_ws import DSADecodeWSKernel
 from tileops._kernels.attention.dsa.paged import DSAPagedClusterKernel, DSAPagedWSKernel
+from tileops._kernels.attention.dsa.paged_mma import DSAPagedMMAKernel
 from tileops._kernels.attention.fp8_lightning_indexer import (
     FP8LightningIndexerCall,
     FP8LightningIndexerFwdInterface,
@@ -102,6 +103,7 @@ __all__ = [
     "DSADecodeWSKernel",
     "DSAPagedCall",
     "DSAPagedClusterKernel",
+    "DSAPagedMMAKernel",
     "DSAPagedWSKernel",
     "FP8LightningIndexerCall",
     "FP8LightningIndexerFwdInterface",

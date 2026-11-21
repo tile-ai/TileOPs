@@ -190,7 +190,7 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
         return reason
 
     def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
-        super().__init__(device_index=call.device.index if call.device is not None else None)
+        super().__init__(device_index=call.device_index)
         self.call = call
         input_bytes = call.rows * call.cols * 2
         hopper_group64 = call.arch == 90 and call.group_size == 64 and not self._PER_CTA
@@ -242,13 +242,14 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
 
     _PER_CTA = False
 
-    # Use evict-first loads below _DEFAULT_LOAD_BYTES, default-policy loads above it.
     _THREADS: ClassVar[int] = 512
     _WIDE_THREADS: ClassVar[int] = 256
+    # An input of at least this many bytes loads with the default L2 policy on
+    # ``_WIDE_THREADS``-thread CTAs; a smaller one loads evict-first on ``_THREADS``.
     _DEFAULT_LOAD_BYTES: ClassVar[int] = 176 << 20
 
     @classmethod
-    def refusal(cls, call: QuantizeCall) -> "str | None":
+    def refusal(cls, call: QuantizeCall) -> str | None:
         lanes = call.group_size // cls._CHUNK
         if call.group_size % cls._CHUNK or lanes & (lanes - 1) or lanes > WARP_LANES:
             return (
@@ -288,16 +289,17 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
     _PER_CTA = True
     general = True
 
-    # Bound input fragments to 64 registers and total usage to 128 per thread.
-    # Increasing these limits requires checking for spills.
+    # A thread's input fragments stay within 64 registers and its total within 128, where
+    # the program does not spill.
     _MAX_CPT: ClassVar[int] = 4
     _MAX_THREADS: ClassVar[int] = 512
-    # Chunks per thread and register budget used to derive CTA residency.
+    # The chunks a thread holds and the registers it takes, from which the CTAs an SM
+    # holds at once follow.
     _CPT: ClassVar[int] = 2
     _REGISTERS: ClassVar[int] = 64
 
     @classmethod
-    def refusal(cls, call: QuantizeCall) -> "str | None":
+    def refusal(cls, call: QuantizeCall) -> str | None:
         widest = cls._MAX_THREADS * cls._MAX_CPT * cls._CHUNK
         if call.group_size % 128 or call.group_size > widest:
             return f"requires a group a multiple of 128 up to {widest}, got {call.group_size}"

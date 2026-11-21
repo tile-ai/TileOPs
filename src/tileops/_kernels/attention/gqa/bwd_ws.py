@@ -721,7 +721,7 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         args = (
             call.batch,
             call.heads,
@@ -782,9 +782,7 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
             self.dtype_str,
             sm_scale,
         )
-        device = (
-            torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
-        )
+        device = self._build_device
         # [next tile, CTAs retired, dQ accumulator parity, landing CTAs retired]. The
         # backward returns the first two to zero; the landing kernel flips the parity and
         # returns the last to zero. Device-side, so a captured graph replays them too.

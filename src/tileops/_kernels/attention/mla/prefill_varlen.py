@@ -12,6 +12,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.attention.call_spec import MLAVarlenCall, MLAVarlenFwdInterface
+from tileops._kernels.attention.gqa.prefill_varlen import stages_score_tile
 from tileops._kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
@@ -20,24 +21,11 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
     SHARED_BUFFER_ALIGN_BYTES,
-    WARPGROUP_THREADS,
-    WGMMA_ROWS,
 )
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = ["MLAVarlenPrefillFwdKernel"]
-
-
-def _stages_score_tile(block_m: int, threads: int) -> bool:
-    """Whether the score tile goes through shared memory.
-
-    TileLang finds no register layout for it when a warpgroup holds fewer than
-    ``WGMMA_ROWS`` rows, and staging it also takes it out of the register budget
-    that is what caps this kernel at one block per SM.
-    """
-    warpgroups = threads // WARPGROUP_THREADS
-    return warpgroups > 1 and block_m // warpgroups < WGMMA_ROWS
 
 
 @target_cache(maxsize=32)
@@ -74,7 +62,7 @@ def _mla_varlen_fwd_kernel(
         lse_shape = (heads, total_q)
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
         rescale = make_rescale(block_m, dim_v)
-        p_via_shared = _stages_score_tile(block_m, threads)
+        p_via_shared = stages_score_tile(block_m, threads)
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
 
@@ -298,7 +286,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
                 f"needs {need} bytes of shared memory per block at its narrowest tile, over "
                 f"the {call.smem_budget} bytes the device allows"
             )
-        return None
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: MLAVarlenCall) -> Entry:
@@ -311,7 +299,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
             is_causal=call.is_causal,
             sm_scale=call.sm_scale,
             dtype=call.dtype,
-            device_index=call.device.index if call.device is not None else None,
+            device_index=call.device_index,
         )
         return tuple(args.items()), lambda: cls(**args)
 
@@ -420,7 +408,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
             block_n * dim_v * itemsize,
             4 * (batch + 1),
         ]
-        if _stages_score_tile(block_m, config["threads"]):
+        if stages_score_tile(block_m, config["threads"]):
             buffers.append(block_m * block_n * itemsize)
         align = SHARED_BUFFER_ALIGN_BYTES
         return sum(-(-b // align) * align for b in buffers)
@@ -485,7 +473,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
 
         Returns:
             The ``(total_tokens, heads, dim_v)`` output and its float32
-            ``(total_tokens, heads)`` log-sum-exp.
+            ``(heads, total_tokens)`` log-sum-exp.
         """
         self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
         return self.program(self._compile)(q, k_nope, k_pe, v, cu_seqlens)

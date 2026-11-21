@@ -52,48 +52,6 @@ struct VTranspose128x224 {
   static constexpr cute::GMMA::Major MmaMajorV = cute::GMMA::Major::K;
   static constexpr cute::GMMA::Major TmaMajorV = cute::GMMA::Major::MN;
 
-  using SmemLayoutVt =
-      Layout<Shape<Int<kHeadDimV>, Int<kBlockN224>, Int<kStages>>,
-             Stride<_1, Int<kHeadDimV>, _0>>;
-
-  using SmemLayoutAtomVtMma =
-      decltype(cutlass::gemm::collective::detail::ss_smem_selector<
-               MmaMajorV, Element, Int<kHeadDimV>, Int<kBlockN224>>());
-  using SmemLayoutVtMma = decltype(tile_to_shape(
-      SmemLayoutAtomVtMma{},
-      make_shape(Int<kHeadDimV>{}, Int<kBlockN224>{}, Int<kStages>{}),
-      Step<_1, _2, _3>{}));
-
-  using LDSMThreadShape = Shape<_32, _4, _1, _1>;
-  using LDSMThreadStride = Stride<_4, _1, _0, _0>;
-  using LDSMValueShape = Shape<_2, _2, _1, _4>;
-  using LDSMValueStride = Stride<_1, _2, _16, _4>;
-  using LDSMDivideShape = Shape<_64, _8>;
-
-  using S2RTiledCopyVt =
-      decltype(make_tiled_copy(Copy_Atom<SM75_U16x8_LDSM_T, Element>{},
-                               Layout<LDSMThreadShape, LDSMThreadStride>{},
-                               Layout<LDSMValueShape, LDSMValueStride>{}));
-
-  using STSMThreadShape = Shape<_8, _4, _4, _1>;
-  using STSMThreadStride = Stride<_4, _1, _32, _0>;
-  using STSMValueShape = Shape<_1, _4, _2, _2>;
-  using STSMValueStride = Stride<_0, _1, _4, _8>;
-  using STSMDivideShape = Shape<_8, _16>;
-
-  using R2STiledCopyV =
-      decltype(make_tiled_copy(Copy_Atom<SM90_U32x4_STSM_N, Element>{},
-                               Layout<STSMThreadShape, STSMThreadStride>{},
-                               Layout<STSMValueShape, STSMValueStride>{}));
-};
-template <typename Element>
-struct VTranspose128x224Fa3Src {
-  static constexpr int kHeadDimV = 128;
-  static constexpr int kBlockN224 = 224;
-  static constexpr int kStages = 1;
-  static constexpr cute::GMMA::Major MmaMajorV = cute::GMMA::Major::K;
-  static constexpr cute::GMMA::Major TmaMajorV = cute::GMMA::Major::MN;
-
   using SmemLayoutAtomVt =
       decltype(cutlass::gemm::collective::detail::ss_smem_selector<
                TmaMajorV, Element, Int<kHeadDimV>, Int<kBlockN224>>());
@@ -132,32 +90,16 @@ struct VTranspose128x224Fa3Src {
                                Layout<STSMThreadShape, STSMThreadStride>{},
                                Layout<STSMValueShape, STSMValueStride>{}));
 };
-template <bool Transposed = false, typename Layout0>
+// The SM90 accumulator layout ((2, 2, V), M, N) regrouped as (rows, columns).
+template <typename Layout0>
 CUTLASS_DEVICE auto convert_layout_acc_rowcol(Layout0 acc_layout) {
-  if constexpr (decltype(rank<0>(acc_layout))::value == 3) {
-    static_assert(decltype(size<0, 0>(acc_layout))::value == 2);
-    static_assert(decltype(size<0, 1>(acc_layout))::value == 2);
-    static_assert(decltype(rank(acc_layout))::value == 3);
-    auto l = acc_layout;
-    if constexpr (!Transposed) {
-      return make_layout(make_layout(get<0, 1>(l), get<1>(l)),
-                         make_layout(get<0, 0>(l), get<0, 2>(l), get<2>(l)));
-    } else {
-      return make_layout(make_layout(get<0, 0>(l), get<0, 2>(l), get<2>(l)),
-                         make_layout(get<0, 1>(l), get<1>(l)));
-    }
-  } else {
-    static_assert(decltype(size<0>(acc_layout))::value == 4);
-    static_assert(decltype(rank(acc_layout))::value == 3);
-    auto l = logical_divide(acc_layout, Shape<_2>{});
-    if constexpr (!Transposed) {
-      return make_layout(make_layout(get<0, 1>(l), get<1>(l)),
-                         make_layout(get<0, 0>(l), get<2>(l)));
-    } else {
-      return make_layout(make_layout(get<0, 0>(l), get<2>(l)),
-                         make_layout(get<0, 1>(l), get<1>(l)));
-    }
-  }
+  static_assert(decltype(rank<0>(acc_layout))::value == 3);
+  static_assert(decltype(size<0, 0>(acc_layout))::value == 2);
+  static_assert(decltype(size<0, 1>(acc_layout))::value == 2);
+  static_assert(decltype(rank(acc_layout))::value == 3);
+  auto l = acc_layout;
+  return make_layout(make_layout(get<0, 1>(l), get<1>(l)),
+                     make_layout(get<0, 0>(l), get<0, 2>(l), get<2>(l)));
 }
 template <typename Fragment>
 CUTLASS_DEVICE void permute_output_fp8(Fragment& out) {
@@ -203,6 +145,13 @@ CUTLASS_DEVICE void permute_output_fp8_Vcolmajor(Fragment& frag) {
     }
   }
 }
+
+// The tiled RS WGMMA whose 64 x 128 f32 accumulator holds the output.
+using OutputTiledMma = decltype(make_tiled_mma(
+    GMMA::rs_op_selector<cutlass::float_e4m3_t, cutlass::float_e4m3_t, float,
+                         Shape<_64, _128, _128>, GMMA::Major::K,
+                         GMMA::Major::K>(),
+    Layout<Shape<_1, _1, _1>>{}));
 
 }  // namespace fp8_gqa_detail
 __device__ __forceinline__ int fp8_fa3_p_src_index(int i) {
@@ -289,26 +238,27 @@ __device__ __forceinline__ void fp8_row_max_raw_acc_64x224(float* acc_s,
     row_max[i] = m;
   }
 }
-__device__ __forceinline__ float fp8_tanh_approx(float value) {
-  float result;
-  asm("tanh.approx.f32 %0, %1;" : "=f"(result) : "f"(value));
-  return result;
-}
 __device__ __forceinline__ void fp8_apply_softcap_raw_acc_64x224(
     float* acc_s, float score_to_cap) {
 #pragma unroll
   for (int i = 0; i < 112; ++i) {
-    acc_s[i] = fp8_tanh_approx(acc_s[i] * score_to_cap);
+    float capped;
+    asm("tanh.approx.f32 %0, %1;"
+        : "=f"(capped)
+        : "f"(acc_s[i] * score_to_cap));
+    acc_s[i] = capped;
   }
 }
 __device__ __forceinline__ void fp8_producer_barrier_128() {
   asm volatile("bar.sync 15, 128;\n" ::: "memory");
 }
+// InPlace: the two pointers alias, so the 128 producer threads sync between
+// each read and the write that overwrites it.
 template <bool InPlace, typename FP8T>
-__device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl(
+__device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm(
     FP8T* v_vt_smem, FP8T* v_tc_smem) {
   using namespace cute;
-  using Config = fp8_gqa_detail::VTranspose128x224Fa3Src<FP8T>;
+  using Config = fp8_gqa_detail::VTranspose128x224<FP8T>;
 
   Tensor sVt = cute::as_position_independent_swizzle_tensor(
       make_tensor(make_smem_ptr(v_vt_smem), typename Config::SmemLayoutVt{}));
@@ -358,55 +308,6 @@ __device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl(
     }
   }
 }
-template <typename FP8T>
-__device__ __forceinline__ void
-fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter(FP8T* v_vt_smem,
-                                                            FP8T* v_tc_smem) {
-  fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl<true>(v_vt_smem, v_tc_smem);
-}
-template <typename FP8T>
-__device__ __forceinline__ void
-fp8_transpose_v_128x224_fa3_src_ldsm_stsm_out_of_place(FP8T* v_vt_smem,
-                                                       FP8T* v_tc_smem) {
-  fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl<false>(v_vt_smem, v_tc_smem);
-}
-template <typename FP8T>
-__device__ __forceinline__ void
-fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(float* acc_s,
-                                                    FP8T* v_tc_smem,
-                                                    float* acc_o) {
-  using namespace cute;
-  using Element = cutlass::float_e4m3_t;
-  using ElementAccum = float;
-  using TileShapePV = Shape<_64, _128, Int<224>>;
-  using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaPV =
-      decltype(GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapePV,
-                                    GMMA::Major::K, GMMA::Major::K>());
-  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
-  using VConfig = fp8_gqa_detail::VTranspose128x224<FP8T>;
-
-  int const tid = static_cast<int>(threadIdx.x) & 127;
-  uint32_t p_regs[28];
-  TiledMmaPV tiled_mma_pv;
-  auto thr_mma = tiled_mma_pv.get_slice(tid);
-  Tensor sV = make_tensor(make_smem_ptr(v_tc_smem),
-                          typename VConfig::SmemLayoutVtMma{});
-  Tensor tOrV = thr_mma.partition_fragment_B(sV)(_, _, _, _0{});
-
-  fp8_acc_to_fa3_p_regs_64x224_no_cute(acc_s, p_regs);
-
-  asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
-#pragma unroll
-  for (int ki = 0; ki < 7; ++ki) {
-    cute::GmmaDescriptor desc_b = tOrV(_, _, ki)(0);
-    tl::wgmma_rs<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat8_e4m3,
-                 tl::DataType::kFloat32, 64, 128, 32, false, false>(
-        p_regs + ki * 4, uint64_t(desc_b), reinterpret_cast<uint32_t*>(acc_o),
-        true);
-  }
-  asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
-}
 // The caller owns P across iterations. Keep packing separate from issue so QK
 // can overwrite its score fragment while the preceding PV still reads P.
 template <typename FP8T>
@@ -437,6 +338,17 @@ __device__ __forceinline__ void fp8_pv_from_p_regs_fa3_raw_64x128x224(
   asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
 }
 
+// Packs the scores of acc_s into P and issues P V into acc_o.
+template <typename FP8T>
+__device__ __forceinline__ void
+fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(float* acc_s,
+                                                    FP8T* v_tc_smem,
+                                                    float* acc_o) {
+  uint32_t p_regs[28];
+  fp8_acc_to_fa3_p_regs_64x224_no_cute(acc_s, p_regs);
+  fp8_pv_from_p_regs_fa3_raw_64x128x224(p_regs, v_tc_smem, acc_o);
+}
+
 // An RS-WGMMA source remains live until its group completes, even though the
 // inline issue asm only names it as an input. Call this after wait<0>, before
 // packing the next P, to make that lifetime visible to the CUDA compiler.
@@ -450,14 +362,7 @@ __device__ __forceinline__ void fp8_fence_p_regs_64x224(uint32_t* p_regs) {
 __device__ __forceinline__ void fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128(
     float* acc_o, float* ss) {
   using namespace cute;
-  using Element = cutlass::float_e4m3_t;
-  using ElementAccum = float;
-  using TileShapePV = Shape<_64, _128, _128>;
-  using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaPV =
-      decltype(GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapePV,
-                                    GMMA::Major::K, GMMA::Major::K>());
-  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
+  using TiledMmaPV = fp8_gqa_detail::OutputTiledMma;
 
   int const tid = static_cast<int>(threadIdx.x) & 127;
   TiledMmaPV tiled_mma_pv;
@@ -503,30 +408,6 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128(
         frag(make_coord(_0{}, j, 2 * i + 1), mi) *= ss[row_a];
       }
     }
-  }
-}
-__device__ __forceinline__ void fp8_fa3_raw_acc_permute_to_canonical_64x128(
-    float* acc_o) {
-  using namespace cute;
-  using Element = cutlass::float_e4m3_t;
-  using ElementAccum = float;
-  using TileShapePV = Shape<_64, _128, _128>;
-  using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaPV =
-      decltype(GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapePV,
-                                    GMMA::Major::K, GMMA::Major::K>());
-  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
-
-  TiledMmaPV tiled_mma_pv;
-  Tensor tOrO_template = partition_fragment_C(tiled_mma_pv, Shape<_64, _128>{});
-  Tensor tAccO = make_tensor(acc_o, tOrO_template.layout());
-  fp8_gqa_detail::permute_output_fp8(tAccO);
-}
-__device__ __forceinline__ void fp8_fa3_raw_acc_scale_64x128(float* acc_o,
-                                                             float scale) {
-#pragma unroll
-  for (int i = 0; i < 64; ++i) {
-    acc_o[i] *= scale;
   }
 }
 template <typename FP8T>
@@ -586,18 +467,13 @@ struct FP8Fa3OutputStore64x128 {
       SmemLayoutAtomO{}, cute::Shape<cute::_64, cute::_128>{}));
 };
 
+// Puts the output accumulator in canonical order, scales it by `scale`, divides
+// each row by its sum in `ls`, and stores it to `o_smem` in the output dtype.
 template <typename OutT>
-__device__ __forceinline__ void fp8_fa3_raw_acc_store_smem_cute_64x128(
-    float* acc_o, float* ls, int flags, OutT* o_smem) {
+__device__ __forceinline__ void fp8_fa3_raw_acc_finalize_store_smem_cute_64x128(
+    float* acc_o, float* ls, float scale, OutT* o_smem) {
   using namespace cute;
-  using Element = cutlass::float_e4m3_t;
-  using ElementAccum = float;
-  using TileShapePV = Shape<_64, _128, _128>;
-  using AtomLayout = Layout<Shape<_1, _1, _1>>;
-  using MmaPV =
-      decltype(GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapePV,
-                                    GMMA::Major::K, GMMA::Major::K>());
-  using TiledMmaPV = decltype(make_tiled_mma(MmaPV{}, AtomLayout{}));
+  using TiledMmaPV = fp8_gqa_detail::OutputTiledMma;
   using StoreConfig = FP8Fa3OutputStore64x128<OutT>;
   using SmemCopyAtomO = Copy_Atom<SM90_U32x4_STSM_N, OutT>;
 
@@ -606,6 +482,11 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_store_smem_cute_64x128(
   auto thr_mma = tiled_mma_pv.get_slice(tid);
   Tensor tOrO_template = partition_fragment_C(tiled_mma_pv, Shape<_64, _128>{});
   Tensor tAccO = make_tensor(acc_o, tOrO_template.layout());
+  fp8_gqa_detail::permute_output_fp8(tAccO);
+#pragma unroll
+  for (int i = 0; i < 64; ++i) {
+    acc_o[i] *= scale;
+  }
   Tensor tOut = make_tensor_like<OutT>(tAccO);
   Tensor cO = make_identity_tensor(Shape<_64, _128>{});
   Tensor tOcO = thr_mma.partition_C(cO);
@@ -627,9 +508,7 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_store_smem_cute_64x128(
     }
   }
 
-  if ((flags & 4) != 0 && (flags & 2) == 0) {
-    fp8_gqa_detail::permute_output_fp8_Vcolmajor(tOut);
-  }
+  fp8_gqa_detail::permute_output_fp8_Vcolmajor(tOut);
 
   Tensor sO =
       make_tensor(make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
@@ -638,13 +517,6 @@ __device__ __forceinline__ void fp8_fa3_raw_acc_store_smem_cute_64x128(
   Tensor taccOrO = smem_thr_copy_O.retile_S(tOut);
   Tensor taccOsO = smem_thr_copy_O.partition_D(sO);
   cute::copy(smem_tiled_copy_O, taccOrO, taccOsO);
-}
-template <typename OutT>
-__device__ __forceinline__ void fp8_fa3_raw_acc_finalize_store_smem_cute_64x128(
-    float* acc_o, float* ls, int flags, float scale, OutT* o_smem) {
-  fp8_fa3_raw_acc_permute_to_canonical_64x128(acc_o);
-  fp8_fa3_raw_acc_scale_64x128(acc_o, scale);
-  fp8_fa3_raw_acc_store_smem_cute_64x128(acc_o, ls, flags, o_smem);
 }
 template <typename OutT>
 __device__ __forceinline__ void fp8_fa3_o_smem_store_global_cute_64x128(

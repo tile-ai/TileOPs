@@ -18,6 +18,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import PostPermuteCall, PostPermuteFwdInterface
+from tileops._kernels.moe.layout import row_threads
 
 __all__ = ["MoEUnpermuteKernel"]
 
@@ -30,8 +31,8 @@ def _make_unpermute_kernel(
     materialized_rows: int,
     dtype: str,
     threads: int,
-    scaling: float = 1.0,
-    has_residual: bool = False,
+    scaling: float,
+    has_residual: bool,
 ):
     """Build one block per output token with an fp32 reduction.
 
@@ -148,7 +149,7 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
     def entry_for(cls, call: PostPermuteCall) -> Entry:
         """One build per route extents, hidden width, routing scale, residual presence, dtype
         and device."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         scaling = call.epilogue.routed_scaling_factor
         identity = (
             call.num_tokens,
@@ -192,7 +193,6 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         self.hidden_size = hidden_size
         self.materialized_rows = materialized_rows
         self.dtype = dtype
-        self.numel = num_tokens * top_k
         self.sm_count = self.build_target.sm_count if sm_count is None else sm_count
         if self.sm_count <= 0:
             raise ValueError("sm_count must be positive")
@@ -206,10 +206,8 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         # threads, at one vector access a thread: up to a block's thread limit with no more
         # tokens than SMs, up to 256 otherwise so several blocks share an SM.
         cap = MAX_BLOCK_THREADS if self.num_tokens <= self.sm_count else 256
-        threads = min(cap, self.hidden_size // (VECTOR_ACCESS_BYTES // self.dtype.itemsize))
-        while threads > 0 and self.hidden_size % threads != 0:
-            threads -= 1
-        return {"threads": max(threads, 1)}
+        vector = VECTOR_ACCESS_BYTES // self.dtype.itemsize
+        return {"threads": row_threads(self.hidden_size, vector, cap)}
 
     def forward(
         self,

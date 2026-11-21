@@ -1,3 +1,5 @@
+"""Gated DeltaNet (GDN) inference prefill on SM89 through the shared chunk programs."""
+
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention.call_spec import GDNFwdInterface
 from tileops._kernels.linear_attention.chunk_prefill import chunk_refusal, run_chunk_prefill
@@ -5,6 +7,8 @@ from tileops._kernels.linear_attention.gdn.prefill import GDNDensePrefillFwdKern
 
 
 class GDNChunkPrefillFwdKernel(Kernel, GDNFwdInterface):
+    """Solve each chunk's inverse, prepare its products, then scan the chunks."""
+
     supported_archs = [89]
     split_output = False
 
@@ -12,7 +16,11 @@ class GDNChunkPrefillFwdKernel(Kernel, GDNFwdInterface):
     def refusal(cls, call):
         if call.pooled:
             return "reads and writes the states in batch order; a state pool is not served"
-        return GDNDensePrefillFwdKernel.refusal(call) or chunk_refusal(call)
+        return (
+            GDNDensePrefillFwdKernel.refusal(call)
+            or chunk_refusal(call, call.num_sequences)
+            or super().refusal(call)
+        )
 
     @classmethod
     def entry_for(cls, call):
@@ -53,9 +61,6 @@ class GDNSplitPrefillFwdKernel(GDNChunkPrefillFwdKernel):
 
     @classmethod
     def refusal(cls, call):
-        reason = super().refusal(call)
-        if reason is not None:
-            return reason
         if call.varlen or call.state_v_first or call.dim_k != 128:
             return "uses dense sequences with a key-major 128-wide state"
         # Below 256 chunks the extra output launch can outweigh the shorter walk.
@@ -65,4 +70,4 @@ class GDNSplitPrefillFwdKernel(GDNChunkPrefillFwdKernel):
         ctas = call.num_sequences * call.value_heads * (call.dim_v // 16)
         if ctas * 4 > call.sm_count:
             return "uses state walks occupying at most a quarter of the SMs"
-        return None
+        return super().refusal(call)

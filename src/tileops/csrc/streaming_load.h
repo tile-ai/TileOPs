@@ -43,7 +43,7 @@ __device__ __forceinline__ T load_evict_first(const T* src) {
 }
 
 // Loads one element of global memory, evict-last in L1 and L2. T is 4 or 2
-// bytes wide. Each reader states its measurement.
+// bytes wide.
 template <typename T>
 __device__ __forceinline__ T load_evict_last(const T* src) {
   static_assert(sizeof(T) == 4 || sizeof(T) == 2, "a 4- or 2-byte element");

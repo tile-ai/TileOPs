@@ -145,7 +145,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
 
     @classmethod
     def entry_for(cls, call: DequantizeCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m, call.k, call.out_dtype, index)
         return identity, lambda: cls(*identity[:3], device_index=index)
 
@@ -155,7 +155,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         k: int,
         out_dtype: torch.dtype,
         config: dict | None = None,
-        device_index: "int | None" = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.m = m
@@ -307,7 +307,7 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
 
     @classmethod
     def entry_for(cls, call: DequantizeCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m * call.k, call.out_dtype, index)
         return identity, lambda: cls(*identity[:2], device_index=index)
 
@@ -316,10 +316,9 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         n: int,
         out_dtype: torch.dtype,
         config: dict | None = None,
-        device_index: "int | None" = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
-        self.n = n
         self.dtype = out_dtype
         # Codes per thread per step: one 16-byte vector of ``x``.
         vec = VECTOR_ACCESS_BYTES // out_dtype.itemsize
@@ -367,7 +366,7 @@ class INT8DequantPerTensorSmallFwdKernel(INT8DequantPerTensorFwdKernel):
     _SMALL_N: ClassVar[int] = 1 << 19
 
     @classmethod
-    def refusal(cls, call: DequantizeCall) -> "str | None":
+    def refusal(cls, call: DequantizeCall) -> str | None:
         if call.m * call.k >= cls._SMALL_N:
             return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
         return super().refusal(call)
@@ -596,7 +595,7 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
 
     @classmethod
     def entry_for(cls, call: DequantizeCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m, call.k, call.out_dtype, index)
         return identity, lambda: cls(*identity[:3], device_index=index)
 
@@ -606,11 +605,9 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         k: int,
         out_dtype: torch.dtype,
         config: dict | None = None,
-        device_index: "int | None" = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
-        self.m = m
-        self.k = k
         self.dtype = out_dtype
         # Codes per thread per step: one 16-byte vector of ``x``.
         vec = VECTOR_ACCESS_BYTES // out_dtype.itemsize
@@ -658,7 +655,7 @@ class INT8DequantPerBlockSmallFwdKernel(INT8DequantPerBlockFwdKernel):
     _SMALL_N: ClassVar[int] = 1 << 19
 
     @classmethod
-    def refusal(cls, call: DequantizeCall) -> "str | None":
+    def refusal(cls, call: DequantizeCall) -> str | None:
         if call.m * call.k >= cls._SMALL_N:
             return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
         return super().refusal(call)

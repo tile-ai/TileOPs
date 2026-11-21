@@ -12,18 +12,13 @@ from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from tileops.quantization import INT8QuantPerTokenGroupFwdOp
 
-# Autotuning is a bench-run policy, not a workload property; manifest
-# workloads do not carry it.
-_TUNE = True
-
 
 @pytest.mark.parametrize("case", bench.cases(INT8QuantPerTokenGroupFwdOp), ids=lambda case: case.id)
 def test_int8_quant_per_block_bench(case) -> None:
     workload = case.workload
 
     op = INT8QuantPerTokenGroupFwdOp(**case.arguments)
-    if _TUNE:
-        op.request_tune()
+    op.request_tune()
     implementations = {
         "torch-ref": case.reference,
         TORCH_COMPILE_TAG: bench.Implementation(

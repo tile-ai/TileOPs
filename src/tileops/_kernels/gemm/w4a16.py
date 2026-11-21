@@ -1233,7 +1233,7 @@ def _gemm_w4a16_kernel(
                     T.call_extern("handle", "tileops::w4a16_pair_wait", T.address_of(received[0]))
                     T.call_extern(
                         "handle",
-                        f"tileops::w4a16_pair_add<{wg_regs}>",
+                        f"tileops::add_partials<{wg_regs}>",
                         buf.output_local.data,
                         T.address_of(landing[0, 0, 0]),
                         tx % 128,
@@ -1243,7 +1243,7 @@ def _gemm_w4a16_kernel(
                     T.cluster_wait()
                     T.call_extern(
                         "handle",
-                        f"tileops::w4a16_pair_send<{wg_regs}>",
+                        f"tileops::send_partials<{wg_regs}>",
                         buf.output_local.data,
                         T.address_of(landing[0, 0, 0]),
                         T.address_of(received[0]),
@@ -1383,7 +1383,7 @@ def _gemm_w4a16_kernel(
                     T.call_extern("handle", "tileops::w4a16_pair_wait", T.address_of(received[0]))
                     T.call_extern(
                         "handle",
-                        f"tileops::w4a16_pair_add<{wg_regs}>",
+                        f"tileops::add_partials<{wg_regs}>",
                         acc.data,
                         T.address_of(landing[0, 0, 0]),
                         tx % 128,
@@ -1394,7 +1394,7 @@ def _gemm_w4a16_kernel(
                     T.cluster_wait()
                     T.call_extern(
                         "handle",
-                        f"tileops::w4a16_pair_send<{wg_regs}>",
+                        f"tileops::send_partials<{wg_regs}>",
                         acc.data,
                         T.address_of(landing[0, 0, 0]),
                         T.address_of(received[0]),
@@ -1812,7 +1812,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
 
     @classmethod
     def entry_for(cls, call: GEMMW4A16Call) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (call.m, call.n, call.k, call.dtype, call.group_size, index)
         return identity, lambda: cls(
             call.m,

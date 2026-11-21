@@ -1,8 +1,9 @@
 """How the mamba family's benchmarks call their ops."""
 
+import functools
 from typing import Any
 
-from benchmarks._cases import Entry
+from benchmarks._cases import Entry, default_binder
 from benchmarks.api import Implementation
 from benchmarks.baselines import private_inputs
 from workloads.mamba import conv_state_result, ssd_decode_result
@@ -15,13 +16,8 @@ def _ssd_decode_binder(op: Any, case: Any) -> Implementation:
 
 def _conv_state_binder(op: Any, case: Any) -> Implementation:
     """The op on a private copy of the convolution state it overwrites, returning output and
-    state; it receives a ``kw_only`` input by name, as its ``forward`` takes it."""
-    signature = case._call.signature
-
-    def run(*inputs: Any) -> Any:
-        args, keywords = signature.forward_arguments(inputs)
-        return conv_state_result(op, *args, **keywords)
-
+    state."""
+    run = default_binder(functools.partial(conv_state_result, op), case).run
     return private_inputs(run, case.inputs, 2)
 
 

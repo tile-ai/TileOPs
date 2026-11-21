@@ -34,7 +34,7 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
             rotary_dim=call.rotary_dim if call.rotary_dim else call.dim,
             rope_layout=call.rope_layout,
             has_sinks=call.has_sinks,
-            device_index=call.device.index if call.device is not None else None,
+            device_index=call.device_index,
         )
         return tuple(args.values()), lambda: cls(**args)
 
@@ -54,8 +54,6 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
-        accum_dtype: torch.dtype = torch.float32,
-        config: dict | None = None,
         *,
         device_index: int | None = None,
         has_sinks: bool = False,
@@ -79,7 +77,6 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         self.softcap = softcap
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
-        self.accum_dtype = accum_dtype
         self.fuse_rope = fuse_rope
         self.max_position = max_position
         self.rotary_dim = rotary_dim
@@ -103,7 +100,7 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         )
         self.kernel = self._make_kernel()
         self._supply_prog = self._make_supply_prog()
-        self.init_config(config)
+        self.init_config()
 
     @property
     def rotated_dtype_str(self) -> str:
@@ -179,7 +176,3 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
     @property
     def autotune_supply_prog(self) -> Callable:
         return self._supply_prog
-
-    @property
-    def accum_dtype_str(self) -> str:
-        return "float" if self.accum_dtype == torch.float32 else "double"

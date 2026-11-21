@@ -21,6 +21,8 @@ call, as at model load or by a caller holding the routing on the host. Every com
 checked on each expert's valid rows only, which is all the op defines.
 """
 
+import functools
+
 import pytest
 import torch
 
@@ -28,20 +30,19 @@ from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from tileops._ops.moe import MoEGroupedGEMMFP8FwdOp, MoEGroupedGEMMMXFP4FwdOp
 
-_dequant_rows = None
+
+@functools.cache
+def _dequant_rows():
+    def dequant(a, a_scale):
+        scale = a_scale.to(torch.bfloat16).repeat_interleave(128, dim=-1)
+        return a.to(torch.bfloat16) * scale
+
+    return torch.compile(dequant, dynamic=False)
 
 
 def _bf16_rows(a: torch.Tensor, a_scale: torch.Tensor) -> torch.Tensor:
     """``a * a_scale`` in bf16, one compiled kernel."""
-    global _dequant_rows
-    if _dequant_rows is None:
-
-        def dequant(a, a_scale):
-            scale = a_scale.to(torch.bfloat16).repeat_interleave(128, dim=-1)
-            return a.to(torch.bfloat16) * scale
-
-        _dequant_rows = torch.compile(dequant, dynamic=False)
-    return _dequant_rows(a, a_scale)
+    return _dequant_rows()(a, a_scale)
 
 
 def _marlin(case) -> bench.Implementation:

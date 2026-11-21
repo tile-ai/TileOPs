@@ -21,15 +21,19 @@ from tileops._kernels.build_target import building_on, target_of
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 from tileops._ops._signature_codegen import (
+    PARAM_NAMES_ATTRIBUTE,
     CheckError,
     ResultCheck,
     SignatureCall,
     _snapshot,
     in_tree,
+    install_param_names,
     leaves,
+    maybe_install_signature,
+    op_entry,
     param_state,
+    tensorless_device,
 )
 from tileops._ops.compile_boundary import instance_key, register_instance
 from tileops._utils.device import current_device, device_context
@@ -65,23 +69,19 @@ _OPEN_CALLS = threading.local()
 _UNOBSERVED = object()
 
 
-def _misaligned(t: "torch.Tensor | None") -> bool:
-    """Whether *t* does not start on a 16-byte boundary. A tensor whose storage has no
-    address, a fake one or a wrapper refusing the read, passes as it is."""
-    if not isinstance(t, torch.Tensor) or (type(t) is not torch.Tensor and _addressless(t)):
-        return False
-    return t.data_ptr() % VECTOR_ACCESS_BYTES != 0
-
-
-def _addressless(t: torch.Tensor) -> bool:
-    """Whether the storage of *t*, a tensor subclass, has no address to read."""
-    if isinstance(t, FakeTensor):
-        return True
-    try:
-        t.data_ptr()
-    except RuntimeError:
-        return True
-    return False
+def _address(t: object) -> "int | None":
+    """The address *t* starts at, or None for an absent value, a scalar, or a tensor whose
+    storage has no address: a fake one, or a wrapper refusing the read."""
+    if not isinstance(t, torch.Tensor):
+        return None
+    if type(t) is not torch.Tensor:
+        if isinstance(t, FakeTensor):
+            return None
+        try:
+            return t.data_ptr()
+        except RuntimeError:
+            return None
+    return t.data_ptr()
 
 
 def _slot_spec(t: object) -> object:
@@ -448,9 +448,6 @@ class Op(ABC):
                 rejects.
         """
         super().__init_subclass__(**kwargs)
-        from tileops._ops._params_codegen import maybe_install_param_names
-        from tileops._ops._signature_codegen import maybe_install_signature, op_entry
-
         if not in_tree(cls):
             for base in cls.__mro__[1:]:
                 if base is not Op and issubclass(base, Op) and in_tree(base):
@@ -461,7 +458,7 @@ class Op(ABC):
         entry = op_entry(cls)
         if maybe_install_signature(cls, entry):
             cls.__call__ = cls.__dict__.get("_call_boundary", Op.__call__)
-        maybe_install_param_names(cls, entry)
+        install_param_names(cls, entry)
 
     # The op's dispatch keys and the kernel class each names. An op with no kernel of its own
     # (a composite) declares none.
@@ -1085,7 +1082,12 @@ class Op(ABC):
         plan = _Plan(
             signature,
             call,
-            tuple(i for i, t in enumerate(passed) if _misaligned(t)),
+            # A tensor whose storage has no address passes as it is.
+            tuple(
+                i
+                for i, t in enumerate(passed)
+                if (address := _address(t)) is not None and address % VECTOR_ACCESS_BYTES
+            ),
             _overlap_checks(
                 type(self).__name__,
                 _leaf_names(tuple(tensors), slots),
@@ -1144,14 +1146,8 @@ class Op(ABC):
                 plan = frame.plan = self._resolve_plan(key, inputs, writes, execution or {})
             if plan.overlaps:
                 if addresses is None:
-                    # A call no observer read: None where a tensor is absent or has no address.
-                    addresses = [
-                        None
-                        if not isinstance(t, torch.Tensor)
-                        or (type(t) is not torch.Tensor and _addressless(t))
-                        else t.data_ptr()
-                        for t in leaves((*inputs, *writes.values()))
-                    ]
+                    # A call no observer read.
+                    addresses = list(map(_address, leaves((*inputs, *writes.values()))))
                 for i, j, span, other, message in plan.overlaps:
                     a, b = addresses[i], addresses[j]
                     if a is not None and b is not None and a < b + other and b < a + span:
@@ -1318,10 +1314,11 @@ class Op(ABC):
 
     def _traced_device(self, arguments: tuple) -> "torch.device | None":
         """The call device of a call no check placed, from its *arguments*: its tensors'
-        device, `device: cpu` tensors aside, else :meth:`_device_without_call_tensors`."""
+        device, `device: cpu` tensors aside, else the declared ``device`` param, else the
+        accelerator's current one, as the generated checks place it."""
         devices = {t.device for t in arguments if isinstance(t, torch.Tensor)}
         devices = {d for d in devices if d.type != "cpu"} or devices
-        return next(iter(devices)) if devices else self._device_without_call_tensors()
+        return next(iter(devices)) if devices else tensorless_device(self)
 
     def _build_target_kernel(
         self,
@@ -1360,17 +1357,22 @@ class Op(ABC):
         A kernel that defines no ``request_tune`` cannot be tuned, and the op warns once.
         """
         tune = getattr(kernel, "request_tune", None)
-        if not callable(tune):
-            self._warn_untunable_target_kernel(kernel)
-            return
-        with device_context(device):
-            tune()
+        if callable(tune):
+            with device_context(device):
+                tune()
+        elif not self._tune_warned:
+            self._tune_warned = True
+            warnings.warn(
+                f"{type(self).__name__}'s target kernel {kernel!r} defines no request_tune",
+                UserWarning,
+                stacklevel=3,
+            )
 
     def _manifest_params(self) -> dict[str, object]:
         """The op's manifest params, by name, with the values this instance holds.
 
         ``build_kernel`` is called with these by keyword. Names come from the manifest
-        (``_params_codegen``), values off the instance, so a param the manifest defaults to
+        (``install_param_names``), values off the instance, so a param the manifest defaults to
         null arrives as the instance holds it: ``None`` unless the caller gave a value.
 
         Raises:
@@ -1576,8 +1578,6 @@ class Op(ABC):
         The same rule the generated checks apply, for a caller that runs no check: a traced
         call, or an op body building a call spec for an op with no tensor input.
         """
-        from tileops._ops._signature_codegen import tensorless_device
-
         return tensorless_device(self)
 
     @staticmethod
@@ -1636,17 +1636,6 @@ class Op(ABC):
             kernel.request_tune()
         for op, device, kernel in self._target_kernels_by_device():
             op._tune_target_kernel(device, kernel)
-
-    def _warn_untunable_target_kernel(self, kernel: object) -> None:
-        """Warn, once per instance, that a kernel of this op's target cannot be tuned."""
-        if self._tune_warned:
-            return
-        self._tune_warned = True
-        warnings.warn(
-            f"{type(self).__name__}'s target kernel {kernel!r} defines no request_tune",
-            UserWarning,
-            stacklevel=4,
-        )
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> torch.Tensor | tuple[torch.Tensor, ...]:

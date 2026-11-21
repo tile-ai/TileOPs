@@ -26,7 +26,8 @@ from tileops._kernels.attention.call_spec import (
     MLAVarlenCall,
     MLAVarlenFwdInterface,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.attention.stream_counter import stream_counter
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -42,15 +43,7 @@ __all__ = ["MLAVarlenPrefillWSFwdKernel"]
         tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
     },
     compile_flags=[
-        "-O3",
-        "-Wno-deprecated-declarations",
-        "-U__CUDA_NO_HALF_OPERATORS__",
-        "-U__CUDA_NO_HALF_CONVERSIONS__",
-        "-U__CUDA_NO_HALF2_OPERATORS__",
-        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "-DNDEBUG",
+        *CUDA_COMPILE_FLAGS,
     ],
 )
 def _mla_varlen_ws_kernel(
@@ -468,7 +461,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
             )
         if call.batch > cls._MAX_BATCH:
             return f"the per-request prefix is held in shared memory, got batch {call.batch}"
-        return None
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: MLAVarlenCall) -> Entry:
@@ -481,7 +474,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
             is_causal=call.is_causal,
             sm_scale=call.sm_scale,
             dtype=call.dtype,
-            device_index=call.device.index if call.device is not None else None,
+            device_index=call.device_index,
         )
         return tuple(args.items()), lambda: cls(**args)
 
@@ -571,15 +564,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
             ``(heads, total_tokens)`` log-sum-exp.
         """
         self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
-        if torch.cuda.is_current_stream_capturing():
-            # Each captured graph owns a counter from its private pool.
-            counter = torch.zeros(2, dtype=torch.int32, device=q.device)
-        else:
-            stream = torch.cuda.current_stream(q.device).cuda_stream
-            counter = self._counters.get(stream)
-            if counter is None:
-                counter = torch.zeros(2, dtype=torch.int32, device=q.device)
-                self._counters[stream] = counter
+        counter = stream_counter(self._counters, q.device)
         out = torch.empty((q.shape[0], self.heads, self.dim_v), dtype=q.dtype, device=q.device)
         lse = torch.empty((self.heads, q.shape[0]), dtype=torch.float32, device=q.device)
         self.program(self._compile)(q, k_nope, k_pe, v, cu_seqlens, out, lse, counter)

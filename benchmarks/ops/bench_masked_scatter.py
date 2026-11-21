@@ -4,7 +4,13 @@ and vLLM's multimodal embedding merge."""
 import pytest
 
 from benchmarks import api as bench
-from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
+from benchmarks.baselines import (
+    TORCH_COMPILE_TAG,
+    VLLM_TAG,
+    compiled_reference,
+    private_inputs,
+    vllm_op,
+)
 from tileops.indexing import MaskedScatterFwdOp
 
 
@@ -15,16 +21,16 @@ def test_masked_scatter_bench(case) -> None:
     input, mask, source = case.inputs
     # vLLM writes the text embeddings in place through a token mask, from exactly as many
     # source rows as the mask has true tokens.
-    embeds, tokens = input.clone(), mask.flatten()
+    tokens = mask.flatten()
     rows = source[: int(tokens.sum())]
     bench.Runner(op, case).compare(
         {
             "torch": case.torch,
             TORCH_COMPILE_TAG: compiled_reference(case.torch),
-            VLLM_TAG: bench.Implementation(
-                run=merge,
-                args=(embeds, rows, tokens),
-                reset=lambda: embeds.copy_(input),
+            VLLM_TAG: private_inputs(
+                merge,
+                (input, rows, tokens),
+                0,
                 noncomparable_reason="writes input in place and takes exactly the true rows of source",
             ),
         }

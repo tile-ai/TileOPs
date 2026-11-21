@@ -18,6 +18,10 @@ from tileops._kernels.mamba.call_spec import SSDChunkCumsumCall, SSDChunkCumsumF
 
 __all__ = ["SSDChunkCumsumFwdKernel"]
 
+# Pad of a shared row past chunk_len: the builder lays rows out with it and the kernel's shared
+# budget counts it. ``SSDChunkCumsumFwdKernel._head_tile`` says why it is 4.
+_ROW_PAD = 4
+
 
 @target_cache(maxsize=32)
 def _ssd_chunk_cumsum_fwd_kernel(
@@ -27,11 +31,10 @@ def _ssd_chunk_cumsum_fwd_kernel(
     n_heads: int,
     seq_len: int,
     dtype: str,
-    row_pad: int,
-    dt_softplus: bool = False,
-    has_dt_bias: bool = False,
-    dt_min: float = 0.0,
-    dt_max: float = float("inf"),
+    dt_softplus: bool,
+    has_dt_bias: bool,
+    dt_min: float,
+    dt_max: float,
 ) -> Callable:
     """Build the chunk-local dA cumsum kernel: one CTA per (batch, chunk, head tile).
 
@@ -47,7 +50,7 @@ def _ssd_chunk_cumsum_fwd_kernel(
     Rows past ``n_heads`` read a clamped head and are never stored.
 
     ``block_h`` (heads per CTA) and ``threads`` are supplied by the returned
-    ``kernel_func``; ``row_pad`` is the shared row's pad past ``chunk_len``.
+    ``kernel_func``.
     """
     accum_dtype = "float"
     dtype_bytes = {"float16": 2, "bfloat16": 2, "float32": 4}[dtype]
@@ -57,22 +60,14 @@ def _ssd_chunk_cumsum_fwd_kernel(
     Q = chunk_len
     H = n_heads
     S = seq_len
-    row_stride = Q + row_pad
+    row_stride = Q + _ROW_PAD
 
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(block_h: int, threads: int):
-        def _scan_groups(block_h: int, threads: int, chunk_len: int) -> int:
-            """Threads that share one row's scan, each taking a run of at least four positions."""
-            groups = 1
-            while (
-                groups * 2 <= threads // block_h
-                and chunk_len % (groups * 2) == 0
-                and chunk_len // (groups * 2) >= 4
-            ):
-                groups *= 2
-            return groups
-
-        groups = _scan_groups(block_h, threads, Q)
+        # Threads that share one row's scan, each taking a run of at least four positions.
+        groups = 1
+        while groups * 2 <= threads // block_h and Q % (groups * 2) == 0 and Q // (groups * 2) >= 4:
+            groups *= 2
         span = Q // groups
         store_loop = T.vectorized if span * dtype_bytes <= 16 else T.serial
 
@@ -145,13 +140,10 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
     """Mamba-2 dA_cumsum forward kernel: optional per-head bias, softplus and clamp on raw
     dt, then the chunk-local inclusive prefix sum of dA = dt * A."""
 
-    # Pad of a shared row past chunk_len, a multiple of 4; ``_head_tile`` says why.
-    _ROW_PAD = 4
-
     @classmethod
     def _shared_bytes(cls, block_h: int, chunk_len: int) -> int:
         """Bytes a block's shared tiles take, bounding the run sums by a quarter row."""
-        return block_h * ((chunk_len + cls._ROW_PAD) * 4 + chunk_len)
+        return block_h * ((chunk_len + _ROW_PAD) * 4 + chunk_len)
 
     @classmethod
     def _head_tile(cls, n_heads: int, chunk_len: int) -> int:
@@ -178,9 +170,6 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         return threads
 
     supported_archs: list[int] = [80, 86, 89, 90]
-
-    # This backend's capability, possibly narrower than the op's.
-    SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
     @classmethod
     def entry_for(cls, call: SSDChunkCumsumCall) -> Entry:
@@ -212,15 +201,8 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         config: dict | None = None,
     ) -> None:
         super().__init__()
-        self.batch = batch
-        self.num_chunks = num_chunks
         self.chunk_len = chunk_len
         self.n_heads = n_heads
-        self.seq_len = seq_len
-        self.dt_softplus = dt_softplus
-        self.has_dt_bias = has_dt_bias
-        self.dt_min = dt_min
-        self.dt_max = dt_max
         self.dtype = dtype
         self.kernel = _ssd_chunk_cumsum_fwd_kernel(
             batch,
@@ -229,7 +211,6 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
             n_heads,
             seq_len,
             self.dtype_str,
-            self._ROW_PAD,
             dt_softplus,
             has_dt_bias,
             dt_min,
@@ -265,8 +246,6 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         A: torch.Tensor,
         dt_bias: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        dt = dt.contiguous()
-        A = A.contiguous()
         # The no-bias build never reads dt_bias; A fills the slot.
         dt_bias = A if dt_bias is None else dt_bias.contiguous()
 

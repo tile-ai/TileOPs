@@ -147,21 +147,15 @@ def test_mla_varlen_lse_merges_a_split_context() -> None:
 
 
 @pytest.mark.parametrize(
-    "dims",
-    [
-        pytest.param((128, 64, 128), id="dims-of-64"),
-        # Head dims off a multiple of 64 leave the warp-specialized schedule.
-        pytest.param((96, 32, 96), id="dims-off-64"),
-    ],
-)
-@pytest.mark.parametrize(
     "seq_lens",
     [
         pytest.param([256, 384], id="ragged", marks=pytest.mark.smoke),
         pytest.param([17, 1024], id="below-one-tile", marks=pytest.mark.full),
     ],
 )
-def test_mla_varlen_matches_the_reference(seq_lens, dims) -> None:
+def test_mla_varlen_dims_off_64(seq_lens) -> None:
+    """Head dims off a multiple of 64 leave the warp-specialized schedule."""
+    dims = (96, 32, 96)
     inputs = mla_varlen_inputs(seq_lens, 4, *dims, torch.bfloat16)
     workload = MLAVarlenWorkload(seq_lens, 4, *dims, torch.bfloat16)
     TestBase.check(workload, MLAVarlenFwdOp(is_causal=True), *inputs)

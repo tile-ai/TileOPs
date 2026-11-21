@@ -12,7 +12,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
-from tileops._utils import WARP_LANES
+from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["MaskedScatterCall", "MaskedScatterFwdInterface", "MaskedScatterKernel", "mask_runs"]
 
@@ -135,11 +135,11 @@ def _masked_scatter_kernel(run_len, dtype):
                         own += T.cast(Mask[start + j] != 0, "int32")
                 incl = T.alloc_var("int32")
                 incl = own
-                for k in T.unroll(5):
+                for k in T.unroll(WARP_SHUFFLE_STAGES):
                     up = T.shfl_up(incl, 1 << k)
                     if lane >= (1 << k):
                         incl += up
-                if lane == 31:
+                if lane == WARP_LANES - 1:
                     warp_sum[warp] = incl
                 T.sync_threads()
                 local = T.alloc_var("int32")
@@ -227,7 +227,7 @@ class MaskedScatterKernel(Kernel, MaskedScatterFwdInterface):
 
     @classmethod
     def entry_for(cls, call: MaskedScatterCall) -> Entry:
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         return (call.run_len, call.dtype, index), lambda: cls(
             call.run_len, call.dtype, device_index=index
         )

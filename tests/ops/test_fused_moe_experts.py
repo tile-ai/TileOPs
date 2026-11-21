@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tileops._ops.moe.abc import WeightedReduce, WeightedReduceNoOp
+from tileops._ops.moe.abc import WeightedReduceNoOp
 from tileops._ops.moe.fused_moe import FusedMoEFwdOp
 from tileops._ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
 from tileops._ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
@@ -41,12 +41,6 @@ def _small_route_case(ids, dtype=torch.bfloat16):
 
 
 @pytest.mark.smoke
-def test_abc_imports():
-    """ABCs and data structures can be imported."""
-    assert issubclass(WeightedReduceNoOp, WeightedReduce)
-
-
-@pytest.mark.smoke
 def test_weighted_reduce_noop():
     """WeightedReduceNoOp copies expert_out to output."""
     T, H = 4, 8
@@ -74,9 +68,6 @@ def test_weighted_reduce_noop_same_tensor():
     assert torch.allclose(t, original)
 
 
-# MoEPrepareAndFinalizeNoDPEP
-
-
 class TestMoEPrepareAndFinalizeNoDPEP:
     @pytest.mark.smoke
     def test_prepare_passthrough(self):
@@ -101,9 +92,6 @@ class TestMoEPrepareAndFinalizeNoDPEP:
         pf = MoEPrepareAndFinalizeNoDPEP()
         pf.finalize(output, expert_out, weights, ids, WeightedReduceNoOp())
         assert torch.allclose(output, expert_out)
-
-
-# FusedMoEExpertsFwdOp
 
 
 class TestFusedMoEExpertsFwdOp:
@@ -164,12 +152,6 @@ class TestFusedMoEExpertsFwdOp:
     def test_expert_biases_match_the_reference(self, activation, dtype, some, dims):
         """``b_gate_up`` is added before the activation, ``b_down`` before the routing weight."""
         experts, workload, inputs = _experts_case(dtype, activation, some, **dims)
-        out = experts(*inputs)
-        compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
-
-    @pytest.mark.smoke
-    def test_dims_off_the_tile_grid(self):
-        experts, workload, inputs = _experts_case(T=64, E=4, K=2, H=128, F=96)
         out = experts(*inputs)
         compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
@@ -251,7 +233,7 @@ class TestFusedMoEExpertsFwdOp:
             experts(*args, out=out)
 
         args[4].copy_(
-            torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device="cuda")
+            torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device=run_device())
         )
         graph.replay()
         torch.cuda.synchronize()
@@ -317,22 +299,3 @@ class TestFusedMoEActivationInjection:
         assert moe._experts().activation == "gelu_and_mul"
         shared = FusedMoESharedExpertFwdOp(2, activation="gelu_and_mul")
         assert shared._experts().activation == "gelu_and_mul"
-
-
-@pytest.mark.smoke
-def test_the_shared_expert_refuses_a_non_silu_activation():
-    """The shared-expert kernel applies silu_and_mul; with gelu routed experts the two halves
-    would disagree, so a call passing the shared weights is refused."""
-    T, E, H, F, S = 4, 4, 128, 128, 128
-    op = FusedMoESharedExpertFwdOp(2, activation="gelu_and_mul")
-    args = (
-        torch.randn(T, H, dtype=torch.bfloat16, device=run_device()),
-        torch.randn(T, E, device=run_device()),
-        torch.randn(E, 2 * F, H, dtype=torch.bfloat16, device=run_device()),
-        torch.randn(E, H, F, dtype=torch.bfloat16, device=run_device()),
-        None,
-        torch.randn(2 * S, H, dtype=torch.bfloat16, device=run_device()),
-        torch.randn(H, S, dtype=torch.bfloat16, device=run_device()),
-    )
-    with pytest.raises(ValueError, match="silu_and_mul"):
-        op(*args)

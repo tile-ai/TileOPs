@@ -105,8 +105,13 @@ def _reference(name, params, positions, query, key, offsets=None):
 
 @pytest.mark.smoke
 @pytest.mark.packaging(family="rope")
-@pytest.mark.parametrize("name", sorted(_PARAMS))
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize(
+    ("name", "dtype"),
+    # The ops differ only in the cache they compute, so one dtype covers each; RoPEFwdOp
+    # covers the other dtypes.
+    [(name, torch.float16) for name in sorted(_PARAMS)]
+    + [("RoPEFwdOp", torch.bfloat16), ("RoPEFwdOp", torch.float32)],
+)
 def test_rope_matches_the_reference_at_positions_past_0(name, dtype) -> None:
     op, params = _op(name, dtype)
     positions, query, key = _inputs(name, params, 37, 4, 2, dtype, first=1000)
@@ -187,20 +192,14 @@ def test_longrope_reads_the_row_positions_plus_offsets_name() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
 @pytest.mark.parametrize(
     ("dtype", "bad"),
     [(torch.int32, 8), (torch.int64, 2**32 + 1), (torch.int64, -(2**32) + 1)],
     ids=["int32", "int64-past-int32", "int64-negative"],
 )
-def test_rope_validate_inputs_rejects_a_position_outside_the_cache(neox, dtype, bad) -> None:
-    op, params = _op(
-        "RoPEFwdOp",
-        torch.float16,
-        max_position_embeddings=8,
-        is_neox_style=neox,
-        validate_inputs=True,
-    )
+def test_rope_validate_inputs_rejects_a_position_outside_the_cache(dtype, bad) -> None:
+    # The check runs before either rotation convention's kernel, so one convention covers it.
+    op, params = _op("RoPEFwdOp", torch.float16, max_position_embeddings=8, validate_inputs=True)
     positions = torch.zeros(2, device=run_device(), dtype=dtype)
     positions[-1] = bad
     query = torch.randn(2, 64, device=run_device(), dtype=torch.float16)
@@ -506,8 +505,13 @@ def _vllm_class(vllm_rope, name: str, params: dict):
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("name", ["RoPEFwdOp", "RoPELlama31FwdOp", "YaRNFwdOp"])
-@pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
+@pytest.mark.parametrize(
+    ("name", "neox"),
+    # The ops differ only in the cache they compute, so one convention covers each; RoPEFwdOp
+    # covers the other convention.
+    [("RoPEFwdOp", True), ("RoPEFwdOp", False), ("RoPELlama31FwdOp", True), ("YaRNFwdOp", True)],
+    ids=["RoPEFwdOp-neox", "RoPEFwdOp-gptj", "RoPELlama31FwdOp-neox", "YaRNFwdOp-neox"],
+)
 def test_rope_matches_vllm_at_positions_past_0(name, neox) -> None:
     """Decode at position p > 0: the rows vLLM reads for each token, not rows 0..S-1."""
     dtype = torch.bfloat16

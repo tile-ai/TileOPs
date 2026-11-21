@@ -197,7 +197,6 @@ def _nsa_varlen(p, t):
         0, q.shape[1], q.shape[0], q.shape[-1], p["is_causal"], p["sm_scale"],
         p["block_size"], group, selected, q.dtype,
     )  # fmt: skip
-    workload.g_slc = torch.ones(1, q.shape[0], q.shape[1], device=q.device)
     # The selection meets q's device; the offsets are read on the host.
     picks = (t[n].to(q.device) for n in ("block_indices", "block_counts"))
     names = ("cu_seqlens", "token_indices", "cu_seqlens_k")

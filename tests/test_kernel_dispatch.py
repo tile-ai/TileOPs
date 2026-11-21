@@ -234,24 +234,22 @@ class _ScalingOnly(_Scaling):
 
 
 @pytest.mark.parametrize(
-    ("kernel_type", "error", "match"),
+    ("kernel_type", "match"),
     [
-        (_ScalingOnly, TypeError, "does not implement _Scaling; .* inherits _Scaling"),
+        (_ScalingOnly, "does not implement _Scaling; .* inherits _Scaling"),
         (
             _implementation("TwoArgs", forward=lambda self, x, y: x),
-            TypeError,
             "does not take _Scaling's arguments",
         ),
         (
             _implementation("StaticEntry", entry_for=staticmethod(lambda call: 0)),
-            TypeError,
             "entry_for is not a classmethod",
         ),
     ],
 )
-def test_a_registered_implementation_implements_its_interface(kernel_type, error, match) -> None:
+def test_a_registered_implementation_implements_its_interface(kernel_type, match) -> None:
     register_kernel_type("_ScaleOp", "added", kernel_type)
-    with pytest.raises(error, match=match):
+    with pytest.raises(TypeError, match=match):
         _ScaleOp()
 
 

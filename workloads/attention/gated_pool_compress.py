@@ -8,6 +8,7 @@ row ``p % (c * ratio)`` holds the request's token at position ``p``, its kv row 
 
 import torch
 
+from workloads.numerics import Custom, reference_tolerance
 from workloads.workload_base import CallWorkload
 
 
@@ -212,8 +213,6 @@ class GatedPoolCompressFwdCall(CallWorkload):
         return entries, valid, kv_state, score_state
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, reference_tolerance
-
         def validate(got, expected):
             entries, valid, kv_state, score_state = got
             want_entries, want_valid, want_kv_state, want_score_state = expected

@@ -16,8 +16,8 @@ import tilelang.language as T
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
+from tileops._kernels.linear_attention.gdn.prefill_common import L2NORM_EPS
 from tileops._kernels.linear_attention.kda.chunk_programs import (
-    L2_EPS,
     REFERENCE_BLOCK,
     centred_bounds,
     centred_row_bound,
@@ -482,7 +482,7 @@ def fused_chunk_program(
                 for i, j in T.Parallel(BT, K):
                     qa_s[i, j] = T.cast(
                         T.cast(qa_s[i, j], accum)
-                        * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0)
+                        * (T.rsqrt(rowsum[i] + L2NORM_EPS) if l2norm else 1.0)
                         * scale,
                         dtype,
                     )
@@ -502,7 +502,7 @@ def fused_chunk_program(
                 for i, j in T.Parallel(BT, K):
                     ka_s[i, j] = T.cast(
                         T.cast(ka_s[i, j], accum)
-                        * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0),
+                        * (T.rsqrt(rowsum[i] + L2NORM_EPS) if l2norm else 1.0),
                         dtype,
                     )
                 if guarded and l2norm:

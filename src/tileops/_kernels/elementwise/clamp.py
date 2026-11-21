@@ -76,9 +76,6 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max):
     The result is written back into ``x``'s fragment rather than a third
     data-typed one.
     """
-    if not (has_min or has_max):
-        raise ValueError("_make_clamp_tensor_kernel requires has_min or has_max to be True")
-
     if has_min and has_max:
 
         @tilelang.jit(out_idx=[3])

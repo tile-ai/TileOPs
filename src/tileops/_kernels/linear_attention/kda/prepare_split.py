@@ -12,13 +12,14 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.linear_attention.chunk_plan import CHUNK_SIZE
-from tileops._kernels.linear_attention.gdn.prefill_common import step_size
-from tileops._kernels.linear_attention.kda.chunk_programs import L2_EPS, REFERENCE_BLOCK
+from tileops._kernels.linear_attention.gdn.prefill_common import L2NORM_EPS, step_size
+from tileops._kernels.linear_attention.kda.chunk_programs import REFERENCE_BLOCK
 from tileops._kernels.linear_attention.kda.gate import (
     DIAGONAL_COLUMNS,
     DIAGONAL_LANES,
     diagonal_row_gram,
     exact_fma,
+    group_sum,
     log_decay,
     scaled_query,
 )
@@ -204,10 +205,10 @@ def _norm_program(tokens, H, K, dtype, scale):
                     row = block * R + r
                     if row < tokens * H:
                         qn[0, row // H, row % H, c] = T.cast(
-                            qf[r, c] * T.rsqrt(qr[r] + L2_EPS) * scale, dtype
+                            qf[r, c] * T.rsqrt(qr[r] + L2NORM_EPS) * scale, dtype
                         )
                         kn[0, row // H, row % H, c] = T.cast(
-                            kf[r, c] * T.rsqrt(kr[r] + L2_EPS), dtype
+                            kf[r, c] * T.rsqrt(kr[r] + L2NORM_EPS), dtype
                         )
 
         return main
@@ -265,8 +266,8 @@ def _staged_norm_program(rows, K, dtype, scale, rows_per_cta):
                 T.reduce_sum(qs, qr, dim=1)
                 T.reduce_sum(ks, kr, dim=1)
                 for r, c in T.Parallel(R, K):
-                    q_s[r, c] = T.cast(qf[r, c] * T.rsqrt(qr[r] + L2_EPS) * scale, dtype)
-                    k_s[r, c] = T.cast(kf[r, c] * T.rsqrt(kr[r] + L2_EPS), dtype)
+                    q_s[r, c] = T.cast(qf[r, c] * T.rsqrt(qr[r] + L2NORM_EPS) * scale, dtype)
+                    k_s[r, c] = T.cast(kf[r, c] * T.rsqrt(kr[r] + L2NORM_EPS), dtype)
                 T.copy(q_s, qn[block * R, 0])
                 T.copy(k_s, kn[block * R, 0])
 
@@ -539,34 +540,6 @@ def _diagonal_program(
     return build()
 
 
-@T.macro
-def _group_sum16(values, part):
-    """Sums of sixteen per-lane partials over the eight lanes of a lane group.
-
-    Each xor step (4, 2, 1) keeps the half of the partials its lane bit selects and adds
-    the partner lane's partial of the same entry, so lane ``part`` of the group ends
-    with entries 2 part and 2 part + 1. The additions round like the products' chains.
-    """
-    for m in T.unroll(8):
-        values[m] = exact_fma(
-            1.0,
-            T.if_then_else((part >> 2) & 1 == 1, values[m + 8], values[m]),
-            T.shfl_xor(T.if_then_else((part >> 2) & 1 == 1, values[m], values[m + 8]), 4),
-        )
-    for m in T.unroll(4):
-        values[m] = exact_fma(
-            1.0,
-            T.if_then_else((part >> 1) & 1 == 1, values[m + 4], values[m]),
-            T.shfl_xor(T.if_then_else((part >> 1) & 1 == 1, values[m], values[m + 4]), 2),
-        )
-    for m in T.unroll(2):
-        values[m] = exact_fma(
-            1.0,
-            T.if_then_else(part & 1 == 1, values[m + 2], values[m]),
-            T.shfl_xor(T.if_then_else(part & 1 == 1, values[m], values[m + 2]), 1),
-        )
-
-
 @target_cache(maxsize=64)
 def _offdiagonal_program(
     total_tokens, num_seqs, heads, dim_k, dtype, grid_chunks=None, qscale=None, key_heads=None
@@ -596,7 +569,7 @@ def _offdiagonal_program(
     PAIR = 2
     # Columns per butterfly: two rows of two Gram entries fill the sixteen partials.
     COLS = 4
-    assert GROUP == 8 and 2 * PAIR * COLS == 16, "the widths _group_sum16 reduces"
+    assert GROUP == 8 and 2 * PAIR * COLS == 16, "the widths group_sum reduces"
     accum = "float32"
     tiling = GroupTiling(num_seqs, BT)
     chunks = grid_chunks or tiling.tile_upper_bound(total_tokens)
@@ -690,7 +663,7 @@ def _offdiagonal_program(
                                     rv[j * VEC + v],
                                     acc[p * 2 * COLS + j * 2 + 1],
                                 )
-                _group_sum16(acc, part)
+                group_sum(acc, part, 16)
                 # Lane part now holds row part // 4, column part % 4 of the batch.
                 if row0 + part // COLS < rows:
                     kk[0, bos + row0 + part // COLS, ih, col0 + cg * COLS + part % COLS] = acc[0]

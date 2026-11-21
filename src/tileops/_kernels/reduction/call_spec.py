@@ -17,7 +17,6 @@ from tileops._kernels.kernel_base import KernelInterface
 from tileops._kernels.reduction._primitives import edge_axis_split
 
 __all__ = [
-    "WELFORD_KINDS",
     "ArgreduceCall",
     "ArgreduceFwdInterface",
     "CountNonzeroFwdInterface",
@@ -40,38 +39,13 @@ __all__ = [
 
 
 @dataclasses.dataclass(frozen=True)
-class LogicalReduceCall(CallSpec):
-    """A logical reduction call: the input's shape and dtype, the axes it reduces."""
-
-    shape: tuple[int, ...] = ()
-    # Non-negative and ascending.
-    axes: tuple[int, ...] = ()
-    op_kind: str = ""
-    dtype: torch.dtype = torch.float16
-    keepdim: bool = False
-
-    @property
-    def device_index(self) -> int | None:
-        return self.device.index if self.device is not None else None
-
-    @property
-    def edge_kept(self) -> int:
-        """The kept extent between a reduced prefix and suffix of axes, or 0 for other layouts."""
-        k, j = edge_axis_split(len(self.shape), self.axes)
-        return math.prod(self.shape[k : len(self.shape) - j]) if k else 0
-
-
-@dataclasses.dataclass(frozen=True)
-class LogSumExpCall(CallSpec):
-    """A logsumexp call: the input as the manifest declares it.
-
-    ``axes`` are the reduced axes, ascending and non-negative.
-    """
+class _AxesCall(CallSpec):
+    """A call reducing ``axes`` of an input of ``shape``; ``axes`` are non-negative and
+    ascending."""
 
     shape: tuple[int, ...] = ()
     axes: tuple[int, ...] = ()
     keepdim: bool = False
-    dtype: torch.dtype = torch.float16
 
     @property
     def n(self) -> int:
@@ -82,6 +56,27 @@ class LogSumExpCall(CallSpec):
     def m(self) -> int:
         """Output elements: the kept extents' product."""
         return math.prod(self.shape) // self.n
+
+
+@dataclasses.dataclass(frozen=True)
+class LogicalReduceCall(_AxesCall):
+    """A logical reduction call: the input's shape and dtype, the axes it reduces."""
+
+    op_kind: str = ""
+    dtype: torch.dtype = torch.float16
+
+    @property
+    def edge_kept(self) -> int:
+        """The kept extent between a reduced prefix and suffix of axes, or 0 for other layouts."""
+        k, j = edge_axis_split(len(self.shape), self.axes)
+        return math.prod(self.shape[k : len(self.shape) - j]) if k else 0
+
+
+@dataclasses.dataclass(frozen=True)
+class LogSumExpCall(_AxesCall):
+    """A logsumexp call: the input as the manifest declares it."""
+
+    dtype: torch.dtype = torch.float16
 
 
 @dataclasses.dataclass(frozen=True)
@@ -109,16 +104,10 @@ class SoftmaxCall(CallSpec):
         return math.prod(self.shape) // self.n
 
 
-WELFORD_KINDS = frozenset({"std", "var", "var_mean"})
-
-
 @dataclasses.dataclass(frozen=True)
-class ReduceCall(CallSpec):
+class ReduceCall(_AxesCall):
     """A reduction or vector-norm call: the manifest's input, ``dim`` and parameters."""
 
-    shape: tuple[int, ...] = ()
-    axes: tuple[int, ...] = ()
-    keepdim: bool = False
     op_kind: str = ""
     dtype: torch.dtype = torch.float16
     # The ``dtype`` parameter; ``None`` keeps the input's.
@@ -126,39 +115,16 @@ class ReduceCall(CallSpec):
     # The Welford kinds' correction; 0 where the op divides by zero degrees of freedom itself.
     correction: float = 0
 
-    @property
-    def n(self) -> int:
-        """Elements each output reduces."""
-        return math.prod(self.shape[a] for a in self.axes)
-
-    @property
-    def m(self) -> int:
-        """Outputs: the elements of the axes the reduction keeps."""
-        return math.prod(self.shape) // self.n
-
 
 @dataclasses.dataclass(frozen=True)
-class ArgreduceCall(CallSpec):
+class ArgreduceCall(_AxesCall):
     """An argmax or argmin call: the input's shape and dtype, the axes it reduces.
 
     ``axes`` is one axis, or every axis for the index into the flattened input.
     """
 
-    shape: tuple[int, ...] = ()
-    axes: tuple[int, ...] = ()
-    keepdim: bool = False
     op_kind: str = "argmax"
     dtype: torch.dtype = torch.float16
-
-    @property
-    def n(self) -> int:
-        """Length of the reduced extent."""
-        return math.prod(self.shape[a] for a in self.axes)
-
-    @property
-    def m(self) -> int:
-        """Output elements."""
-        return math.prod(self.shape) // self.n
 
     @property
     def inner_stride(self) -> int:

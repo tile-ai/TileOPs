@@ -511,13 +511,13 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
             call.dim_k, call.dim_v, call.chunk_size, call.dtype, call.arch
         )
         if reason is not None or not call.smem_budget:
-            return reason
+            return reason or super().refusal(call)
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
         late = cls._late_dv_state(c, k, v, elem, call.smem_budget)
         compact = cls._compact(c, k, v, elem, call.smem_budget)
         need = cls._shared_bytes(c, k, v, elem, late, compact)
         if need <= call.smem_budget:
-            return None
+            return super().refusal(call)
         requirement = "reserves" if compact else "needs at least"
         return (
             f"{requirement} {need} bytes of shared memory per block at chunk {c}, head dims "
@@ -527,7 +527,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     @classmethod
     def entry_for(cls, call: GLAChunkCall) -> Entry:
         """``has_initial_state`` is a launch argument, so it is out of the identity."""
-        index = call.device.index if call.device is not None else None
+        index = call.device_index
         identity = (
             call.batch,
             call.seq_len,

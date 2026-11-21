@@ -2,8 +2,7 @@
 
 Ruff's DOC102 compares each docstring against the signature written beside it,
 so it cannot see a class whose ``Args:`` describe an ``__init__`` defined in a
-base — the shape that let `RoundFwdOp` document a removed `dtype` argument
-while every static check passed. Resolving the signature needs the class.
+base. Resolving the signature needs the class.
 """
 
 import inspect
@@ -73,7 +72,7 @@ def test_inherited_ctor_args_exist(name):
 
 @pytest.mark.smoke
 def test_sweep_still_sees_inheriting_classes():
-    assert len(_CASES) >= 20, f"only {len(_CASES)} found; the filter broke"
+    assert len(_CASES) >= 20, f"only {len(_CASES)} found; the filter finds too few"
     # A canary that inherits its constructor and documents it, which is the shape
     # this sweep exists for.
     assert "AddFwdOp" in _CASES

@@ -110,10 +110,7 @@ from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkloa
 from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import GQADenseDecodeWorkload, GQADenseWithLSECall
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
-from workloads.attention.gqa.varlen import (
-    GQAPrefillVarlenFwdWorkload,
-    GQASlidingWindowVarlenFwdWorkload,
-)
+from workloads.attention.gqa.varlen import GQAPrefillVarlenFwdWorkload, GQAVarlenFwdWorkload
 from workloads.attention.mha import MHADecodePagedWorkload
 from workloads.attention.mla import (
     MLADecodeWorkload,
@@ -166,9 +163,7 @@ def _attention_cases():
 
     def gqa_sliding_window_varlen():
         lens = [128, 128]
-        case = GQASlidingWindowVarlenFwdWorkload(
-            2, lens, lens, _HEADS, _HEADS_KV, _DIM, True, 64, -1, _DTYPE
-        )
+        case = GQAVarlenFwdWorkload(2, lens, lens, _HEADS, _HEADS_KV, _DIM, True, 64, -1, _DTYPE)
         op = GQAVarlenFwdOp(is_causal=True, window_size_left=64)
         return op, case.gen_inputs()
 

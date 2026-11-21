@@ -6,6 +6,8 @@
 #include <tl_templates/cuda/instruction/wgmma.h>
 #include <tl_templates/cuda/intrin.h>
 
+#include "gdn_inverse_helper.h"
+
 namespace tileops {
 
 // The state warp groups of the gated delta rule's one-kernel prefill. Each
@@ -20,11 +22,6 @@ namespace tileops {
 // 3 (lower row). Packed in pairs, the same registers are the A operand of a k16
 // product: k-step i is the pairs 4 i to 4 i + 3.
 
-constexpr int kGdnScanGroupThreads = 128;
-constexpr int kGdnScanTokens = 64;
-constexpr int kGdnScanRowBytes = 128;
-constexpr int kGdnScanAtomBytes = kGdnScanTokens * kGdnScanRowBytes;
-
 // Arrive at named barrier id, counted over n threads, without waiting.
 __device__ __forceinline__ void gdn_bar_arrive(int id, int n) {
   asm volatile("bar.arrive %0, %1;\n" ::"r"(id), "r"(n) : "memory");
@@ -32,8 +29,7 @@ __device__ __forceinline__ void gdn_bar_arrive(int id, int n) {
 
 // Byte offset of (token, value) in the two-atom tile.
 __device__ __forceinline__ int gdn_tile_offset(int token, int value) {
-  return (value >> 6) * kGdnScanAtomBytes + token * kGdnScanRowBytes +
-         (((((value & 63) >> 3) ^ (token & 7)) << 4) | ((value & 7) << 1));
+  return (value >> 6) * kGdnAtomBytes + gdn_swizzle(token, value & 63);
 }
 
 __device__ __forceinline__ float2 gdn_unpack(uint32_t x, bfloat16_t*) {
@@ -41,17 +37,7 @@ __device__ __forceinline__ float2 gdn_unpack(uint32_t x, bfloat16_t*) {
 }
 
 __device__ __forceinline__ float2 gdn_unpack(uint32_t x, half_t*) {
-  return __half22float2(*reinterpret_cast<__half2*>(&x));
-}
-
-__device__ __forceinline__ uint32_t gdn_pack(float a, float b, bfloat16_t*) {
-  __nv_bfloat162 h = __floats2bfloat162_rn(a, b);
-  return *reinterpret_cast<uint32_t*>(&h);
-}
-
-__device__ __forceinline__ uint32_t gdn_pack(float a, float b, half_t*) {
-  __half2 h = __floats2half2_rn(a, b);
-  return *reinterpret_cast<uint32_t*>(&h);
+  return gdn_unpack_half(x);
 }
 
 // X^T = V^T - SK^T diag(e^gc) as the A operand of the product X^T T^T, for
@@ -62,7 +48,7 @@ template <typename InT>
 __device__ __forceinline__ void gdn_form_x(InT* x, const float* sk,
                                            const InT* v, int row0,
                                            const float* eg, int tx) {
-  int warp = (tx % kGdnScanGroupThreads) >> 5;
+  int warp = (tx % kGdnGroupThreads) >> 5;
   int lane = tx & 31;
   int quad = lane >> 3;
   int value = row0 + warp * 16 + (quad & 1) * 8;
@@ -86,8 +72,8 @@ __device__ __forceinline__ void gdn_form_x(InT* x, const float* sk,
       int col = ki * 16 + c + (p >> 1) * 8;
       float2 vv = gdn_unpack(r[p], x);
       float2 e = *reinterpret_cast<const float2*>(eg + col);
-      xr[4 * ki + p] = gdn_pack(vv.x - sk[8 * ki + 2 * p] * e.x,
-                                vv.y - sk[8 * ki + 2 * p + 1] * e.y, x);
+      xr[4 * ki + p] = gdn_pack_out(vv.x - sk[8 * ki + 2 * p] * e.x,
+                                    vv.y - sk[8 * ki + 2 * p + 1] * e.y, x);
     }
   }
 }
@@ -122,7 +108,7 @@ __device__ __forceinline__ void gdn_issue_xt(float* acc, InT* x, InT* t) {
 template <typename OutT>
 __device__ __forceinline__ void gdn_store_ot(const float* o, OutT* out,
                                              int row0, int tx) {
-  int warp = (tx % kGdnScanGroupThreads) >> 5;
+  int warp = (tx % kGdnGroupThreads) >> 5;
   int lane = tx & 31;
   int quad = lane >> 3;
   char* base = reinterpret_cast<char*>(out);
@@ -131,10 +117,10 @@ __device__ __forceinline__ void gdn_store_ot(const float* o, OutT* out,
   for (int j = 0; j < 8; j += 2) {
     int token = (j + (quad >> 1)) * 8 + (lane & 7);
     uint32_t addr = smem_ptr_to_uint(base + gdn_tile_offset(token, value));
-    uint32_t r0 = gdn_pack(o[4 * j], o[4 * j + 1], out);
-    uint32_t r1 = gdn_pack(o[4 * j + 2], o[4 * j + 3], out);
-    uint32_t r2 = gdn_pack(o[4 * j + 4], o[4 * j + 5], out);
-    uint32_t r3 = gdn_pack(o[4 * j + 6], o[4 * j + 7], out);
+    uint32_t r0 = gdn_pack_out(o[4 * j], o[4 * j + 1], out);
+    uint32_t r1 = gdn_pack_out(o[4 * j + 2], o[4 * j + 3], out);
+    uint32_t r2 = gdn_pack_out(o[4 * j + 4], o[4 * j + 5], out);
+    uint32_t r3 = gdn_pack_out(o[4 * j + 6], o[4 * j + 7], out);
     asm volatile(
         "stmatrix.sync.aligned.x4.trans.m8n8.shared.b16 [%0], {%1, %2, %3, "
         "%4};\n" ::"r"(addr),
@@ -149,14 +135,13 @@ template <typename OutT>
 __device__ __forceinline__ void gdn_copy_rows(const OutT* tile, int half,
                                               OutT* out, int row_stride,
                                               int valid, int lane) {
-  constexpr int kPieces = kGdnScanRowBytes / 16;
-  const char* base =
-      reinterpret_cast<const char*>(tile) + half * kGdnScanAtomBytes;
-  for (int i = lane; i < kGdnScanTokens * kPieces; i += 32) {
+  constexpr int kPieces = kGdnSwizzleRowBytes / 16;
+  const char* base = reinterpret_cast<const char*>(tile) + half * kGdnAtomBytes;
+  for (int i = lane; i < kGdnChunk * kPieces; i += 32) {
     int r = i / kPieces;
     int c = i % kPieces;
     if (r < valid) {
-      uint4 x = *reinterpret_cast<const uint4*>(base + r * kGdnScanRowBytes +
+      uint4 x = *reinterpret_cast<const uint4*>(base + r * kGdnSwizzleRowBytes +
                                                 ((c ^ (r & 7)) << 4));
       *reinterpret_cast<uint4*>(out + r * row_stride +
                                 c * (16 / sizeof(OutT))) = x;
