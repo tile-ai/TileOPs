@@ -831,7 +831,7 @@ def _rope_cos_sin_kernel(
     head_units = rot_units + (0 if inplace else (head_dim - rotary) // vec)
 
     # TileLang proves no flat-index access in bounds, and its inserted check would split every
-    # vector; `item < units` guards each thread instead.
+    # vector; `item < units` guards each thread of a grid that exceeds the units.
     @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True})
     def kernel(threads, per_thread):
         # A flat view, a table or the sequences may number 2^31 or more.
@@ -867,7 +867,9 @@ def _rope_cos_sin_kernel(
             token = item // token_items
             group = T.Cast("int32", item % token_items) // head_units
             slot = T.Cast("int32", item % token_items) % head_units
-            if item < units:
+            # With one head a thread, the check is dropped wherever a token's units fill whole
+            # blocks: the grid then holds exactly the units, so no thread is past them.
+            if (per_thread == 1 and token_items % threads == 0) or item < units:
                 # Packed x has no sequence stride, so its address needs no search.
                 if seqlens_dtype is not None:
                     x_token = token * qs

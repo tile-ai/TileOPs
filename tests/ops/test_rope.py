@@ -625,6 +625,13 @@ _COS_SIN_CASES = (
         marks=_FULL,
         id="decode-offsets",
     ),
+    # A token's 256 units fill two whole blocks: the grid holds exactly the units.
+    pytest.param(
+        _dense(3, 1, 32, 128, 64, P=16, some=["seqlen_offsets"]),
+        {"T": "bfloat16", **_F32_TABLES, "O": "int64"},
+        marks=_FULL,
+        id="decode-whole-blocks",
+    ),
     # An empty sequence among packed ones, each sequence at its own offset.
     pytest.param(
         _packed([5, 0, 9], 3, 64, 32, P=24, some=["seqlen_offsets"]),
