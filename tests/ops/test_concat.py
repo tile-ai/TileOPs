@@ -20,17 +20,36 @@ class TransposedConcatTest(TransposedConcatWorkload, TestBase):
 _BF16, _FP16, _FP32 = "bfloat16", "float16", "float32"
 _SMOKE = pytest.mark.smoke
 _FULL = pytest.mark.full
-# One case per dtype and per copy path: whole 16-byte reads, narrower vectors, rows that end
-# inside a column tile, one input, several launches, and empty elements.
+# One case per dtype and per copy path: whole 16-byte reads, narrower vectors, one or several
+# vectors per thread, rows that end inside a column tile, one input, several launches, and
+# empty elements.
 _CASES = (
     # Two inputs that each fill whole column tiles, along a negative dim: the MTP decode-4 row.
     pytest.param([[4, 5120], [4, 5120]], -1, [_BF16] * 2, marks=_SMOKE, id="bf16-tiles"),
     # Each input's row ends inside a column tile.
     pytest.param([[3, 40], [3, 24]], 1, [_FP16] * 2, marks=_SMOKE, id="fp16-tails"),
     pytest.param([[2, 3, 8], [2, 5, 8]], 1, [_FP32] * 2, marks=_SMOKE, id="fp32-middle-dim"),
-    # bfloat16 and float16 promote to a float32 output: 8-byte reads, converted.
+    # Rows whose one-vector CTAs are all resident at once: each thread takes more vectors
+    # until there are at most as many CTAs as SMs.
     pytest.param(
-        [[16, 64], [16, 32], [16, 8]], -1, [_BF16, _FP16, _BF16], marks=_FULL, id="promote"
+        [[16, 5120], [16, 5120]], -1, [_BF16] * 2, marks=_FULL, id="bf16-resident-16-rows"
+    ),
+    pytest.param(
+        [[32, 5120], [32, 5120]], -1, [_BF16] * 2, marks=_FULL, id="bf16-resident-32-rows"
+    ),
+    # The MTP draft row: its CTAs are all resident at once, so each thread copies eight
+    # vectors, the last ones past the input's row end.
+    pytest.param(
+        [[64, 5120], [64, 5120]], -1, [_BF16] * 2, marks=_FULL, id="bf16-eight-per-thread"
+    ),
+    # Widths that make a vector 8 bytes: two per thread, each an 8-byte store, the second
+    # one past the row end in the last tile.
+    pytest.param([[4, 1036], [4, 1044]], 1, [_BF16] * 2, marks=_FULL, id="bf16-8-byte-vectors"),
+    # Widths that make a vector 4 bytes: four per thread, each a 4-byte store of two elements.
+    pytest.param([[4, 1034], [4, 1030]], 1, [_BF16] * 2, marks=_FULL, id="bf16-4-byte-vectors"),
+    # bfloat16 and float16 promote to a float32 output: 8-byte reads, two per thread, converted.
+    pytest.param(
+        [[16, 1200], [16, 1032], [16, 8]], -1, [_BF16, _FP16, _BF16], marks=_FULL, id="promote"
     ),
     # Along dim 0 the output is one row.
     pytest.param([[5], [7]], 0, [_FP32] * 2, marks=_FULL, id="rank-1"),

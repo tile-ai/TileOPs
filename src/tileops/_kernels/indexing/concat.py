@@ -21,6 +21,10 @@ __all__ = ["ConcatCall", "ConcatFwdInterface", "ConcatKernel"]
 # The inputs one launch copies: `_concat_kernel` declares that many tensor slots, x0 to x3,
 # and `ConcatKernel.forward` groups the inputs by it.
 _SLOTS = 4
+# The threads of a CTA, which `_concat_kernel` launches and `ConcatKernel` counts CTAs by.
+# Small CTAs spread a decode row's few hundred vectors over the SMs, and 128 threads divide
+# every architecture's per-SM thread limit, so whole CTAs fill an SM.
+_THREADS = 128
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,17 +62,15 @@ class ConcatFwdInterface(KernelInterface):
 
 
 @target_cache(maxsize=64)
-def _concat_kernel(vec, dtypes, out_dtype):
+def _concat_kernel(vec, dtypes, out_dtype, per_thread):
     """One launch: up to ``_SLOTS`` inputs copied into the output viewed as ``[rows, total, vec]``.
 
     Input ``k``, viewed as ``[rows, cols_k, vec]``, lands at the vectors from ``base`` plus the
-    widths of the inputs before it. Rows, widths and ``base`` are dynamic.
+    widths of the inputs before it. Each thread copies ``per_thread[k]`` of its vectors, one
+    CTA width apart. Rows, widths and ``base`` are dynamic.
     """
     n = len(dtypes)
     assert n <= _SLOTS, f"a launch copies at most {_SLOTS} inputs, got {n}"
-    # Small CTAs spread a decode row's few hundred vectors over the SMs, and 128 threads
-    # divide every architecture's per-SM thread limit, so whole CTAs fill an SM.
-    threads = 128
     rows = T.dynamic("rows", "int64")
     total = T.dynamic("total", "int64")
     cols = [T.dynamic(f"cols{k}", "int64") for k in range(n)]
@@ -76,10 +78,18 @@ def _concat_kernel(vec, dtypes, out_dtype):
     # compare of its tile index, the same for every thread of the CTA.
     first, offset = [0], [0]
     for k in range(n):
-        first.append(first[k] + T.ceildiv(cols[k], threads))
+        first.append(first[k] + T.ceildiv(cols[k], _THREADS * per_thread[k]))
         offset.append(offset[k] + cols[k])
     # An input whose vector is a whole 16-byte access reads it with an L2 hint.
     whole = [vec * DataType(d).bits == VECTOR_ACCESS_BYTES * 8 for d in dtypes]
+    # TileLang lowers a vector assignment from a local array to 4-byte stores; its st.global
+    # intrinsic of the vector's width writes the vector in one instruction.
+    store_bits = vec * DataType(out_dtype).bits
+    store, word = {
+        32: (T.stg32, "uint32"),
+        64: (T.stg64, "uint32x2"),
+        128: (T.stg128, "uint32x4"),
+    }.get(store_bits, (None, None))
 
     def slot(k):
         return T.Tensor((rows, cols[k], vec), dtypes[k]) if k < n else None
@@ -87,17 +97,30 @@ def _concat_kernel(vec, dtypes, out_dtype):
     @T.macro
     def copy(out, x, k, t, r, base):
         if t >= first[k] and t < first[k + 1]:
-            c = (t - first[k]) * threads + T.get_thread_binding()
-            if c < cols[k]:
-                held = T.alloc_local((vec,), dtypes[k])
-                if whole[k]:
-                    # Evict-last: the read lines stay in L2 while the output's lines go first.
-                    load16_evict_last(held, 0, x, (r, c, 0))
-                else:
+            held = T.alloc_local((per_thread[k], vec), dtypes[k])
+            conv = T.alloc_local((vec,), out_dtype)
+            lane = (t - first[k]) * _THREADS * per_thread[k] + T.get_thread_binding()
+            # Every read of the thread issues before its first write.
+            for u in T.unroll(per_thread[k]):
+                c = lane + u * _THREADS
+                if c < cols[k]:
+                    if whole[k]:
+                        # Evict-last: the read lines stay in L2 while the output's lines go first.
+                        load16_evict_last(held, (u, 0), x, (r, c, 0))
+                    else:
+                        for v in T.vectorized(vec):
+                            held[u, v] = x[r, c, v]
+            for u in T.unroll(per_thread[k]):
+                c = lane + u * _THREADS
+                if c < cols[k]:
                     for v in T.vectorized(vec):
-                        held[v] = x[r, c, v]
-                for v in T.vectorized(vec):
-                    out[r, base + offset[k] + c, v] = T.cast(held[v], out_dtype)
+                        conv[v] = T.cast(held[u, v], out_dtype)
+                    if store is None:
+                        for v in T.vectorized(vec):
+                            out[r, base + offset[k] + c, v] = conv[v]
+                    else:
+                        value = conv[0] if vec == 1 else conv[0:vec]
+                        store(out[r, base + offset[k] + c, 0:vec], T.reinterpret(value, word))
 
     @T.prim_func
     def concat(
@@ -109,7 +132,7 @@ def _concat_kernel(vec, dtypes, out_dtype):
         x3: slot(3) = None,  # type: ignore
     ):
         # Column tiles vary fastest, so consecutive CTAs walk an output row in order.
-        with T.Kernel(first[n], rows, threads=threads) as (bx, r):
+        with T.Kernel(first[n], rows, threads=_THREADS) as (bx, r):
             t = T.cast(bx, "int64")
             copy(out, x0, 0, t, r, base)
             if n > 1:
@@ -133,10 +156,12 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
     """Each input copied into its columns of the output rows, converted on the way.
 
     Viewed as ``[rows, total]``, the output takes input ``j`` at the columns after the
-    previous inputs'. A thread moves one vector: the most elements, up to 16 bytes of the
-    widest dtype, that divide every input's row width, so a vector never crosses a row or an
-    input. A program is built for the vector and the dtypes of the inputs it copies; one
-    program serves every row count and row width. Inputs share a launch ``_SLOTS`` at a time.
+    previous inputs'. A vector is the most elements, up to 16 bytes of the widest dtype, that
+    divide every input's row width, so a vector never crosses a row or an input. A CTA copies
+    one column tile of one input row; its threads copy the vectors ``per_thread`` decides. A
+    program is built for the vector, the dtypes of the inputs it copies and their vectors per
+    thread; one program serves every row count and row width. Inputs share a launch
+    ``_SLOTS`` at a time.
     """
 
     @classmethod
@@ -145,7 +170,10 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         vec = math.gcd(*call.widths, VECTOR_ACCESS_BYTES // widest)
         args = (call.dim, vec, call.dtypes, call.out_dtype)
         index = call.device.index if call.device is not None else None
-        return (*args, index), lambda: cls(*args, device_index=index)
+        resident = call.threads_per_sm // _THREADS
+        return (*args, index), lambda: cls(
+            *args, device_index=index, sm_count=call.sm_count, resident_ctas=resident
+        )
 
     def __init__(
         self,
@@ -154,14 +182,18 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         dtypes: tuple[torch.dtype, ...],
         out_dtype: torch.dtype,
         device_index: int | None = None,
+        *,
+        sm_count: int,
+        resident_ctas: int,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dim, self.vec, self.dtypes, self.dtype = dim, vec, dtypes, out_dtype
+        self.sm_count, self.resident_ctas = sm_count, resident_ctas
         self.init_config()
 
-    def _compile(self, cfg: dict, dtypes: tuple[str, ...]):
-        """The program of a launch whose inputs have *dtypes*."""
-        return _concat_kernel(self.vec, dtypes, self.dtype_str)
+    def _compile(self, cfg: dict, dtypes: tuple[str, ...], per_thread: tuple[int, ...]):
+        """The program of a launch whose inputs have *dtypes* and *per_thread* vectors."""
+        return _concat_kernel(self.vec, dtypes, self.dtype_str, per_thread)
 
     def forward(self, tensors: list[torch.Tensor]) -> torch.Tensor:
         shape = list(tensors[0].shape)
@@ -179,7 +211,26 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
             last = min(first + MAX_GRID_YZ_BLOCKS, rows)
             for group in groups:
                 kinds = tuple(self.dtype_to_str(self.dtypes[j]) for j in group)
-                self.program(self._compile, kinds)(
+                # A thread keeps 16 bytes of each input in flight.
+                per = [VECTOR_ACCESS_BYTES // (self.vec * self.dtypes[j].itemsize) for j in group]
+
+                def ctas(scale: int, per=per, group=group, rows=last - first) -> int:
+                    return sum(
+                        rows * -(-widths[j] // (_THREADS * p * scale))
+                        for j, p in zip(group, per, strict=True)
+                    )
+
+                # A launch whose CTAs are all resident at once waits on their start and one
+                # DRAM round trip, not on bandwidth: each thread takes more vectors, doubling,
+                # until there are at most as many CTAs as SMs. Eight 16-byte vectors hold 32
+                # registers of data, so a thread takes at most eight.
+                most = 8
+                scale = 1
+                if ctas(1) <= self.sm_count * self.resident_ctas:
+                    while ctas(scale) > self.sm_count and max(per) * scale < most:
+                        scale *= 2
+                per_thread = tuple(p * scale for p in per)
+                self.program(self._compile, kinds, per_thread)(
                     flat[first:last],
                     sum(widths[: group[0]]),
                     *(views[j][first:last] for j in group),
