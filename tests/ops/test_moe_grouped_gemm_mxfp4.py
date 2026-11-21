@@ -410,6 +410,10 @@ def _shared_decode_op(workload: MoEGroupedGEMMMXFP4Workload, inputs: tuple):
         pytest.param("per_row", 328, 2048, marks=pytest.mark.smoke, id="per-row-n328-k2048"),
         # 128-byte code-table rows; experts found from their physical row ends.
         pytest.param("physical_psum", 256, 4096, marks=pytest.mark.full, id="psum-k4096"),
+        # Code tables that leave room for three token and decoded stages (48 steps).
+        pytest.param("per_row", 256, 6144, marks=pytest.mark.full, id="per-row-k6144"),
+        # The largest K whose shallowest ring, two stages, fits beside its code tables.
+        pytest.param("per_row", 256, 10240, marks=pytest.mark.full, id="per-row-k10240"),
     ],
 )
 def test_mxfp4_grouped_gemm_decodes_aligned_rows_into_shared_memory(
@@ -606,6 +610,20 @@ def test_mxfp4_grouped_gemm_tune_picks_a_correct_config() -> None:
     op.request_tune()
     out = op(*inputs)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_tune_picks_a_correct_config() -> None:
+    """Tuning aligned rows under e8m0 scales, which decode into shared memory, picks a config
+    that computes the GEMM correctly."""
+    workload = _aligned_workload(256, 2048)
+    inputs = workload.gen_inputs()
+    op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
+    op.request_tune()
+    run_into_guarded_out(op, workload, *inputs)
+    assert isinstance(next(op.iter_kernels()), MoEGroupedGEMMMXFP4SharedDecodeKernel)
 
 
 @pytest.mark.smoke

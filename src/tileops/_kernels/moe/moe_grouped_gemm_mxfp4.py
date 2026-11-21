@@ -1047,7 +1047,8 @@ def _shared_decode_smem_bytes(block_n: int, num_stages: int, scale_k: int) -> in
     barriers."""
     kernel = MoEGroupedGEMMMXFP4SharedDecodeKernel
     block_m = kernel._TILE_ROWS
-    packed_stages, decoded_stages = kernel._PACKED_STAGES, kernel._DECODED_STAGES
+    # The decoded stages run as deep as the ring of token rows.
+    packed_stages, decoded_stages = kernel._PACKED_STAGES, num_stages
     ring = num_stages * block_m * QUANT_SCALE_BLOCK
     packed = packed_stages * block_n * QUANT_SCALE_BLOCK // 2
     decoded = decoded_stages * block_n * QUANT_SCALE_BLOCK
@@ -1055,6 +1056,14 @@ def _shared_decode_smem_bytes(block_n: int, num_stages: int, scale_k: int) -> in
     task_info = 2 * (2 * block_n * 4 + 4)
     barriers = (2 * num_stages + 2 * packed_stages + 2 * decoded_stages + 4) * 8
     return ring + packed + decoded + tables + task_info + block_m * block_n * 2 + barriers
+
+
+def _shared_decode_unroll(num_stages: int) -> int:
+    """K steps the shared-decode loops unroll by: twice the least common multiple of the ring
+    depths (the decoded ring as deep as the token ring), so each ring makes an even number of
+    round trips in it and every stage and barrier phase of a step is a constant."""
+    kernel = MoEGroupedGEMMMXFP4SharedDecodeKernel
+    return 2 * math.lcm(num_stages, kernel._PACKED_STAGES)
 
 
 @target_cache(maxsize=32)
@@ -1084,7 +1093,6 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
     table_row_bytes = scale_k * 4
     table_box = _table_box(scale_k)
     packed_stages = MoEGroupedGEMMMXFP4SharedDecodeKernel._PACKED_STAGES
-    decoded_stages = MoEGroupedGEMMMXFP4SharedDecodeKernel._DECODED_STAGES
     # Columns of one output staging box: 128 bytes of bfloat16, the TMA store's 128B swizzle.
     store_box_cols = 64
 
@@ -1116,6 +1124,8 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
         )
         if reason is not None:
             raise ValueError(f"cannot build the MXFP4 grouped GEMM for {config}: {reason}")
+        # The decode warps fill decoded stages as far ahead as the token rows are loaded.
+        decoded_stages = num_stages
         tasks = task_walk(
             num_groups=num_groups,
             block_m=block_m,
@@ -1166,9 +1176,13 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             * SETMAXNREG_GRANULARITY
         )
 
-        def position(step, depth):
-            """Stage and barrier phase of a role's ``step``-th K step in a ring of ``depth``."""
-            return step % depth, (step // depth) & 1
+        # Every ring makes an even number of round trips a task and the K loop unrolls by
+        # ``unroll``, so each step's stage and barrier phase in every ring are constants.
+        unroll = _shared_decode_unroll(num_stages)
+
+        def position(kk, depth):
+            """Stage and barrier phase of a task's K step ``kk`` in a ring of ``depth``."""
+            return kk % depth, (kk // depth) % 2
 
         @T.macro
         def copy_tables(
@@ -1202,15 +1216,14 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                 )
 
         @T.macro
-        def math_step(
+        def task_steps(
             fold,
             buf,
-            kk,
-            step_index,
             a_desc_lo,
             b_desc_lo,
             token_codes,
             codes,
+            token_words,
             tokens,
             step,
             final,
@@ -1221,71 +1234,80 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             acc_row0,
             tx,
         ):
-            """K step ``kk`` of the task: its WGMMAs, the release of its stages, its promotion;
-            all at once under the task's ``fold`` flag, sub-block by sub-block otherwise."""
-            slot, phase = position(step_index, num_stages)
-            stage, stage_phase = position(step_index, decoded_stages)
-            # The token scales of the thread's two accumulator rows.
-            T.call_extern(
-                "handle",
-                "tileops::mxfp4_token_scales",
-                T.address_of(token_codes[buf, 0]),
-                acc_row0,
-                scale_k,
-                kk,
-                fold != 0,
-                tokens.data,
-            )
-            T.barrier_wait(full[slot], phase)
-            T.barrier_wait(decoded_full[stage], stage_phase)
-            a_lo = T.meta_var(a_desc_lo + T.uint32(slot * block_m * (block_k // 16)))
-            b_lo = T.meta_var(b_desc_lo + T.uint32(stage * block_n * (block_k // 16)))
-            if fold != 0:
-                T.call_extern(
-                    "handle",
-                    f"tileops::moe_fp8_wgmma_64x128_by_128xN_lo<{block_n}>",
-                    step.data,
-                    a_lo,
-                    b_lo,
-                )
-                T.wait_wgmma(0)
-                if tx % 32 == 0:
-                    T.barrier_arrive(empty[slot])
-                    T.barrier_arrive(decoded_empty[stage])
-                T.call_extern(
-                    "handle",
-                    f"tileops::moe_fp8_promote<{block_n}>",
-                    step.data,
-                    final.data,
-                    tokens[0],
-                    tokens[1],
-                    T.float32(1.0),
-                )
-            else:
-                for sub_block in T.unroll(_SUB_BLOCKS):
+            """A task's K steps, each its WGMMAs, the release of its stages and its promotion: all
+            four sub-blocks at once when ``fold``, sub-block by sub-block otherwise."""
+            for kk in T.unroll(scale_k, unroll_factor=unroll):
+                slot, phase = position(kk, num_stages)
+                stage, stage_phase = position(kk, decoded_stages)
+                # The token codes of the thread's two accumulator rows, four steps a word.
+                if kk % 4 == 0:
                     T.call_extern(
                         "handle",
-                        f"tileops::mxfp4_wgmma_ss_slice<{block_n}>",
+                        "tileops::mxfp4_token_words",
+                        T.address_of(token_codes[buf, 0]),
+                        acc_row0,
+                        scale_k,
+                        kk,
+                        token_words.data,
+                    )
+                T.call_extern(
+                    "handle",
+                    "tileops::mxfp4_token_scales",
+                    token_words.data,
+                    kk % 4,
+                    fold,
+                    tokens.data,
+                )
+                T.barrier_wait(full[slot], phase)
+                T.barrier_wait(decoded_full[stage], stage_phase)
+                a_lo = T.meta_var(a_desc_lo + T.uint32(slot * block_m * (block_k // 16)))
+                b_lo = T.meta_var(b_desc_lo + T.uint32(stage * block_n * (block_k // 16)))
+                if fold:
+                    T.call_extern(
+                        "handle",
+                        f"tileops::moe_fp8_wgmma_64x128_by_128xN_lo<{block_n}>",
                         step.data,
                         a_lo,
                         b_lo,
-                        sub_block,
                     )
                     T.wait_wgmma(0)
+                    if tx % 32 == 0:
+                        T.barrier_arrive(empty[slot])
+                        T.barrier_arrive(decoded_empty[stage])
                     T.call_extern(
                         "handle",
-                        f"tileops::mxfp4_promote_exact<{layout_args}>",
+                        f"tileops::moe_fp8_promote<{block_n}>",
                         step.data,
                         final.data,
-                        T.address_of(codes[buf, 0]),
-                        kk,
-                        sub_block,
                         tokens[0],
                         tokens[1],
+                        T.float32(1.0),
                     )
-                if tx % 32 == 0:
-                    T.barrier_arrive(empty[slot])
-                    T.barrier_arrive(decoded_empty[stage])
+                else:
+                    for sub_block in T.unroll(_SUB_BLOCKS):
+                        T.call_extern(
+                            "handle",
+                            f"tileops::mxfp4_wgmma_ss_slice<{block_n}>",
+                            step.data,
+                            a_lo,
+                            b_lo,
+                            sub_block,
+                        )
+                        T.wait_wgmma(0)
+                        T.call_extern(
+                            "handle",
+                            f"tileops::mxfp4_promote_exact<{layout_args}>",
+                            step.data,
+                            final.data,
+                            T.address_of(codes[buf, 0]),
+                            kk,
+                            sub_block,
+                            tokens[0],
+                            tokens[1],
+                        )
+                    if tx % 32 == 0:
+                        T.barrier_arrive(empty[slot])
+                        T.barrier_arrive(decoded_empty[stage])
 
         @T.prim_func
         def _moe_grouped_gemm_mxfp4_shared_decode_main(
@@ -1319,6 +1341,8 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                 step = T.alloc_local((fragment_regs,), "float32")
                 final = T.alloc_local((fragment_regs,), "float32")
                 tokens = T.alloc_local((2,), "float32")
+                # The token codes of a math thread's two accumulator rows, four steps a word.
+                token_words = T.alloc_local((2,), "uint32")
                 unit_refs = T.alloc_local((unit_slots,), "int32")
                 # Two magnitude byte-row words a unit (mxfp4_decode_luts).
                 luts = T.alloc_local((2 * unit_slots,), "uint32")
@@ -1335,9 +1359,8 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                 ahead_tile = T.alloc_local((2,), "int32")
                 cursor = T.alloc_local((tasks.cursor_len,), "int32")
                 tile = T.alloc_local((2,), "int32")
-                # Each role's count of the K steps and of the tasks it has run. Not the wave
-                # index: a skipped task advances no barrier.
-                step_index = T.alloc_var("int32", init=0)
+                # Each role's count of the tasks it has run. Not the wave index: a skipped task
+                # advances no barrier.
                 task_index = T.alloc_var("int32", init=0)
                 for i in T.unroll(tasks.cursor_len):
                     cursor[i] = 0
@@ -1414,8 +1437,8 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                 g = T.meta_var(tasks.expert(cursor))
                                 m_start = T.meta_var(tasks.first_row(cursor, tile))
                                 n_start = T.meta_var(tasks.first_col(tile))
-                                for kk in T.serial(scale_k):
-                                    packed_slot, packed_phase = position(step_index, packed_stages)
+                                for kk in T.unroll(scale_k, unroll_factor=unroll):
+                                    packed_slot, packed_phase = position(kk, packed_stages)
                                     T.barrier_wait(packed_empty[packed_slot], packed_phase ^ 1)
                                     if T.shuffle_elect(32):
                                         T.mbarrier_arrive_expect_tx(
@@ -1430,7 +1453,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                             g,
                                             0,
                                         )
-                                    slot, phase = position(step_index, num_stages)
+                                    slot, phase = position(kk, num_stages)
                                     T.barrier_wait(empty[slot], phase ^ 1)
                                     if T.shuffle_elect(32):
                                         T.mbarrier_arrive_expect_tx(full[slot], block_m * block_k)
@@ -1459,7 +1482,6 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                             token_codes,
                                             task_index + 1,
                                         )
-                                    step_index = step_index + 1
                                 task_index = task_index + 1
                     else:
                         decode_tx = producer_tx - 32
@@ -1503,9 +1525,9 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                         T.address_of(flags[buf]),
                                         fold,
                                     )
-                                for kk in T.serial(scale_k):
-                                    packed_slot, packed_phase = position(step_index, packed_stages)
-                                    stage, stage_phase = position(step_index, decoded_stages)
+                                for kk in T.unroll(scale_k, unroll_factor=unroll):
+                                    packed_slot, packed_phase = position(kk, packed_stages)
+                                    stage, stage_phase = position(kk, decoded_stages)
                                     T.call_extern(
                                         "handle",
                                         f"tileops::mxfp4_decode_luts<{layout_args}, "
@@ -1535,7 +1557,6 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                         "tileops::mxfp4_publish_stage",
                                         T.address_of(decoded_full[stage]),
                                     )
-                                    step_index = step_index + 1
                                 T.call_extern(
                                     "handle",
                                     "tileops::mxfp4_warp_arrive",
@@ -1569,20 +1590,19 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                             T.clear(final)
                             T.barrier_wait(tab_full[buf], task_index // 2 & 1)
                             # The decode threads set the task's flag before its first stage.
-                            first_stage, first_phase = position(step_index, decoded_stages)
-                            T.barrier_wait(decoded_full[first_stage], first_phase)
+                            T.barrier_wait(decoded_full[0], 0)
                             fold = T.alloc_var("int32")
                             fold = flags[buf]
-                            for kk in T.serial(scale_k):
-                                math_step(
-                                    fold,
+                            # One loop a flag, so no step branches on it.
+                            if fold != 0:
+                                task_steps(
+                                    True,
                                     buf,
-                                    kk,
-                                    step_index,
                                     a_desc_lo,
                                     b_desc_lo,
                                     token_codes,
                                     codes,
+                                    token_words,
                                     tokens,
                                     step,
                                     final,
@@ -1593,7 +1613,25 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                     acc_row0,
                                     tx,
                                 )
-                                step_index = step_index + 1
+                            else:
+                                task_steps(
+                                    False,
+                                    buf,
+                                    a_desc_lo,
+                                    b_desc_lo,
+                                    token_codes,
+                                    codes,
+                                    token_words,
+                                    tokens,
+                                    step,
+                                    final,
+                                    full,
+                                    empty,
+                                    decoded_full,
+                                    decoded_empty,
+                                    acc_row0,
+                                    tx,
+                                )
                             if fold != 0:
                                 T.call_extern(
                                     "handle",
@@ -1916,7 +1954,7 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
     exponent. Rows past an aligned expert's end are its padding and are stored like the others.
 
     A config is ``{block_m, block_n, num_stages, num_sms}`` with ``block_m`` and ``block_n``
-    128; ``num_stages`` is the depth of the ring of ``a``'s rows.
+    128; ``num_stages`` is the depth of the ring of ``a``'s rows and of the decoded fp8 stages.
     """
 
     preferred_over: ClassVar[frozenset[str]] = frozenset({"grouped_gemm_mxfp4"})
@@ -1925,12 +1963,9 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
     # Weight rows of a tile, the WGMMA N extent: a math thread holds a step's and the task's
     # accumulators, 64 floats each.
     _TILE_COLUMNS: ClassVar[int] = 128
-    # Decoded fp8 stages: the decode warps fill one while the math warp-groups contract the
-    # other.
-    _DECODED_STAGES: ClassVar[int] = 2
-    # Stages of packed weights: the decode warps release a stage once they have read it, a step
+    # Stages of packed weights: the decode warps release a stage once they have converted it,
     # ahead of the math warp-groups, so the ring of fp8 token rows sets the loads' lead.
-    _PACKED_STAGES: ClassVar[int] = 3
+    _PACKED_STAGES: ClassVar[int] = 2
     _BLOCK_M: ClassVar[tuple[int, ...]] = (_TILE_ROWS,)
     _BLOCK_N: ClassVar[tuple[int, ...]] = (_TILE_COLUMNS,)
 
@@ -1959,6 +1994,9 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
         reason = cls._common_refusal(config, sm_count=sm_count, alignment=alignment)
         if reason is not None:
             return reason
+        unroll = _shared_decode_unroll(config["num_stages"])
+        if scale_k % unroll:
+            return f"unrolls the K steps by {unroll}, which does not divide {scale_k}"
         smem = _shared_decode_smem_bytes(config["block_n"], config["num_stages"], scale_k)
         if smem > smem_limit:
             return f"takes {smem} bytes of shared memory, past the {smem_limit} a block may"
@@ -2009,8 +2047,9 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Every ring depth that fits beside the tiles; the ring keeps its position across tasks.
-        return [
+        # Every ring depth the builder takes: it fits beside the tiles, and its unrolled K loop
+        # divides the K steps.
+        configs = [
             {
                 "block_m": self._TILE_ROWS,
                 "block_n": self._TILE_COLUMNS,
@@ -2018,8 +2057,11 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
                 "num_sms": self.sm_count,
             }
             for stages in self._NUM_STAGES
-            if _shared_decode_smem_bytes(self._TILE_COLUMNS, stages, self.scale_k)
-            <= self.smem_limit
+        ]
+        return [
+            config
+            for config in configs
+            if self.config_refusal(config, **self._refusal_inputs()) is None
         ]
 
     @property
