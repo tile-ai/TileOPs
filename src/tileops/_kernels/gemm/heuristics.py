@@ -411,7 +411,8 @@ def _enumerate(
                 if ns < 3:
                     continue
                 if exposed:
-                    swizzle = next(w for w in (128, 64, 32) if sn * out_bytes % w == 0)
+                    # The swizzle span: the largest power of two up to 128 B dividing the row.
+                    swizzle = math.gcd(sn * out_bytes, 128)
                     key = (ns, swizzle, sn < bn, sn)
                 else:
                     key = (ns, sn)

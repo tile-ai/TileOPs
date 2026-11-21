@@ -2577,6 +2577,19 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             marks=pytest.mark.full,
             id="f32-176-n-tail",
         ),
+        # Rows of 330 float32 values are no whole number of 16-byte units: no TMA store, and
+        # the tile keeps the chunk that leaves the deepest ring.
+        pytest.param(
+            8150,
+            330,
+            1032,
+            torch.bfloat16,
+            torch.float32,
+            False,
+            (176, 88),
+            marks=pytest.mark.full,
+            id="f32-176-unaligned-rows",
+        ),
         pytest.param(
             8150,
             440,
