@@ -226,8 +226,8 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
                 # flight, the widest read a thread issues. Within one wave it waits on CTA starts
                 # and one DRAM round trip, and an input stops at eight vectors (eight 16-byte
                 # vectors hold 32 registers of data). A launch that fits the SMs at one vector
-                # keeps 16 bytes of each input a thread: at one vector, float32 [64, 7] x2 and
-                # bfloat16 [4, 1036] + [4, 1044] ran a timer step slower on an H200.
+                # gains no CTA from any count, so it takes 16 bytes of each input a thread, the
+                # count a launch past one wave stops at, and reuses that launch's program.
                 per = [1] * len(group)
                 if ctas(per) <= self.sm_count:
                     per = [most[j] for j in group]
