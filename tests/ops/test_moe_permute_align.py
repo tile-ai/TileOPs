@@ -106,7 +106,7 @@ def test_sparse_routes_across_expert_blocks(num_experts) -> None:
     TestBase.check(workload, op, ids.view(-1, 1))
     (kernel,) = op.iter_kernels()
     with building_on(ids.device):
-        assert kernel._small_batch_fn is _make_sparse_routes_kernel(129, num_experts)
+        assert kernel._fused_fn is _make_sparse_routes_kernel(129, num_experts)
 
 
 @pytest.mark.parametrize(
