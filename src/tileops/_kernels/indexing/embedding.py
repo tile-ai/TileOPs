@@ -12,7 +12,7 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
 from tileops._utils import WARP_LANES
 
 __all__ = ["EmbeddingCall", "EmbeddingFwdInterface", "EmbeddingKernel"]
@@ -181,21 +181,44 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         ]
         warps = -(-slots // (max_passes * WARP_LANES))
         threads = max(divisors) if divisors else min(WARP_LANES * warps, max_threads)
-        # Every thread of a one-row tile waits on its one id: the fewest whole warps give each
-        # id round trip up to max_passes loads a thread and fit more CTAs on an SM.
+        # Every thread of a one-row tile waits on the tile's one id before its row loads.
+        # spread_threads, the fewest whole warps that divide the row, put up to max_passes row
+        # loads a thread behind that id: in a call of more CTAs than the device holds at once
+        # an SM holds more of their smaller CTAs, while in a one-wave call the extra loads
+        # lengthen its single round trip, so such a call keeps threads.
         whole_warps = [t for t in divisors if t % WARP_LANES == 0]
+        spread_threads = threads
         if block_rows == 1 and whole_warps:
-            threads = min(whole_warps)
+            spread_threads = min(whole_warps)
         return {
             "block_rows": block_rows,
             "block_vectors": block_vectors,
             "vec": vec,
             "threads": threads,
+            "spread_threads": spread_threads,
         }
 
     def forward(self, input, weight):
-        return self.program(self._compile)(input.view(-1), weight).view(*input.shape, self.dim)
+        ids = input.view(-1)
+        spread = ids.numel() > self._spread_above(self.config)
+        program = self.program(self._compile, spread)
+        return program(ids, weight).view(*input.shape, self.dim)
 
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)
+    def _spread_above(self, cfg: dict) -> float:
+        """The id count above which ``forward`` launches the ``spread_threads`` program,
+        infinity where *cfg* does not spread."""
+        if cfg["spread_threads"] == cfg["threads"]:
+            return math.inf
+        # A config that spreads has one-row tiles of the whole row, one CTA an id, so a call
+        # runs in waves above the CTAs of the ``threads`` program the device holds at once,
+        # which the SM's thread limit bounds; an SM holds a CTA in whole warps.
+        target = self.build_target
+        warps = -(-cfg["threads"] // WARP_LANES)
+        return target.sm_count * (target.threads_per_sm // WARP_LANES // warps)
+
+    def _compile(self, cfg: dict, spread: bool) -> CompiledProgram:
+        """The program ``forward`` launches, compiled from *cfg*, with ``spread_threads`` for
+        ``threads`` when *spread* holds."""
+        threads = cfg["spread_threads"] if spread else cfg["threads"]
+        block_rows, block_vectors, vec = cfg["block_rows"], cfg["block_vectors"], cfg["vec"]
+        return CompiledProgram(self.kernel(block_rows, block_vectors, vec, threads))

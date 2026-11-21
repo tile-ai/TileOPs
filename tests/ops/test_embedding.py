@@ -24,17 +24,8 @@ _SMOKE = pytest.mark.smoke
 _FULL = pytest.mark.full
 # One case per dtype and per tiling path. Every case reads the table's last row.
 _CASES = (
-    # A one-row tile of 256 vectors on two warps: four passes.
-    pytest.param(
-        [4, 33],
-        1000,
-        2048,
-        "int64",
-        "bfloat16",
-        {},
-        marks=[_SMOKE, pytest.mark.in_tree_kernels],
-        id="bf16-four-passes",
-    ),
+    # An odd row of 2-byte elements: 2-byte vectors, which cp.async does not move.
+    pytest.param([7], 50, 1001, "int64", "bfloat16", {}, marks=_SMOKE, id="two-byte-vectors"),
     pytest.param([129], 300, 1152, "int64", "float32", {}, marks=_SMOKE, id="fp32"),
     # Fewer ids than a tile of narrow rows holds: a partial row tile. The gradient-only
     # params ride on it.
@@ -53,8 +44,6 @@ _CASES = (
     pytest.param([2, 9], 40, 3, "int32", "int32", {}, marks=_SMOKE, id="int32-table"),
     # 24-byte rows: 8-byte vectors.
     pytest.param([5, 7], 90, 3, "int32", "int64", {}, marks=_FULL, id="eight-byte-vectors"),
-    # An odd row of 2-byte elements: 2-byte vectors, which cp.async does not move.
-    pytest.param([7], 50, 1001, "int64", "bfloat16", {}, marks=_FULL, id="two-byte-vectors"),
     # 1021 vectors, a prime: no thread count divides them, so the last pass is guarded.
     pytest.param([2], 1, 8168, "int64", "bfloat16", {}, marks=_FULL, id="guarded-pass"),
     # 1025-vector rows: two column tiles, the second holding one vector; more than 2**20
@@ -87,8 +76,6 @@ def _column_tiles(cfg: dict, S: list, D: int) -> bool:
 # The kernel config each path-named case relies on, so a retune fails the case instead of
 # moving it off its path.
 _ON_PATH = {
-    "bf16-four-passes": lambda cfg, S, D: cfg["block_rows"] == 1
-    and cfg["block_vectors"] == 4 * cfg["threads"],
     "guarded-pass": lambda cfg, S, D: cfg["block_rows"] * cfg["block_vectors"] % cfg["threads"]
     != 0,
     "column-tiles": _column_tiles,
@@ -110,6 +97,51 @@ def test_embedding(S, V, D, index_dtype, dtype, params, request) -> None:
         cfg = op.kernel_for("embedding", lambda: call).config
         assert on_path(cfg, S, D), cfg
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_embedding_wave_limit_counts_whole_warps() -> None:
+    """A 1152-wide float32 row takes 144 threads, five warps, of which an SM holds 12 CTAs by
+    its warp limit, not the 14 its thread limit alone would give."""
+    call = EmbeddingCall(
+        dim=1152, dtype=torch.float32, index_dtype=torch.int64, device=torch.device(run_device())
+    )
+    kernel = EmbeddingFwdOp().kernel_for("embedding", lambda: call)
+    cfg = kernel.config
+    assert cfg["threads"] == 144, cfg
+    assert kernel._spread_above(cfg) == call.sm_count * (call.threads_per_sm // 32 // 5)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_embedding_spreads_past_one_wave(monkeypatch) -> None:
+    """A one-row tile of one vector a thread takes the fewest whole warps, four vectors a
+    thread on a 256-vector row, only for a call of more CTAs than the device holds at once."""
+    call = EmbeddingCall(
+        dim=2048, dtype=torch.bfloat16, index_dtype=torch.int64, device=torch.device(run_device())
+    )
+    op = EmbeddingFwdOp()
+    kernel = op.kernel_for("embedding", lambda: call)
+    cfg = kernel.config
+    assert cfg["block_rows"] == 1 and cfg["block_vectors"] == cfg["threads"], cfg
+    assert cfg["block_vectors"] == 4 * cfg["spread_threads"], cfg
+    wave = kernel._spread_above(cfg)
+    blocks, rest = divmod(wave, call.sm_count)
+    assert rest == 0 and 1 <= blocks <= call.threads_per_sm // cfg["threads"], wave
+    launched = []
+    program = kernel.program
+
+    def recording(build, *facts):
+        launched.append(facts)
+        return program(build, *facts)
+
+    monkeypatch.setattr(kernel, "program", recording)
+    for tokens, spread in ((wave, False), (wave + 1, True)):
+        launched.clear()
+        test = _test([tokens], 50, 2048, "int64", "bfloat16")
+        test.check(op, *test.gen_inputs())
+        assert launched[-1] == (spread,), (tokens, launched)
 
 
 @pytest.mark.smoke
