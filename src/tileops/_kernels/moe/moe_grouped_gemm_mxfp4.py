@@ -1596,45 +1596,14 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                             T.barrier_wait(decoded_full[0], 0)
                             fold = T.alloc_var("int32")
                             fold = flags[buf]
+                            steps_args = (buf, a_desc_lo, b_desc_lo, token_codes, codes,
+                                          token_words, tokens, step, final, full, empty,
+                                          decoded_full, decoded_empty, acc_row0, tx)  # fmt: skip
                             # One loop a flag, so no step branches on it.
                             if fold != 0:
-                                task_steps(
-                                    True,
-                                    buf,
-                                    a_desc_lo,
-                                    b_desc_lo,
-                                    token_codes,
-                                    codes,
-                                    token_words,
-                                    tokens,
-                                    step,
-                                    final,
-                                    full,
-                                    empty,
-                                    decoded_full,
-                                    decoded_empty,
-                                    acc_row0,
-                                    tx,
-                                )
+                                task_steps(True, *steps_args)
                             else:
-                                task_steps(
-                                    False,
-                                    buf,
-                                    a_desc_lo,
-                                    b_desc_lo,
-                                    token_codes,
-                                    codes,
-                                    token_words,
-                                    tokens,
-                                    step,
-                                    final,
-                                    full,
-                                    empty,
-                                    decoded_full,
-                                    decoded_empty,
-                                    acc_row0,
-                                    tx,
-                                )
+                                task_steps(False, *steps_args)
                             if fold != 0:
                                 T.call_extern(
                                     "handle",
