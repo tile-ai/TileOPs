@@ -1,11 +1,8 @@
-import threading
-
 import pytest
 import torch
 
 from tests.workload_test_base import TestBase
 from tileops._kernels.indexing import EmbeddingCall
-from tileops._kernels.kernel_base import CompiledProgram
 from tileops.backend import OpNotAvailableError
 from tileops.indexing import EmbeddingFwdOp
 from workloads.device import run_device
@@ -133,46 +130,6 @@ def test_embedding_spreads_past_one_wave(monkeypatch) -> None:
         test = _test([tokens], 50, 2048, "int64", "bfloat16")
         test.check(op, *test.gen_inputs())
         assert launched[-1] == (spread,), (tokens, launched)
-
-
-@pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-def test_embedding_first_call_on_a_thread_without_cuda_context() -> None:
-    """A thread that has made no CUDA call has no current CUDA context; a cold op's first
-    call there loads its program's module to read the wave limit and returns the lookup. A
-    second cold op reuses that module. No other case uses this row width and id dtype, so the
-    module is not loaded yet."""
-    test = _test([64], 50, 1536, "int64", "bfloat16")
-    inputs = test.gen_inputs()
-
-    def first_call_on_a_new_thread() -> dict:
-        op, out = EmbeddingFwdOp(), []
-        thread = threading.Thread(target=lambda: out.append(op(*inputs)))
-        thread.start()
-        thread.join()
-        assert len(out) == 1
-        test.check(op, *inputs, runs=lambda *args: out[0])
-        return {key: int(f) for key, f in CompiledProgram._occupancy_functions.items()}
-
-    loaded = [first_call_on_a_new_thread() for _ in range(2)]
-    assert loaded[0] and loaded[0] == loaded[1]
-
-
-@pytest.mark.smoke
-@pytest.mark.cuda_only("cuda-graph")
-def test_embedding_first_call_in_a_cuda_graph() -> None:
-    """A cold op's first call, which loads its program's module to read the wave limit, is
-    captured in a CUDA graph and replays on changed ids. No other case uses this row width
-    and id dtype, so the module is not loaded yet."""
-    test = _test([64], 50, 1536, "int32", "bfloat16")
-    input, weight = test.gen_inputs()
-    op = EmbeddingFwdOp()
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph, stream=torch.cuda.Stream()):
-        out = op(input, weight)
-    input.copy_(input.flip(0))
-    graph.replay()
-    test.check(op, input, weight, runs=lambda *args: out)
 
 
 @pytest.mark.smoke

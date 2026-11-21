@@ -46,15 +46,6 @@ class EmbeddingFwdInterface(KernelInterface):
         """
 
 
-def _stage_slots(block_rows: int, block_vectors: int, threads: int) -> int:
-    """Vectors one CTA's shared stage holds: a slot a thread in each of its passes.
-
-    The kernel allocates its stage from it, and the launch reads the stage's bytes from it to
-    ask how many CTAs an SM holds.
-    """
-    return -(-(block_rows * block_vectors) // threads) * threads
-
-
 @target_cache(maxsize=32)
 def _embedding_kernel(dim, dtype, index_dtype):
     # A thread reads back only the shared memory it landed itself, so no barrier orders it.
@@ -101,9 +92,7 @@ def _embedding_kernel(dim, dtype, index_dtype):
         ):
             with T.Kernel(grid_x, T.ceildiv(tiles, grid_x), threads=threads) as (bx, by):
                 tx = T.get_thread_binding()
-                stage = T.alloc_shared(
-                    (_stage_slots(block_rows, block_vectors, threads), vec), dtype
-                )
+                stage = T.alloc_shared((passes * threads, vec), dtype)
                 tile = T.cast(by, "int64") * grid_x + bx
                 first_row = tile // col_tiles * block_rows
                 first_col = tile % col_tiles * block_vectors
@@ -197,8 +186,7 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         # makes that one round trip and more threads cannot shorten it. A call of more CTAs
         # runs in waves: spread_threads, the fewest whole warps that divide the row, put up to
         # max_passes row loads behind each id round trip a thread, and an SM holds more of
-        # their smaller CTAs: 24 at 64 threads on a 2048-wide bfloat16 row, whose 33 registers
-        # a thread bound them below the 32-CTA limit, against 8 at 256 threads.
+        # their smaller CTAs.
         whole_warps = [t for t in divisors if t % WARP_LANES == 0]
         spread_threads = threads
         if block_rows == 1 and slots <= max_threads and whole_warps:
@@ -228,9 +216,9 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         if spread or cfg["spread_threads"] == threads:
             return program, math.inf
         # A config that spreads has one-row tiles of the whole row, one CTA an id, so the call
-        # runs in waves above the CTAs of this program the device holds at once. Its compiled
-        # registers and shared memory, not only the thread limit, bound the CTAs an SM holds.
-        stage_bytes = _stage_slots(block_rows, block_vectors, threads) * vec * self.dtype.itemsize
-        sm_count = self.build_target.sm_count
-        holds = program.blocks_per_sm(self._build_device.index, threads, stage_bytes)
-        return program, sm_count * holds
+        # runs in waves above the CTAs of this program the device holds at once. The SM's
+        # thread limit bounds them: a thread of this program holds one vector, in few
+        # registers and one stage slot of shared memory, so the SM's registers and shared
+        # memory allow more of its CTAs.
+        target = self.build_target
+        return program, target.sm_count * (target.threads_per_sm // threads)

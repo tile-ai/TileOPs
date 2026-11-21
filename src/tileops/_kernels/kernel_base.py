@@ -55,12 +55,6 @@ class CompiledProgram:
 
     __slots__ = ("jit", "adapter", "inputs", "outputs", "single", "order")
 
-    # The kernel of each binary blocks_per_sm has loaded, by device index and binary, so one
-    # binary's module is loaded once a device. It stays loaded: unloading a module
-    # synchronizes the device, which invalidates a CUDA graph capture of a first launch.
-    _occupancy_functions: ClassVar[dict[tuple[int, bytes], Any]] = {}
-    _occupancy_lock: ClassVar[threading.Lock] = threading.Lock()
-
     def __init__(self, jit: Any) -> None:
         """Read *jit*'s output descriptors, or leave its launches to TileLang."""
         self.jit, self.adapter, self.outputs, self.single, self.order = jit, None, (), None, None
@@ -109,53 +103,6 @@ class CompiledProgram:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.jit, name)
-
-    def blocks_per_sm(self, device_index: int, threads: int, dynamic_smem: int) -> int:
-        """CTAs of this one-kernel CUDA program one SM of CUDA device *device_index* holds at once.
-
-        The CUDA occupancy calculator reads the registers and static shared memory the compiler
-        gave the program's binary, with *threads* threads and *dynamic_smem* bytes of dynamic
-        shared memory a CTA.
-        """
-        import tilelang
-        from cuda.bindings import driver
-        from tilelang.engine.lower import tilelang_callback_cuda_compile
-
-        def checked(result: tuple) -> Any:
-            error, *values = result
-            if error != driver.CUresult.CUDA_SUCCESS:
-                raise RuntimeError(f"CUDA driver call failed: {error!r}")
-            return values[0] if len(values) == 1 else values
-
-        jit = self.jit
-        # TileLang's device compile, given the flags it merged when it built this program,
-        # returns the program's binary: from TileLang's binary cache when that is on.
-        configs = dict(jit.pass_configs or {})
-        if jit.compile_flags is not None:
-            key = tilelang.PassConfigKey.TL_DEVICE_COMPILE_FLAGS
-            configs[key] = configs.get(key, []) + jit.compile_flags
-        binary = tilelang_callback_cuda_compile(jit.get_kernel_source(), jit.target, configs)
-        # The device's primary context, torch's, made current here: a thread that has not
-        # yet called into CUDA has none current.
-        checked(driver.cuInit(0))
-        device = checked(driver.cuDeviceGet(device_index))
-        context = checked(driver.cuDevicePrimaryCtxRetain(device))
-        checked(driver.cuCtxPushCurrent(context))
-        try:
-            key = (device_index, bytes(binary))
-            with CompiledProgram._occupancy_lock:
-                function = CompiledProgram._occupancy_functions.get(key)
-                if function is None:
-                    module = checked(driver.cuModuleLoadData(key[1]))
-                    count = checked(driver.cuModuleGetFunctionCount(module))
-                    (function,) = checked(driver.cuModuleEnumerateFunctions(count, module))
-                    CompiledProgram._occupancy_functions[key] = function
-            return checked(
-                driver.cuOccupancyMaxActiveBlocksPerMultiprocessor(function, threads, dynamic_smem)
-            )
-        finally:
-            checked(driver.cuCtxPopCurrent())
-            checked(driver.cuDevicePrimaryCtxRelease(device))
 
     def __call__(self, *inputs: Any) -> Any:
         adapter = self.adapter
