@@ -967,8 +967,10 @@ def test_gdn_skips_the_states_of_negative_slots(
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "batch,heads,allow_neg_eigval",
-    [(1, 8, False), (4, 2, True)],
-    ids=["one-request-eight-heads", "four-requests-two-heads"],
+    [
+        pytest.param(1, 8, False, marks=pytest.mark.smoke, id="one-request-eight-heads"),
+        pytest.param(4, 2, True, marks=pytest.mark.full, id="four-requests-two-heads"),
+    ],
 )
 def test_gdn_column_decode_uses_the_call_gate_and_beta_shapes(batch, heads, allow_neg_eigval):
     """The Hopper decode reads the given gate and beta for each request and head."""
