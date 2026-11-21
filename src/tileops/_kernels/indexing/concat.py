@@ -225,8 +225,12 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
                 # resident wave the launch waits on bandwidth, and an input stops at 16 bytes in
                 # flight (one 16-byte read, the widest a thread issues). Within one wave it waits
                 # on CTA starts and one DRAM round trip, and an input stops at eight vectors
-                # (eight 16-byte vectors hold 32 registers of data).
+                # (eight 16-byte vectors hold 32 registers of data). The doubling exists to
+                # remove CTAs: a launch that fits the SMs at one vector has none to remove, so
+                # it keeps 16 bytes of each input in flight.
                 per = [1] * len(group)
+                if ctas(per) <= self.sm_count:
+                    per = [most[j] for j in group]
                 while (now := ctas(per)) > self.sm_count:
                     grown = [
                         min(2 * p, most[j] if now > wave else 8)

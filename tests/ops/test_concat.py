@@ -69,7 +69,8 @@ _CASES = (
         marks=_FULL,
         id="mixed-reads-per-thread",
     ),
-    # Along dim 0 the output is one row.
+    # Along dim 0 the output is one row. The launch fits the SMs at one vector, so each thread
+    # keeps 16 bytes in flight: four 4-byte vectors, the last three past the row end.
     pytest.param([[5], [7]], 0, [_FP32] * 2, marks=_FULL, id="rank-1"),
     # One input: a launch with one tensor slot.
     pytest.param([[4, 16]], 1, [_BF16], marks=_FULL, id="single"),
