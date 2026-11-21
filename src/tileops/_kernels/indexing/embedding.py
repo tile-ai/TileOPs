@@ -181,15 +181,14 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         ]
         warps = -(-slots // (max_passes * WARP_LANES))
         threads = max(divisors) if divisors else min(WARP_LANES * warps, max_threads)
-        # Every thread of a one-row tile of one vector a thread waits on the tile's one id
-        # before its row load. While the call's CTAs all fit on the device at once, each CTA
-        # makes that one round trip and more threads cannot shorten it. A call of more CTAs
-        # runs in waves: spread_threads, the fewest whole warps that divide the row, put up to
-        # max_passes row loads behind each id round trip a thread, and an SM holds more of
-        # their smaller CTAs.
+        # Every thread of a one-row tile waits on the tile's one id before its row loads.
+        # spread_threads, the fewest whole warps that divide the row, put up to max_passes row
+        # loads a thread behind that id: in a call of more CTAs than the device holds at once
+        # an SM holds more of their smaller CTAs, while in a one-wave call the extra loads
+        # lengthen its single round trip, so such a call keeps threads.
         whole_warps = [t for t in divisors if t % WARP_LANES == 0]
         spread_threads = threads
-        if block_rows == 1 and slots <= max_threads and whole_warps:
+        if block_rows == 1 and whole_warps:
             spread_threads = min(whole_warps)
         return {
             "block_rows": block_rows,
@@ -201,24 +200,24 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
 
     def forward(self, input, weight):
         ids = input.view(-1)
-        program, spread_above = self.program(self._compile, False)
-        if ids.numel() > spread_above:
-            program, _ = self.program(self._compile, True)
+        spread = ids.numel() > self._spread_above(self.config)
+        program = self.program(self._compile, spread)
         return program(ids, weight).view(*input.shape, self.dim)
 
-    def _compile(self, cfg: dict, spread: bool) -> tuple[CompiledProgram, float]:
+    def _spread_above(self, cfg: dict) -> float:
+        """The id count above which ``forward`` launches the ``spread_threads`` program,
+        infinity where *cfg* does not spread."""
+        if cfg["spread_threads"] == cfg["threads"]:
+            return math.inf
+        # A config that spreads has one-row tiles of the whole row, one CTA an id, so a call
+        # runs in waves above the CTAs of the ``threads`` program the device holds at once,
+        # which the SM's thread limit bounds.
+        target = self.build_target
+        return target.sm_count * (target.threads_per_sm // cfg["threads"])
+
+    def _compile(self, cfg: dict, spread: bool) -> CompiledProgram:
         """The program ``forward`` launches, compiled from *cfg*, with ``spread_threads`` for
-        ``threads`` when *spread* holds; and the id count above which ``forward`` launches the
-        spread program instead of this one, infinity where there is none."""
+        ``threads`` when *spread* holds."""
         threads = cfg["spread_threads"] if spread else cfg["threads"]
         block_rows, block_vectors, vec = cfg["block_rows"], cfg["block_vectors"], cfg["vec"]
-        program = CompiledProgram(self.kernel(block_rows, block_vectors, vec, threads))
-        if spread or cfg["spread_threads"] == threads:
-            return program, math.inf
-        # A config that spreads has one-row tiles of the whole row, one CTA an id, so the call
-        # runs in waves above the CTAs of this program the device holds at once. The SM's
-        # thread limit bounds them: a thread of this program holds one vector, in few
-        # registers and one stage slot of shared memory, so the SM's registers and shared
-        # memory allow more of its CTAs.
-        target = self.build_target
-        return program, target.sm_count * (target.threads_per_sm // threads)
+        return CompiledProgram(self.kernel(block_rows, block_vectors, vec, threads))

@@ -24,8 +24,8 @@ _SMOKE = pytest.mark.smoke
 _FULL = pytest.mark.full
 # One case per dtype and per tiling path. Every case reads the table's last row.
 _CASES = (
-    # A one-row tile of 256 vectors, one a thread.
-    pytest.param([4, 33], 1000, 2048, "int64", "bfloat16", {}, marks=_SMOKE, id="bf16-one-row"),
+    # An odd row of 2-byte elements: 2-byte vectors, which cp.async does not move.
+    pytest.param([7], 50, 1001, "int64", "bfloat16", {}, marks=_SMOKE, id="two-byte-vectors"),
     pytest.param([129], 300, 1152, "int64", "float32", {}, marks=_SMOKE, id="fp32"),
     # Fewer ids than a tile of narrow rows holds: a partial row tile. The gradient-only
     # params ride on it.
@@ -44,8 +44,6 @@ _CASES = (
     pytest.param([2, 9], 40, 3, "int32", "int32", {}, marks=_SMOKE, id="int32-table"),
     # 24-byte rows: 8-byte vectors.
     pytest.param([5, 7], 90, 3, "int32", "int64", {}, marks=_FULL, id="eight-byte-vectors"),
-    # An odd row of 2-byte elements: 2-byte vectors, which cp.async does not move.
-    pytest.param([7], 50, 1001, "int64", "bfloat16", {}, marks=_FULL, id="two-byte-vectors"),
     # 1021 vectors, a prime: no thread count divides them, so the last pass is guarded.
     pytest.param([2], 1, 8168, "int64", "bfloat16", {}, marks=_FULL, id="guarded-pass"),
     # 1025-vector rows: two column tiles, the second holding one vector; more than 2**20
@@ -114,7 +112,7 @@ def test_embedding_spreads_past_one_wave(monkeypatch) -> None:
     cfg = kernel.config
     assert cfg["block_rows"] == 1 and cfg["block_vectors"] == cfg["threads"], cfg
     assert cfg["block_vectors"] == 4 * cfg["spread_threads"], cfg
-    wave = kernel.program(kernel._compile, False)[1]
+    wave = kernel._spread_above(cfg)
     blocks, rest = divmod(wave, call.sm_count)
     assert rest == 0 and 1 <= blocks <= call.threads_per_sm // cfg["threads"], wave
     launched = []
