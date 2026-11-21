@@ -39,8 +39,8 @@ _CASES = (
     pytest.param(
         [[80, 1032], [80, 1032]], -1, [_BF16] * 2, marks=_FULL, id="bf16-resident-no-removal"
     ),
-    # A launch just beyond one resident wave: the first input's vectors double once, which
-    # brings the launch within the wave, so the second input keeps one vector.
+    # A launch just beyond one resident wave: doubling the vectors brings it within the wave,
+    # where they keep doubling to eight.
     pytest.param([[64, 4097], [64, 3]], 1, [_BF16, _FP16], marks=_FULL, id="mixed-wave-stop"),
     # The MTP draft row: its CTAs are all resident at once, so each thread copies eight
     # vectors, the last ones past the input's row end.
@@ -52,8 +52,7 @@ _CASES = (
     pytest.param([[32, 1036], [32, 1044]], 1, [_BF16] * 2, marks=_FULL, id="bf16-8-byte-vectors"),
     # Widths that make a vector 4 bytes: four per thread, each a 4-byte store of two elements.
     pytest.param([[32, 1034], [32, 1030]], 1, [_BF16] * 2, marks=_FULL, id="bf16-4-byte-vectors"),
-    # bfloat16 and float16 promote to a float32 output: 8-byte reads, two per thread, converted;
-    # the third input is one tile wide and keeps one.
+    # bfloat16 and float16 promote to a float32 output: 8-byte reads, two per thread, converted.
     pytest.param(
         [[512, 1200], [512, 1032], [512, 8]],
         -1,

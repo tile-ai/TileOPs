@@ -206,41 +206,35 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         groups = [present[first : first + _SLOTS] for first in range(0, len(present), _SLOTS)]
         # One resident wave: the CTAs the device's thread limit keeps on its SMs at once.
         wave = self.sm_count * self.resident_ctas
+        # The vectors of each input that make one 16-byte read.
+        most = [VECTOR_ACCESS_BYTES // (self.vec * d.itemsize) for d in self.dtypes]
         # A launch covers at most MAX_GRID_YZ_BLOCKS rows, the grid's y extent.
         for first in range(0, rows, MAX_GRID_YZ_BLOCKS):
             last = min(first + MAX_GRID_YZ_BLOCKS, rows)
             for group in groups:
                 kinds = tuple(self.dtype_to_str(self.dtypes[j]) for j in group)
 
-                def tiles(j: int, p: int, rows: int = last - first) -> int:
-                    return rows * -(-widths[j] // (_THREADS * p))
+                def ctas(per: list[int], group=group, rows: int = last - first) -> int:
+                    return sum(
+                        rows * -(-widths[j] // (_THREADS * p))
+                        for j, p in zip(group, per, strict=True)
+                    )
 
+                # Each thread takes more vectors of every input, doubling them together, while
+                # the launch has more CTAs than SMs and the doubling removes CTAs. Beyond one
+                # resident wave the launch waits on bandwidth, and an input stops at 16 bytes in
+                # flight (one 16-byte read, the widest a thread issues). Within one wave it waits
+                # on CTA starts and one DRAM round trip, and an input stops at eight vectors
+                # (eight 16-byte vectors hold 32 registers of data).
                 per = [1] * len(group)
-                if sum(tiles(j, 1) for j in group) > wave:
-                    # A bandwidth-bound launch: each thread takes more vectors of an input, up
-                    # to 16 bytes in flight (one 16-byte read, the widest a thread issues), while
-                    # the launch exceeds one resident wave and the doubling removes CTAs of that
-                    # input.
-                    for i, j in enumerate(group):
-                        most = VECTOR_ACCESS_BYTES // (self.vec * self.dtypes[j].itemsize)
-                        while (
-                            per[i] < most
-                            and sum(tiles(g, q) for g, q in zip(group, per, strict=True)) > wave
-                            and tiles(j, 2 * per[i]) < tiles(j, per[i])
-                        ):
-                            per[i] *= 2
-                else:
-                    # A launch whose CTAs are all resident at once waits on their start and one
-                    # DRAM round trip: each thread takes more vectors, doubling, while there
-                    # are more CTAs than SMs and the doubling removes CTAs. Eight 16-byte
-                    # vectors hold 32 registers of data, so a thread takes at most eight.
-                    scale = 1
-                    while scale < 8:
-                        now = sum(tiles(j, scale) for j in group)
-                        if now <= self.sm_count or sum(tiles(j, 2 * scale) for j in group) >= now:
-                            break
-                        scale *= 2
-                    per = [scale] * len(group)
+                while (now := ctas(per)) > self.sm_count:
+                    grown = [
+                        min(2 * p, most[j] if now > wave else 8)
+                        for j, p in zip(group, per, strict=True)
+                    ]
+                    if ctas(grown) >= now:
+                        break
+                    per = grown
                 per_thread = tuple(per)
                 self.program(self._compile, kinds, per_thread)(
                     flat[first:last],
