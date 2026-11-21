@@ -206,7 +206,7 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         groups = [present[first : first + _SLOTS] for first in range(0, len(present), _SLOTS)]
         # One resident wave: the CTAs the device's thread limit keeps on its SMs at once.
         wave = self.sm_count * self.resident_ctas
-        # The vectors of each input that make one 16-byte read.
+        # The vectors of each input that hold 16 bytes.
         most = [VECTOR_ACCESS_BYTES // (self.vec * d.itemsize) for d in self.dtypes]
         # A launch covers at most MAX_GRID_YZ_BLOCKS rows, the grid's y extent.
         for first in range(0, rows, MAX_GRID_YZ_BLOCKS):
@@ -223,11 +223,11 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
                 # Each thread takes more vectors of every input, doubling them together, while
                 # the launch has more CTAs than SMs and the doubling removes CTAs. Beyond one
                 # resident wave the launch waits on bandwidth, and an input stops at 16 bytes in
-                # flight (one 16-byte read, the widest a thread issues). Within one wave it waits
-                # on CTA starts and one DRAM round trip, and an input stops at eight vectors
-                # (eight 16-byte vectors hold 32 registers of data). A launch that fits the
-                # SMs at one vector keeps 16 bytes of each input a thread, main's program, even
-                # where the wider read removes no CTA.
+                # flight, the widest read a thread issues. Within one wave it waits on CTA starts
+                # and one DRAM round trip, and an input stops at eight vectors (eight 16-byte
+                # vectors hold 32 registers of data). A launch that fits the SMs at one vector
+                # keeps 16 bytes of each input a thread, main's program, even where the wider
+                # read removes no CTA.
                 per = [1] * len(group)
                 if ctas(per) <= self.sm_count:
                     per = [most[j] for j in group]
