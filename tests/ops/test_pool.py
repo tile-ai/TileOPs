@@ -1516,17 +1516,15 @@ def _check_max_pool2d_odd_rectangle_and_nan(height, width, dtype):
     return kernel
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "height,width,dtype,half_warp",
     [
-        (33, 33, torch.bfloat16, True),
-        (47, 63, torch.bfloat16, False),
-        (55, 55, torch.float16, False),
+        pytest.param(33, 33, torch.bfloat16, True, marks=pytest.mark.smoke, id="bf16-half-warp"),
+        pytest.param(55, 55, torch.float16, False, marks=pytest.mark.smoke, id="fp16-warp-window"),
+        pytest.param(47, 63, torch.bfloat16, False, marks=pytest.mark.full, id="bf16-warp-window"),
     ],
-    ids=["bf16-half-warp", "bf16-warp-window", "fp16-warp-window"],
 )
 def test_warp_pool_odd_rectangle_and_nan(height, width, dtype, half_warp):
     from tileops._kernels.pool import MaxPool2dWarpKernel
@@ -1544,6 +1542,21 @@ def test_max_pool2d_mixed_extents_use_fallback():
 
     kernel = _check_max_pool2d_odd_rectangle_and_nan(33, 63, torch.bfloat16)
     assert type(kernel) is MaxPool2dKernel
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+def test_max_pool2d_65x65_bf16_default_config():
+    """An unpadded 3x3 stride-2 BF16 pool on 65x65 takes MaxPool2dKernel's tile_h=8 default."""
+    from tileops._kernels.pool import MaxPool2dKernel
+
+    x = torch.randn(1, 1, 65, 65, device=run_device(), dtype=torch.bfloat16)
+    op = MaxPool2dFwdOp(3, stride=2, target=BUILTIN)
+    torch.testing.assert_close(op(x), F.max_pool2d(x, 3, stride=2), rtol=0, atol=0)
+    (kernel,) = op.iter_kernels()
+    assert type(kernel) is MaxPool2dKernel
+    assert kernel.config == {"block_m": 128, "threads": 128, "tile_h": 8, "tile_w": 1}
 
 
 class MaxPool2dFixture(FixtureBase):

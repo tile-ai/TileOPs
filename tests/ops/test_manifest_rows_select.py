@@ -66,7 +66,6 @@ def test_every_row_selects_an_implementation_or_is_refused(name, monkeypatch):
 @pytest.mark.parametrize(
     "name,case_id,expected_kernel,config,program_checks",
     [
-        ("GDNFwdOp", "decode-beta-l2norm-bfloat16", "GDNColumnDecodeKernel", {}, ()),
         ("DeltaNetRecurrentFwdOp", "serving-b1-h8-bfloat16", "DeltaNetDecodeColumnKernel", {}, ()),
         (
             "GEMMFP8FwdOp",

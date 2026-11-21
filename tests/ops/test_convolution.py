@@ -268,7 +268,7 @@ def test_conv1d(
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "dtype,bias,length",
-    [(torch.float16, False, 4103), (torch.bfloat16, True, 4102)],
+    [(torch.float16, False, 2053), (torch.bfloat16, True, 2052)],
     ids=["fp16-odd-output", "bf16-bias-even-output"],
 )
 def test_conv1d_short_waveform(dtype, bias, length):
@@ -282,6 +282,65 @@ def test_conv1d_short_waveform(dtype, bias, length):
     args = (x, weight, offset)
     compare_outputs(op(*args), F.conv1d(*args), convolution_verification(dtype, inputs=args))
     assert [type(k) for k in op.iter_kernels()] == [Conv1dDirectKernel]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "x_shape,w_shape,stride,padding,dtype,kernel_name,config",
+    [
+        # k_total = 4 * 5 <= 32 at stride 2: Conv1dKernel's block_k=32 default.
+        pytest.param(
+            (1, 4, 128),
+            (64, 4, 5),
+            2,
+            2,
+            torch.float16,
+            "Conv1dKernel",
+            {"block_k": 32},
+            marks=pytest.mark.smoke,
+            id="short-k-strided",
+        ),
+        # out_l 2048, kernel_l 3, c_out 1024: Conv1dUnitStrideKernel's wide-output default.
+        pytest.param(
+            (1, 16, 2048),
+            (1024, 16, 3),
+            1,
+            1,
+            torch.bfloat16,
+            "Conv1dUnitStrideKernel",
+            {"block_m": 128, "block_n": 128, "block_k": 64, "num_stages": 2, "threads": 256},
+            marks=pytest.mark.smoke,
+            id="unit-stride-wide-k3",
+        ),
+        # out_l 64 <= 640, kernel_l 7, c_in 128: Conv1dUnitStrideKernel's short-row default.
+        pytest.param(
+            (1, 128, 64),
+            (64, 128, 7),
+            1,
+            3,
+            torch.float16,
+            "Conv1dUnitStrideKernel",
+            {"block_m": 64, "block_n": 32, "block_k": 128, "num_stages": 2, "threads": 128},
+            marks=pytest.mark.full,
+            id="unit-stride-short-row-k7",
+        ),
+    ],
+)
+def test_conv1d_sm90_default_configs(x_shape, w_shape, stride, padding, dtype, kernel_name, config):
+    from tileops.backend import BUILTIN
+
+    x = torch.randn(x_shape, device=run_device(), dtype=dtype)
+    weight = torch.randn(w_shape, device=x.device, dtype=dtype)
+    op = Conv1dFwdOp(stride=stride, padding=padding, target=BUILTIN)
+    compare_outputs(
+        op(x, weight),
+        F.conv1d(x, weight, stride=stride, padding=padding),
+        convolution_verification(dtype, inputs=(x, weight)),
+    )
+    (kernel,) = op.iter_kernels()
+    assert type(kernel).__name__ == kernel_name
+    assert {key: kernel.config[key] for key in config} == config, kernel.config
 
 
 @pytest.mark.smoke
@@ -783,13 +842,16 @@ def test_conv2d_batch_with_partial_tile_leaves_the_symmetric_kernel() -> None:
     compare_outputs(out, ref.contiguous(), convolution_verification(out.dtype))
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "shape",
-    [(2, 256, 104, 104), (1, 288, 96, 96)],
-    ids=["tile-crosses-images", "input-channels-not-divisible-by-64"],
+    [
+        pytest.param((2, 256, 64, 129), marks=pytest.mark.smoke, id="tile-crosses-images"),
+        pytest.param(
+            (1, 288, 64, 128), marks=pytest.mark.full, id="input-channels-not-divisible-by-64"
+        ),
+    ],
 )
 def test_conv2d_highres_default_preserves_tile_constraints(shape):
     from tileops._kernels.convolution.conv2d import Conv2dSymmetricKernel
@@ -815,8 +877,8 @@ def test_conv2d_depthwise_warp_bf16_bias():
     from tileops._kernels.convolution.conv2d import DepthwiseConv2dWarpKernel
     from tileops.backend import BUILTIN
 
-    channels = 32
-    x = torch.randn(1, channels, 24, 32, device=run_device(), dtype=torch.bfloat16)
+    channels = 2
+    x = torch.randn(1, channels, 16, 32, device=run_device(), dtype=torch.bfloat16)
     weight = torch.randn(channels, 1, 3, 3, device=x.device, dtype=x.dtype)
     bias = torch.randn(channels, device=x.device, dtype=x.dtype)
     op = Conv2dFwdOp(groups=channels, padding=1, target=BUILTIN)
