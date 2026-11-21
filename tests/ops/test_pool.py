@@ -921,34 +921,36 @@ def test_avg_pool1d_refuses_an_output_row_of_2_31_from_a_shorter_input_row() -> 
     assert AvgPool1dRegisterKernel.refusal(call) is not None
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "rows, l_in, kernel_l, stride_l, pad_l",
-    [
-        # fp16, kernel 2, stride 2: four outputs a group, 16385 groups a row, 2**31 + 2**17 in
-        # all, on more rows than grid y holds.
-        pytest.param(131072, 131080, 2, 2, 0, id="rows-past-grid-y", marks=pytest.mark.smoke),
-        # fp16, kernel 5, stride 4, padding 2: two outputs (4 bytes) a group, so two runs a
-        # thread put the 2**31 groups of one row on the one-axis grid.
-        pytest.param(1, 2**34, 5, 4, 2, id="paired-runs-one-row", marks=pytest.mark.full),
-    ],
-)
-def test_avg_pool1d_register_refuses_groups_past_its_int32_thread_index(
-    rows: int, l_in: int, kernel_l: int, stride_l: int, pad_l: int
-) -> None:
+@pytest.mark.smoke
+def test_avg_pool1d_register_refuses_groups_past_its_int32_thread_index() -> None:
     """The register kernel's one-axis grid indexes a thread a group of outputs in int32, so
-    a call that puts every group on that grid, by more rows than grid y holds or by two runs
-    a thread, and whose groups and one more block pass 2**31 - 1, goes to AvgPool1dKernel."""
+    a call of more rows than grid y holds whose groups and one more block pass 2**31 - 1
+    goes to AvgPool1dKernel."""
+    # fp16, kernel 2, stride 2: four outputs a group, 16385 groups a row, 2**31 + 2**17 in all.
     call = AvgPoolCall(
         n=1,
-        c_in=rows,
-        size=(l_in,),
-        window=(kernel_l,),
-        stride=(stride_l,),
-        pad=(pad_l,),
+        c_in=131072,
+        size=(131080,),
+        window=(2,),
+        stride=(2,),
+        pad=(0,),
         dtype=torch.float16,
     )
     assert "groups of outputs" in AvgPool1dRegisterKernel.refusal(call)
+
+
+@pytest.mark.smoke
+def test_avg_pool1d_register_serves_one_row_past_int32_groups_one_run_a_thread() -> None:
+    """A row of 2**31 groups of 4-byte stores would pair runs on the one-axis grid, whose
+    int32 thread index cannot hold them; it takes one run a thread on the row grid."""
+    # fp16, kernel 5, stride 4, padding 2: two outputs (4 bytes) a group, 2**31 groups.
+    call = AvgPoolCall(
+        n=1, c_in=1, size=(2**34,), window=(5,), stride=(4,), pad=(2,), dtype=torch.float16
+    )
+    assert AvgPool1dRegisterKernel.refusal(call) is None
+    identity, _ = AvgPool1dRegisterKernel.entry_for(call)
+    flat, runs = identity[-2:]
+    assert (flat, runs) == (False, 1)
 
 
 @pytest.mark.in_tree_kernels

@@ -42,11 +42,14 @@ def _runs_a_thread(itemsize: int, stride_l: int, units: int, sm_count: int) -> i
     apart, where one run's outputs take at most 4 bytes and one block an SM cannot cover
     the launch even at two runs a thread; otherwise one. Where one block an SM covers it,
     every thread is resident from the start, and a second run a thread only halves the
-    warps each SM issues from."""
+    warps each SM issues from. Past the one-axis grid's int32 thread index, one run on the
+    row grid still serves the launch."""
     # 4 bytes is one 32-bit register: a run storing that little leaves its thread mostly
     # index math, which a second run shares; two runs a thread also double the loads each
     # thread keeps in flight and halve the threads the launch dispatches.
     paired_store_bytes = 4
+    if units > 2**31 - 1 - MAX_BLOCK_THREADS:
+        return 1
     _, outputs = _run(itemsize, stride_l)
     covered = _one_block_an_sm_covers(-(-units // (2 * WARP_LANES)), sm_count)
     return 2 if outputs * itemsize <= paired_store_bytes and not covered else 1
@@ -235,12 +238,11 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         ):
             return f"requires whole {run}-element loads along the row"
         # The one-axis grid's int32 thread index must hold the last group's thread and the
-        # rest of its block. Rows past grid y, or two runs a thread, put every group on that
-        # grid; the row grid indexes groups within a row.
+        # rest of its block. Only rows past grid y put this many groups on that grid; the row
+        # grid indexes groups within a row.
         rows = call.n * call.c_in
         units = rows * (out_l // outputs)
-        runs = _runs_a_thread(call.dtype.itemsize, stride_l, units, call.sm_count)
-        if (rows > MAX_GRID_YZ_BLOCKS or runs > 1) and units > 2**31 - 1 - MAX_BLOCK_THREADS:
+        if rows > MAX_GRID_YZ_BLOCKS and units > 2**31 - 1 - MAX_BLOCK_THREADS:
             return f"serves at most 2**31 - 1 - {MAX_BLOCK_THREADS} groups of outputs"
         return super().refusal(call)
 
