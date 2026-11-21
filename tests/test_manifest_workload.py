@@ -652,6 +652,19 @@ def test_the_nightly_sweep_keeps_one_dtype_where_a_bfloat16_sibling_times_the_sa
         ("float16", "float32", None),
         ("bfloat16", "float32", None),
     ]
+    # A call mixing float16 and bfloat16 is no float16 sibling of the all-bfloat16 one.
+    mixed = {
+        "forall": {"M": "Dim", "T": "DType[float16 | bfloat16]", "U": "DType[float16 | bfloat16]"},
+        "inputs": {"a": {"dtype": "T", "shape": "[M]"}, "b": {"dtype": "U", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    cases = [
+        {"T": t, "U": u}
+        for t, u in [("bfloat16", "float16"), ("bfloat16", "bfloat16"), ("float16", "float16")]
+    ]
+    rows = [{"M": 1, "dtype_cases": cases, "label": "mixed"}]
+    plan = entry_plan("Mixed", {"signature": mixed, "workloads": rows}, _ADTS)
+    assert [case for _, case in nightly_calls(plan, rows)] == cases[:2]
 
 
 def _gemm_from(a: tuple, b: tuple):

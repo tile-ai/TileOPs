@@ -1084,9 +1084,13 @@ def nightly_calls(plan: EntryPlan, rows: list[dict]) -> list[tuple[dict, dict]]:
     sequences = [n for n, kind in sig.forall.items() if kind == "Seq[Int]"]
 
     def key(row: dict, case: dict) -> tuple[bool, tuple]:
-        """Whether the call holds a float16 dtype, and the call with every one bfloat16."""
+        """Whether the call is a float16 call, and the call with every float16 bfloat16.
+
+        A call mixing float16 and bfloat16 promotes differently from its all-bfloat16
+        counterpart, so it is no float16 call.
+        """
         call = instantiate(plan, row, case, metadata=False)
-        held = {n: v for n, v in call.indices.items() if n in dtypes}
+        held = repr([v for n, v in call.indices.items() if n in dtypes])
         as_bfloat16 = _plain(
             (
                 row.get("label"),
@@ -1097,7 +1101,7 @@ def nightly_calls(plan: EntryPlan, rows: list[dict]) -> list[tuple[dict, dict]]:
                 [_convert(sig, n, row[n]) if n in row else None for n in sequences],
             )
         )
-        return any(_as_bfloat16(v) != v for v in held.values()), as_bfloat16
+        return "'float16'" in held and "'bfloat16'" not in held, as_bfloat16
 
     calls = [
         (row, case, *key(row, case))

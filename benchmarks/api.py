@@ -69,7 +69,9 @@ def set_verifying(value: bool) -> None:
 
 # --tileops-nightly runs the nightly sweep's cases.
 _nightly = False
-# A reference whose first-pass device time is this many times a baseline's gets no second pass.
+# A reference whose first-pass device time is this many times a baseline's gets no second pass:
+# both passes time the same call on the same inputs and agree to a few percent, so a second
+# pass would have to cut the reading tenfold to make the reference the row's fastest comparator.
 _SLOW_REFERENCE_RATIO = 10.0
 
 
