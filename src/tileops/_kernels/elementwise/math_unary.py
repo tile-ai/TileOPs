@@ -261,6 +261,12 @@ class ErfFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     BYTES_PER_THREAD = 32
 
+    @property
+    def FULL_OCCUPANCY(self) -> bool:
+        """Why: a float32 result evaluates ``erff``, which nvcc compiles past the budget; the
+        16-bit polynomial fits it on its own."""
+        return self.dtype == torch.float32
+
     @staticmethod
     def op_func(x):
         return erf(x, x.dtype)
