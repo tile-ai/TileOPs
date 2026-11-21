@@ -3,10 +3,10 @@
 The projection launch multiplies the flattened streams by ``fn`` on the tensor cores and
 sums their squares, split over the reduction axis when the tokens are too few to fill the
 device. ``fn`` takes part as three bfloat16 terms whose sum is its float32 value, so every
-product is exact, and each 64-channel slot's products are added to float32 accumulators.
-A small call splits ``fn`` in the projection, a large one in a launch before it. The mix
-launch reduces the splits and, one block per token, computes the mixes, runs Sinkhorn in
-one warp and writes the weighted stream sum.
+product is exact, and each 64-channel step's products are added to float32 accumulators. A
+warpgroup of the projection splits each step's slice of ``fn`` as it arrives. The mix launch
+reduces the splits and, one block per token, computes the mixes, runs Sinkhorn in one warp
+and writes the weighted stream sum.
 """
 
 import math
@@ -17,11 +17,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import (
-    SHARED_BUFFER_ALIGN_BYTES,
-    WARPGROUP_THREADS,
-    WGMMA_ROWS,
-)
+from tileops._kernels.constants import WARPGROUP_THREADS, WGMMA_ROWS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.sequence_modeling.hyper_connection.call_spec import (
     HyperConnectionPreCall,
@@ -34,42 +30,6 @@ __all__ = ["HyperConnectionPreKernel"]
 _STEP = 64
 
 
-def _shared_shapes(slots: int, q: int, block_m: int, num_stages: int):
-    """The projection's bfloat16 shared buffers: ``slots`` 64-channel slots of the three terms
-    of ``q`` rows, and a ring of ``num_stages`` slots of ``block_m`` tokens."""
-    return (slots, 3 * q, _STEP), (num_stages, block_m, _STEP)
-
-
-@target_cache(maxsize=8)
-def _split_fn_kernel(rows: int, cols: int):
-    """``fn`` ``(rows, cols)`` float32 to its three bfloat16 terms stacked ``(3 * rows, cols)``,
-    eight values a thread."""
-    chunks = rows * cols // 8
-    threads = WARPGROUP_THREADS
-
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", *csrc_include("hyper_connection_helper.h")])
-    def _func():
-        @T.prim_func
-        def main(
-            fn: T.Tensor((rows, cols), "float32"),
-            stacked: T.Tensor((3 * rows, cols), "bfloat16"),
-        ):
-            with T.Kernel(T.ceildiv(chunks, threads), threads=threads) as b:
-                ch = b * threads + T.get_thread_binding()
-                if ch < chunks:
-                    T.call_extern(
-                        "handle",
-                        "tileops::hc_split_global",
-                        T.address_of(fn[ch // (cols // 8), ch % (cols // 8) * 8]),
-                        T.address_of(stacked[ch // (cols // 8), ch % (cols // 8) * 8]),
-                        rows * cols,
-                    )
-
-        return main
-
-    return _func()
-
-
 @target_cache(maxsize=32)
 def _prenorm_gemm_kernel(
     n: int,
@@ -78,32 +38,27 @@ def _prenorm_gemm_kernel(
     splits: int,
     block_m: int,
     num_stages: int,
-    resident: bool,
 ):
     """Per split of the ``n * c`` reduction: ``partial = x @ fn^T`` and ``sqr = sum(x^2)``.
 
     ``x`` holds ``streams`` stored streams a token, 1 for a broadcast residual, whose one
-    stream stands for all ``n``. The last warp loads ``block_m`` tokens 64 channels at a
-    time into a ring of ``num_stages`` slots. Each warpgroup before it takes 64 of the
-    tokens: one 64 x 72 WGMMA per 16 channels against the stacked terms, the slot's
-    products added into float32, the slot's squares summed. With *resident* the program
-    takes ``fn`` in float32 and the warpgroups split the split's whole slice into shared
-    memory before the first slot; otherwise it takes the stacked terms and loads each
-    slot's with its tokens.
+    stream stands for all ``n``. Split ``s`` takes the 64-channel steps from ``s * steps //
+    splits`` up to the next split's first, so a split count that does not divide the steps
+    still fills the SMs. The last warp loads each step's ``block_m`` tokens and float32 slice
+    of ``fn`` into a ring of ``num_stages`` slots. The warpgroup before it splits the slice
+    into its three bfloat16 terms in the slot. Each warpgroup before that takes 64 of the
+    tokens into registers, sums their squares and multiplies them by the terms, one 64 x 72
+    WGMMA per 16 channels, the step's products added into float32.
     """
     k_total = n * c
     q = n * n + 2 * n
     rows = 3 * q
-    k_split = k_total // splits
-    steps = k_split // _STEP
+    steps = k_total // _STEP
     workers = block_m // WGMMA_ROWS * WARPGROUP_THREADS
-    threads = workers + WARP_LANES
+    threads = workers + WARPGROUP_THREADS + WARP_LANES
     regs = rows // 2
-    terms_barrier = 8
-    wgmma = f"tileops::dense_wgmma_64xN_k64<tl::DataType::kBFloat16, {rows}>"
-    split_slice = f"tileops::hc_split_slice<{q}, {steps}, {workers}, 4>"
-    weight_shape = (q, k_total) if resident else (rows, k_total)
-    weight_dtype = "float32" if resident else "bfloat16"
+    split_tile = f"tileops::hc_split_tile<{q}, {WARPGROUP_THREADS}>"
+    wgmma = f"tileops::dense_wgmma_64xN_k64_rs<tl::DataType::kBFloat16, {rows}>"
     tokens = T.dynamic("tokens", "int64")
 
     @tilelang.jit(
@@ -119,92 +74,94 @@ def _prenorm_gemm_kernel(
         @T.prim_func
         def main(
             x: T.Tensor((tokens, streams * c), "bfloat16"),
-            weight: T.Tensor(weight_shape, weight_dtype),
+            fn: T.Tensor((q, k_total), "float32"),
             partial: T.Tensor((splits, tokens, q), "float32"),
             sqr: T.Tensor((splits, tokens), "float32"),
         ):
             with T.Kernel(T.ceildiv(tokens, block_m), splits, threads=threads) as (bm, bs):
-                w_shape, x_shape = _shared_shapes(
-                    steps if resident else num_stages, q, block_m, num_stages
-                )
-                x_s = T.alloc_shared(x_shape, "bfloat16")
-                w_s = T.alloc_shared(w_shape, "bfloat16")
+                x_s = T.alloc_shared((num_stages, block_m, _STEP), "bfloat16")
+                fn_s = T.alloc_shared((num_stages, q, _STEP), "float32")
+                w_s = T.alloc_shared((num_stages, rows, _STEP), "bfloat16")
                 T.annotate_layout(
                     {
                         x_s: tilelang.layout.make_swizzled_layout(x_s),
                         w_s: tilelang.layout.make_swizzled_layout(w_s),
                     }
                 )
-                full = T.alloc_barrier([WARP_LANES] * num_stages)
+                # A slot is full once the loader's tokens land and the splitter's terms are
+                # stored; the slice the splitter reads has a barrier of its own.
+                full = T.alloc_barrier([WARP_LANES + WARPGROUP_THREADS] * num_stages)
+                sliced = T.alloc_barrier([WARP_LANES] * num_stages)
                 empty = T.alloc_barrier([workers] * num_stages)
+                a = T.alloc_local((16,), "uint32")
                 tile = T.alloc_local((regs,), "float32")
                 total = T.alloc_local((regs,), "float32")
-                sq = T.alloc_local((1,), "float32")
+                squares = T.alloc_local((2,), "float32")
                 tx = T.get_thread_binding()
                 m0 = bm * block_m
-                k_base = bs * k_split
-                if tx >= workers:
-                    for g in T.Pipelined(steps, num_stages=0):
+                first = bs * steps // splits
+                count = (bs + 1) * steps // splits - first
+                if tx >= workers + WARPGROUP_THREADS:
+                    for g in T.serial(count):
                         slot = g % num_stages
                         T.barrier_wait(empty[slot], ((g // num_stages) & 1) ^ 1)
-                        k0 = k_base + g * _STEP
+                        k0 = (first + g) * _STEP
                         xk = k0 % c if streams == 1 else k0
                         T.tma_copy(
                             x[m0 : m0 + block_m, xk : xk + _STEP],
                             x_s[slot, :, :],
                             barrier=full[slot],
                         )
-                        if not resident:
-                            T.tma_copy(
-                                weight[0:rows, k0 : k0 + _STEP],
-                                w_s[slot, :, :],
-                                barrier=full[slot],
-                            )
+                        T.tma_copy(fn[0:q, k0 : k0 + _STEP], fn_s[slot, :, :], barrier=sliced[slot])
+                        T.barrier_arrive(sliced[slot])
+                        T.barrier_arrive(full[slot])
+                elif tx >= workers:
+                    for g in T.serial(count):
+                        slot = g % num_stages
+                        T.barrier_wait(sliced[slot], (g // num_stages) & 1)
+                        T.call_extern(
+                            "handle",
+                            split_tile,
+                            T.address_of(fn_s[slot, 0, 0]),
+                            T.address_of(w_s[slot, 0, 0]),
+                            tx - workers,
+                        )
+                        T.fence_proxy_async()
                         T.barrier_arrive(full[slot])
                 else:
                     wg = tx // WARPGROUP_THREADS
                     wt = tx % WARPGROUP_THREADS
                     for r in T.unroll(regs):
                         total[r] = 0.0
-                    sq[0] = 0.0
-                    if resident:
-                        T.call_extern(
-                            "handle",
-                            split_slice,
-                            T.address_of(weight[0, k_base]),
-                            k_total,
-                            T.address_of(w_s[0, 0, 0]),
-                            tx,
-                        )
-                        T.fence_proxy_async()
-                        T.sync_threads(barrier_id=terms_barrier, arrive_count=workers)
-                    for g in T.Pipelined(steps, num_stages=0):
+                    squares[0] = 0.0
+                    squares[1] = 0.0
+                    for g in T.serial(count):
                         slot = g % num_stages
                         T.barrier_wait(full[slot], (g // num_stages) & 1)
                         T.call_extern(
                             "handle",
-                            wgmma,
-                            tile.data,
+                            "tileops::dense_load_a_64x64",
                             T.address_of(x_s[slot, wg * WGMMA_ROWS, 0]),
-                            T.address_of(w_s[g if resident else slot, 0, 0]),
-                            0,
+                            a.data,
                         )
-                        sq[0] += T.call_extern(
-                            "float32",
-                            "tileops::hc_square_sum",
-                            T.address_of(x_s[slot, wg * WGMMA_ROWS, 0]),
-                            wt,
+                        T.call_extern("handle", "tileops::hc_square_regs", a.data, squares.data)
+                        T.call_extern(
+                            "handle", wgmma, tile.data, a.data, T.address_of(w_s[slot, 0, 0]), 0
                         )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(tile, num_regs=regs)
                         T.barrier_arrive(empty[slot])
                         for r in T.unroll(regs):
                             total[r] += tile[r]
-                    whole = T.call_extern("float32", "tileops::hc_pair_sum", sq[0])
-                    first = m0 + wg * WGMMA_ROWS
-                    if wt % 2 == 0 and first + wt // 2 < tokens:
-                        sqr[bs, first + wt // 2] = whole
-                    row = first + wt // WARP_LANES * 16 + wt % WARP_LANES // 4
+                    # A thread holds rows ``row`` and ``row + 8`` of its warpgroup's 64.
+                    row = m0 + wg * WGMMA_ROWS + wt // WARP_LANES * 16 + wt % WARP_LANES // 4
+                    upper = T.call_extern("float32", "tileops::hc_quad_sum", squares[0])
+                    lower = T.call_extern("float32", "tileops::hc_quad_sum", squares[1])
+                    if wt % 4 == 0:
+                        if row < tokens:
+                            sqr[bs, row] = upper
+                        if row + 8 < tokens:
+                            sqr[bs, row + 8] = lower
                     for cg in T.unroll(q // 8):
                         for h in T.unroll(2):
                             for e in T.unroll(2):
@@ -232,13 +189,14 @@ def _pre_mix_kernel(
     hc_sinkhorn_eps: float,
     hc_post_mult_value: float,
     sinkhorn_repeat: int,
-    staged: bool,
 ):
-    """One block a token: the splits' sums and the mixes, then one warp writes the post and
-    comb mixes while two write the stream sum, staged through shared memory up to 512
-    channels at a time when *staged*, else loaded whole into registers."""
+    """One block a token. Every thread sums a share of the splits; then the first warp
+    computes the post and comb mixes and runs Sinkhorn while the other two write the stream
+    sum, staged through shared memory up to 512 channels at a time. The launch may start
+    while the projection drains: only the shares wait for it, and the two stream warps issue
+    their first loads before summing theirs."""
     q = n * n + 2 * n
-    parts = math.gcd(4, splits)
+    parts = min(4, splits)
     block = math.gcd(512, c)
     tokens = T.dynamic("tokens", "int64")
 
@@ -248,8 +206,49 @@ def _pre_mix_kernel(
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         },
+        compile_flags=["-O3", *csrc_include("hyper_connection_helper.h")],
     )
     def _func():
+        @T.macro
+        def share(partial, sqr, part_s, t, tx):
+            # Thread tx sums part tx // q of the splits of mix tx % q, part p being splits
+            # [p * splits // parts, (p + 1) * splits // parts), and each of the first `parts`
+            # threads part tx of the squares. A part one split short reads its last split
+            # again and adds it as zero, so no load waits on a branch. The splits are the
+            # projection's output, so the wait for it comes first.
+            T.pdl_sync()
+            if tx < parts * q:
+                lo = tx // q * splits // parts
+                hi = (tx // q + 1) * splits // parts
+                acc = T.alloc_var("float32")
+                acc = 0.0
+                for sp in T.unroll(-(-splits // parts)):
+                    acc += (
+                        T.if_then_else(lo + sp < hi, 1.0, 0.0)
+                        * partial[T.min(lo + sp, hi - 1), t, tx % q]
+                    )
+                part_s[tx // q, tx % q] = acc
+            if tx < parts:
+                lo = tx * splits // parts
+                hi = (tx + 1) * splits // parts
+                acc = T.alloc_var("float32")
+                acc = 0.0
+                for sp in T.unroll(-(-splits // parts)):
+                    acc += T.if_then_else(lo + sp < hi, 1.0, 0.0) * sqr[T.min(lo + sp, hi - 1), t]
+                part_s[tx, q] = acc
+
+        @T.macro
+        def mix(part_s, j):
+            # Mix j of the token, from the parts the block summed.
+            whole = T.alloc_var("float32")
+            squares = T.alloc_var("float32")
+            whole = 0.0
+            squares = 0.0
+            for p in T.unroll(parts):
+                whole += part_s[p, j]
+                squares += part_s[p, q]
+            return whole * T.rsqrt(squares / (n * c) + rms_eps)
+
         @T.prim_func
         def main(
             x: T.Tensor((tokens, streams, c), "bfloat16"),
@@ -262,86 +261,53 @@ def _pre_mix_kernel(
             layer_input: T.Tensor((tokens, c), "bfloat16"),
         ):
             with T.Kernel(tokens, threads=3 * WARP_LANES) as t:
+                tx = T.get_thread_binding()
                 part_s = T.alloc_shared((parts, q + 1), "float32")
-                for p, j in T.Parallel(parts, q):
-                    acc = T.alloc_var("float32")
-                    acc = 0.0
-                    for sp in T.unroll(splits // parts):
-                        acc += partial[p * (splits // parts) + sp, t, j]
-                    part_s[p, j] = acc
-                for p in T.Parallel(parts):
-                    acc = T.alloc_var("float32")
-                    acc = 0.0
-                    for sp in T.unroll(splits // parts):
-                        acc += sqr[p * (splits // parts) + sp, t]
-                    part_s[p, q] = acc
-                total = T.alloc_shared((q + 1,), "float32")
-                for j in T.Parallel(q + 1):
-                    whole = T.alloc_var("float32")
-                    whole = 0.0
-                    for p in T.unroll(parts):
-                        whole += part_s[p, j]
-                    total[j] = whole
-                mixes = T.alloc_shared((q,), "float32")
-                for j in T.Parallel(q):
-                    mixes[j] = total[j] * T.rsqrt(total[q] / (n * c) + rms_eps)
-                if T.get_thread_binding() < WARP_LANES:
-                    for i in T.Parallel(n):
-                        post_mix[t, i] = (
-                            T.sigmoid(mixes[n + i] * hc_scale[1] + hc_base[n + i])
+                # Every share is in ``part_s`` once all three warps arrive; the two stream warps
+                # then wait for the pre weights.
+                summed = 1
+                weighed = 2
+                if tx < WARP_LANES:
+                    share(partial, sqr, part_s, t, tx)
+                    T.sync_threads(barrier_id=summed, arrive_count=3 * WARP_LANES)
+                    if tx < n:
+                        post_mix[t, tx] = (
+                            T.sigmoid(mix(part_s, n + tx) * hc_scale[1] + hc_base[n + tx])
                             * hc_post_mult_value
                         )
-                    cm = T.alloc_fragment((n, n), "float32")
-                    row = T.alloc_fragment((n,), "float32")
-                    col = T.alloc_fragment((n,), "float32")
-                    for i, j in T.Parallel(n, n):
-                        cm[i, j] = (
-                            mixes[2 * n + i * n + j] * hc_scale[2] + hc_base[2 * n + i * n + j]
-                        )
-                    T.reduce_max(cm, row, dim=1)
-                    for i, j in T.Parallel(n, n):
-                        cm[i, j] = T.exp(cm[i, j] - row[i])
-                    T.reduce_sum(cm, row, dim=1)
-                    for i, j in T.Parallel(n, n):
-                        cm[i, j] = cm[i, j] / row[i] + hc_sinkhorn_eps
-                    T.reduce_sum(cm, col, dim=0)
-                    for i, j in T.Parallel(n, n):
-                        cm[i, j] = cm[i, j] / (col[j] + hc_sinkhorn_eps)
-                    for _ in T.serial(sinkhorn_repeat - 1):
-                        T.reduce_sum(cm, row, dim=1)
-                        for i, j in T.Parallel(n, n):
-                            cm[i, j] = cm[i, j] / (row[i] + hc_sinkhorn_eps)
-                        T.reduce_sum(cm, col, dim=0)
-                        for i, j in T.Parallel(n, n):
-                            cm[i, j] = cm[i, j] / (col[j] + hc_sinkhorn_eps)
-                    for i, j in T.Parallel(n, n):
-                        comb_mix[t, i * n + j] = cm[i, j]
+                    lane = tx % (n * n)
+                    comb = T.call_extern(
+                        "float32",
+                        "tileops::hc_sinkhorn4",
+                        mix(part_s, 2 * n + lane) * hc_scale[2] + hc_base[2 * n + lane],
+                        sinkhorn_repeat,
+                        T.float32(hc_sinkhorn_eps),
+                    )
+                    if tx < n * n:
+                        comb_mix[t, lane] = comb
                 else:
                     pre = T.alloc_shared((n,), "float32")
-                    for i in T.Parallel(n):
-                        pre[i] = T.sigmoid(mixes[i] * hc_scale[0] + hc_base[i]) + hc_pre_eps
-                    if staged:
-                        for b in T.Pipelined(c // block, num_stages=2):
-                            xs = T.alloc_shared((streams, block), "bfloat16")
-                            xl = T.alloc_fragment((streams, block), "float32")
-                            T.copy(x[t, 0, b * block], xs)
-                            T.copy(xs, xl)
-                            part = T.alloc_fragment((block,), "float32")
-                            T.clear(part)
-                            for i in T.serial(n):
-                                for k in T.Parallel(block):
-                                    part[k] += pre[i] * xl[0 if streams == 1 else i, k]
-                            T.copy(part, layer_input[t, b * block])
-                    else:
-                        out = T.alloc_fragment((c,), "float32")
-                        T.clear(out)
-                        for i in T.unroll(n):
-                            for k in T.Parallel(c):
-                                out[k] += pre[i] * T.cast(
-                                    x[t, 0 if streams == 1 else i, k], "float32"
+                    for b in T.Pipelined(c // block, num_stages=3):
+                        xs = T.alloc_shared((streams, block), "bfloat16")
+                        xl = T.alloc_fragment((streams, block), "float32")
+                        T.copy(x[t, 0, b * block], xs)
+                        if b == 0:
+                            share(partial, sqr, part_s, t, tx)
+                            T.sync_threads(barrier_id=summed, arrive_count=3 * WARP_LANES)
+                            if tx < WARP_LANES + n:
+                                i = tx - WARP_LANES
+                                pre[i] = (
+                                    T.sigmoid(mix(part_s, i) * hc_scale[0] + hc_base[i])
+                                    + hc_pre_eps
                                 )
-                        for k in T.Parallel(c):
-                            layer_input[t, k] = T.cast(out[k], "bfloat16")
+                            T.sync_threads(barrier_id=weighed, arrive_count=2 * WARP_LANES)
+                        T.copy(xs, xl)
+                        part = T.alloc_fragment((block,), "float32")
+                        T.clear(part)
+                        for i in T.serial(n):
+                            for k in T.Parallel(block):
+                                part[k] += pre[i] * xl[0 if streams == 1 else i, k]
+                        T.copy(part, layer_input[t, b * block])
 
         return main
 
@@ -351,12 +317,10 @@ def _pre_mix_kernel(
 class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
     """The manifold hyper-connection pre step on SM90 tensor cores, for four streams.
 
-    The projection's products are exact and each 64-channel slot's add into float32, so the
+    The projection's products are exact and each 64-channel step's add into float32, so the
     mixes are as accurate as a float32 matrix product. The token count is a runtime extent:
-    a launch picks the tile, the reduction splits and the paths from it, so a new token count
-    builds programs only where it picks a new set. A call of few tokens whose slice of the terms
-    fits in shared memory beside the token ring splits ``fn`` in the projection; any other
-    splits it in a launch of its own.
+    a launch picks the tile and the reduction splits from it, so a new token count builds
+    programs only where it picks a new pair.
 
     Args:
         n: Streams a token.
@@ -366,8 +330,6 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         rms_eps, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value, sinkhorn_repeat: The op's
             constants.
         sm_count: Device SM count, which sizes the reduction splits.
-        smem_budget: Shared memory a block may take, which bounds the slice of the terms
-            the projection holds.
     """
 
     supported_archs: list[int] = [90]
@@ -394,7 +356,6 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
             call.hc_post_mult_value,
             call.sinkhorn_repeat,
             sm_count=call.sm_count,
-            smem_budget=call.smem_budget,
         )
 
     def __init__(
@@ -409,7 +370,6 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         sinkhorn_repeat: int,
         *,
         sm_count: int,
-        smem_budget: int,
     ):
         super().__init__()
         self.n = n
@@ -421,39 +381,20 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         self.hc_post_mult_value = hc_post_mult_value
         self.sinkhorn_repeat = sinkhorn_repeat
         self.sm_count = sm_count
-        self.smem_budget = smem_budget
 
-    def _launch(self, tokens: int) -> tuple[int, int, int, bool, bool]:
-        """The ``block_m``, ``num_stages``, ``splits``, ``resident`` and ``staged_mix`` a call
-        of *tokens* tokens launches with; *tokens* is positive.
-
-        A resident launch takes the barriers' aligned slot, its slice of the terms and the
-        token ring, within the device's shared-memory budget.
-        """
+    def _launch(self, tokens: int) -> tuple[int, int, int]:
+        """The ``block_m``, ``num_stages`` and ``splits`` a call of *tokens* tokens launches
+        with; *tokens* is positive."""
         # A call within one WGMMA's rows would leave a second warpgroup idle; its splits run a
         # few steps, which four slots cover, and six cover a 128-token tile's load latency.
         small = tokens <= WGMMA_ROWS
         block_m, num_stages = (WGMMA_ROWS, 4) if small else (2 * WGMMA_ROWS, 6)
-        # More splits fill more SMs but add partial sums the mix launch reads.
-        max_splits = 128 if small else 64
+        # The splits fill the SMs the token tiles leave. The projection lasts as long as its
+        # longest split, and of the counts with that longest split the fewest leave the mix
+        # launch the fewest partial sums.
         steps = self.n * self.c // _STEP
-        splits = max(1, min(max_splits, self.sm_count // -(-tokens // block_m)))
-        while steps % splits:
-            splits -= 1
-        q = self.n * self.n + 2 * self.n
-        shapes = _shared_shapes(steps // splits, q, block_m, num_stages)
-        shared = SHARED_BUFFER_ALIGN_BYTES + 2 * sum(math.prod(shape) for shape in shapes)
-        # Every token tile splits the fn slice itself, work that outgrows the launch it saves.
-        resident_max = 512
-        # Staging overlaps loads with sums while few blocks share an SM.
-        staged_mix_max = 4096
-        return (
-            block_m,
-            num_stages,
-            splits,
-            shared <= self.smem_budget and tokens <= resident_max,
-            tokens <= staged_mix_max,
-        )
+        fill = max(1, min(steps, self.sm_count // -(-tokens // block_m)))
+        return block_m, num_stages, -(-steps // -(-steps // fill))
 
     def forward(
         self,
@@ -467,9 +408,8 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         tokens = math.prod(lead)
         stored = residual[..., :1, :] if self.broadcast else residual
         x = stored.reshape(tokens, stored.shape[-2], self.c).contiguous()
-        split, gemm, mix = self.program(self._compile, *self._launch(tokens))
-        weight = fn if split is None else split(fn)
-        partial, sqr = gemm(x.view(tokens, -1), weight)
+        gemm, mix = self.program(self._compile, *self._launch(tokens))
+        partial, sqr = gemm(x.view(tokens, -1), fn)
         post_mix, comb_mix, layer_input = mix(x, partial, sqr, hc_scale, hc_base)
         return (
             post_mix.view(*lead, self.n, 1),
@@ -478,19 +418,11 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         )
 
     def _compile(
-        self,
-        cfg: dict,
-        block_m: int,
-        num_stages: int,
-        splits: int,
-        resident: bool,
-        staged_mix: bool,
-    ) -> tuple[CompiledProgram | None, CompiledProgram, CompiledProgram]:
-        """The split, projection and mix programs a launch of these facts runs."""
+        self, cfg: dict, block_m: int, num_stages: int, splits: int
+    ) -> tuple[CompiledProgram, CompiledProgram]:
+        """The projection and mix programs a launch of these facts runs."""
         streams = 1 if self.broadcast else self.n
-        q = self.n * self.n + 2 * self.n
-        split = None if resident else CompiledProgram(_split_fn_kernel(q, self.n * self.c))
-        gemm = _prenorm_gemm_kernel(self.n, self.c, streams, splits, block_m, num_stages, resident)
+        gemm = _prenorm_gemm_kernel(self.n, self.c, streams, splits, block_m, num_stages)
         mix = _pre_mix_kernel(
             self.n,
             self.c,
@@ -501,6 +433,5 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
             self.hc_sinkhorn_eps,
             self.hc_post_mult_value,
             self.sinkhorn_repeat,
-            staged_mix,
         )
-        return split, CompiledProgram(gemm), CompiledProgram(mix)
+        return CompiledProgram(gemm), CompiledProgram(mix)
