@@ -209,6 +209,20 @@ def test_rope_validate_inputs_rejects_a_position_outside_the_cache(neox, dtype, 
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
+def test_partial_neox_query_clamps_both_table_edges():
+    op, params = _op(
+        "RoPEFwdOp", torch.bfloat16, head_size=80, rotary_dim=32, max_position_embeddings=64
+    )
+    positions = torch.tensor([-1, 0, 63, 64], device=run_device(), dtype=torch.int32)
+    query = torch.randn(4, 32 * 80, device=run_device(), dtype=torch.bfloat16)
+    got, key = op(positions, query)
+    expected, _ = _reference("RoPEFwdOp", params, positions.clamp(0, 63), query, None)
+    compare_outputs(got, expected, rope_verification())
+    assert key is None
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("neox", [True, False], ids=["neox", "gptj"])
 def test_rope_unchecked_position_outside_the_cache_reads_its_nearest_row(neox) -> None:
     dtype = torch.float16

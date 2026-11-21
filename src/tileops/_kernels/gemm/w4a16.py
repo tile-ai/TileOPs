@@ -1700,6 +1700,73 @@ def _gemm_w4a16_kernel(
     return build
 
 
+@target_cache(maxsize=32)
+@tilelang.jit(out_idx=[4])
+def _two_group_gemm(rows: int, cols: int, groups: int):
+    @T.prim_func
+    def main(
+        A: T.Tensor((rows, groups * 128), "float16"),
+        W: T.Tensor((cols, groups * 64), "uint8"),
+        S: T.Tensor((cols, groups), "float16"),
+        Z: T.Tensor((cols, groups), "uint8"),
+        C: T.Tensor((rows, cols), "float16"),
+    ):
+        with T.Kernel(cols // 16, rows // 16, threads=64) as (bx, by):
+            a = T.alloc_shared((16, 128), "float16")
+            b = T.alloc_fragment((16, 128), "float16")
+            c = T.alloc_fragment((16, 16), "float32")
+            T.clear(c)
+            partial = T.alloc_fragment((16, 16), "float32")
+            for g in T.unroll(groups):
+                T.clear(partial)
+                T.copy(A[by * 16, g * 128], a)
+                for n, j in T.Parallel(16, 128):
+                    row = bx * 16 + n
+                    byte = (j // 2 % 4) * 16 + (j // 32) * 4 + j % 2 * 2 + j // 16 % 2
+                    packed = T.cast(W[row, g * 64 + byte], "int32")
+                    q = (packed >> (j // 8 % 2 * 4)) & 15
+                    b[n, j] = T.cast(q - T.cast(Z[row, g], "int32"), "float16")
+                T.gemm(a, b, partial, transpose_B=True)
+                for m, n in T.Parallel(16, 16):
+                    c[m, n] += partial[m, n] * T.cast(S[bx * 16 + n, g], "float32")
+            T.copy(c, C[by * 16, bx * 16])
+
+    return main
+
+
+class GEMMW4A16TwoGroupKernel(Kernel, GEMMW4A16FwdInterface):
+    """Accumulate the two 128-column groups separately, applying their per-row scales."""
+
+    supported_archs = [90]
+    preferred_over = frozenset({"gemm_w4a16"})
+
+    @classmethod
+    def refusal(cls, call: GEMMW4A16Call) -> str | None:
+        if call.k not in (128, 256) or call.group_size != 128 or call.dtype != torch.float16:
+            return "requires one or two 128-column FP16 groups"
+        max_cols = 304 if call.m == 128 else 256
+        if call.m % 16 or call.n % 16 or call.m > 128 or call.n > max_cols:
+            return "requires whole 16-by-16 tiles in a small projection"
+        return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: GEMMW4A16Call) -> Entry:
+        index = call.device.index if call.device is not None else None
+        return (call.m, call.n, call.k, index), lambda: cls(call.m, call.n, call.k // 128, index)
+
+    def __init__(self, m, n, groups, device_index):
+        super().__init__(device_index=device_index)
+        self.m, self.n, self.groups = m, n, groups
+        self.dtype = torch.float16
+        self.init_config()
+
+    def forward(self, activation, packed_weight, weight_scale, weight_zero):
+        return self.program(self._compile)(activation, packed_weight, weight_scale, weight_zero)
+
+    def _compile(self, cfg):
+        return _two_group_gemm(self.m, self.n, self.groups)
+
+
 class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
     """W4A16 NT GEMM reading a prepacked weight, dequantized into the A fragment.
 

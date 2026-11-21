@@ -482,3 +482,29 @@ def test_dtype_casts_the_input_before_the_scan(
     y = op_cls(dim=-1, dtype=out_dtype)(x)
     assert y.dtype == out_dtype
     compare_outputs(y, workload.torch_program(x), workload.verification(x.to(out_dtype)))
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize("rows", [16, 24])
+def test_cumsum_cluster_exchanges_the_totals_of_all_eight_blocks(rows) -> None:
+    from tileops._kernels.reduction.cumulative import CumsumClusterScanKernel
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
+    from tileops._utils.utils import get_sm_count
+    from tileops.backend import BUILTIN
+
+    if get_sm_count() < 128:
+        pytest.skip("The eight-block cluster kernel requires at least 128 SMs")
+    width = 65536
+    storage = torch.empty(rows * width + 1, dtype=torch.float32, device=run_device())
+    op = CumsumFwdOp(dim=-1, target=BUILTIN)
+    for offset in (0, 1):
+        x = storage[offset : offset + rows * width].view(rows, width)
+        x.zero_()
+        values = torch.arange(rows * 8, dtype=x.dtype, device=x.device).view(rows, 8) + 1
+        x[:, ::8192] = values
+        x[:, 8191::8192] = -2 * values
+        expected = torch.cumsum(x, dim=-1)
+        assert torch.equal(op(x), expected)
+        assert [type(k) for k in op.iter_kernels()] == [CumsumClusterScanKernel]

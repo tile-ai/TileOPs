@@ -203,6 +203,26 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     compare_outputs(out, ref, workload.verification(x))
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+def test_ssd_chunk_state_fp16_tma_masks_packed_sequences():
+    from tileops.backend import BUILTIN
+
+    test = SSDChunkStateFwdTest(1, 16, 256, 48, 64, 128, 1, torch.float16, True)
+    x, bmat, dt, da, seq_idx = test.gen_inputs()
+    seq_idx[:, :256] = -1
+    seq_idx[:, 256:416] = 0
+    seq_idx[:, 416:] = 1
+    op = SSDChunkStateFwdOp(target=BUILTIN)
+    inputs = (x, bmat, dt, da, seq_idx)
+    out = op(*inputs)
+    compare_outputs(out, test.ref_program(*inputs), test.verification(*inputs))
+    (kernel,) = op.iter_kernels()
+    assert kernel._uses_tma_panels()
+    assert torch.count_nonzero(out[:, 0]) == 0
+
+
 class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):
     pass
 
@@ -273,3 +293,16 @@ def test_ssd_state_passing_fwd_prefetched_scan(dtype):
     """A wide state over 16 chunks: four elements a thread, eight chunks loaded ahead."""
     test = SSDStatePassingFwdTest(1, 16, 4, 8192, dtype)
     test.check(SSDStatePassingFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_ssd_scan_retains_a_small_coefficient_on_a_large_value() -> None:
+    test = SSDChunkScanFwdTest(1, 1, 64, 4, 64, 32, 1, torch.bfloat16)
+    x, cb, decay, c, state, dt = test.gen_inputs()
+    x.zero_()
+    x[:, 0] = 1e8
+    cb.zero_()
+    cb[..., -1, 0] = 1
+    decay.zero_()
+    decay[..., 32:] = -20
+    test.check(SSDChunkScanFwdOp(), x, cb, decay, c.zero_(), state.zero_(), dt.fill_(1))

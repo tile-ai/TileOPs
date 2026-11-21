@@ -24,7 +24,11 @@ from tileops._kernels.attention.gqa.bwd import (
     GQABwdWGMMAPipelinedKernel,
 )
 from tileops._kernels.attention.gqa.bwd_ws import GQABwdWSKernel
-from tileops._kernels.attention.gqa.decode import GQADecodeKernel, GQADecodeSplitKernel
+from tileops._kernels.attention.gqa.decode import (
+    GQADecodeKernel,
+    GQADecodeNarrowGroupKernel,
+    GQADecodeSplitKernel,
+)
 from tileops._kernels.attention.gqa.decode_bs1 import GQADecodeBs1Kernel
 from tileops._kernels.attention.gqa.decode_fp8 import GQADenseFP8DecodeKernel
 from tileops._kernels.attention.gqa.decode_ws import GQADecodeWSKernel
@@ -81,6 +85,7 @@ from tileops._kernels.attention.paged_cache_gather import (
     PagedKVCacheGatherCall,
     PagedKVCacheGatherFwdInterface,
     PagedKVCacheGatherKernel,
+    PagedKVCacheGatherShortKernel,
 )
 from tileops._kernels.attention.paged_cache_write import PagedKVCacheWriteKernel
 from tileops._kernels.attention.topk_select import (
@@ -108,6 +113,7 @@ __all__ = [
     "GQABwdWSKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
+    "GQADecodeNarrowGroupKernel",
     "GQADecodePagedBs1Kernel",
     "GQADecodeSplitKernel",
     "GQADecodeWSKernel",
@@ -157,6 +163,7 @@ __all__ = [
     "PagedKVCacheGatherCall",
     "PagedKVCacheGatherFwdInterface",
     "PagedKVCacheGatherKernel",
+    "PagedKVCacheGatherShortKernel",
     "PagedKVCacheWriteKernel",
     "TopKSelectCall",
     "TopKSelectFwdInterface",

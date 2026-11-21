@@ -264,6 +264,27 @@ def test_conv1d(
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "dtype,bias,length",
+    [(torch.float16, False, 4103), (torch.bfloat16, True, 4102)],
+    ids=["fp16-odd-output", "bf16-bias-even-output"],
+)
+def test_conv1d_short_waveform(dtype, bias, length):
+    from tileops._kernels.convolution import Conv1dDirectKernel
+    from tileops.backend import BUILTIN
+
+    x = torch.randn(1, 1, length, device=run_device(), dtype=dtype)
+    weight = torch.randn(16, 1, 5, device=x.device, dtype=dtype)
+    offset = torch.randn(16, device=x.device, dtype=dtype) if bias else None
+    op = Conv1dFwdOp(target=BUILTIN)
+    args = (x, weight, offset)
+    compare_outputs(op(*args), F.conv1d(*args), convolution_verification(dtype, inputs=args))
+    assert [type(k) for k in op.iter_kernels()] == [Conv1dDirectKernel]
+
+
+@pytest.mark.smoke
 def test_conv1d_no_bias_matches_torch() -> None:
     op = Conv1dFwdOp(stride=2, padding=2)
     x = torch.randn(1, 32, 256, device=run_device(), dtype=torch.float16).contiguous()
@@ -760,6 +781,51 @@ def test_conv2d_batch_with_partial_tile_leaves_the_symmetric_kernel() -> None:
     out = op(x, weight)
     ref = F.conv2d(x, weight, bias=None)
     compare_outputs(out, ref.contiguous(), convolution_verification(out.dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "shape",
+    [(2, 256, 104, 104), (1, 288, 96, 96)],
+    ids=["tile-crosses-images", "input-channels-not-divisible-by-64"],
+)
+def test_conv2d_highres_default_preserves_tile_constraints(shape):
+    from tileops._kernels.convolution.conv2d import Conv2dSymmetricKernel
+    from tileops.backend import BUILTIN
+
+    x = torch.randn(shape, device=run_device(), dtype=torch.float16) * 0.125
+    weight = torch.randn(256, shape[1], 3, 3, device=x.device, dtype=x.dtype) * 0.125
+    op = Conv2dFwdOp(padding=1, target=BUILTIN)
+    compare_outputs(
+        op(x, weight),
+        F.conv2d(x, weight, padding=1),
+        convolution_verification(x.dtype, inputs=(x, weight)),
+    )
+    (kernel,) = op.iter_kernels()
+    assert type(kernel) is Conv2dSymmetricKernel
+    assert (kernel.config["block_m"], kernel.config["block_k"]) == (64, 32)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+def test_conv2d_depthwise_warp_bf16_bias():
+    from tileops._kernels.convolution.conv2d import DepthwiseConv2dWarpKernel
+    from tileops.backend import BUILTIN
+
+    channels = 32
+    x = torch.randn(1, channels, 24, 32, device=run_device(), dtype=torch.bfloat16)
+    weight = torch.randn(channels, 1, 3, 3, device=x.device, dtype=x.dtype)
+    bias = torch.randn(channels, device=x.device, dtype=x.dtype)
+    op = Conv2dFwdOp(groups=channels, padding=1, target=BUILTIN)
+    compare_outputs(
+        op(x, weight, bias),
+        F.conv2d(x, weight, bias, padding=1, groups=channels),
+        convolution_verification(x.dtype, inputs=(x, weight, bias)),
+    )
+    assert [type(k) for k in op.iter_kernels()] == [DepthwiseConv2dWarpKernel]
 
 
 class Conv3dFixture(FixtureBase):

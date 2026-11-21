@@ -84,6 +84,31 @@ def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block
     TestBase.check(test, op, *inputs)
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize("num_experts", [128, 256, 384])
+def test_sparse_routes_across_expert_blocks(num_experts) -> None:
+    from tileops._kernels.build_target import building_on
+    from tileops._kernels.moe.permute_align import _make_sparse_routes_kernel
+    from tileops.backend import BUILTIN
+
+    # The first expert spans two blocks. Other active experts belong to different CTAs.
+    ids = torch.tensor(
+        [1] * 65 + [num_experts // 2] * 33 + [num_experts - 1] * 31,
+        dtype=torch.int32,
+        device=run_device(),
+    )
+    workload = MoEPermuteAlignWorkload(
+        manifest_call("MoEPermuteAlignFwdOp", T=129, K=1, num_experts=num_experts, block_size=64)
+    )
+    op = MoEPermuteAlignFwdOp(num_experts, 64, target=BUILTIN)
+    TestBase.check(workload, op, ids.view(-1, 1))
+    (kernel,) = op.iter_kernels()
+    with building_on(ids.device):
+        assert kernel._small_batch_fn is _make_sparse_routes_kernel(129, num_experts)
+
+
 @pytest.mark.parametrize(
     "total_tokens, top_k, num_experts, block_size",
     [

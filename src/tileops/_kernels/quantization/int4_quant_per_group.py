@@ -17,7 +17,9 @@ __all__ = ["INT4QuantPerGroupFwdKernel", "INT4QuantPerGroupRowFwdKernel"]
 
 
 @target_cache(maxsize=32)
-def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, chunk: int, per_cta: bool):
+def _int4_quant_per_group_kernel(
+    n: int, k: int, group_size: int, chunk: int, per_cta: bool, pack_intrinsic: bool = False
+):
     """Build the quantization of ``n`` rows of ``k`` float16 elements in groups of ``group_size``.
 
     A thread holds whole chunks of ``chunk`` elements in registers. With ``per_cta`` a CTA
@@ -36,7 +38,11 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, chunk: int, pe
     groups = total // group_size
     lanes = group_size // chunk
 
-    @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
+    headers = ["streaming_load.h"]
+    if pack_intrinsic:
+        headers.append("int4_pack.h")
+
+    @tilelang.jit(compile_flags=csrc_include(*headers))
     def _int4_quant_per_group_func(threads: int, cpt: int, evict_first: bool, min_blocks: int):
         assert threads % WARP_LANES == 0
         assert threads * cpt >= lanes if per_cta else (threads % lanes == 0 and cpt == 1)
@@ -128,19 +134,32 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, chunk: int, pe
                 for u in T.unroll(cpt):
                     c = chunk_of(bx, u, tx)
                     for word in T.unroll(chunk // 8):
-                        out[word] = T.uint32(0)
-                        for pair in T.unroll(4):
-                            for half in T.unroll(2):
-                                value = widen(vals[u, word * 4 + pair], half)
-                                code = T.cast(
-                                    T.round(T.ieee_mul(T.ieee_add(value, -num[0]), num[2])),
-                                    "int32",
-                                )
-                                code = T.min(T.max(code, -8), 7) & 15
-                                # DeepSpeed stores the first signed code in the high nibble.
-                                out[word] = out[word] | (
-                                    T.cast(code, "uint32") << T.uint32(8 * pair + 4 * (1 - half))
-                                )
+                        if pack_intrinsic:
+                            out[word] = T.call_extern(
+                                "uint32",
+                                "tileops::pack_int4_group_word",
+                                vals[u, word * 4],
+                                vals[u, word * 4 + 1],
+                                vals[u, word * 4 + 2],
+                                vals[u, word * 4 + 3],
+                                num[0],
+                                num[2],
+                            )
+                        else:
+                            out[word] = T.uint32(0)
+                            for pair in T.unroll(4):
+                                for half in T.unroll(2):
+                                    value = widen(vals[u, word * 4 + pair], half)
+                                    code = T.cast(
+                                        T.round(T.ieee_mul(T.ieee_add(value, -num[0]), num[2])),
+                                        "int32",
+                                    )
+                                    code = T.min(T.max(code, -8), 7) & 15
+                                    # DeepSpeed stores the first signed code in the high nibble.
+                                    out[word] = out[word] | (
+                                        T.cast(code, "uint32")
+                                        << T.uint32(8 * pair + 4 * (1 - half))
+                                    )
                     if held(u, tx) & (c < chunks):
                         for word in T.vectorized(chunk // 8):
                             packed[c * (chunk // 8) + word] = out[word]
@@ -172,8 +191,18 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
     def __init__(self, call: QuantizeCall, config: dict | None = None) -> None:
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
+        input_bytes = call.rows * call.cols * 2
+        hopper_group64 = call.arch == 90 and call.group_size == 64 and not self._PER_CTA
+        # Vector packing improves throughput while the weights still largely fit in L2.
+        self.pack_intrinsic = hopper_group64 and (4 << 20) <= input_bytes <= (64 << 20)
+        self.four_lanes = hopper_group64 and input_bytes <= (64 << 20)
         self.kernel = _int4_quant_per_group_kernel(
-            call.rows, call.cols, call.group_size, self._CHUNK, self._PER_CTA
+            call.rows,
+            call.cols,
+            call.group_size,
+            16 if self.four_lanes else self._CHUNK,
+            self._PER_CTA,
+            self.pack_intrinsic,
         )
         self.init_config(config)
 
@@ -228,6 +257,10 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
 
     @property
     def default_config(self) -> dict:
+        if self.pack_intrinsic:
+            return {"threads": 256, "cpt": 1, "evict_first": True, "min_blocks": 1}
+        if self.four_lanes:
+            return {"threads": 128, "cpt": 1, "evict_first": False, "min_blocks": 1}
         wide = self.call.rows * self.call.cols * 2 >= self._DEFAULT_LOAD_BYTES
         return {
             "threads": self._WIDE_THREADS if wide else self._THREADS,

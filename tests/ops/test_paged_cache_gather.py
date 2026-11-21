@@ -90,6 +90,25 @@ def test_paged_kv_cache_gather(lengths, shape, page, dtype, out_dtype, starts, t
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "lengths,dtype",
+    [([15, 16], torch.float16), ([0, 32], torch.bfloat16), ([63, 65], torch.float16)],
+    ids=["one-page", "empty-first", "cross-page"],
+)
+def test_short_gather_packed_requests(lengths, dtype):
+    from tileops._kernels.attention import PagedKVCacheGatherShortKernel
+    from tileops.backend import BUILTIN
+
+    workload = PagedKVCacheGatherWorkload(lengths, (576,), 64, dtype, num_pages=8, table_width=4)
+    inputs = workload.gen_inputs()
+    op = PagedKVCacheGatherFwdOp(target=BUILTIN)
+    TestBase.check(workload, op, *inputs)
+    assert [type(k) for k in op.iter_kernels()] == [PagedKVCacheGatherShortKernel]
+
+
+@pytest.mark.smoke
 def test_paged_kv_cache_gather_strided_destination():
     workload = PagedKVCacheGatherWorkload([3, 17], (3, 5), 7, torch.bfloat16, starts=[1, 2])
     inputs = list(workload.gen_inputs())

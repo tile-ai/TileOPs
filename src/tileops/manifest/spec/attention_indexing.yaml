@@ -3,11 +3,13 @@
 FP8LightningIndexerFwdOp:
   family: attention
   status: implemented
+  # assume_nonnegative_scale is a TileOPs execution hint absent from the reference API.
   ref_api: deep_gemm.fp8_mqa_logits  # gitleaks:allow (public API path)
   signature:
     forall: {B: Dim, S: Dim, S_kv: Dim, H: Dim, G: Dim, D: Dim, first: Dim, T: "DType[bfloat16 | float8_e4m3fn]", seq_lens: "Seq[Int]"}
     params:
       clean_logits: {type: bool, default: true}
+      assume_nonnegative_scale: {type: bool, default: false, kw_only: true}
     inputs:
       index_q: {dtype: T, shape: "[B, S, H, D]"}
       index_k: {dtype: T, shape: "[B, S_kv, G, D]"}

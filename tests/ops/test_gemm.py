@@ -755,8 +755,8 @@ class GEMMW4A16Fixture(FixtureBase):
                     256,
                     256,
                     torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-w4a16-rect",
+                    marks=pytest.mark.smoke,
+                    id="two-group-rect",
                 ),
                 pytest.param(
                     1,
@@ -886,9 +886,8 @@ def test_gemm(
     trans_a: bool,
     trans_b: bool,
     tune: bool,
-    monkeypatch: pytest.MonkeyPatch,
+    fp32_gemm_reduction,
 ) -> None:
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     test = GEMMTest(m, n, k, dtype, trans_a, trans_b)
     op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b)
     if tune:
