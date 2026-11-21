@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 __all__ = ["load_weights"]
 
-_BLOCK = 128
+_SCALE_BLOCK = 128
 _LAYER = re.compile(r"layers\.(\d+)\.")
 
 
@@ -49,7 +49,7 @@ def load_weights(model: DeepseekV4ForCausalLM, path: Path) -> None:
             if all(n in tensors for n in pending_layers[layer_id]):
                 prefix = f"layers.{layer_id}."
                 own = {n[len(prefix) :]: tensors.pop(n) for n in pending_layers[layer_id]}
-                _load_block(model.layers[layer_id], own)
+                _load_block(model.layers[layer_id], own, model.config.n_routed_experts)
     model.embed = tensors.pop("embed.weight")
     model.norm = tensors.pop("norm.weight")
     model.head = tensors.pop("head.weight")
@@ -80,15 +80,21 @@ def _fp8(t: dict[str, torch.Tensor], prefix: str) -> FP8Linear:
 
 
 def _fp8_stacked(t: dict[str, torch.Tensor], first: str, second: str) -> FP8Linear:
-    """One FP8 linear layer whose output rows are ``first``'s, then ``second``'s."""
+    """One FP8 linear layer whose output rows are ``first``'s, then ``second``'s; ``first``'s
+    rows must fill whole scale blocks for the stacked scales to stay aligned."""
     a, b = _fp8(t, first), _fp8(t, second)
+    if a.weight.shape[0] % _SCALE_BLOCK:
+        raise ValueError(
+            f"{first} has {a.weight.shape[0]} rows, not whole {_SCALE_BLOCK}-row blocks"
+        )
     return FP8Linear(torch.cat([a.weight, b.weight]), torch.cat([a.scale, b.scale]))
 
 
 def _dequant_fp8(weight: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """A bfloat16 copy of an FP8 weight under 128x128 block scales."""
     n, k = weight.shape
-    blocks = weight.float().view(n // _BLOCK, _BLOCK, k // _BLOCK, _BLOCK)
+    b = _SCALE_BLOCK
+    blocks = weight.float().view(n // b, b, k // b, b)
     return (blocks * scale.float()[:, None, :, None]).view(n, k).to(torch.bfloat16)
 
 
@@ -98,7 +104,7 @@ def _load_compressor(c: Compressor, t: dict[str, torch.Tensor], prefix: str) -> 
     c.norm = t.pop(f"{prefix}.norm.weight")
 
 
-def _load_block(block: Block, t: dict[str, torch.Tensor]) -> None:
+def _load_block(block: Block, t: dict[str, torch.Tensor], n_experts: int) -> None:
     """Fill one layer from its tensors, named relative to ``layers.<i>.``."""
     block.attn_norm = t.pop("attn_norm.weight")
     block.ffn_norm = t.pop("ffn_norm.weight")
@@ -130,7 +136,6 @@ def _load_block(block: Block, t: dict[str, torch.Tensor]) -> None:
         ffn.bias = t.pop("ffn.gate.bias")
     ffn.shared_w13 = _fp8_stacked(t, "ffn.shared_experts.w1", "ffn.shared_experts.w3")
     ffn.shared_w2 = _fp8(t, "ffn.shared_experts.w2")
-    n_experts = 1 + max(int(name.split(".")[2]) for name in t if name.startswith("ffn.experts."))
     ffn.w13 = torch.stack(
         [
             torch.cat([t.pop(f"ffn.experts.{e}.w1.weight"), t.pop(f"ffn.experts.{e}.w3.weight")])

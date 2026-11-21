@@ -64,6 +64,12 @@ class DeepseekV4Config:
         if self.n_shared_experts != 1:
             raise ValueError("DeepSeek-V4 has exactly one shared expert")
 
+    @staticmethod
+    def indexed(ratio: int) -> bool:
+        """Whether a layer of compression ``ratio`` pools overlapping windows and attends only
+        to the entries its lightning indexer selects."""
+        return ratio == 4
+
     @classmethod
     def from_hf(cls, config: dict) -> DeepseekV4Config:
         """Map a Hugging Face ``deepseek_v4`` config dict onto the official field names."""

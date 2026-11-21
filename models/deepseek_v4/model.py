@@ -53,7 +53,7 @@ class DeepseekV4ForCausalLM:
         self.norm: torch.Tensor
         self.head: torch.Tensor
         self.hc_head: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        self._batch = 0
+        self._next_pos: int | None = None
 
     @classmethod
     def from_pretrained(
@@ -82,11 +82,11 @@ class DeepseekV4ForCausalLM:
         """The device holding the last layer and the LM head."""
         return self.layer_devices[-1]
 
-    def reset(self, batch: int) -> None:
-        """Clear every layer's decoding state for ``batch`` requests."""
+    def reset(self) -> None:
+        """Clear every layer's decoding state; the next call must be a prefill."""
         for layer in self.layers:
-            layer.reset(batch)
-        self._batch = batch
+            layer.reset(1)
+        self._next_pos = None
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
@@ -95,16 +95,20 @@ class DeepseekV4ForCausalLM:
         batch, seqlen = input_ids.shape
         if batch != 1:
             raise ValueError(f"forward runs one request, got a batch of {batch}")
-        if start_pos == 0:
-            self.reset(batch)
-        elif self._batch == 0:
-            raise ValueError("a decode step needs a prefill at start_pos 0 first")
-        elif seqlen != 1:
-            raise ValueError(f"a decode step takes one token per request, got {seqlen}")
         if start_pos + seqlen > self.max_seq_len:
             raise ValueError(
                 f"position {start_pos + seqlen} exceeds max_seq_len {self.max_seq_len}"
             )
+        if start_pos == 0:
+            self.reset()
+        elif self._next_pos is None:
+            raise ValueError("a decode step needs a prefill at start_pos 0 first")
+        elif start_pos != self._next_pos:
+            raise ValueError(
+                f"the next decode step is at position {self._next_pos}, got {start_pos}"
+            )
+        elif seqlen != 1:
+            raise ValueError(f"a decode step takes one token, got {seqlen}")
         ops = self.ops
         ids = input_ids.to(self.first_device)
         x = ops.embedding(ids, self.embed)
@@ -117,7 +121,9 @@ class DeepseekV4ForCausalLM:
         last = h[:, -1].contiguous()
         x = ops.hc_head(last, *self.hc_head)
         x = ops.norm(x, self.norm)
-        return ops.gemm_f32(x, self.head)
+        logits = ops.gemm_f32(x, self.head)
+        self._next_pos = start_pos + seqlen
+        return logits
 
     __call__ = forward
 
@@ -129,7 +135,8 @@ class DeepseekV4ForCausalLM:
         *,
         eos_token_id: int | None = None,
     ) -> list[int]:
-        """Greedily extend one prompt by up to ``max_new_tokens`` tokens; stops after EOS."""
+        """Greedily extend one prompt by up to ``max_new_tokens`` tokens; stops after EOS or
+        once the sequence fills ``max_seq_len``."""
         eos = self.config.eos_token_id if eos_token_id is None else eos_token_id
         tokens = torch.tensor([list(prompt_ids)], dtype=torch.long, device=self.first_device)
         logits = self.forward(tokens, 0)

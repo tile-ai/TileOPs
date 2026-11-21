@@ -25,6 +25,7 @@ from workloads.models.deepseek_v4 import (
     INFERENCE_DIR_ENV,
     check_decode_state,
     check_index_selection,
+    check_selection_agreement,
     check_within_rounding,
     load_official,
     official_args,
@@ -57,21 +58,18 @@ def test_config_rejects_a_ratio_list_of_the_wrong_length():
         DeepseekV4Config.from_hf({**DEEPSEEK_V4_FLASH_CONFIG, "compress_ratios": [0] * 43})
 
 
-@pytest.mark.smoke
-def test_forward_refuses_a_batch_of_two():
-    model = DeepseekV4ForCausalLM(DeepseekV4Config.from_hf(_SMALL), devices=[run_device()])
-    with pytest.raises(ValueError, match="batch of 2"):
-        model(torch.zeros(2, 4, dtype=torch.long))
-
-
 @pytest.fixture(scope="module")
 def checkpoint(tmp_path_factory):
+    """The small model as a Hugging Face checkpoint whose tensors alternate between two shards,
+    so every layer spans both, and its tensors."""
     from safetensors.torch import save_file
 
     path = tmp_path_factory.mktemp("dsv4-small")
     tensors = random_checkpoint(_SMALL, seed=0)
-    save_file(tensors, str(path / "model-00001-of-00001.safetensors"))
-    weight_map = dict.fromkeys(tensors, "model-00001-of-00001.safetensors")
+    names = sorted(tensors)
+    weight_map = {n: f"model-0000{1 + i % 2}-of-00002.safetensors" for i, n in enumerate(names)}
+    for shard in set(weight_map.values()):
+        save_file({n: tensors[n] for n in names if weight_map[n] == shard}, str(path / shard))
     (path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
     (path / "config.json").write_text(json.dumps(_SMALL))
     return path, tensors
@@ -132,7 +130,7 @@ def _official_model(tensors, max_seq_len, *, rounded=False):
 def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, decode_steps):
     """Each layer, fed the official model's input to it, against that layer of the official model,
     over the prefill and over the decode steps, and its decoding state at the end; the entries
-    the indexer selects; and the logits of the whole model."""
+    the indexer selects, against the official indexer's; and the logits of the whole model."""
     path, tensors = checkpoint
     max_seq_len = 2304
     mine, mine_tf = (
@@ -145,17 +143,22 @@ def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, deco
         rounded, rounded_tf = (
             _official_model(on_device, max_seq_len, rounded=True) for _ in range(2)
         )
-        trace = []
+        trace, official_selections = [], []
         for i, layer in enumerate(ref.layers):
             layer.register_forward_hook(
                 lambda _m, args, out, i=i: trace.append((i, args[0].clone(), out.clone()))
             )
+        for layer in rounded_tf.layers:
+            if getattr(layer.attn, "indexer", None) is not None:
+                layer.attn.indexer.register_forward_hook(
+                    lambda _m, _args, out: official_selections.append(out)
+                )
         g = torch.Generator().manual_seed(1)
         shape = (1, prompt_len + decode_steps)
         ids = torch.randint(0, _SMALL["vocab_size"], shape, generator=g, device="cpu")
         ids = ids.to(run_device())
         phases = {"prefill": [0], "decode": list(range(prompt_len, prompt_len + decode_steps))}
-        mine_tf.reset(1)
+        mine_tf.reset()
         selections = []
         for layer in mine_tf.layers:
             if layer.attn.indexer is not None:
@@ -183,6 +186,38 @@ def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, deco
     assert len(selections) == len(phases["prefill"]) + len(phases["decode"])
     for indices, start_pos, offset in selections:
         check_index_selection(indices, start_pos, offset, 4, top_k)
+    check_selection_agreement(selections, official_selections, 4, top_k)
+
+
+@pytest.mark.full
+@pytest.mark.sm90
+def test_forward_takes_one_request_position_by_position(checkpoint):
+    """``forward`` refuses a batch, a decode step out of order or of more than one token, and a
+    sequence past ``max_seq_len``; a refused call leaves the request where it was."""
+    path, _ = checkpoint
+    max_seq_len = 18
+    model = DeepseekV4ForCausalLM.from_pretrained(
+        path, devices=[run_device()], max_seq_len=max_seq_len
+    )
+    ids = torch.zeros(1, max_seq_len + 1, dtype=torch.long, device=run_device())
+    refused = [(ids[:, :4].expand(2, -1), 0, "batch of 2"), (ids[:, :1], 4, "prefill")]
+    for step, pos, match in refused:
+        with pytest.raises(ValueError, match=match):
+            model(step, pos)
+    model(ids[:, :16], 0)
+    refused = [
+        (ids, 0, "max_seq_len"),
+        (ids[:, :1], 17, "position 16"),
+        (ids[:, :2], 16, "one token"),
+    ]
+    for step, pos, match in refused:
+        with pytest.raises(ValueError, match=match):
+            model(step, pos)
+    model(ids[:, :1], 16)
+    model(ids[:, :1], 17)
+    model(ids[:, :max_seq_len], 0)
+    with pytest.raises(ValueError, match="max_seq_len"):
+        model(ids[:, :1], max_seq_len)
 
 
 @pytest.mark.full

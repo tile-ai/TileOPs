@@ -57,8 +57,9 @@ def int8_quant_per_block(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return _to_int8(xf, scale.repeat_interleave(_BLOCK, 1)[:, :k]), scale
 
 
-def fp8_quant_per_block(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """``FP8QuantPerBlockFwdOp``'s reference: one scale per 128x128 tile."""
+def fp8_quant_per_block(w: torch.Tensor, ue8m0: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+    """``FP8QuantPerBlockFwdOp``'s reference: one scale per 128x128 tile, under ``ue8m0``
+    rounded up to a power of two."""
     n, k = w.shape
     wf = w.float()
     padded = _pad_to_blocks(wf, rows=True)
@@ -66,6 +67,8 @@ def fp8_quant_per_block(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     amax = tiles.abs().amax(dim=(1, 3))
     fp8_max = torch.finfo(torch.float8_e4m3fn).max
     scale = torch.where(amax > 0, amax / fp8_max, torch.ones_like(amax))
+    if ue8m0:
+        scale = round_up_to_power_of_two(scale)
     full = scale.repeat_interleave(_BLOCK, 0).repeat_interleave(_BLOCK, 1)[:n, :k]
     q = (wf / full).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
     return q, scale
