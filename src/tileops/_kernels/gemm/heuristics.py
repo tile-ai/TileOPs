@@ -298,6 +298,29 @@ def _enumerate(
         ring = (bm + bn) * bk * 2
         return _ring_budget(bm * bn * out_bytes, bn) // ring
 
+    def _coop2_ns_sn(bn: int, bk: int, exposed: bool):
+        """The deepest ring under ``ns_cap`` the SMEM budget allows and its epilogue staging
+        chunk (stage_n, 0 for the whole tile). A hidden epilogue takes the widest chunk, shrunk
+        only to buy a stage; an *exposed* one takes the chunk of the widest TMA swizzle, in two
+        chunks or more so one chunk's store overlaps the next one's copy."""
+        ring = (128 + bn) * bk * 2
+        best = None
+        for sn in range(8, bn + 1, 8) if exposed else (bn, bn // 2, bn // 4):
+            # The coop2 epilogue stores whole chunks of 8 columns.
+            if bn % sn or sn % 8 or (sn < 32 and not exposed):
+                continue
+            staging = 2 * 64 * sn * out_bytes
+            ns = min(ns_cap["coop2"], (BLOCK_SHARED_BYTES_OPT_IN[90] - staging) // ring)
+            if ns < 3:
+                continue
+            # The swizzle span: the largest power of two up to 128 B dividing the row.
+            key = (ns, math.gcd(sn * out_bytes, 128), sn < bn, sn) if exposed else (ns, sn)
+            if best is None or key > best:
+                best = key
+        if best is None:
+            return None
+        return best[0], (0 if best[-1] == bn else best[-1])
+
     def _stage_rule_ok(bm: int, bn: int, ns: int) -> bool:
         if ns < 3:
             return False
@@ -391,36 +414,13 @@ def _enumerate(
             if bn == 176 and (bk != 64 or (n % bn and bn != one_wave)):
                 continue
             mn_tiles = rows * math.ceil(n / bn)
-            # The deepest ring under ``ns_cap`` the SMEM budget allows, and the epilogue staging
-            # chunk (stage_n) beside it. A CTA that runs several tiles hides each epilogue under
-            # the next mainloop: the widest chunk wins, shrunk only to buy a stage. With one tile
-            # per CTA nothing hides it, and a float32 tile writes twice a 16-bit one's bytes;
-            # where its rows are whole 16-byte units the TMA store writes it in boxes one
-            # swizzle wide (the widest of 128, 64 or 32 B dividing the chunk's row bytes), so it
-            # takes the chunk of the widest swizzle, in two chunks or more so one chunk's store
-            # overlaps the next one's copy.
+            # One tile a CTA leaves the epilogue unhidden; a float32 one with 16-byte rows goes
+            # through the TMA store.
             exposed = mn_tiles <= sm_count and out_bytes == 4 and n * out_bytes % 16 == 0
-            ring = (128 + bn) * bk * 2
-            best = None
-            for sn in range(8, bn + 1, 8) if exposed else (bn, bn // 2, bn // 4):
-                # The coop2 epilogue stores whole chunks of 8 columns.
-                if bn % sn or sn % 8 or (sn < 32 and not exposed):
-                    continue
-                staging = 2 * 64 * sn * out_bytes
-                ns = min(ns_cap["coop2"], (BLOCK_SHARED_BYTES_OPT_IN[90] - staging) // ring)
-                if ns < 3:
-                    continue
-                if exposed:
-                    # The swizzle span: the largest power of two up to 128 B dividing the row.
-                    swizzle = math.gcd(sn * out_bytes, 128)
-                    key = (ns, swizzle, sn < bn, sn)
-                else:
-                    key = (ns, sn)
-                if best is None or key > best:
-                    best = key
-            if best is None:
+            d = _coop2_ns_sn(bn, bk, exposed)
+            if d is None:
                 continue
-            ns, sn = best[0], 0 if best[-1] == bn else best[-1]
+            ns, sn = d
             if not _stage_rule_ok(128, bn, ns):
                 continue
             coop2_ok = bn == 256 or (nt and bn in (176, 192))
