@@ -16,7 +16,13 @@ from tileops._ops import op_base
 from tileops._ops.norm.instance_norm import InstanceNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
 from tileops._ops.pool.max_pool import MaxPool2dFwdOp
-from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, set_default_target
+from tileops.backend import (
+    BUILTIN,
+    OpNotAvailableError,
+    OpNotServedError,
+    TensorSpec,
+    set_default_target,
+)
 from tileops.backend import _registry as registry
 
 pytestmark = pytest.mark.smoke
@@ -553,8 +559,9 @@ def test_a_target_without_this_op_raises_and_names_the_ones_that_have_it():
     registry.register_detector("claims_device", lambda device: True)
     registry.DETECTORS.pop("has_it")  # only the op-less target claims the device
 
-    with pytest.raises(OpNotAvailableError, match=r"claims_device.*has_it.*no fall back"):
+    with pytest.raises(OpNotServedError, match=r"claims_device.*has_it.*no fall back") as excinfo:
         RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(*_inputs())
+    assert excinfo.value.target == "claims_device"
 
 
 def test_builtin_keeps_the_in_tree_kernels_even_when_a_target_claims_the_device():

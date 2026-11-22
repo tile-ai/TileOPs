@@ -68,6 +68,7 @@ from tileops.backend._errors import (
     AmbiguousTargetError,
     BackendError,
     OpNotAvailableError,
+    OpNotServedError,
     UnknownTargetError,
 )
 from tileops.backend._protocol import (
@@ -93,6 +94,7 @@ __all__ = [
     "DeviceFacts",
     "KernelResult",
     "OpNotAvailableError",
+    "OpNotServedError",
     "ReadDeviceFacts",
     "Target",
     "TensorSpec",
