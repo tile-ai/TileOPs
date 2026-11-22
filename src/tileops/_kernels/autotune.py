@@ -395,6 +395,8 @@ class _BusyTimedKernel:
             input_tensors: list,
             backend: str,
             device: Any = None,
+            # Ignored: the busy median takes every repeat, so no candidate stops early.
+            early_stop_baseline: float | None = None,
         ) -> float:
             fn = functools.partial(func or profiler.func, *input_tensors)
             with torch.cuda.device(device):  # lint: device-api allow: CUPTI runs on CUDA only

@@ -292,7 +292,8 @@ def representable(v: complex, dtype: str) -> bool:
     if isinstance(v, numbers.Integral):
         # An unsigned dtype also takes a negative int it can wrap.
         return (-hi if lo == 0 else lo) <= v <= hi
-    return math.isfinite(v) and lo <= v <= hi
+    # torch takes a float below hi + 1, which converts to hi, but none below lo.
+    return math.isfinite(v) and lo <= v < hi + 1
 
 
 PRIMITIVES: dict[str, Callable[..., Any]] = {

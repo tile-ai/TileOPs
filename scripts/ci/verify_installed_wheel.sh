@@ -59,7 +59,6 @@ unset PYTHONPATH PIP_CONSTRAINT PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS
 # Each verification starts with empty compiler caches, including repeated runs in WORK_DIR.
 CACHE_DIR="$(mktemp -d "${WORK_DIR}/compiler-cache.XXXXXX")"
 export TILELANG_CACHE_DIR="${CACHE_DIR}/tilelang"
-export TILELANG_TMP_DIR="${CACHE_DIR}/tilelang-tmp"
 export TRITON_CACHE_DIR="${CACHE_DIR}/triton"
 export TORCHINDUCTOR_CACHE_DIR="${CACHE_DIR}/inductor"
 export CUDA_CACHE_PATH="${CACHE_DIR}/cuda"
@@ -193,7 +192,7 @@ env = {
     "compiler_caches": {
         name: os.environ[name]
         for name in (
-            "TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR",
+            "TILELANG_CACHE_DIR", "TRITON_CACHE_DIR",
             "TORCHINDUCTOR_CACHE_DIR", "CUDA_CACHE_PATH",
         )
     },

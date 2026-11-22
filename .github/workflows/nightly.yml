@@ -17,7 +17,6 @@ concurrency:
 
 env:
   TILELANG_CACHE_DIR: /ci-cache/tilelang
-  TILELANG_TMP_DIR: /ci-cache/tilelang/tmp
   TRITON_CACHE_DIR: /ci-cache/triton
   TORCHINDUCTOR_CACHE_DIR: /ci-cache/torchinductor
   PIP_CACHE_DIR: /ci-cache/pip
@@ -73,7 +72,6 @@ jobs:
         # Tests marked structural run in preflight compile-contract-gate instead.
         env:
           TILELANG_CACHE_DIR: ${{ runner.temp }}/tilelang
-          TILELANG_TMP_DIR: ${{ runner.temp }}/tilelang/tmp
           TRITON_CACHE_DIR: ${{ runner.temp }}/triton
           TORCHINDUCTOR_CACHE_DIR: ${{ runner.temp }}/torchinductor
         run: |
@@ -88,7 +86,6 @@ jobs:
         env:
           OMP_NUM_THREADS: "1"
           TILELANG_CACHE_DIR: ${{ runner.temp }}/tilelang
-          TILELANG_TMP_DIR: ${{ runner.temp }}/tilelang/tmp
           TRITON_CACHE_DIR: ${{ runner.temp }}/triton
           TORCHINDUCTOR_CACHE_DIR: ${{ runner.temp }}/torchinductor
         run: |
@@ -220,7 +217,6 @@ jobs:
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
           echo "Runtime cache env:"
           echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
-          echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           # One pytest process per bench file: a native hang / segfault / OOM
@@ -360,7 +356,6 @@ jobs:
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
           echo "Runtime cache env:"
           echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
-          echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           python3 -m pip install -q -c constraints.txt pytest-timeout pytest-cov
@@ -766,7 +761,6 @@ jobs:
 
           echo "=== Runtime cache env ==="
           echo "TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-}"
-          echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
           # torch and tilelang come from the image; the release workflow runs the same

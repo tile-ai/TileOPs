@@ -91,14 +91,15 @@ def make_gqa_decode_bs1_split(
     through a ring of ``RING_DEPTH`` slots. A dense cache splits whole key tiles as evenly
     as possible. A *paged* one reads each request's length from a buffer, gives every split
     the same whole tiles and the last the rest, and zeroes the value rows past the cache.
-    Full-dimensional RoPE makes the producer a warpgroup, whose first warp copies and whose
-    threads all rotate K, so the rotation overlaps the consumer; partial RoPE rotates K in
-    the consumer.
+    RoPE makes the producer a warpgroup, whose first warp copies and whose threads all
+    rotate K, so the rotation overlaps the consumer and the consumer reads K through WGMMA
+    alone.
     """
     consumer_threads = 128
     # TileLang gives each thread range it inserts a sync for its own named barrier, counting
     # from 3 per kernel; this kernel's producer and consumer ranges take 3 and 4.
     consumer_barrier = 5
+    producer_barrier = 6
     tma_threads = 32
     apply_softcap = (
         make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
@@ -113,7 +114,6 @@ def make_gqa_decode_bs1_split(
         hid,
         sid,
         this_len,
-        base,
         seqlen_kv,
         loop_range,
         rope_cos,
@@ -169,21 +169,6 @@ def make_gqa_decode_bs1_split(
                             Vs[k % RING_DEPTH, j, d] = T.cast(0, dtype)
                     T.fence_proxy_async()
                     T.sync_threads(consumer_barrier, consumer_threads)
-            if fuse_rope and rotary_dim != dim:
-                # Every row is rotated: TileLang places a consumer barrier inside this
-                # loop, so a row guard would leave the tail tile's barrier short of
-                # threads. Rows past the end are masked from the scores, and TileLang
-                # reads zero for their positions past the tables.
-                for i, freq in T.Parallel(block_n, rotary_dim // 2):
-                    d0, d1 = rope_channel_pair(rope_layout, rotary_dim // 2, freq)
-                    position = base + k * block_n + i
-                    x0 = Ks[k % RING_DEPTH, i, d0]
-                    x1 = Ks[k % RING_DEPTH, i, d1]
-                    cos = rope_cos[position, freq]
-                    sin = rope_sin[position, freq]
-                    Ks[k % RING_DEPTH, i, d0] = x0 * cos - x1 * sin
-                    Ks[k % RING_DEPTH, i, d1] = x1 * cos + x0 * sin
-                T.sync_threads(consumer_barrier, consumer_threads)
             T.wgmma_gemm(
                 Qs,
                 Ks[k % RING_DEPTH, :, :],
@@ -257,8 +242,10 @@ def make_gqa_decode_bs1_split(
             ks = T.alloc_shared([RING_DEPTH, block_n, dim], dtype)
             vs = T.alloc_shared([RING_DEPTH, block_n, dim], dtype)
             ps = T.alloc_shared([block_m, block_n], dtype)
-            tma_rope_pipeline = fuse_rope and rotary_dim == dim
-            if tma_rope_pipeline:
+            rope_pipeline = fuse_rope
+            # TMA needs 16-byte table rows; narrower 16-bit tables are read from global memory.
+            tma_rope_tables = fuse_rope and rotary_dim % 16 == 0
+            if tma_rope_tables:
                 rope_cos_s = T.alloc_shared([block_n, rotary_dim // 2], dtype)
                 rope_sin_s = T.alloc_shared([block_n, rotary_dim // 2], dtype)
             T.annotate_layout(
@@ -272,9 +259,9 @@ def make_gqa_decode_bs1_split(
             producer_threads = threads - consumer_threads
             ready = T.alloc_barrier([producer_threads] * RING_DEPTH)
             free = T.alloc_barrier([consumer_threads] * RING_DEPTH)
-            if tma_rope_pipeline:
+            if rope_pipeline:
                 loaded = T.alloc_barrier([tma_threads] * RING_DEPTH)
-            load_ready = loaded if tma_rope_pipeline else ready
+            load_ready = loaded if rope_pipeline else ready
             acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
             acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
             sm = T.alloc_fragment([block_m], accum_dtype)
@@ -304,6 +291,9 @@ def make_gqa_decode_bs1_split(
                         free[k % RING_DEPTH],
                         ((k // RING_DEPTH) % RING_DEPTH) ^ 1,
                     )
+                    if tma_rope_tables:
+                        # One table buffer: every producer warp must have read the last tile's.
+                        T.sync_threads(producer_barrier, producer_threads)
                     if tx < consumer_threads + tma_threads:
                         load_kv(
                             K,
@@ -317,7 +307,7 @@ def make_gqa_decode_bs1_split(
                             vs,
                             load_ready,
                         )
-                        if tma_rope_pipeline:
+                        if tma_rope_tables:
                             T.tma_copy(
                                 rope_cos[
                                     base + k * block_n : base + (k + 1) * block_n,
@@ -335,7 +325,7 @@ def make_gqa_decode_bs1_split(
                                 barrier=loaded[k % RING_DEPTH],
                             )
                         T.mbarrier_arrive(load_ready[k % RING_DEPTH])
-                    if tma_rope_pipeline:
+                    if rope_pipeline:
                         T.mbarrier_wait_parity(
                             loaded[k % RING_DEPTH],
                             (k // RING_DEPTH) % RING_DEPTH,
@@ -345,8 +335,12 @@ def make_gqa_decode_bs1_split(
                                 d0, d1 = rope_channel_pair(rope_layout, rotary_dim // 2, freq)
                                 x0 = ks[k % RING_DEPTH, i, d0]
                                 x1 = ks[k % RING_DEPTH, i, d1]
-                                cos = rope_cos_s[i, freq]
-                                sin = rope_sin_s[i, freq]
+                                if tma_rope_tables:
+                                    cos = rope_cos_s[i, freq]
+                                    sin = rope_sin_s[i, freq]
+                                else:
+                                    cos = rope_cos[base + k * block_n + i, freq]
+                                    sin = rope_sin[base + k * block_n + i, freq]
                                 ks[k % RING_DEPTH, i, d0] = x0 * cos - x1 * sin
                                 ks[k % RING_DEPTH, i, d1] = x1 * cos + x0 * sin
                         T.mbarrier_arrive(ready[k % RING_DEPTH])
@@ -357,7 +351,6 @@ def make_gqa_decode_bs1_split(
                     hid,
                     sid,
                     this_len,
-                    base,
                     seqlen_kv_b,
                     loop_range,
                     rope_cos,

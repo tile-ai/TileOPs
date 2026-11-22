@@ -590,8 +590,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             marks=pytest.mark.full,
             id="batched-bf16-split-tail",
         ),
-        # The last key tile holds 15 rows; a per-row guard around the consumer's key
-        # rotation leaves the barrier inside it short of threads, and the kernel hangs.
+        # The last key tile holds 15 rows.
         pytest.param(
             1,
             (8, 2),
@@ -603,6 +602,19 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             GQADecodeBs1Kernel,
             marks=pytest.mark.full,
             id="bs1-fp16-neox-partial",
+        ),
+        # Table rows of 12 bytes, too narrow for TMA.
+        pytest.param(
+            1,
+            (8, 2),
+            128,
+            torch.float16,
+            (271, 1025),
+            "neox",
+            12,
+            GQADecodeBs1Kernel,
+            marks=pytest.mark.full,
+            id="bs1-fp16-neox-narrow-rope-table",
         ),
         pytest.param(
             1,

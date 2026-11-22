@@ -17,7 +17,7 @@ import torch
 from benchmarks import api as bench
 from benchmarks.baselines import (
     DEEPGEMM_TAG,
-    baseline_module,
+    deepgemm_module,
     deepgemm_op,
 )
 from tileops._ops.moe import MoEGroupedGEMMFP8FwdOp
@@ -32,7 +32,7 @@ def _deepgemm_masked(case) -> bench.Implementation:
     hint its tile heuristic takes, read once off the metadata. The output is a private
     buffer the call overwrites.
     """
-    deep_gemm = baseline_module("deep_gemm", "deepgemm")
+    deep_gemm = deepgemm_module()
 
     gemm = deepgemm_op("m_grouped_fp8_gemm_nt_masked")
     a, a_scale, b, b_scale, masked_m = case.inputs
@@ -49,7 +49,7 @@ def _deepgemm_masked(case) -> bench.Implementation:
 
 def _deepgemm_contiguous(case) -> bench.Implementation:
     """Convert scales and trailing padding ids for DeepGEMM outside the timed call."""
-    deep_gemm = baseline_module("deep_gemm", "deepgemm")
+    deep_gemm = deepgemm_module()
 
     gemm = deepgemm_op("m_grouped_fp8_gemm_nt_contiguous")
     a, a_scale, b, b_scale, expert_ids = case.inputs

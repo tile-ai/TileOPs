@@ -3,7 +3,6 @@ set -euo pipefail
 
 required_vars=(
   TILELANG_CACHE_DIR
-  TILELANG_TMP_DIR
   TRITON_CACHE_DIR
   PIP_CACHE_DIR
 )

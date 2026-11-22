@@ -204,8 +204,9 @@ def _conv1d_unit_stride_kernel(
                 for i, j in T.Parallel(block_k, block_n):
                     ci = c0 + i
                     il = window_start + kw * dilation_l + j
+                    # Logical And: TileLang's safe-memory pass misreads a bitwise_and guard.
                     data_shared[row0 + i, j] = T.if_then_else(
-                        (ci < c_in) & (il >= 0) & (il < l_in),
+                        T.And(T.And(ci < c_in, il >= 0), il < l_in),
                         x[bz, ci, il],
                         T.cast(0.0, dtype),
                     )

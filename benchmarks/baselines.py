@@ -279,13 +279,22 @@ def quack_op(name: str, module: str = "quack") -> Callable:
     return _resolve(module, name, "quack")
 
 
+# The runner image's only DeepGEMM is the copy vllm's wheel vendors.
+DEEPGEMM_MODULE = "vllm.third_party.deep_gemm"
+
+
+def deepgemm_module() -> Any:
+    """Import DeepGEMM as the runner image carries it."""
+    return baseline_module(DEEPGEMM_MODULE, "deepgemm")
+
+
 def deepgemm_op(name: str) -> Callable:
-    """Return the ``deep_gemm`` entry point *name*.
+    """Return the DeepGEMM entry point *name*.
 
     Its GEMMs write into a caller-allocated output and return ``None``, so an adapter
     allocates before it calls.
     """
-    return _resolve("deep_gemm", name, "deepgemm")
+    return _resolve(DEEPGEMM_MODULE, name, "deepgemm")
 
 
 def deepspeed_op(name: str) -> Any:

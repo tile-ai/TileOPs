@@ -936,11 +936,13 @@ def _gemm_fp8_ws_kernel(
             out_dtype: str,
             has_bias: bool,
             stage_store: bool,
+            native: bool,
         ):
             """Cast one consumer's tile and store it: one TMA box when full, elements otherwise.
 
             ``stage_store`` is False where no row tile can be full — every ``m`` inside
-            one consumer's half — and the staging tile is then not allocated.
+            one consumer's half — and the staging tile is then not allocated. ``native``
+            marks ``out`` as carrying the annotated :func:`native_acc_layout`.
             """
             if has_bias:
                 for i, j in T.Parallel(half_m, block_n):
@@ -954,7 +956,12 @@ def _gemm_fp8_ws_kernel(
                             c[m_start + i, n_start + j] = out[i, j]
             elif rows == T.int32(half_m) and cols == T.int32(block_n):
                 T.sync_threads(barrier_id=bar, arrive_count=128)
-                T.copy(out, c_smem)
+                if native:
+                    # stmatrix offsets the branch's first thread; this layout is absolute, so loop.
+                    for i, j in T.Parallel(half_m, block_n):
+                        c_smem[i, j] = out[i, j]
+                else:
+                    T.copy(out, c_smem)
                 T.fence_proxy_async()
                 T.sync_threads(barrier_id=bar, arrive_count=128)
                 T.copy(c_smem, c[m_start, n_start])
@@ -1182,6 +1189,7 @@ def _gemm_fp8_ws_kernel(
                                 out_dtype=out_dtype,
                                 has_bias=has_bias,
                                 stage_store=stage_store,
+                                native=bool(native_n),
                             )
 
                 elif consumers == 2:
@@ -1265,6 +1273,7 @@ def _gemm_fp8_ws_kernel(
                                 out_dtype=out_dtype,
                                 has_bias=has_bias,
                                 stage_store=stage_store,
+                                native=bool(native_n),
                             )
 
         return _gemm_fp8_ws_main

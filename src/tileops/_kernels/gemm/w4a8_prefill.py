@@ -482,7 +482,9 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                 if ragged:
                                     # Per 64-row block: a whole tile, the compact last tile, or
                                     # nothing past N.
-                                    for b in T.unroll(LAYOUT.consumer_warpgroups, explicit=True):
+                                    # A Python loop, so no ragged copy is emitted under a branch
+                                    # no rb0 can take: TileLang rejects it there.
+                                    for b in tuple(range(LAYOUT.consumer_warpgroups)):
                                         if rb0 + b < full_blocks:
                                             T.tma_copy(
                                                 wq[
@@ -496,7 +498,11 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                                 w_s[slot, b, :, :],
                                                 barrier=full[slot],
                                             )
-                                        if ragged_units > 0 and rb0 + b == full_blocks:
+                                        if (
+                                            ragged_units > 0
+                                            and b == full_blocks % LAYOUT.consumer_warpgroups
+                                            and rb0 + b == full_blocks
+                                        ):
                                             T.tma_copy(
                                                 wq[
                                                     full_blocks * kg * rows_per_tma

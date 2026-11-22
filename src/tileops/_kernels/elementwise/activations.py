@@ -105,8 +105,8 @@ class ReLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     @staticmethod
     def op_func(x):
-        # Preserve NaN and map either signed zero to +0.0.
-        return T.if_then_else(x <= T.cast(0, x.dtype), T.cast(0, x.dtype), x)
+        # Preserve NaN and the sign of zero, as torch's relu does.
+        return T.if_then_else(x < T.cast(0, x.dtype), T.cast(0, x.dtype), x)
 
 
 class GELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):

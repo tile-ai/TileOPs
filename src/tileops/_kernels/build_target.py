@@ -77,6 +77,7 @@ def building_on(device: torch.device | None) -> Iterator[None]:
         from tilelang.contrib.nvcc import get_target_arch
         from tvm.target import Target
 
+        unroll_pipelined_waits()
         sm = get_target_arch((target.arch // 10, target.arch % 10))
         with Target({"kind": "cuda", "arch": f"sm_{sm}"}):
             yield
@@ -97,6 +98,7 @@ def target_cache(maxsize: int | None = 128) -> Callable[[Callable], Callable]:
         @functools.lru_cache(maxsize=maxsize)
         def cached(target: BuildTarget, /, *args: Any, **kwargs: Any) -> Any:
             with building_on(None):
+                unroll_pipelined_waits()
                 return fn.compile(*args, **kwargs) if jit else fn(*args, **kwargs)
 
         @functools.wraps(fn, updated=())
@@ -127,3 +129,69 @@ def chain_cuda_postproc(rewrite: Callable[[str], str]) -> None:
         return rewrite(code)
 
     tilelang.register_cuda_postproc(postproc)
+
+
+def unroll_pipelined_waits() -> None:
+    """Unroll each constant-extent unrolled loop holding a cp.async wait on a loop variable.
+
+    TileLang's CUDA codegen rejects the variable ``ptx_wait_group`` count a pipelined
+    epilogue leaves; per-iteration copies let Simplify fold each count to a constant.
+    Cleanup: drop this hook once tile-ai/tilelang#4424 is fixed.
+    """
+    import importlib
+    import sys
+
+    from tilelang import tvm
+
+    tirx = tvm.tirx
+    importlib.import_module("tilelang.engine.lower")
+    lower = sys.modules["tilelang.engine.lower"]
+    prepare = lower._prepare_device_codegen_mod
+    if getattr(prepare, "unrolls_pipelined_waits", False):
+        return
+    wait = tvm.ir.Op.get("tirx.ptx_wait_group")
+
+    def waits_on_a_variable(stmt: Any) -> bool:
+        found = []
+
+        def visit(node: Any) -> None:
+            if (
+                isinstance(node, tirx.Call)
+                and node.op.same_as(wait)
+                and not isinstance(node.args[0], tirx.IntImm)
+            ):
+                found.append(node)
+
+        tirx.stmt_functor.post_order_visit(stmt, visit)
+        return bool(found)
+
+    def unroll(node: Any) -> Any:
+        if (
+            isinstance(node, tirx.For)
+            and node.kind == tirx.ForKind.UNROLLED
+            and isinstance(node.extent, tirx.IntImm)
+            and waits_on_a_variable(node.body)
+        ):
+            var = node.loop_var
+            return tirx.SeqStmt(
+                [
+                    tirx.stmt_functor.substitute(
+                        node.body, {var: node.min + tirx.const(i, var.dtype)}
+                    )
+                    for i in range(node.extent.value)
+                ]
+            )
+        return None
+
+    def prepare_unrolled(device_mod: Any) -> Any:
+        functions = {}
+        for gvar, func in device_mod.functions.items():
+            if isinstance(func, tirx.PrimFunc) and waits_on_a_variable(func.body):
+                func = func.with_body(tirx.stmt_functor.ir_transform(func.body, None, unroll))
+            functions[gvar] = func
+        # Each unrolled copy redefines the loops it holds; ConvertSSA renames them apart.
+        unrolled = tirx.transform.ConvertSSA()(tvm.IRModule(functions, attrs=device_mod.attrs))
+        return prepare(unrolled)
+
+    prepare_unrolled.unrolls_pipelined_waits = True
+    lower._prepare_device_codegen_mod = prepare_unrolled

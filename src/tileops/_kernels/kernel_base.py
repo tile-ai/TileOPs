@@ -110,10 +110,8 @@ class CompiledProgram:
             return self.jit(*inputs)
         executable = adapter.executable
         if executable is None:
-            executable = adapter._executables_by_device.get(torch._C._cuda_getDevice())
-            if executable is None:
-                # TileLang builds the executable for the current device on this launch.
-                return self.jit(*inputs)
+            # TileLang builds the executable on this launch and keeps it on the adapter.
+            return self.jit(*inputs)
         if len(inputs) != self.inputs:
             raise ValueError(
                 f"Kernel expected {self.inputs} inputs, but {len(inputs)} are provided."
