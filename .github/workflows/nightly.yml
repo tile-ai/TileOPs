@@ -409,8 +409,12 @@ jobs:
           set -euo pipefail
           export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
           python3 -m pip install -q -c constraints.txt pytest-timeout
-          # Deselected until the runner image ships the DeepSeek-V4-Flash reference and
-          # GQAPagedFwdOp compiles on TileLang 0.1.15 for these calls (#3120).
+          # FIXME(staged-rollout): eight model tests are deselected from the nightly run.
+          #
+          # Broken invariant: the nightly job runs every nightly model test.
+          # Why: the runner image lacks the DeepSeek-V4-Flash reference, and GQAPagedFwdOp
+          # does not compile on TileLang 0.1.15 for these calls.
+          # Cleanup: delete this list when #3120 closes.
           deselect=(
             "tests/models/test_deepseek_v4.py::test_layers_and_logits_match_the_official_model"
             "tests/models/test_deepseek_v4.py::test_generate_takes_the_official_argmax_until_eos"
