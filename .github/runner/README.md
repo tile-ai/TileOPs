@@ -22,7 +22,9 @@ cuda<major.minor>-torch<major.minor>-tilelang<version>
 `<version>` is the tilelang release `constraints.txt` pins, the one a PyPI install of tileops
 resolves. The `ARG` block in the Dockerfile lists the other options, with defaults.
 
-The release tag prefixes it with `tileops<version>-tilefoundry<version>-`.
+The release tag prefixes it with `tileops<version>-tilefoundry<version>-`. The `release` target
+builds only when the published tileops declares the tilelang and torch `constraints.txt` names;
+until then, skip its build, verify and push lines below.
 
 ## Build and roll out
 
