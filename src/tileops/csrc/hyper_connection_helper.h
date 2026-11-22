@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "approx_math.h"
 #include "bf16_widen.h"
 
 namespace tileops {
@@ -72,12 +73,6 @@ __device__ __forceinline__ void hc_square_regs(const uint32_t* a, float* rows) {
   rows[1] += step[1];
 }
 
-// ``value`` summed over the four lanes that differ in bits 0 and 1.
-__device__ __forceinline__ float hc_quad_sum(float value) {
-  value += __shfl_xor_sync(0xffffffffu, value, 1);
-  return value + __shfl_xor_sync(0xffffffffu, value, 2);
-}
-
 // The sum of ``value`` over the four lanes that differ from this one in the
 // lane bits ``Bits`` and ``2 * Bits``: one round of three shuffles, added in
 // one order on every lane of the four.
@@ -89,31 +84,25 @@ __device__ __forceinline__ float hc_sum4(float value) {
   return (value + a) + (b + c);
 }
 
-// ``value`` times the approximate reciprocal of ``divisor``: within two units
-// in the last place of the quotient, where a division is within half of one.
-__device__ __forceinline__ float hc_scale_by_rcp(float value, float divisor) {
-  float r;
-  asm("rcp.approx.ftz.f32 %0, %1;" : "=f"(r) : "f"(divisor));
-  return value * r;
-}
-
 // Sinkhorn on a 4 x 4 matrix held one entry a lane, the lane whose bits 3..0
 // are ``4 * i + j`` holding entry (i, j): a row softmax plus ``eps``, a column
 // normalization, then ``repeat - 1`` row-then-column normalizations, each
-// dividing by the sum plus ``eps``. A warp holds the matrix twice. Each step
-// waits on one round of shuffles and one reciprocal, the latency the repeats
-// chain.
+// dividing by the sum plus ``eps``. A warp holds the matrix twice. A
+// normalization multiplies by the sum's approximate reciprocal, within two
+// units in the last place of the quotient where a division is within half of
+// one, so each step waits on one round of shuffles and one MUFU.RCP, the
+// latency the repeats chain.
 __device__ __forceinline__ float hc_sinkhorn4(float logit, int repeat,
                                               float eps) {
   const float m = fmaxf(fmaxf(logit, __shfl_xor_sync(0xffffffffu, logit, 1)),
                         fmaxf(__shfl_xor_sync(0xffffffffu, logit, 2),
                               __shfl_xor_sync(0xffffffffu, logit, 3)));
   const float e = expf(logit - m);
-  float v = hc_scale_by_rcp(e, hc_sum4<1>(e)) + eps;
-  v = hc_scale_by_rcp(v, hc_sum4<4>(v) + eps);
+  float v = e * approx_rcp(hc_sum4<1>(e)) + eps;
+  v *= approx_rcp(hc_sum4<4>(v) + eps);
   for (int it = 1; it < repeat; ++it) {
-    v = hc_scale_by_rcp(v, hc_sum4<1>(v) + eps);
-    v = hc_scale_by_rcp(v, hc_sum4<4>(v) + eps);
+    v *= approx_rcp(hc_sum4<1>(v) + eps);
+    v *= approx_rcp(hc_sum4<4>(v) + eps);
   }
   return v;
 }

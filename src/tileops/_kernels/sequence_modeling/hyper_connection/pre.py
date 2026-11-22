@@ -10,6 +10,7 @@ and writes the weighted stream sum.
 """
 
 import math
+import operator
 
 import tilelang
 import tilelang.language as T
@@ -17,19 +18,37 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
-from tileops._kernels.constants import WARPGROUP_THREADS, WGMMA_ROWS
+from tileops._kernels.constants import (
+    SHARED_BUFFER_ALIGN_BYTES,
+    WARPGROUP_THREADS,
+    WGMMA_ROWS,
+)
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.sequence_modeling.hyper_connection.call_spec import (
     HyperConnectionPreCall,
     HyperConnectionPreFwdInterface,
 )
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 
 __all__ = ["HyperConnectionPreKernel"]
 
 # Channels of one projection step, the k extent of ``dense_load_a_64x64`` and
-# ``dense_wgmma_64xN_k64_rs``; the shared buffers and the projection agree on it.
+# ``dense_wgmma_64xN_k64_rs``; the shared buffers, the projection and the launch's
+# shared-memory count agree on it.
 _STEP = 64
+
+# The fewest slots of the projection's ring: two let one step's loads land while the step
+# before is consumed. ``refusal`` refuses a device that cannot hold them; ``_launch`` lowers
+# the ring to what the device holds.
+_MIN_STAGES = 2
+
+
+def _projection_smem(block_m: int, num_stages: int, q: int) -> int:
+    """Shared bytes of a projection of ``block_m``-token tiles and ``num_stages`` slots, each
+    slot holding ``_STEP`` channels of the tokens and of the ``3 * q`` terms in bfloat16 and
+    of the ``q`` rows of ``fn`` in float32, plus the barriers' aligned slot."""
+    return SHARED_BUFFER_ALIGN_BYTES + num_stages * _STEP * (2 * block_m + 2 * 3 * q + 4 * q)
 
 
 @target_cache(maxsize=32)
@@ -157,13 +176,13 @@ def _prenorm_gemm_kernel(
                             total[r] += tile[r]
                     # A thread holds rows ``row`` and ``row + 8`` of its warpgroup's 64.
                     row = m0 + wg * WGMMA_ROWS + wt // WARP_LANES * 16 + wt % WARP_LANES // 4
-                    upper = T.call_extern("float32", "tileops::hc_quad_sum", squares[0])
-                    lower = T.call_extern("float32", "tileops::hc_quad_sum", squares[1])
+                    # A quad's four lanes hold parts of the same two rows' sums of squares.
+                    warp_reduce(squares, operator.add, count=2, lanes=4)
                     if wt % 4 == 0:
                         if row < tokens:
-                            sqr[bs, row] = upper
+                            sqr[bs, row] = squares[0]
                         if row + 8 < tokens:
-                            sqr[bs, row + 8] = lower
+                            sqr[bs, row + 8] = squares[1]
                     for cg in T.unroll(q // 8):
                         for h in T.unroll(2):
                             for e in T.unroll(2):
@@ -198,7 +217,9 @@ def _pre_mix_kernel(
     while the projection drains: only the shares wait for it, and the two stream warps issue
     their first loads before summing theirs."""
     q = n * n + 2 * n
-    parts = min(4, splits)
+    threads = 3 * WARP_LANES
+    # ``share`` gives each (part, mix) pair a thread of the block.
+    parts = min(threads // q, splits)
     block = math.gcd(512, c)
     tokens = T.dynamic("tokens", "int64")
 
@@ -262,7 +283,7 @@ def _pre_mix_kernel(
             comb_mix: T.Tensor((tokens, n * n), "float32"),
             layer_input: T.Tensor((tokens, c), "bfloat16"),
         ):
-            with T.Kernel(tokens, threads=3 * WARP_LANES) as t:
+            with T.Kernel(tokens, threads=threads) as t:
                 tx = T.get_thread_binding()
                 part_s = T.alloc_shared((parts, q + 1), "float32")
                 # Every share is in ``part_s`` once all three warps arrive; the two stream warps
@@ -271,7 +292,7 @@ def _pre_mix_kernel(
                 weighed = 2
                 if tx < WARP_LANES:
                     share(partial, sqr, part_s, t, tx)
-                    T.sync_threads(barrier_id=summed, arrive_count=3 * WARP_LANES)
+                    T.sync_threads(barrier_id=summed, arrive_count=threads)
                     if tx < n:
                         post_mix[t, tx] = (
                             T.sigmoid(mix(part_s, n + tx) * hc_scale[1] + hc_base[n + tx])
@@ -295,14 +316,14 @@ def _pre_mix_kernel(
                         T.copy(x[t, 0, b * block], xs)
                         if b == 0:
                             share(partial, sqr, part_s, t, tx)
-                            T.sync_threads(barrier_id=summed, arrive_count=3 * WARP_LANES)
+                            T.sync_threads(barrier_id=summed, arrive_count=threads)
                             if tx < WARP_LANES + n:
                                 i = tx - WARP_LANES
                                 pre[i] = (
                                     T.sigmoid(mix(part_s, i) * hc_scale[0] + hc_base[i])
                                     + hc_pre_eps
                                 )
-                            T.sync_threads(barrier_id=weighed, arrive_count=2 * WARP_LANES)
+                            T.sync_threads(barrier_id=weighed, arrive_count=threads - WARP_LANES)
                         T.copy(xs, xl)
                         part = T.alloc_fragment((block,), "float32")
                         T.clear(part)
@@ -332,6 +353,7 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         rms_eps, hc_pre_eps, hc_sinkhorn_eps, hc_post_mult_value, sinkhorn_repeat: The op's
             constants.
         sm_count: Device SM count, which sizes the reduction splits.
+        smem_budget: Shared memory a block may take, which bounds the projection's ring.
     """
 
     supported_archs: list[int] = [90]
@@ -344,6 +366,13 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
             return f"requires the stream width to be a positive multiple of 128, got {call.c}"
         if call.sinkhorn_repeat < 1:
             return f"requires at least one Sinkhorn iteration, got {call.sinkhorn_repeat}"
+        # A 128-token tile takes more than a 64-token one.
+        need = _projection_smem(2 * WGMMA_ROWS, _MIN_STAGES, call.n * call.n + 2 * call.n)
+        if need > call.smem_budget:
+            return (
+                f"needs {need} bytes of shared memory for {_MIN_STAGES} projection slots, "
+                f"past the {call.smem_budget} a block may take"
+            )
         return super().refusal(call)
 
     @classmethod
@@ -358,6 +387,7 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
             call.hc_post_mult_value,
             call.sinkhorn_repeat,
             sm_count=call.sm_count,
+            smem_budget=call.smem_budget,
         )
 
     def __init__(
@@ -372,6 +402,7 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         sinkhorn_repeat: int,
         *,
         sm_count: int,
+        smem_budget: int,
     ):
         super().__init__()
         self.n = n
@@ -383,6 +414,7 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         self.hc_post_mult_value = hc_post_mult_value
         self.sinkhorn_repeat = sinkhorn_repeat
         self.sm_count = sm_count
+        self.smem_budget = smem_budget
 
     def _launch(self, tokens: int) -> tuple[int, int, int]:
         """The ``block_m``, ``num_stages`` and ``splits`` a call of *tokens* tokens launches
@@ -391,6 +423,11 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         # few steps, which four slots cover, and six cover a 128-token tile's load latency.
         small = tokens <= WGMMA_ROWS
         block_m, num_stages = (WGMMA_ROWS, 4) if small else (2 * WGMMA_ROWS, 6)
+        # A device whose blocks take less shared memory runs fewer slots; ``refusal`` saw that
+        # the fewest fit.
+        q = self.n * self.n + 2 * self.n
+        while _projection_smem(block_m, num_stages, q) > self.smem_budget:
+            num_stages -= 1
         # The splits fill the SMs the token tiles leave. The projection lasts as long as its
         # longest split, and of the counts with that longest split the fewest leave the mix
         # launch the fewest partial sums.
