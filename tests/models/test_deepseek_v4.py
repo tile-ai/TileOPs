@@ -5,10 +5,10 @@ indexer, ratio-128 compressed attention) at DeepSeek-V4-Flash's widths, on rando
 checkpoint's formats, is written as a Hugging Face checkpoint and loaded by both. Each layer's
 output and the logits are compared over the prefill and over the decode steps by
 ``check_within_rounding``, the rounded reference being the official model with its attention
-probabilities rounded to bfloat16, as its TileLang kernel rounds them. The long prompt is longer than four times the
-indexer's top-k, so the indexer selects from more entries than it keeps, and leaves partial
-windows that the decode steps close at both compression ratios; the short one closes no
-window, so the decode steps close the first.
+probabilities rounded to bfloat16, as its TileLang kernel rounds them. The long prompt is longer
+than four times the indexer's top-k, so the indexer selects from more entries than it keeps, and
+leaves partial windows that the decode steps close at both compression ratios; the short one closes
+no window, so the decode steps close the first.
 """
 
 import contextlib
@@ -144,7 +144,7 @@ def _official_model(tensors, max_seq_len, *, rounded=False):
     its attention probabilities to bfloat16, as its TileLang kernel does; built and run under
     ``_official_defaults``."""
     inference_dir = os.environ.get(INFERENCE_DIR_ENV)
-    assert inference_dir, f"{INFERENCE_DIR_ENV} names no directory; the dev image sets it"
+    assert inference_dir, f"{INFERENCE_DIR_ENV} names no DeepSeek-V4-Flash inference/ directory"
     module = load_official(inference_dir)
     if rounded:
         module.sparse_attn = functools.partial(sparse_attn, p_dtype=torch.bfloat16)

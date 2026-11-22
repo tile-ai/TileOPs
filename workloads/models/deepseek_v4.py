@@ -2,7 +2,7 @@
 
 ``load_official`` imports the checkpoint repository's ``inference/model.py`` with a torch
 module standing in for its ``kernel.py``, so the reference shares no kernel with TileOPs.
-The dev image ships that directory at the path ``INFERENCE_DIR_ENV`` names.
+The environment variable ``INFERENCE_DIR_ENV`` names that ``inference/`` directory.
 """
 
 from __future__ import annotations

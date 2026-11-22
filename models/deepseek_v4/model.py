@@ -17,12 +17,12 @@ __all__ = ["DeepseekV4ForCausalLM"]
 class DeepseekV4ForCausalLM:
     """DeepSeek-V4 text decoder: embedding, mHC blocks, ``hc_head`` collapse and LM head.
 
-    Layers are spread over ``devices`` in contiguous runs; a device without an index is the
-    current one at construction. Each run computes with its device current and builds the
-    index metadata its layers share, a ``Step``, once; the streams move to the next device
-    between runs, and a forward call leaves the current device as it found it. A forward call advances one request: ``start_pos`` 0 is a prefill that resets the
-    decoding state; any later ``start_pos`` is a decode step of one token and must be the
-    number of tokens already passed. The MTP layer is not built.
+    Layers are spread over ``devices`` in contiguous runs; a device without an index is the current
+    one at construction. Each run computes with its device current and builds the index metadata its
+    layers share, a ``Step``, once; the streams move to the next device between runs, and a forward
+    call leaves the current device as it found it. A forward call advances one request:
+    ``start_pos`` 0 is a prefill that resets the decoding state; any later ``start_pos`` is a decode
+    step of one token and must be the number of tokens already passed. The MTP layer is not built.
     """
 
     def __init__(
