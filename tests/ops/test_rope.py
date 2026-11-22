@@ -379,8 +379,9 @@ def test_rope_rotates_one_unit_a_thread_where_heads_copy_columns(name, neox, dty
     token's position.
 
     5 tokens of 64 query heads and one key head, 64 columns a head and 24 rotating. In float32
-    a token has more units than the 1024-thread block limit, so its second block is partly
-    empty. Positions outside the cache read its nearest row; LongRoPE's offsets move each row.
+    a GPT-J token has 1040 units, more than the 1024-thread block limit, so no block holds all
+    its heads. Positions outside the cache read its nearest row; LongRoPE's offsets move each
+    row.
     """
     changes = {"head_size": 64, "rotary_dim": 24, "is_neox_style": neox}
     if name == "LongRoPEFwdOp":
@@ -391,6 +392,86 @@ def test_rope_rotates_one_unit_a_thread_where_heads_copy_columns(name, neox, dty
     positions = torch.tensor([-1, rows, 3, rows - 1, 1000], device=run_device())
     (got_q, got_k), read = _call_with_offsets(name, op, positions, query, key)
     ref_q, ref_k = _reference(name, params, read.clamp(0, rows - 1), query, key)
+    compare_outputs(got_q, ref_q, rope_verification())
+    compare_outputs(got_k, ref_k, rope_verification())
+
+
+@pytest.mark.parametrize(
+    ("name", "neox", "dtype", "head_size", "rotary_dim", "heads", "tokens"),
+    [
+        pytest.param(
+            "RoPEFwdOp", True, torch.bfloat16, 96, 96, (7, 5), 20, marks=_SMOKE, id="neox"
+        ),
+        pytest.param(
+            "LongRoPEFwdOp",
+            True,
+            torch.float32,
+            96,
+            96,
+            (7, 5),
+            20,
+            marks=_SMOKE,
+            id="longrope-offsets-float32",
+        ),
+        pytest.param(
+            "RoPEFwdOp",
+            True,
+            torch.float16,
+            2050,
+            2050,
+            (1, 1),
+            20,
+            marks=_SMOKE,
+            id="head-past-a-block",
+        ),
+        pytest.param(
+            "RoPEFwdOp", True, torch.bfloat16, 96, 96, (7, 5), 1, marks=_FULL, id="one-token"
+        ),
+        pytest.param(
+            "RoPEFwdOp",
+            False,
+            torch.float32,
+            64,
+            24,
+            (64, 1),
+            30,
+            marks=_FULL,
+            id="fewest-parts-past-the-sms",
+        ),
+        pytest.param(
+            "RoPEFwdOp",
+            True,
+            torch.float16,
+            2,
+            2,
+            (65536, 1),
+            1,
+            marks=_FULL,
+            id="parts-past-the-grid",
+        ),
+    ],
+)
+def test_rope_spreads_a_small_call_over_blocks_of_whole_heads(
+    name, neox, dtype, head_size, rotary_dim, heads, tokens
+) -> None:
+    """Calls of few enough tokens that each takes several blocks of whole heads.
+
+    7 query and 5 key heads split into 2, 3, 4 or 6 parts, so every split puts the last query
+    head and the first key head in one block; 20 tokens give 4 or 6 parts on any device of 80
+    to 239 SMs, and one token a block a head. 65 float32 GPT-J heads of 16 units fill more than
+    a block, so a token takes at least 5 parts; at 30 tokens no split leaves every block an SM
+    of its own below 150 SMs, and the token takes those 5. A 2050-column head of single columns
+    has more units than a block has threads, so the call takes the program that is not wide;
+    so does a token of 65537 one-unit heads, a prime count whose one split into blocks needs
+    more parts than a grid dimension holds.
+    """
+    changes = {"head_size": head_size, "rotary_dim": rotary_dim, "is_neox_style": neox}
+    if name == "LongRoPEFwdOp":
+        changes["rescale_factors"] = [1.0 + i / 16 for i in range(rotary_dim // 2)]
+    op, params = _op(name, dtype, **changes)
+    positions, query, key = _inputs(name, params, tokens, *heads, dtype, first=10)
+    (got_q, got_k), read = _call_with_offsets(name, op, positions.flip(0), query, key)
+    ref_q, ref_k = _reference(name, params, read, query, key)
     compare_outputs(got_q, ref_q, rope_verification())
     compare_outputs(got_k, ref_k, rope_verification())
 

@@ -174,13 +174,17 @@ def _rope_positions_kernel(
     pairs; or ``tail_vec`` columns past ``rotary_dim``, copied. A token's query units come
     before its key units, so one launch serves both. A block holds ``threads * units`` units
     of one token, ``units`` a thread, and reads the token's position once; consecutive
-    blocks walk a token's parts, then the next token's. A thread of one unit loads it before
-    the token's position where heads copy columns or the program is ``wide``; any other thread
-    reads the position first, then, where heads copy columns, loads all its units before it
-    stores any, and otherwise loads and stores one unit at a time. ``rot_vec`` and
-    ``tail_vec`` divide every column offset they start at, so each unit moves as vectors.
-    Each block clamps the token's position into the table once, before its table loads, so a
-    position outside the table reads the nearest row. The arithmetic is f32 and rounds once.
+    blocks walk a token's parts, then the next token's. The ``wide`` program instead gives a
+    block whole heads, ``threads`` a multiple of a head's units: thread ``(slot, head)`` of a
+    ``(head units, threads / head units)`` block takes that unit of that head, and the grid is
+    ``(tokens, parts)``, so consecutive blocks hold the same part of consecutive tokens. A
+    thread of one unit loads it before the token's position where heads copy columns or the
+    program is ``wide``; any other thread reads the position first, then, where heads copy
+    columns, loads all its units before it stores any, and otherwise loads and stores one
+    unit at a time. ``rot_vec`` and ``tail_vec`` divide every column offset they start at, so
+    each unit moves as vectors. Each block clamps the token's position into the table once,
+    before its table loads, so a position outside the table reads the nearest row. The
+    arithmetic is f32 and rounds once.
 
     The staged program instead gives a block one token's query row or key row, the two
     alternating: its threads load the row into shared memory in ``row_vec``-column vectors,
@@ -195,7 +199,6 @@ def _rope_positions_kernel(
     run = max(width, tail_vec)
     vector_pairs = neox or rot_vec >= 2
     head_units = rot_units + tail_units
-    query_units = query_heads * head_units
     token_units = (query_heads + key_heads) * head_units
 
     sides = _staged_sides(key_heads)
@@ -207,6 +210,10 @@ def _rope_positions_kernel(
         key_shape = (num_tokens, key_heads * head_size)
         table_shape = (max_position, half)
         parts = sides if staged else -(-token_units // (threads * units))
+        block_heads = threads // head_units
+        # A wide program's token takes its parts a grid row apart, so they run on SMs apart.
+        grid = (num_tokens, parts) if wide else (num_tokens * parts, 1)
+        block = (head_units, block_heads) if wide else threads
 
         @T.macro
         def table_slots(cos_table, sin_table, row, first, cs, sn, at):
@@ -304,26 +311,31 @@ def _rope_positions_kernel(
             shared = (cos_table, sin_table, regs, load, store)
             for r in T.unroll(units):
                 within = (part * units + r) * threads + T.get_thread_binding()
-                if within < query_units:
+                # A wide thread's head and slot are its thread indices: no index is divided.
+                head = (
+                    part * block_heads + T.get_thread_binding(1) if wide else within // head_units
+                )
+                slot = T.get_thread_binding(0) if wide else within % head_units
+                if head < query_heads:
                     move_unit(
                         r,
                         None if row is None else row[0],
                         query,
                         query_out,
                         token,
-                        within // head_units,
-                        within % head_units,
+                        head,
+                        slot,
                         *shared,
                     )
-                elif within < token_units:
+                elif head < query_heads + key_heads:
                     move_unit(
                         r,
                         None if row is None else row[0],
                         key,
                         key_out,
                         token,
-                        (within - query_units) // head_units,
-                        (within - query_units) % head_units,
+                        head - query_heads,
+                        slot,
                         *shared,
                     )
 
@@ -386,8 +398,11 @@ def _rope_positions_kernel(
 
         @T.macro
         def rotate_token(
-            positions, offsets, query, key, cos_table, sin_table, query_out, key_out, token, part
+            positions, offsets, query, key, cos_table, sin_table, query_out, key_out, bx, by
         ):
+            # The block's token and its part of the token, from its grid indices.
+            token = bx if wide else bx // parts
+            part = by if wide else bx % parts
             row = T.alloc_local([1], "int64" if offset_dtype else position_dtype)
             tensors = (query, key, cos_table, sin_table, query_out, key_out, token, part)
             if staged:
@@ -436,7 +451,7 @@ def _rope_positions_kernel(
                 query_out: T.Tensor(query_shape, dtype),
                 key_out: T.Tensor(key_shape, dtype),
             ):
-                with T.Kernel(num_tokens * parts, threads=threads) as bx:
+                with T.Kernel(grid[0], grid[1], threads=block) as (bx, by):
                     rotate_token(
                         positions,
                         offsets,
@@ -446,8 +461,8 @@ def _rope_positions_kernel(
                         sin_table,
                         query_out,
                         key_out,
-                        bx // parts,
-                        bx % parts,
+                        bx,
+                        by,
                     )
 
         elif key_heads:
@@ -462,8 +477,7 @@ def _rope_positions_kernel(
                 query_out: T.Tensor(query_shape, dtype),
                 key_out: T.Tensor(key_shape, dtype),
             ):
-                # Consecutive blocks walk consecutive memory: a token's parts, then the next.
-                with T.Kernel(num_tokens * parts, threads=threads) as bx:
+                with T.Kernel(grid[0], grid[1], threads=block) as (bx, by):
                     rotate_token(
                         positions,
                         positions,
@@ -473,8 +487,8 @@ def _rope_positions_kernel(
                         sin_table,
                         query_out,
                         key_out,
-                        bx // parts,
-                        bx % parts,
+                        bx,
+                        by,
                     )
 
         else:
@@ -487,7 +501,7 @@ def _rope_positions_kernel(
                 sin_table: T.Tensor(table_shape, dtype),
                 query_out: T.Tensor(query_shape, dtype),
             ):
-                with T.Kernel(num_tokens * parts, threads=threads) as bx:
+                with T.Kernel(grid[0], grid[1], threads=block) as (bx, by):
                     rotate_token(
                         positions,
                         positions,
@@ -497,8 +511,8 @@ def _rope_positions_kernel(
                         sin_table,
                         query_out,
                         query_out,
-                        bx // parts,
-                        bx % parts,
+                        bx,
+                        by,
                     )
 
         return main
@@ -533,7 +547,10 @@ class _RoPEPositionsKernel(Kernel):
     @classmethod
     def _device_terms(cls, call: RoPECall) -> dict:
         """The constructor's keyword arguments that come from *call*'s device facts."""
-        return {"resident_threads": call.sm_count * call.threads_per_sm}
+        return {
+            "resident_threads": call.sm_count * call.threads_per_sm,
+            "sm_count": call.sm_count,
+        }
 
     def __init__(
         self,
@@ -548,6 +565,7 @@ class _RoPEPositionsKernel(Kernel):
         position_dtype: torch.dtype = torch.int64,
         offset_dtype: torch.dtype | None = None,
         resident_threads: int = 0,
+        sm_count: int = 0,
     ):
         super().__init__()
         if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > head_size:
@@ -570,8 +588,17 @@ class _RoPEPositionsKernel(Kernel):
         rot_vec = math.gcd(lanes, head_size, span)
         tail_vec = math.gcd(lanes, head_size, rotary_dim)
         _, rotating, copying = _head_units(self._NEOX, head_size, rotary_dim, rot_vec, tail_vec)
-        self._token_units = (query_heads + key_heads) * (rotating + copying)
+        heads, head_units = query_heads + key_heads, rotating + copying
+        self._token_units = heads * head_units
         self._resident_threads = resident_threads
+        self._sm_count = sm_count
+        # The parts a wide program can split a token into: whole heads within one block, and
+        # no more parts than the grid's second dimension holds.
+        self._wide_parts = [
+            p
+            for p in range(1, min(heads, MAX_GRID_YZ_BLOCKS) + 1)
+            if heads % p == 0 and head_units * heads // p <= MAX_BLOCK_THREADS
+        ]
         self.kernel = _rope_positions_kernel(
             query_heads,
             key_heads,
@@ -618,20 +645,27 @@ class _RoPEPositionsKernel(Kernel):
         query_out, key_out = program(*tensors, cos, sin)
         return query_out.view(query.shape), key_out.view(key.shape)
 
-    def _shape(self, tokens: int) -> bool:
-        """Whether a call of *tokens* tokens is wide.
+    def _shape(self, tokens: int) -> int:
+        """The parts a call of *tokens* tokens splits each token into, 0 where it is not wide.
 
         A call whose units fill at most half the device's resident threads is bound by the
         latency of one unit, so each thread takes one; a larger one keeps several in flight a
-        thread.
+        thread. A wide call splits each token into the most parts of whole heads that leave
+        every block an SM of its own, so the token's loads and stores issue from that many
+        SMs; with no such split, into the fewest parts a block holds. A token with no split of
+        whole heads into blocks of at most ``MAX_BLOCK_THREADS`` threads and at most
+        ``MAX_GRID_YZ_BLOCKS`` parts takes the program that is not wide.
         """
-        return 2 * tokens * self._token_units <= self._resident_threads
+        if not self._wide_parts or 2 * tokens * self._token_units > self._resident_threads:
+            return 0
+        spread = [p for p in self._wide_parts if tokens * p <= self._sm_count]
+        return spread[-1] if spread else self._wide_parts[0]
 
-    def _compile(self, cfg: dict, wide: bool):
-        """The program ``forward`` launches, compiled from *cfg*; *wide* gives a block a thread
-        per unit of its token, whole warps, up to the block limit."""
-        if wide:
-            return self.kernel(min(1024, -(-self._token_units // 32) * 32), 1, False, True)
+    def _compile(self, cfg: dict, parts: int):
+        """The program ``forward`` launches, compiled from *cfg*; *parts* nonzero gives a block
+        a thread per unit of ``1 / parts`` of its token's heads."""
+        if parts:
+            return self.kernel(self._token_units // parts, 1, False, True)
         return self.kernel(cfg["threads"], cfg["units"], False, False)
 
 
@@ -700,18 +734,18 @@ class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
         self._staged_threads = staged_threads
         self._wave_rows = wave_rows
 
-    def _shape(self, tokens: int) -> bool | None:
+    def _shape(self, tokens: int) -> int | None:
         """``None`` for a call whose rows (a query row and a key row a token) outnumber one
-        wave of staged blocks, else whether it is wide."""
+        wave of staged blocks, else the positions kernel's parts."""
         if tokens * _staged_sides(self.key_heads) > self._wave_rows:
             return None
         return super()._shape(tokens)
 
-    def _compile(self, cfg: dict, wide: bool | None):
-        """The staged program for a *wide* of ``None``, else the positions kernel's."""
-        if wide is None:
+    def _compile(self, cfg: dict, parts: int | None):
+        """The staged program for *parts* ``None``, else the positions kernel's."""
+        if parts is None:
             return self.kernel(self._staged_threads, 1, True, False)
-        return super()._compile(cfg, wide)
+        return super()._compile(cfg, parts)
 
 
 class RoPENeoxStagedRowsKernel(_RoPEStagedRowsKernel, RoPENeoxPositionIdsFwdInterface):
