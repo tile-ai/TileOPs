@@ -17,7 +17,7 @@ import torch
 
 from models.qwen3_8 import Qwen3_8Config, Qwen3_8ForCausalLM
 from models.qwen3_8.layers import GatedDeltaNet
-from workloads.device import run_device, run_device_is_cuda
+from workloads.device import run_device
 from workloads.models.qwen3_8 import (
     QWEN3_8_27B_CONFIG,
     ReferenceRequest,
@@ -316,16 +316,15 @@ def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
     assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 6
 
 
-@pytest.mark.sm90
-def test_layers_split_over_two_devices_give_the_one_device_logits(checkpoint):
+def test_layers_split_over_two_devices_give_the_one_device_logits(checkpoint, two_devices):
     """The model spread over two devices moves the hidden state, the residual and each device's
     position metadata between its layer runs, and returns the logits it returns on one device,
     over a prefill and a decode step."""
-    if not run_device_is_cuda() or torch.cuda.device_count() < 2:
-        pytest.skip("needs two CUDA devices")
-    one = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[0], max_seq_len=64)
-    two = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[0, 1], max_seq_len=64)
-    assert {d.index for d in two.layer_devices} == {0, 1}
+    if any(torch.cuda.get_device_capability(d)[0] != 9 for d in two_devices):
+        pytest.skip("needs two devices of compute capability 9.x")
+    one = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=two_devices[:1], max_seq_len=64)
+    two = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=two_devices, max_seq_len=64)
+    assert set(two.layer_devices) == set(two_devices)
     ids = torch.arange(1, 8).view(1, -1)
     for step, pos in ((ids[:, :6], 0), (ids[:, 6:], 6)):
         expected = one(step, pos)
