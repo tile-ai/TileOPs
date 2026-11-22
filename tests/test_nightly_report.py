@@ -540,34 +540,36 @@ def test_an_unread_window_does_not_read_as_an_empty_one(report):
     )
 
 
+def _run_script(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(REPORT_SCRIPT), *args], capture_output=True, text=True
+    )
+
+
 def test_a_named_history_that_does_not_exist_is_refused(tmp_path):
     """A window the builder failed to write must not read as no history."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(REPORT_SCRIPT),
-            "--output",
-            str(tmp_path / "report.md"),
-            "--history",
-            str(tmp_path / "absent.json"),
-        ],
-        capture_output=True,
-        text=True,
+    result = _run_script(
+        "--output", str(tmp_path / "report.md"), "--history", str(tmp_path / "absent.json")
     )
     assert result.returncode != 0
     assert "--history file does not exist" in result.stderr
 
 
+def _report(report, **overrides):
+    """The whole report over one passing FooFwdOp test, with *overrides* to its arguments."""
+    args = {
+        "test_ops": {_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
+        "bench_ops": None,
+        "bench_failures": [],
+        "regressions": [],
+        "improvements": [],
+        "baseline_alerts": [],
+    }
+    return report.generate_report(**{**args, **overrides})
+
+
 def _summary_report(report, scale):
-    return report.generate_report(
-        scale=scale,
-        test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
-        bench_ops=_bench_ops(1.0),
-        bench_failures=[],
-        regressions=[],
-        improvements=[],
-        baseline_alerts=[],
-    )
+    return _report(report, scale=scale, bench_ops=_bench_ops(1.0))
 
 
 def test_the_summary_names_the_scale_rows_verbatim(report):
@@ -589,15 +591,7 @@ def test_the_new_ops_section_and_summary_row_are_named_verbatim(report):
         {"op": "NewOp", "config": "test_x_bench[x]", "curr_ms": 0.0123, "tflops": 1.5},
         {"op": "NewOp", "config": "test_x_bench[y]", "curr_ms": 0.5, "tflops": None},
     ]
-    md = report.generate_report(
-        test_ops=None,
-        bench_ops=_bench_ops(1.0),
-        bench_failures=[],
-        regressions=[],
-        improvements=[],
-        baseline_alerts=[],
-        new_ops=new_ops,
-    )
+    md = _report(report, test_ops=None, bench_ops=_bench_ops(1.0), new_ops=new_ops)
     assert "| **New ops** (no 14-day history) | \U0001f195 1 ops · 2 rows |" in md
     section = md[md.index("## \U0001f195 New Ops (no 14-day history)") :]
     assert "| Op | Config | Current (ms) | TFLOPS |" in section
@@ -633,20 +627,6 @@ def _result(outcome, op, name="test_x", compared=True):
     }
 
 
-def _counted(report, results):
-    """The whole report, built over *results* as the suite that ran."""
-    md = report.generate_report(
-        test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
-        bench_ops=None,
-        bench_failures=[],
-        regressions=[],
-        improvements=[],
-        baseline_alerts=[],
-        test_results=results,
-    )
-    return md
-
-
 def test_unattributed_passes_and_failures_are_counted_and_failures_named(report):
     """A test with no op property fails the job, so the report must not lose it.
 
@@ -654,7 +634,7 @@ def test_unattributed_passes_and_failures_are_counted_and_failures_named(report)
     nothing behind it: the reader sees N failed and a table holding fewer rows.
     """
     row = _result("failed", None, "test_sum")
-    md = _counted(report, [_result("passed", _OP), _result("passed", None), row])
+    md = _report(report, test_results=[_result("passed", _OP), _result("passed", None), row])
 
     assert "(2/3 tests)" in md
     assert report._FAIL in md
@@ -860,21 +840,9 @@ def test_a_model_is_named_by_its_test_module(report, nodeid, name):
     assert list(report.aggregate_model_results([case])) == ["qwen3_8"]
 
 
-def _model_report(report, models):
-    return report.generate_report(
-        test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
-        bench_ops=None,
-        bench_failures=[],
-        regressions=[],
-        improvements=[],
-        baseline_alerts=[],
-        models=models,
-    )
-
-
 def test_models_are_their_own_summary_row_and_section(report):
-    md = _model_report(
-        report, {"qwen3_8": {"passed": 30, "failed": 0, "skipped": 0, "failing_tests": []}}
+    md = _report(
+        report, models={"qwen3_8": {"passed": 30, "failed": 0, "skipped": 0, "failing_tests": []}}
     )
     assert "| **Models** | ✅ &ensp; (1 models, 30/30 tests) |" in md
     assert "| ✅ **qwen3_8** | 30 | 0 | 0 |  |" in md[md.index("## Models") :]
@@ -882,8 +850,9 @@ def test_models_are_their_own_summary_row_and_section(report):
 
 
 def test_a_failing_model_test_fails_the_report(report):
-    md = _model_report(
-        report, {"qwen3_8": {"passed": 29, "failed": 1, "skipped": 0, "failing_tests": ["test_x"]}}
+    md = _report(
+        report,
+        models={"qwen3_8": {"passed": 29, "failed": 1, "skipped": 0, "failing_tests": ["test_x"]}},
     )
     assert md.startswith("# ❌")
     assert "| **Models** | ❌ 1 failed" in md
@@ -891,29 +860,14 @@ def test_a_failing_model_test_fails_the_report(report):
 
 
 def test_a_run_without_model_results_has_no_models_row(report):
-    assert "**Models**" not in _model_report(report, None)
+    assert "**Models**" not in _report(report)
 
 
-def test_a_model_run_without_results_fails_the_report(report):
+def test_a_missing_model_results_file_fails_the_report(tmp_path):
     """A model run killed before pytest writes its JUnit file reports no results, not a pass."""
-    md = _model_report(report, {})
-    assert md.startswith("# \u274c")
-    assert "| **Models** | \u274c no results" in md
-
-
-def test_a_missing_model_results_file_reads_as_no_results(report, tmp_path):
     out = tmp_path / "report.md"
     missing = tmp_path / "model_test_results.xml"
-    subprocess.run(
-        [
-            sys.executable,
-            str(REPORT_SCRIPT),
-            "--model-test-xml",
-            str(missing),
-            "--output",
-            str(out),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    assert "| **Models** | \u274c no results" in out.read_text()
+    _run_script("--model-test-xml", str(missing), "--output", str(out)).check_returncode()
+    md = out.read_text()
+    assert md.startswith("# ❌")
+    assert "| **Models** | ❌ no results" in md
