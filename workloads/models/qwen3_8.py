@@ -21,8 +21,6 @@ import torch
 __all__ = [
     "QWEN3_8_27B_CONFIG",
     "ReferenceRequest",
-    "check_argmax_within_rounding",
-    "check_within_rounding",
     "random_checkpoint",
     "reference_model",
     "torch_paths",
@@ -234,47 +232,3 @@ class ReferenceRequest:
         )
         self.cache = out.past_key_values
         return out.logits[:, -1].float()
-
-
-# How many times the reference's own bfloat16 rounding noise a model may differ from it. A model
-# rounds to bfloat16 at other points than the reference (fused ops, other accumulation orders), an
-# error of the same size as the reference's own rounding; 2 lets the two add.
-_NOISE_FACTOR = 2
-
-
-def check_within_rounding(
-    actual: list[torch.Tensor], expected: list[torch.Tensor], rounded: list[torch.Tensor], what: str
-) -> None:
-    """Assert ``actual`` is at most twice as far from ``expected`` as ``rounded`` is.
-
-    Each list holds one tensor per step; distances are L2 over all of them. ``expected`` comes
-    from the reference in float32 and ``rounded`` from the same reference in bfloat16: their
-    distance is the reference's own bfloat16 rounding noise.
-    """
-
-    def distance(xs: list[torch.Tensor]) -> float:
-        return (
-            sum(
-                (x.float().cpu() - e.float().cpu()).square().sum().item()
-                for x, e in zip(xs, expected, strict=True)
-            )
-            ** 0.5
-        )
-
-    error, noise = distance(actual), distance(rounded)
-    assert error <= _NOISE_FACTOR * noise, (
-        f"{what} differ from the float32 reference by {error:.4g} in L2, its bfloat16 run by "
-        f"{noise:.4g}"
-    )
-
-
-def check_argmax_within_rounding(
-    token: int, expected: torch.Tensor, rounded: torch.Tensor, what: str
-) -> None:
-    """Assert ``token``'s logit in ``expected`` (the float32 reference) is the maximum to within
-    twice the reference's largest bfloat16 logit error, ``rounded - expected``."""
-    slack = _NOISE_FACTOR * (rounded - expected).abs().max()
-    assert expected[token] >= expected.max() - slack, (
-        f"{what}: token {token} is {expected.max() - expected[token]:.3f} below the reference's "
-        f"maximum, its bfloat16 run moves logits by {slack / _NOISE_FACTOR:.3f}"
-    )

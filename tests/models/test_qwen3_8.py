@@ -10,7 +10,6 @@ most twice as far from HF float32 as HF bfloat16 is.
 """
 
 import dataclasses
-import json
 
 import pytest
 import torch
@@ -18,15 +17,15 @@ import torch
 from models.qwen3_8 import Qwen3_8Config, Qwen3_8ForCausalLM
 from models.qwen3_8.layers import GatedDeltaNet
 from workloads.device import run_device
+from workloads.models.checkpoint import write_checkpoint
 from workloads.models.qwen3_8 import (
     QWEN3_8_27B_CONFIG,
     ReferenceRequest,
-    check_argmax_within_rounding,
-    check_within_rounding,
     random_checkpoint,
     reference_model,
     torch_paths,
 )
+from workloads.models.rounding import check_argmax_within_rounding, check_within_rounding
 
 pytestmark = pytest.mark.nightly
 
@@ -104,24 +103,11 @@ def test_config_refuses_what_the_model_does_not_compute(config, match):
         Qwen3_8Config.from_hf(config)
 
 
-def _write_checkpoint(path, config, tensors):
-    """Write ``tensors`` and ``config`` as a Hugging Face checkpoint whose tensors alternate
-    between two shards, so every layer spans both."""
-    from safetensors.torch import save_file
-
-    names = sorted(tensors)
-    weight_map = {n: f"model-0000{1 + i % 2}-of-00002.safetensors" for i, n in enumerate(names)}
-    for shard in set(weight_map.values()):
-        save_file({n: tensors[n] for n in names if weight_map[n] == shard}, str(path / shard))
-    (path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
-    (path / "config.json").write_text(json.dumps(config))
-
-
 @pytest.fixture(scope="module")
 def checkpoint(tmp_path_factory):
     """The small model's checkpoint directory."""
     path = tmp_path_factory.mktemp("qwen3_8-small")
-    _write_checkpoint(path, _SMALL, random_checkpoint(_SMALL, seed=0))
+    write_checkpoint(path, _SMALL, random_checkpoint(_SMALL, seed=0))
     return path
 
 
@@ -138,7 +124,7 @@ def test_from_pretrained_refuses_a_tensor_it_does_not_read(tmp_path, extra, matc
     tensors every checkpoint carries are skipped."""
     tensors = random_checkpoint(_TINY, seed=0)
     tensors[extra] = torch.zeros(1, dtype=torch.bfloat16)
-    _write_checkpoint(tmp_path, _TINY, tensors)
+    write_checkpoint(tmp_path, _TINY, tensors)
     with pytest.raises(ValueError, match=match):
         Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
 
@@ -146,9 +132,7 @@ def test_from_pretrained_refuses_a_tensor_it_does_not_read(tmp_path, extra, matc
 def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
     tensors = random_checkpoint(_TINY, seed=0)
     layer = "model.language_model.layers.1."
-    _write_checkpoint(
-        tmp_path, _TINY, {n: t for n, t in tensors.items() if not n.startswith(layer)}
-    )
+    write_checkpoint(tmp_path, _TINY, {n: t for n, t in tensors.items() if not n.startswith(layer)})
     with pytest.raises(ValueError, match="holds no tensors of layers \\[1\\]"):
         Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
 
@@ -157,7 +141,7 @@ def test_from_pretrained_skips_the_vision_and_mtp_tensors(tmp_path):
     tensors = random_checkpoint(_TINY, seed=0)
     assert any(n.startswith("model.visual.") for n in tensors)
     assert any(n.startswith("mtp.") for n in tensors)
-    _write_checkpoint(tmp_path, _TINY, tensors)
+    write_checkpoint(tmp_path, _TINY, tensors)
     model = Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
     assert model.lm_head.shape == (64, 64)
 
