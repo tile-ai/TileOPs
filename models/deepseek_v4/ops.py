@@ -6,11 +6,11 @@ import math
 
 import torch
 
+from models.deepseek_v4.config import DeepseekV4Config
 from tileops.attention import DSADenseFwdOp, GatedPoolCompressFwdOp, TopKSelectFwdOp
 from tileops.elementwise import MulFwdOp, ReLUFwdOp, SiLUAndMulFwdOp
 from tileops.gemm import BMMFwdOp, GEMMFP8FwdOp, GEMMFwdOp
 from tileops.indexing import EmbeddingFwdOp
-from models.deepseek_v4.config import DeepseekV4Config
 from tileops.moe import (
     ContiguousLayoutSpec,
     FusedTopKFwdOp,

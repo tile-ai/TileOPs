@@ -3,8 +3,9 @@
 A three-layer model (sliding window with hash routing, ratio-4 compressed attention with the
 indexer, ratio-128 compressed attention) at DeepSeek-V4-Flash's widths, on random weights in the
 checkpoint's formats, is written as a Hugging Face checkpoint and loaded by both. Each layer's
-output and the logits are compared over the prefill and over the decode steps, within the
-reference's own bfloat16 rounding noise. The long prompt is longer than four times the
+output and the logits are compared over the prefill and over the decode steps by
+``check_within_rounding``, the rounded reference being the official model with its attention
+probabilities rounded to bfloat16, as its TileLang kernel rounds them. The long prompt is longer than four times the
 indexer's top-k, so the indexer selects from more entries than it keeps, and leaves partial
 windows that the decode steps close at both compression ratios; the short one closes no
 window, so the decode steps close the first.
@@ -19,6 +20,7 @@ import pytest
 import torch
 
 from models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
+from models.deepseek_v4.layers import Step
 from workloads.device import run_device
 from workloads.models.deepseek_v4 import (
     DEEPSEEK_V4_FLASH_CONFIG,
@@ -26,13 +28,15 @@ from workloads.models.deepseek_v4 import (
     check_decode_state,
     check_index_selection,
     check_selection_agreement,
-    check_within_rounding,
     load_official,
     official_args,
     official_state_dict,
     random_checkpoint,
     sparse_attn,
 )
+from workloads.models.rounding import check_argmax_within_rounding, check_within_rounding
+
+pytestmark = pytest.mark.nightly
 
 _SMALL = {
     **DEEPSEEK_V4_FLASH_CONFIG,
@@ -44,7 +48,6 @@ _SMALL = {
 }
 
 
-@pytest.mark.smoke
 def test_config_reads_the_published_flash_config():
     cfg = DeepseekV4Config.from_hf(DEEPSEEK_V4_FLASH_CONFIG)
     assert (cfg.n_layers, cfg.n_hash_layers, cfg.n_routed_experts) == (43, 3, 256)
@@ -52,7 +55,6 @@ def test_config_reads_the_published_flash_config():
     assert (cfg.rope_factor, cfg.original_seq_len, cfg.route_scale) == (16, 65536, 1.5)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("change", "match"),
     [
@@ -88,7 +90,6 @@ def checkpoint(tmp_path_factory):
     return path, tensors
 
 
-@pytest.mark.full
 @pytest.mark.parametrize(
     ("change", "extra", "match"),
     [
@@ -119,9 +120,9 @@ class _Recorded:
     def __getattr__(self, name):
         return getattr(self._indexer, name)
 
-    def __call__(self, ops, rope, x, qr, batch, start_pos, offset):
-        indices = self._indexer(ops, rope, x, qr, batch, start_pos, offset)
-        self._record.append((indices, start_pos, offset))
+    def __call__(self, ops, rope, x, qr, step):
+        indices = self._indexer(ops, rope, x, qr, step)
+        self._record.append((indices, step.start_pos, step.offset))
         return indices
 
 
@@ -155,7 +156,6 @@ def _official_model(tensors, max_seq_len, *, rounded=False):
     return model
 
 
-@pytest.mark.full
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     ("prompt_len", "decode_steps"),
@@ -202,15 +202,17 @@ def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, deco
                 logits = ([], [], [])
                 layers = {i: ([], [], []) for i in range(len(ref.layers))}
                 for pos in positions:
-                    step = ids[:, :prompt_len] if pos == 0 else ids[:, pos : pos + 1]
+                    tokens = ids[:, :prompt_len] if pos == 0 else ids[:, pos : pos + 1]
                     trace.clear()
                     for out, model in zip(logits, (mine, ref, rounded), strict=True):
-                        out.append(model(step, pos))
+                        out.append(model(tokens, pos))
+                    step = Step.build(mine_tf.config, pos, tokens.shape[1], mine_tf.first_device)
                     for i, h_in, h_out in trace:
                         actual, expected, rnd = layers[i]
-                        actual.append(mine_tf.layers[i](mine_tf.ops, h_in.contiguous(), step, pos))
+                        layer = mine_tf.layers[i]
+                        actual.append(layer(mine_tf.ops, h_in.contiguous(), tokens, step))
                         expected.append(h_out)
-                        rnd.append(rounded_tf.layers[i](h_in.clone(), pos, step))
+                        rnd.append(rounded_tf.layers[i](h_in.clone(), pos, tokens))
                 for i, outs in layers.items():
                     check_within_rounding(*outs, f"{phase} layer {i} outputs")
                 check_within_rounding(*logits, f"{phase} logits")
@@ -223,18 +225,22 @@ def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, deco
     check_selection_agreement(selections, official_selections, 4, top_k)
 
 
-@pytest.mark.full
 @pytest.mark.sm90
 def test_forward_takes_one_request_position_by_position(checkpoint):
-    """``forward`` refuses a batch, a decode step out of order or of more than one token, and a
-    sequence past ``max_seq_len``; a refused call leaves the request where it was."""
+    """``forward`` refuses a batch, an empty input, a decode step out of order or of more than
+    one token, and a sequence past ``max_seq_len``; a refused call leaves the request where it
+    was."""
     path, _ = checkpoint
     max_seq_len = 18
     model = DeepseekV4ForCausalLM.from_pretrained(
         path, devices=[run_device()], max_seq_len=max_seq_len
     )
     ids = torch.zeros(1, max_seq_len + 1, dtype=torch.long, device=run_device())
-    refused = [(ids[:, :4].expand(2, -1), 0, "batch of 2"), (ids[:, :1], 4, "prefill")]
+    refused = [
+        (ids[:, :4].expand(2, -1), 0, "batch of 2"),
+        (ids[:, :0], 0, "at least one token"),
+        (ids[:, :1], 4, "prefill"),
+    ]
     for step, pos, match in refused:
         with pytest.raises(ValueError, match=match):
             model(step, pos)
@@ -254,7 +260,29 @@ def test_forward_takes_one_request_position_by_position(checkpoint):
         model(ids[:, :1], max_seq_len)
 
 
-@pytest.mark.full
+@pytest.mark.sm90
+def test_layers_split_over_two_devices_give_the_one_device_logits(checkpoint, two_devices):
+    """The model spread over two devices moves the streams and the token ids between its layer
+    runs, and returns the logits it returns on one device, over a prefill that closes windows at
+    both compression ratios, the ratio-128 one on the second device, and a decode step; it
+    leaves the current device as it found it."""
+    if any(torch.cuda.get_device_capability(d)[0] != 9 for d in two_devices):
+        pytest.skip("needs two devices of compute capability 9.x")
+    path, _ = checkpoint
+    one, two = (
+        DeepseekV4ForCausalLM.from_pretrained(path, devices=devices, max_seq_len=256)
+        for devices in (two_devices[:1], two_devices)
+    )
+    assert two.layer_devices == [two_devices[0], two_devices[0], two_devices[1]]
+    g = torch.Generator().manual_seed(3)
+    ids = torch.randint(0, _SMALL["vocab_size"], (1, 131), generator=g)
+    current = torch.cuda.current_device()
+    for step, pos in ((ids[:, :130], 0), (ids[:, 130:], 130)):
+        expected = one(step, pos)
+        torch.testing.assert_close(two(step, pos).to(expected.device), expected, rtol=0, atol=0)
+    assert torch.cuda.current_device() == current
+
+
 @pytest.mark.sm90
 def test_generate_takes_the_official_argmax_until_eos_or_max_seq_len(checkpoint):
     """``generate`` from a three-token prompt: each token's official logit, given the tokens
@@ -279,9 +307,6 @@ def test_generate_takes_the_official_argmax_until_eos_or_max_seq_len(checkpoint)
         steps = [(ids[:, : len(prompt)], 0)]
         steps += [(ids[:, pos : pos + 1], pos) for pos in range(len(prompt), max_seq_len)]
         for token, (step, pos) in zip(out, steps, strict=True):
-            expected, noisy = ref(step, pos)[0].float(), rounded(step, pos)[0].float()
-            slack = 2 * (noisy - expected).abs().max()
-            assert expected[token] >= expected.max() - slack, (
-                f"position {pos}: token {token} is {expected.max() - expected[token]:.3f} below the "
-                f"official maximum, the reference's rounding moves logits by {slack / 2:.3f}"
+            check_argmax_within_rounding(
+                token, ref(step, pos)[0].float(), rounded(step, pos)[0].float(), f"position {pos}"
             )

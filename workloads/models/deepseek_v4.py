@@ -27,7 +27,6 @@ __all__ = [
     "check_decode_state",
     "check_index_selection",
     "check_selection_agreement",
-    "check_within_rounding",
     "load_official",
     "official_args",
     "official_state_dict",
@@ -353,35 +352,6 @@ def random_checkpoint(config: dict, seed: int = 0) -> dict[str, torch.Tensor]:
     t["hc_head_base"] = normal(hc)
     t["hc_head_scale"] = normal(1, std=0.05, mean=0.1)
     return t
-
-
-def check_within_rounding(
-    actual: list[torch.Tensor],
-    expected: list[torch.Tensor],
-    rounded: list[torch.Tensor],
-    what: str,
-) -> None:
-    """Assert ``actual`` is at most twice as far from ``expected`` as ``rounded`` is.
-
-    Each list holds one tensor per step; distances are L2 over all of them. ``expected`` comes
-    from the official model on float32 torch kernels and ``rounded`` from the same model with its
-    attention probabilities rounded to bfloat16, as its TileLang kernel rounds them: their
-    distance is the reference's own rounding noise, which FP8 requantization amplifies.
-    """
-
-    def distance(xs: list[torch.Tensor]) -> float:
-        return (
-            sum(
-                (x.float() - e.float()).square().sum().item()
-                for x, e in zip(xs, expected, strict=True)
-            )
-            ** 0.5
-        )
-
-    error, noise = distance(actual), distance(rounded)
-    assert error <= 2 * noise, (
-        f"{what} differ from the reference by {error:.4g} in L2, its bfloat16 rounding by {noise:.4g}"
-    )
 
 
 def check_decode_state(block, official_block, positions: int) -> None:

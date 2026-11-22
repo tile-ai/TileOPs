@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 
 from models.deepseek_v4.config import DeepseekV4Config
-from models.deepseek_v4.layers import Block
+from models.deepseek_v4.layers import Block, Step
 from models.deepseek_v4.ops import ModelOps, RoPETable
 
 __all__ = ["DeepseekV4ForCausalLM"]
@@ -17,10 +17,12 @@ __all__ = ["DeepseekV4ForCausalLM"]
 class DeepseekV4ForCausalLM:
     """DeepSeek-V4 text decoder: embedding, mHC blocks, ``hc_head`` collapse and LM head.
 
-    Layers are spread over ``devices`` in contiguous runs; the streams move to the next
-    device between runs. A forward call advances one request: ``start_pos`` 0 is a prefill
-    that resets the decoding state; any later ``start_pos`` is a decode step of one token and
-    must be the number of tokens already passed. The MTP layer is not built.
+    Layers are spread over ``devices`` in contiguous runs; a device without an index is the
+    current one at construction. Each run computes with its device current and builds the
+    index metadata its layers share, a ``Step``, once; the streams move to the next device
+    between runs, and a forward call leaves the current device as it found it. A forward call advances one request: ``start_pos`` 0 is a prefill that resets the
+    decoding state; any later ``start_pos`` is a decode step of one token and must be the
+    number of tokens already passed. The MTP layer is not built.
     """
 
     def __init__(
@@ -32,9 +34,7 @@ class DeepseekV4ForCausalLM:
     ) -> None:
         self.config = config
         self.max_seq_len = max_seq_len
-        self.devices = [
-            torch.device("cuda", d) if isinstance(d, int) else torch.device(d) for d in devices
-        ]
+        self.devices = [_indexed(d) for d in devices]
         self.ops = ModelOps(config)
         n_dev = len(self.devices)
         self.layer_devices = [
@@ -85,7 +85,7 @@ class DeepseekV4ForCausalLM:
     def reset(self) -> None:
         """Clear every layer's decoding state; the next call must be a prefill."""
         for layer in self.layers:
-            layer.reset(1)
+            layer.reset()
         self._next_pos = None
 
     @torch.inference_mode()
@@ -95,6 +95,8 @@ class DeepseekV4ForCausalLM:
         batch, seqlen = input_ids.shape
         if batch != 1:
             raise ValueError(f"forward runs one request, got a batch of {batch}")
+        if seqlen == 0:
+            raise ValueError("forward takes at least one token")
         if start_pos + seqlen > self.max_seq_len:
             raise ValueError(
                 f"position {start_pos + seqlen} exceeds max_seq_len {self.max_seq_len}"
@@ -111,17 +113,20 @@ class DeepseekV4ForCausalLM:
             raise ValueError(f"a decode step takes one token, got {seqlen}")
         ops = self.ops
         ids = input_ids.to(self.first_device)
-        x = ops.embedding(ids, self.embed)
-        h = x.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
+        with torch.cuda.device(self.first_device):
+            x = ops.embedding(ids, self.embed)
+            h = x.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
+        previous = None
         for layer, device in zip(self.layers, self.layer_devices, strict=True):
-            if h.device != device:
-                h = h.to(device)
-                ids = ids.to(device)
-            h = layer(ops, h, ids, start_pos)
-        last = h[:, -1].contiguous()
-        x = ops.hc_head(last, *self.hc_head)
-        x = ops.norm(x, self.norm)
-        logits = ops.gemm_f32(x, self.head)
+            with torch.cuda.device(device):
+                if device != previous:
+                    previous = device
+                    step = Step.build(self.config, start_pos, seqlen, device)
+                    h, ids = h.to(device), ids.to(device)
+                h = layer(ops, h, ids, step)
+        with torch.cuda.device(self.last_device):
+            x = ops.hc_head(h[:, -1].contiguous(), *self.hc_head)
+            logits = ops.gemm_f32(ops.norm(x, self.norm), self.head)
         self._next_pos = start_pos + seqlen
         return logits
 
@@ -143,7 +148,8 @@ class DeepseekV4ForCausalLM:
         pos = tokens.shape[1]
         out: list[int] = []
         for _ in range(max_new_tokens):
-            nxt = self.ops.argmax(logits)
+            with torch.cuda.device(self.last_device):
+                nxt = self.ops.argmax(logits)
             token = int(nxt.item())
             out.append(token)
             if token == eos or pos >= self.max_seq_len:
@@ -151,3 +157,14 @@ class DeepseekV4ForCausalLM:
             logits = self.forward(nxt.view(1, 1).to(self.first_device), pos)
             pos += 1
         return out
+
+
+def _indexed(device: torch.device | str | int) -> torch.device:
+    """``device`` as a CUDA device with an index: an int is that index, and ``"cuda"`` the
+    current device's."""
+    if isinstance(device, int):
+        return torch.device("cuda", device)
+    device = torch.device(device)
+    if device.index is None:
+        return torch.device(device.type, torch.cuda.current_device())
+    return device

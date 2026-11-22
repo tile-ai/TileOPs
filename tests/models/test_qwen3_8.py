@@ -21,12 +21,11 @@ from workloads.device import run_device
 from workloads.models.qwen3_8 import (
     QWEN3_8_27B_CONFIG,
     ReferenceRequest,
-    check_argmax_within_rounding,
-    check_within_rounding,
     random_checkpoint,
     reference_model,
     torch_paths,
 )
+from workloads.models.rounding import check_argmax_within_rounding, check_within_rounding
 
 pytestmark = pytest.mark.nightly
 

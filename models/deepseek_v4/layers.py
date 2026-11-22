@@ -1,17 +1,61 @@
 """DeepSeek-V4 blocks composed from TileOPs ops: attention with KV compression, MoE, mHC.
 
 Each layer holds its weights as tensors on one device, in the layouts the ops read, and the
-decoding state of one batch of requests that advance together from position 0.
+decoding state of one request, which advances from position 0.
 """
 
 from __future__ import annotations
+
+import dataclasses
 
 import torch
 
 from models.deepseek_v4.config import DeepseekV4Config
 from models.deepseek_v4.ops import ModelOps, RoPETable
 
-__all__ = ["Block", "FP8Linear"]
+__all__ = ["Block", "FP8Linear", "Step"]
+
+
+@dataclasses.dataclass
+class Step:
+    """The index metadata of one forward call on one device, shared by its layers.
+
+    ``window`` holds each query's sliding-window keys, -1 where none: token positions in a
+    prefill, ``[S, min(S, window_size)]``, ring slots in a decode step, ``[1, window_size]``.
+    ``offset`` is where the compressed entries start among a layer's keys: after the prompt in
+    a prefill, after the ring in a decode step. ``cu_seqlens``, ``starts`` and ``slots`` are the
+    int32 ``[0, S]``, ``[start_pos]`` and ``[0]`` the pooling ops read.
+    """
+
+    start_pos: int
+    seqlen: int
+    offset: int
+    window: torch.Tensor
+    cu_seqlens: torch.Tensor
+    starts: torch.Tensor
+    slots: torch.Tensor
+
+    @classmethod
+    def build(
+        cls, cfg: DeepseekV4Config, start_pos: int, seqlen: int, device: torch.device
+    ) -> Step:
+        win = cfg.window_size
+        if start_pos == 0:
+            pos = torch.arange(seqlen, device=device).unsqueeze(1)
+            idx = (pos - win + 1).clamp(min=0) + torch.arange(min(seqlen, win), device=device)
+            window = torch.where(idx > pos, -1, idx)
+        else:
+            idx = torch.arange(win, device=device)
+            window = torch.where(idx > start_pos, -1, idx).unsqueeze(0)
+        return cls(
+            start_pos=start_pos,
+            seqlen=seqlen,
+            offset=seqlen if start_pos == 0 else win,
+            window=window,
+            cu_seqlens=torch.tensor([0, seqlen], dtype=torch.int32, device=device),
+            starts=torch.tensor([start_pos], dtype=torch.int32, device=device),
+            slots=torch.zeros(1, dtype=torch.int32, device=device),
+        )
 
 
 class FP8Linear:
@@ -49,47 +93,42 @@ class Compressor:
         self.kv_state: torch.Tensor
         self.score_state: torch.Tensor
 
-    def reset(self, batch: int) -> None:
-        """Allocate fresh pooling state for ``batch`` requests."""
+    def reset(self) -> None:
+        """Allocate fresh pooling state."""
         self.kv_state = torch.zeros(
-            batch, self.state_rows, self.width, dtype=torch.float32, device=self.ape.device
+            1, self.state_rows, self.width, dtype=torch.float32, device=self.ape.device
         )
         self.score_state = torch.zeros_like(self.kv_state)
 
     def __call__(
-        self, ops: ModelOps, rope: RoPETable, x: torch.Tensor, batch: int, start_pos: int
+        self, ops: ModelOps, rope: RoPETable, x: torch.Tensor, step: Step
     ) -> torch.Tensor | None:
-        """Pool ``x`` (``[batch * S, dim]``, positions from ``start_pos``) and return the
-        entries of the windows it closes, ``[batch, n, head_dim]``, or None."""
-        seqlen = x.shape[0] // batch
+        """Pool ``x`` (``[S, dim]``) and return the entries of the windows it closes,
+        ``[1, n, head_dim]``, or None."""
         projected = ops.gemm_f32(x, self.wkv_gate)
         kv, score = projected[:, : self.width], projected[:, self.width :]
-        device = x.device
-        cu_seqlens = torch.arange(0, batch + 1, dtype=torch.int32, device=device) * seqlen
-        starts = torch.full((batch,), start_pos, dtype=torch.int32, device=device)
-        slots = torch.arange(batch, dtype=torch.int32, device=device)
         entries, _ = ops.pools[self.ratio](
             kv,
             score,
             self.ape,
             self.kv_state,
             self.score_state,
-            cu_seqlens,
-            starts,
-            slots,
+            step.cu_seqlens,
+            step.starts,
+            step.slots,
         )
-        ratio = self.ratio
+        ratio, start_pos = self.ratio, step.start_pos
         if start_pos == 0:
-            n = seqlen // ratio
+            n = step.seqlen // ratio
             if n == 0:
                 return None
-            closed = entries.view(batch, seqlen, -1)[:, ratio - 1 : n * ratio : ratio]
+            closed = entries.view(1, step.seqlen, -1)[:, ratio - 1 : n * ratio : ratio]
             first = 0
             cos, sin = rope.cos[: n * ratio : ratio], rope.sin[: n * ratio : ratio]
         else:
             if (start_pos + 1) % ratio != 0:
                 return None
-            closed = entries.view(batch, 1, -1)
+            closed = entries.view(1, 1, -1)
             first = start_pos + 1 - ratio
             cos, sin = rope.cos, rope.sin
         closed = ops.norm(closed.contiguous(), self.norm)
@@ -122,12 +161,12 @@ class Indexer:
         self.weights_proj: torch.Tensor
         self.cache: torch.Tensor
 
-    def reset(self, batch: int) -> None:
-        """Allocate an empty entry cache for ``batch`` requests."""
+    def reset(self) -> None:
+        """Allocate an empty entry cache."""
         device = self.weights_proj.device
-        self.compressor.reset(batch)
+        self.compressor.reset()
         self.cache = torch.zeros(
-            batch, self.max_entries, self.head_dim, dtype=torch.bfloat16, device=device
+            1, self.max_entries, self.head_dim, dtype=torch.bfloat16, device=device
         )
         self.weight_scale = torch.tensor(
             [self.head_dim**-0.5 * self.n_heads**-0.5], dtype=torch.float32, device=device
@@ -139,19 +178,17 @@ class Indexer:
         rope: RoPETable,
         x: torch.Tensor,
         qr: torch.Tensor,
-        batch: int,
-        start_pos: int,
-        offset: int,
+        step: Step,
     ) -> torch.Tensor:
-        """Return ``[batch, S, index_topk]`` int32 indices of compressed entries, shifted by
-        ``offset`` and padded with -1."""
-        seqlen = x.shape[0] // batch
+        """Return ``[1, S, index_topk]`` int32 indices of compressed entries, shifted by
+        ``step.offset`` and padded with -1."""
+        start_pos, seqlen = step.start_pos, step.seqlen
         end_pos = start_pos + seqlen
-        q = self.wq_b(ops, qr).view(batch, seqlen, self.n_heads, self.head_dim)
+        q = self.wq_b(ops, qr).view(1, seqlen, self.n_heads, self.head_dim)
         ops.rope(q[..., -self.rope_dim :], rope.cos, rope.sin, seqlen_offsets=start_pos)
         q = ops.hadamard(q)
         ops.fp4_fake_quant(q)
-        entries = self.compressor(ops, rope, x, batch, start_pos)
+        entries = self.compressor(ops, rope, x, step)
         if entries is not None:
             first = start_pos // self.ratio
             self.cache[:, first : first + entries.shape[1]] = entries
@@ -159,24 +196,24 @@ class Indexer:
         device = x.device
         if n_keys == 0:
             return torch.full(
-                (batch, seqlen, ops.index_topk.top_k), -1, dtype=torch.int32, device=device
+                (1, seqlen, ops.index_topk.top_k), -1, dtype=torch.int32, device=device
             )
         weights = ops.mul(ops.gemm(x, self.weights_proj).float(), self.weight_scale)
         weights = weights.to(torch.bfloat16)
         width = n_keys if start_pos == 0 else self.max_entries
         keys = self.cache[:, :width].transpose(1, 2).contiguous()
-        scores = ops.bmm(q.view(batch, seqlen * self.n_heads, self.head_dim), keys)
-        scores = ops.relu(scores).view(batch * seqlen, self.n_heads, width)
-        logits = ops.bmm(weights.view(batch * seqlen, 1, self.n_heads), scores)
-        logits = logits.float().view(batch, seqlen, width, 1)
+        scores = ops.bmm(q.view(1, seqlen * self.n_heads, self.head_dim), keys)
+        scores = ops.relu(scores).view(seqlen, self.n_heads, width)
+        logits = ops.bmm(weights.view(seqlen, 1, self.n_heads), scores)
+        logits = logits.float().view(1, seqlen, width, 1)
         if start_pos == 0:
             visible = torch.arange(1, seqlen + 1, dtype=torch.int32, device=device) // self.ratio
-            ends = visible.expand(batch, seqlen)
+            ends = visible.unsqueeze(0)
         else:
-            ends = torch.full((batch, seqlen), n_keys, dtype=torch.int32, device=device)
+            ends = torch.full((1, 1), n_keys, dtype=torch.int32, device=device)
         starts = torch.zeros_like(ends)
         idx = ops.index_topk(logits, starts, ends).squeeze(2)
-        return torch.where(idx >= 0, idx + offset, idx)
+        return torch.where(idx >= 0, idx + step.offset, idx)
 
 
 class Attention:
@@ -212,80 +249,56 @@ class Attention:
         self.attn_sink: torch.Tensor
         self.kv_cache: torch.Tensor
 
-    def reset(self, batch: int) -> None:
-        """Allocate an empty window ring and entry cache for ``batch`` requests."""
+    def reset(self) -> None:
+        """Allocate an empty window ring and entry cache."""
         self.kv_cache = torch.zeros(
-            batch,
+            1,
             self.window + self.max_entries,
             self.head_dim,
             dtype=torch.bfloat16,
             device=self.attn_sink.device,
         )
         if self.compressor is not None:
-            self.compressor.reset(batch)
+            self.compressor.reset()
         if self.indexer is not None:
-            self.indexer.reset(batch)
+            self.indexer.reset()
 
-    def _window_indices(self, seqlen: int, start_pos: int, device: torch.device) -> torch.Tensor:
-        """Each query's window keys: token positions in prefill, ring slots in decode."""
-        win = self.window
-        if start_pos == 0:
-            pos = torch.arange(seqlen, device=device).unsqueeze(1)
-            idx = (pos - win + 1).clamp(min=0) + torch.arange(min(seqlen, win), device=device)
-            return torch.where(idx > pos, -1, idx)
-        idx = torch.arange(win, device=device)
-        return torch.where(idx > start_pos, -1, idx).unsqueeze(0)
-
-    def _entry_indices(
-        self, seqlen: int, start_pos: int, offset: int, device: torch.device
-    ) -> torch.Tensor:
-        """Each query's closed compressed entries on a layer without an indexer."""
-        ratio = self.ratio
+    def _entry_indices(self, step: Step, device: torch.device) -> torch.Tensor:
+        """Each query's closed compressed entries on a layer without an indexer, ``[S, n]``."""
+        ratio, seqlen, start_pos = self.ratio, step.seqlen, step.start_pos
         if start_pos == 0:
             idx = torch.arange(seqlen // ratio, device=device).expand(seqlen, -1)
             visible = torch.arange(1, seqlen + 1, device=device).unsqueeze(1) // ratio
-            return torch.where(idx >= visible, -1, idx + offset)
+            return torch.where(idx >= visible, -1, idx + step.offset)
         idx = torch.arange(self.max_entries, device=device)
-        return torch.where(idx < (start_pos + 1) // ratio, idx + offset, -1).unsqueeze(0)
+        return torch.where(idx < (start_pos + 1) // ratio, idx + step.offset, -1).unsqueeze(0)
 
-    def __call__(
-        self,
-        ops: ModelOps,
-        rope: RoPETable,
-        x: torch.Tensor,
-        batch: int,
-        start_pos: int,
-    ) -> torch.Tensor:
-        """Attend ``x`` (``[batch * S, dim]`` bfloat16) and return ``[batch * S, dim]``."""
-        seqlen = x.shape[0] // batch
+    def __call__(self, ops: ModelOps, rope: RoPETable, x: torch.Tensor, step: Step) -> torch.Tensor:
+        """Attend ``x`` (``[S, dim]`` bfloat16) and return ``[S, dim]``."""
+        seqlen, start_pos = step.seqlen, step.start_pos
         device = x.device
         win, rd = self.window, self.rope_dim
         qr = ops.norm(self.wq_a(ops, x), self.q_norm)
-        q = self.wq_b(ops, qr).view(batch, seqlen, self.n_heads, self.head_dim)
+        q = self.wq_b(ops, qr).view(1, seqlen, self.n_heads, self.head_dim)
         q = ops.norm(q, None)
         ops.rope(q[..., -rd:], rope.cos, rope.sin, seqlen_offsets=start_pos)
         kv = ops.norm(self.wkv(ops, x), self.kv_norm)
         ops.rope(
-            kv.view(batch, seqlen, 1, self.head_dim)[..., -rd:],
+            kv.view(1, seqlen, 1, self.head_dim)[..., -rd:],
             rope.cos,
             rope.sin,
             seqlen_offsets=start_pos,
         )
         ops.kv_fake_quant(kv[:, :-rd])
-        kv = kv.view(batch, seqlen, self.head_dim)
+        kv = kv.view(1, seqlen, self.head_dim)
 
-        indices = [self._window_indices(seqlen, start_pos, device).expand(batch, seqlen, -1)]
-        offset = seqlen if start_pos == 0 else win
+        indices = [step.window]
         if self.indexer is not None:
-            indices.append(self.indexer(ops, rope, x, qr, batch, start_pos, offset))
+            indices.append(self.indexer(ops, rope, x, qr, step)[0])
         elif self.ratio:
-            indices.append(
-                self._entry_indices(seqlen, start_pos, offset, device).expand(batch, seqlen, -1)
-            )
+            indices.append(self._entry_indices(step, device))
 
-        entries = (
-            self.compressor(ops, rope, x, batch, start_pos) if self.compressor is not None else None
-        )
+        entries = self.compressor(ops, rope, x, step) if self.compressor is not None else None
         if start_pos == 0:
             kept = torch.arange(max(0, seqlen - win), seqlen, device=device)
             self.kv_cache[:, kept % win] = kv[:, kept]
@@ -299,12 +312,12 @@ class Attention:
                 self.kv_cache[:, win + start_pos // self.ratio] = entries[:, 0]
             keys = self.kv_cache
 
-        idx = torch.cat(indices, dim=-1).to(torch.int32).unsqueeze(2).contiguous()
+        idx = torch.cat(indices, dim=-1).to(torch.int32).view(1, seqlen, 1, -1)
         o = ops.attention(q, keys.unsqueeze(2).contiguous(), idx, attn_sink=self.attn_sink)
         ops.rope(o[..., -rd:], rope.cos, rope.neg_sin, seqlen_offsets=start_pos)
-        grouped = o.view(batch * seqlen, self.o_groups, -1).transpose(0, 1).contiguous()
+        grouped = o.view(seqlen, self.o_groups, -1).transpose(0, 1).contiguous()
         projected = ops.bmm(grouped, self.wo_a)
-        projected = projected.transpose(0, 1).reshape(batch * seqlen, self.o_groups * self.o_rank)
+        projected = projected.transpose(0, 1).reshape(seqlen, self.o_groups * self.o_rank)
         return self.wo_b(ops, projected)
 
 
@@ -362,20 +375,21 @@ class Block:
         self.hc_ffn: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         self.rope: RoPETable
 
-    def reset(self, batch: int) -> None:
-        """Clear this layer's decoding state for ``batch`` requests."""
-        self.attn.reset(batch)
+    def reset(self) -> None:
+        """Clear this layer's decoding state."""
+        self.attn.reset()
 
     def __call__(
-        self, ops: ModelOps, h: torch.Tensor, input_ids: torch.Tensor, start_pos: int
+        self, ops: ModelOps, h: torch.Tensor, input_ids: torch.Tensor, step: Step
     ) -> torch.Tensor:
-        """Advance the streams ``h`` (``[B, S, hc_mult, dim]``) through this layer."""
-        batch, seqlen, _, dim = h.shape
+        """Advance the streams ``h`` (``[1, S, hc_mult, dim]``) of the tokens ``input_ids``
+        (``[1, S]``) through this layer."""
+        seqlen, dim = step.seqlen, h.shape[-1]
         post, comb, x = ops.hc_pre(h, *self.hc_attn)
-        x = ops.norm(x, self.attn_norm).view(batch * seqlen, dim)
-        x = self.attn(ops, self.rope, x, batch, start_pos)
-        h = ops.hc_post(x.view(batch, seqlen, dim), h, post, comb)
+        x = ops.norm(x, self.attn_norm).view(seqlen, dim)
+        x = self.attn(ops, self.rope, x, step)
+        h = ops.hc_post(x.view(1, seqlen, dim), h, post, comb)
         post, comb, x = ops.hc_pre(h, *self.hc_ffn)
-        x = ops.norm(x, self.ffn_norm).view(batch * seqlen, dim)
+        x = ops.norm(x, self.ffn_norm).view(seqlen, dim)
         x = self.ffn(ops, x, input_ids.view(-1))
-        return ops.hc_post(x.view(batch, seqlen, dim), h, post, comb)
+        return ops.hc_post(x.view(1, seqlen, dim), h, post, comb)
