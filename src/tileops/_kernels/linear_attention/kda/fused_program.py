@@ -79,6 +79,8 @@ def fused_chunk_program(
     @tilelang.jit(
         out_idx=[-1] if pooled else {"rerun": [], "check": [-3, -2, -1]}.get(stage, [-2, -1]),
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        # Not CUDA_COMPILE_FLAGS: ptxas's output for this program changes with any added
+        # flag, a warning flag included.
         compile_flags=[
             "-O3",
             "-DENABLE_BF16",

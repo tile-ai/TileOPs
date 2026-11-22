@@ -6,6 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.moe.call_spec import PrePermuteCall, PrePermuteFwdInterface
@@ -20,7 +21,7 @@ _ROW_VECTOR = VECTOR_ACCESS_BYTES // 2
 def _make_tight_scan(numel: int, num_experts: int):
     """Count assignments and produce tight physical-PSUM metadata."""
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _scan(threads: int):
         @T.prim_func
         def _scan_main(
@@ -81,7 +82,7 @@ def _make_parallel_tight_scan(
     blocks = (numel + routes_per_block - 1) // routes_per_block
     prefix_threads = min(1024, 1 << max(0, (num_experts - 1).bit_length()))
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _count():
         @T.prim_func
         def _count_main(
@@ -111,7 +112,7 @@ def _make_parallel_tight_scan(
 
         return _count_main
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _prefix():
         @T.prim_func
         def _prefix_main(
@@ -153,7 +154,7 @@ def _make_parallel_tight_scan(
 
         return _prefix_main
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _scatter():
         @T.prim_func
         def _scatter_main(
@@ -195,7 +196,7 @@ def _make_aligned_per_row_scan(
     """Produce aligned slots, per-row expert IDs, and inverse indices."""
     owner_search_steps = max(1, num_experts.bit_length())
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _scan(threads: int):
         @T.prim_func
         def _scan_main(
@@ -287,7 +288,7 @@ def _make_aligned_gather(
     threads = row_threads(hidden_size, _ROW_VECTOR)
     grid = (physical_rows + rows_per_block - 1) // rows_per_block
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _gather():
         @T.prim_func
         def _gather_main(
@@ -326,7 +327,7 @@ def _make_token_gather(num_tokens: int, top_k: int, hidden_size: int, dtype: str
     threads = row_threads(hidden_size, _ROW_VECTOR)
     per_block = (top_k + splits - 1) // splits
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _gather():
         @T.prim_func
         def _token_gather_main(

@@ -24,7 +24,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.linear_attention.chunk_plan import fp32_exponent_range
@@ -179,7 +179,7 @@ def chunk_prepare_program(
         out_idx=[-6, -5, -4, -3, -2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "-DENABLE_BF16",
             "--use_fast_math",
             *(csrc_include("kda_prefill_helper.h") if centred and not single else []),
@@ -1081,7 +1081,7 @@ def chunk_state_program(
     @tilelang.jit(
         out_idx=list(range(-outputs - (0 if pooled else 1), 0)),
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         # Built here so the jit builder closes over scalars only.
@@ -1379,7 +1379,7 @@ def chunk_output_program(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         # Built here so the jit builder closes over scalars only.

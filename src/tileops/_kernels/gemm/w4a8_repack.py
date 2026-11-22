@@ -128,7 +128,7 @@ class W4A8RepackKernel(Kernel, W4A8RepackFwdInterface):
     @classmethod
     def entry_for(cls, call: W4A8RepackCall) -> Entry:
         """The program depends on ``(n, k)`` only; the architecture is validated, not read."""
-        return (call.n, call.k), lambda: cls(call.n, call.k, device_index=call.device.index)
+        return (call.n, call.k), lambda: cls(call.n, call.k, device_index=call.device_index)
 
     def __init__(
         self,

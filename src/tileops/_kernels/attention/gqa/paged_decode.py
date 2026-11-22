@@ -23,7 +23,7 @@ from tileops._kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
@@ -286,7 +286,7 @@ def gqa_decode_no_split_paged_kernel(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(block_M, block_N, num_stages, threads):
         shape_q = [batch, seqlen_q, heads, dim]
@@ -378,7 +378,7 @@ def _gqa_decode_split_paged_kernel(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(block_M, block_N, num_split, num_stages, threads):
         shape_q = [batch, seqlen_q, heads, dim]

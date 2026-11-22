@@ -8,7 +8,7 @@ from tileops._kernels.attention.call_spec import (
     MergeAttentionStatesCall,
     MergeAttentionStatesFwdInterface,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 
@@ -21,7 +21,7 @@ def _merge_states_kernel(dim, dtype, cols, run, tail, base2):
     # count ahead of every load, which delays the loads of a single-wave launch.
     @tilelang.jit(
         out_idx=[4, 5],
-        compile_flags=["--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "--use_fast_math"],
         pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True},
     )
     def _func(block_rows, threads):

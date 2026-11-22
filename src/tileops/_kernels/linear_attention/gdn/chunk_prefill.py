@@ -27,7 +27,7 @@ class GDNChunkPrefillFwdKernel(Kernel, GDNFwdInterface):
         return call, lambda: cls(call)
 
     def __init__(self, call):
-        super().__init__(device_index=call.device.index)
+        super().__init__(device_index=call.device_index)
         self.call = call
 
     def forward(

@@ -16,7 +16,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
     WARPGROUP_THREADS,
@@ -112,7 +112,7 @@ def _prenorm_gemm_kernel(
         out_idx=[2, 3],
         pass_configs={tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "-DENABLE_BF16",
             *csrc_include("dense_wgmma_helper.h", "hyper_connection_helper.h"),
         ],

@@ -15,7 +15,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMINT8W8A8Call, GEMMINT8W8A8FwdInterface
 from tileops._kernels.gemm.dense import _narrow_grid, _narrow_grid_tile, native_acc_layout
@@ -257,7 +257,7 @@ def _gemm_int8_ws_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_int8_ws_func(
         block_n: int = 64,
@@ -500,7 +500,7 @@ def _gemm_int8_pingpong_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_int8_pingpong_func(
         num_stages: int = 4,
@@ -912,7 +912,7 @@ def _gemm_int8_simple_kernel(
     sb_shape = (1, n) if per_channel else (1, 1)
     bias_shape = (n,) if has_bias else (1,)
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _gemm_int8_simple_func(
         block_m: int = 128,
         block_n: int = 128,

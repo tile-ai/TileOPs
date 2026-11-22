@@ -6,7 +6,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.pool.call_spec import (
     MaxPool3dFwdInterface,
     MaxPool3dIndicesFwdInterface,
@@ -54,7 +54,7 @@ def _max_pool3d_kernel(
         and axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
     )
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _max_pool3d_func(block_m: int, threads: int):
         tile_full = total % block_m == 0
 
@@ -139,7 +139,7 @@ def _max_pool3d_with_indices_kernel(
     )
 
     # Only the float32 vector path reads through the csrc header, so only it includes it.
-    flags = ["-O3", "-DENABLE_BF16"]
+    flags = [*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"]
     if dtype == "float32":
         flags += csrc_include("streaming_load.h")
 

@@ -8,7 +8,7 @@ uses the blockwise scheme of kda/inverse.py and is multiplied into the WY vector
 import tilelang
 import tilelang.language as T
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.linear_attention.chunk_plan import CHUNK_SIZE
@@ -45,7 +45,7 @@ def _gate_program(tokens, seqs, HV, K, dtype, has_bias, bound, grid_chunks=None,
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         @T.macro
@@ -159,7 +159,7 @@ def _norm_program(tokens, H, K, dtype, scale):
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         @T.prim_func
@@ -228,7 +228,7 @@ def _staged_norm_program(rows, K, dtype, scale, rows_per_cta):
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         @T.prim_func
@@ -333,7 +333,7 @@ def _diagonal_reduce_program(
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         @T.macro
@@ -471,7 +471,7 @@ def _diagonal_program(
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         buffers, row_gram = diagonal_row_gram(K, dtype, qscale)
@@ -590,7 +590,7 @@ def _offdiagonal_program(
     @tilelang.jit(
         out_idx=[],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         @T.macro
@@ -806,7 +806,7 @@ def _inverse_wy_program(
     @tilelang.jit(
         out_idx=[-6, -5, -4, -3, -2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         @T.prim_func

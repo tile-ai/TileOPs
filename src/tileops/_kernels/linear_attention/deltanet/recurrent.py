@@ -17,7 +17,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.autotune import TUNING_FATAL, candidate_busy_ms
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     DeltaNetDecodeCall,
@@ -239,7 +239,7 @@ def _deltanet_decode_warp_tl(
     total_blocks = batch * head * (dim_v // v_tile)
     k_chunk = dim_k // raw_group_size
 
-    raw_compile_flags = ["-O3", "-DENABLE_BF16", "--use_fast_math"]
+    raw_compile_flags = [*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"]
     if raw_maxrregcount > 0:
         raw_compile_flags.append(f"--maxrregcount={raw_maxrregcount}")
 
@@ -338,7 +338,7 @@ def _deltanet_decode_tl(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _decode_func(num_stages, threads=128):
         @T.macro
@@ -644,7 +644,7 @@ def _deltanet_decode_fp32_tl(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _decode_func(num_stages, threads=128):
         @T.prim_func

@@ -14,7 +14,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMW4A16Call, GEMMW4A16FwdInterface
 from tileops._kernels.gemm.dense import splitk_reduce_kernel
@@ -111,7 +111,7 @@ def _w4a16_streamk_reduce_kernel(
 ) -> Callable:
     """Sum the ``[tiles_n, slots, m, block_n]`` FP32 stream-K partials into ``[m, n]``."""
 
-    @tilelang.jit(compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def build(elems_per_cta: int = 1024) -> Callable:
         def slot_sum(partials, tile, row, offset):
             return functools.reduce(
@@ -606,7 +606,7 @@ def _gemm_w4a16_kernel(
         out_idx=-1,
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "-DENABLE_BF16",
             *csrc_include("cluster_partials.h", "w4a16_decode_helper.h", "dense_wgmma_helper.h"),
         ],

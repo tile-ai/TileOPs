@@ -6,7 +6,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
@@ -25,7 +25,7 @@ __all__ = ["MaxPool1dKernel", "MaxPool1dWithIndicesKernel"]
 
 _NEG_INF = float("-inf")
 _NAN = float("nan")
-_JIT_FLAGS = ["-O3", "-DENABLE_BF16"]
+_JIT_FLAGS = [*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"]
 
 # Taps one row-reduce block may hold. It bounds the two f32 fragments together: 8192
 # taps is 64 KB over a 256-thread block, or 64 registers a thread. _plan admits a row

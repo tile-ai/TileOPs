@@ -17,7 +17,7 @@ from tileops._kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     LOG2E,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -50,7 +50,7 @@ def _mla_varlen_fwd_kernel(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _mla_varlen_fwd_func(block_m: int, block_n: int, num_stages: int, threads: int) -> Callable:
         total_q = T.dynamic("total_q")

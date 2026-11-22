@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E, WARP_MMA_ROWS
 from tileops._kernels.linear_attention.gdn.prefill_common import (
     L2NORM_EPS,
@@ -21,7 +21,7 @@ from tileops._kernels.state_pool import state_row
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     },
-    compile_flags=["-O3", "-DENABLE_BF16"],
+    compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
 )
 def _build_fused_chunk_gdr_fwd_kernel(
     H,

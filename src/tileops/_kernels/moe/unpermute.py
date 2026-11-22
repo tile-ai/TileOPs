@@ -14,7 +14,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import PostPermuteCall, PostPermuteFwdInterface
@@ -41,7 +41,7 @@ def _make_unpermute_kernel(
     """
     numel = num_tokens * top_k
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _unpermute():
         @T.macro
         def reduce_tokens(expert_output, inverse_indices, topk_weights, residual, output):

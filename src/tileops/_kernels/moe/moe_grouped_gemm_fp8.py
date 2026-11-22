@@ -15,7 +15,7 @@ import torch
 from tilelang.transform import PassConfigKey
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     QUANT_SCALE_BLOCK,
     TMA_DTYPE_BFLOAT16,
@@ -112,7 +112,7 @@ def _moe_grouped_gemm_fp8_kernel(
     @tilelang.jit(
         pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "--use_fast_math",
             "-DENABLE_BF16",
             *csrc_include("moe_grouped_gemm_fp8_helper.h"),

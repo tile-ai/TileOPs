@@ -19,7 +19,7 @@ Outputs: dk, dv, dbeta
 import tilelang
 import tilelang.language as T
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 
 __all__ = ["compute_w_u_bwd_tl"]
 
@@ -50,7 +50,7 @@ def compute_w_u_bwd_tl(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _kernel_func(threads=128):
         @T.prim_func

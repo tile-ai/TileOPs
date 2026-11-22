@@ -4,7 +4,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.convolution._common import (
     SWIZZLE_PANEL,
     conv_autotune_configs,
@@ -62,7 +62,7 @@ def _conv3d_kernel(
     # the gathered data loads. The weight T.copy stays eligible for TMA.
     @tilelang.jit(
         out_idx=[2],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
         pass_configs={"tl.enable_async_copy": False},
     )
     def _conv3d_func(
@@ -209,7 +209,7 @@ def _conv3d_group_kernel(
 
     @tilelang.jit(
         out_idx=[2],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
         pass_configs={"tl.enable_async_copy": False},
     )
     def _conv3d_group_func(
@@ -381,7 +381,7 @@ def _conv3d_ndhwc_kernel(
     # more, which cp.async takes inside the pipelined K loop.
     @tilelang.jit(
         out_idx=[4],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _conv3d_ndhwc_func(
         block_m: int,

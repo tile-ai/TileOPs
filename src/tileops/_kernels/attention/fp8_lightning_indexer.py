@@ -8,7 +8,7 @@ from tilelang import language as T
 from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import SETMAXNREG_GRANULARITY, SM90_REGISTERS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
@@ -492,7 +492,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         # warpgroup's loop and the consumers' would deadlock them.
         tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
     },
-    compile_flags=["-O3", "-DNDEBUG", *csrc_include("lightning_indexer_helper.h")],
+    compile_flags=[*CUDA_COMPILE_FLAGS, *csrc_include("lightning_indexer_helper.h")],
 )
 def _fp8_lightning_indexer_ws_kernel(
     batch,

@@ -4,7 +4,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.convolution._common import (
     SWIZZLE_PANEL,
     conv_autotune_configs,
@@ -40,7 +40,7 @@ def _conv2d_1x1_kernel(
     accum_dtype = "float"
     hw = h * w
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _conv2d_1x1_func(
         block_m: int,
         block_n: int,
@@ -145,7 +145,7 @@ def _conv2d_kernel(
     # the gathered data loads. The weight T.copy stays eligible for TMA.
     @tilelang.jit(
         out_idx=[2],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
         pass_configs={"tl.enable_async_copy": False},
     )
     def _conv2d_func(
@@ -281,7 +281,7 @@ def _conv2d_group_kernel(
 
     @tilelang.jit(
         out_idx=[2],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
         pass_configs={"tl.enable_async_copy": False},
     )
     def _conv2d_group_func(
@@ -434,7 +434,7 @@ def _conv2d_depthwise_kernel(
     out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     out_hw = out_h * out_w
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _conv2d_depthwise_func(
         block_m: int,
         block_n: int,
@@ -537,7 +537,7 @@ def _conv2d_symmetric_kernel(
 
     @tilelang.jit(
         out_idx=[4],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
         pass_configs={"tl.enable_async_copy": False},
     )
     def _conv2d_symmetric_func(

@@ -12,7 +12,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.gla.call_spec import (
@@ -63,7 +63,7 @@ def _gla_dense_decode_tl(
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def decode():
         # A parameter this build leaves unread is declared one element wide, and the kernel

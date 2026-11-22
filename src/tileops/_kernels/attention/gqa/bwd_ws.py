@@ -10,7 +10,7 @@ from tileops._kernels.attention.call_spec import (
     AttentionCall,
     GQABwdInterface,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 
@@ -66,7 +66,7 @@ def _gqa_bwd_ws_kernel(
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "-DENABLE_BF16",
             *csrc_include("tile_claim.h", "wgmma_rows.h", "bulk_zero.h", "dq_landing.h"),
         ],

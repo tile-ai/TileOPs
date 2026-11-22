@@ -11,7 +11,7 @@ import math
 import tilelang
 import tilelang.language as T
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 
 __all__ = ["fused_prepare_compute_w_u_tl"]
 
@@ -48,7 +48,7 @@ def fused_prepare_compute_w_u_tl(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _fused_func(threads=128):
         @T.macro

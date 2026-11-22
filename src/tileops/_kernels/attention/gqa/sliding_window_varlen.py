@@ -22,7 +22,7 @@ from tileops._kernels.attention.online_softmax import (
     make_rescale,
 )
 from tileops._kernels.attention.varlen import VarlenKernel
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 
@@ -47,7 +47,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     @tilelang.jit(
         out_idx=[5],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _gqa_sw_fwd_varlen_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
         @T.macro

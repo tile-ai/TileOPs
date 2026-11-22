@@ -20,7 +20,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInterface
@@ -39,7 +39,7 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
     max_padded = numel + (num_experts + 1) * (block_size - 1)
     max_num_blocks = math.ceil(max_padded / block_size)
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _align(threads: int):
         @T.prim_func
         def _align_main(
@@ -174,7 +174,7 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     scatter_blocks = math.ceil(numel / threads)
     expert_rounds = math.ceil(num_experts / threads)
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _scatter():
         @T.prim_func
         def _scatter_main(
@@ -248,7 +248,7 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     # holds worker k's first rank per expert and the last row the totals.
     cnts_size = (worker_threads + 1) * num_experts
 
-    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _small():
         @T.prim_func
         def _small_main(

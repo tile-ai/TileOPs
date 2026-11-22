@@ -4,7 +4,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry
 from tileops._kernels.pool.call_spec import AdaptiveAvgPool2dFwdInterface, AdaptivePool2dCall
@@ -34,7 +34,7 @@ def _adaptive_avg_pool2d_kernel(
     max_kh = max_adaptive_bin_extent(h_in, out_h)
     max_kw = max_adaptive_bin_extent(w_in, out_w)
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _adaptive_avg_pool2d_func(block_m: int, threads: int):
         @T.prim_func
         def _adaptive_avg_pool2d_main(
@@ -134,7 +134,7 @@ def _adaptive_avg_pool2d_lanes_kernel(
     # A bin row's loads; a bin as wide as the input row is one contiguous run of its rows.
     row_slots = (w_in if out_w == 1 else max_kw) // vector
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _adaptive_avg_pool2d_lanes_func(lanes: int, threads: int):
         bins_per_block = threads // lanes
         # Lanes split a bin row first and its rows with the rest.

@@ -5,7 +5,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool3dFwdInterface, AvgPoolCall
@@ -14,7 +14,7 @@ from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow
 __all__ = ["AvgPool3dKernel"]
 
 # Every kernel here reads through the same csrc header, so one flag list keys their caches.
-_JIT_FLAGS = ["-O3", "-DENABLE_BF16", *csrc_include("streaming_load.h")]
+_JIT_FLAGS = [*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("streaming_load.h")]
 
 
 def _by_divisor(total, divisor: int):

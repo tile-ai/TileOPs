@@ -26,7 +26,7 @@ from tileops._kernels.attention.call_spec import (
     MLADenseBwdInterface,
     MLAVarlenBwdInterface,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -42,7 +42,7 @@ def _delta_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: 
     @tilelang.jit(
         out_idx=[2],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _delta_func() -> Callable:
         total = T.dynamic("total_q")
@@ -84,7 +84,7 @@ def _dq_land_kernel(heads: int, dim_qk: int, scale: float, dtype: str) -> Callab
     @tilelang.jit(
         out_idx=[1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _dq_land_func() -> Callable:
         total = T.dynamic("total_q")
@@ -125,7 +125,7 @@ def _bwd_kernel(
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _bwd_func(block_n: int, block_m: int, num_stages: int, threads: int) -> Callable:
         total_q = T.dynamic("total_q")

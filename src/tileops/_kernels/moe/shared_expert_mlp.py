@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel
 from tileops._kernels.gemm.heuristics import small_m_splitk_config
@@ -26,7 +26,7 @@ def _silu_mul_fused_kernel(M: int, N: int, dtype_str: str):
     @tilelang.jit(
         out_idx=[1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(block_m, block_n, threads):
         gate_up_shape = (M, N * 2)

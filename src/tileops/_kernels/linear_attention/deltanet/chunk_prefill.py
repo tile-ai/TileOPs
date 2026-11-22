@@ -39,7 +39,7 @@ class DeltaNetChunkPrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         return call, lambda: cls(gated)
 
     def __init__(self, call):
-        super().__init__(device_index=call.device.index)
+        super().__init__(device_index=call.device_index)
         self.call = call
 
     def forward(self, q, k, v, beta, initial_state=None, cu_seqlens=None, cu_seqlens_cpu=None):
