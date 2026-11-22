@@ -67,35 +67,15 @@ class GatedPoolCompressFwdInterface(KernelInterface):
         """
 
 
-# A short window's blocks keep SM_WARPS warps an SM: fewer starve the loads a prefill keeps in
-# flight. A window of at most REG_SPAN positions pools in a warp from registers, rounding its
-# weights and products to kv's dtype as the reference does: its l_sc and l_kv, SPAN *
-# WARP_VEC float32 each, take at most a thread's share of an SM's registers. A longer one
-# pools across a block, BATCH positions a warp at a time folded in online, in float32: for
-# float32 kv the same sum, for bfloat16 kv within the entry's bfloat16 tolerance. The kernel
-# and the choice of its program agree on these.
-SM_WARPS = 16
-WARP_VEC = 4
-REG_SPAN = 65536 // (SM_WARPS * 32) // (2 * WARP_VEC)
-BATCH = 8
-
-
-def _lane_vec(ratio: int, overlap: bool, dim: int) -> "tuple[bool, int]":
-    """Whether a window pools across a block, and the channels a lane pools at once: WARP_VEC
-    for a warp's window, two for a block's, which spreads a long window's loads over twice the
-    blocks."""
-    if (2 if overlap else 1) * ratio > REG_SPAN:
-        return True, 2 if dim % 2 == 0 else 1
-    return False, WARP_VEC if dim % WARP_VEC == 0 else 1
-
-
 @target_cache(maxsize=32)
 def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_warps):
+    K = GatedPoolCompressKernel
+    SM_WARPS, BATCH = K.SM_WARPS, K.BATCH
     C = 2 if overlap else 1
     # The positions a window pools, and the ring rows a request keeps.
     SPAN = C * ratio
     WIDTH = C * dim
-    LONG, VEC = _lane_vec(ratio, overlap, dim)
+    LONG, VEC = K._lane_vec(ratio, overlap, dim)
     # A long window's warps, one per BATCH positions and at most long_warps (at least 3, as
     # SPAN > 16), and the batches each folds.
     LONG_WARPS = min(long_warps, -(-SPAN // BATCH))
@@ -131,6 +111,9 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_w
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
             tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True,
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            # Binds stay binds: TileLang 0.1.15's IfStmtBinding would inline them into one if a
+            # statement, which MergeIfStmt does not rejoin, putting window loads behind branches.
+            tilelang.PassConfigKey.TL_IF_STMT_BINDING_INLINE_REPLAYABLE_BINDS: False,
         },
     )
     def gated_pool_compress_func():
@@ -681,12 +664,9 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_w
                 if not LONG:
                     T.annotate_min_blocks_per_sm(max(1, SM_WARPS // BLOCK_WARPS))
                 if LONG and N_BATCH == 1:
-                    # Two blocks an SM: 16 warps' threads each fit 64 registers with a single
-                    # batch live.
-                    T.annotate_min_blocks_per_sm(2)
+                    T.annotate_min_blocks_per_sm(K.LONG_BLOCKS_PER_SM)
                 elif LONG and long_warps < 16:
-                    # Four blocks of 8 warps an SM, at 64 registers a thread as for 16.
-                    T.annotate_min_blocks_per_sm(4)
+                    T.annotate_min_blocks_per_sm(K.SPLIT_BLOCKS_PER_SM)
                 tx = T.get_thread_binding()
                 warp = tx // 32
                 lane = tx % 32
@@ -973,6 +953,8 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_w
                         else (bx // CHUNKS - n_req) * BLOCK_WARPS + warp
                     )
                     if l_g < n_windows:
+                        # Let-bound: one if guards the statements below, not one each reading l_g.
+                        g = l_g
                         # The request whose slots hold g: the last i with
                         # cu_seqlens[i] // ratio <= g, which i = 0 meets; an earlier request
                         # with the same start has no slot. The warp's lanes test 32 evenly
@@ -995,7 +977,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_w
                                                         T.min(l_lo + lane * l_step, l_hi)
                                                     ]
                                                     // ratio
-                                                    <= l_g
+                                                    <= g
                                                 )
                                             ),
                                         )
@@ -1010,7 +992,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_w
                         l_count = cu_seqlens[l_req + 1] - l_base
                         # Slot g - base // ratio: the window closing that many windows after
                         # the first at or after first + SPAN - 1.
-                        l_p = (T.ceildiv(l_first + SPAN, ratio) + l_g - l_base // ratio) * ratio - 1
+                        l_p = (T.ceildiv(l_first + SPAN, ratio) + g - l_base // ratio) * ratio - 1
                         if l_p < l_first + l_count and chunk == 0:
                             # The valid flags of the window's own ratio positions, the last true.
                             if LONG:
@@ -1089,6 +1071,32 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    # A short window's blocks keep SM_WARPS warps an SM: fewer starve the loads a prefill
+    # keeps in flight. A window of at most REG_SPAN positions pools in a warp from registers,
+    # rounding its weights and products to kv's dtype as the reference does: its l_sc and
+    # l_kv, SPAN * WARP_VEC float32 each, take at most a thread's share of an SM's registers.
+    # A longer one pools across a block, BATCH positions a warp at a time folded in online, in
+    # float32: for float32 kv the same sum, for bfloat16 kv within the entry's bfloat16
+    # tolerance. The program builder and _program_facts agree on these.
+    SM_WARPS = 16
+    WARP_VEC = 4
+    REG_SPAN = 65536 // (SM_WARPS * 32) // (2 * WARP_VEC)
+    BATCH = 8
+    # The blocks an SM keeps of a long window's 16-warp program with a single batch live, and
+    # of its 8-warp program (SPLIT), each at 64 registers a thread: the kernel asks for them,
+    # and _program_facts counts a call's waves by them.
+    LONG_BLOCKS_PER_SM = 2
+    SPLIT_BLOCKS_PER_SM = 4
+
+    @classmethod
+    def _lane_vec(cls, ratio: int, overlap: bool, dim: int) -> "tuple[bool, int]":
+        """Whether a window pools across a block, and the channels a lane pools at once:
+        WARP_VEC for a warp's window, two for a block's, which spreads a long window's loads
+        over twice the blocks."""
+        if (2 if overlap else 1) * ratio > cls.REG_SPAN:
+            return True, 2 if dim % 2 == 0 else 1
+        return False, cls.WARP_VEC if dim % cls.WARP_VEC == 0 else 1
+
     @classmethod
     def entry_for(cls, call: GatedPoolCompressCall) -> Entry:
         return call, lambda: cls(call.ratio, call.overlap, call.dim, call.dtype)
@@ -1141,11 +1149,12 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
         take; each wave pays a request's metadata round trip and the merge again.
         """
         one_token = t_q <= n
-        long, vec = _lane_vec(self.ratio, self.overlap, self.dim)
+        long, vec = self._lane_vec(self.ratio, self.overlap, self.dim)
         span = (2 if self.overlap else 1) * self.ratio
         blocks = (n + t_q // self.ratio) * -(-self.dim // (32 * vec))
         sms = self.build_target.sm_count
-        eight = long and one_token and -(-span // BATCH) == 16 and 2 * sms < blocks <= 4 * sms
+        one_split_wave = self.LONG_BLOCKS_PER_SM * sms < blocks <= self.SPLIT_BLOCKS_PER_SM * sms
+        eight = long and one_token and -(-span // self.BATCH) == 16 and one_split_wave
         return one_token, 8 if eight else 16
 
     def _compile(self, cfg: dict, one_token: bool, long_warps: int):

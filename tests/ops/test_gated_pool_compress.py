@@ -83,15 +83,18 @@ def _check(test):
             marks=pytest.mark.full,
             id="decode-dim10",
         ),
-        # One token a request, a window over a block: closing and not. Forty requests of eight
-        # channel chunks fit one wave of 8-warp blocks on an SM90 part, not of 16-warp blocks.
+        # At most a token a request, a window over a block: forty requests of eight channel
+        # chunks fit one wave of the one-token program's 8-warp blocks on an SM90 part, not of
+        # 16-warp blocks. The three-token request pools the window its token at 127 closes on
+        # the general request path, from its ring and its tokens, and writes its rows; the
+        # others are empty or one token, closing a window and not.
         pytest.param(
             torch.float32,
             512,
             128,
             False,
-            [1] * 40,
-            [128 * i + 127 if i % 4 else 128 * i + 5 for i in range(40)],
+            [3, 0, 0] + [1] * 37,
+            [126, 40, 300] + [128 * i + 127 if i % 4 else 128 * i + 5 for i in range(3, 40)],
             marks=pytest.mark.full,
             id="decode-long",
         ),
@@ -285,8 +288,8 @@ def test_gated_pool_compress_prefill_then_decode_equals_one_shot(
 @pytest.mark.parametrize(
     "n",
     [
-        pytest.param(40, marks=pytest.mark.smoke, id="8-warp"),
-        pytest.param(4, marks=pytest.mark.full, id="16-warp"),
+        pytest.param(4, marks=pytest.mark.smoke, id="16-warp"),
+        pytest.param(40, marks=pytest.mark.full, id="8-warp"),
     ],
 )
 def test_gated_pool_compress_long_window_decode_equals_prefill(n: int) -> None:
@@ -325,6 +328,28 @@ def test_gated_pool_compress_long_window_decode_equals_prefill(n: int) -> None:
     assert bool(valid[ratio - 1 :: ratio].all()) and bool(last[1].all())
     assert torch.equal(last[0], entries[ratio - 1 :: ratio])
     assert torch.equal(steps_kv, once_kv) and torch.equal(steps_score, once_score)
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        pytest.param(1, marks=pytest.mark.smoke, id="one-token"),
+        pytest.param(3, marks=pytest.mark.full, id="request"),
+    ],
+)
+def test_gated_pool_compress_flushes_subnormal_score_rows(tokens: int) -> None:
+    """A float32 score below the normal range with zero ape leaves its ring rows' score + ape
+    at zero, as the kernel flushes subnormals: a request's only token and a longer request's
+    tokens alike."""
+    dim, ratio, start = 128, 4, 11
+    kv = torch.randn(tokens, 2 * dim, device=run_device())
+    score = torch.full((tokens, 2 * dim), 1e-39, device=run_device())
+    ape = torch.zeros(ratio, 2 * dim, device=run_device())
+    op = GatedPoolCompressFwdOp(ratio, True)
+    kv_state, score_state = _ring(dim, ratio, True)
+    _call(op, kv, score, ape, kv_state, score_state, start)
+    rows = [p % (2 * ratio) for p in range(start, start + tokens)]
+    assert torch.equal(score_state[1, rows], torch.zeros(tokens, 2 * dim, device=run_device()))
 
 
 @pytest.mark.smoke
