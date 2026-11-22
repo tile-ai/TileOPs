@@ -611,3 +611,44 @@ def test_concurrent_readings_are_taken_in_turn(monkeypatch, no_device):
     _from_threads(lambda: tileops_autotune.candidate_busy_ms(lambda: None, 0, 1))
 
     assert overlap.most == 1
+
+
+def _tuned_impl():
+    return tileops_autotune.autotune(configs=_AccumulatingKernel.autotune_configs)(
+        _accumulating_builder("cuda")  # lint: device-literal allow: a compile target
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(("mode", "entry"), [("lazy", "__call__"), ("eager", "compile")])
+def test_candidates_compile_at_once(monkeypatch, mode, entry):
+    """The tuner's compile pool builds its candidates together; TileLang 0.1.15 holds one
+    lock across every candidate's compile."""
+    overlap = _Overlap()
+    impl = _tuned_impl()
+    monkeypatch.setattr(type(impl.jit_impl), entry, lambda self, *args, **kwargs: overlap.enter())
+    compile_one = impl._make_jit_compile_func(mode, (), {})
+
+    _from_threads(lambda: compile_one(loops=1, __pass_configs__=None))
+
+    assert overlap.most > 1
+
+
+@pytest.mark.smoke
+def test_a_candidates_pass_options_stay_off_the_shared_jit(monkeypatch):
+    """A candidate with its own pass options compiles on a copy carrying them, so a candidate
+    compiling at the same time on the shared JIT object never reads them."""
+    impl = _tuned_impl()
+    seen = []
+    monkeypatch.setattr(
+        type(impl.jit_impl),
+        "compile",
+        lambda self, *args, **kwargs: seen.append((self is impl.jit_impl, self.pass_configs)),
+    )
+    shared = impl.jit_impl.pass_configs
+    options = {"tl.disable_warp_specialized": True}
+
+    impl._make_jit_compile_func("lazy", (), {})(loops=1, __pass_configs__=options)
+
+    assert seen == [(False, {**(shared or {}), **options})]
+    assert impl.jit_impl.pass_configs == shared
