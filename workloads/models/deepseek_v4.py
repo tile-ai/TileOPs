@@ -89,12 +89,14 @@ def fp4_gemm(a, a_s, b, b_s, scale_dtype=torch.float32):
     return out.to(torch.get_default_dtype()).view(*a.shape[:-1], b.shape[0])
 
 
-def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale, chunk: int = 256, p_dtype=None):
+def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale, p_dtype=None):
     """``kernel.sparse_attn``: each query attends in float32 to the ``kv`` rows its indices
     name (-1 skips), ``exp(attn_sink[h])`` joining head ``h``'s softmax denominator.
 
     ``p_dtype`` rounds the unnormalized probabilities before they weight the values, as the
-    TileLang kernel rounds them to bfloat16."""
+    TileLang kernel rounds them to bfloat16. Queries run 256 at a time, which bounds the float32
+    ``kv`` rows gathered for one block of queries."""
+    chunk = 256
     b, m, h, d = q.shape
     out = torch.empty_like(q)
     sink = attn_sink.float().view(1, 1, h, 1)
