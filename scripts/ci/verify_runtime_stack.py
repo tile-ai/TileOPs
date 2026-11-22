@@ -9,6 +9,7 @@ names its own fix.
 
 import importlib.metadata as md
 import importlib.util
+import site
 import sys
 from pathlib import Path
 
@@ -52,9 +53,20 @@ def _unsatisfied() -> list[str]:
     A requirement naming extras, such as ``nvidia-cutlass-dsl[cu13]``, also checks what those
     extras of the named package require.
     """
-    dists = {canonicalize_name(d.metadata["Name"]): d for d in md.distributions()}
-    overridden = _overridden()
+    # The interpreter's site directories only: importing setuptools puts its vendored copies of
+    # packaging and wheel on sys.path, and those are setuptools' own, not installs. The first copy
+    # found wins, as for an import; a second one is reported.
+    dists: dict[str, md.Distribution] = {}
     found = []
+    for dist in md.distributions(path=site.getsitepackages()):
+        name = canonicalize_name(dist.metadata["Name"])
+        first = dists.setdefault(name, dist)
+        if first is not dist and first.locate_file("") != dist.locate_file(""):
+            found.append(
+                f"{name} is installed twice: {first.version} at {first.locate_file('')} "
+                f"and {dist.version} at {dist.locate_file('')}"
+            )
+    overridden = _overridden()
     pending = [(name, "") for name in dists]
     seen = set(pending)
     while pending:
