@@ -14,7 +14,7 @@ from collections.abc import Callable
 import tilelang
 import tilelang.language as T
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E, MAX_BLOCK_THREADS
 from tileops._kernels.linear_attention.gdn.prefill_common import L2NORM_EPS, softplus
 from tileops._kernels.state_pool import state_row
@@ -165,7 +165,7 @@ def delta_decode_tl(
     # A pooled build writes the advanced state into the pool, so only the output is returned.
     @tilelang.jit(
         out_idx=[-1] if pooled else [-2, -1],
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def _decode():
         # A parameter the flags leave unread is declared one element wide; the kernel hands

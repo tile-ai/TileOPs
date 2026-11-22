@@ -5,6 +5,8 @@ tiles through TMA rings while a consumer warpgroup maintains online softmax
 partials. Shared memory merges consumer and split-block partials.
 """
 
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -16,13 +18,14 @@ from tileops._kernels.attention.call_spec import (
     MHAPagedDecodeFwdInterface,
 )
 from tileops._kernels.attention.stream_counter import stream_counter
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     LOG2E,
     VECTOR_ACCESS_BYTES,
 )
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 
 __all__ = ["MHADecodePagedWSKernel"]
@@ -68,7 +71,7 @@ def _mha_decode_paged_ws_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(block_N: int, num_split: int, stages: int, group: int):
         rows_per_warp = block_N // cons_warps
@@ -215,10 +218,9 @@ def _mha_decode_paged_ws_kernel(
 
                             # One max per query row and tile, across the warp's rows.
                             for g in T.unroll(group):
-                                for r in T.unroll(lanes_per_row.bit_length() - 1):
-                                    dot[g] += T.shfl_xor(
-                                        dot[g], T.shift_right(lanes_per_row // 2, r)
-                                    )
+                                warp_reduce(
+                                    dot, operator.add, first=g, lanes=lanes_per_row, high_first=True
+                                )
                                 dot[g] = T.if_then_else(
                                     row0 + j_own < row_len[g], dot[g] * scale, -T.infinity(accum)
                                 )

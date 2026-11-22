@@ -19,7 +19,7 @@ from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
 )
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -70,6 +70,8 @@ def _gemm_fp8_1d2d_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
+        # Not CUDA_COMPILE_FLAGS: its -DNDEBUG changes ptxas's register allocation and
+        # schedule for the 64x16 tile.
         compile_flags=[
             "-O3",
             "--use_fast_math",
@@ -121,6 +123,144 @@ def _gemm_fp8_1d2d_kernel(
             mt[0] = first_m + (flat_id % tiles_per_group) % group_m
             nt[0] = (flat_id % tiles_per_group) // group_m
 
+        @T.macro
+        def consume(
+            wg,
+            a_shared,
+            b_shared,
+            scale_a_ring,
+            one_scale_b,
+            shared_c,
+            full,
+            empty,
+            scale_a_full,
+            scale_a_empty,
+            consumer_index: T.Ref,
+            scale_a_consumer: T.Ref,
+            partial,
+            final,
+            scales,
+            mt,
+            nt,
+            pid,
+            tx,
+            acc_row0,
+            acc_row1,
+            c,
+        ):
+            """Consumer warpgroup ``wg``: WGMMA and store of the 64 rows from ``wg * half_m``."""
+            row = wg * half_m
+            T.inc_max_nreg(240)
+            for wave in T.serial(max_waves):
+                flat_id = T.int32(sm_count) * wave + pid
+                if flat_id < total_tiles:
+                    decode(flat_id, mt, nt)
+                    m_start = mt[0] * block_m
+                    n_start = nt[0] * block_n
+                    if not stage_1d2d_b_per_k and scale_k < 16:
+                        T.sync_threads(barrier_id=10, arrive_count=threads)
+                    T.clear(final)
+                    for group in T.unroll(num_groups, unroll_factor=group_unroll):
+                        for col in T.unroll(scale_a_group):
+                            kk = group * scale_a_group + col
+                            slot = consumer_index % num_stages
+                            T.barrier_wait(full[slot], (consumer_index // num_stages) & 1)
+                            buf = scale_a_consumer % scale_a_buffers
+                            if col == 0:
+                                T.barrier_wait(
+                                    scale_a_full[buf],
+                                    (scale_a_consumer // scale_a_buffers) & 1,
+                                )
+                            scales[0] = scale_a_ring[buf, row + acc_row0, col]
+                            scales[1] = scale_a_ring[buf, row + acc_row1, col]
+                            if col == scale_a_group - 1:
+                                if tx % 32 == 0:
+                                    T.barrier_arrive(scale_a_empty[buf])
+                                scale_a_consumer = scale_a_consumer + 1
+                            if stage_1d2d_b_per_k:
+                                scales[2] = one_scale_b[slot, 0]
+                            else:
+                                scales[2] = one_scale_b[0, kk]
+                            T.call_extern(
+                                "handle",
+                                wgmma_helper,
+                                partial.data,
+                                T.address_of(a_shared[slot, row, 0]),
+                                T.address_of(b_shared[slot, 0, 0]),
+                            )
+                            T.wait_wgmma(0)
+                            # Nothing reads the stage past here; releasing it before
+                            # the promotion overlaps the next TMA with it.
+                            if tx % 32 == 0:
+                                T.barrier_arrive(empty[slot])
+                            T.call_extern(
+                                "handle",
+                                promotion_helper,
+                                partial.data,
+                                final.data,
+                                scales[0],
+                                scales[1],
+                                scales[2],
+                            )
+                            consumer_index = consumer_index + 1
+                    if shared_epilogue:
+                        # Warpgroup 0 issues the TMA store of the whole tile. The previous
+                        # tile's store may still read shared_c; waiting here rather than
+                        # after issuing it lets the store overlap this tile's mainloop.
+                        if wg == 0 and tx == 128:
+                            T.tma_store_wait(0)
+                        T.sync_threads(barrier_id=13, arrive_count=consumer_threads)
+                        T.call_extern(
+                            "handle",
+                            smem_store_helper,
+                            final.data,
+                            T.address_of(shared_c[row, 0]),
+                        )
+                        T.fence_proxy_async()
+                        T.sync_threads(barrier_id=14, arrive_count=consumer_threads)
+                        if wg == 0 and tx == 128:
+                            output_desc = T.create_tma_descriptor(
+                                TMA_DTYPE_BFLOAT16,
+                                2,
+                                c.data,
+                                n,
+                                m,
+                                1,
+                                n * 2,
+                                block_n,
+                                block_m,
+                                1,
+                                1,
+                                TMA_INTERLEAVE_NONE,
+                                TMA_SWIZZLE_NONE,
+                                TMA_L2_PROMOTION_128B,
+                                TMA_OOB_FILL_NONE,
+                            )
+                            T.call_extern(
+                                "handle",
+                                "tileops::fp8_tma_store_2d_issue",
+                                output_desc,
+                                T.address_of(shared_c[0, 0]),
+                                n_start,
+                                m_start,
+                            )
+                            T.tma_store_arrive()
+                    else:
+                        T.call_extern(
+                            "handle",
+                            global_store_helper,
+                            final.data,
+                            c.data,
+                            n,
+                            m_start + row,
+                            n_start,
+                            m,
+                            n,
+                        )
+            # Drain the last tile's store before the CTA's shared memory goes.
+            if shared_epilogue and wg == 0 and tx == 128:
+                T.tma_store_wait(0)
+
         @T.prim_func
         def main(
             a: T.Tensor((m, k), dtype),
@@ -136,6 +276,7 @@ def _gemm_fp8_1d2d_kernel(
                 partial_1 = T.alloc_local((fragment_regs,), accum_dtype)
                 final_0 = T.alloc_local((fragment_regs,), accum_dtype)
                 final_1 = T.alloc_local((fragment_regs,), accum_dtype)
+                shared_c = None
                 if shared_epilogue:
                     shared_c = T.alloc_shared((block_m, block_n), out_dtype)
                 scale_a_ring = T.alloc_shared(
@@ -251,193 +392,55 @@ def _gemm_fp8_1d2d_kernel(
                                         producer_index = producer_index + 1
 
                 elif tx < 256:
-                    T.inc_max_nreg(240)
-                    for wave in T.serial(max_waves):
-                        flat_id = T.int32(sm_count) * wave + pid
-                        if flat_id < total_tiles:
-                            decode(flat_id, mt, nt)
-                            m_start = mt[0] * block_m
-                            n_start = nt[0] * block_n
-                            if not stage_1d2d_b_per_k and scale_k < 16:
-                                T.sync_threads(barrier_id=10, arrive_count=threads)
-                            T.clear(final_0)
-                            for group in T.unroll(num_groups, unroll_factor=group_unroll):
-                                for col in T.unroll(scale_a_group):
-                                    kk = group * scale_a_group + col
-                                    slot = consumer_index_0 % num_stages
-                                    T.barrier_wait(full[slot], (consumer_index_0 // num_stages) & 1)
-                                    buf = scale_a_consumer_0 % scale_a_buffers
-                                    if col == 0:
-                                        T.barrier_wait(
-                                            scale_a_full[buf],
-                                            (scale_a_consumer_0 // scale_a_buffers) & 1,
-                                        )
-                                    scales[0] = scale_a_ring[buf, acc_row0, col]
-                                    scales[1] = scale_a_ring[buf, acc_row1, col]
-                                    if col == scale_a_group - 1:
-                                        if tx % 32 == 0:
-                                            T.barrier_arrive(scale_a_empty[buf])
-                                        scale_a_consumer_0 = scale_a_consumer_0 + 1
-                                    if stage_1d2d_b_per_k:
-                                        scales[2] = one_scale_b[slot, 0]
-                                    else:
-                                        scales[2] = one_scale_b[0, kk]
-                                    T.call_extern(
-                                        "handle",
-                                        wgmma_helper,
-                                        partial_0.data,
-                                        T.address_of(a_shared[slot, 0, 0]),
-                                        T.address_of(b_shared[slot, 0, 0]),
-                                    )
-                                    T.wait_wgmma(0)
-                                    # Nothing reads the stage past here; releasing it before
-                                    # the promotion overlaps the next TMA with it.
-                                    if tx % 32 == 0:
-                                        T.barrier_arrive(empty[slot])
-                                    T.call_extern(
-                                        "handle",
-                                        promotion_helper,
-                                        partial_0.data,
-                                        final_0.data,
-                                        scales[0],
-                                        scales[1],
-                                        scales[2],
-                                    )
-                                    consumer_index_0 = consumer_index_0 + 1
-                            if shared_epilogue:
-                                # The previous tile's TMA store may still read shared_c;
-                                # waiting here rather than after issuing it lets the
-                                # store overlap this tile's mainloop.
-                                if tx == 128:
-                                    T.tma_store_wait(0)
-                                T.sync_threads(barrier_id=13, arrive_count=consumer_threads)
-                                T.call_extern(
-                                    "handle",
-                                    smem_store_helper,
-                                    final_0.data,
-                                    T.address_of(shared_c[0, 0]),
-                                )
-                                T.fence_proxy_async()
-                                T.sync_threads(barrier_id=14, arrive_count=consumer_threads)
-                                if tx == 128:
-                                    output_desc = T.create_tma_descriptor(
-                                        TMA_DTYPE_BFLOAT16,
-                                        2,
-                                        c.data,
-                                        n,
-                                        m,
-                                        1,
-                                        n * 2,
-                                        block_n,
-                                        block_m,
-                                        1,
-                                        1,
-                                        TMA_INTERLEAVE_NONE,
-                                        TMA_SWIZZLE_NONE,
-                                        TMA_L2_PROMOTION_128B,
-                                        TMA_OOB_FILL_NONE,
-                                    )
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_tma_store_2d_issue",
-                                        output_desc,
-                                        T.address_of(shared_c[0, 0]),
-                                        n_start,
-                                        m_start,
-                                    )
-                                    T.tma_store_arrive()
-                            else:
-                                T.call_extern(
-                                    "handle",
-                                    global_store_helper,
-                                    final_0.data,
-                                    c.data,
-                                    n,
-                                    m_start,
-                                    n_start,
-                                    m,
-                                    n,
-                                )
-                    # Drain the last tile's store before the CTA's shared memory goes.
-                    if shared_epilogue and tx == 128:
-                        T.tma_store_wait(0)
-
+                    consume(
+                        0,
+                        a_shared,
+                        b_shared,
+                        scale_a_ring,
+                        one_scale_b,
+                        shared_c,
+                        full,
+                        empty,
+                        scale_a_full,
+                        scale_a_empty,
+                        consumer_index_0,
+                        scale_a_consumer_0,
+                        partial_0,
+                        final_0,
+                        scales,
+                        mt,
+                        nt,
+                        pid,
+                        tx,
+                        acc_row0,
+                        acc_row1,
+                        c,
+                    )
                 elif consumer_warpgroups == 2:
-                    T.inc_max_nreg(240)
-                    for wave in T.serial(max_waves):
-                        flat_id = T.int32(sm_count) * wave + pid
-                        if flat_id < total_tiles:
-                            decode(flat_id, mt, nt)
-                            m_start = mt[0] * block_m
-                            n_start = nt[0] * block_n
-                            if not stage_1d2d_b_per_k and scale_k < 16:
-                                T.sync_threads(barrier_id=10, arrive_count=threads)
-                            T.clear(final_1)
-                            for group in T.unroll(num_groups, unroll_factor=group_unroll):
-                                for col in T.unroll(scale_a_group):
-                                    kk = group * scale_a_group + col
-                                    slot = consumer_index_1 % num_stages
-                                    T.barrier_wait(full[slot], (consumer_index_1 // num_stages) & 1)
-                                    buf = scale_a_consumer_1 % scale_a_buffers
-                                    if col == 0:
-                                        T.barrier_wait(
-                                            scale_a_full[buf],
-                                            (scale_a_consumer_1 // scale_a_buffers) & 1,
-                                        )
-                                    scales[0] = scale_a_ring[buf, half_m + acc_row0, col]
-                                    scales[1] = scale_a_ring[buf, half_m + acc_row1, col]
-                                    if col == scale_a_group - 1:
-                                        if tx % 32 == 0:
-                                            T.barrier_arrive(scale_a_empty[buf])
-                                        scale_a_consumer_1 = scale_a_consumer_1 + 1
-                                    if stage_1d2d_b_per_k:
-                                        scales[2] = one_scale_b[slot, 0]
-                                    else:
-                                        scales[2] = one_scale_b[0, kk]
-                                    T.call_extern(
-                                        "handle",
-                                        wgmma_helper,
-                                        partial_1.data,
-                                        T.address_of(a_shared[slot, half_m, 0]),
-                                        T.address_of(b_shared[slot, 0, 0]),
-                                    )
-                                    T.wait_wgmma(0)
-                                    # Nothing reads the stage past here; releasing it before
-                                    # the promotion overlaps the next TMA with it.
-                                    if tx % 32 == 0:
-                                        T.barrier_arrive(empty[slot])
-                                    T.call_extern(
-                                        "handle",
-                                        promotion_helper,
-                                        partial_1.data,
-                                        final_1.data,
-                                        scales[0],
-                                        scales[1],
-                                        scales[2],
-                                    )
-                                    consumer_index_1 = consumer_index_1 + 1
-                            if shared_epilogue:
-                                T.sync_threads(barrier_id=13, arrive_count=consumer_threads)
-                                T.call_extern(
-                                    "handle",
-                                    smem_store_helper,
-                                    final_1.data,
-                                    T.address_of(shared_c[half_m, 0]),
-                                )
-                                T.fence_proxy_async()
-                                T.sync_threads(barrier_id=14, arrive_count=consumer_threads)
-                            else:
-                                T.call_extern(
-                                    "handle",
-                                    global_store_helper,
-                                    final_1.data,
-                                    c.data,
-                                    n,
-                                    m_start + half_m,
-                                    n_start,
-                                    m,
-                                    n,
-                                )
+                    consume(
+                        1,
+                        a_shared,
+                        b_shared,
+                        scale_a_ring,
+                        one_scale_b,
+                        shared_c,
+                        full,
+                        empty,
+                        scale_a_full,
+                        scale_a_empty,
+                        consumer_index_1,
+                        scale_a_consumer_1,
+                        partial_1,
+                        final_1,
+                        scales,
+                        mt,
+                        nt,
+                        pid,
+                        tx,
+                        acc_row0,
+                        acc_row1,
+                        c,
+                    )
 
         return main
 
@@ -535,7 +538,7 @@ def _gemm_fp8_block128_wave_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("fp8_1d2d_helper.h")],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("fp8_1d2d_helper.h")],
     )
     def _gemm_fp8_block128_wave_func(
         block_n: int = 128,

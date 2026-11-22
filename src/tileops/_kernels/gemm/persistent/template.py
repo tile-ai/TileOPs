@@ -10,7 +10,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import WARPGROUP_THREADS
 from tileops._kernels.elementwise._erf import erf
 from tileops._kernels.gemm.dense import wgmma_acc_layout
@@ -1086,7 +1086,7 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
         headers.append("approx_math.h")
     if vector_row_store:
         headers.append("streaming_load.h")  # copy16
-    compile_flags = ["-O3", "-DENABLE_BF16"]
+    compile_flags = [*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"]
     if headers:
         compile_flags += csrc_include(*headers)
 

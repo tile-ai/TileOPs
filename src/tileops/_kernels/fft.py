@@ -18,7 +18,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
@@ -419,7 +419,7 @@ def _build_tiny(n: int, ept: int, real_dtype: str) -> Any:
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _func(row: int, grp: int):
         def _bit_reverse(position, bits: int):
@@ -549,7 +549,7 @@ def _build_warp8(n: int, real_dtype: str) -> Any:
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _func(row: int, grp: int):
         @T.macro
@@ -643,7 +643,7 @@ def _build_packed_256(real_dtype: str) -> Any:
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _func(row: int, grp: int):
         batch = T.dynamic("batch")
@@ -693,7 +693,7 @@ def _build_packed_512(table_limit: int, real_dtype: str) -> Any:
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _func(row: int, grp: int):
         batch = T.dynamic("batch")
@@ -783,7 +783,7 @@ def _build_three_pass(n: int, real_dtype: str) -> Any:
     # No out_idx on any builder: a symbolic output shape would resolve on every call.
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _func(row: int, grp: int):
         """Build for S1 row stride *row* and S2 group stride *grp*, in reals."""
@@ -855,7 +855,7 @@ def _build_four_pass(n: int, real_dtype: str) -> Any:
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _func(row: int, grp: int):
         @T.macro
@@ -995,7 +995,7 @@ def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _func(tw: int, row: int, grp: int = 0):
         """Build for *tw* columns per CTA and strides *row*, *grp*; two passes ignore grp."""
@@ -1201,7 +1201,7 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _func(tw: int, row: int, grp: int = 0):
         """Build for *tw* transforms per CTA and strides *row*, *grp*; two passes ignore grp."""

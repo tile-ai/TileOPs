@@ -14,7 +14,7 @@ import math
 import tilelang
 import tilelang.language as T
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.linear_attention.delta_decode import key_of
 from tileops._kernels.linear_attention.gdn.prefill_common import L2NORM_EPS
@@ -65,7 +65,7 @@ def decode_program(
     @tilelang.jit(
         out_idx=[-1] if pooled else [-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
         def channel_decay(g, a_log, dt_bias, iseq, ihv, j):

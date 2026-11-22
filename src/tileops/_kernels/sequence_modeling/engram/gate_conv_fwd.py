@@ -23,7 +23,7 @@ import tilelang.language as T
 import torch
 import torch.nn.functional as F
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.sequence_modeling.engram.call_spec import (
     CONV_KERNEL_SIZE,
@@ -68,7 +68,7 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
 
     @tilelang.jit(
         out_idx=[6, 7, 8, 9, 10, 11],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(threads):
         @T.prim_func

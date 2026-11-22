@@ -1,5 +1,6 @@
 """Per-row top-k then top-p logit mask on one kernel."""
 
+import operator
 from typing import ClassVar
 
 import tilelang
@@ -11,6 +12,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sampling.call_spec import SamplingCall, TopKTopPMaskFwdInterface
 from tileops._kernels.sampling.radix_select import cluster_plan, key_select, row_refusal
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["TopKTopPMaskFwdKernel"]
@@ -168,14 +170,7 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                         seen_any[0] = T.max(seen_any[0], rows.key_of(vals, i, h))
                         if rows.key_of(vals, i, h) != T.uint32(nan_key):
                             seen_number[0] = T.max(seen_number[0], rows.key_of(vals, i, h))
-                for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                    reach = T.int32(WARP_LANES // 2) >> stage
-                    seen_any[0] = T.max(
-                        seen_any[0], T.shfl_xor(seen_any[0], reach, width=WARP_LANES)
-                    )
-                    seen_number[0] = T.max(
-                        seen_number[0], T.shfl_xor(seen_number[0], reach, width=WARP_LANES)
-                    )
+                warp_reduce((seen_any, seen_number), T.max, high_first=True)
                 if tx % WARP_LANES == 0:
                     kred[2 * (tx // WARP_LANES)] = seen_any[0]
                     kred[2 * (tx // WARP_LANES) + 1] = seen_number[0]
@@ -277,10 +272,7 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                             for i in T.serial(-(-walk_bins // threads)):
                                 if i * threads + tx < walk_bins:
                                     weight[0] = weight[0] + wtot[i * threads + tx]
-                            for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                                weight[0] = weight[0] + T.shfl_xor(
-                                    weight[0], 1 << stage, width=WARP_LANES
-                                )
+                            warp_reduce(weight, operator.add)
                             if tx % WARP_LANES == 0:
                                 wred[tx // WARP_LANES] = weight[0]
                             T.sync_threads()

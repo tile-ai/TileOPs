@@ -4,7 +4,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 
 __all__ = ["deltanet_partition_states", "deltanet_partition_states_program"]
 
@@ -15,7 +15,7 @@ __all__ = ["deltanet_partition_states", "deltanet_partition_states_program"]
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         tilelang.PassConfigKey.TL_DISABLE_SHARED_MEMORY_REUSE: True,
     },
-    compile_flags=["-O3", "-DENABLE_BF16"],
+    compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
 )
 def _build_partition_states_kernel(
     heads: int,

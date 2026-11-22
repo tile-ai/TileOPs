@@ -145,7 +145,7 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
 
     @classmethod
     def entry_for(cls, call: EmbeddingCall) -> Entry:
-        index = call.device.index
+        index = call.device_index
         return (call.dim, call.dtype, call.index_dtype, index), lambda: cls(
             call.dim, call.dtype, call.index_dtype, device_index=index
         )

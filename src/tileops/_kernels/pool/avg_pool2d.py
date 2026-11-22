@@ -4,7 +4,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool2dFwdInterface, AvgPoolCall
 from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow
@@ -26,7 +26,7 @@ def _avg_pool2d_kernel(window: AvgPoolWindow, dtype: str):
     one_divisor = window.whole_window_divides or window.divisor_override is not None
     divisor = window.divisor
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _avg_pool2d_func(threads: int):
         # A compile-time truth when the launch divides, and the tail test drops out.
         block_full = total % threads == 0

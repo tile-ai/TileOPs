@@ -18,7 +18,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops._kernels.elementwise._division import approx_fdiv
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -69,7 +69,7 @@ def _selective_scan_chunk_kernel(
     group_dim = dim // groups
     itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
 
-    @tilelang.jit(out_idx=[], compile_flags=["--use_fast_math"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS, "--use_fast_math"])
     def _func(warps: int, items: int):
         batch = T.dynamic("batch")
         chunk = WARP_LANES * items
@@ -359,7 +359,7 @@ def _selective_scan_step_kernel(
 ):
     group_dim = dim // groups
 
-    @tilelang.jit(out_idx=[], compile_flags=["--use_fast_math"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS, "--use_fast_math"])
     def _func(threads: int, states: int):
         batch = T.dynamic("batch")
         # A channel's lanes, each holding `states` of its states; they sum y with shfl_xor.

@@ -8,7 +8,7 @@ import tilelang.language as T
 import torch
 import tvm.tirx as tirx
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.linear_attention.gdn.prefill_common import (
@@ -54,7 +54,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(threads: int = 128):
         @T.macro
@@ -220,7 +220,7 @@ def prefill_blocksolve_A_bthd_tl(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(threads=32):
         @T.prim_func
@@ -645,7 +645,7 @@ def prefill_solve_warpgroup_tl(
     @tilelang.jit(
         out_idx=[],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func():
         @T.prim_func
@@ -1177,7 +1177,7 @@ def correct_initial_states(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     },
-    compile_flags=["-O3", "-DENABLE_BF16"],
+    compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
 )
 def _build_prepare_h_kernel(
     H,

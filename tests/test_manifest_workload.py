@@ -14,10 +14,10 @@ from tileops.manifest._values import ADTValue
 from tileops.manifest._workload import (
     RowError,
     TensorSpec,
+    bench_calls,
     call_from_tensors,
     check_workloads,
     instantiate,
-    nightly_calls,
 )
 from tileops.manifest.primitives import GENERATOR_SHAPES, GENERATORS, PREDICATES
 
@@ -640,7 +640,9 @@ def test_the_nightly_sweep_keeps_one_dtype_where_a_bfloat16_sibling_times_the_sa
         ),
     ]
     plan = entry_plan("Probe", {"signature": signature, "workloads": rows}, _ADTS)
-    kept = [(row["label"], case["T"], row.get("out")) for row, case in nightly_calls(plan, rows)]
+    kept = [
+        (row["label"], case["T"], row.get("out")) for row, case in bench_calls(plan, rows, True)
+    ]
     assert kept == [
         ("pair", "bfloat16", None),
         ("alone", "float16", None),
@@ -664,7 +666,7 @@ def test_the_nightly_sweep_keeps_one_dtype_where_a_bfloat16_sibling_times_the_sa
     ]
     rows = [{"M": 1, "dtype_cases": cases, "label": "mixed"}]
     plan = entry_plan("Mixed", {"signature": mixed, "workloads": rows}, _ADTS)
-    assert [case for _, case in nightly_calls(plan, rows)] == cases[:2]
+    assert [case for _, case in bench_calls(plan, rows, True)] == cases[:2]
 
 
 def _gemm_from(a: tuple, b: tuple):

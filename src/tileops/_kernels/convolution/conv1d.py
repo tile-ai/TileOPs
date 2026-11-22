@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.convolution._common import (
     SWIZZLE_PANEL,
     conv_autotune_configs,
@@ -47,7 +47,7 @@ def _conv1d_kernel(
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     k_total = c_in * kernel_l
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _conv1d_func(
         block_m: int,
         block_n: int,
@@ -167,7 +167,7 @@ def _conv1d_unit_stride_kernel(
     out_l = l_in + pad_left + pad_right - dilation_l * (kernel_l - 1)
     k_total = c_in * kernel_l
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _conv1d_unit_stride_func(
         block_m: int,
         block_n: int,
@@ -326,7 +326,7 @@ def _conv1d_depthwise_kernel(
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _conv1d_depthwise_func(
         block_m: int,
         block_n: int,
@@ -417,7 +417,7 @@ def _conv1d_group_kernel(
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     k_total = c_in_g * kernel_l
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _conv1d_group_func(
         block_m: int,
         block_n: int,
@@ -539,7 +539,7 @@ def _conv1d_pointwise_kernel(
 ):
     accum_dtype = "float"
 
-    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _conv1d_pointwise_func(
         block_m: int,
         block_n: int,

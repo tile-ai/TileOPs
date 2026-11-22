@@ -7,7 +7,7 @@ import tilelang
 import torch
 from tilelang import language as T
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry
 from tileops._kernels.linear_attention.gla.call_spec import (
@@ -258,7 +258,7 @@ def _gla_fwd_partitioned_replay_kernel(
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _replay_func(threads=512):
         qk_shape = [batch, seq_len, heads, dim_k]

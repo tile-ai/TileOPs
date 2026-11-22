@@ -332,15 +332,13 @@ def test_a_row_counts_the_retries_of_both_passes(timed, monkeypatch, retries, po
     assert results["tileops"]["attribution_retries"] == pooled
 
 
-@pytest.mark.parametrize("first, second", [(3, 3), (None, None), (0, 0)])
-def test_the_second_pass_starts_from_the_block_the_first_settled_on(
-    timed, monkeypatch, first, second
-):
+@pytest.mark.parametrize("block", [3, None, 0])
+def test_the_second_pass_starts_from_the_block_the_first_settled_on(timed, monkeypatch, block):
     """The same call on the same inputs fills the launch queue at the same sample, so the
     second pass does not find the block size again through a block that times out."""
-    _passes_reporting(monkeypatch, [first, first])
+    _passes_reporting(monkeypatch, [block, block])
     bench.Runner(SumFwdOp(), _case()).compare({})
-    assert [run.start_block for run in timed.runs] == [None, second]
+    assert [run.start_block for run in timed.runs] == [None, block]
 
 
 @pytest.mark.parametrize("reference_ms, passes", [(10.0, 1), (9.0, 2)])

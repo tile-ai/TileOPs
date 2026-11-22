@@ -21,6 +21,9 @@ asks for the CTAs a multiprocessor's shared memory and registers hold, and the c
 chosen against those waves.
 """
 
+import functools
+import operator
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -32,7 +35,7 @@ from tileops._kernels.attention.call_spec import (
     AttentionCall,
     GQAPagedFwdInterface,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -106,15 +109,7 @@ def _gqa_paged_fp8_decode_kernel(
             # them, while the copies of one role land beside the reads of another.
             tilelang.PassConfigKey.TL_DISABLE_SHARED_MEMORY_REUSE: True,
         },
-        compile_flags=[
-            "-O3",
-            "-DENABLE_BF16",
-            "-U__CUDA_NO_HALF_OPERATORS__",
-            "-U__CUDA_NO_HALF_CONVERSIONS__",
-            "-U__CUDA_NO_HALF2_OPERATORS__",
-            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-            *csrc_include("fp8_paged_helper.h"),
-        ],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("fp8_paged_helper.h")],
     )
     def _func(
         block_m: int,
@@ -243,14 +238,14 @@ def _gqa_paged_fp8_decode_kernel(
                     scores[at] = scores[at] * item_scale
             # A tile wholly inside every row's visible range keeps every score; its upper bound
             # is set by the tile's first row and its lower by its last.
-            cut = key0 + block_n > kv_len
+            bounds = [key0 + block_n > kv_len]
             if is_causal:
-                cut = cut | (key0 + block_n > first_q + 1)
+                bounds.append(key0 + block_n > first_q + 1)
             elif window_size_right >= 0:
-                cut = cut | (key0 + block_n > first_q + window_size_right + 1)
+                bounds.append(key0 + block_n > first_q + window_size_right + 1)
             if window_size_left >= 0:
-                cut = cut | (key0 < last_q - window_size_left)
-            if cut:
+                bounds.append(key0 < last_q - window_size_left)
+            if functools.reduce(operator.or_, bounds):
                 for i, j in T.Parallel(block_m, block_n):
                     at = (j, i) if keys_on_m else (i, j)
                     scores[at] = T.if_then_else(

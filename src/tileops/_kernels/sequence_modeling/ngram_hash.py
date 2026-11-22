@@ -196,7 +196,7 @@ class NGramHashKernel(Kernel, NGramHashFwdInterface):
             call.heads,
             call.eos,
         )
-        device_index = call.device.index
+        device_index = call.device_index
         return (*args, device_index), lambda: cls(*args, device_index=device_index)
 
     def __init__(

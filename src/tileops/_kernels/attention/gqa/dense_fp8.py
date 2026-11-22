@@ -20,7 +20,7 @@ from tileops._kernels.attention.online_softmax import (
     make_dense_sink_scale,
     make_online_softmax_with_score_scale,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     LOG2E,
     TMA_DTYPE_UINT8,
@@ -82,7 +82,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "-DENABLE_BF16",
             "-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
             *csrc_include("fp8_gqa_helper.h"),

@@ -8,7 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
     TMA_DTYPE_UINT8,
@@ -257,7 +257,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
     @tilelang.jit(
         out_idx=[-1],
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "--use_fast_math",
             "-DENABLE_BF16",
             *csrc_include("w4a8_prefill_helper.h"),

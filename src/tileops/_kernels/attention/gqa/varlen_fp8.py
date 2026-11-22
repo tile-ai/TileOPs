@@ -34,7 +34,7 @@ from tileops._kernels.attention.online_softmax import (
 )
 from tileops._kernels.attention.varlen import VarlenKernel
 from tileops._kernels.attention.varlen_rope import make_varlen_query_rope
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     LOG2E,
     TMA_DTYPE_BFLOAT16,
@@ -82,7 +82,7 @@ def _gqa_varlen_fp8_fwd_kernel(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _gqa_varlen_fp8_fwd_func(
         block_m: int, block_n: int, num_stages: int, threads: int
@@ -339,7 +339,7 @@ def _gqa_varlen_fp8_ws_kernel(
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "-DENABLE_BF16",
             "-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
             *csrc_include("fp8_gqa_helper.h"),

@@ -38,7 +38,8 @@ from tileops._kernels.reduction.call_spec import (
     LogicalReduceFwdInterface,
 )
 from tileops._kernels.streaming_load import load16
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 from tileops.manifest.primitives import ceil_div
 
 __all__ = [
@@ -180,7 +181,7 @@ def _logical_fold_kernel(
                 nonzero = T.Not(nonzero)
             return nonzero
 
-        def _fold_combine(op_kind: str, acc, term):
+        def fold_combine(acc, term):
             """Fold *term* into the accumulator value *acc*: a sum for a count, else an or."""
             term = T.cast(term, acc.dtype)
             return acc + term if op_kind == "count_nonzero" else acc | term
@@ -196,7 +197,7 @@ def _logical_fold_kernel(
         @T.macro
         def fold_held(held, acc):
             for e in T.unroll(vec // components):
-                acc[0] = _fold_combine(op_kind, acc[0], _fold_term(held, e))
+                acc[0] = fold_combine(acc[0], _fold_term(held, e))
 
         @T.prim_func
         def main(
@@ -231,10 +232,7 @@ def _logical_fold_kernel(
                             )
                         fold_held(held, acc)
 
-                for stage in T.serial(WARP_SHUFFLE_STAGES):
-                    acc[0] = _fold_combine(
-                        op_kind, acc[0], T.shfl_xor(acc[0], T.int32(WARP_LANES // 2) >> stage)
-                    )
+                warp_reduce(acc, fold_combine, high_first=True, serial=True)
                 if num_warps > 1:
                     if tx % WARP_LANES == 0:
                         warp_acc[tx // WARP_LANES] = acc[0]
@@ -243,7 +241,7 @@ def _logical_fold_kernel(
                         # Lane 0 already holds warp 0's value and folds the others in.
                         if tx == 0:
                             for w in T.unroll(1, num_warps):
-                                acc[0] = _fold_combine(op_kind, acc[0], warp_acc[w])
+                                acc[0] = fold_combine(acc[0], warp_acc[w])
                     else:
                         # The whole first warp shuffles; lanes past the warp count hold the
                         # identity, and xor offsets below the warp count never reach them.
@@ -251,12 +249,9 @@ def _logical_fold_kernel(
                             acc[0] = T.if_then_else(
                                 tx < num_warps, warp_acc[tx % num_warps], T.cast(0, acc_dtype)
                             )
-                            for stage in T.serial(num_warps.bit_length() - 1):
-                                acc[0] = _fold_combine(
-                                    op_kind,
-                                    acc[0],
-                                    T.shfl_xor(acc[0], T.int32(num_warps // 2) >> stage),
-                                )
+                            warp_reduce(
+                                acc, fold_combine, lanes=num_warps, high_first=True, serial=True
+                            )
                 if tx == 0:
                     if counts:
                         out[row] = T.cast(acc[0], out_dtype)

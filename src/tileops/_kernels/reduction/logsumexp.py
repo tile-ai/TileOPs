@@ -41,6 +41,7 @@ from tileops._kernels.reduction._split_softmax import (
 )
 from tileops._kernels.reduction.call_spec import LogSumExpCall, LogSumExpFwdInterface
 from tileops._kernels.tiling import ALIGNMENT, align_up
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 from tileops.manifest.primitives import ceil_div
 
@@ -312,7 +313,6 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
     num_warps = threads // WARP_LANES
     vec_elems = min(cols_per_thread, VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize)
     vec_groups = cols_per_thread // vec_elems
-    warp_stages = WARP_LANES.bit_length() - 1
     # Seed of the running max: below every finite fp16/bf16 value, but finite, so an
     # all--inf row keeps a zero sum and folds to floor + log(0) = -inf, matching torch.
     floor = -3.4e38
@@ -380,15 +380,14 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
                 for c in T.serial(1, cols_per_thread):
                     s_run[0] = s_run[0] + slots[c]
 
-                for stage in T.serial(warp_stages):
-                    # Bound locals: a bare expression is substituted per mention.
-                    other_m[0] = T.shfl_xor(
-                        m_run[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
-                    )
-                    other_s[0] = T.shfl_xor(
-                        s_run[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
-                    )
-                    merge_pair(m_run, s_run, other_m[0], other_s[0], m_new, m_safe)
+                # Shuffled into locals: a bare expression is substituted per mention.
+                warp_reduce(
+                    (m_run, s_run),
+                    lambda run, other: merge_pair(*run, other[0][0], other[1][0], m_new, m_safe),
+                    high_first=True,
+                    serial=True,
+                    peer=(other_m, other_s),
+                )
                 if tx % WARP_LANES == 0:
                     warp_m[tx // WARP_LANES] = m_run[0]
                     warp_s[tx // WARP_LANES] = s_run[0]
@@ -412,7 +411,7 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
     _TILED_WORKSPACE_BYTES = 2 * DEFAULT_THREADS * 4
 
     def __init__(self, call: LogSumExpCall):
-        super().__init__(device_index=call.device.index)
+        super().__init__(device_index=call.device_index)
         self.call = call
         self.dtype = call.dtype
 

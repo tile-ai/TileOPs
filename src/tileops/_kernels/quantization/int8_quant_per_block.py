@@ -18,7 +18,7 @@ from tileops._kernels.quantization.int8_codes import (
     quantize,
     widen,
 )
-from tileops._utils import WARP_LANES
+from tileops._kernels.warp_reduce import warp_reduce
 
 __all__ = ["INT8QuantPerBlockFwdKernel", "INT8QuantPerBlockShiftedFwdKernel"]
 
@@ -135,10 +135,7 @@ def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
                     acc[0] = T.max(acc[0] & T.uint32(0xFFFF), acc[0] >> T.uint32(16))
                 # The lanes of a group are adjacent and aligned, so XOR offsets below
                 # ``lanes`` stay inside it; every lane of the warp takes part.
-                for stage in T.unroll(lanes.bit_length() - 1):
-                    acc[0] = T.max(
-                        acc[0], T.shfl_xor(acc[0], T.int32(lanes // 2) >> stage, width=WARP_LANES)
-                    )
+                warp_reduce(acc, T.max, lanes=lanes, high_first=True)
                 amax = widen(acc[0], 0, dtype)
                 num[0] = T.if_then_else(amax > 0, amax * T.float32(INV_QMAX), T.float32(1.0))
                 if (tx % lanes == 0) & (exact or (b < blocks)):
@@ -300,10 +297,7 @@ def _int8_quant_per_block_shifted_kernel(m: int, k: int, dtype: str):
                 if per_word == 2:
                     acc[0] = T.max(acc[0] & T.uint32(0xFFFF), acc[0] >> T.uint32(16))
                 # Every lane of the warp takes part in the shuffles.
-                for stage in T.unroll(lanes.bit_length() - 1):
-                    acc[0] = T.max(
-                        acc[0], T.shfl_xor(acc[0], T.int32(lanes // 2) >> stage, width=WARP_LANES)
-                    )
+                warp_reduce(acc, T.max, lanes=lanes, high_first=True)
                 amax = widen(acc[0], 0, dtype)
                 num[0] = T.if_then_else(amax > 0, amax * T.float32(INV_QMAX), T.float32(1.0))
                 if b < blocks:

@@ -5,7 +5,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     LOG2E,
     NAMED_BARRIERS,
@@ -31,7 +31,7 @@ FUSED_PREFILL_DIM = 128
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     },
     compile_flags=[
-        "-O3",
+        *CUDA_COMPILE_FLAGS,
         "-DENABLE_BF16",
         *csrc_include("gdn_inverse_helper.h", "gdn_scan_helper.h"),
     ],

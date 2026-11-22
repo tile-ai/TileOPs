@@ -29,7 +29,7 @@ from tileops._kernels.attention.online_softmax import (
     make_sink_scale,
 )
 from tileops._kernels.attention.varlen_rope import rope_channel_pair
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -402,7 +402,7 @@ def _gqa_paged_varlen_kernel(
             tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True,
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: not producer_warpgroup,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(block_M: int, block_N: int, num_stages: int, threads: int):
         total_q = T.dynamic("total_q")
@@ -568,7 +568,7 @@ def _gqa_paged_varlen_split_kernel(
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(block_M: int, block_N: int, num_split: int, num_stages: int, threads: int):
         total_q = T.dynamic("total_q")

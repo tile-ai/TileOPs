@@ -10,7 +10,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import (
     BMMCall,
@@ -61,7 +61,7 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _bmm_func(
         block_m: int = 128,
@@ -179,7 +179,7 @@ def _bmm_fp8_kernel(
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             "tl.disable_warp_specialized": False,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _bmm_fp8_func(
         block_m: int = 128,
@@ -287,7 +287,7 @@ def _bmm_fp8_persistent_kernel(
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             "tl.disable_warp_specialized": True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _bmm_fp8_persistent_func(
         block_m: int = 128,
@@ -630,7 +630,7 @@ def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> C
         A ``(block, threads)`` builder returning the compiled ``prim_func``.
     """
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _bmm_fp8_transpose_func(block: int = 64, threads: int = 128) -> Callable:
         exact = rows % block == 0 and cols % block == 0
 

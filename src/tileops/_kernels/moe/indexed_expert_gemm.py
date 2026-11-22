@@ -5,7 +5,7 @@ import tilelang.language as T
 import torch
 from tilelang.transform import PassConfigKey
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import (
     IndexedExpertCall,
@@ -78,7 +78,7 @@ def _indexed_expert_gemm(
 
     @tilelang.jit(
         out_idx=[],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
         # The A tile is rewritten inside the K loop, so producer/consumer WS would race.
         pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
     )

@@ -1,5 +1,6 @@
 """Seeded categorical draw: one inverse-CDF search per row, over one read of the row."""
 
+import operator
 from typing import ClassVar
 
 import tilelang
@@ -21,6 +22,7 @@ from tileops._kernels.sampling.row_tiles import (
     row_split,
     vector_width,
 )
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["SamplingFromProbsFwdKernel"]
@@ -192,9 +194,7 @@ def _sampling_from_probs_kernel(
                     for j in T.unroll(pace):
                         if r * pace + j < chunk:
                             fold(warp, cur, j)
-                            for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                                reach = T.int32(WARP_LANES // 2) >> stage
-                                warp[0] = warp[0] + T.shfl_xor(warp[0], reach, width=WARP_LANES)
+                            warp_reduce(warp, operator.add, high_first=True)
                             if tx % WARP_LANES == 0:
                                 seg[(r * pace + j) * warps + tx // WARP_LANES] = T.cast(
                                     warp[0], "float64"

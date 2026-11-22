@@ -868,7 +868,7 @@ def _rope_cos_sin_kernel(
             group = T.Cast("int32", item % token_items) // head_units
             slot = T.Cast("int32", item % token_items) % head_units
             # Whole blocks of a token's units make the grid exact; programs of several heads a
-            # thread keep the check, which measured faster for them.
+            # thread keep the check.
             if (per_thread == 1 and token_items % threads == 0) or item < units:
                 # Packed x has no sequence stride, so its address needs no search.
                 if seqlens_dtype is not None:

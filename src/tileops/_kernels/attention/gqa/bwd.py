@@ -12,7 +12,7 @@ from tileops._kernels.attention.call_spec import (
     GQABwdInterface,
     GQAPreprocessBwdInterface,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 
@@ -249,7 +249,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _gqa_bwd_wgmma_pipelined_func(
         block_m: int, block_n: int, num_stages: int, threads: int

@@ -95,8 +95,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--tileops-nightly",
         action="store_true",
-        help="Run the nightly sweep's cases, the manifest calls tileops.manifest's "
-        "nightly_calls selects, and time a reference ten times slower than a baseline once.",
+        help="Run the manifest calls the nightly sweep times, and time a reference ten "
+        "times slower than a baseline once.",
     )
 
 

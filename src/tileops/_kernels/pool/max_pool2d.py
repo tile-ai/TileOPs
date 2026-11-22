@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
@@ -53,7 +53,7 @@ def _max_pool2d_kernel(
     rows_inside = axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
     cols_inside = axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _max_pool2d_func(block_m: int, threads: int, tile_h: int, tile_w: int):
         band_h = _band(tile_h, stride_h, kernel_h, dilation_h)
         band_w = _band(tile_w, stride_w, kernel_w, dilation_w)
@@ -172,7 +172,7 @@ def _max_pool2d_with_indices_kernel(
     rows_inside = axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
     cols_inside = axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
 
-    @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1, 2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _max_pool2d_with_indices_func(block_m: int, threads: int):
         tile_full = total % block_m == 0
 

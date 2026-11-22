@@ -26,7 +26,7 @@ from tileops._kernels.attention.call_spec import (
     MLADenseBwdInterface,
     MLAVarlenBwdInterface,
 )
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 
@@ -42,7 +42,7 @@ def _prep_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: s
     @tilelang.jit(
         out_idx=[2],
         pass_configs={tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _prep_func() -> Callable:
         total = T.dynamic("total_q")
@@ -86,7 +86,7 @@ def _dq_land_kernel(
     # The race check does not model that ``dq_element`` is a bijection.
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True},
-        compile_flags=["-O3"],
+        compile_flags=[*CUDA_COMPILE_FLAGS],
     )
     def _dq_land_func() -> Callable:
         total = T.dynamic("total_q")
@@ -176,7 +176,7 @@ def _bwd_ws_kernel(
             tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True,
         },
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "-DENABLE_BF16",
             *csrc_include("tile_claim.h", "warp_uniform.h", "mla_bwd_wgmma.h"),
         ],

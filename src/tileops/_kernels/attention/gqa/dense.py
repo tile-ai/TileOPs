@@ -2144,7 +2144,7 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     @tilelang.jit(
         out_idx=[4],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _gqa_sw_fwd_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
         sink_scale = make_dense_sink_scale(scale, block_m)
@@ -2338,7 +2338,7 @@ def _gqa_sw_fwd_packed_kernel(
     @tilelang.jit(
         out_idx=[4],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _gqa_sw_fwd_packed_func(num_stages):
         block_n = block_m

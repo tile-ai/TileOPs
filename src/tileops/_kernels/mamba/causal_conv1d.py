@@ -23,7 +23,7 @@ import tilelang.language as T
 import torch
 from tvm import DataType
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.elementwise._division import approx_fdiv
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -82,7 +82,7 @@ def _causal_conv1d_kernel(
     hist = width - 1
 
     # exp2 as one MUFU op, denormals flushed.
-    @tilelang.jit(out_idx=[], compile_flags=["--use_fast_math"])
+    @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS, "--use_fast_math"])
     def _func(vec: int, warps: int, seg: int, steps: int, stages: int):
         total = T.dynamic("total")
         batch = T.dynamic("batch")

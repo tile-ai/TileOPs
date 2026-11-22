@@ -1131,8 +1131,7 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits, vec, zero_centered):
         @T.macro
         def block_rsqrt(tx, acc, warp_sums, rrms):
             """Fold one fp32 partial per thread into ``rrms[0]``."""
-            for step in T.serial(WARP_SHUFFLE_STAGES):
-                acc[0] += T.shfl_xor(acc[0], T.shift_left(1, step))
+            warp_reduce(acc, operator.add, serial=True)
             if tx % WARP_LANES == 0:
                 warp_sums[tx // WARP_LANES] = acc[0]
             T.sync_threads()

@@ -40,7 +40,7 @@ from nightly_report import case_id  # noqa: E402
 from benchmarks.outcomes import UNAVAILABLE_PROPERTY  # noqa: E402
 from tileops.manifest import load_adts, load_manifest  # noqa: E402
 from tileops.manifest._plan import entry_plan  # noqa: E402
-from tileops.manifest._workload import instantiate, nightly_calls  # noqa: E402
+from tileops.manifest._workload import bench_calls, instantiate  # noqa: E402
 
 EXIT_OK = 0
 EXIT_GAP = 1
@@ -101,12 +101,7 @@ def parse_run(
 def _declared(op_name: str, entry: dict, nightly: bool = False) -> set[str]:
     """The case ids the entry's workload rows produce, or those the nightly sweep runs."""
     plan = entry_plan(op_name, entry, load_adts(), resolve=False)
-    rows = entry.get("workloads") or []
-    calls = (
-        nightly_calls(plan, rows)
-        if nightly
-        else [(row, case) for row in rows for case in row.get("dtype_cases") or [{}]]
-    )
+    calls = bench_calls(plan, entry.get("workloads") or [], nightly)
     return {instantiate(plan, row, case).case_id for row, case in calls}
 
 

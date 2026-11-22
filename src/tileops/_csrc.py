@@ -8,21 +8,21 @@ __all__ = ["csrc_include", "csrc_path"]
 
 _CSRC = Path(__file__).resolve().parent / "csrc"
 
-# A quoted include, the form one csrc header uses to pull in another.
-_QUOTED_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
-
 
 def csrc_path(name: str) -> str:
     """Return the absolute path of ``name`` under ``tileops/csrc``."""
     return str(_CSRC / name)
 
 
-def _included_files(names: tuple[str, ...]) -> list[Path]:
-    """Return ``names`` and every csrc file they reach through quoted includes, sorted.
+def _csrc_digest(names: tuple[str, ...]) -> str:
+    """Hash the name and content of ``names`` and of every csrc file they reach through
+    quoted includes.
 
-    A quoted include resolves against the including file's directory.
-    Files outside ``tileops/csrc`` and system headers are not followed.
+    A quoted include, the form one csrc header uses to pull in another, resolves against the
+    including file's directory. Files outside ``tileops/csrc`` and system headers are not
+    followed.
     """
+    quoted_include = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
     root = _CSRC.resolve()
     seen: set[Path] = set()
     pending = [_CSRC / name for name in names]
@@ -31,16 +31,10 @@ def _included_files(names: tuple[str, ...]) -> list[Path]:
         if path in seen or not path.is_file() or not path.is_relative_to(root):
             continue
         seen.add(path)
-        for target in _QUOTED_INCLUDE.findall(path.read_text(errors="replace")):
+        for target in quoted_include.findall(path.read_text(errors="replace")):
             pending.append(path.parent / target)
-    return sorted(seen)
-
-
-def _csrc_digest(names: tuple[str, ...]) -> str:
-    """Hash the name and content of ``names`` and of the csrc files they include."""
-    root = _CSRC.resolve()
     digest = hashlib.sha256()
-    for path in _included_files(names):
+    for path in sorted(seen):
         digest.update(path.relative_to(root).as_posix().encode())
         digest.update(b"\0")
         digest.update(path.read_bytes())

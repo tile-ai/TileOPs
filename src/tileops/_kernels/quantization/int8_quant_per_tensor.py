@@ -23,7 +23,8 @@ from tileops._kernels.quantization.int8_codes import (
     quantize,
     widen,
 )
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 
 __all__ = ["INT8QuantPerTensorFwdKernel"]
 
@@ -93,10 +94,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
         def block_max(val, warp_max):
             # Leaves the maximum of val[0] over the block in val[0] of every thread.
             tx = T.get_thread_binding()
-            for stage in T.serial(WARP_SHUFFLE_STAGES):
-                val[0] = T.max(
-                    val[0], T.shfl_xor(val[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES)
-                )
+            warp_reduce(val, T.max, high_first=True, serial=True)
             if tx % WARP_LANES == 0:
                 warp_max[tx // WARP_LANES] = val[0]
             T.sync_threads()

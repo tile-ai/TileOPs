@@ -4,7 +4,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     MAX_GRID_X_BLOCKS,
     MAX_GRID_YZ_BLOCKS,
@@ -127,7 +127,7 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
     # an extent of exactly 2**31, and TileLang widens the offsets of a longer tensor by itself.
     wide = rows * max(l_in, out_l) >= 2**31
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _avg_pool1d_func(block_ol: int, threads: int):
         # A warp taking one output each reads one short stretch of the row `kernel_l`
         # times over. A block stages that stretch with full-width loads instead.

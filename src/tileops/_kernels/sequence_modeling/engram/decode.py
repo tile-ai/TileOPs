@@ -11,7 +11,7 @@ import tilelang.language as T
 import torch
 import torch.nn.functional as F
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.sequence_modeling.engram.call_spec import (
     EngramDecodeCall,
@@ -47,7 +47,7 @@ def _engram_project_kernel(batch, d_mem, d_padded, max_conv_len, dtype):
 
     @tilelang.jit(
         out_idx=[],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(block_m: int, block_n: int, block_k: int, threads: int, num_stages: int):
         @T.macro
@@ -139,7 +139,7 @@ def _engram_step_kernel(batch, d, d_padded, max_conv_len, conv_kernel_size, dila
 
     @tilelang.jit(
         out_idx=[],
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(threads: int):
         @T.prim_func

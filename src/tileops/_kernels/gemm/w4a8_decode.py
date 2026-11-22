@@ -15,7 +15,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
     WARPGROUP_THREADS,
@@ -245,7 +245,7 @@ def _gemm_w4a8_decode_kernel(
         pass_configs={
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("w4a8_decode_helper.h")],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("w4a8_decode_helper.h")],
     )
     def build():
         def clamp_row(row):
@@ -446,6 +446,38 @@ def _gemm_w4a8_decode_kernel(
                             v[c] * T.if_then_else((c // 2) % 2 == 1, ch1, ch0) * as_s[tok],
                             "bfloat16",
                         )
+
+        @T.macro
+        def store_or_park(
+            end,
+            acc,
+            park0,
+            park1,
+            parked0: T.Ref,
+            parked1: T.Ref,
+            ct_cur: T.Ref,
+            seg_begin: T.Ref,
+            ib,
+            pch0: T.Ref,
+            pch1: T.Ref,
+            stores,
+        ):
+            """Store tile ``ct_cur`` when the segment ``[seg_begin, end)`` covers all of it;
+            else park the segment's partial sum, in slot 0 when it opens the unit's run.
+
+            The loop state is ``T.Ref`` so it is read in place: a by-value copy hides
+            ``ct_cur``'s range from the output index, which then widens to int64.
+            """
+            if seg_begin == ct_cur * nchunk and end == (ct_cur + 1) * nchunk:
+                store_tile(acc, ct_cur, pch0, pch1, stores)
+            elif seg_begin == ib:
+                for q in T.unroll(acc_regs):
+                    park0[q] = acc[q]
+                parked0 = 1  # noqa: F841 -- stores through the T.Ref
+            else:
+                for q in T.unroll(acc_regs):
+                    park1[q] = acc[q]
+                parked1 = 1  # noqa: F841 -- stores through the T.Ref
 
         @T.prim_func
         def main(
@@ -720,19 +752,20 @@ def _gemm_w4a8_decode_kernel(
                                 if ct != ct_cur:
                                     if ct_cur >= 0:
                                         drain(acc)
-                                        if (
-                                            seg_begin == ct_cur * nchunk
-                                            and i == (ct_cur + 1) * nchunk
-                                        ):
-                                            store_tile(acc, ct_cur, pch0, pch1, stores)
-                                        elif seg_begin == ib:
-                                            for q in T.unroll(acc_regs):
-                                                park0[q] = acc[q]
-                                            parked0 = 1
-                                        else:
-                                            for q in T.unroll(acc_regs):
-                                                park1[q] = acc[q]
-                                            parked1 = 1
+                                        store_or_park(
+                                            i,
+                                            acc,
+                                            park0,
+                                            park1,
+                                            parked0,
+                                            parked1,
+                                            ct_cur,
+                                            seg_begin,
+                                            ib,
+                                            pch0,
+                                            pch1,
+                                            stores,
+                                        )
                                     ct_cur = ct
                                     seg_begin = i
                                     pch0 = channel_scale(ch, ct, srow0)
@@ -755,16 +788,20 @@ def _gemm_w4a8_decode_kernel(
                         if ct_cur >= 0 and prev_st >= 0 and lane == 0:
                             T.barrier_arrive(empty[ul * st + prev_st])
                         if ct_cur >= 0:
-                            if seg_begin == ct_cur * nchunk and ie == (ct_cur + 1) * nchunk:
-                                store_tile(acc, ct_cur, pch0, pch1, stores)
-                            elif seg_begin == ib:
-                                for q in T.unroll(acc_regs):
-                                    park0[q] = acc[q]
-                                parked0 = 1
-                            else:
-                                for q in T.unroll(acc_regs):
-                                    park1[q] = acc[q]
-                                parked1 = 1
+                            store_or_park(
+                                ie,
+                                acc,
+                                park0,
+                                park1,
+                                parked0,
+                                parked1,
+                                ct_cur,
+                                seg_begin,
+                                ib,
+                                pch0,
+                                pch1,
+                                stores,
+                            )
                         # Each warpgroup parks its head and tail partial sums in its own two slots.
                         if parked0 == 1:
                             T.call_extern(

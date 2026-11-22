@@ -17,7 +17,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES, WARPGROUP_THREADS
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Kernel
@@ -175,7 +175,7 @@ def _varlen_rope_keys_kernel(
     @tilelang.jit(
         out_idx=[4],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _varlen_rope_keys_func() -> Callable:
         total_kv = T.dynamic("total_kv")

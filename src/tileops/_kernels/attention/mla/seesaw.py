@@ -10,7 +10,7 @@ import tilelang.language as T
 from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 
 __all__: list[str] = []
@@ -649,7 +649,7 @@ _SEESAW_PASS_CONFIGS = {
     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
 }
-_SEESAW_FLAGS = ["-O3", "-DNDEBUG", *csrc_include("bulk_prefetch.h")]
+_SEESAW_FLAGS = [*CUDA_COMPILE_FLAGS, *csrc_include("bulk_prefetch.h")]
 
 
 @target_cache(maxsize=32)

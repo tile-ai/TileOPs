@@ -9,7 +9,7 @@ from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
 )
 
 from tileops._csrc import csrc_include
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.gemm.call_spec import (
     GEMMCall,
     GEMMFP8Call,
@@ -903,7 +903,7 @@ def _gemm_fp8_ws_kernel(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
         compile_flags=[
-            "-O3",
+            *CUDA_COMPILE_FLAGS,
             "-DENABLE_BF16",
             "-DENABLE_FP8",
             *csrc_include("dense_wgmma_helper.h"),
@@ -1306,7 +1306,7 @@ def _gemm_fp8_ws_splitk_kernel(
 
     @tilelang.jit(
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", "-DENABLE_FP8"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", "-DENABLE_FP8"],
     )
     def _gemm_fp8_ws_splitk_func(
         block_n: int = 64,
@@ -1554,7 +1554,7 @@ def _gemm_kernel(
     @tilelang.jit(
         out_idx=trace.out_idx(1, traced),
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_func(
         block_m: int = 128,
@@ -1801,7 +1801,7 @@ def _gemm_splitk_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _gemm_splitk_func(
         block_m: int = 128,
@@ -1955,7 +1955,7 @@ def splitk_reduce_kernel(
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: gated},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _splitk_reduce_func(elems_per_cta: int = 1024) -> Callable:
         def _slice_sum(w, bias, gi, gj):
@@ -2177,7 +2177,7 @@ def _gemm_coop2_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_coop2_func(
         block_n: int = 256,
@@ -2609,7 +2609,7 @@ def _gemm_coop2_swap_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_coop2_swap_func(
         block_n: int = 160,
@@ -2955,11 +2955,7 @@ def _gemm_pingpong_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=[
-            "-O3",
-            "-DENABLE_BF16",
-            *csrc_include("dense_wgmma_helper.h"),
-        ],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_pingpong_func(
         block_n: int = 128,
@@ -3308,7 +3304,7 @@ def _gemm_coop2_splitk_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _gemm_coop2_splitk_func(
         block_n: int = 64, block_k: int = 128, num_stages: int = 4, split_k: int = 4
@@ -3499,7 +3495,7 @@ def _gemm_simple_kernel(
     accum_dtype = "float"
     c_dtype = out_dtype or dtype
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _gemm_simple_func(
         block_m: int = 64,
         block_n: int = 128,
@@ -3594,7 +3590,7 @@ def _gemm_swap_ab_kernel(
     # A float32 C stores the accumulator as it is.
     cast = c_dtype != "float32"
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _gemm_swap_ab_func(block_nn: int = 64, block_k: int = 128, num_stages: int = 4) -> Callable:
         mpad = SWAP_AB_MPAD
 
@@ -3675,7 +3671,7 @@ def _gemm_stream_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_stream_func(block_k: int, num_stages: int, blocks: int) -> Callable:
         # One WGMMA's M: the rows of B one block streams.
@@ -3856,7 +3852,7 @@ def _gemm_coop2s_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _gemm_coop2s_func(block_n: int = 64, block_k: int = 128, num_stages: int = 4) -> Callable:
         if m % block_m or n % block_n or k % block_k:
@@ -4312,7 +4308,11 @@ def _gemm_small_batch_kernel(
         JIT factory taking ``(block_n, reduce_threads, num_stages)`` and producing C."""
     accum_dtype = "float"
     c_dtype = out_dtype or dtype
-    flags = ["-O3", "-DENABLE_BF16", *(csrc_include("streaming_load.h") if bias_len else ())]
+    flags = [
+        *CUDA_COMPILE_FLAGS,
+        "-DENABLE_BF16",
+        *(csrc_include("streaming_load.h") if bias_len else ()),
+    ]
 
     @tilelang.jit(out_idx=[-1], compile_flags=flags)
     def _gemm_small_batch_func(
@@ -4596,7 +4596,7 @@ def _gemm_basic_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _gemm_basic_func(
         block_m: int = 64,

@@ -28,7 +28,8 @@ from tileops._kernels.quantization.int8_codes import (
     quantize,
     widen,
 )
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 
 __all__ = ["INT8QuantPerChannelFwdKernel", "SmoothQuantFwdKernel"]
 
@@ -234,11 +235,7 @@ def _quantize_rows(
 
     @T.macro
     def reduce_row(acc, warp_max, tx):
-        for stage in T.serial(WARP_SHUFFLE_STAGES):
-            acc[0] = T.max(
-                acc[0],
-                T.shfl_xor(acc[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES),
-            )
+        warp_reduce(acc, T.max, high_first=True, serial=True)
         if tx % WARP_LANES == 0:
             warp_max[tx // WARP_LANES] = acc[0]
         T.sync_threads()
