@@ -2,7 +2,7 @@
 name: Bug report
 about: Wrong results, a crash, or an error from a TileOPs op
 title: '[BUG][<COMPONENT>] <short description in lowercase>'
-labels: bug
+labels: type:bug
 assignees: ''
 ---
 

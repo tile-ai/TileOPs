@@ -34,35 +34,35 @@ BRANCH_NAME_PATTERN="^(${BRANCH_PREFIXES})/[a-z0-9._-]+/[a-z0-9._-]+$"
 # ---------------------------------------------------------------------------
 
 declare -A TYPE_TO_LABEL=(
-  [Bench]=bench
-  [BugFix]=fix
-  [Chore]=chore
-  [CI]=ci
-  [Design]=design
-  [Doc]=docs
-  [Enhancement]=enhancement
-  [Feat]=feature
-  [Fix]=fix
-  [Maintain]=maintain
-  [Perf]=perf
-  [Refactor]=refactor
-  [Style]=style
-  [Test]=test
+  [Bench]=type:bench
+  [BugFix]=type:fix
+  [Chore]=type:chore
+  [CI]=type:ci
+  [Design]=type:design
+  [Doc]=type:docs
+  [Enhancement]=type:enhancement
+  [Feat]=type:feat
+  [Fix]=type:fix
+  [Maintain]=type:maintain
+  [Perf]=type:perf
+  [Refactor]=type:refactor
+  [Style]=type:style
+  [Test]=type:test
 )
 
 # All type-related labels (used for stale-label cleanup)
-ALL_TYPE_LABELS="bench bug chore ci design docs enhancement feature fix maintain perf refactor style test"
+ALL_TYPE_LABELS="type:bench type:bug type:chore type:ci type:design type:docs type:enhancement type:feat type:fix type:maintain type:perf type:refactor type:style type:test"
 
 # ---------------------------------------------------------------------------
 # Origin → GitHub label mapping
 # ---------------------------------------------------------------------------
 
 declare -A ORIGIN_TO_LABEL=(
-  [foundry]=foundry
+  [foundry]=origin:foundry
 )
 
 # Separate from ALL_TYPE_LABELS so stale-type cleanup cannot strip these.
-ALL_ORIGIN_LABELS="foundry"
+ALL_ORIGIN_LABELS="origin:foundry"
 
 # ---------------------------------------------------------------------------
 # Issue types (ALL CAPS, used in issue titles)
@@ -72,17 +72,17 @@ ISSUE_TYPES="BENCHMARK|BUG|DESIGN|DOCS|FEAT|MAINTAIN|META|PERF|REFACTOR|STYLE|TE
 
 # Issue type → GitHub label (for auto-label workflow)
 declare -A ISSUE_TYPE_TO_LABEL=(
-  [BENCHMARK]=bench
-  [BUG]=bug
-  [DESIGN]=design
-  [DOCS]=docs
-  [FEAT]=feature
-  [MAINTAIN]=maintain
-  [META]=chore
-  [PERF]=perf
-  [REFACTOR]=refactor
-  [STYLE]=style
-  [TEST]=test
+  [BENCHMARK]=type:bench
+  [BUG]=type:bug
+  [DESIGN]=type:design
+  [DOCS]=type:docs
+  [FEAT]=type:feat
+  [MAINTAIN]=type:maintain
+  [META]=type:chore
+  [PERF]=type:perf
+  [REFACTOR]=type:refactor
+  [STYLE]=type:style
+  [TEST]=type:test
 )
 
 # Issue type → commit/PR type prefix

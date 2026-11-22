@@ -5,32 +5,32 @@
 changelog:
   exclude:
     labels:
-      - chore
-      - ci
-      - test
-      - style
+      - type:chore
+      - type:ci
+      - type:test
+      - type:style
   categories:
     - title: Breaking changes
       labels:
         - breaking change
     - title: Features
       labels:
-        - feature
+        - type:feat
     - title: Enhancements
       labels:
-        - enhancement
+        - type:enhancement
     - title: Performance
       labels:
-        - perf
+        - type:perf
     - title: Bug fixes
       labels:
-        - fix
+        - type:fix
     - title: Refactoring
       labels:
-        - refactor
+        - type:refactor
     - title: Documentation
       labels:
-        - docs
+        - type:docs
     - title: Other changes
       labels:
         - "*"

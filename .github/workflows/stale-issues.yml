@@ -71,7 +71,7 @@ jobs:
             done < <(
               echo "$PAGE" | jq -r --arg cutoff "$CUTOFF" '
                 .data.repository.issues.nodes[]
-                | select([.labels.nodes[].name] | index("never-stale") | not)
+                | select([.labels.nodes[].name] | index("status:never-stale") | not)
                 | .number as $n
                 | (.comments.nodes[0].createdAt // .createdAt) as $last
                 | select($last < $cutoff)

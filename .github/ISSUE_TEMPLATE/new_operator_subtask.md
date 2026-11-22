@@ -2,7 +2,7 @@
 name: New Operator Sub-task
 about: A specific sub-task for implementing a part of a new operator
 title: '[FEAT][OPS] <operator name>: <manifest/test/impl/bench scope>'
-labels: feature
+labels: type:feat, area:ops
 assignees: ''
 ---
 
