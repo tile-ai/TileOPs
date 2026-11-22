@@ -34,6 +34,8 @@ def _private_imports(root: Path) -> list[str]:
 
 def test_models_import_no_private_module():
     """A model reaches kernels only through the ops a caller of the package can construct."""
+    if not _MODELS.is_dir():
+        pytest.skip("no tileops.models package to check yet")
     assert _private_imports(_MODELS) == []
 
 

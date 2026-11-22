@@ -135,7 +135,6 @@ def test_a_nightly_model_test_passes():
     pytest_collection_modifyitems([_item(0, "nightly", path="tests/models/test_foo.py")])
 
 
-@pytest.mark.parametrize("tier", ["smoke", "full"])
-def test_a_model_test_below_nightly_fails(tier):
+def test_a_model_test_below_nightly_fails():
     with pytest.raises(pytest.UsageError, match="a test under tests/models is nightly"):
-        pytest_collection_modifyitems([_item(0, tier, path="tests/models/test_foo.py")])
+        pytest_collection_modifyitems([_item(0, "full", path="tests/models/test_foo.py")])

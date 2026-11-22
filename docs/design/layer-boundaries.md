@@ -17,7 +17,7 @@ it state what one layer owns and what it must not reach into.
 | Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `roof_key()`)              |
 | Roofline tool                                               | benchmark output and the GPU profile; it never instantiates an op                                                          |
 | Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
-| Models                                                      | the public op interface, never `tileops._ops` or `tileops._kernels`                                                        |
+| Models                                                      | the public op interface, never a private `tileops._*` module, `workloads`, `tests` or `benchmarks`                         |
 
 ## Manifest
 
@@ -69,8 +69,7 @@ its ops read.
 
 A model is tested against its authors' code, never copied into `src/`:
 [`workloads/models/`](../../workloads/models/) runs that code with torch in place
-of any custom kernel it calls. Model tests run nightly, not in a pull request's
-gate.
+of any custom kernel it calls.
 
 → Rules: [testing.md §Model tests](testing.md#model-tests)
 
