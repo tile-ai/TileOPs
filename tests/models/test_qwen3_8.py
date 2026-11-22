@@ -143,6 +143,16 @@ def test_from_pretrained_refuses_a_tensor_it_does_not_read(tmp_path, extra, matc
         Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
 
 
+def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
+    tensors = random_checkpoint(_TINY, seed=0)
+    layer = "model.language_model.layers.1."
+    _write_checkpoint(
+        tmp_path, _TINY, {n: t for n, t in tensors.items() if not n.startswith(layer)}
+    )
+    with pytest.raises(ValueError, match="holds no tensors of layers \\[1\\]"):
+        Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
+
+
 def test_from_pretrained_skips_the_vision_and_mtp_tensors(tmp_path):
     tensors = random_checkpoint(_TINY, seed=0)
     assert any(n.startswith("model.visual.") for n in tensors)
@@ -274,8 +284,11 @@ def test_generate_takes_the_hf_argmax_until_eos(checkpoint):
     g = torch.Generator().manual_seed(2)
     prompt = torch.randint(0, _SMALL["text_config"]["vocab_size"], (3,), generator=g).tolist()
     mine = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[run_device()], max_seq_len=64)
+    forward, calls = mine.forward, []
+    mine.forward = lambda *args: calls.append(args) or forward(*args)
     out = mine.generate(prompt, 12, eos_token_id=-1)
-    assert len(out) == 12
+    assert (len(out), len(calls)) == (12, 12), "a prefill and one decode step per fed-back token"
+    mine.forward = forward
     eos = out[5]
     assert mine.generate(prompt, 12, eos_token_id=[-1, eos]) == out[: out.index(eos) + 1]
     with torch_paths():

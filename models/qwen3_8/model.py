@@ -139,7 +139,7 @@ class Qwen3_8ForCausalLM:
             nxt = self.ops.argmax(logits)
             token = int(nxt.item())
             out.append(token)
-            if token in eos_ids or pos >= self.max_seq_len:
+            if token in eos_ids or len(out) == max_new_tokens or pos >= self.max_seq_len:
                 break
             logits = self.forward(nxt.view(1, 1).to(self.first_device), pos)
             pos += 1
