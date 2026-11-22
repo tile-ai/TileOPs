@@ -9,6 +9,7 @@ decoding state. The bound is ``check_within_rounding``: in L2 over all calls, th
 most twice as far from HF float32 as HF bfloat16 is.
 """
 
+import dataclasses
 import json
 
 import pytest
@@ -291,6 +292,8 @@ def test_generate_takes_the_hf_argmax_until_eos(checkpoint):
     mine.forward = forward
     eos = out[5]
     assert mine.generate(prompt, 12, eos_token_id=[-1, eos]) == out[: out.index(eos) + 1]
+    mine.config = dataclasses.replace(mine.config, eos_token_id=eos)
+    assert mine.generate(prompt, 12) == out[: out.index(eos) + 1], "config.eos_token_id stops it"
     with torch_paths():
         exact, rounded = (
             ReferenceRequest(reference_model(checkpoint, dtype, run_device()))
