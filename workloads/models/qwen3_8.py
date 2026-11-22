@@ -21,6 +21,7 @@ import torch
 __all__ = [
     "QWEN3_8_27B_CONFIG",
     "ReferenceRequest",
+    "check_argmax_within_rounding",
     "check_within_rounding",
     "random_checkpoint",
     "reference_model",
@@ -237,6 +238,10 @@ class ReferenceRequest:
         return out.logits[:, -1].float()
 
 
+# How many times the reference's own bfloat16 rounding noise a model may differ from it.
+_NOISE_FACTOR = 2
+
+
 def check_within_rounding(
     actual: list[torch.Tensor], expected: list[torch.Tensor], rounded: list[torch.Tensor], what: str
 ) -> None:
@@ -257,7 +262,19 @@ def check_within_rounding(
         )
 
     error, noise = distance(actual), distance(rounded)
-    assert error <= 2 * noise, (
+    assert error <= _NOISE_FACTOR * noise, (
         f"{what} differ from the float32 reference by {error:.4g} in L2, its bfloat16 run by "
         f"{noise:.4g}"
+    )
+
+
+def check_argmax_within_rounding(
+    token: int, expected: torch.Tensor, rounded: torch.Tensor, what: str
+) -> None:
+    """Assert ``token``'s logit in ``expected`` (the float32 reference) is the maximum to within
+    twice the reference's largest bfloat16 logit error, ``rounded - expected``."""
+    slack = _NOISE_FACTOR * (rounded - expected).abs().max()
+    assert expected[token] >= expected.max() - slack, (
+        f"{what}: token {token} is {expected.max() - expected[token]:.3f} below the reference's "
+        f"maximum, its bfloat16 run moves logits by {slack / _NOISE_FACTOR:.3f}"
     )

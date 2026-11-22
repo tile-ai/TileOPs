@@ -15,7 +15,8 @@ from models.qwen3_8.ops import ModelOps
 
 __all__ = ["MLP", "DecoderLayer", "GatedAttention", "GatedDeltaNet", "Step"]
 
-# Tokens a KV-cache page holds.
+# Rows of a KV-cache page. GQAPagedFwdOp's batch-1 decode kernel serves pages of 64 rows or a
+# multiple of 128, so a fixed page keeps decode on that kernel whatever max_seq_len is.
 PAGE_SIZE = 64
 
 

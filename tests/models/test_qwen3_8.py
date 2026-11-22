@@ -20,6 +20,7 @@ from workloads.device import run_device
 from workloads.models.qwen3_8 import (
     QWEN3_8_27B_CONFIG,
     ReferenceRequest,
+    check_argmax_within_rounding,
     check_within_rounding,
     random_checkpoint,
     reference_model,
@@ -86,6 +87,16 @@ def test_config_reads_the_published_config():
             _config(layer_types=["sliding_attention"] * 64), "layer_types", id="layer-type"
         ),
         pytest.param(_config(linear_value_head_dim=64), "square", id="non-square-state"),
+        pytest.param(_config(hidden_act="gelu"), "hidden_act", id="activation"),
+        pytest.param(_config(output_gate_type="sigmoid"), "output_gate_type", id="gdn-gate"),
+        pytest.param(_config(mamba_ssm_dtype="bfloat16"), "mamba_ssm_dtype", id="state-dtype"),
+        pytest.param(_config(num_key_value_heads=5), "num_key_value_heads", id="gqa-heads"),
+        pytest.param(_config(linear_num_key_heads=20), "linear_num_key_heads", id="gdn-heads"),
+        pytest.param(
+            _config(rope_parameters={**_TEXT["rope_parameters"], "mrope_section": [11, 11, 11]}),
+            "does not cover",
+            id="mrope-section",
+        ),
     ],
 )
 def test_config_refuses_what_the_model_does_not_compute(config, match):
@@ -276,9 +287,14 @@ def test_generate_takes_the_hf_argmax_until_eos(checkpoint):
         steps = [(ids[:, : len(prompt)], 0)]
         steps += [(ids[:, pos : pos + 1], pos) for pos in range(len(prompt), ids.shape[1])]
         for token, (step, pos) in zip(out, steps, strict=True):
-            expected, noisy = exact(step, pos)[0], rounded(step, pos)[0]
-            slack = 2 * (noisy - expected).abs().max()
-            assert expected[token] >= expected.max() - slack, (
-                f"position {pos}: token {token} is {expected.max() - expected[token]:.3f} below "
-                f"HF's maximum, HF bfloat16 moves logits by {slack / 2:.3f}"
+            check_argmax_within_rounding(
+                token, exact(step, pos)[0], rounded(step, pos)[0], f"position {pos}"
             )
+
+
+@pytest.mark.sm90
+def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
+    """From a three-token prompt with ``max_seq_len`` 8 and no EOS, ``generate`` returns six
+    tokens: the last one completes the sequence without a forward call past position 7."""
+    model = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[run_device()], max_seq_len=8)
+    assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 6
