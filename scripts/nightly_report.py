@@ -291,30 +291,33 @@ def parse_coverage_xml(path: str) -> list[dict] | None:
 # ---------------------------------------------------------------------------
 
 
-def aggregate_test_results(results: list[dict]) -> dict:
-    """Group test results by Op."""
-    ops = defaultdict(
-        lambda: {
-            "module": None,
-            "passed": 0,
-            "failed": 0,
-            "skipped": 0,
-            "compared": 0,
-            "failing_tests": [],
-        }
+def _tally(results: list[dict], key_of) -> dict[str, dict]:
+    """Group testcases by ``key_of``, counting each group's outcomes and naming its failing
+    tests. A testcase ``key_of`` maps to nothing is left out."""
+    groups: dict[str, dict] = defaultdict(
+        lambda: {"passed": 0, "failed": 0, "skipped": 0, "failing_tests": []}
     )
     for r in results:
-        op = r.get("op")
-        if op:
-            d = ops[op]
-            if not d["module"]:
-                d["module"] = r.get("op_module")
+        key = key_of(r)
+        if key:
+            d = groups[key]
             d[r["outcome"]] += 1
-            if r["outcome"] == "passed" and r.get("compared"):
-                d["compared"] += 1
             if r["outcome"] == "failed":
                 d["failing_tests"].append(r["name"])
-    return dict(ops)
+    return dict(groups)
+
+
+def aggregate_test_results(results: list[dict]) -> dict:
+    """Group test results by Op."""
+    ops = _tally(results, lambda r: r.get("op"))
+    for d in ops.values():
+        d.update(module=None, compared=0)
+    for r in results:
+        d = ops.get(r.get("op"))
+        if d is not None:
+            d["module"] = d["module"] or r.get("op_module")
+            d["compared"] += r["outcome"] == "passed" and bool(r.get("compared"))
+    return ops
 
 
 def _model_of(result: dict) -> str:
@@ -329,15 +332,7 @@ def _model_of(result: dict) -> str:
 def aggregate_model_results(results: list[dict]) -> dict[str, dict]:
     """Group model test results by model, the ``tests/models/test_<model>.py`` file each
     testcase comes from."""
-    models: dict[str, dict] = defaultdict(
-        lambda: {"passed": 0, "failed": 0, "skipped": 0, "failing_tests": []}
-    )
-    for r in results:
-        d = models[_model_of(r)]
-        d[r["outcome"] if r["outcome"] in ("passed", "failed") else "skipped"] += 1
-        if r["outcome"] == "failed":
-            d["failing_tests"].append(r["name"])
-    return dict(models)
+    return _tally(results, _model_of)
 
 
 def aggregate_bench_results(results: list[dict]) -> dict:
@@ -1282,6 +1277,15 @@ def _ratio_emoji(ratio: float) -> str:
     return _RED
 
 
+def _failing_tests_cell(names: list[str]) -> str:
+    """The first three failing test names, then a count of the rest."""
+    shown = 3
+    cell = ", ".join(names[:shown])
+    if len(names) > shown:
+        cell += f", ... (+{len(names) - shown})"
+    return cell
+
+
 def generate_report(
     test_ops: dict | None,
     bench_ops: dict | None,
@@ -1481,12 +1485,9 @@ def generate_report(
         lines.append("|:------|:------:|:------:|:-------:|:--------------|")
         for model, d in sorted(models.items()):
             icon = _PASS if d["failed"] == 0 else _FAIL
-            tests_str = ", ".join(d["failing_tests"][:3])
-            if len(d["failing_tests"]) > 3:
-                tests_str += f", ... (+{len(d['failing_tests']) - 3})"
             lines.append(
                 f"| {icon} **{model}** | {d['passed']} | {d['failed']} | {d['skipped']} "
-                f"| {tests_str} |"
+                f"| {_failing_tests_cell(d['failing_tests'])} |"
             )
         lines.append("")
 
@@ -1499,11 +1500,9 @@ def generate_report(
         lines.append("|:---|:-------|:--------------:|:--------------|")
         for op, d in sorted(failed_ops.items()):
             total = d["passed"] + d["failed"] + d["skipped"]
-            tests_str = ", ".join(d["failing_tests"][:3])
-            if len(d["failing_tests"]) > 3:
-                tests_str += f", ... (+{len(d['failing_tests']) - 3})"
             lines.append(
-                f"| **{op}** | `{d['module'] or 'N/A'}` | {d['failed']}/{total} | {tests_str} |"
+                f"| **{op}** | `{d['module'] or 'N/A'}` | {d['failed']}/{total} "
+                f"| {_failing_tests_cell(d['failing_tests'])} |"
             )
         lines.append("")
 

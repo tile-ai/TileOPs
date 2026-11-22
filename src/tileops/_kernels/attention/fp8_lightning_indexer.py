@@ -8,7 +8,7 @@ from tilelang import language as T
 from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
-from tileops._kernels.attention.dsa.decode_ws import ROLE_INDEX_CALL
+from tileops._kernels.attention.dsa.decode_ws import mark_role_branches
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import SETMAXNREG_GRANULARITY, SM90_REGISTERS
@@ -513,8 +513,8 @@ def _fp8_lightning_indexer_ws_kernel(
 
     Warpgroups 0 and 1 take alternate tiles: one m64n``rows`` WGMMA each, then the
     relu-weighted head sums, stored. Warpgroup 2 serves them: warp 0 loads q and the key tiles
-    by TMA, and warps 1 to 3 write -inf over the keys outside every window. A consumer returns
-    a key stage to the producer before its epilogue; the helper states the head-sum formula.
+    by TMA, and warps 1 to 3 write -inf over the keys outside every window. The helper states
+    the head-sum formula.
 
     ``mixed`` builds the one-batch-row launch that runs some query blocks whole and splits the
     rest: the launch arguments ``whole``, ``shift`` and ``per`` give its CTA mapping. Without
@@ -666,11 +666,7 @@ def _fp8_lightning_indexer_ws_kernel(
                 Win[0, tx] = T.if_then_else(s0 + tx < seq_len, lo, seq_len_kv)
                 Win[1, tx] = T.if_then_else(s0 + tx < seq_len, hi, 0)
             T.sync_threads()
-            # Marks this kernel for decode_ws's rewrite of its role branches to the warp-uniform
-            # role index: the WGMMA descriptors then stay in uniform registers.
-            T.evaluate(
-                T.call_extern("int32", ROLE_INDEX_CALL)  # lint: extern-target allow: decode_ws
-            )
+            mark_role_branches()
             lo_b = T.alloc_var("int32", init=seq_len_kv)
             hi_b = T.alloc_var("int32", init=0)
             # [in_lo, in_hi): keys inside every row's window, empty when a row is past seq_len.

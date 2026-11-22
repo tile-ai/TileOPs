@@ -49,7 +49,7 @@ class ModelOps:
             mrope_interleaved=True,
         )
         self.kv_write = PagedKVCacheWriteFwdOp()
-        self.attention = GQAPagedFwdOp(is_causal=True, sm_scale=cfg.head_dim**-0.5)
+        self.attention = GQAPagedFwdOp(is_causal=True)
         self.sigmoid = SigmoidFwdOp()
         self.mul = MulFwdOp()
         self.silu_and_mul = SiLUAndMulFwdOp()

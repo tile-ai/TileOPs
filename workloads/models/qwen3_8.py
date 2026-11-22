@@ -28,8 +28,6 @@ __all__ = [
     "torch_paths",
 ]
 
-_LAYER_TYPES = (["linear_attention"] * 3 + ["full_attention"]) * 16
-
 # Qwen3.8-27B's published ``config.json``, its vision part left out.
 QWEN3_8_27B_CONFIG = {
     "architectures": ["Qwen3_5ForConditionalGeneration"],
@@ -48,7 +46,7 @@ QWEN3_8_27B_CONFIG = {
         "hidden_size": 5120,
         "initializer_range": 0.02,
         "intermediate_size": 17408,
-        "layer_types": _LAYER_TYPES,
+        "layer_types": (["linear_attention"] * 3 + ["full_attention"]) * 16,
         "linear_conv_kernel_dim": 4,
         "linear_key_head_dim": 128,
         "linear_num_key_heads": 16,
@@ -82,13 +80,6 @@ QWEN3_8_27B_CONFIG = {
 _PREFIX = "model.language_model."
 # The vision tower and the MTP layer, which the text model does not read.
 _SKIPPED = ("model.visual.", "mtp.")
-_TORCH_PATHS = (
-    "torch_chunk_gated_delta_rule",
-    "torch_recurrent_gated_delta_rule",
-    "causal_conv1d_fn",
-    "causal_conv1d_update",
-    "eager_attention_forward",
-)
 
 
 def random_checkpoint(config: dict, seed: int) -> dict[str, torch.Tensor]:
@@ -159,8 +150,15 @@ def torch_paths() -> Iterator[Counter]:
     block; yield a counter of the calls each takes, by function name."""
     from transformers.models.qwen3_5 import modeling_qwen3_5 as m
 
+    names = (
+        "torch_chunk_gated_delta_rule",
+        "torch_recurrent_gated_delta_rule",
+        "causal_conv1d_fn",
+        "causal_conv1d_update",
+        "eager_attention_forward",
+    )
     calls: Counter = Counter()
-    saved = {name: getattr(m, name) for name in _TORCH_PATHS}
+    saved = {name: getattr(m, name) for name in names}
 
     def recorded(name: str) -> object:
         fn = inspect.unwrap(saved[name])
@@ -174,7 +172,7 @@ def torch_paths() -> Iterator[Counter]:
         return run
 
     try:
-        for name in _TORCH_PATHS:
+        for name in names:
             setattr(m, name, recorded(name))
         yield calls
     finally:

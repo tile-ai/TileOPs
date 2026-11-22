@@ -156,37 +156,19 @@ def test_indexer_empty_and_inverted_windows() -> None:
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "queries, keys, groups",
+    "queries, keys, heads, index_dim, groups",
     [
-        pytest.param(8, 128, 1, marks=pytest.mark.smoke, id="warp-specialized"),
-        pytest.param(8, 128, 2, marks=pytest.mark.full, id="two-groups"),
-        pytest.param(532, 32768, 1, marks=pytest.mark.full, id="partial-wave"),
-    ],
-)
-def test_indexer_signed_external_key_scales(queries, keys, groups) -> None:
-    test = FP8LightningIndexerTest(1, queries, 64, 128, keys, groups)
-    q, k, weights, starts, ends, scales = test.gen_weight_boundary_inputs()
-    q.fill_(1)
-    k.fill_(1)
-    weights.fill_(1)
-    scales.fill_(1)
-    scales[:, 1::2] = -1
-    test.check(FP8LightningIndexerFwdOp(), q, k, weights, starts, ends, scales)
-
-
-@pytest.mark.sm90
-@pytest.mark.parametrize(
-    "queries, keys, heads, index_dim",
-    [
-        pytest.param(8, 128, 64, 128, marks=pytest.mark.smoke, id="warp-specialized"),
+        pytest.param(8, 128, 64, 128, 1, marks=pytest.mark.smoke, id="warp-specialized"),
         # Eight queries of 32 heads a block: one FFMA chain a head sum, where 64 heads take two.
-        pytest.param(64, 512, 32, 64, marks=pytest.mark.full, id="eight-queries"),
+        pytest.param(64, 512, 32, 64, 1, marks=pytest.mark.full, id="eight-queries"),
+        pytest.param(8, 128, 64, 128, 2, marks=pytest.mark.full, id="two-groups"),
+        pytest.param(532, 32768, 64, 128, 1, marks=pytest.mark.full, id="partial-wave"),
     ],
 )
-def test_indexer_random_signed_key_scales(queries, keys, heads, index_dim) -> None:
+def test_indexer_signed_external_key_scales(queries, keys, heads, index_dim, groups) -> None:
     """Random keys whose scales take random signs: each key row's scores take its own sign, in
     both row halves of a thread's accumulators."""
-    test = FP8LightningIndexerTest(1, queries, heads, index_dim, keys, 1)
+    test = FP8LightningIndexerTest(1, queries, heads, index_dim, keys, groups)
     q, k, weights, starts, ends, scales = test.gen_weight_boundary_inputs()
     q = torch.randn(q.shape, device=q.device).to(q.dtype)
     k = torch.randn(k.shape, device=k.device).to(k.dtype)

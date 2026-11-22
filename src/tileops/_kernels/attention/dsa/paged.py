@@ -14,7 +14,7 @@ from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import DSAPagedCall, DSAPagedFwdInterface
-from tileops._kernels.attention.dsa.decode_ws import ROLE_INDEX_CALL
+from tileops._kernels.attention.dsa.decode_ws import mark_role_branches
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -581,10 +581,7 @@ def _dsa_paged_kernel(
                 # Both CTAs' barriers are initialized before either touches the other's.
                 T.cluster_arrive()
                 T.cluster_wait()
-            # Marker for decode_ws's uniform-role rewrite; it must stay a bare call.
-            T.evaluate(
-                T.call_extern("int32", ROLE_INDEX_CALL)  # lint: extern-target allow: decode_ws
-            )
+            mark_role_branches()
             if tx >= consumer_threads:
                 T.set_max_nreg(producer_regs, 0)
                 producer(

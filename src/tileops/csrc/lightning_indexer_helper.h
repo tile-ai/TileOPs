@@ -30,8 +30,7 @@ __device__ __forceinline__ float indexer_fma(float a, float b, float c) {
 // head sums are of (score + sgn |score|) * weight / 2 = sgn relu(sgn score) *
 // weight, so the stored logit is the sum times key_scale. ``sgn0`` and ``sgn1``
 // are the signs at row halves 0 and 1, or 1 for a call that takes every key
-// scale as nonnegative;
-// ``key_scale`` is the scale of this thread's stored row,
+// scale as nonnegative; ``key_scale`` is the scale of this thread's stored row,
 // 16 (t / 32) + (t % 32) / 4 + 8 (t % 2). The four lanes that share a row
 // reduce-scatter the 2 BQ sums, so lane t % 4 ends with the (query q, row half
 // h) of 2 q + h congruent to it. Outside its row's window a logit is -inf when

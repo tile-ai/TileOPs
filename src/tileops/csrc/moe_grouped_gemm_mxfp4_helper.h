@@ -103,13 +103,12 @@ constexpr uint32_t kMxfp4BinadeHi = 0x08080808u;
 // codes. A selector with bit 3 set fills its byte with the selected byte's top
 // bit, so ``signs`` is 0xff where a code is negative and 0x80 elsewhere; bit 6
 // tells them apart.
-__device__ __forceinline__ uint32_t mxfp4_e2m1x4_e4m3(uint32_t codes, uint2 row,
-                                                      uint32_t fill) {
+__device__ __forceinline__ uint32_t mxfp4_e2m1x4_e4m3(uint32_t codes,
+                                                      uint2 row) {
   uint32_t const magnitude = __byte_perm(row.x, row.y, codes & 0x7777u);
   // prmt itself: __byte_perm's runtime selector drops the sign-fill bit.
-  // ``fill`` is 0x80808080.
   uint32_t signs;
-  asm("prmt.b32 %0, %1, %1, %2;" : "=r"(signs) : "r"(fill), "r"(codes));
+  asm("prmt.b32 %0, %1, %1, %2;" : "=r"(signs) : "r"(0x80808080u), "r"(codes));
   return magnitude | ((signs << 1) & 0x80808080u);
 }
 
@@ -235,7 +234,6 @@ __device__ __forceinline__ void mxfp4_weight_step(void const* packed_stage,
       }
     }
   }
-  uint32_t const fill = 0x80808080u;
 #pragma unroll
   for (int i = 0; i < 4; ++i) {
 #pragma unroll
@@ -243,8 +241,8 @@ __device__ __forceinline__ void mxfp4_weight_step(void const* packed_stage,
       uint8_t const* chunk = rows[r] + 16 * (i ^ swizzle);
       uint32_t const lo = *reinterpret_cast<uint16_t const*>(chunk);
       uint32_t const hi = *reinterpret_cast<uint16_t const*>(chunk + 8);
-      frags[4 * i + r] = mxfp4_e2m1x4_e4m3(lo, folds[r][i], fill);
-      frags[4 * i + 2 + r] = mxfp4_e2m1x4_e4m3(hi, folds[r][i], fill);
+      frags[4 * i + r] = mxfp4_e2m1x4_e4m3(lo, folds[r][i]);
+      frags[4 * i + 2 + r] = mxfp4_e2m1x4_e4m3(hi, folds[r][i]);
     }
   }
 }

@@ -363,11 +363,10 @@ jobs:
           echo "TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-}"
           echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-}"
 
-          set -o pipefail
           python3 -m pip install -q -c constraints.txt pytest-timeout pytest-cov
           # Coverage reflects the full/nightly tiers only. Smoke-only cases run in
           # gpu-smoke.yml and their code reads as untested here.
-          # tests/models runs in model_test, as its own group.
+          # tests/models runs in the model_test job.
           python3 -m pytest tests/ --ignore=tests/models -m "full or nightly" -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml --cov=tileops --cov-branch --cov-report=html:htmlcov --cov-report=xml:coverage.xml | tee tileops_op_test.log
         shell: bash
 

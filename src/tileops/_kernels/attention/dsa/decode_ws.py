@@ -17,7 +17,7 @@ from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS
 
 __all__ = ["DSADecodeWSKernel"]
 
-# The kernel issues this call once as a bare statement; _uniform_role_branches finds the
+# mark_role_branches issues this call as a bare statement; _uniform_role_branches finds the
 # kernel by that statement and turns it into the role index, so the two must agree.
 ROLE_INDEX_CALL = "tileops::canonical_warp_group_idx"
 
@@ -47,6 +47,13 @@ def _uniform_role_branches(code: str) -> str:
 
 
 chain_cuda_postproc(_uniform_role_branches)
+
+
+@T.macro
+def mark_role_branches():
+    """Mark a warp-specialized kernel for _uniform_role_branches, which defines the role index
+    here; issue it once, as a bare statement, before the role branches."""
+    T.evaluate(T.call_extern("int32", ROLE_INDEX_CALL))
 
 
 @target_cache(maxsize=32)
@@ -439,8 +446,7 @@ def _dsa_decode_ws_kernel(
             k_free = T.alloc_barrier([warpgroup] * 4)
             bias_ready = T.alloc_barrier([producer_threads])
             tx = T.get_thread_binding()
-            # Marks this kernel for _uniform_role_branches, which defines the role index here.
-            T.evaluate(T.call_extern("int32", ROLE_INDEX_CALL))
+            mark_role_branches()
             if tx >= consumer_threads:
                 T.set_max_nreg(producer_regs, 0)
                 producer(
