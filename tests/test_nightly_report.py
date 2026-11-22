@@ -823,3 +823,97 @@ def test_an_unavailable_row_is_neither_a_skip_nor_a_failure(report, tmp_path, ex
     assert report.count_bench_outcome(rows, "skipped") == 0
     assert report.count_bench_outcome(rows, "unavailable") == (outcome == "unavailable")
     assert len(report.collect_bench_failures(rows)) == (outcome == "failed")
+
+
+def _model_case(model: str, name: str, outcome: str) -> dict:
+    return {"nodeid": f"tests.models.test_{model}::{name}", "name": name, "outcome": outcome}
+
+
+def test_model_results_group_by_model_file(report):
+    models = report.aggregate_model_results(
+        [
+            _model_case("qwen3_8", "test_a", "passed"),
+            _model_case("qwen3_8", "test_b", "failed"),
+            _model_case("deepseek_v4", "test_c", "skipped"),
+        ]
+    )
+    assert models["qwen3_8"] == {
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "failing_tests": ["test_b"],
+    }
+    assert models["deepseek_v4"]["skipped"] == 1
+
+
+@pytest.mark.parametrize(
+    ("nodeid", "name"),
+    [
+        pytest.param("tests.models.test_qwen3_8.TestLoad::test_a", "test_a", id="class-test"),
+        pytest.param("::tests.models.test_qwen3_8", "tests.models.test_qwen3_8", id="collection"),
+    ],
+)
+def test_a_model_is_named_by_its_test_module(report, nodeid, name):
+    """A class test's classname ends in its class, and a collection error leaves the classname
+    empty and puts the module in the name; both still name the model."""
+    case = {"nodeid": nodeid, "name": name, "outcome": "failed"}
+    assert list(report.aggregate_model_results([case])) == ["qwen3_8"]
+
+
+def _model_report(report, models):
+    return report.generate_report(
+        test_ops={_OP: {"module": "m", "failed": 0, "passed": 1, "skipped": 0, "tests": []}},
+        bench_ops=None,
+        bench_failures=[],
+        regressions=[],
+        improvements=[],
+        baseline_alerts=[],
+        models=models,
+    )
+
+
+def test_models_are_their_own_summary_row_and_section(report):
+    md = _model_report(
+        report, {"qwen3_8": {"passed": 30, "failed": 0, "skipped": 0, "failing_tests": []}}
+    )
+    assert "| **Models** | ✅ &ensp; (1 models, 30/30 tests) |" in md
+    assert "| ✅ **qwen3_8** | 30 | 0 | 0 |  |" in md[md.index("## Models") :]
+    assert md.startswith("# ✅")
+
+
+def test_a_failing_model_test_fails_the_report(report):
+    md = _model_report(
+        report, {"qwen3_8": {"passed": 29, "failed": 1, "skipped": 0, "failing_tests": ["test_x"]}}
+    )
+    assert md.startswith("# ❌")
+    assert "| **Models** | ❌ 1 failed" in md
+    assert "| ❌ **qwen3_8** | 29 | 1 | 0 | test_x |" in md
+
+
+def test_a_run_without_model_results_has_no_models_row(report):
+    assert "**Models**" not in _model_report(report, None)
+
+
+def test_a_model_run_without_results_fails_the_report(report):
+    """A model run killed before pytest writes its JUnit file reports no results, not a pass."""
+    md = _model_report(report, {})
+    assert md.startswith("# \u274c")
+    assert "| **Models** | \u274c no results" in md
+
+
+def test_a_missing_model_results_file_reads_as_no_results(report, tmp_path):
+    out = tmp_path / "report.md"
+    missing = tmp_path / "model_test_results.xml"
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPORT_SCRIPT),
+            "--model-test-xml",
+            str(missing),
+            "--output",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert "| **Models** | \u274c no results" in out.read_text()

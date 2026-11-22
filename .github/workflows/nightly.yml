@@ -79,7 +79,7 @@ jobs:
         run: |
           python -m pytest -q -n auto --dist loadgroup --durations=20 -p tests.privateuse1 \
             --tileops-device=tileops_test -m "not structural" tests benchmarks/tests \
-            --ignore=tests/ops
+            --ignore=tests/ops --ignore=tests/models
 
       # The tileops_test target computes each op's manifest reference on the test device. A
       # call it does not serve is reported unvalidated, not failed.
@@ -367,7 +367,8 @@ jobs:
           python3 -m pip install -q -c constraints.txt pytest-timeout pytest-cov
           # Coverage reflects the full/nightly tiers only. Smoke-only cases run in
           # gpu-smoke.yml and their code reads as untested here.
-          python3 -m pytest tests/ -m "full or nightly" -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml --cov=tileops --cov-branch --cov-report=html:htmlcov --cov-report=xml:coverage.xml | tee tileops_op_test.log
+          # tests/models runs in model_test, as its own group.
+          python3 -m pytest tests/ --ignore=tests/models -m "full or nightly" -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml --cov=tileops --cov-branch --cov-report=html:htmlcov --cov-report=xml:coverage.xml | tee tileops_op_test.log
         shell: bash
 
       - name: Upload op test artifacts
@@ -389,12 +390,57 @@ jobs:
         run: exit 1
         shell: bash
 
+  model_test:
+    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    timeout-minutes: 90
+    runs-on: [self-hosted, tile-ops, shared]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Verify nightly runner environment
+        run: scripts/ci/verify_nightly_runner.sh
+        shell: bash
+
+      - name: Install TileOPs (image-baked stack, --no-deps)
+        run: bash scripts/ci/install_tileops.sh
+        shell: bash
+
+      - name: Run model tests
+        id: model_tests
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          python3 -m pip install -q -c constraints.txt pytest-timeout
+          python3 -m pytest tests/models -m nightly -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=model_test_results.xml | tee tileops_model_test.log
+        shell: bash
+
+      - name: Upload model test artifacts
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ always() }}
+        with:
+          name: tileops_model_test_${{ github.run_id }}
+          overwrite: true
+          path: |
+            model_test_results.xml
+            tileops_model_test.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail model test job if pytest failed
+        if: ${{ always() && steps.model_tests.outcome == 'failure' }}
+        run: exit 1
+        shell: bash
+
   # =========================================================================
-  # Phase 2 — Nightly report from the benchmark and op test results
+  # Phase 2 — Nightly report from the benchmark, op test and model test results
   # =========================================================================
   nightly-report:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    needs: [benchmark, op_test]
+    needs: [benchmark, op_test, model_test]
     timeout-minutes: 30
     runs-on: [self-hosted, tile-ops, shared]
     steps:
@@ -416,6 +462,13 @@ jobs:
         if: ${{ always() }}
         with:
           name: tileops_op_test_${{ github.run_id }}
+        continue-on-error: true
+
+      - name: Download model test artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: ${{ always() }}
+        with:
+          name: tileops_model_test_${{ github.run_id }}
         continue-on-error: true
 
       - name: Download benchmark artifacts
@@ -471,6 +524,7 @@ jobs:
 
           python3 scripts/nightly_report.py \
             --test-xml test_results.xml \
+            --model-test-xml model_test_results.xml \
             --bench-xml bench_results.xml \
             "${HISTORY_ARGS[@]}" \
             --output nightly_report.md \
