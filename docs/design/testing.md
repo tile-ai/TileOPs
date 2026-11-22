@@ -146,9 +146,7 @@ No performance exploration, autotune sweep or duplicate code path.
 
 ### Model tests
 
-- [`tests/models/`](../../tests/models/) holds the tests of [`models/`](../../models/); every one carries `nightly`, and collection fails otherwise.
-- A test builds the model with a few layers at the published widths, on random weights in the checkpoint's formats, and compares each layer's output and the logits with the authors' code that [`workloads/models/`](../../workloads/models/) runs.
-- The bound derives from the reference's own noise, such as the gap between two reference runs that differ only in the rounding its kernels apply; the model's pull request states it.
+- Tests under [`tests/models/`](../../tests/models/) run nightly, not in a pull request's gate.
 
 ## Benchmarks
 

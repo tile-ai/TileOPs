@@ -52,6 +52,8 @@ dev = [
     "pytest-xdist>=3.0",
     # torch's C++ extension loader builds the PrivateUse1 test backend in tests/privateuse1.
     "ninja",
+    # models/ reads checkpoints with it; tests/models writes them.
+    "safetensors==0.8.0",
 ]
 # Benchmark baselines. FlashAttention-3 (`flash_attn_interface`) is not on PyPI;
 # the dev image builds it.

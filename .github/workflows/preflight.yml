@@ -410,7 +410,7 @@ jobs:
           OMP_NUM_THREADS: "1"
         run: |
           python -m pytest -q -n auto -p tests.privateuse1 --tileops-device=tileops_test \
-            --tileops-cuda-only-must-fail tests --ignore=tests/ops
+            --tileops-cuda-only-must-fail tests --ignore=tests/ops --ignore=tests/models
           python -m pytest -q -n auto -p tests.privateuse1.target --tileops-device=tileops_test \
             --tileops-target=tileops_test --tileops-cuda-only-must-fail tests/ops
 
