@@ -209,6 +209,17 @@ def pool_baseline(op_name: str, workload) -> tuple:
     return choice, fn
 
 
+# avg_pool2d (kernel_size, stride, padding) whose Inductor build returns wrong values:
+# torch 2.14 miscompiles this one at the first and last two output columns.
+_INDUCTOR_MISCOMPILED_AVG_POOL2D = {((5, 5), (2, 2), (2, 2))}
+
+
+def _avg_pool2d_window(workload) -> tuple:
+    kernel = tuple(per_axis_values(workload.kernel_size, 2))
+    stride = kernel if workload.stride is None else tuple(per_axis_values(workload.stride, 2))
+    return kernel, stride, tuple(per_axis_values(workload.padding, 2))
+
+
 def _bench(op_cls: type, case: bench.Case) -> None:
     op = op_cls(**case.arguments)
     op.request_tune()
@@ -216,13 +227,14 @@ def _bench(op_cls: type, case: bench.Case) -> None:
     _tag, _baseline_fn = pool_baseline(op_cls.__name__, case.workload)
     # torch stays alongside the library baseline: it is what the nightly's ratio alert and
     # its history were measured against, and both numbers belong in the same row.
-    bench.Runner(op, case).compare(
-        {
-            _tag: _baseline_fn,
-            "torch-ref": case.torch,
-            TORCH_COMPILE_TAG: compiled_reference(case.torch),
-        }
-    )
+    implementations = {_tag: _baseline_fn, "torch-ref": case.torch}
+    if op_cls is AvgPool2dFwdOp and _avg_pool2d_window(case.workload) in (
+        _INDUCTOR_MISCOMPILED_AVG_POOL2D
+    ):
+        print(f"  [skip] {TORCH_COMPILE_TAG}: torch {torch.__version__} miscompiles this call")
+    else:
+        implementations[TORCH_COMPILE_TAG] = compiled_reference(case.torch)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(AvgPool1dFwdOp), ids=lambda case: case.id)
