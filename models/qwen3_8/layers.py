@@ -15,10 +15,6 @@ from models.qwen3_8.ops import ModelOps
 
 __all__ = ["MLP", "DecoderLayer", "GatedAttention", "GatedDeltaNet", "Step"]
 
-# Rows of a KV-cache page. GQAPagedFwdOp's batch-1 decode kernel serves pages of 64 rows or a
-# multiple of 128, so a fixed page keeps decode on that kernel whatever max_seq_len is.
-PAGE_SIZE = 64
-
 
 @dataclasses.dataclass(frozen=True)
 class Step:
@@ -114,6 +110,10 @@ class GatedAttention:
     then ``k_proj`` and ``v_proj``; ``gate_proj`` holds the second half of each head's rows.
     """
 
+    # Rows of a KV-cache page. GQAPagedFwdOp's batch-1 decode kernel serves pages of 64 rows or a
+    # multiple of 128, so a fixed page keeps decode on that kernel whatever max_seq_len is.
+    PAGE_SIZE = 64
+
     def __init__(self, cfg: Qwen3_8Config, max_seq_len: int, device: torch.device) -> None:
         self.heads = cfg.num_attention_heads
         self.kv_heads = cfg.num_key_value_heads
@@ -123,8 +123,8 @@ class GatedAttention:
         self.q_norm: torch.Tensor
         self.k_norm: torch.Tensor
         self.o_proj: torch.Tensor
-        pages = -(-max_seq_len // PAGE_SIZE)
-        shape = (pages, PAGE_SIZE, self.kv_heads, self.head_dim)
+        pages = -(-max_seq_len // self.PAGE_SIZE)
+        shape = (pages, self.PAGE_SIZE, self.kv_heads, self.head_dim)
         self.k_cache = torch.zeros(shape, dtype=torch.bfloat16, device=device)
         self.v_cache = torch.zeros(shape, dtype=torch.bfloat16, device=device)
         self.block_table = torch.arange(pages, dtype=torch.int32, device=device).view(1, pages)

@@ -179,7 +179,10 @@ class _Recorded:
         return out, residual
 
 
-# Per request: the lengths of the calls that prefill it, then the decode steps.
+# Per request: the lengths of the calls that prefill it, then the decode steps. GDN chunks and
+# KV-cache pages are 64 tokens: 130 ends 2 tokens into its third chunk, 67 starts there and ends
+# mid-chunk, and 64 crosses a chunk boundary without starting on one; 2100 walks 33 chunks and
+# pages and ends mid-chunk, so the recurrent state's rounding builds up over a long prefill.
 _REQUESTS = {
     "short": ([5], 6),
     "chunked-prefill": ([130, 67, 64], 4),
