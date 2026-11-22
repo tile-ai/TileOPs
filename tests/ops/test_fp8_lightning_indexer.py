@@ -20,11 +20,16 @@ def test_indexer_preserves_small_normal_weights() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.sm90
-def test_indexer_partial_wave_preserves_small_normal_weights() -> None:
-    """133 blocks of four queries over 512 key tiles take the partial-wave launch, whose
-    epilogue doubles the relu terms; small normal weights still count."""
-    workload = FP8LightningIndexerTest(1, 532, 64, 128, 32768, 1)
-    workload.check(FP8LightningIndexerFwdOp(), *workload.gen_weight_boundary_inputs())
+def test_indexer_keeps_large_finite_head_sums() -> None:
+    """A head sum of 2^127 before a key scale of 2^-10 stays finite: 2^117."""
+    workload = FP8LightningIndexerTest(1, 8, 64, 128, 128, 1)
+    q, k, weights, starts, ends, scales = workload.gen_weight_boundary_inputs()
+    q.fill_(1)
+    k.fill_(1)
+    weights.zero_()
+    weights[:, 0] = 2.0**120
+    scales.fill_(2.0**-10)
+    workload.check(FP8LightningIndexerFwdOp(), q, k, weights, starts, ends, scales)
 
 
 @pytest.mark.smoke
@@ -166,6 +171,28 @@ def test_indexer_signed_external_key_scales(queries, keys, groups) -> None:
     weights.fill_(1)
     scales.fill_(1)
     scales[:, 1::2] = -1
+    test.check(FP8LightningIndexerFwdOp(), q, k, weights, starts, ends, scales)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "queries, keys, heads, index_dim",
+    [
+        pytest.param(8, 128, 64, 128, marks=pytest.mark.smoke, id="warp-specialized"),
+        # Eight queries of 32 heads a block: one FFMA chain a head sum, where 64 heads take two.
+        pytest.param(64, 512, 32, 64, marks=pytest.mark.full, id="eight-queries"),
+        pytest.param(532, 32768, 64, 128, marks=pytest.mark.full, id="partial-wave"),
+    ],
+)
+def test_indexer_random_signed_key_scales(queries, keys, heads, index_dim) -> None:
+    """Random keys whose scales take random signs: each key row's scores take its own sign, in
+    both row halves of a thread's accumulators."""
+    test = FP8LightningIndexerTest(1, queries, heads, index_dim, keys, 1)
+    q, k, weights, starts, ends, scales = test.gen_weight_boundary_inputs()
+    q = torch.randn(q.shape, device=q.device).to(q.dtype)
+    k = torch.randn(k.shape, device=k.device).to(k.dtype)
+    weights = torch.randn(weights.shape, device=weights.device)
+    scales = torch.randn(scales.shape, device=scales.device) / 448.0
     test.check(FP8LightningIndexerFwdOp(), q, k, weights, starts, ends, scales)
 
 

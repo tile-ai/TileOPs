@@ -8,6 +8,7 @@ from tilelang import language as T
 from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
+from tileops._kernels.attention.dsa.decode_ws import ROLE_INDEX_CALL
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import SETMAXNREG_GRANULARITY, SM90_REGISTERS
@@ -492,7 +493,10 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         # warpgroup's loop and the consumers' would deadlock them.
         tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
     },
-    compile_flags=[*CUDA_COMPILE_FLAGS, *csrc_include("lightning_indexer_helper.h")],
+    compile_flags=[
+        *CUDA_COMPILE_FLAGS,
+        *csrc_include("lightning_indexer_helper.h", "warp_uniform.h"),
+    ],
 )
 def _fp8_lightning_indexer_ws_kernel(
     batch,
@@ -509,12 +513,12 @@ def _fp8_lightning_indexer_ws_kernel(
 
     Warpgroups 0 and 1 take alternate tiles: one m64n``rows`` WGMMA each, then the
     relu-weighted head sums, stored. Warpgroup 2 serves them: warp 0 loads q and the key tiles
-    by TMA, and warps 1 to 3 write -inf over the keys outside every window.
+    by TMA, and warps 1 to 3 write -inf over the keys outside every window. A consumer returns
+    a key stage to the producer before its epilogue; the helper states the head-sum formula.
 
     ``mixed`` builds the one-batch-row launch that runs some query blocks whole and splits the
-    rest: the launch arguments ``whole``, ``shift`` and ``per`` give its CTA mapping, its
-    epilogue sums (x + |x|) * weight on the FMA pipe and halves the sum, and a consumer
-    releases its key stage before the epilogue. Without it the launch arguments go unread.
+    rest: the launch arguments ``whole``, ``shift`` and ``per`` give its CTA mapping. Without
+    it the launch arguments go unread.
     """
     dtype = T.float8_e4m3fn
     accum = T.float32
@@ -530,8 +534,6 @@ def _fp8_lightning_indexer_ws_kernel(
     consumer_regs = (launch_regs + (launch_regs - serving_regs) // 2) // step * step
     seq_len = T.dynamic("seq_len")
     seq_len_kv = T.dynamic("seq_len_kv")
-    epilogue = "indexer_tile_epilogue_doubled" if mixed else "indexer_tile_epilogue"
-    check_sign = str(check_scale_sign).lower()
 
     def acc_layout(thread_offset):
         """The m64n``rows`` WGMMA accumulator as the PTX arranges it, which the helper reads.
@@ -552,7 +554,7 @@ def _fp8_lightning_indexer_ws_kernel(
         T.set_max_nreg(consumer_regs, 1)
         acc = T.alloc_fragment([block_n, rows], accum)
         T.annotate_layout({acc: acc_layout(128 * wg)})
-        # The head weight of each accumulator column this thread holds: column
+        # Half the head weight of each accumulator column this thread holds: column
         # 8 j + 2 (t % 4) + i at 2 j + i.
         wt = T.alloc_local([rows // 4], accum)
         t = tx % 128
@@ -564,7 +566,9 @@ def _fp8_lightning_indexer_ws_kernel(
                     # The clamp at 0 changes no index; it lets the compiler drop the bounds
                     # checks a run-time CTA mapping would otherwise put on the loads.
                     query = T.max(query, 0)
-                wt[2 * j + i] = Weights[query, col % heads]
+                wt[2 * j + i] = T.call_extern(
+                    "float32", "tileops::indexer_half_weight", Weights[query, col % heads]
+                )
         # The offset of this thread's first stored logit at the walk's first key: query
         # (t % 4) / 2 at tile row 16 (t / 32) + (t % 32) / 4 + 8 (t % 2), the row the helper
         # derives from t; a tile adds its first key.
@@ -581,23 +585,27 @@ def _fp8_lightning_indexer_ws_kernel(
                     stage = wg + 2 * u
                     T.mbarrier_wait_parity(k_full[stage], jj2 % 2)
                     T.wgmma_gemm(Ks[stage, :, :], Qs, acc, transpose_B=True, clear_accum=True)
+                    # The signs of this thread's two key rows, read while the WGMMA runs: the
+                    # head sums start on the accumulator as soon as it lands.
+                    sgn0 = T.alloc_var(accum, init=1.0)
+                    sgn1 = T.alloc_var(accum, init=1.0)
+                    if check_scale_sign:
+                        row0 = row - 8 * (t % 2)  # the thread's rows: row0 and row0 + 8
+                        sgn0 = T.if_then_else(Ss[stage, row0] < 0, -1.0, 1.0)
+                        sgn1 = T.if_then_else(Ss[stage, row0 + 8] < 0, -1.0, 1.0)
                     T.wait_wgmma(0)
-                    if mixed:
-                        # The tile's last read of the stage is the scale of this thread's row:
-                        # the stage goes back to the producer before the epilogue.
-                        key_scale = T.alloc_var(accum, init=Ss[stage, row])
-                        T.mbarrier_arrive(k_free[stage])
+                    # The tile's last read of the stage is the scale of this thread's row: the
+                    # stage goes back to the producer before the epilogue.
+                    key_scale = T.alloc_var(accum, init=Ss[stage, row])
+                    T.mbarrier_arrive(k_free[stage])
                     k0 = T.alloc_var("int32", init=(c0 + wg + 2 * jj) * block_n)
                     T.call_extern(
                         "handle",
-                        f"tileops::{epilogue}<{heads}, {block_q}, {str(clean_logits).lower()}, {check_sign}>",
-                        T.address_of(acc[0, 0]), T.address_of(wt[0]),
-                        key_scale if mixed else T.address_of(Ss[stage, 0]),
+                        f"tileops::indexer_tile_epilogue<{heads}, {block_q}, {str(clean_logits).lower()}>",
+                        T.address_of(acc[0, 0]), T.address_of(wt[0]), sgn0, sgn1, key_scale,
                         T.address_of(Logits[b, 0, 0]), off, s0, k0, seq_len, seq_len_kv,
                         T.address_of(Win[0, 0]), k0 >= in_lo and k0 + block_n <= in_hi, t,
                     )  # fmt: skip
-                    if not mixed:
-                        T.mbarrier_arrive(k_free[stage])
 
     @T.prim_func
     def main(
@@ -658,6 +666,11 @@ def _fp8_lightning_indexer_ws_kernel(
                 Win[0, tx] = T.if_then_else(s0 + tx < seq_len, lo, seq_len_kv)
                 Win[1, tx] = T.if_then_else(s0 + tx < seq_len, hi, 0)
             T.sync_threads()
+            # Marks this kernel for decode_ws's rewrite of its role branches to the warp-uniform
+            # role index: the WGMMA descriptors then stay in uniform registers.
+            T.evaluate(
+                T.call_extern("int32", ROLE_INDEX_CALL)  # lint: extern-target allow: decode_ws
+            )
             lo_b = T.alloc_var("int32", init=seq_len_kv)
             hi_b = T.alloc_var("int32", init=0)
             # [in_lo, in_hi): keys inside every row's window, empty when a row is past seq_len.
