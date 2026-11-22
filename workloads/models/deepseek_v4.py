@@ -66,25 +66,26 @@ def _dequant_blocks(w: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return _dequant_rows(w, scale.float().repeat_interleave(128, 0)[: w.shape[0]])
 
 
+def _gemm(a: torch.Tensor, a_s: torch.Tensor, b32: torch.Tensor) -> torch.Tensor:
+    """``a @ b32^T`` in float32, ``a`` FP8 under per-row-block scales ``a_s``, returned in the
+    default dtype."""
+    k = a.shape[-1]
+    a32 = _dequant_rows(a.reshape(-1, k), a_s.reshape(-1, a_s.shape[-1]))
+    return (a32 @ b32.T).to(torch.get_default_dtype()).view(*a.shape[:-1], b32.shape[0])
+
+
 def fp8_gemm(a, a_s, b, b_s, scale_dtype):
     """``kernel.fp8_gemm``: ``a @ b^T`` in float32 over dequantized FP8 operands, ``b`` under
     128x128 block scales, returned in the default dtype; the scales are read as float32
     whatever their ``scale_dtype``."""
-    k = a.shape[-1]
-    a32 = _dequant_rows(a.reshape(-1, k), a_s.reshape(-1, a_s.shape[-1]))
-    out = a32 @ _dequant_blocks(b, b_s).T
-    return out.to(torch.get_default_dtype()).view(*a.shape[:-1], b.shape[0])
+    return _gemm(a, a_s, _dequant_blocks(b, b_s))
 
 
 def fp4_gemm(a, a_s, b, b_s, scale_dtype):
     """``kernel.fp4_gemm``: ``a @ b^T`` in float32, ``b`` e2m1 codes two per byte (even element
     in the low nibble) under per-32 scales, returned in the default dtype; the scales are read as
     float32 whatever their ``scale_dtype``."""
-    k = a.shape[-1]
-    a32 = _dequant_rows(a.reshape(-1, k), a_s.reshape(-1, a_s.shape[-1]))
-    b32 = _dequant_rows(unpack_e2m1(b.view(torch.uint8)), b_s)
-    out = a32 @ b32.T
-    return out.to(torch.get_default_dtype()).view(*a.shape[:-1], b.shape[0])
+    return _gemm(a, a_s, _dequant_rows(unpack_e2m1(b.view(torch.uint8)), b_s))
 
 
 def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale, p_dtype=None):
@@ -125,21 +126,16 @@ def hc_split_sinkhorn(mixes, hc_scale, hc_base, hc_mult, sinkhorn_iters, eps):
     return pre, 2 * post, comb
 
 
-def _torch_kernel_module() -> types.ModuleType:
-    """A module with ``kernel.py``'s six functions implemented in torch."""
-    module = types.ModuleType("kernel")
-    for fn in (act_quant, fp4_act_quant, fp8_gemm, fp4_gemm, sparse_attn, hc_split_sinkhorn):
-        setattr(module, fn.__name__, fn)
-    return module
-
-
 def _load_official(inference_dir: str | os.PathLike) -> types.ModuleType:
-    """Import the official ``inference/model.py`` in ``inference_dir`` against
-    :func:`_torch_kernel_module`. ``rotate_activation`` is replaced too, so
+    """Import the official ``inference/model.py`` in ``inference_dir`` against a ``kernel``
+    module of this file's torch functions. ``rotate_activation`` is replaced too, so
     ``fast_hadamard_transform`` is not needed."""
     path = Path(inference_dir) / "model.py"
+    kernel = types.ModuleType("kernel")
+    for fn in (act_quant, fp4_act_quant, fp8_gemm, fp4_gemm, sparse_attn, hc_split_sinkhorn):
+        setattr(kernel, fn.__name__, fn)
     saved = sys.modules.get("kernel")
-    sys.modules["kernel"] = _torch_kernel_module()
+    sys.modules["kernel"] = kernel
     try:
         spec = importlib.util.spec_from_file_location("deepseek_v4_official_model", path)
         module = importlib.util.module_from_spec(spec)
@@ -264,28 +260,19 @@ def _official_args(module: types.ModuleType, config: dict, max_seq_len: int):
     )
 
 
-def _official_tensor(name: str, tensor: torch.Tensor, scale: torch.Tensor | None):
-    """A checkpoint tensor in the dtype the official module holds it, as ``convert.py`` writes
-    it: ``wo_a`` dequantized to bfloat16 (``scale`` is its block scale), routed-expert bytes as
-    ``float4_e2m1fn_x2``."""
-    if name.endswith("wo_a.weight"):
-        return _dequant_blocks(tensor, scale).bfloat16()
-    if ".experts." in name and tensor.dtype == torch.int8:
-        return tensor.view(torch.float4_e2m1fn_x2)
-    return tensor
-
-
 def _official_state_dict(tensors: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Checkpoint tensors in the dtypes the official modules hold, for their
-    ``load_state_dict``; MTP tensors and ``wo_a`` scales are dropped."""
+    """Checkpoint tensors in the dtypes the official modules hold, as ``convert.py`` writes
+    them, for their ``load_state_dict``: ``wo_a`` dequantized to bfloat16 by its block scale,
+    routed-expert bytes as ``float4_e2m1fn_x2``; MTP tensors and ``wo_a`` scales are dropped."""
     out = {}
     for name, tensor in tensors.items():
         if name.startswith("mtp.") or name.endswith("wo_a.scale"):
             continue
-        scale = (
-            tensors.get(name.replace("weight", "scale")) if name.endswith("wo_a.weight") else None
-        )
-        out[name] = _official_tensor(name, tensor, scale)
+        if name.endswith("wo_a.weight"):
+            tensor = _dequant_blocks(tensor, tensors[name.replace("weight", "scale")]).bfloat16()
+        elif ".experts." in name and tensor.dtype == torch.int8:
+            tensor = tensor.view(torch.float4_e2m1fn_x2)
+        out[name] = tensor
     return out
 
 

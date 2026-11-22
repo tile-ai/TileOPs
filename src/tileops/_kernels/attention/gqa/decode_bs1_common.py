@@ -398,7 +398,9 @@ def make_gqa_decode_bs1_combine(
         with T.Kernel(heads, batch, threads=128) as (hq, bid):
             lse_vec = T.alloc_fragment([ctx_splits], accum_dtype)
             lse_max = T.alloc_fragment([1], accum_dtype)
-            lse_logsum = T.alloc_local([1], accum_dtype)
+            mass = T.alloc_fragment([1], accum_dtype)
+            sink_mass = T.alloc_local([1], accum_dtype)
+            weights = T.alloc_shared([ctx_splits], accum_dtype)
             o_accum = T.alloc_fragment([dim], accum_dtype)
 
             for s in T.Parallel(ctx_splits):
@@ -406,31 +408,26 @@ def make_gqa_decode_bs1_combine(
             T.fill(lse_max, -T.infinity(accum_dtype))
             T.reduce_max(lse_vec, lse_max, dim=0, clear=False)
             lse_max[0] = T.if_then_else(lse_max[0] == -T.infinity(accum_dtype), 0.0, lse_max[0])
-            lse_logsum[0] = 0
+            sink_mass[0] = 0
             if has_sinks:
-                sink_merge(
-                    sinks[hq if sink_heads is None else hq % sink_heads], lse_max, lse_logsum
+                sink_merge(sinks[hq if sink_heads is None else hq % sink_heads], lse_max, sink_mass)
+            # Weigh each split once; an empty split's -inf log-sum-exp weighs nothing.
+            for s in T.Parallel(ctx_splits):
+                lse_vec[s] = T.if_then_else(
+                    lse_vec[s] == -T.infinity(accum_dtype), 0.0, T.exp2(lse_vec[s] - lse_max[0])
                 )
-            for s in T.serial(ctx_splits):
-                lse_logsum[0] += T.exp2(glse[bid, hq, s] - lse_max[0])
-            if not has_sinks:
-                lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
+                weights[s] = lse_vec[s]
+            T.reduce_sum(lse_vec, mass, dim=0)
+            # Keep the denominator separate from the maximum: adding log2(sum) to a large
+            # maximum can round away the sink contribution. A row with no keys and no sink
+            # has no mass; its output is zero, not 0/0.
+            mass[0] += sink_mass[0]
+            mass[0] = T.if_then_else(mass[0] > 0, mass[0], 1.0)
             T.clear(o_accum)
             for s in T.serial(ctx_splits):
-                if has_sinks:
-                    # Keep the denominator separate: adding log2(sum) to a large maximum
-                    # can round away the sink contribution.
-                    partial_weight = T.exp2(glse[bid, hq, s] - lse_max[0]) / lse_logsum[0]
-                else:
-                    partial_weight = T.exp2(glse[bid, hq, s] - lse_logsum[0])
-                weight = T.if_then_else(
-                    glse[bid, hq, s] == -T.infinity(accum_dtype),
-                    0.0,
-                    partial_weight,
-                )
                 for j in T.Parallel(dim):
-                    o_accum[j] += Output_partial[bid, hq, s, j] * weight
+                    o_accum[j] += Output_partial[bid, hq, s, j] * weights[s]
             for j in T.Parallel(dim):
-                Output[bid, hq, j] = T.cast(o_accum[j], dtype)
+                Output[bid, hq, j] = T.cast(o_accum[j] / mass[0], dtype)
 
     return combine

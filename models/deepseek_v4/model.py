@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 
+from models.causal_lm import CausalLM
 from models.deepseek_v4.config import DeepseekV4Config
 from models.deepseek_v4.layers import Block, Step
 from models.deepseek_v4.ops import ModelOps, RoPETable
@@ -14,7 +15,7 @@ from models.deepseek_v4.ops import ModelOps, RoPETable
 __all__ = ["DeepseekV4ForCausalLM"]
 
 
-class DeepseekV4ForCausalLM:
+class DeepseekV4ForCausalLM(CausalLM):
     """DeepSeek-V4 text decoder: embedding, mHC blocks, ``hc_head`` collapse and LM head.
 
     Layers are spread over ``devices`` in contiguous runs; a device without an index is the current
@@ -55,7 +56,6 @@ class DeepseekV4ForCausalLM:
         self.norm: torch.Tensor
         self.head: torch.Tensor
         self.hc_head: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        self._next_pos: int | None = None
 
     @classmethod
     def from_pretrained(
@@ -74,42 +74,12 @@ class DeepseekV4ForCausalLM:
         load_weights(model, Path(path))
         return model
 
-    @property
-    def first_device(self) -> torch.device:
-        """The device holding the embedding and the first layer."""
-        return self.layer_devices[0]
-
-    @property
-    def last_device(self) -> torch.device:
-        """The device holding the last layer and the LM head."""
-        return self.layer_devices[-1]
-
-    def reset(self) -> None:
-        """End the request; the next call must be a prefill."""
-        self._next_pos = None
-
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
         """Run ``input_ids`` (``[1, S]``) from ``start_pos``; return the float32 logits of its
         last token, ``[1, vocab_size]``."""
-        batch, seqlen = input_ids.shape
-        if batch != 1:
-            raise ValueError(f"forward runs one request, got a batch of {batch}")
-        if seqlen == 0:
-            raise ValueError("forward takes at least one token")
-        if start_pos + seqlen > self.max_seq_len:
-            raise ValueError(
-                f"position {start_pos + seqlen} exceeds max_seq_len {self.max_seq_len}"
-            )
-        if start_pos == 0:
-            self.reset()
-        elif self._next_pos is None:
-            raise ValueError("a decode step needs a prefill at start_pos 0 first")
-        elif start_pos != self._next_pos:
-            raise ValueError(
-                f"the next decode step is at position {self._next_pos}, got {start_pos}"
-            )
-        elif seqlen != 1:
+        seqlen = self._continue(input_ids, start_pos)
+        if start_pos and seqlen != 1:
             raise ValueError(f"a decode step takes one token, got {seqlen}")
         ops = self.ops
         ids = input_ids.to(self.first_device)
@@ -131,33 +101,6 @@ class DeepseekV4ForCausalLM:
         return logits
 
     __call__ = forward
-
-    @torch.inference_mode()
-    def generate(
-        self,
-        prompt_ids: Sequence[int],
-        max_new_tokens: int,
-        *,
-        eos_token_id: int | None = None,
-    ) -> list[int]:
-        """Greedily extend one prompt by up to ``max_new_tokens`` tokens; stops after an EOS
-        token (``config.eos_token_id`` unless given) or once the sequence fills
-        ``max_seq_len``."""
-        eos = self.config.eos_token_id if eos_token_id is None else eos_token_id
-        tokens = torch.tensor([list(prompt_ids)], dtype=torch.long, device=self.first_device)
-        logits = self.forward(tokens, 0)
-        pos = tokens.shape[1]
-        out: list[int] = []
-        for _ in range(max_new_tokens):
-            with torch.accelerator.device_index(self.last_device.index):
-                nxt = self.ops.argmax(logits)
-            token = int(nxt.item())
-            out.append(token)
-            if token == eos or len(out) == max_new_tokens or pos >= self.max_seq_len:
-                break
-            logits = self.forward(nxt.view(1, 1).to(self.first_device), pos)
-            pos += 1
-        return out
 
 
 def _indexed(device: torch.device | str | int) -> torch.device:

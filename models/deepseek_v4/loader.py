@@ -6,15 +6,13 @@ the stacked and the dequantized weights both follow.
 
 from __future__ import annotations
 
-import json
-import re
-from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
 
 from models.deepseek_v4.layers import Block, Compressor, FP8Linear
+from models.loader import read_checkpoint
 
 if TYPE_CHECKING:
     from models.deepseek_v4.model import DeepseekV4ForCausalLM
@@ -22,48 +20,20 @@ if TYPE_CHECKING:
 __all__ = ["load_weights"]
 
 _SCALE_BLOCK = 128
-_LAYER = re.compile(r"layers\.(\d+)\.")
 
 
 def load_weights(model: DeepseekV4ForCausalLM, path: Path) -> None:
-    """Read every tensor of the checkpoint at ``path`` onto its layer's device.
-
-    Needs the ``safetensors`` package. The MTP layer's tensors are not read. A tensor outside the
-    model's layers and a missing layer raise ``ValueError`` before any tensor is read; a tensor a
-    layer has no place for raises once that layer's tensors are read.
-    """
-    from safetensors import safe_open
-
-    with open(path / "model.safetensors.index.json") as f:
-        weight_map: dict[str, str] = json.load(f)["weight_map"]
-    by_shard: dict[tuple[str, torch.device], list[str]] = defaultdict(list)
-    per_layer: dict[int, set[str]] = defaultdict(set)
-    unused = []
-    for name, shard in weight_map.items():
-        if name.startswith("mtp."):
-            continue
-        device = _device_of(model, name)
-        if device is None:
-            unused.append(name)
-            continue
-        by_shard[(shard, device)].append(name)
-        if m := _LAYER.match(name):
-            per_layer[int(m.group(1))].add(name)
-    if unused:
-        raise ValueError(f"unused checkpoint tensors: {sorted(unused)[:8]}")
-    missing = set(range(len(model.layers))) - set(per_layer)
-    if missing:
-        raise ValueError(f"the checkpoint holds no tensors of layers {sorted(missing)}")
-    tensors: dict[str, torch.Tensor] = {}
-    for (shard, device), names in sorted(by_shard.items(), key=lambda item: item[0][0]):
-        with safe_open(str(path / shard), framework="pt", device=str(device)) as f:
-            for name in names:
-                tensors[name] = f.get_tensor(name)
-        for layer_id in sorted({int(m.group(1)) for n in names if (m := _LAYER.match(n))}):
-            if all(n in tensors for n in per_layer[layer_id]):
-                prefix = f"layers.{layer_id}."
-                own = {n[len(prefix) :]: tensors.pop(n) for n in per_layer[layer_id]}
-                _load_block(model.layers[layer_id], own, model.config.n_routed_experts)
+    """Read every tensor of the checkpoint at ``path`` onto its layer's device, as
+    :func:`read_checkpoint` does. The MTP layer's tensors are not read."""
+    tensors = read_checkpoint(
+        model,
+        path,
+        prefix="",
+        skipped=("mtp.",),
+        first=("embed.weight",),
+        last=("norm.weight", "head.weight", "hc_head_fn", "hc_head_scale", "hc_head_base"),
+        load_layer=lambda i, t: _load_block(model.layers[i], t, model.config.n_routed_experts),
+    )
     model.embed = tensors.pop("embed.weight")
     model.norm = tensors.pop("norm.weight")
     model.head = tensors.pop("head.weight")
@@ -72,18 +42,6 @@ def load_weights(model: DeepseekV4ForCausalLM, path: Path) -> None:
         tensors.pop("hc_head_scale"),
         tensors.pop("hc_head_base"),
     )
-
-
-def _device_of(model: DeepseekV4ForCausalLM, name: str) -> torch.device | None:
-    """The device a checkpoint tensor belongs on, or None for one the model does not read."""
-    if m := _LAYER.match(name):
-        layer_id = int(m.group(1))
-        return model.layer_devices[layer_id] if layer_id < len(model.layers) else None
-    if name == "embed.weight":
-        return model.first_device
-    if name in ("norm.weight", "head.weight", "hc_head_fn", "hc_head_scale", "hc_head_base"):
-        return model.last_device
-    return None
 
 
 def _fp8(t: dict[str, torch.Tensor], prefix: str) -> FP8Linear:
@@ -148,21 +106,14 @@ def _load_block(block: Block, t: dict[str, torch.Tensor], n_experts: int) -> Non
         ffn.bias = t.pop("ffn.gate.bias")
     ffn.shared_w13 = _fp8_stacked(t, "ffn.shared_experts.w1", "ffn.shared_experts.w3")
     ffn.shared_w2 = _fp8(t, "ffn.shared_experts.w2")
-    ffn.w13 = torch.stack(
-        [
-            torch.cat([t.pop(f"ffn.experts.{e}.w1.weight"), t.pop(f"ffn.experts.{e}.w3.weight")])
-            for e in range(n_experts)
-        ]
-    ).view(torch.uint8)
-    ffn.w13_scale = torch.stack(
-        [
-            torch.cat([t.pop(f"ffn.experts.{e}.w1.scale"), t.pop(f"ffn.experts.{e}.w3.scale")])
-            for e in range(n_experts)
-        ]
-    )
-    ffn.w2 = torch.stack([t.pop(f"ffn.experts.{e}.w2.weight") for e in range(n_experts)]).view(
-        torch.uint8
-    )
-    ffn.w2_scale = torch.stack([t.pop(f"ffn.experts.{e}.w2.scale") for e in range(n_experts)])
+
+    def experts(name: str) -> torch.Tensor:
+        return torch.stack([t.pop(f"ffn.experts.{e}.{name}") for e in range(n_experts)])
+
+    # Each expert's w13 rows are its w1 rows, then its w3 rows.
+    ffn.w13 = torch.cat([experts("w1.weight"), experts("w3.weight")], dim=1).view(torch.uint8)
+    ffn.w13_scale = torch.cat([experts("w1.scale"), experts("w3.scale")], dim=1)
+    ffn.w2 = experts("w2.weight").view(torch.uint8)
+    ffn.w2_scale = experts("w2.scale")
     if t:
         raise ValueError(f"layer {block.layer_id}: unused tensors {sorted(t)[:8]}")

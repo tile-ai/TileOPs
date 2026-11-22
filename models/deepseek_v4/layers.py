@@ -58,6 +58,11 @@ class Step:
             slots=torch.zeros(1, dtype=torch.int32, device=device),
         )
 
+    def closed(self, ratio: int) -> torch.Tensor:
+        """``[S]``: how many compressed entries of ``ratio`` each query sees closed."""
+        end = self.start_pos + self.seqlen
+        return torch.arange(self.start_pos + 1, end + 1, device=self.window.device) // ratio
+
 
 class FP8Linear:
     """A dense linear layer: FP8 e4m3 weight ``[N, K]`` and float32 128x128 block scales."""
@@ -177,7 +182,6 @@ class Indexer:
         """Return ``[1, S, index_topk]`` int32 indices of compressed entries, shifted by
         ``step.offset`` and padded with -1."""
         start_pos, seqlen = step.start_pos, step.seqlen
-        end_pos = start_pos + seqlen
         q = self.wq_b(ops, qr).view(1, seqlen, self.n_heads, self.head_dim)
         ops.rope(q[..., -self.rope_dim :], rope.cos, rope.sin, seqlen_offsets=start_pos)
         q = ops.hadamard(q)
@@ -186,11 +190,10 @@ class Indexer:
         if entries is not None:
             first = start_pos // self.ratio
             self.cache[:, first : first + entries.shape[1]] = entries
-        n_keys = end_pos // self.ratio
-        device = x.device
+        n_keys = (start_pos + seqlen) // self.ratio
         if n_keys == 0:
             return torch.full(
-                (1, seqlen, ops.index_topk.top_k), -1, dtype=torch.int32, device=device
+                (1, seqlen, ops.index_topk.top_k), -1, dtype=torch.int32, device=x.device
             )
         weights = ops.mul(ops.gemm(x, self.weights_proj).float(), self.weight_scale)
         weights = weights.to(torch.bfloat16)
@@ -200,11 +203,7 @@ class Indexer:
         scores = ops.relu(scores).view(seqlen, self.n_heads, width)
         logits = ops.bmm(weights.view(seqlen, 1, self.n_heads), scores)
         logits = logits.float().view(1, seqlen, width, 1)
-        if start_pos == 0:
-            visible = torch.arange(1, seqlen + 1, dtype=torch.int32, device=device) // self.ratio
-            ends = visible.unsqueeze(0)
-        else:
-            ends = torch.full((1, 1), n_keys, dtype=torch.int32, device=device)
+        ends = step.closed(self.ratio).to(torch.int32).unsqueeze(0)
         starts = torch.zeros_like(ends)
         idx = ops.index_topk(logits, starts, ends).squeeze(2)
         return torch.where(idx >= 0, idx + step.offset, idx)
@@ -249,16 +248,6 @@ class Attention:
             1, self.window + self.max_entries, self.head_dim, dtype=torch.bfloat16, device=device
         )
 
-    def _entry_indices(self, step: Step, device: torch.device) -> torch.Tensor:
-        """Each query's closed compressed entries on a layer without an indexer, ``[S, n]``."""
-        ratio, seqlen, start_pos = self.ratio, step.seqlen, step.start_pos
-        if start_pos == 0:
-            idx = torch.arange(seqlen // ratio, device=device).expand(seqlen, -1)
-            visible = torch.arange(1, seqlen + 1, device=device).unsqueeze(1) // ratio
-            return torch.where(idx >= visible, -1, idx + step.offset)
-        idx = torch.arange(self.max_entries, device=device)
-        return torch.where(idx < (start_pos + 1) // ratio, idx + step.offset, -1).unsqueeze(0)
-
     def __call__(self, ops: ModelOps, rope: RoPETable, x: torch.Tensor, step: Step) -> torch.Tensor:
         """Attend ``x`` (``[S, dim]`` bfloat16) and return ``[S, dim]``."""
         seqlen, start_pos = step.seqlen, step.start_pos
@@ -282,7 +271,11 @@ class Attention:
         if self.indexer is not None:
             indices.append(self.indexer(ops, rope, x, qr, step)[0])
         elif self.ratio:
-            indices.append(self._entry_indices(step, device))
+            # Without an indexer a query attends to every compressed entry it sees closed.
+            width = seqlen // self.ratio if start_pos == 0 else self.max_entries
+            idx = torch.arange(width, device=device)
+            closed = step.closed(self.ratio).unsqueeze(1)
+            indices.append(torch.where(idx < closed, idx + step.offset, -1))
 
         entries = self.compressor(ops, rope, x, step) if self.compressor is not None else None
         if start_pos == 0:
@@ -344,8 +337,7 @@ class MoE:
         a, a_scale, _ = ops.act_quant_e8m0(hidden)
         expert_out = ops.expert_gemm(a, a_scale, self.w2, self.w2_scale, metadata)
         shared = self.shared_w2(ops, ops.swiglu(self.shared_w13(ops, x)))
-        ones = torch.ones_like(weights)
-        return ops.unpermute(expert_out, ones, inverse, residual=shared)
+        return ops.unpermute(expert_out, torch.ones_like(weights), inverse, residual=shared)
 
 
 class Block:

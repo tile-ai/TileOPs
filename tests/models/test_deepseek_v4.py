@@ -156,6 +156,14 @@ def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
         DeepseekV4ForCausalLM.from_pretrained(tmp_path, devices=[run_device()])
 
 
+def test_from_pretrained_refuses_a_layer_missing_some_tensors(tmp_path):
+    tensors = random_checkpoint(_TINY, seed=0)
+    del tensors["layers.0.attn.kv_norm.weight"]
+    write_checkpoint(tmp_path, _TINY, tensors)
+    with pytest.raises(ValueError, match="layer 0: missing tensor 'attn.kv_norm.weight'"):
+        DeepseekV4ForCausalLM.from_pretrained(tmp_path, devices=[run_device()])
+
+
 def test_from_pretrained_skips_the_mtp_tensors(tmp_path):
     tensors = random_checkpoint(_TINY, seed=0)
     tensors["mtp.0.norm.weight"] = torch.ones(_TINY["hidden_size"], dtype=torch.bfloat16)
@@ -176,36 +184,15 @@ def _check_decode_state(block, official_block, positions: int) -> None:
     """
     fp8_tol, fp4_tol = 1e-2, 2e-2
     attn, official = block.attn, official_block.attn
-    window = attn.window
-    pairs = [
-        (
-            "window ring",
-            attn.kv_cache[:, :window],
-            official.kv_cache[:, :window],
-            fp8_tol,
-        )
-    ]
+    ring = slice(0, attn.window)
+    pairs = [("window ring", attn.kv_cache[:, ring], official.kv_cache[:, ring], fp8_tol)]
     if attn.ratio and positions >= attn.ratio:
-        n = positions // attn.ratio
-        entries = slice(window, window + n)
-        pairs.append(
-            (
-                "entries",
-                attn.kv_cache[:, entries],
-                official.kv_cache[:, entries],
-                fp8_tol,
-            )
-        )
+        entries = slice(attn.window, attn.window + positions // attn.ratio)
+        pairs.append(("entries", attn.kv_cache[:, entries], official.kv_cache[:, entries], fp8_tol))
     if attn.indexer is not None and positions >= attn.indexer.ratio:
         n = positions // attn.indexer.ratio
-        pairs.append(
-            (
-                "indexer entries",
-                attn.indexer.cache[:, :n],
-                official.indexer.kv_cache[:, :n],
-                fp4_tol,
-            )
-        )
+        actual, expected = attn.indexer.cache[:, :n], official.indexer.kv_cache[:, :n]
+        pairs.append(("indexer entries", actual, expected, fp4_tol))
     for name, actual, expected, tol in pairs:
         rel = ((actual.float() - expected.float()).norm() / expected.float().norm()).item()
         assert rel <= tol, f"{name}: {rel:.3e} relative L2 from the official state, bound {tol:.0e}"
@@ -293,7 +280,7 @@ def test_layers_and_logits_match_the_official_model(
             for layer, official in zip(mine_tf.layers, ref.layers, strict=True):
                 _check_decode_state(layer, official, prompt_len + decode_steps)
     top_k = _SMALL["index_topk"]
-    assert len(selections) == len(phases["prefill"]) + len(phases["decode"])
+    assert len(selections) == 1 + decode_steps
     for indices, start_pos, offset, ratio in selections:
         check_index_selection(indices, start_pos, offset, ratio, top_k)
     check_selection_agreement(selections, official_selections, top_k)

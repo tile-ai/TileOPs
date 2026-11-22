@@ -115,9 +115,13 @@ class RoPETable:
         dim = cfg.rope_head_dim
         freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
         if yarn:
-            low, high = _yarn_correction_range(
-                cfg.beta_fast, cfg.beta_slow, dim, base, cfg.original_seq_len
+            # The rotary dimensions whose wavelengths fit beta_fast and beta_slow times in the
+            # original length bound the interpolated range.
+            low, high = (
+                dim * math.log(cfg.original_seq_len / (b * 2 * math.pi)) / (2 * math.log(base))
+                for b in (cfg.beta_fast, cfg.beta_slow)
             )
+            low, high = max(math.floor(low), 0), min(math.ceil(high), dim - 1)
             if low == high:
                 high += 0.001
             ramp = ((torch.arange(dim // 2, dtype=torch.float32) - low) / (high - low)).clamp(0, 1)
@@ -126,14 +130,3 @@ class RoPETable:
         self.cos = torch.cos(angles).to(device)
         self.sin = torch.sin(angles).to(device)
         self.neg_sin = -self.sin
-
-
-def _yarn_correction_range(
-    beta_fast: int, beta_slow: int, dim: int, base: float, original_seq_len: int
-) -> tuple[int, int]:
-    """The rotary dimensions YaRN interpolates between, clamped to ``[0, dim - 1]``."""
-
-    def corr(rotations: float) -> float:
-        return dim * math.log(original_seq_len / (rotations * 2 * math.pi)) / (2 * math.log(base))
-
-    return max(math.floor(corr(beta_fast)), 0), min(math.ceil(corr(beta_slow)), dim - 1)
