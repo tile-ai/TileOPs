@@ -416,12 +416,8 @@ def _enumerate(
             # One tile a CTA leaves the epilogue unhidden; a float32 one with 16-byte rows goes
             # through the TMA store.
             exposed = mn_tiles <= sm_count and out_bytes == 4 and n * out_bytes % 16 == 0
-            # At 128 wide the one-wave tile scores as the 128 x 128 basic tile listed above, and
-            # its two consumer warpgroups outrun the basic tile's one only on a ring no shallower
-            # than the basic tile's. Uncapped, it takes the deepest ring the SMEM holds beside its
-            # staging chunk, and replaces the basic tile where that ring is the deeper one (see
-            # ``score``). Only on grids two tiles or more along each axis: where every CTA reads
-            # the same panel of A or of B, the basic tile keeps the call.
+            # At 128 wide, two tiles or more along each axis, coop2 outruns the basic tile only on
+            # a ring at least as deep: it takes the deepest ring the SMEM holds (see ``score``).
             deep = bn == one_wave == 128 and rows > 1 and n > bn
             d = _coop2_ns_sn(bn, bk, exposed, deep)
             if d is None:
