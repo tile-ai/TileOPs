@@ -2626,6 +2626,32 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
             marks=pytest.mark.full,
             id="f32-240",
         ),
+        # Two 128-wide column tiles, 128 CTAs: a float32 tile stages 64-column chunks beside a
+        # six-stage ring, one stage deeper than the 128 x 128 basic tile's beside its whole
+        # staged tile.
+        pytest.param(
+            8150,
+            256,
+            1032,
+            torch.bfloat16,
+            torch.float32,
+            False,
+            (128, 64),
+            marks=pytest.mark.full,
+            id="f32-128-deep-ring",
+        ),
+        # Rows of 250 float32 values leave through predicated row stores.
+        pytest.param(
+            8150,
+            250,
+            1032,
+            torch.bfloat16,
+            torch.float32,
+            True,
+            (128, 64),
+            marks=pytest.mark.full,
+            id="f32-128-bias-unaligned-rows",
+        ),
         # Two 256-wide column tiles, 128 CTAs, where 128-wide ones take 256.
         pytest.param(
             8150,
@@ -2650,8 +2676,9 @@ def test_gemm_one_wave_grid_runs_the_narrowest_coop2_tile(
     tile: tuple,
 ) -> None:
     """A call whose 128-row tiles fit one wave at a coop2 width runs coop2 at the narrowest such
-    width, staged in the columns *tile* names, past M, N and K tails. The cases count tiles
-    against the 132 SMs of an H200."""
+    width, staged in the columns *tile* names, past M, N and K tails. At 128 wide the coop2 tile
+    replaces the basic tile with a deeper ring. The cases count tiles against the 132 SMs of an
+    H200."""
     call = GEMMCall(
         m=m,
         n=n,
@@ -2687,6 +2714,11 @@ _H200_L2_BYTES = 60 * 2**20
         # One row tile of 65 K steps: 128 columns of 224 fit one wave, and the 128 x 128 basic
         # tile scores best of the others.
         pytest.param(96, 28672, 4160, 2, (128, 128), id="one-row-tile-past-64-k-steps"),
+        # A bfloat16 128-wide coop2 tile holds no deeper ring than the basic tile.
+        pytest.param(8150, 256, 1032, 2, (128, 128), id="bf16-128-equal-ring"),
+        # Grids of one row tile, or of one column tile, at 128 wide.
+        pytest.param(96, 16032, 2048, 4, (128, 128), id="f32-128-one-row-tile"),
+        pytest.param(16350, 128, 1032, 4, (128, 128), id="f32-128-one-column-tile"),
     ],
 )
 def test_gemm_one_wave_grid_keeps_other_tiles_where_coop2_gains_nothing(
@@ -2695,7 +2727,9 @@ def test_gemm_one_wave_grid_keeps_other_tiles_where_coop2_gains_nothing(
     """On a 132-SM H200 the one-wave coop2 tile is not offered where its last row tile leaves a
     64-row consumer without rows, or where its grid fills less than 15/16 of the wave. In one
     row tile past 64 K steps the 128 x 128 basic tile, which streams B at the DRAM rate as the
-    one-wave tile does, keeps the call where it scores best of the others."""
+    one-wave tile does, keeps the call where it scores best of the others. At 128 wide the
+    128 x 128 basic tile keeps the call where the coop2 ring is no deeper, and on grids of one
+    tile along an axis."""
     cfg = best_config(
         m, n, k, False, True, 132, "h200", l2_bytes=_H200_L2_BYTES, out_bytes=out_bytes
     )

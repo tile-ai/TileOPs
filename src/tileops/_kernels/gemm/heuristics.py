@@ -295,11 +295,11 @@ def _enumerate(
         ring = (bm + bn) * bk * 2
         return _ring_budget(bm * bn * out_bytes, bn) // ring
 
-    def _coop2_ns_sn(bn: int, bk: int, exposed: bool):
-        """The deepest ring under ``ns_cap`` the SMEM budget allows and its epilogue staging
-        chunk (stage_n, 0 for the whole tile). A hidden epilogue takes the widest chunk, shrunk
-        only to buy a stage; an *exposed* one takes the chunk of the widest TMA swizzle, in two
-        chunks or more so one chunk's store overlaps the next one's copy."""
+    def _coop2_ns_sn(bn: int, bk: int, exposed: bool, deep: bool):
+        """The deepest ring the SMEM budget allows, under ``ns_cap`` unless *deep*, and its
+        epilogue staging chunk (stage_n, 0 for the whole tile). A hidden epilogue takes the
+        widest chunk, shrunk only to buy a stage; an *exposed* one takes the chunk of the widest
+        TMA swizzle, in two chunks or more so one chunk's store overlaps the next one's copy."""
         ring = (128 + bn) * bk * 2
         best = None
         for sn in range(8, bn + 1, 8) if exposed else (bn, bn // 2, bn // 4):
@@ -307,7 +307,9 @@ def _enumerate(
             if bn % sn or sn % 8 or (sn < 32 and not exposed):
                 continue
             staging = 2 * 64 * sn * out_bytes
-            ns = min(ns_cap["coop2"], (BLOCK_SHARED_BYTES_OPT_IN[90] - staging) // ring)
+            ns = (BLOCK_SHARED_BYTES_OPT_IN[90] - _STATIC_SMEM_BYTES - staging) // ring
+            if not deep:
+                ns = min(ns_cap["coop2"], ns)
             if ns < 3:
                 continue
             # The swizzle span: the largest power of two up to 128 B dividing the row.
@@ -414,17 +416,18 @@ def _enumerate(
             # One tile a CTA leaves the epilogue unhidden; a float32 one with 16-byte rows goes
             # through the TMA store.
             exposed = mn_tiles <= sm_count and out_bytes == 4 and n * out_bytes % 16 == 0
-            d = _coop2_ns_sn(bn, bk, exposed)
+            # At 128 wide, two tiles or more along each axis, coop2 outruns the basic tile only on
+            # a ring at least as deep: it takes the deepest ring the SMEM holds (see ``score``).
+            deep = bn == one_wave == 128 and rows > 1 and n > bn
+            d = _coop2_ns_sn(bn, bk, exposed, deep)
             if d is None:
                 continue
             ns, sn = d
             if not _stage_rule_ok(128, bn, ns):
                 continue
             coop2_ok = bn == 256 or (nt and bn in (176, 192))
-            # At 128 or narrower a coop2 tile scores as the basic tile of its width listed above,
-            # which a tie keeps. A width that does not divide 256 is one WGMMA only over 64-wide
-            # K steps.
-            one_wave_ok = bn == one_wave and bn > 128 and (bk == 64 or 256 % bn == 0)
+            # A width that does not divide 256 is one WGMMA only over 64-wide K steps.
+            one_wave_ok = bn == one_wave and (deep or (bn > 128 and (bk == 64 or 256 % bn == 0)))
             full_wave_ok = coop2_ok and mn_tiles >= sm_count
             if full_wave_ok or one_wave_ok:
                 out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn, one_wave=not full_wave_ok))
@@ -817,8 +820,10 @@ def _best_config_cached(
             f"trans_b={trans_b}, sm_count={sm_count})"
         )
 
+    # Of two tiles scoring alike, the deeper ring wins: a one-wave coop2 tile on a ring
+    # shallower than the basic tile's loses to it.
     def score(c: _Cand) -> tuple:
-        return _score_us(c, m, n, k, sm_count, cal, out_bytes), -c.block_k
+        return _score_us(c, m, n, k, sm_count, cal, out_bytes), -c.block_k, -c.num_stages
 
     best = min(cands, key=score)
     # In one row tile past 64 K steps, a 128 x 128 basic grid streams B at the DRAM rate
