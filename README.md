@@ -143,7 +143,7 @@ states what each layer of an op owns.
 pip install tileops
 ```
 
-pip resolves PyTorch 2.13, [TileLang](https://github.com/tile-ai/tilelang) 0.1.12 and PyYAML
+pip resolves PyTorch 2.14, [TileLang](https://github.com/tile-ai/tilelang) 0.1.15 and PyYAML
 from PyPI. The machine provides the rest:
 
 - Linux and an NVIDIA GPU with compute capability 9.0 (SM90), with its driver

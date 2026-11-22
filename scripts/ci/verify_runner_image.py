@@ -35,16 +35,15 @@ def main() -> int:
     assert flash_attn_interface.flash_attn_func is not None
     print(f"flash-attn {flash_attn.__version__} | flash-attn-3 | flag_gems")
 
-    import mamba_ssm
-    import selective_scan_cuda  # noqa: F401 - import is the check
-    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+    import vllm
+    from vllm.third_party import deep_gemm
 
-    assert mamba_chunk_scan_combined is not None
-    print(f"mamba-ssm {mamba_ssm.__version__}")
+    assert callable(deep_gemm.tf32_hc_prenorm_gemm)
+    print(f"vllm {vllm.__version__} | deep_gemm {deep_gemm.__version__} (vendored)")
 
-    import deep_gemm
+    import tile_kernels
 
-    print(f"deep_gemm {deep_gemm.__version__}")
+    print(f"tile-kernels {tile_kernels.__version__}")
 
     import deepspeed
     from deepspeed.ops.quantizer import quantizer_op

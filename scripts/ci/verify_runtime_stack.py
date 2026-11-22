@@ -8,11 +8,23 @@ names its own fix.
 """
 
 import importlib.metadata as md
+import importlib.util
+import site
 import sys
+from pathlib import Path
 
 import tilelang
 import torch
 from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
+OVERRIDES = Path("/tmp/overrides.txt")
+# (package, requirement) pairs a --no-deps install leaves unmet. Any other unmet one fails.
+NO_DEPS_GAPS = {
+    ("flag-gems", "numpy"),
+    ("flag-gems", "sqlalchemy"),
+    ("flag-gems", "packaging"),
+}
 
 
 def _torch_pin(name: str) -> Requirement | None:
@@ -22,6 +34,54 @@ def _torch_pin(name: str) -> Requirement | None:
         if req.name == name:
             return req
     return None
+
+
+def _overridden() -> set[str]:
+    """Names of the requirements overrides.txt replaces for every install."""
+    if not OVERRIDES.exists():
+        sys.exit(f"FAIL: {OVERRIDES} is missing; the Dockerfile copies it beside the constraints.")
+    lines = (line.split("#", 1)[0].strip() for line in OVERRIDES.read_text().splitlines())
+    return {canonicalize_name(Requirement(line).name) for line in lines if line}
+
+
+def _unsatisfied() -> list[str]:
+    """Every declared requirement, extras included, that the installed packages do not meet."""
+    # Site directories only: importing setuptools puts its vendored packaging and wheel on sys.path.
+    dists: dict[str, md.Distribution] = {}
+    found = []
+    for dist in md.distributions(path=site.getsitepackages()):
+        name = canonicalize_name(dist.metadata["Name"])
+        first = dists.setdefault(name, dist)
+        if first is not dist and first.locate_file("") != dist.locate_file(""):
+            found.append(
+                f"{name} is installed twice: {first.version} at {first.locate_file('')} "
+                f"and {dist.version} at {dist.locate_file('')}"
+            )
+    overridden = _overridden()
+    pending = [(name, "") for name in dists]
+    seen = set(pending)
+    while pending:
+        name, extra = pending.pop()
+        for raw in dists[name].requires or []:
+            req = Requirement(raw)
+            if req.marker is not None and not req.marker.evaluate({"extra": extra}):
+                continue
+            if extra and (req.marker is None or "extra" not in str(req.marker)):
+                continue
+            dep = canonicalize_name(req.name)
+            have = dists[dep].version if dep in dists else None
+            if dep in overridden or (name, dep) in NO_DEPS_GAPS:
+                continue
+            if have is None or not req.specifier.contains(have, prereleases=True):
+                where = f"{name}[{extra}]" if extra else name
+                found.append(f"{where} requires {req}, found {have or 'nothing'}")
+                continue
+            for wanted in req.extras:
+                key = (dep, canonicalize_name(wanted))
+                if key not in seen:
+                    seen.add(key)
+                    pending.append(key)
+    return sorted(found)
 
 
 # Bump together with the base image's CUDA major.minor.
@@ -93,6 +153,8 @@ for dist, why in (
     ("flash-linear-attention", "the linear-attention columns"),
     ("deepspeed", "the fused INT4 quantization baseline"),
     ("nvmath-python", "the cuBLASLt-search GEMM baseline"),
+    ("vllm", "the vllm columns, and the stack every other version follows"),
+    ("tile-kernels", "the TileKernels columns"),
 ):
     try:
         md.version(dist)
@@ -107,6 +169,20 @@ except Exception as exc:
     sys.exit(
         f"FAIL: DeepSpeed's prebuilt quantizer does not import ({exc}). "
         "Build it with DS_BUILD_QUANTIZER=1 in the runner image."
+    )
+
+# A top-level deep_gemm would shadow the copy vllm vendors.
+if importlib.util.find_spec("deep_gemm") is not None:
+    sys.exit(
+        "FAIL: a top-level deep_gemm is installed; the image's DeepGEMM is vllm's vendored copy."
+    )
+if importlib.util.find_spec("vllm.third_party.deep_gemm") is None:
+    sys.exit("FAIL: vllm.third_party.deep_gemm is missing; the deepgemm columns would be missing.")
+
+unsatisfied = _unsatisfied()
+if unsatisfied:
+    sys.exit(
+        "FAIL: requirements left unsatisfied outside overrides.txt:\n  " + "\n  ".join(unsatisfied)
     )
 
 print(

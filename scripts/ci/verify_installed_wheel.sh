@@ -6,7 +6,7 @@
 #
 # --deps image  the venv sees the system site-packages and the wheel goes in with --no-deps,
 #               so torch and tilelang are the ones the runner image bakes. No `pip check`: the
-#               image installs mamba-ssm and flag_gems with --no-deps, pins unsatisfied by design.
+#               image overrides vllm's tilelang pin and installs flag_gems --no-deps.
 # --deps pypi   the venv sees nothing else and `pip check` must pass, so the wheel's declared
 #               dependencies are what a user would resolve.
 #

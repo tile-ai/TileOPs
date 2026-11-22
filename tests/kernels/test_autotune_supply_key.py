@@ -330,10 +330,10 @@ def _supplied_in_new_process(cache_dir: Path, fill: float, seed: str) -> int:
 def test_persisted_result_is_tuned_again_after_the_supplier_changes():
     """Across processes, the stored result is read for an unchanged supplier and tuned
     again for a changed one."""
-    # TileLang moves a result from its temporary directory into the cache by rename, so the
-    # cache stands on the same file system.
-    os.makedirs(tilelang.env.TILELANG_TMP_DIR, exist_ok=True)
-    cache_dir = Path(tempfile.mkdtemp(dir=tilelang.env.TILELANG_TMP_DIR))
+    # TileLang moves a result into the cache by rename, so the cache stands on the file system
+    # of TileLang's cache directory, where its staging lives.
+    os.makedirs(tilelang.env.TILELANG_CACHE_DIR, exist_ok=True)
+    cache_dir = Path(tempfile.mkdtemp(dir=tilelang.env.TILELANG_CACHE_DIR))
     try:
         assert _supplied_in_new_process(cache_dir, 1.0, "1"), "the first run found a result"
         assert _supplied_in_new_process(cache_dir, 1.0, "2") == 0, (

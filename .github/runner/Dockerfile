@@ -20,24 +20,25 @@ RUN apt-get update \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
     && python -m pip install --upgrade pip
-COPY constraints.txt constraints-runner-lock.txt /tmp/
+COPY constraints.txt constraints-runner-lock.txt .github/runner/overrides.txt /tmp/
 # Env, not a flag per install: it reaches build backends too, and a step added later cannot forget
 # it. pip keeps its own copy because the tilelang stage builds the wheel through `pip wheel`.
 ENV PIP_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt"
 # pip only bootstraps uv; constraints.txt pins it, since the installer cannot come from the lock
 # it produces.
 RUN python -m pip install uv
-# These mirror the lock's header. uv defaults to first-index, which resolves a package against
-# whichever index lists it first rather than the one the lock was compiled against; install and
-# compile must agree on all four or the lock stops applying.
+# These mirror the lock's header, UV_OVERRIDE its --override. uv defaults to first-index, which
+# resolves a package against whichever index lists it first rather than the one the lock was
+# compiled against; install and compile must agree or the lock stops applying.
 ENV UV_INDEX_URL=https://download.pytorch.org/whl/cu132 \
     UV_EXTRA_INDEX_URL="https://pypi.org/simple https://download.pytorch.org/whl/cpu" \
     UV_INDEX_STRATEGY=unsafe-best-match \
     UV_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt" \
+    UV_OVERRIDE=/tmp/overrides.txt \
     UV_SYSTEM_PYTHON=1 UV_BREAK_SYSTEM_PACKAGES=1 UV_NO_CACHE=1
 # The CPU index serves torchaudio alone: no cu132 build of it exists, and a CUDA build of another
-# minor refuses to load beside this torch, so vllm's pin is met by the extension-free CPU wheel.
-RUN uv pip install "torch==2.13.0+cu132" "torchvision==0.28.0+cu132"
+# minor refuses to load beside this torch, so vllm's pin is met by the CPU wheel.
+RUN uv pip install "torch==2.14.0+cu132" "torchvision==0.29.0+cu132"
 # tilelang's build backend and runtime deps, so its stage can use --no-build-isolation. The wheel
 # cmake meets tilelang's >=3.26.1 floor; jammy apt cmake is 3.22. setuptools-scm is tileops'
 # backend, baked in for the same reason.
@@ -57,8 +58,9 @@ RUN uv pip install pytest pytest-xdist ruff pytest-timeout pytest-cov py-spy
 # Hopper FA3 has no wheel. A commit, not the v2.8.3 tag: releases through 2.8.3.post1 swap in a
 # downloaded CUDA 12.6 nvcc unless the system CUDA is exactly 12.8, and that toolchain ships no
 # CCCL, so every translation unit fails on `cuda/std/utility`. Only main takes the CUDA 13 path.
+# FA2 builds from it too: every 2.8.3 release compiles as C++17, which torch 2.14 rejects.
 # Only csrc/cutlass: --recursive also pulls AMD composable_kernel, unused at sm_90 and slow.
-ARG FLASH_ATTENTION_GIT_SHA=a369df707e1980fb328abcc1733e3457ec10155f
+ARG FLASH_ATTENTION_GIT_SHA=616b0e8abab13b87b01525b3916d5a863ab02ae0
 # Fatal, unlike the bench baselines below: eleven attention benchmarks name `fa3` and
 # lose the column without it. Imported here because a returned 0 has meant an installed
 # wrapper with no compiled extension behind it.
@@ -77,54 +79,38 @@ RUN set -e; \
 # Own layer: no wheel for this torch/py, so it builds from source and changes to the bench loop
 # below must not recompile it.
 FROM post-fa3 AS fa2
-# setup.py takes a prebuilt wheel from GitHub releases. FLASH_ATTENTION_FORCE_BUILD compiles
-# instead -- slower, and the way out where that download is unavailable.
-ARG FLASH_ATTENTION_FORCE_BUILD=
-RUN FLASH_ATTENTION_FORCE_BUILD="${FLASH_ATTENTION_FORCE_BUILD}" \
-        uv pip install --no-build-isolation "flash-attn==2.8.3.post1"
+RUN set -e; \
+    mkdir -p /tmp/flash-attention \
+        && cd /tmp/flash-attention \
+        && git init -q \
+        && git remote add origin https://github.com/Dao-AILab/flash-attention.git \
+        && git fetch --depth 1 origin "${FLASH_ATTENTION_GIT_SHA}" \
+        && git checkout -q FETCH_HEAD \
+        && git submodule update --init --depth 1 csrc/cutlass; \
+    FLASH_ATTENTION_FORCE_BUILD=TRUE uv pip install --no-build-isolation --no-deps .; \
+    cd / && rm -rf /tmp/flash-attention; \
+    python -c "import flash_attn, flash_attn_2_cuda; print('FA2', flash_attn.__version__)"
 
-# This vllm and no other: it pins constraints.txt's tilelang release and apache-tvm-ffi 0.1.11.
-# Versions come from constraints.txt via UV_CONSTRAINT.
+# Fatal: every other version follows vllm. UV_OVERRIDE replaces its tilelang pin. Its wheel
+# vendors the image's only DeepGEMM; a separately built one would shadow it.
 FROM fa2 AS fullstack
-RUN for pkg in \
-        "flash-linear-attention" \
-        "vllm"; do \
-        uv pip install --no-build-isolation "$pkg" \
-            || echo "WARNING: bench baseline '$pkg' install failed (non-fatal)"; \
-    done
+RUN uv pip install --no-build-isolation vllm
+RUN uv pip install --no-build-isolation flash-linear-attention \
+    || echo "WARNING: bench baseline 'flash-linear-attention' install failed (non-fatal)"
 # Prebuilt here: a first-use JIT build would otherwise land inside a timed benchmark.
 RUN DS_BUILD_OPS=0 DS_BUILD_QUANTIZER=1 DS_ACCELERATOR=cuda \
         uv pip install --no-build-isolation deepspeed \
     && python -c "import torch; from deepspeed.ops.quantizer import quantizer_op; assert callable(quantizer_op.quantize)"
-# --no-deps, so not in the loop: flag_gems pins numpy==1.26.4 and this stack is on 2.2.6.
+# --no-deps: flag_gems pins numpy, sqlalchemy and packaging off the lock. It imports sqlalchemy.
 RUN uv pip install sqlalchemy \
     && uv pip install --no-deps flag_gems \
     || echo "WARNING: bench baseline 'flag_gems' install failed (non-fatal)"
-# --no-deps so mamba_ssm cannot pull its own newer tilelang pin. The CUDA extension must still
-# build: importing the package loads selective_scan_cuda even for the Triton path the bench uses.
-RUN MAMBA_FORCE_BUILD=TRUE \
-    uv pip install --no-build-isolation --no-deps "mamba-ssm==2.3.2.post1" \
-    || echo "WARNING: mamba-ssm 2.3.2.post1 install failed (non-fatal)"
-# From the official tag; PyPI's 1.0.0 sdist is stale.
-ARG DEEPGEMM_GIT_SHA=c9f8b34dcdacc20aa746b786f983492c51072870
-RUN { mkdir -p /tmp/DeepGEMM \
-        && cd /tmp/DeepGEMM \
-        && git init -q \
-        && git remote add origin https://github.com/deepseek-ai/DeepGEMM.git \
-        && git fetch --depth 1 origin "${DEEPGEMM_GIT_SHA}" \
-        && git checkout -q FETCH_HEAD \
-        && git submodule update --init --depth 1 --jobs 1 \
-            third-party/cutlass third-party/fmt \
-        && DG_FORCE_BUILD=1 uv pip install --no-build-isolation --no-deps .; } \
-    || echo "WARNING: DeepGEMM v2.1.1.post3 install failed (non-fatal)"; \
-    rm -rf /tmp/DeepGEMM
-
 # The Hadamard transform baselines. Both non-fatal, like the baselines above: no test imports
 # them, and their absence drops benchmark rows rather than failing the image.
 # A commit, not PyPI's 1.1.0 sdist: only v1.1.0.post2 gates `c10::DeviceGuard` by torch version and
 # takes the lightweight CUDAGuard header, and both are needed to compile against this torch.
 # FORCE_BUILD compiles here instead of fetching a release wheel: the releases carry no
-# cu13/torch2.13 build. --no-deps: torch, packaging and ninja are already installed and pinned.
+# cu13/torch2.14 build. --no-deps: torch, packaging and ninja are already installed and pinned.
 ARG FAST_HADAMARD_TRANSFORM_GIT_SHA=e7706faf8d1c3b9f241e36860640ad1dac644ede
 RUN { mkdir -p /tmp/fast-hadamard-transform \
         && cd /tmp/fast-hadamard-transform \
@@ -154,9 +140,9 @@ RUN { mkdir -p /tmp/applied-ai \
 
 # After the bench baselines, so tilelang links against the final stack and a TILELANG_GIT_SHA bump
 # reuses every layer before this one. By default it installs the tilelang release constraints.txt
-# pins, which vllm already pulled; naming it here keeps it off vllm's non-fatal install.
+# pins, which vllm already pulled.
 # TILELANG_GIT_SHA compiles that main commit instead: the wheel replaces the pinned release, so the
-# constraints are dropped for that one install and vllm's tilelang pin goes unsatisfied.
+# constraints and the override are dropped for that one install.
 # `pip wheel` stays on pip — uv has no equivalent subcommand. cutlass and tvm only:
 # composable_kernel is the ROCm backend's, and this image builds CUDA.
 FROM fullstack AS tilelang
@@ -172,11 +158,15 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
         && mkdir -p /opt/tilelang-wheels \
         && CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS}" \
             env -u PIP_CONSTRAINT python -m pip wheel . --no-deps --no-build-isolation -w /opt/tilelang-wheels \
-        && env -u UV_CONSTRAINT uv pip install --no-deps --reinstall /opt/tilelang-wheels/tilelang-*.whl \
+        && env -u UV_CONSTRAINT -u UV_OVERRIDE \
+            uv pip install --no-deps --reinstall /opt/tilelang-wheels/tilelang-*.whl \
         && rm -rf /tmp/tilelang /opt/tilelang-wheels; \
     else \
         uv pip install tilelang; \
     fi
+# --no-deps: torch and tilelang are in place, and a TILELANG_GIT_SHA wheel must stay.
+RUN uv pip install --no-deps tile-kernels \
+    && python -c "import tile_kernels; print('tile-kernels', tile_kernels.__version__)"
 # --no-deps: it must not re-resolve a CUDA wheel under torch.
 RUN uv pip install --no-deps cupti-python
 # Deps resolved, unlike cupti-python: all four are already pinned in the lock. Fatal, unlike the
@@ -191,14 +181,16 @@ ARG TILEOPS_RUNNER_IMAGE=""
 ENV TILEOPS_RUNNER_IMAGE=${TILEOPS_RUNNER_IMAGE}
 
 # The dev image plus the published tileops and tilefoundry releases. tilefoundry caps transformers
-# below the lock's pin; the override keeps the lock's version.
+# below the lock's pin; the override keeps the lock's version. --override replaces UV_OVERRIDE,
+# so it carries overrides.txt too.
 FROM tilelang AS release
 # Links the ghcr package to this repository.
 LABEL org.opencontainers.image.source=https://github.com/tile-ai/TileOPs
 ARG TILEOPS_VERSION
 ARG TILEFOUNDRY_VERSION
 RUN test -n "${TILEOPS_VERSION}" && test -n "${TILEFOUNDRY_VERSION}" \
-    && grep '^transformers==' /tmp/constraints-runner-lock.txt > /tmp/release-overrides.txt \
+    && { cat /tmp/overrides.txt; grep '^transformers==' /tmp/constraints-runner-lock.txt; } \
+        > /tmp/release-overrides.txt \
     && uv pip install --override /tmp/release-overrides.txt \
         "tileops==${TILEOPS_VERSION}" "tilefoundry==${TILEFOUNDRY_VERSION}" \
     && tilefoundry --version

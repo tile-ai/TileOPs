@@ -25,12 +25,12 @@ The `dev` dependency group (pip 25.1 or later) adds the linters, pre-commit, pyt
 
 ## Dev Docker image
 
-The prebuilt dev image ships the whole stack — CUDA 13.2, PyTorch 2.13 (cu132), the TileLang release TileOPs declares, and the benchmark baselines — so nothing needs resolving locally:
+The prebuilt dev image ships the whole stack — CUDA 13.2, PyTorch 2.14 (cu132), the TileLang release TileOPs declares, and the benchmark baselines — so nothing needs resolving locally:
 
 ```bash
 docker run --rm -it --gpus all \
   -v "$(pwd)":/workspace -w /workspace \
-  ghcr.io/tile-ai/tileops-dev:cuda13.2-torch2.13-tilelang0.1.12
+  ghcr.io/tile-ai/tileops-dev:cuda13.2-torch2.14-tilelang0.1.15
 
 # inside the container
 pip install -e . --no-deps
@@ -147,15 +147,16 @@ reStructuredText, or an `Args:` left on a class.
 
 ## Benchmarks
 
-Benchmarks compare against external baselines, which the `bench` dependency group pulls in (pip 25.1 or later):
+Benchmarks compare against external baselines, which the `bench` dependency group pulls in. vLLM pins an older TileLang than TileOPs, and only uv can replace that pin:
 
 ```bash
-PIP_NO_BUILD_ISOLATION=1 pip install -e . --group dev --group bench -c constraints.txt
+UV_NO_BUILD_ISOLATION=1 uv pip install -e . --group dev --group bench \
+  -c constraints.txt --override .github/runner/overrides.txt
 ```
 
-FlashAttention-3 (`flash_attn_interface`) is not on PyPI and is not in the group; build it from the FlashAttention repository's `hopper/` directory, or use the dev image.
+FlashAttention-3 is not on PyPI and no FlashAttention-2 release builds against PyTorch 2.14, so neither is in the group. Build both from the Dockerfile's `FLASH_ATTENTION_GIT_SHA` (FA3 from `hopper/`), or use the dev image.
 
-`PIP_NO_BUILD_ISOLATION=1` is required here: several baselines build against the installed PyTorch, and an isolated build environment would fetch a different one.
+`UV_NO_BUILD_ISOLATION=1` is required here: several baselines build against the installed PyTorch, and an isolated build environment would fetch a different one.
 
 Prefer the dev Docker image, which carries FlashAttention-2/3, flash-linear-attention, vLLM and flashinfer prebuilt against its own CUDA and PyTorch — the FA3 build in particular takes a long time from source.
 
