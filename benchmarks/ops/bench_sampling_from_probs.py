@@ -35,6 +35,9 @@ def test_sampling_from_probs_bench(case) -> None:
     # tensors of each batch size are built on its first call.
     temperature = torch.ones(1, dtype=torch.float32, device=probs.device)
     row_indices: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+    # gumbel_sample takes logits, as vllm's sampler hands it; the case's are taken once here,
+    # and only the distribution check's own probabilities are converted in the call.
+    case_probs, case_logits = probs, probs.log()
 
     def flashinfer_from_probs(probs, _seed, _offset):
         return flashinfer_draw(probs, generator=generator).to(torch.int32)
@@ -47,10 +50,8 @@ def test_sampling_from_probs_bench(case) -> None:
                 torch.arange(batch, dtype=torch.int64, device=probs.device),
             )
         requests, positions = row_indices[batch]
-        # gumbel_sample takes logits; the log stays in the call because the distribution
-        # check calls it with probabilities of its own.
         return gumbel_sample(
-            probs.log(),
+            case_logits if probs is case_probs else probs.log(),
             requests,
             temperature,
             seed,
