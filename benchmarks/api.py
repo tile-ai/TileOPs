@@ -31,7 +31,7 @@ from tileops.backend import OpNotAvailableError
 from tileops.manifest import _manifest_key, load_adts, load_manifest, load_workloads
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
-from tileops.manifest._workload import Call, Elements, instantiate, nightly_calls
+from tileops.manifest._workload import Call, Elements, bench_calls, instantiate
 from workloads.calls import call_workload
 from workloads.device import torch_compile_unavailable
 from workloads.numerics import CheckResult, Request, check_inputs_preserved, verify
@@ -69,15 +69,6 @@ def set_verifying(value: bool) -> None:
 
 # --tileops-nightly runs the nightly sweep's cases.
 _nightly = False
-# A reference whose first-pass device time is this many times a baseline's gets no second pass:
-# both passes time the same call on the same inputs and agree to a few percent, so a second
-# pass would have to cut the reading tenfold to make the reference the row's fastest comparator.
-_SLOW_REFERENCE_RATIO = 10.0
-
-
-def _method(meta: dict) -> str:
-    """The timing method a reading's metadata records: the timer and the cache preparation."""
-    return " ".join(meta[key] for key in ("timing", "l2_flush") if key in meta)
 
 
 def nightly() -> bool:
@@ -200,8 +191,8 @@ def cases(op: "str | type") -> list[Case]:
     """One :class:`Case` per manifest call of *op*, an Op class or its manifest key.
 
     Each workload row is instantiated once per dtype case; in nightly mode, only the calls
-    ``nightly_calls`` selects. An op with no call workload in ``workloads.calls`` fails here,
-    at collection.
+    ``bench_calls`` selects for the nightly sweep. An op with no call workload in
+    ``workloads.calls`` fails here, at collection.
     """
     from benchmarks._cases import entry
 
@@ -209,15 +200,12 @@ def cases(op: "str | type") -> list[Case]:
     workload = call_workload(name)
     calling = entry(name)
     plan = entry_plan(name, load_manifest()[name], load_adts(), resolve=False)
-    rows = load_workloads(name)
-    selected = (
-        nightly_calls(plan, rows)
-        if _nightly
-        else [(row, case) for row in rows for case in row.get("dtype_cases") or [{}]]
-    )
     return [
         Case(call.case_id, call, workload, calling)
-        for call in (instantiate(plan, row, dtype_case) for row, dtype_case in selected)
+        for call in (
+            instantiate(plan, row, dtype_case)
+            for row, dtype_case in bench_calls(plan, load_workloads(name), _nightly)
+        )
     ]
 
 
@@ -364,10 +352,7 @@ class Runner:
             impl = plan[name]
             if _nightly and name in meta and self._slow_reference(name, impl, first_pass):
                 continue
-            # The second pass starts from the block size the first settled on: the same
-            # call on the same inputs fills the launch queue at the same sample, so probing
-            # again only costs a block that times out.
-            first = meta.get(name)
+            previous = meta.get(name)
             with torch.no_grad():
                 samples[name].extend(
                     bench_kernel(
@@ -380,14 +365,20 @@ class Runner:
                         count_copies=self.case.count_copies,
                         reset=impl.reset,
                         device=device,
-                        start_block=first.get("block_samples") if first else None,
+                        # The second pass starts from the block size the first settled on:
+                        # the same call on the same inputs fills the launch queue at the same
+                        # sample, so probing again only costs a block that times out.
+                        start_block=previous.get("block_samples") if previous else None,
                     )
                 )
             pass_meta = _capture_bench_meta()
-            previous = meta.get(name)
             # The cache preparation is part of the method: samples drained without the
             # blocker are another measurement than held ones.
-            methods = [_method(m) for m in (previous, pass_meta) if m is not None]
+            methods = [
+                " ".join(m[key] for key in ("timing", "l2_flush") if key in m)
+                for m in (previous, pass_meta)
+                if m is not None
+            ]
             if previous is None:
                 first_pass[name] = (median_busy_ms(samples[name]), methods[0])
             if len(set(methods)) > 1:
@@ -412,6 +403,10 @@ class Runner:
     ) -> bool:
         """Whether *impl* is the case's reference and its first-pass device time is ten times
         that of a baseline timed by the same method."""
+        # Both passes time the same call on the same inputs and agree to a few percent, so a
+        # second pass would have to cut the reading tenfold to make the reference the row's
+        # fastest comparator.
+        ratio = 10.0
         if impl.run is not self.case.reference or impl.args is not None or impl.reset is not None:
             return False
         busy, method = first_pass[name]
@@ -420,7 +415,7 @@ class Runner:
             for other, (other_busy, other_method) in first_pass.items()
             if other not in (TILEOPS, name) and other_method == method
         ]
-        return bool(baselines) and busy >= _SLOW_REFERENCE_RATIO * min(baselines)
+        return bool(baselines) and busy >= ratio * min(baselines)
 
     def _roofline_counts(self) -> tuple[float, float]:
         """The op's own count of the work, read once.

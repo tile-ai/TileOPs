@@ -358,16 +358,21 @@ def _bench_kernel(
         """Take *n_repeat* samples in blocks held by the blocking kernel, or all of them
         unheld where the queue holds no sample; start from *start_block* where given."""
         nonlocal size, blocking, retried
-        blocking, per_block = True, n_repeat
+        per_block = n_repeat
+
+        def _block_in(samples: int) -> None:
+            """Hold blocks of *samples* from here on, or none for 0."""
+            nonlocal blocking, per_block
+            blocking = samples > 0
+            per_block = samples if blocking else n_repeat
+            _bench_meta.block_samples = samples
+            _bench_meta.l2_flush = _L2_FLUSH_CUDA if blocking else _L2_FLUSH_CUDA_DRAINED
+
+        blocking = True
         _bench_meta.block_samples = None
         _bench_meta.l2_flush = _L2_FLUSH_CUDA
-        if start_block == 0:
-            blocking = False
-            _bench_meta.block_samples = 0
-            _bench_meta.l2_flush = _L2_FLUSH_CUDA_DRAINED
-        elif start_block is not None and start_block < n_repeat:
-            per_block = start_block
-            _bench_meta.block_samples = start_block
+        if start_block is not None and start_block < n_repeat:
+            _block_in(start_block)
         # The row's retries are those of the blocks it keeps.
         _bench_meta.attribution_retries = None
         kept: list[Sample] = []
@@ -378,13 +383,11 @@ def _bench_kernel(
             if blocking and blocker.timed_out():
                 # The queue took fewer samples than the block held. A queue that took none
                 # drops what was kept, so no reading mixes held and drained samples.
-                per_block = fitted if fitted is not None else size - 1
-                if per_block == 0:
-                    blocking, per_block = False, n_repeat
+                fits = fitted if fitted is not None else size - 1
+                if fits == 0:
                     kept.clear()
-                    _bench_meta.l2_flush = _L2_FLUSH_CUDA_DRAINED
                     _bench_meta.attribution_retries = None
-                _bench_meta.block_samples = per_block if blocking else 0
+                _block_in(fits)
                 continue
             kept.extend(
                 sample._replace(sm_clock_hz=hz)

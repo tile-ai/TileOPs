@@ -75,10 +75,10 @@ __all__ = [
     "Elements",
     "RowError",
     "TensorSpec",
+    "bench_calls",
     "call_from_tensors",
     "check_workloads",
     "instantiate",
-    "nightly_calls",
 ]
 
 
@@ -1043,19 +1043,16 @@ def _plain(value: Any) -> Any:
     return type(value).__name__, value
 
 
-def _shapes(tensor: tuple | Elements) -> tuple:
-    """A tensor's shape, or each element's shape of a tensor sequence; its dtypes left out."""
-    if isinstance(tensor, Elements):
-        return tuple(shape for shape, _ in tensor.items)
-    return tensor[0]
+def bench_calls(plan: EntryPlan, rows: list[dict], nightly: bool) -> list[tuple[dict, dict]]:
+    """The ``(row, dtype_case)`` pairs of an entry's rows a benchmark run times.
 
-
-def nightly_calls(plan: EntryPlan, rows: list[dict]) -> list[tuple[dict, dict]]:
-    """The ``(row, dtype_case)`` pairs of an entry's rows that the nightly benchmark sweep runs.
-
-    It leaves out ``nightly: skip`` rows, and a float16 call whose instantiated bfloat16 sibling
-    of the same label runs, unless its row is ``nightly: every-dtype``.
+    Without *nightly*, every pair. The nightly sweep leaves out ``nightly: skip`` rows, and a
+    float16 call whose instantiated bfloat16 sibling of the same label runs, unless its row
+    is ``nightly: every-dtype``.
     """
+    pairs = [(row, case) for row in rows for case in row.get("dtype_cases") or [{}]]
+    if not nightly:
+        return pairs
     sig = plan.sig
     dtypes = {n for n in sig.forall if _dtype_index(sig, n)} | {
         p for p in sig.params if sig.kind(p).payload().tag == "DType"
@@ -1075,7 +1072,11 @@ def nightly_calls(plan: EntryPlan, rows: list[dict]) -> list[tuple[dict, dict]]:
             (
                 row.get("label"),
                 {n: _as_bfloat16(v) if n in dtypes else v for n, v in call.indices.items()},
-                {n: _shapes(t) for n, t in call.tensors.items()},
+                # Shapes only: the dtypes are among the indices.
+                {
+                    n: tuple(shape for shape, _ in (t.items if isinstance(t, Elements) else (t,)))
+                    for n, t in call.tensors.items()
+                },
                 call.members,
                 call.scalars,
                 [_convert(sig, n, row[n]) if n in row else None for n in sequences],
@@ -1083,12 +1084,7 @@ def nightly_calls(plan: EntryPlan, rows: list[dict]) -> list[tuple[dict, dict]]:
         )
         return "'float16'" in held and "'bfloat16'" not in held, as_bfloat16
 
-    calls = [
-        (row, case, *key(row, case))
-        for row in rows
-        if row.get("nightly") != "skip"
-        for case in row.get("dtype_cases") or [{}]
-    ]
+    calls = [(row, case, *key(row, case)) for row, case in pairs if row.get("nightly") != "skip"]
     bfloat16_calls = {called for _, _, float16, called in calls if not float16}
     return [
         (row, case)
