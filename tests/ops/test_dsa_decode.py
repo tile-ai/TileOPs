@@ -55,6 +55,43 @@ class DSADecodeFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-fp16-tuned",
                 ),
+                # Every causal query sees topk keys, so no row is scanned for dead slots. More
+                # rows than SMs: each CTA runs one row after another.
+                pytest.param(
+                    1,
+                    64,
+                    300,
+                    1024,
+                    512,
+                    0,
+                    192,
+                    1,
+                    1,
+                    1024,
+                    None,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="rows-past-sms-see-topk",
+                ),
+                # Rows that fill fewer than half the SMs: a CTA pair shares each row's keys.
+                pytest.param(
+                    2,
+                    128,
+                    3,
+                    1024,
+                    512,
+                    0,
+                    512,
+                    1,
+                    1,
+                    1024,
+                    None,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="few-rows-see-topk",
+                ),
             ],
         ),
     ]
@@ -295,25 +332,28 @@ def test_dsa_decode_index_only(batch, seq_len, seq_len_kv, topk, with_sink) -> N
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("batch", "seq_len", "heads", "topk", "is_causal"),
+    ("batch", "seq_len", "seq_len_kv", "heads", "topk", "is_causal"),
     [
+        # The bf16-no-tail shape: a CTA a row.
+        pytest.param(1, 7, 256, 64, 128, False, marks=pytest.mark.smoke, id="bf16-no-tail-shape"),
         # More rows than SMs: each CTA runs one row after another.
-        pytest.param(1, 300, 64, 200, False, marks=pytest.mark.smoke, id="rows-past-sms"),
+        pytest.param(1, 300, 1024, 64, 200, False, marks=pytest.mark.full, id="rows-past-sms"),
         # Rows that fill fewer than half the SMs: a CTA pair shares each row's keys.
-        pytest.param(4, 2, 64, 640, False, marks=pytest.mark.smoke, id="few-rows"),
-        pytest.param(2, 3, 128, 512, True, marks=pytest.mark.full, id="few-rows-causal"),
+        pytest.param(4, 2, 1024, 64, 640, False, marks=pytest.mark.full, id="few-rows"),
+        pytest.param(2, 3, 1024, 128, 512, True, marks=pytest.mark.full, id="few-rows-causal"),
         # More rows than SMs with an odd block count: a row of one block leaves consumer 1
         # no odd block to score.
-        pytest.param(1, 300, 64, 192, False, marks=pytest.mark.full, id="rows-past-sms-odd"),
-        pytest.param(1, 300, 64, 192, True, marks=pytest.mark.full, id="rows-past-sms-causal"),
+        pytest.param(1, 300, 1024, 64, 192, False, marks=pytest.mark.full, id="rows-past-sms-odd"),
+        pytest.param(
+            1, 300, 1024, 64, 192, True, marks=pytest.mark.full, id="rows-past-sms-causal"
+        ),
         # Between half and all of the SMs: a CTA a row.
-        pytest.param(1, 100, 64, 640, False, marks=pytest.mark.full, id="row-per-cta"),
+        pytest.param(1, 100, 1024, 64, 640, False, marks=pytest.mark.full, id="row-per-cta"),
     ],
 )
-def test_dsa_decode_skips_dead_tails(batch, seq_len, heads, topk, is_causal) -> None:
+def test_dsa_decode_skips_dead_tails(batch, seq_len, seq_len_kv, heads, topk, is_causal) -> None:
     """Rows end in dead slots of every length, a row with none live included: the blocks
     past a row's last live slot weigh nothing, however the rows are spread over the SMs."""
-    seq_len_kv = 1024
     # Every causal row sees fewer than topk keys.
     q_start = topk // 2 if is_causal else 0
     test = DSADecodeTest(

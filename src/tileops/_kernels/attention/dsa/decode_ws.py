@@ -671,8 +671,11 @@ def _dsa_decode_ws_kernel(
         else:
             rebase(rO, rM, rL, prev, keep)
         if persistent and pair == 0:
-            # Its stores have read S0 and S1 before either is rewritten.
+            # The previous item's stores have read S0 and S1 before either is rewritten. The
+            # wait holds only the thread that issued them, so the rest of consumer 1 waits
+            # for it before writing S1; consumer 0 writes S0 after pair_max_ready.
             T.tma_store_wait(0)
+            T.sync_threads(staged_ready + 1, warpgroup)
         T.named_barrier_arrive(pair_max_ready, consumer_threads)
         # Each branch waits for every WGMMA it issues, for the same reason.
         if odd:
@@ -746,6 +749,8 @@ def _dsa_decode_ws_kernel(
         if persistent:
             lb, ls, _, lh0 = coords(item_of(cta, n_items - 1))
             store_item(rO, rL, out, X0, X1, S0, S1, O, lb, ls, lh0)
+            # Nothing rewrites the tiles after this; the CTA's shared memory stays until the
+            # thread that issued the stores has waited for them to read it.
             T.tma_store_wait(0)
 
     @T.macro
