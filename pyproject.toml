@@ -53,9 +53,8 @@ dev = [
     # torch's C++ extension loader builds the PrivateUse1 test backend in tests/privateuse1.
     "ninja",
 ]
-# Benchmark baselines. FlashAttention-3 (`flash_attn_interface`) is not on PyPI, and no
-# FlashAttention-2 release builds against this torch; the dev image builds both. vllm pins an older tilelang than the project's, so the group
-# installs only with .github/runner/overrides.txt applied (docs/development.md#benchmarks).
+# Benchmark baselines. FA3 is not on PyPI and no FA2 release builds against this torch; the dev
+# image builds both. Install with .github/runner/overrides.txt: vllm pins an older tilelang.
 bench = [
     "flash-linear-attention==0.5.2",
     "deepspeed==0.19.7",

@@ -35,7 +35,6 @@ def main() -> int:
     assert flash_attn_interface.flash_attn_func is not None
     print(f"flash-attn {flash_attn.__version__} | flash-attn-3 | flag_gems")
 
-    # vllm's vendored copy is the image's only DeepGEMM.
     import vllm
     from vllm.third_party import deep_gemm
 

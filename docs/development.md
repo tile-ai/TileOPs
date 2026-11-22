@@ -147,14 +147,14 @@ reStructuredText, or an `Args:` left on a class.
 
 ## Benchmarks
 
-Benchmarks compare against external baselines, which the `bench` dependency group pulls in. vLLM pins an older TileLang than TileOPs declares, and pip cannot replace a dependency's pin, so the install goes through uv with the override file the runner image uses:
+Benchmarks compare against external baselines, which the `bench` dependency group pulls in. vLLM pins an older TileLang than TileOPs, and only uv can replace that pin:
 
 ```bash
 UV_NO_BUILD_ISOLATION=1 uv pip install -e . --group dev --group bench \
   -c constraints.txt --override .github/runner/overrides.txt
 ```
 
-FlashAttention-3 (`flash_attn_interface`) is not on PyPI, and no FlashAttention-2 release builds against PyTorch 2.14; neither is in the group. Build both from the FlashAttention commit the runner Dockerfile names (`FLASH_ATTENTION_GIT_SHA`), FA3 from its `hopper/` directory, or use the dev image.
+FlashAttention-3 is not on PyPI and no FlashAttention-2 release builds against PyTorch 2.14, so neither is in the group. Build both from the Dockerfile's `FLASH_ATTENTION_GIT_SHA` (FA3 from `hopper/`), or use the dev image.
 
 `UV_NO_BUILD_ISOLATION=1` is required here: several baselines build against the installed PyTorch, and an isolated build environment would fetch a different one.
 

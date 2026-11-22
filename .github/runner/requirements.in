@@ -1,6 +1,5 @@
-# Direct requirements of the runner image. The source-built packages (FA2, FA3 and the Hadamard
-# pair) are absent: no wheel to resolve, and they go in with --no-deps.
-# flag_gems is absent too: its exact pins do not resolve here, so it also goes in with --no-deps.
+# Direct requirements of the runner image. The source-built packages (FA2, FA3, the Hadamard pair)
+# and flag_gems, whose exact pins do not resolve here, are absent: they go in with --no-deps.
 # Compile with the command in constraints-runner-lock.txt's header.
 --index-url https://download.pytorch.org/whl/cu132
 --extra-index-url https://pypi.org/simple

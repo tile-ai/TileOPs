@@ -97,19 +97,16 @@ What the flags are for:
 
 Change the `tilelang` pin in `pyproject.toml`, `constraints.txt` and `overrides.txt` together,
 regenerate the lock, and rebuild under a new tag. The constraints reach the first layer, so the
-whole image rebuilds. **Never edit the Dockerfile** for a bump.
-
-vllm pins an exact tilelang release, older than the one TileOPs declares. `overrides.txt` replaces
-that pin for the lock compile and, through `UV_OVERRIDE`, for every install in the image. Drop its
-line once a vllm release pins the tilelang `constraints.txt` names.
+whole image rebuilds. **Never edit the Dockerfile** for a bump. `overrides.txt` replaces vllm's
+older tilelang pin; drop its line once vllm pins the one `constraints.txt` names.
 
 Then update the tag in [`docs/development.md`](../../docs/development.md#dev-docker-image), the
 one place in the repo that names it.
 
 ## Pinning
 
-Four files. `PIP_CONSTRAINT` hands `constraints.txt` and the lock to every `pip install` in the
-build, and `UV_CONSTRAINT` and `UV_OVERRIDE` hand the last three to every `uv pip install`.
+Four files. `PIP_CONSTRAINT` and `UV_CONSTRAINT` hand the middle two to every install in the
+build; `UV_OVERRIDE` hands `overrides.txt` to every `uv pip install`.
 
 | File                          | Written by | Holds                                                    |
 | ----------------------------- | ---------- | -------------------------------------------------------- |
@@ -122,9 +119,8 @@ The lock is what makes a version stick: an install that would move a settled ver
 build instead of winning silently. After changing a version or a requirement, regenerate it with
 the `uv pip compile` command in its own header and read the diff.
 
-`verify_runtime_stack.py` checks, at build time, that every requirement every installed package
-declares is met, except those `overrides.txt` replaces and the named gaps of `--no-deps`
-installs (flag_gems).
+`verify_runtime_stack.py` fails the build on any unmet requirement outside `overrides.txt` and
+flag_gems' named pins.
 
 ## Runner registration
 

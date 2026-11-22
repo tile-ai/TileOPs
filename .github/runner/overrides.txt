@@ -1,6 +1,3 @@
-# Requirements that replace a dependency's own pin, for the lock compile and every install in the
-# runner image (UV_OVERRIDE). Each line is a requirement the image knowingly leaves unsatisfied.
-#
-# vllm pins tilelang==0.1.12 in every release through 0.34.0 and on main; TileOPs and tile-kernels
-# need 0.1.15. Drop this line once a vllm release pins 0.1.15 or later.
+# Pins that replace a dependency's own, for the lock compile and, as UV_OVERRIDE, every install
+# in the image. vllm pins tilelang==0.1.12 through 0.34.0; drop the line once it pins 0.1.15.
 tilelang==0.1.15

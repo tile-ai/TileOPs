@@ -18,12 +18,9 @@ import torch
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
-# The pins the image replaces for every install.
 OVERRIDES = Path("/tmp/overrides.txt")
-# Requirements of a package installed --no-deps that the image leaves unmet, by (package,
-# requirement). Any other unmet requirement fails the build.
+# (package, requirement) pairs a --no-deps install leaves unmet. Any other unmet one fails.
 NO_DEPS_GAPS = {
-    # flag_gems 5.0.2 pins exact versions of three packages the lock resolves otherwise.
     ("flag-gems", "numpy"),
     ("flag-gems", "sqlalchemy"),
     ("flag-gems", "packaging"),
@@ -48,14 +45,8 @@ def _overridden() -> set[str]:
 
 
 def _unsatisfied() -> list[str]:
-    """Every declared requirement of an installed package that the environment does not meet.
-
-    A requirement naming extras, such as ``nvidia-cutlass-dsl[cu13]``, also checks what those
-    extras of the named package require.
-    """
-    # The interpreter's site directories only: importing setuptools puts its vendored copies of
-    # packaging and wheel on sys.path, and those are setuptools' own, not installs. The first copy
-    # found wins, as for an import; a second one is reported.
+    """Every declared requirement, extras included, that the installed packages do not meet."""
+    # Site directories only: importing setuptools puts its vendored packaging and wheel on sys.path.
     dists: dict[str, md.Distribution] = {}
     found = []
     for dist in md.distributions(path=site.getsitepackages()):
@@ -76,7 +67,7 @@ def _unsatisfied() -> list[str]:
             if req.marker is not None and not req.marker.evaluate({"extra": extra}):
                 continue
             if extra and (req.marker is None or "extra" not in str(req.marker)):
-                continue  # Already checked with the package's base requirements.
+                continue
             dep = canonicalize_name(req.name)
             have = dists[dep].version if dep in dists else None
             if dep in overridden or (name, dep) in NO_DEPS_GAPS:
@@ -180,7 +171,7 @@ except Exception as exc:
         "Build it with DS_BUILD_QUANTIZER=1 in the runner image."
     )
 
-# vllm's wheel carries the image's only DeepGEMM; a second, top-level one would win vllm's import.
+# A top-level deep_gemm would shadow the copy vllm vendors.
 if importlib.util.find_spec("deep_gemm") is not None:
     sys.exit(
         "FAIL: a top-level deep_gemm is installed; the image's DeepGEMM is vllm's vendored copy."

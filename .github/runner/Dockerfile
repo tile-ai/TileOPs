@@ -27,9 +27,9 @@ ENV PIP_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt"
 # pip only bootstraps uv; constraints.txt pins it, since the installer cannot come from the lock
 # it produces.
 RUN python -m pip install uv
-# These mirror the lock's header; UV_OVERRIDE is its --override. uv defaults to first-index, which
+# These mirror the lock's header, UV_OVERRIDE its --override. uv defaults to first-index, which
 # resolves a package against whichever index lists it first rather than the one the lock was
-# compiled against; install and compile must agree on all of them or the lock stops applying.
+# compiled against; install and compile must agree or the lock stops applying.
 ENV UV_INDEX_URL=https://download.pytorch.org/whl/cu132 \
     UV_EXTRA_INDEX_URL="https://pypi.org/simple https://download.pytorch.org/whl/cpu" \
     UV_INDEX_STRATEGY=unsafe-best-match \
@@ -37,8 +37,7 @@ ENV UV_INDEX_URL=https://download.pytorch.org/whl/cu132 \
     UV_OVERRIDE=/tmp/overrides.txt \
     UV_SYSTEM_PYTHON=1 UV_BREAK_SYSTEM_PACKAGES=1 UV_NO_CACHE=1
 # The CPU index serves torchaudio alone: no cu132 build of it exists, and a CUDA build of another
-# minor refuses to load beside this torch, so vllm's pin is met by the CPU wheel, whose one
-# extension targets torch's stable ABI and carries no CUDA.
+# minor refuses to load beside this torch, so vllm's pin is met by the CPU wheel.
 RUN uv pip install "torch==2.14.0+cu132" "torchvision==0.29.0+cu132"
 # tilelang's build backend and runtime deps, so its stage can use --no-build-isolation. The wheel
 # cmake meets tilelang's >=3.26.1 floor; jammy apt cmake is 3.22. setuptools-scm is tileops'
@@ -59,8 +58,7 @@ RUN uv pip install pytest pytest-xdist ruff pytest-timeout pytest-cov py-spy
 # Hopper FA3 has no wheel. A commit, not the v2.8.3 tag: releases through 2.8.3.post1 swap in a
 # downloaded CUDA 12.6 nvcc unless the system CUDA is exactly 12.8, and that toolchain ships no
 # CCCL, so every translation unit fails on `cuda/std/utility`. Only main takes the CUDA 13 path.
-# FA2 builds from the same commit, which compiles its extension as C++20; torch 2.14's headers
-# reject the C++17 every 2.8.3 release passes.
+# FA2 builds from it too: every 2.8.3 release compiles as C++17, which torch 2.14 rejects.
 # Only csrc/cutlass: --recursive also pulls AMD composable_kernel, unused at sm_90 and slow.
 ARG FLASH_ATTENTION_GIT_SHA=616b0e8abab13b87b01525b3916d5a863ab02ae0
 # Fatal, unlike the bench baselines below: eleven attention benchmarks name `fa3` and
@@ -79,8 +77,7 @@ RUN set -e; \
     python -c "import flash_attn_interface as m; assert m.flash_attn_func is not None; print('FA3 OK')"
 
 # Own layer: no wheel for this torch/py, so it builds from source and changes to the bench loop
-# below must not recompile it. FLASH_ATTENTION_FORCE_BUILD skips setup.py's search for a release
-# wheel, which no release publishes for this torch. --no-deps: torch and einops are in place.
+# below must not recompile it.
 FROM post-fa3 AS fa2
 RUN set -e; \
     mkdir -p /tmp/flash-attention \
@@ -94,10 +91,8 @@ RUN set -e; \
     cd / && rm -rf /tmp/flash-attention; \
     python -c "import flash_attn, flash_attn_2_cuda; print('FA2', flash_attn.__version__)"
 
-# Every other version in the image follows vllm's requirements, so its install is fatal; a failed
-# one would leave a green image without the stack the lock was resolved for. Its one unsatisfied
-# pin, tilelang==0.1.12, is replaced through UV_OVERRIDE. Its wheel carries the image's only
-# DeepGEMM, as vllm.third_party.deep_gemm.
+# Fatal: every other version follows vllm. UV_OVERRIDE replaces its tilelang pin. Its wheel
+# vendors the image's only DeepGEMM; a separately built one would shadow it.
 FROM fa2 AS fullstack
 RUN uv pip install --no-build-isolation vllm
 RUN uv pip install --no-build-isolation flash-linear-attention \
@@ -106,9 +101,7 @@ RUN uv pip install --no-build-isolation flash-linear-attention \
 RUN DS_BUILD_OPS=0 DS_BUILD_QUANTIZER=1 DS_ACCELERATOR=cuda \
         uv pip install --no-build-isolation deepspeed \
     && python -c "import torch; from deepspeed.ops.quantizer import quantizer_op; assert callable(quantizer_op.quantize)"
-# --no-deps: flag_gems 5.0.2 pins numpy, sqlalchemy and packaging to exact versions the lock
-# resolves otherwise; verify_runtime_stack.py names those three as the only gaps it may leave.
-# sqlalchemy first, since flag_gems imports it at module load.
+# --no-deps: flag_gems pins numpy, sqlalchemy and packaging off the lock. It imports sqlalchemy.
 RUN uv pip install sqlalchemy \
     && uv pip install --no-deps flag_gems \
     || echo "WARNING: bench baseline 'flag_gems' install failed (non-fatal)"
@@ -147,7 +140,7 @@ RUN { mkdir -p /tmp/applied-ai \
 
 # After the bench baselines, so tilelang links against the final stack and a TILELANG_GIT_SHA bump
 # reuses every layer before this one. By default it installs the tilelang release constraints.txt
-# pins, which vllm already pulled through the override; naming it here states it at this layer.
+# pins, which vllm already pulled.
 # TILELANG_GIT_SHA compiles that main commit instead: the wheel replaces the pinned release, so the
 # constraints and the override are dropped for that one install.
 # `pip wheel` stays on pip — uv has no equivalent subcommand. cutlass and tvm only:
@@ -171,9 +164,7 @@ RUN if [ -n "${TILELANG_GIT_SHA}" ]; then \
     else \
         uv pip install tilelang; \
     fi
-# DeepSeek's TileLang kernels, a benchmark baseline, linked against the tilelang just installed.
-# --no-deps: its two requirements, torch and tilelang>=0.1.15, are in place, and a TILELANG_GIT_SHA
-# wheel must not be swapped back for the release. Fatal: the import is the check.
+# --no-deps: torch and tilelang are in place, and a TILELANG_GIT_SHA wheel must stay.
 RUN uv pip install --no-deps tile-kernels \
     && python -c "import tile_kernels; print('tile-kernels', tile_kernels.__version__)"
 # --no-deps: it must not re-resolve a CUDA wheel under torch.
@@ -190,8 +181,8 @@ ARG TILEOPS_RUNNER_IMAGE=""
 ENV TILEOPS_RUNNER_IMAGE=${TILEOPS_RUNNER_IMAGE}
 
 # The dev image plus the published tileops and tilefoundry releases. tilefoundry caps transformers
-# below the lock's pin; the override keeps the lock's version, on top of overrides.txt, which
-# --override replaces UV_OVERRIDE with.
+# below the lock's pin; the override keeps the lock's version. --override replaces UV_OVERRIDE,
+# so it carries overrides.txt too.
 FROM tilelang AS release
 # Links the ghcr package to this repository.
 LABEL org.opencontainers.image.source=https://github.com/tile-ai/TileOPs

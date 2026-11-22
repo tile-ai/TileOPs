@@ -3,18 +3,16 @@
 # constraints-runner-lock.txt.
 #
 # No `+cu132`: the CUDA variant comes from the install index, so this file also fits the CPU
-# preflight. torch/torchvision/torchaudio follow vllm's exact pins; see requirements.in for
-# torchaudio's variant.
+# preflight. torch/torchvision/torchaudio follow vllm's exact pins.
 torch==2.14.0
 torchvision==0.29.0
 torchaudio==2.11.0
 # What torch 2.14.0 requires. Follow torch; never pick independently.
 triton==3.8.0
 # The release pyproject.toml declares; the runner image installs it unless built from a
-# TILELANG_GIT_SHA. vllm pins tilelang==0.1.12; .github/runner/overrides.txt replaces that pin
-# with this version, the one requirement in the image left unsatisfied.
+# TILELANG_GIT_SHA. vllm pins 0.1.12; .github/runner/overrides.txt replaces that pin.
 tilelang==0.1.15
-# DeepSeek's TileLang kernel library, a benchmark baseline. Needs tilelang>=0.1.15.
+# DeepSeek's TileKernels, a benchmark baseline.
 tile-kernels==2.1.0
 # ABI-coupled to tilelang: MUST sit inside the range tilelang's metadata declares
 # (verify_runtime_stack.py checks it). Re-confirm on every tilelang change.
@@ -44,11 +42,9 @@ coverage==7.15.4
 flash-linear-attention==0.5.2
 # Fused INT4 group quantization baseline; prebuild only its quantizer extension.
 deepspeed==0.19.7
-# Every other version in the image follows this vllm's requirements. Its wheel carries the
-# image's only DeepGEMM, as vllm.third_party.deep_gemm.
+# Every other version follows this vllm's requirements.
 vllm==0.34.0
-# The only non-torch baseline of most convolution, pooling, reduction and norm rows. Installed
-# --no-deps: it pins numpy==1.26.4 (this stack is on 2.2.6), sqlalchemy and packaging.
+# Installed --no-deps: it pins numpy==1.26.4 (this stack is on 2.2.6), sqlalchemy and packaging.
 flag_gems==5.0.2
 # flag_gems imports it at module load.
 sqlalchemy==2.0.52
