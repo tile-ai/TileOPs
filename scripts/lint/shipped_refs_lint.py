@@ -25,7 +25,7 @@ _PLAIN_PATTERNS = (
     ("follow-up marker", re.compile(r"[Ff]ollow-up:\s*#[0-9]+")),
 )
 
-SCANNED = ("src/tileops", "tests", "benchmarks", "scripts", "workloads")
+SCANNED = ("src/tileops", "tests", "benchmarks", "scripts", "workloads", "models")
 
 
 def _hash_number_violations(line: str) -> list[str]:

@@ -15,7 +15,7 @@ from pathlib import Path
 from comment_lines import allowed_lines, prose_lines
 from common import lint_files, relative
 
-SCANNED = ("src/tileops", "tests", "benchmarks", "workloads", "scripts")
+SCANNED = ("src/tileops", "tests", "benchmarks", "workloads", "scripts", "models")
 
 _FILE = r"[\w./-]*\w\.(?:py|pyi|cu|cuh|cc|cpp|cxx|c|h|hpp|inl|yaml|yml|toml|md|json|sh)"
 _LOCATIONS = (

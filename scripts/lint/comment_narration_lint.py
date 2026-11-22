@@ -15,7 +15,7 @@ from pathlib import Path
 from comment_lines import allowed_lines, prose_lines
 from common import lint_files, relative
 
-SCANNED = ("src/tileops", "tests", "benchmarks", "workloads")
+SCANNED = ("src/tileops", "tests", "benchmarks", "workloads", "models")
 
 _NARRATION = re.compile(
     r"\b(?:we|i)\s+(?:have\s+)?(?:tried|measured)\b"
