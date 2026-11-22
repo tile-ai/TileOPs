@@ -2,8 +2,8 @@
 
 The two masks that settle a row's maximum before masking it share their launch plan, their
 read of a row and their masked write; the two draws share the barrier that meets a split
-row's totals. ``vector_width`` sits here beside the macros that read it rather than on the
-call record, which holds no TileLang.
+row's totals and the warp fold that picks the entry a draw lands on. ``vector_width`` sits
+here beside the macros that read it rather than on the call record, which holds no TileLang.
 """
 
 from types import SimpleNamespace
@@ -12,7 +12,7 @@ import tilelang.language as T
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.warp_reduce import warp_reduce
-from tileops._utils import WARP_LANES
+from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
     "INF_BITS",
@@ -22,6 +22,7 @@ __all__ = [
     "mask_plan",
     "mask_tiles",
     "offset_refusal",
+    "pick_entry",
     "row_split",
     "vector_width",
 ]
@@ -144,6 +145,22 @@ def gather_part_totals(
         if i * threads + tx < parts:
             chunks[i * threads + tx] = partial[line * parts + i * threads + tx]
     T.sync_threads()
+
+
+@T.macro
+def pick_entry(idx, pick, n):
+    """Leave in ``pick[0]`` of lane 0 the entry a draw lands on, from warp 0's candidates.
+
+    Each lane holds in ``idx[0]`` its first entry past the draw point, or *n*, and in
+    ``idx[1]`` its last entry carrying weight, or -1. The pick is the warp's first entry past
+    the point, else its last carrying weight, else 0.
+    """
+    for stage in T.unroll(WARP_SHUFFLE_STAGES):
+        reach = T.int32(WARP_LANES // 2) >> stage
+        idx[0] = T.min(idx[0], T.shfl_xor(idx[0], reach, width=WARP_LANES))
+        idx[1] = T.max(idx[1], T.shfl_xor(idx[1], reach, width=WARP_LANES))
+    if T.get_thread_binding() == 0:
+        pick[0] = T.if_then_else(idx[0] < n, idx[0], T.max(idx[1], 0))
 
 
 def mask_plan(vectors: int, batch: int, sm_count: int, threads: int, min_threads: int):

@@ -19,11 +19,12 @@ from tileops._kernels.sampling.philox import draw, uniform_of
 from tileops._kernels.sampling.row_tiles import (
     gather_part_totals,
     load_vector,
+    pick_entry,
     row_split,
     vector_width,
 )
 from tileops._kernels.warp_reduce import warp_reduce
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._utils import WARP_LANES
 
 __all__ = ["SamplingFromProbsFwdKernel"]
 
@@ -133,12 +134,7 @@ def _sampling_from_probs_kernel(
                         if src[tx * span + i] > T.cast(0, "float64"):
                             idx[1] = tx * span + i
                         acc[0] = acc[0] + src[tx * span + i]
-                for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                    reach = T.int32(WARP_LANES // 2) >> stage
-                    idx[0] = T.min(idx[0], T.shfl_xor(idx[0], reach, width=WARP_LANES))
-                    idx[1] = T.max(idx[1], T.shfl_xor(idx[1], reach, width=WARP_LANES))
-                if tx == 0:
-                    pick[0] = T.if_then_else(idx[0] < n, idx[0], T.max(idx[1], 0))
+                pick_entry(idx, pick, n)
             T.sync_threads()
             if tx == 0:
                 acc[1] = frac * edge[0] + base
