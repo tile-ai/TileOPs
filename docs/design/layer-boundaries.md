@@ -17,7 +17,7 @@ it state what one layer owns and what it must not reach into.
 | Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `roof_key()`)              |
 | Roofline tool                                               | benchmark output and the GPU profile; it never instantiates an op                                                          |
 | Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
-| Models                                                      | the public op interface, never a private `tileops._*` module, `workloads`, `tests` or `benchmarks`                         |
+| Models                                                      | the public op interface, never a private `tileops._*` module; nothing under `src/` depends on a model                      |
 
 ## Manifest
 
@@ -60,16 +60,25 @@ helper such as `x.float().mean(...)` is a tensor primitive, not a fallback.
 
 ## Models
 
-[`tileops.models`](../../src/tileops/models/) composes published models from the
-public ops. Every computation is an op call; between calls a model uses only
-tensor primitives: views, copies, concatenation, index metadata and constant
-tables such as RoPE frequencies. A model loads its published checkpoint, and its
-loader may convert those weights with torch once, at load time, into the layouts
-its ops read.
+[`models/`](../../models/) composes published models from the public ops. It sits
+at the repository root beside `workloads/` and `benchmarks/` and does not ship in
+the package: models are experimental, and their interface becomes a contract only
+after validation at scale.
 
-A model is tested against its authors' code, never copied into `src/`:
-[`workloads/models/`](../../workloads/models/) runs that code with torch in place
-of any custom kernel it calls.
+| Code                        | Never imports                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `src/tileops/`              | `models`, `workloads`, `tests`, `benchmarks`, or a checkpoint package (`safetensors`, `transformers`, `huggingface_hub`) |
+| `models/`                   | a private `tileops._*` module                                                                                            |
+| `tests/ops/`, `benchmarks/` | `models`                                                                                                                 |
+
+- Every computation is an op call. Between calls a model uses only tensor primitives: views, copies, concatenation, index metadata and constant tables such as RoPE frequencies.
+- Reading a checkpoint, parsing a model config, converting weights into the layouts the ops read, placing layers on devices and the generation loop live in `models/`.
+- A runtime computation no op serves becomes a new op through the manifest, never a helper under `src/`.
+- Code moves to `models/_common/` once two models carry the same code, not before.
+- A package a model or its reference imports is declared in the `dev` dependency group, pinned to the runner lock's version, by the pull request that first imports it.
+- A model is tested against its authors' code, never copied into the repository: [`workloads/models/`](../../workloads/models/) runs it with torch in place of any custom kernel it calls.
+
+[`tests/test_model_imports.py`](../../tests/test_model_imports.py) checks the import table.
 
 → Rules: [testing.md §Model tests](testing.md#model-tests)
 

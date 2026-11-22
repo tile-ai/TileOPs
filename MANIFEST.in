@@ -5,6 +5,7 @@ prune benchmarks
 prune docs
 prune assets
 prune workloads
+prune models
 prune .github
 prune scripts
 
