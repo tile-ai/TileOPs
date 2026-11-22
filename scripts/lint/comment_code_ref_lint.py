@@ -5,7 +5,7 @@ A location is a file name followed by ``:<n>``, ``:L<n>``, ``#L<n>`` or ``line <
 ``line(s) <n> of|in <file>``. A line number with no file passes.
 
 Exempt: ``lint: code-ref allow: <reason>`` on the line. Default scan: ``src/tileops/``,
-``tests/``, ``benchmarks/``, ``workloads/``, ``scripts/``.
+``tests/``, ``benchmarks/``, ``workloads/``, ``scripts/``, ``models/``.
 """
 
 import re
@@ -15,7 +15,7 @@ from pathlib import Path
 from comment_lines import allowed_lines, prose_lines
 from common import lint_files, relative
 
-SCANNED = ("src/tileops", "tests", "benchmarks", "workloads", "scripts")
+SCANNED = ("src/tileops", "tests", "benchmarks", "workloads", "scripts", "models")
 
 _FILE = r"[\w./-]*\w\.(?:py|pyi|cu|cuh|cc|cpp|cxx|c|h|hpp|inl|yaml|yml|toml|md|json|sh)"
 _LOCATIONS = (

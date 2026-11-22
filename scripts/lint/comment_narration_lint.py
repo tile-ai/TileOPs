@@ -5,7 +5,7 @@
 "Measured on H200: ..." beside a tuned value states a contract and passes.
 
 Exempt: ``lint: narration allow: <reason>`` on the line. Default scan: ``src/tileops/``,
-``tests/``, ``benchmarks/``, ``workloads/``.
+``tests/``, ``benchmarks/``, ``workloads/``, ``models/``.
 """
 
 import re
@@ -15,7 +15,7 @@ from pathlib import Path
 from comment_lines import allowed_lines, prose_lines
 from common import lint_files, relative
 
-SCANNED = ("src/tileops", "tests", "benchmarks", "workloads")
+SCANNED = ("src/tileops", "tests", "benchmarks", "workloads", "models")
 
 _NARRATION = re.compile(
     r"\b(?:we|i)\s+(?:have\s+)?(?:tried|measured)\b"

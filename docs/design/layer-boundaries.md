@@ -17,6 +17,7 @@ it state what one layer owns and what it must not reach into.
 | Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `roof_key()`)              |
 | Roofline tool                                               | benchmark output and the GPU profile; it never instantiates an op                                                          |
 | Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
+| Models                                                      | the public op interface                                                                                                    |
 
 ## Manifest
 
@@ -56,6 +57,18 @@ tensor primitives replaces; its call site names the blocking limitation. A
 helper such as `x.float().mean(...)` is a tensor primitive, not a fallback.
 
 → Rules: [ops-design.md](ops-design.md), [code-style.md](../code-style.md)
+
+## Models
+
+[`models/`](../../models/) composes published models from the public ops. It is
+experimental and does not ship in the package; its interface becomes a contract
+only after validation at scale.
+
+- A model calls public ops only; between calls it uses tensor primitives. A computation no op serves becomes a new op, not a helper under `src/`.
+- Nothing under `src/`, no reference, no op test and no benchmark depends on a model.
+- A model is tested against its authors' code, which [`workloads/models/`](../../workloads/models/) runs without any TileOPs kernel.
+
+→ Rules: [testing.md §Model tests](testing.md#model-tests)
 
 ## Benchmark
 

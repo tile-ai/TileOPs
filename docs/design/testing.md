@@ -144,6 +144,10 @@ No performance exploration, autotune sweep or duplicate code path.
 
 - A change to shared test infrastructure (`tests/workload_test_base.py`, common fixtures, the shared verifier) keeps default semantics unless every affected test migrates with it.
 
+### Model tests
+
+- Tests under [`tests/models/`](../../tests/models/) run nightly, not in a pull request's gate.
+
 ## Benchmarks
 
 → Boundary: [layer-boundaries.md §Benchmark](layer-boundaries.md#benchmark)

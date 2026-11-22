@@ -60,7 +60,7 @@ repos:
         name: shipped-source reference lint
         entry: python scripts/lint/shipped_refs_lint.py
         language: python
-        files: ^(src/tileops|tests|benchmarks|scripts|workloads)/
+        files: ^(src/tileops|tests|benchmarks|scripts|workloads|models)/
         types: [text]
       - id: workload-names-lint
         name: benchmark case name lint
@@ -120,13 +120,13 @@ repos:
         name: comment and docstring narration lint
         entry: python scripts/lint/comment_narration_lint.py
         language: python
-        files: ^(src/tileops|tests|benchmarks|workloads)/.*\.py$
+        files: ^(src/tileops|tests|benchmarks|workloads|models)/.*\.py$
 
       - id: comment-code-ref-lint
         name: comment and docstring code-location lint
         entry: python scripts/lint/comment_code_ref_lint.py
         language: python
-        files: ^(src/tileops|tests|benchmarks|workloads|scripts)/.*\.py$
+        files: ^(src/tileops|tests|benchmarks|workloads|scripts|models)/.*\.py$
 
       - id: manifest-label-lint
         name: manifest workload label lint

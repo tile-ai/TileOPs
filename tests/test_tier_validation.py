@@ -16,11 +16,14 @@ pytestmark = pytest.mark.smoke
 
 
 def _item(
-    index: int, *markers: str, tune: bool | None = False, dtype: torch.dtype | None = None
+    index: int,
+    *markers: str,
+    tune: bool | None = False,
+    dtype: torch.dtype | None = None,
+    path: str = "tests/ops/test_foo.py",
 ) -> SimpleNamespace:
-    """The ``index``-th case of ``tests/ops/test_foo.py::test_op``, carrying *markers*."""
+    """The ``index``-th case of ``<path>::test_op``, carrying *markers*."""
     params = {k: v for k, v in (("dtype", dtype), ("tune", tune)) if v is not None}
-    path = "tests/ops/test_foo.py"
     return SimpleNamespace(
         nodeid=f"{path}::test_op[{index}]",
         path=Path(path),
@@ -126,3 +129,12 @@ def test_a_dtype_whose_only_case_is_full_fails_both_dtype_rules():
         pytest_collection_modifyitems(items)
     assert "each dtype must have at least one smoke case" in str(exc_info.value)
     assert "must not differ from a smoke case only by dtype" in str(exc_info.value)
+
+
+def test_a_nightly_model_test_passes():
+    pytest_collection_modifyitems([_item(0, "nightly", path="tests/models/test_foo.py")])
+
+
+def test_a_model_test_below_nightly_fails():
+    with pytest.raises(pytest.UsageError, match="a test under tests/models is nightly"):
+        pytest_collection_modifyitems([_item(0, "full", path="tests/models/test_foo.py")])
