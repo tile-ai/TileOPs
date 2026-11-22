@@ -59,6 +59,8 @@ def _anchor_value_waits(code: str) -> str:
     entries = (0, 1, 4, 5)
     slot_line = re.compile(r"^(?P<ind>[ \t]*)tileops::value_wait_anchor_slot\((?P<ptr>.*)\);$")
     exp_target = re.compile(r"^\s*(?P<frag>\w+)\[\w+\] = exp2f\(\(\((?P=frag)\[")
+    # The same loop vectorized: exponentials into a temporary, then one store of it.
+    vec_store = re.compile(r"^\s*\*\(float\d\*\)\((?P<frag>\w+) \+ .*\) = (?P<tmp>__\d+);$")
     lines = code.split("\n")
     for n, line in enumerate(lines):
         if "tileops::value_wait_anchor_slot" not in line:
@@ -67,11 +69,19 @@ def _anchor_value_waits(code: str) -> str:
         if slot is None:
             raise RuntimeError(f"unrecognized value_wait_anchor_slot line: {line.strip()}")
         frag = None
-        for prev in reversed(lines[:n]):
+        for k in range(n - 1, -1, -1):
+            prev = lines[k]
             if prev.strip() == "tl::wait_wgmma<1>();":
                 break
             m = exp_target.match(prev)
             if m is not None:
+                frag = m["frag"]
+                break
+            m = vec_store.match(prev)
+            if m is not None and any(
+                line.lstrip().startswith(f"{m['tmp']}.") and "= exp2f(" in line
+                for line in lines[max(k - 4, 0) : k]
+            ):
                 frag = m["frag"]
                 break
         if frag is None:

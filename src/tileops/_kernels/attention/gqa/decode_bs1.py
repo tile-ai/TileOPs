@@ -4,7 +4,7 @@
 use the context-only warp-specialized split; plain calls retain the generic single-kernel
 path below a fixed cache length.
 The split path has a TMA producer feeding a four-warp WGMMA consumer, exp2-domain online
-softmax, and FP32 partial reduction through a combine kernel.  Full-dimensional RoPE
+softmax, and FP32 partial reduction through a combine kernel.  RoPE
 expands the producer into a warpgroup so lookup-table loads and K rotation overlap the
 consumer.  SM90-only, low-level ``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
 """
@@ -168,18 +168,13 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
 
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_dense_decode_ws"})
-    # Threads of the full-dimensional RoPE pipeline, whose producer is a warpgroup.
+    # Threads of the RoPE pipeline, whose producer is a warpgroup.
     _ROPE_PIPELINE_THREADS = 256
     _PLAIN_CTX_MIN = 640
     _TARGET_PARTIAL_CTAS = 128
     _CTX_SPLIT_CANDIDATES = (1, 2, 4, 8, 16, 32, 64)
 
-    def _dense_ctx_splits_for(
-        self,
-        real_seqlen_kv: int,
-        *,
-        allow_empty: bool = True,
-    ) -> int:
+    def _dense_ctx_splits_for(self, real_seqlen_kv: int) -> int:
         block_n = self.config["block_N"]
         num_tiles = (real_seqlen_kv + block_n - 1) // block_n
         split_capacity = max(
@@ -190,10 +185,8 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         for ctx_splits in self._CTX_SPLIT_CANDIDATES:
             if ctx_splits > split_capacity:
                 break
-            if not allow_empty and ctx_splits > num_tiles:
-                break
             selected = ctx_splits
-            if allow_empty and ctx_splits >= num_tiles:
+            if ctx_splits >= num_tiles:
                 break
         return selected
 
@@ -276,15 +269,11 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
             raise ValueError("fused RoPE requires rope_cos and rope_sin")
         Q = q.squeeze(1)
         real_seqlen_kv = k.shape[1]
-        full_rope_pipeline = self.fuse_rope and self.rotary_dim == self.dim
         if not self.fuse_rope and real_seqlen_kv < self._PLAIN_CTX_MIN:
             program = self.program(self._compile_short, sinks is not None)
             return program(Q, k, v, sinks if sinks is not None else Q).unsqueeze(1)
 
-        ctx_splits = self._dense_ctx_splits_for(
-            real_seqlen_kv,
-            allow_empty=not self.fuse_rope or full_rope_pipeline,
-        )
+        ctx_splits = self._dense_ctx_splits_for(real_seqlen_kv)
         program = self.program(self._compile, ctx_splits)
         glse, Output_partial = allocate_partials(Q, self.batch, self.heads, self.dim, ctx_splits)
         if self.fuse_rope:
@@ -313,8 +302,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         """The context pipeline for *cfg* over *ctx_splits* splits, with RoPE when built for it."""
         if self.fuse_rope:
             rope = (True, self.max_position, self.rotary_dim, self.rope_layout)
-            full = self.rotary_dim == self.dim
-            threads = self._ROPE_PIPELINE_THREADS if full else cfg["threads"]
+            threads = self._ROPE_PIPELINE_THREADS
         else:
             rope = (False, 1, 0, "neox")
             threads = cfg["threads"]
