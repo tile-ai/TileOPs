@@ -110,10 +110,6 @@ class GatedAttention:
     then ``k_proj`` and ``v_proj``; ``gate_proj`` holds the second half of each head's rows.
     """
 
-    # Rows of a KV-cache page. GQAPagedFwdOp's batch-1 decode kernel serves pages of 64 rows or a
-    # multiple of 128, so a fixed page keeps decode on that kernel whatever max_seq_len is.
-    PAGE_SIZE = 64
-
     def __init__(self, cfg: Qwen3_8Config, max_seq_len: int, device: torch.device) -> None:
         self.heads = cfg.num_attention_heads
         self.kv_heads = cfg.num_key_value_heads
@@ -123,8 +119,11 @@ class GatedAttention:
         self.q_norm: torch.Tensor
         self.k_norm: torch.Tensor
         self.o_proj: torch.Tensor
-        pages = -(-max_seq_len // self.PAGE_SIZE)
-        shape = (pages, self.PAGE_SIZE, self.kv_heads, self.head_dim)
+        # Rows of a KV-cache page. GQAPagedFwdOp's batch-1 decode kernel serves pages of 64 rows
+        # or a multiple of 128, so a fixed page keeps decode on that kernel whatever max_seq_len is.
+        page_size = 64
+        pages = -(-max_seq_len // page_size)
+        shape = (pages, page_size, self.kv_heads, self.head_dim)
         self.k_cache = torch.zeros(shape, dtype=torch.bfloat16, device=device)
         self.v_cache = torch.zeros(shape, dtype=torch.bfloat16, device=device)
         self.block_table = torch.arange(pages, dtype=torch.int32, device=device).view(1, pages)
