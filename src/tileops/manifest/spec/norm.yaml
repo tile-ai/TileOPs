@@ -443,7 +443,7 @@ RMSNormGatedFwdOp:
   # to x's dtype.
   family: norm
   status: implemented
-  ref_api: mamba_ssm.ops.triton.layernorm_gated.rmsnorm_fn
+  ref_api: workloads.norm.rms_norm_gated
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float16 | bfloat16 | float32]", W: "DType[float16 | bfloat16 | float32]", Wb: "DType[float16 | bfloat16 | float32]", Z: "DType[float16 | bfloat16 | float32]"}
     params:

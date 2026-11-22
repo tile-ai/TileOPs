@@ -235,6 +235,14 @@ def _deepgemm_fp8(workload: GEMMFP8Workload) -> Callable[..., torch.Tensor]:
         raise ValueError(
             f"DeepGEMM FP8 requires K divisible by 16 and N divisible by {output_alignment}"
         )
+    # FIXME(staged-rollout): DeepGEMM has no timing on SM90 1D1D rows with M <= 32.
+    #
+    # Broken invariant: every selected baseline times every row it can express.
+    # Why: the SM90 1D1D kernel asserts BLOCK_M % 64 == 0, but the heuristic of the DeepGEMM
+    # vllm 0.34 vendors picks a BLOCK_M of 16 or 32 for M <= 32, so the kernel fails to compile.
+    # Cleanup: remove the check once the vendored DeepGEMM picks a BLOCK_M of 64 there.
+    if arch < 100 and granularity == 1 and workload.m <= 32:
+        raise ValueError("DeepGEMM's SM90 1D1D FP8 GEMM fails to compile for M <= 32")
     gemm = deepgemm_op("fp8_gemm_nt")
 
     def run(a, b, scale_a, scale_b, bias=None):
@@ -400,17 +408,13 @@ def _prepare_marlin_w4a16_baseline(
             b_q_weight=packed,
             b_bias=None,
             b_scales=weight_scales,
-            a_scales=None,
             global_scale=None,
             b_zeros=weight_zeros,
-            g_idx=None,
-            perm=None,
             workspace=locks,
             b_q_type=scalar_types.uint4,
             size_m=m,
             size_n=n,
             size_k=k,
-            is_k_full=True,
             use_atomic_add=False,
             use_fp32_reduce=use_fp32_reduce,
             is_zp_float=False,

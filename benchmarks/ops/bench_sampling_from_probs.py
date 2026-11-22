@@ -14,7 +14,6 @@ from benchmarks.baselines import (
     VLLM_TAG,
     compiled_reference,
     flashinfer_op,
-    private_inputs,
     vllm_op,
 )
 from tileops.sampling import SamplingFromProbsFwdOp
@@ -26,19 +25,40 @@ def test_sampling_from_probs_bench(case) -> None:
 
     op = SamplingFromProbsFwdOp(**case.arguments)
 
-    # flashinfer and torch.multinomial take a torch.Generator rather than a Philox pair, and
-    # vllm's random_sample takes one per request; each is seeded once here so no timed call
-    # carries set-up the others do not.
+    # flashinfer and torch.multinomial take a torch.Generator rather than a Philox pair; it
+    # is seeded once here so no timed call carries set-up the others do not.
     flashinfer_draw = flashinfer_op("sampling.sampling_from_probs")
-    random_sample = vllm_op("random_sample", "v1.sample.ops.topk_topp_sampler")
+    gumbel_sample = vllm_op("gumbel_sample", "v1.worker.gpu.sample.gumbel")
     generator = torch.Generator(device=probs.device).manual_seed(int(seed.item()))
-    generators = {0: torch.Generator(device=probs.device).manual_seed(int(seed.item()))}
+    # vllm keys a row's Gumbel noise by its request's seed and the row's position; every row
+    # maps to request 0, which carries the call's seed, and the offset is unused. The index
+    # tensors of each batch size are built on its first call.
+    temperature = torch.ones(1, dtype=torch.float32, device=probs.device)
+    row_indices: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+    # gumbel_sample takes logits, as vllm's sampler hands it; the case's are taken once here,
+    # and only the distribution check's own probabilities are converted in the call.
+    case_probs, case_logits = probs, probs.log()
 
     def flashinfer_from_probs(probs, _seed, _offset):
         return flashinfer_draw(probs, generator=generator).to(torch.int32)
 
-    def vllm_from_probs(probs, _seed, _offset):
-        return random_sample(probs, generators).to(torch.int32)
+    def vllm_from_probs(probs, seed, _offset):
+        batch = probs.shape[0]
+        if batch not in row_indices:
+            row_indices[batch] = (
+                torch.zeros(batch, dtype=torch.int32, device=probs.device),
+                torch.arange(batch, dtype=torch.int64, device=probs.device),
+            )
+        requests, positions = row_indices[batch]
+        return gumbel_sample(
+            case_logits if probs is case_probs else probs.log(),
+            requests,
+            temperature,
+            seed,
+            positions,
+            apply_temperature=False,
+            is_drafting=False,
+        ).to(torch.int32)
 
     def multinomial_from_probs(probs, _seed, _offset):
         return torch.multinomial(probs, 1, generator=generator)[:, 0].to(torch.int32)
@@ -47,9 +67,7 @@ def test_sampling_from_probs_bench(case) -> None:
         {
             TORCH_COMPILE_TAG: compiled_reference(case.reference),
             FLASHINFER_TAG: flashinfer_from_probs,
-            # vllm's random_sample divides the probabilities it is handed by a draw of
-            # exponentials and takes the argmax, in place.
-            VLLM_TAG: private_inputs(vllm_from_probs, case.inputs, 0),
+            VLLM_TAG: vllm_from_probs,
             "torch-multinomial": multinomial_from_probs,
             "torch-ref": case.reference,
         }

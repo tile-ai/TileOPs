@@ -60,16 +60,13 @@ def _marlin(case) -> bench.Implementation:
     a, a_scale, b, b_scale, metadata = case.inputs
     num_experts, n, packed_k = b.shape
     k = 2 * packed_k
-    weights = _repack_marlin_experts(
-        b, n, k, torch.empty(0, dtype=torch.int, device=b.device), False
-    )
+    weights = _repack_marlin_experts(b, n, k)
     scales = torch.stack(
         [
             mxfp4_marlin_process_scales(
                 marlin_permute_scales(
                     s=b_scale[e].to(torch.bfloat16).T, size_k=k, size_n=n, group_size=32
-                ),
-                input_dtype=None,
+                )
             )
             for e in range(num_experts)
         ]
@@ -105,9 +102,6 @@ def _marlin(case) -> bench.Implementation:
             scales,
             None,
             None,
-            None,
-            None,
-            None,
             workspace,
             sorted_ids,
             expert_ids,
@@ -120,7 +114,6 @@ def _marlin(case) -> bench.Implementation:
             size_m=rows,
             size_n=n,
             size_k=k,
-            is_k_full=True,
             use_atomic_add=False,
             use_fp32_reduce=True,
             is_zp_float=False,

@@ -79,7 +79,7 @@ GEMMFwdOp:
     flops: "2 * M * N * K + (M * N if present(bias) else 0)"
 
 GEMMFP8FwdOp:
-  ref_api: deep_gemm.fp8_gemm_nt
+  ref_api: vllm.third_party.deep_gemm.fp8_gemm_nt
   family: gemm
   status: implemented
 

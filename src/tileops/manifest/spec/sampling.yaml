@@ -38,7 +38,7 @@ MinPMaskFwdOp:
   # min_p = 1 keeps only the logits equal to the row max.
   family: sampling
   status: implemented
-  ref_api: vllm.v1.sample.logits_processor.builtin.MinPLogitsProcessor
+  ref_api: vllm.v1.worker.gpu.sample.min_p.apply_min_p
   signature:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:

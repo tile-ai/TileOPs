@@ -209,6 +209,12 @@ def pool_baseline(op_name: str, workload) -> tuple:
     return choice, fn
 
 
+def _avg_pool2d_window(workload) -> tuple:
+    kernel = tuple(per_axis_values(workload.kernel_size, 2))
+    stride = kernel if workload.stride is None else tuple(per_axis_values(workload.stride, 2))
+    return kernel, stride, tuple(per_axis_values(workload.padding, 2))
+
+
 def _bench(op_cls: type, case: bench.Case) -> None:
     op = op_cls(**case.arguments)
     op.request_tune()
@@ -216,12 +222,21 @@ def _bench(op_cls: type, case: bench.Case) -> None:
     _tag, _baseline_fn = pool_baseline(op_cls.__name__, case.workload)
     # torch stays alongside the library baseline: it is what the nightly's ratio alert and
     # its history were measured against, and both numbers belong in the same row.
+    compiled = compiled_reference(case.torch)
+    # FIXME(staged-rollout): torch-compile is timed but not verified on these avg_pool2d calls.
+    #
+    # Broken invariant: every timed implementation is verified against the reference.
+    # Why: Inductor in torch 2.14 returns wrong values at the first and last two output
+    # columns of avg_pool2d with these (kernel_size, stride, padding).
+    # Cleanup: remove an entry once the runner image's torch builds that call correctly.
+    inductor_miscompiled = {((5, 5), (2, 2), (2, 2))}
+    if op_cls is AvgPool2dFwdOp and _avg_pool2d_window(case.workload) in inductor_miscompiled:
+        compiled = bench.Implementation(
+            run=compiled,
+            noncomparable_reason=f"Inductor in torch {torch.__version__} miscompiles this call",
+        )
     bench.Runner(op, case).compare(
-        {
-            _tag: _baseline_fn,
-            "torch-ref": case.torch,
-            TORCH_COMPILE_TAG: compiled_reference(case.torch),
-        }
+        {_tag: _baseline_fn, "torch-ref": case.torch, TORCH_COMPILE_TAG: compiled}
     )
 
 
