@@ -4,7 +4,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.pool.call_spec import (
     AdaptiveMaxPool2dFwdInterface,
     AdaptiveMaxPool2dIndicesFwdInterface,
@@ -17,6 +17,7 @@ from tileops._kernels.pool.common import (
     fits_static_shared,
     max_adaptive_bin_extent,
 )
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 
 __all__ = [
@@ -126,7 +127,7 @@ def _adaptive_max_pool2d_kernel(
 
     # The autotuner reads this builder's free variables and accepts only int, float,
     # str, bool and None, so every value the jit function closes over is a scalar.
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _adaptive_max_pool2d_func(planes: int, threads: int):
         _check_planes(rows, planes)
         # A global pool has one bin a plane; finer bins keep a thread each, where the
@@ -170,9 +171,7 @@ def _adaptive_max_pool2d_kernel(
                     and (uniform_w or iw < iw_end)
                 ):
                     _keep(run, T.cast(src[src_plane, ih, iw], ACCUM_DTYPE))
-            for level in T.unroll(lanes.bit_length() - 1):
-                other[0] = T.shfl_xor(run[0], T.shift_left(1, level))
-                _keep(run, other[0])
+            warp_reduce(run, lambda run, other: _keep(run, other[0]), lanes=lanes, peer=other)
             if active and lane == 0:
                 dst[dst_plane, oh, ow] = T.cast(run[0], dtype)
 
@@ -258,7 +257,7 @@ def _adaptive_max_pool2d_with_indices_kernel(
     idx_dtype = "int32" if plane < 2**31 else "int64"
 
     # Scalar free variables only, as the autotuner requires.
-    @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[1, 2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _adaptive_max_pool2d_with_indices_func(planes: int, threads: int):
         _check_planes(rows, planes)
         staged = fits_static_shared(planes * plane, dtype)

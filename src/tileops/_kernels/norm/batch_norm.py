@@ -16,11 +16,12 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.autotune import TUNING_FATAL, candidate_busy_ms
-from tileops._kernels.build_target import target_cache
+from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.norm._config import (
     FP32_RANGE_BOUND,
+    FP32_RANGE_BOUND_BITS,
     VARIANCE_FLOOR,
     fold_chains,
     make_raw_sums_hold,
@@ -35,6 +36,7 @@ from tileops._kernels.norm.call_spec import (
     InstanceNormInferFwdInterface,
 )
 from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 
 __all__ = [
     "BatchNormBwdKernel",
@@ -110,8 +112,7 @@ def rstd_in_unit(var_u, unit, eps: float):
 def _past_range(value):
     """Whether *value* is past `FP32_RANGE_BOUND` in magnitude or NaN, read from its bits: the
     compiler may negate a comparison into its converse, which a NaN fails."""
-    bound_bits = 0x7F61B1E6  # FP32_RANGE_BOUND's bit pattern
-    return T.bitwise_and(T.reinterpret(value, "int32"), 0x7FFFFFFF) > bound_bits
+    return T.bitwise_and(T.reinterpret(value, "int32"), 0x7FFFFFFF) > FP32_RANGE_BOUND_BITS
 
 
 def _ratio(num, den):
@@ -246,7 +247,7 @@ def _batch_norm_fwd_train_kernel(
     accum_dtype = "float32"
     L = N * S
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _bn_fwd_train_func(block_l: int, threads: int) -> Callable:
         # A divisible length keeps the unguarded body: a predicated load costs a read.
         ragged = L % block_l != 0
@@ -1004,14 +1005,14 @@ def _batch_norm_fwd_train_wide_kernel(
     """
     accum_dtype = "float32"
     L = N * S
-    lanes = 32
+    lanes = WARP_LANES
     group = BatchNormFwdTrainWideKernel.GROUP_ELEMENTS
     # Independent add chains a thread keeps for each sum, so its adds overlap.
     chains = 4
     # A thread's partial sums: its chains for the sum, then its chains for the square sum.
     sums = 2 * chains
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _bn_fwd_train_wide_func(threads: int, num_per_thread: int) -> Callable:
         steps = (L + threads * num_per_thread - 1) // (threads * num_per_thread)
         exact = steps * threads * num_per_thread == L
@@ -1277,8 +1278,7 @@ def _batch_norm_fwd_train_wide_kernel(
                         far[0] = T.cast(0, accum_dtype)
                         for k in T.unroll(held_n):
                             far[0] = T.max(far[0], T.abs(T.cast(held[k], accum_dtype)))
-                        for st in T.unroll(butterfly_depth):
-                            far[0] = T.max(far[0], T.shfl_xor(far[0], T.shift_left(1, st)))
+                        warp_reduce(far, T.max)
                         if tx % lanes == 0:
                             slots[0, tx // lanes] = far[0]
                         T.sync_threads()
@@ -1404,7 +1404,7 @@ def _batch_norm_fwd_train_whole_kernel(
     accum_dtype = "float32"
     L = N * S
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _bn_fwd_train_whole_func(threads: int) -> Callable:
         blocks = (C + threads - 1) // threads
 
@@ -1725,7 +1725,7 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
         threads on each SM the grid fills."""
         _, num_per_thread = cls._block_launch(call, 1)
         vectors = call.n * call.spatial // num_per_thread
-        lanes = 32
+        lanes = WARP_LANES
         per_sm = -(-call.c // call.sm_count)
         grouped = -(-vectors // max(1, cls.GROUP_ELEMENTS // num_per_thread))
         threads = min(max(grouped, cls._HOLDING_BLOCK_THREADS // per_sm), cls._BLOCK_MAX_THREADS)
@@ -2022,7 +2022,7 @@ def _batch_norm_fwd_infer_kernel(
     affine_dtype = dtype if input_dtype_params else accum_dtype
     total = N * C * S
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _bn_fwd_infer_func(threads: int, num_per_thread: int, steps: int) -> Callable:
         # A vector stays inside one channel only where the channel's run
         # divides it; otherwise each element picks its own.
@@ -2295,7 +2295,7 @@ def _batch_norm_bwd_kernel(
     accum_dtype = "float32"
     L = N * S
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _bn_bwd_func(block_l: int, threads: int) -> Callable:
         # A divisible length keeps the unguarded body: a predicated load costs a read.
         ragged = L % block_l != 0
@@ -2449,14 +2449,13 @@ def _batch_norm_bwd_wide_kernel(
     """
     accum_dtype = "float32"
     L = N * S
-    lanes = 32
+    lanes = WARP_LANES
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _bn_bwd_wide_func(threads: int, num_per_thread: int) -> Callable:
         steps = (L + threads * num_per_thread - 1) // (threads * num_per_thread)
         exact = steps * threads * num_per_thread == L
         n_warps = max(threads // lanes, 1)
-        butterfly_depth = lanes.bit_length() - 1
 
         @T.prim_func
         def _bn_bwd_wide(
@@ -2511,9 +2510,7 @@ def _batch_norm_bwd_wide_kernel(
                                 acc[0] += g
                                 acc_xhat[0] += g * x_hat
 
-                for step in T.serial(butterfly_depth):
-                    acc[0] += T.shfl_xor(acc[0], T.shift_left(1, step))
-                    acc_xhat[0] += T.shfl_xor(acc_xhat[0], T.shift_left(1, step))
+                warp_reduce((acc, acc_xhat), operator.add, serial=True)
 
                 warp_sum = T.alloc_shared([n_warps], accum_dtype)
                 warp_sum_xhat = T.alloc_shared([n_warps], accum_dtype)

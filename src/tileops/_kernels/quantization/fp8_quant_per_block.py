@@ -16,7 +16,8 @@ from tileops._kernels.constants import (
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.quantization.call_spec import FP8QuantPerBlockFwdInterface, QuantizeCall
 from tileops._kernels.quantization.int8_codes import SMALL_SCALE, widen
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 
 __all__ = ["FP8QuantPerBlockFwdKernel", "FP8QuantPerBlockUnalignedFwdKernel"]
 
@@ -156,8 +157,7 @@ def _fp8_quant_per_block_kernel(n: int, k: int, dtype: str, aligned: bool):
                             acc[0] = T.max(acc[0], bits)
                 if per_word == 2:
                     acc[0] = T.max(acc[0] & T.uint32(0xFFFF), acc[0] >> T.uint32(16))
-                for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                    acc[0] = T.max(acc[0], T.shfl_xor(acc[0], 1 << stage, width=WARP_LANES))
+                warp_reduce(acc, T.max)
                 if tx % WARP_LANES == 0:
                     partial[tx // WARP_LANES] = acc[0]
                 T.sync_threads()

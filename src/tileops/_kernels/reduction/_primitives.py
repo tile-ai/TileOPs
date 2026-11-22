@@ -33,6 +33,7 @@ from tileops._kernels.constants import (
 from tileops._kernels.kernel_base import CompiledProgram
 from tileops._kernels.streaming_load import load16
 from tileops._kernels.tiling import ALIGNMENT, align_up
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 from tileops.manifest.primitives import ceil_div
 
@@ -53,6 +54,7 @@ __all__ = [
     "exp_shifted_scaled",
     "extrema_combine",
     "fold_max_sum",
+    "fold_max_sum_into",
     "fold_rows_kernel",
     "identity_for",
     "keeps_input_rows",
@@ -129,6 +131,12 @@ def fold_max_sum(peak, total, other_peak, other_total):
     return top, T.if_then_else(top == float("-inf"), T.cast(0, "float32"), both)
 
 
+@T.macro
+def fold_max_sum_into(stat, other):
+    """Fold the ``(max, sum)`` pair in ``other[0:2]`` into the one in ``stat[0:2]``."""
+    stat[0], stat[1] = fold_max_sum(stat[0], stat[1], other[0], other[1])
+
+
 # Largest integer count fp32 carries exactly; a statistic folded through
 # fp32 counts or weights is trusted only below it.
 FP32_EXACT_INT_LIMIT = 1 << 24
@@ -171,14 +179,6 @@ def block_fold(
     group_warps = lanes // WARP_LANES
 
     @T.macro
-    def shuffle(total, span):
-        # Folds the first *span* lanes of each warp, a power of two, into its lane 0.
-        for stage in T.serial(span.bit_length() - 1):
-            total[0] = combine(
-                total[0], T.shfl_xor(total[0], T.int32(span // 2) >> stage, width=WARP_LANES)
-            )
-
-    @T.macro
     def store(total, tx, out, index):
         if rows:
             if T.And(tx % lanes == 0, index < rows):
@@ -188,7 +188,7 @@ def block_fold(
 
     @T.macro
     def fold(total, warp_total, tx, out, index):
-        shuffle(total, WARP_LANES)
+        warp_reduce(total, combine, high_first=True, serial=True)
         if group_warps == 1:
             store(total, tx, out, index)
         else:
@@ -204,7 +204,13 @@ def block_fold(
                     identity,
                 )
                 # Lanes past the group's warps hold the identity, so the span rounds up.
-                shuffle(total, 1 << (group_warps - 1).bit_length())
+                warp_reduce(
+                    total,
+                    combine,
+                    lanes=1 << (group_warps - 1).bit_length(),
+                    high_first=True,
+                    serial=True,
+                )
                 store(total, tx, out, index)
 
     return fold

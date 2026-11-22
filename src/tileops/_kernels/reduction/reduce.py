@@ -6,6 +6,7 @@ each class runs in and the shape of its result are its own business.
 """
 
 import math
+import operator
 from collections.abc import Callable
 
 import tilelang
@@ -41,7 +42,8 @@ from tileops._kernels.reduction.call_spec import (
     VectorNormFwdInterface,
 )
 from tileops._kernels.tiling import ALIGNMENT, align_up
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 from tileops.manifest.primitives import ceil_div
 
 __all__ = [
@@ -837,10 +839,7 @@ def _prod_reduce_kernel(
                 for c in T.serial(1, cols_per_thread):
                     running[0] = running[0] * slots[c]
 
-                for stage in T.serial(WARP_SHUFFLE_STAGES):
-                    running[0] = running[0] * T.shfl_xor(
-                        running[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
-                    )
+                warp_reduce(running, operator.mul, high_first=True, serial=True)
                 if tx % WARP_LANES == 0:
                     warp_prod[tx // WARP_LANES] = running[0]
                 T.sync_threads()

@@ -1,5 +1,6 @@
 """Cumulative scan kernels (cumsum, cumprod) using TileLang."""
 
+import functools
 import itertools
 import math
 from collections.abc import Callable
@@ -25,6 +26,7 @@ from tileops._kernels.reduction.call_spec import (
     CumulativeCall,
 )
 from tileops._kernels.tiling import ALIGNMENT, align_up
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 
 __all__ = [
@@ -43,16 +45,8 @@ def _identity_and_combine(op_kind: str) -> tuple[float, Callable]:
 
 
 @T.macro
-def _warp_combine(value, other, combine: Callable):
-    """Combine *value* (a one-element local) across the lanes of its warp, into every lane.
-
-    A butterfly of shuffles: each lane ends with the combine of all of them, the operands
-    of each step in an order that differs between the two lanes it pairs, so *combine*
-    must be commutative. *other* is a one-element local it uses as scratch.
-    """
-    for step in T.unroll(WARP_LANES.bit_length() - 1):
-        other[0] = T.shfl_xor(value[0], T.shift_right(T.int32(WARP_LANES // 2), step))
-        value[0] = combine(value[0], other[0])
+def _fold_peer(value, other, combine: Callable):
+    value[0] = combine(value[0], other[0])
 
 
 @T.macro
@@ -60,14 +54,14 @@ def _fold_warp_parts(values, extent, value, other, parts, tx, identity, combine:
     """Combine the *extent* elements of fragment *values* across the block, one part a warp.
 
     Each thread combines its own elements into *value* (a one-element local), the warp
-    combines its lanes' with ``_warp_combine`` (*other* is its scratch), and lane 0 of each
-    warp writes the warp's part to *parts* (shared, one slot a warp). The caller syncs the
-    block before reading *parts*.
+    combines its lanes' by shuffles into *other* (a one-element local scratch), and lane 0 of
+    each warp writes the warp's part to *parts* (shared, one slot a warp). The caller syncs
+    the block before reading *parts*.
     """
     value[0] = T.cast(identity, "float32")
     for k in T.Parallel(extent):
         value[0] = combine(value[0], values[k])
-    _warp_combine(value, other, combine)
+    warp_reduce(value, functools.partial(_fold_peer, combine=combine), high_first=True, peer=other)
     if tx % WARP_LANES == 0:
         parts[tx // WARP_LANES] = value[0]
 

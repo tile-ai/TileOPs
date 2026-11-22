@@ -8,6 +8,7 @@ memory or cut across blocks by ``GroupNormSplitKernel``.
 """
 
 import math
+import operator
 
 import tilelang
 import tilelang.language as T
@@ -29,7 +30,8 @@ from tileops._kernels.norm._config import (
 )
 from tileops._kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
 from tileops._kernels.streaming_load import load16
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 
 __all__ = [
     "GroupNormKernel",
@@ -328,9 +330,7 @@ def make_thread_stats(vec, per_thread, full, stride, vectors, dtype, active=None
                 0.0,
             )
             partner[2] = T.if_then_else(count(t) > 0, count(t, lane_unit) * partner[2], 0.0)
-        for st in T.unroll(WARP_SHUFFLE_STAGES):
-            partner[2] += T.shfl_xor(partner[2], T.shift_left(1, st))
-            stats[2] += T.shfl_xor(stats[2], T.shift_left(1, st))
+        warp_reduce((partner, stats), operator.add, first=2)
         stats[2] = stats[2] - partner[2] * (partner[2] * _warp_reciprocal(t))
         stats[1] = (
             (partner[0] - stats[0]) * unit

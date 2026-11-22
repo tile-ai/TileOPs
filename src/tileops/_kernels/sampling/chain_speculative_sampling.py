@@ -1,5 +1,6 @@
 """Chain speculative sampling: verify a draft chain, then draw once from the residual row."""
 
+import operator
 from typing import ClassVar
 
 import tilelang
@@ -19,6 +20,7 @@ from tileops._kernels.sampling.row_tiles import (
     vector_width,
 )
 from tileops._kernels.tiling import align_up
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["ChainSpeculativeSamplingFwdKernel"]
@@ -237,9 +239,7 @@ def _chain_speculative_sampling_kernel(
                         )
                     for j in T.unroll(pace):
                         fold(warp, held, other, j)
-                        for step in T.unroll(WARP_SHUFFLE_STAGES):
-                            reach = T.int32(WARP_LANES // 2) >> step
-                            warp[0] = warp[0] + T.shfl_xor(warp[0], reach, width=WARP_LANES)
+                        warp_reduce(warp, operator.add, high_first=True)
                         if (tx % WARP_LANES == 0) & (r * pace + j < chunk):
                             seg[(r * pace + j) * warps + tx // WARP_LANES] = T.cast(
                                 warp[0], "float64"

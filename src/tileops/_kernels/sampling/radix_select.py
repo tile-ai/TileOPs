@@ -6,12 +6,14 @@ itself, and the launch policy that decides which rows fit and how wide a row spr
 each mask does with the threshold stays in its own file.
 """
 
+import operator
 from types import SimpleNamespace
 
 import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["cluster_plan", "key_select", "row_refusal"]
@@ -370,8 +372,7 @@ def key_select(vocab: int, dtype: str, threads: int, cluster: int, slots: int) -
                                 above[0] = above[0] + 1
                             elif digit >= counted[0]:
                                 T.atomic_add(hist[slab * slabs + digit], T.uint32(1))
-                for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                    above[0] = above[0] + T.shfl_xor(above[0], 1 << stage, width=WARP_LANES)
+                warp_reduce(above, operator.add)
                 if tx % WARP_LANES == 0:
                     red[tx // WARP_LANES] = above[0]
                 T.sync_threads()

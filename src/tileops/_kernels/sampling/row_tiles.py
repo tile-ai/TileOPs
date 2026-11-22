@@ -11,7 +11,8 @@ from types import SimpleNamespace
 import tilelang.language as T
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
+from tileops._kernels.warp_reduce import warp_reduce
+from tileops._utils import WARP_LANES
 
 __all__ = [
     "INF_BITS",
@@ -102,10 +103,7 @@ def store_masked(dst, src, slot, cut, at, vec: int, dtype: str):
 def block_extremes(top, seen, warp_top, warp_seen, warps: int):
     """Leave the block's maxima in ``top[0]`` and ``seen[0]`` of every thread."""
     tx = T.get_thread_binding()
-    for stage in T.serial(WARP_SHUFFLE_STAGES):
-        reach = T.int32(WARP_LANES // 2) >> stage
-        top[0] = T.max(top[0], T.shfl_xor(top[0], reach, width=WARP_LANES))
-        seen[0] = T.max(seen[0], T.shfl_xor(seen[0], reach, width=WARP_LANES))
+    warp_reduce((top, seen), T.max, high_first=True, serial=True)
     if tx % WARP_LANES == 0:
         warp_top[tx // WARP_LANES] = top[0]
         warp_seen[tx // WARP_LANES] = seen[0]

@@ -36,6 +36,7 @@ from tileops._kernels.reduction._primitives import (
     exp_shifted,
     exp_shifted_scaled,
     fold_max_sum,
+    fold_max_sum_into,
     keeps_input_rows,
     restore_same_shape,
     rows_for_axes,
@@ -141,10 +142,7 @@ def _softmax_streaming_kernel(M, N, op_kind, dtype, out_dtype, ctas, ctas_per_sm
                                 T.cast(0, "float32"),
                                 exp_shifted(T.cast(held[j], "float32"), top),
                             )
-                    for k in T.unroll(WARP_LANES.bit_length() - 1):
-                        peer[0] = T.shfl_xor(stat[0], T.shift_left(1, k))
-                        peer[1] = T.shfl_xor(stat[1], T.shift_left(1, k))
-                        stat[0], stat[1] = fold_max_sum(stat[0], stat[1], peer[0], peer[1])
+                    warp_reduce(stat, fold_max_sum_into, 2, peer=peer)
                     if tx % WARP_LANES == 0:
                         warp_stats[step % 2, 0, tx // WARP_LANES] = stat[0]
                         warp_stats[step % 2, 1, tx // WARP_LANES] = stat[1]
@@ -517,7 +515,7 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     def __init__(self, call: SoftmaxCall):
-        super().__init__(device_index=call.device.index)
+        super().__init__(device_index=call.device_index)
         self.call = call
         self.dtype = call.dtype
 

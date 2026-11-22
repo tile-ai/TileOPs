@@ -21,10 +21,12 @@ from tileops._kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     FRAGMENT_ELEMS_PER_THREAD,
     fold_max_sum,
+    fold_max_sum_into,
 )
 from tileops._kernels.reduction.call_spec import SoftmaxCall
 from tileops._kernels.reduction.softmax import _PlannedSoftmaxKernel
 from tileops._kernels.streaming_load import load16
+from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["SoftmaxClusterSplitKernel", "SoftmaxOnChipKernel"]
@@ -153,10 +155,7 @@ def _softmax_on_chip_kernel(
                             piece[i] = tile[0, (v * threads + tx) * vec + i]
                         for i in T.unroll(vec):
                             stat[1] += term(piece[i], stat[0])
-                for step in T.unroll(WARP_LANES.bit_length() - 1):
-                    peer[0] = T.shfl_xor(stat[0], T.shift_left(1, step))
-                    peer[1] = T.shfl_xor(stat[1], T.shift_left(1, step))
-                    stat[0], stat[1] = fold_max_sum(stat[0], stat[1], peer[0], peer[1])
+                warp_reduce(stat, fold_max_sum_into, 2, peer=peer)
                 if tx % WARP_LANES == 0:
                     sums[2 * (tx // WARP_LANES)] = stat[0]
                     sums[2 * (tx // WARP_LANES) + 1] = stat[1]
