@@ -30,7 +30,6 @@ LIBRARIES = frozenset(
         "flash_attn",
         "flash_attn_interface",
         "flashinfer",
-        "mamba_ssm",
         "nvidia",
         "nvmath",
         "quack",

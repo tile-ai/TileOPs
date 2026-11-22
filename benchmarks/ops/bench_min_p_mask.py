@@ -5,6 +5,7 @@ byte counts come from the op's ``eval_roofline()``.
 """
 
 import pytest
+import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import (
@@ -21,10 +22,12 @@ from tileops.sampling import MinPMaskFwdOp
 def test_min_p_mask_bench(case) -> None:
     logits, min_p = case.inputs
     op = MinPMaskFwdOp(**case.arguments)
-    processor = vllm_op("MinPLogitsProcessor", "v1.sample.logits_processor.builtin")
-    vllm_min_p = processor.__new__(processor)
-    vllm_min_p.min_p_count = 1
-    vllm_min_p.min_p = min_p[:, None]
+    apply_min_p = vllm_op("apply_min_p", "v1.worker.gpu.sample.min_p")
+    rows = torch.arange(logits.shape[0], dtype=torch.int32, device=logits.device)
+
+    def vllm_fn(logits, min_p):
+        apply_min_p(logits, rows, min_p)
+        return logits
 
     bench.Runner(op, case).compare(
         {
@@ -32,12 +35,9 @@ def test_min_p_mask_bench(case) -> None:
             TORCH_COMPILE_TAG: compiled_reference(case.reference),
             # vllm masks the logits in place.
             VLLM_TAG: private_inputs(
-                lambda logits, _min_p: vllm_min_p.apply(logits),
+                vllm_fn,
                 case.inputs,
                 0,
-                noncomparable_reason=(
-                    "vendor approximates the mask boundary beyond the workload contract"
-                ),
             ),
         }
     )

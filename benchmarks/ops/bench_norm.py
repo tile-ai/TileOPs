@@ -187,9 +187,9 @@ def test_fused_add_rms_norm_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(RMSNormGatedFwdOp), ids=lambda case: case.id)
 def test_rms_norm_gated_bench(case) -> None:
-    """vLLM's ``layernorm_guard.rmsnorm_fn`` takes every call; mamba_ssm's ``rmsnorm_fn``
-    only a silu gate; fla's ``rms_norm_gated`` only a gate after one norm over the row; Hugging
-    Face's ``Qwen3_5RMSNormGated`` only a silu gate after one norm over the row, without bias."""
+    """vLLM's ``layernorm_guard.rmsnorm_fn`` takes every call; fla's ``rms_norm_gated`` only a
+    gate after one norm over the row; Hugging Face's ``Qwen3_5RMSNormGated`` only a silu gate
+    after one norm over the row, without bias."""
     p = case.arguments
     x, _, bias, z = case.inputs
     one_group = p["group_size"] in (None, x.shape[-1])
@@ -210,23 +210,6 @@ def test_rms_norm_gated_bench(case) -> None:
         )
 
     library = {VLLM_TAG: vllm_fn}
-    if p["activation"] == "silu":
-        mamba_rmsnorm = baseline_module(
-            "mamba_ssm.ops.triton.layernorm_gated", "mamba-ssm"
-        ).rmsnorm_fn
-
-        def mamba_fn(x, weight, bias, z):
-            return mamba_rmsnorm(
-                x,
-                weight,
-                bias,
-                z=z,
-                eps=p["eps"],
-                group_size=p["group_size"],
-                norm_before_gate=p["norm_before_gate"],
-            )
-
-        library["mamba"] = mamba_fn
     if z is not None and p["norm_before_gate"] and one_group:
         fla_rmsnorm = fla_op("modules.fused_norm_gate.rms_norm_gated")
 
