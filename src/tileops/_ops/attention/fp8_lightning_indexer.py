@@ -25,12 +25,6 @@ class FP8LightningIndexerFwdOp(Op):
     window ``[starts[s], ends[s])``. A bf16 call is quantized to FP8 by the op. An FP8 call
     passes per-key scales in ``index_k_scale``; ``k[t, g]`` is then the FP8 key times its
     scale, which may be negative.
-
-    On SM90, a one-batch-row call with one key group and 512 or more 64-key tiles whose query
-    blocks leave a partial last wave sums ``(x + |x|) * weight``, twice the relu term, and
-    halves the head sum. Its logits equal the relu sums unless a term or partial head sum has
-    magnitude below 2^-126, kept doubled where denormal flushing would drop it, or at least
-    2^127, which overflows.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
