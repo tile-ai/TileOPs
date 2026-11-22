@@ -3,6 +3,7 @@
 import dataclasses
 import math
 from abc import abstractmethod
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -12,7 +13,7 @@ from tvm import DataType
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
-from tileops._kernels.constants import L2_LINE_BYTES, MAX_GRID_YZ_BLOCKS, VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 from tileops._kernels.streaming_load import load16_evict_last
 
@@ -25,10 +26,6 @@ _SLOTS = 4
 # Small CTAs spread a decode row's few hundred vectors over the SMs, and 128 threads divide
 # every architecture's per-SM thread limit, so whole CTAs fill an SM.
 _THREADS = 128
-# The vectors each thread of `_concat_flat_kernel` copies, one CTA width apart, so the second
-# vector's row lookup overlaps the first one's read. `ConcatKernel.forward` bounds the launch's
-# positions, rounded up to whole CTA runs, by it.
-_FLAT_PER_THREAD = 2
 
 
 @dataclasses.dataclass(frozen=True)
@@ -157,15 +154,11 @@ def _concat_kernel(vec, dtypes, out_dtype, per_thread):
 
 
 @target_cache(maxsize=64)
-def _concat_flat_kernel(vec, dtype, n):
-    """One launch of ``n`` inputs that writes whole output rows, CTAs over the flat output.
-
-    The inputs and the output share ``dtype``, and a vector is one 16-byte access. Viewed as
-    ``rows * total`` vectors, the output is cut into runs of ``_THREADS * per_thread``
-    vectors, one a CTA, so a warp's stores cover whole lines whatever the row width. A
-    vector's row is its position divided by ``total``, as the multiply-high by ``mul`` and
-    the shift by ``shr``, or the position itself where ``mul`` is 0; its input is a compare
-    of its column.
+def _concat_flat_kernel(vec, dtype, n, per_thread):
+    """One launch of ``n`` same-dtype inputs over the flat output, viewed as ``rows * total``
+    16-byte vectors cut into runs of ``_THREADS * per_thread``, one a CTA, so a warp's stores
+    fill whole lines. A vector's row is its position times ``mul``, high word, shifted by
+    ``shr`` (the position itself where ``mul`` is 0); its input is a compare of its column.
     """
     rows = T.dynamic("rows", "int32")
     total = T.dynamic("total", "int32")
@@ -173,7 +166,6 @@ def _concat_flat_kernel(vec, dtype, n):
     offset = [0]
     for k in range(n):
         offset.append(offset[k] + cols[k])
-    per_thread = _FLAT_PER_THREAD
 
     def slot(k):
         return T.Tensor((rows, cols[k], vec), dtype) if k < n else None
@@ -260,6 +252,10 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
     takes ``_concat_flat_kernel`` instead, while its positions fit 32 bits.
     """
 
+    # Vectors a thread of the flat program copies, one CTA width apart, so the second row
+    # lookup overlaps the first read.
+    _FLAT_PER_THREAD: ClassVar[int] = 2
+
     @classmethod
     def entry_for(cls, call: ConcatCall) -> Entry:
         widest = max(d.itemsize for d in (*call.dtypes, call.out_dtype))
@@ -293,7 +289,7 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
 
     def _compile_flat(self, cfg: dict, inputs: int):
         """The program of one launch of *inputs* inputs over the flat output."""
-        return _concat_flat_kernel(self.vec, self.dtype_str, inputs)
+        return _concat_flat_kernel(self.vec, self.dtype_str, inputs, self._FLAT_PER_THREAD)
 
     def forward(self, tensors: list[torch.Tensor]) -> torch.Tensor:
         shape = list(tensors[0].shape)
@@ -311,18 +307,16 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         # The vectors of each input that hold 16 bytes.
         most = [VECTOR_ACCESS_BYTES // (self.vec * d.itemsize) for d in self.dtypes]
         total = sum(widths)
-        # A row of per-row tiles that ends inside a 128-byte L2 line starts the next row's
-        # tiles mid-line, and each of their warp stores writes two lines in part. CTAs over
-        # the flat output write whole lines, at the cost of a row lookup and an input compare
-        # a vector: a cost that pays on a copy of whole 16-byte vectors waiting on bandwidth,
-        # beyond one resident wave, with a row found by a 32-bit multiply-high.
+        # Rows that end inside a 128-byte L2 line make per-row tiles store lines in part; past
+        # one wave, CTAs over the flat output store whole lines for a row lookup a vector.
+        line_bytes = 128
         if (
-            total * self.vec * self.dtype.itemsize % L2_LINE_BYTES
+            total * self.vec * self.dtype.itemsize % line_bytes
             and len(groups) == 1
             and self.vec * self.dtype.itemsize == VECTOR_ACCESS_BYTES
             and all(d == self.dtype for d in self.dtypes)
             # The positions, rounded up to a whole CTA run, stay below 2**31.
-            and rows * total + _THREADS * _FLAT_PER_THREAD <= 2**31
+            and rows * total + _THREADS * self._FLAT_PER_THREAD <= 2**31
             and rows * sum(-(-widths[j] // _THREADS) for j in present) > wave
         ):
             # Row = (position * mul) >> (32 + shr) for every position below 2**31.

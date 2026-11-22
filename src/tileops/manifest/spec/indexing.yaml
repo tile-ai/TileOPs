@@ -99,5 +99,6 @@ ConcatFwdOp:
   - {S: [[1, 5120], [1, 5120]], dim: -1, dtype_cases: [{D: [bfloat16, bfloat16]}], label: qwen36-mtp-decode}
   - {S: [[2048, 1024], [2048, 4096], [2048, 3000]], dim: 1, dtype_cases: [{D: [bfloat16, bfloat16, bfloat16]}, {D: [bfloat16, float16, bfloat16]}], label: uneven-cols}
   - {S: [[512, 4096], [1000, 4096], [512, 4096], [24, 4096]], dim: 0, dtype_cases: [{D: [bfloat16, bfloat16, bfloat16, bfloat16]}, {D: [float16, float32, float16, float16]}], label: uneven-rows}
+  - {S: [[300000, 8], [300000, 8]], dim: -1, dtype_cases: [{D: [float16, float16]}], label: narrow-rows}
   roofline:
     flops: "0"
