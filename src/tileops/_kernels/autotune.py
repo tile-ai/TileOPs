@@ -418,6 +418,28 @@ class _SupplyKeyedAutoTune(AutoTuneImpl):
 
     supply_key: str = ""
 
+    def _make_jit_compile_func(self, mode: str, args: tuple, kwargs: dict) -> Callable:
+        """Compile candidates concurrently, each on a JIT object no other candidate writes.
+
+        TileLang 0.1.15 writes a candidate's per-config pass options onto the shared
+        ``jit_impl`` and holds one lock across every compile, so its compile pool builds one
+        candidate at a time. Here a candidate with options compiles on a copy carrying them,
+        as tile-ai/tilelang#3476 does, and no compile needs the lock.
+        """
+
+        def jit_compile(**config_arg: Any) -> Any:
+            # The tuner states the key on every candidate, None where it has no options.
+            options = config_arg.pop(_tilelang_tuner._PASS_CONFIGS_KEY, None)
+            if options is not None:
+                merged = {**(self.jit_impl.pass_configs or {}), **options}
+                jit_impl = dataclasses.replace(self.jit_impl, pass_configs=merged)
+                return jit_impl.compile(*args, **{**kwargs, **config_arg})
+            if mode == "lazy":
+                return self.jit_impl(*args, **kwargs, __tune_params=config_arg)
+            return self.jit_impl.compile(*args, **{**kwargs, **config_arg})
+
+        return jit_compile
+
     def get_tunner(self) -> AutoTuner:
         tuner = super().get_tunner()
         tilelang_key = tuner.generate_cache_key
