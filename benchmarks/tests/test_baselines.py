@@ -264,27 +264,35 @@ def test_marlin_baseline_reads_the_callers_group_size(monkeypatch, n, k, group_s
 
 
 @pytest.mark.parametrize(
-    "n, k, out_dtype, mode, bias, supported",
+    "m, n, k, out_dtype, mode, bias, error",
     [
-        pytest.param(64, 144, torch.bfloat16, "per_tensor", False, True, id="partial-scale-group"),
-        pytest.param(68, 144, torch.float16, "per_tensor", False, True, id="fp32-intermediate"),
-        pytest.param(68, 144, torch.bfloat16, "block128", False, True, id="element-scales"),
-        pytest.param(68, 144, torch.bfloat16, "per_tensor", False, False, id="bf16-output-stride"),
-        pytest.param(64, 129, torch.bfloat16, "per_tensor", False, False, id="operand-stride"),
+        pytest.param(
+            64, 64, 144, torch.bfloat16, "per_tensor", False, None, id="partial-scale-group"
+        ),
+        pytest.param(64, 68, 144, torch.float16, "per_tensor", False, None, id="fp32-intermediate"),
+        pytest.param(64, 68, 144, torch.bfloat16, "block128", False, None, id="element-scales"),
+        pytest.param(
+            64, 68, 144, torch.bfloat16, "per_tensor", False, "divisible", id="bf16-output-stride"
+        ),
+        pytest.param(
+            64, 64, 129, torch.bfloat16, "per_tensor", False, "divisible", id="operand-stride"
+        ),
+        pytest.param(32, 64, 144, torch.bfloat16, "per_tensor", False, None, id="small-m-1d2d"),
+        pytest.param(32, 64, 144, torch.bfloat16, "block128", False, "M <= 32", id="small-m-1d1d"),
     ],
 )
 def test_deepgemm_fp8_baseline_preserves_its_aligned_tail_domain(
-    monkeypatch, n, k, out_dtype, mode, bias, supported
+    monkeypatch, m, n, k, out_dtype, mode, bias, error
 ):
     from benchmarks.ops import bench_gemm
 
     monkeypatch.setattr(bench_gemm, "get_sm_version", lambda: 90)
     monkeypatch.setattr(bench_gemm, "deepgemm_op", lambda name: None)
-    workload = SimpleNamespace(n=n, k=k, out_dtype=out_dtype, scale_mode=mode, bias=bias)
-    if supported:
+    workload = SimpleNamespace(m=m, n=n, k=k, out_dtype=out_dtype, scale_mode=mode, bias=bias)
+    if error is None:
         assert callable(bench_gemm._deepgemm_fp8(workload))
     else:
-        with pytest.raises(ValueError, match="divisible"):
+        with pytest.raises(ValueError, match=error):
             bench_gemm._deepgemm_fp8(workload)
 
 
