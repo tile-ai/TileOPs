@@ -76,7 +76,6 @@ def test_wheel_verification_starts_with_fresh_compiler_caches(tmp_path):
     work = tmp_path / "work"
     cache_vars = (
         "TILELANG_CACHE_DIR",
-        "TILELANG_TMP_DIR",
         "TRITON_CACHE_DIR",
         "TORCHINDUCTOR_CACHE_DIR",
         "CUDA_CACHE_PATH",

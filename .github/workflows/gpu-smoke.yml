@@ -553,7 +553,7 @@ jobs:
           import os
 
           print("Runtime cache env:")
-          for key in ("TILELANG_CACHE_DIR", "TILELANG_TMP_DIR", "TRITON_CACHE_DIR"):
+          for key in ("TILELANG_CACHE_DIR", "TRITON_CACHE_DIR"):
               print(f"{key}={os.environ.get(key)}")
           PY
 
