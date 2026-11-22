@@ -28,9 +28,9 @@ _LAYER = re.compile(r"layers\.(\d+)\.")
 def load_weights(model: DeepseekV4ForCausalLM, path: Path) -> None:
     """Read every tensor of the checkpoint at ``path`` onto its layer's device.
 
-    Needs the ``safetensors`` package. The MTP layer's tensors are not read; any other tensor
-    the model has no place for, and a checkpoint missing a layer, raise ``ValueError`` before a
-    tensor is read.
+    Needs the ``safetensors`` package. The MTP layer's tensors are not read. A tensor outside the
+    model's layers and a missing layer raise ``ValueError`` before any tensor is read; a tensor a
+    layer has no place for raises once that layer's tensors are read.
     """
     from safetensors import safe_open
 

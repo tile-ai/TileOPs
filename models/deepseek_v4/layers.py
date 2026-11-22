@@ -2,7 +2,7 @@
 
 Each layer holds its weights as tensors on one device, in the layouts the ops read, and the
 decoding state of one request, allocated once on that device. A request starting at position 0
-needs no clearing: every cached row a call selects or attends to was written by this request.
+needs no clearing: no row an earlier request left in the state reaches a call's output.
 """
 
 from __future__ import annotations
