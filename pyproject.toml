@@ -7,8 +7,8 @@ authors = [{ name="Tile-AI"}]
 dependencies = [
     # What .github/workflows/release.yml verifies on an SM90 device, from official PyPI, on
     # Python 3.12 and 3.13. Widening a pin means verifying it there first.
-    "torch>=2.13.0,<2.14.0",
-    "tilelang==0.1.12",
+    "torch>=2.14.0,<2.15.0",
+    "tilelang==0.1.15",
     "pyyaml>=6.0.1,<7",
 ]
 requires-python = ">=3.12"
@@ -53,15 +53,16 @@ dev = [
     # torch's C++ extension loader builds the PrivateUse1 test backend in tests/privateuse1.
     "ninja",
 ]
-# Benchmark baselines. FlashAttention-3 (`flash_attn_interface`) is not on PyPI;
-# the dev image builds it.
+# Benchmark baselines. FlashAttention-3 (`flash_attn_interface`) is not on PyPI, and no
+# FlashAttention-2 release builds against this torch; the dev image builds both. vllm pins an older tilelang than the project's, so the group
+# installs only with .github/runner/overrides.txt applied (docs/development.md#benchmarks).
 bench = [
-    "flash-attn==2.8.3",
     "flash-linear-attention==0.5.2",
     "deepspeed==0.19.7",
     "flashinfer-python>=0.6.6",
-    "vllm==0.27.1",
+    "vllm==0.34.0",
     "nvmath-python==1.0.0",
+    "tile-kernels==2.1.0",
 ]
 
 [build-system]

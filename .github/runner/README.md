@@ -28,10 +28,11 @@ The release tag prefixes it with `tileops<version>-tilefoundry<version>-`.
 
 Needs a GPU host with a CUDA 13.2-capable driver and `nvcc`, Docker with BuildKit, and the
 GitHub CLI (`gh`). Run from the repository root; the context must contain `constraints.txt`,
-`constraints-runner-lock.txt`, `scripts/ci/`, and `.github/runner/entrypoint.sh`.
+`constraints-runner-lock.txt`, `scripts/ci/`, `.github/runner/overrides.txt`, and
+`.github/runner/entrypoint.sh`.
 
 ```bash
-TAG=cuda13.2-torch2.13-tilelang$(sed -n 's/^tilelang==\([^ ]*\).*/\1/p' constraints.txt)
+TAG=cuda13.2-torch2.14-tilelang$(sed -n 's/^tilelang==\([^ ]*\).*/\1/p' constraints.txt)
 IMG=ghcr.io/tile-ai/tileops-ci-runner:$TAG
 DEV=ghcr.io/tile-ai/tileops-dev:$TAG
 TILEOPS_VERSION=$(gh release view -R tile-ai/TileOPs --json tagName -q .tagName | sed 's/^v//')
@@ -90,35 +91,40 @@ What the flags are for:
 - `--build-arg TILEOPS_RUNNER_IMAGE` — bakes the tag in, so a run reports which image produced
   it; the registry cannot answer that later. `-e TILEOPS_RUNNER_IMAGE=<tag>` overrides it for an
   image built before this. With neither, the nightly reports the image as unknown.
-- `--build-arg FLASH_ATTENTION_FORCE_BUILD=TRUE` — compiles FlashAttention-2 instead of
-  taking the prebuilt wheel from its GitHub releases. Slower; reach for it only where that
-  download keeps failing.
 - `--target runtime`, `--target fa2`, … — build an earlier stage to debug.
 
 ## Bump tilelang
 
-Change the `tilelang` pin in `pyproject.toml` and `constraints.txt` together,
+Change the `tilelang` pin in `pyproject.toml`, `constraints.txt` and `overrides.txt` together,
 regenerate the lock, and rebuild under a new tag. The constraints reach the first layer, so the
-whole image rebuilds. Check the bench baselines the new tilelang affects before rebuilding — vllm
-pins an exact tilelang release, and its install is non-fatal, so an unsatisfiable pin drops the
-baseline from a green image. **Never edit the Dockerfile** for a bump.
+whole image rebuilds. **Never edit the Dockerfile** for a bump.
+
+vllm pins an exact tilelang release, older than the one TileOPs declares. `overrides.txt` replaces
+that pin for the lock compile and, through `UV_OVERRIDE`, for every install in the image. Drop its
+line once a vllm release pins the tilelang `constraints.txt` names.
 
 Then update the tag in [`docs/development.md`](../../docs/development.md#dev-docker-image), the
 one place in the repo that names it.
 
 ## Pinning
 
-Three files. `PIP_CONSTRAINT` hands the latter two to every `pip install` in the build.
+Four files. `PIP_CONSTRAINT` hands `constraints.txt` and the lock to every `pip install` in the
+build, and `UV_CONSTRAINT` and `UV_OVERRIDE` hand the last three to every `uv pip install`.
 
 | File                          | Written by | Holds                                                    |
 | ----------------------------- | ---------- | -------------------------------------------------------- |
 | `requirements.in`             | by hand    | Direct requirements, for the lock compile alone.         |
 | `constraints.txt`             | by hand    | Chosen versions and why. Also used by the CPU preflight. |
 | `constraints-runner-lock.txt` | generated  | The transitive closure of both.                          |
+| `overrides.txt`               | by hand    | Pins replacing a dependency's own; each a known gap.     |
 
 The lock is what makes a version stick: an install that would move a settled version fails the
 build instead of winning silently. After changing a version or a requirement, regenerate it with
 the `uv pip compile` command in its own header and read the diff.
+
+`verify_runtime_stack.py` checks, at build time, that every requirement every installed package
+declares is met, except those `overrides.txt` replaces and the named gaps of `--no-deps`
+installs (flag_gems).
 
 ## Runner registration
 
