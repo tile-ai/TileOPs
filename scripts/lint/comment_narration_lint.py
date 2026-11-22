@@ -5,7 +5,7 @@
 "Measured on H200: ..." beside a tuned value states a contract and passes.
 
 Exempt: ``lint: narration allow: <reason>`` on the line. Default scan: ``src/tileops/``,
-``tests/``, ``benchmarks/``, ``workloads/``.
+``tests/``, ``benchmarks/``, ``workloads/``, ``models/``.
 """
 
 import re

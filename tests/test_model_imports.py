@@ -118,6 +118,7 @@ def test_a_forbidden_import_is_reported(tmp_path, check, source):
         pytest.param(_package_violations, "from tileops.gemm import GEMMFwdOp", id="package"),
         pytest.param(_model_violations, "from tileops.gemm import GEMMFwdOp", id="model"),
         pytest.param(_consumer_violations, "from workloads.device import x", id="consumer"),
+        pytest.param(_reference_violations, "import torch", id="reference"),
     ],
 )
 def test_an_allowed_import_is_not_reported(tmp_path, check, source):

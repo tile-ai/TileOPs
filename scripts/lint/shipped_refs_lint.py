@@ -5,7 +5,8 @@ Flags, on any line of a UTF-8 text file: ``#`` followed by 3+ digits (an issue o
 ``AC-<n>``, ``round-<n> review`` and ``Follow-up: #<n>``. A ``#`` token of 3, 4, 6 or 8 hex
 characters with at least one letter is a CSS color and passes; an all-digit token does not.
 
-Default scan: ``src/tileops/``, ``tests/``, ``benchmarks/``, ``scripts/``, ``workloads/``.
+Default scan: ``src/tileops/``, ``tests/``, ``benchmarks/``, ``scripts/``, ``workloads/``,
+``models/``.
 """
 
 import re

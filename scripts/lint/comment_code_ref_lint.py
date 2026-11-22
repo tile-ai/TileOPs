@@ -5,7 +5,7 @@ A location is a file name followed by ``:<n>``, ``:L<n>``, ``#L<n>`` or ``line <
 ``line(s) <n> of|in <file>``. A line number with no file passes.
 
 Exempt: ``lint: code-ref allow: <reason>`` on the line. Default scan: ``src/tileops/``,
-``tests/``, ``benchmarks/``, ``workloads/``, ``scripts/``.
+``tests/``, ``benchmarks/``, ``workloads/``, ``scripts/``, ``models/``.
 """
 
 import re
