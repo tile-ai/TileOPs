@@ -57,7 +57,10 @@ def load_weights(model: Qwen3_8ForCausalLM, path: Path) -> None:
             if all(n in tensors for n in per_layer[layer_id]):
                 prefix = f"{_PREFIX}layers.{layer_id}."
                 own = {n[len(prefix) :]: tensors.pop(n) for n in per_layer[layer_id]}
-                _load_layer(model.layers[layer_id], own)
+                try:
+                    _load_layer(model.layers[layer_id], own)
+                except KeyError as missing_name:
+                    raise ValueError(f"layer {layer_id}: missing tensor {missing_name}") from None
     missing = set(range(len(model.layers))) - set(per_layer)
     if missing:
         raise ValueError(f"the checkpoint holds no tensors of layers {sorted(missing)}")

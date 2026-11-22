@@ -137,6 +137,14 @@ def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
         Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
 
 
+def test_from_pretrained_refuses_a_layer_missing_some_tensors(tmp_path):
+    tensors = random_checkpoint(_TINY, seed=0)
+    del tensors["model.language_model.layers.1.self_attn.k_norm.weight"]
+    _write_checkpoint(tmp_path, _TINY, tensors)
+    with pytest.raises(ValueError, match="layer 1: missing tensor 'self_attn.k_norm.weight'"):
+        Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
+
+
 def test_from_pretrained_skips_the_vision_and_mtp_tensors(tmp_path):
     tensors = random_checkpoint(_TINY, seed=0)
     assert any(n.startswith("model.visual.") for n in tensors)
