@@ -17,7 +17,7 @@ from tests.conftest import (
     pytest_collection_modifyitems,
     pytest_runtest_makereport,
 )
-from tileops.backend import OpNotAvailableError
+from tileops.backend import OpNotAvailableError, OpNotServedError, default_target
 
 pytestmark = pytest.mark.smoke
 
@@ -223,6 +223,51 @@ def test_a_refusal_the_shared_verifier_renames_is_still_the_test_target_s():
     except OpNotAvailableError as renamed:
         report = _report_of(_item(), renamed)
     assert report.outcome == "skipped" and report.unvalidated
+
+
+@pytest.fixture
+def run_target_backend(monkeypatch):
+    """A run under ``--tileops-target backend``."""
+    monkeypatch.setattr(conftest, "_run_target", "backend")
+
+
+def _not_served(target: str) -> OpNotServedError:
+    return OpNotServedError(f"target {target!r} registers no kernel builder", target=target)
+
+
+def test_an_op_the_run_s_target_does_not_serve_is_unvalidated(run_target_backend):
+    report = _report_of(_item(), _not_served("backend"))
+    assert report.outcome == "skipped" and report.unvalidated
+
+
+def test_the_verifier_s_rename_keeps_the_run_s_target_unvalidated(run_target_backend):
+    """The shared verifier re-raises by message, so the cause carries the target."""
+    original = _not_served("backend")
+    try:
+        raise type(original)(f"SigmoidFwdOp: {original}") from original
+    except OpNotServedError as renamed:
+        report = _report_of(_item(), renamed)
+    assert report.outcome == "skipped" and report.unvalidated
+
+
+def test_an_op_another_target_does_not_serve_fails(run_target_backend):
+    report = _report_of(_item(), _not_served("acme"))
+    assert report.outcome == "failed" and not hasattr(report, "unvalidated")
+
+
+def test_the_run_s_target_is_the_one_the_root_conftest_pins():
+    assert conftest._run_target == default_target()
+
+
+def test_a_renamed_refusal_in_a_detect_run_fails(monkeypatch):
+    """The renamed error carries no target, so it must not match a run with none pinned."""
+    monkeypatch.setattr(conftest, "_run_target", None)
+    original = _not_served("acme")
+    try:
+        raise type(original)(f"SigmoidFwdOp: {original}") from original
+    except OpNotServedError as renamed:
+        report = _report_of(_item(), renamed)
+    assert report.outcome == "failed" and not hasattr(report, "unvalidated")
 
 
 @pytest.mark.parametrize(

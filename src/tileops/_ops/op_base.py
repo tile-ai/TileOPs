@@ -40,6 +40,7 @@ from tileops._utils.device import current_device, device_context
 from tileops.backend import (
     BUILTIN,
     OpNotAvailableError,
+    OpNotServedError,
     Target,
     TensorSpec,
     registered_targets,
@@ -1743,7 +1744,7 @@ class Op(ABC):
         one its sub-ops each select a target of their own.
 
         Raises:
-            OpNotAvailableError: The selected target registers no builder for this op,
+            OpNotServedError: The selected target registers no builder for this op,
                 and the op builds kernels of its own.
         """
         target = select_target(self.target, device)
@@ -1765,12 +1766,13 @@ class Op(ABC):
             self._target_builder = None
             return None
         if builder is None:
-            raise OpNotAvailableError(
+            raise OpNotServedError(
                 f"target {target!r} registers no kernel builder for "
                 f"{type(self).__name__}; targets that do: "
                 f"{registered_targets(type(self).__name__)}. There is no fall back to the "
                 f"in-tree implementation: those kernels do not run on this target's "
-                f"devices."
+                f"devices.",
+                target=target,
             )
         self._serving_target = target
         self._target_builder = builder

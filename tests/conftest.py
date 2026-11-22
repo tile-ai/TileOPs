@@ -9,7 +9,13 @@ import torch
 
 from tests.workload_test_base import _check_result
 from tileops._utils.device import current_accelerator_type, on_current_index
-from tileops.backend import BUILTIN, OpNotAvailableError, _registry, default_target
+from tileops.backend import (
+    BUILTIN,
+    OpNotAvailableError,
+    OpNotServedError,
+    _registry,
+    default_target,
+)
 from workloads.device import (
     run_device,
     run_device_available,
@@ -58,22 +64,27 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     """Flip the in-process trace switch on when ``--trace-kernel`` is passed.
 
     Runs once at startup, before any kernel is built, so the traced build is the
     one that gets cached. No environment variable is involved — the switch lives
-    in this pytest process only.
+    in this pytest process only. Runs after the root conftest pins the target, and
+    records it as the run's target.
     """
     if config.getoption("--trace-kernel"):
         from tileops.trace import trace
 
         trace.enable()  # dumps to debug/ (gitignored)
-    global _cuda_only_must_fail
+    global _cuda_only_must_fail, _run_target
     _cuda_only_must_fail = config.getoption("--tileops-cuda-only-must-fail")
+    _run_target = default_target()
 
 
 _cuda_only_must_fail = False
+# The target ``--tileops-target`` pinned; a default a test or fixture sets later does not change it.
+_run_target = None
 
 
 @pytest.fixture(autouse=True)
@@ -259,10 +270,18 @@ class UnservedError(OpNotAvailableError):
 
 
 def _unserved(exc: BaseException | None) -> bool:
-    """Whether *exc* is, or was re-raised from, a test target's refusal."""
+    """Whether *exc* is, or was re-raised from, a test target's refusal or the run's target
+    not serving the op. A target a test names itself does not count."""
+    run_target = _run_target
     # The shared verifier re-raises a request's error under the op's name, from the original.
     while exc is not None:
         if isinstance(exc, UnservedError):
+            return True
+        if (
+            isinstance(exc, OpNotServedError)
+            and run_target is not None
+            and exc.target == run_target
+        ):
             return True
         exc = exc.__cause__
     return False
@@ -272,8 +291,9 @@ def _unserved(exc: BaseException | None) -> bool:
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
     """Carry the test's architecture markers on its report, which xdist ships to the controller.
 
-    A test whose op call a test target refuses is unvalidated: a skip that is neither a
-    failure nor evidence of the test's own outcome.
+    A test whose op call a test target refuses, or whose op the run's target (the one
+    ``--tileops-target`` names) does not serve, is unvalidated: a skip that is neither a failure
+    nor evidence of the test's own outcome.
     """
     outcome = yield
     report = outcome.get_result()
