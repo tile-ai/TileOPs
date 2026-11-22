@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
-import re
-from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
 
+from models.loader import read_checkpoint
 from models.qwen3_8.layers import DecoderLayer, GatedDeltaNet
 
 if TYPE_CHECKING:
@@ -18,67 +16,24 @@ if TYPE_CHECKING:
 __all__ = ["load_weights"]
 
 _PREFIX = "model.language_model."
-# The vision tower and the MTP layer, which the text decoder does not read.
-_SKIPPED = ("model.visual.", "mtp.")
-_LAYER = re.compile(rf"{re.escape(_PREFIX)}layers\.(\d+)\.")
 
 
 def load_weights(model: Qwen3_8ForCausalLM, path: Path) -> None:
-    """Read the text decoder's tensors of the checkpoint at ``path`` onto their layers' devices.
-
-    Needs the ``safetensors`` package. Tensors under ``model.visual.`` and ``mtp.`` are not
-    read; any other tensor the decoder has no place for raises ``ValueError``.
-    """
-    from safetensors import safe_open
-
-    with open(path / "model.safetensors.index.json") as f:
-        weight_map: dict[str, str] = json.load(f)["weight_map"]
-    by_shard: dict[tuple[str, torch.device], list[str]] = defaultdict(list)
-    per_layer: dict[int, set[str]] = defaultdict(set)
-    unused = []
-    for name, shard in weight_map.items():
-        if name.startswith(_SKIPPED):
-            continue
-        device = _device_of(model, name)
-        if device is None:
-            unused.append(name)
-            continue
-        by_shard[(shard, device)].append(name)
-        if m := _LAYER.match(name):
-            per_layer[int(m.group(1))].add(name)
-    if unused:
-        raise ValueError(f"unused checkpoint tensors: {sorted(unused)[:8]}")
-    tensors: dict[str, torch.Tensor] = {}
-    for (shard, device), names in sorted(by_shard.items(), key=lambda item: item[0][0]):
-        with safe_open(str(path / shard), framework="pt", device=str(device)) as f:
-            for name in names:
-                tensors[name] = f.get_tensor(name)
-        for layer_id in sorted({int(m.group(1)) for n in names if (m := _LAYER.match(n))}):
-            if all(n in tensors for n in per_layer[layer_id]):
-                prefix = f"{_PREFIX}layers.{layer_id}."
-                own = {n[len(prefix) :]: tensors.pop(n) for n in per_layer[layer_id]}
-                try:
-                    _load_layer(model.layers[layer_id], own)
-                except KeyError as missing_name:
-                    raise ValueError(f"layer {layer_id}: missing tensor {missing_name}") from None
-    missing = set(range(len(model.layers))) - set(per_layer)
-    if missing:
-        raise ValueError(f"the checkpoint holds no tensors of layers {sorted(missing)}")
+    """Read the text decoder's tensors of the checkpoint at ``path`` onto their layers' devices,
+    as :func:`read_checkpoint` does. The vision tower's and the MTP layer's tensors are not
+    read."""
+    tensors = read_checkpoint(
+        model,
+        path,
+        prefix=_PREFIX,
+        skipped=("model.visual.", "mtp."),
+        first=(f"{_PREFIX}embed_tokens.weight",),
+        last=(f"{_PREFIX}norm.weight", "lm_head.weight"),
+        load_layer=lambda i, t: _load_layer(model.layers[i], t),
+    )
     model.embed = tensors.pop(f"{_PREFIX}embed_tokens.weight")
     model.norm = tensors.pop(f"{_PREFIX}norm.weight")
     model.lm_head = tensors.pop("lm_head.weight")
-
-
-def _device_of(model: Qwen3_8ForCausalLM, name: str) -> torch.device | None:
-    """The device a checkpoint tensor belongs on, or None for one the decoder does not read."""
-    if m := _LAYER.match(name):
-        layer_id = int(m.group(1))
-        return model.layer_devices[layer_id] if layer_id < len(model.layers) else None
-    if name == f"{_PREFIX}embed_tokens.weight":
-        return model.first_device
-    if name in (f"{_PREFIX}norm.weight", "lm_head.weight"):
-        return model.last_device
-    return None
 
 
 def _load_layer(layer: DecoderLayer, t: dict[str, torch.Tensor]) -> None:

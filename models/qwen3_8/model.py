@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 
+from models.causal_lm import CausalLM
 from models.qwen3_8.config import Qwen3_8Config
 from models.qwen3_8.layers import DecoderLayer, Step
 from models.qwen3_8.ops import ModelOps, rope_cos_sin
@@ -14,7 +15,7 @@ from models.qwen3_8.ops import ModelOps, rope_cos_sin
 __all__ = ["Qwen3_8ForCausalLM"]
 
 
-class Qwen3_8ForCausalLM:
+class Qwen3_8ForCausalLM(CausalLM):
     """Qwen3.8-27B text decoder: embedding, decoder layers, final norm, LM head.
 
     Layers are spread over ``devices`` in contiguous runs; the hidden states move to the next
@@ -47,7 +48,6 @@ class Qwen3_8ForCausalLM:
         self.embed: torch.Tensor
         self.norm: torch.Tensor
         self.lm_head: torch.Tensor
-        self._next_pos: int | None = None
 
     @classmethod
     def from_pretrained(
@@ -64,41 +64,17 @@ class Qwen3_8ForCausalLM:
         load_weights(model, Path(path))
         return model
 
-    @property
-    def first_device(self) -> torch.device:
-        """The device holding the embedding and the first layer."""
-        return self.layer_devices[0]
-
-    @property
-    def last_device(self) -> torch.device:
-        """The device holding the last layer, the final norm and the LM head."""
-        return self.layer_devices[-1]
-
     def reset(self) -> None:
         """Clear every layer's decoding state; the next call must start at position 0."""
         for layer in self.layers:
             layer.reset()
-        self._next_pos = None
+        super().reset()
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
         """Run ``input_ids`` (``[1, S]``) from ``start_pos``; return the float32 logits of its
         last token, ``[1, vocab_size]``."""
-        batch, seqlen = input_ids.shape
-        if batch != 1:
-            raise ValueError(f"forward runs one request, got a batch of {batch}")
-        if seqlen == 0:
-            raise ValueError("forward takes at least one token")
-        if start_pos + seqlen > self.max_seq_len:
-            raise ValueError(
-                f"position {start_pos + seqlen} exceeds max_seq_len {self.max_seq_len}"
-            )
-        if start_pos == 0:
-            self.reset()
-        elif self._next_pos is None:
-            raise ValueError("a call at start_pos > 0 needs a prefill at start_pos 0 first")
-        elif start_pos != self._next_pos:
-            raise ValueError(f"the request continues at position {self._next_pos}, got {start_pos}")
+        seqlen = self._continue(input_ids, start_pos)
         ops = self.ops
         x = ops.embedding(input_ids[0].to(self.first_device), self.embed)
         residual = None
@@ -117,30 +93,3 @@ class Qwen3_8ForCausalLM:
         return logits
 
     __call__ = forward
-
-    @torch.inference_mode()
-    def generate(
-        self,
-        prompt_ids: Sequence[int],
-        max_new_tokens: int,
-        *,
-        eos_token_id: int | Sequence[int] | None = None,
-    ) -> list[int]:
-        """Greedily extend one prompt by up to ``max_new_tokens`` tokens; stops after an EOS
-        token (``config.eos_token_id`` unless given) or once the sequence fills
-        ``max_seq_len``."""
-        eos = self.config.eos_token_id if eos_token_id is None else eos_token_id
-        eos_ids = {eos} if isinstance(eos, int) else set(eos)
-        tokens = torch.tensor([list(prompt_ids)], dtype=torch.long, device=self.first_device)
-        logits = self.forward(tokens, 0)
-        pos = tokens.shape[1]
-        out: list[int] = []
-        for _ in range(max_new_tokens):
-            nxt = self.ops.argmax(logits)
-            token = int(nxt.item())
-            out.append(token)
-            if token in eos_ids or len(out) == max_new_tokens or pos >= self.max_seq_len:
-                break
-            logits = self.forward(nxt.view(1, 1).to(self.first_device), pos)
-            pos += 1
-        return out
