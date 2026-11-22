@@ -1,4 +1,4 @@
-"""Load a Hugging Face ``qwen3_5`` checkpoint's text decoder into the layouts its ops read."""
+"""Load a Qwen3.8-27B checkpoint's text decoder into the layouts its ops read."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from models.qwen3_5.layers import DecoderLayer, GatedDeltaNet
+from models.qwen3_8.layers import DecoderLayer, GatedDeltaNet
 
 if TYPE_CHECKING:
-    from models.qwen3_5.model import Qwen3_5ForCausalLM
+    from models.qwen3_8.model import Qwen3_8ForCausalLM
 
 __all__ = ["load_weights"]
 
@@ -23,7 +23,7 @@ _SKIPPED = ("model.visual.", "mtp.")
 _LAYER = re.compile(rf"{re.escape(_PREFIX)}layers\.(\d+)\.")
 
 
-def load_weights(model: Qwen3_5ForCausalLM, path: Path) -> None:
+def load_weights(model: Qwen3_8ForCausalLM, path: Path) -> None:
     """Read the text decoder's tensors of the checkpoint at ``path`` onto their layers' devices.
 
     Needs the ``safetensors`` package. Tensors under ``model.visual.`` and ``mtp.`` are not
@@ -66,7 +66,7 @@ def load_weights(model: Qwen3_5ForCausalLM, path: Path) -> None:
     model.lm_head = tensors.pop("lm_head.weight")
 
 
-def _device_of(model: Qwen3_5ForCausalLM, name: str) -> torch.device | None:
+def _device_of(model: Qwen3_8ForCausalLM, name: str) -> torch.device | None:
     """The device a checkpoint tensor belongs on, or None for one the decoder does not read."""
     if m := _LAYER.match(name):
         layer_id = int(m.group(1))

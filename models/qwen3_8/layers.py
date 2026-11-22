@@ -1,4 +1,4 @@
-"""Qwen3.5-architecture decoder layers: Gated DeltaNet or gated full attention, then a SwiGLU MLP.
+"""Qwen3.8-27B decoder layers: Gated DeltaNet or gated full attention, then a SwiGLU MLP.
 
 Every layer works on one request's tokens, ``[T, hidden]``, and keeps that request's decoding
 state. Weights are filled by the loader in the layouts the ops read.
@@ -10,8 +10,8 @@ import dataclasses
 
 import torch
 
-from models.qwen3_5.config import LINEAR_ATTENTION, Qwen3_5Config
-from models.qwen3_5.ops import ModelOps
+from models.qwen3_8.config import LINEAR_ATTENTION, Qwen3_8Config
+from models.qwen3_8.ops import ModelOps
 
 __all__ = ["MLP", "DecoderLayer", "GatedAttention", "GatedDeltaNet", "Step"]
 
@@ -54,7 +54,7 @@ class GatedDeltaNet:
     ``in_proj_a``. ``A_log`` and ``dt_bias`` are float32.
     """
 
-    def __init__(self, cfg: Qwen3_5Config, device: torch.device) -> None:
+    def __init__(self, cfg: Qwen3_8Config, device: torch.device) -> None:
         self.key_dim = cfg.linear_num_key_heads * cfg.linear_key_head_dim
         self.value_dim = cfg.linear_num_value_heads * cfg.linear_value_head_dim
         self.conv_dim = 2 * self.key_dim + self.value_dim
@@ -113,7 +113,7 @@ class GatedAttention:
     then ``k_proj`` and ``v_proj``; ``gate_proj`` holds the second half of each head's rows.
     """
 
-    def __init__(self, cfg: Qwen3_5Config, max_seq_len: int, device: torch.device) -> None:
+    def __init__(self, cfg: Qwen3_8Config, max_seq_len: int, device: torch.device) -> None:
         self.heads = cfg.num_attention_heads
         self.kv_heads = cfg.num_key_value_heads
         self.head_dim = cfg.head_dim
@@ -178,7 +178,7 @@ class DecoderLayer:
     """
 
     def __init__(
-        self, cfg: Qwen3_5Config, layer_id: int, max_seq_len: int, device: torch.device
+        self, cfg: Qwen3_8Config, layer_id: int, max_seq_len: int, device: torch.device
     ) -> None:
         self.layer_id = layer_id
         self.input_norm: torch.Tensor

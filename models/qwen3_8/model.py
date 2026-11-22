@@ -1,4 +1,4 @@
-"""Qwen3.5-architecture causal language model (text only) composed from TileOPs ops."""
+"""Qwen3.8-27B causal language model (text only) composed from TileOPs ops."""
 
 from __future__ import annotations
 
@@ -7,15 +7,15 @@ from pathlib import Path
 
 import torch
 
-from models.qwen3_5.config import Qwen3_5Config
-from models.qwen3_5.layers import DecoderLayer, Step
-from models.qwen3_5.ops import ModelOps, rope_cos_sin
+from models.qwen3_8.config import Qwen3_8Config
+from models.qwen3_8.layers import DecoderLayer, Step
+from models.qwen3_8.ops import ModelOps, rope_cos_sin
 
-__all__ = ["Qwen3_5ForCausalLM"]
+__all__ = ["Qwen3_8ForCausalLM"]
 
 
-class Qwen3_5ForCausalLM:
-    """Text decoder of a ``qwen3_5`` checkpoint: embedding, decoder layers, final norm, LM head.
+class Qwen3_8ForCausalLM:
+    """Qwen3.8-27B text decoder: embedding, decoder layers, final norm, LM head.
 
     Layers are spread over ``devices`` in contiguous runs; the hidden states move to the next
     device between runs. A forward call advances one request: ``start_pos`` 0 starts a new
@@ -26,7 +26,7 @@ class Qwen3_5ForCausalLM:
 
     def __init__(
         self,
-        config: Qwen3_5Config,
+        config: Qwen3_8Config,
         *,
         devices: Sequence[torch.device | str | int] = ("cuda",),
         max_seq_len: int = 4096,
@@ -56,11 +56,11 @@ class Qwen3_5ForCausalLM:
         *,
         devices: Sequence[torch.device | str | int] = ("cuda",),
         max_seq_len: int = 4096,
-    ) -> Qwen3_5ForCausalLM:
+    ) -> Qwen3_8ForCausalLM:
         """Load a Hugging Face ``qwen3_5`` checkpoint directory (``safetensors`` shards)."""
-        from models.qwen3_5.loader import load_weights
+        from models.qwen3_8.loader import load_weights
 
-        model = cls(Qwen3_5Config.from_pretrained(path), devices=devices, max_seq_len=max_seq_len)
+        model = cls(Qwen3_8Config.from_pretrained(path), devices=devices, max_seq_len=max_seq_len)
         load_weights(model, Path(path))
         return model
 

@@ -1,4 +1,4 @@
-"""Qwen3_5ForCausalLM against Hugging Face transformers' Qwen3.5 text model run on torch only.
+"""Qwen3_8ForCausalLM against Hugging Face transformers' ``qwen3_5`` text model run on torch only.
 
 A four-layer model (three Gated DeltaNet layers, then a full-attention layer) at Qwen3.8-27B's
 widths with a small vocabulary, on random weights in the checkpoint's format, is written as a
@@ -14,10 +14,10 @@ import json
 import pytest
 import torch
 
-from models.qwen3_5 import Qwen3_5Config, Qwen3_5ForCausalLM
-from models.qwen3_5.layers import GatedDeltaNet
+from models.qwen3_8 import Qwen3_8Config, Qwen3_8ForCausalLM
+from models.qwen3_8.layers import GatedDeltaNet
 from workloads.device import run_device
-from workloads.models.qwen3_5 import (
+from workloads.models.qwen3_8 import (
     QWEN3_8_27B_CONFIG,
     ReferenceRequest,
     check_within_rounding,
@@ -54,12 +54,12 @@ _MAX_SEQ_LEN = 2304
 
 
 def test_config_reads_the_published_config():
-    cfg = Qwen3_5Config.from_hf(QWEN3_8_27B_CONFIG)
+    cfg = Qwen3_8Config.from_hf(QWEN3_8_27B_CONFIG)
     assert (cfg.num_hidden_layers, cfg.hidden_size, cfg.vocab_size) == (64, 5120, 248320)
     assert cfg.layer_types.count("full_attention") == 16
     assert cfg.layer_types[3] == "full_attention"
     assert (cfg.rotary_dim, cfg.mrope_section, cfg.rope_theta) == (64, (11, 11, 10), 1e7)
-    assert Qwen3_5Config.from_hf(_TEXT) == cfg
+    assert Qwen3_8Config.from_hf(_TEXT) == cfg
 
 
 @pytest.mark.parametrize(
@@ -90,7 +90,7 @@ def test_config_reads_the_published_config():
 )
 def test_config_refuses_what_the_model_does_not_compute(config, match):
     with pytest.raises(ValueError, match=match):
-        Qwen3_5Config.from_hf(config)
+        Qwen3_8Config.from_hf(config)
 
 
 def _write_checkpoint(path, config, tensors):
@@ -109,7 +109,7 @@ def _write_checkpoint(path, config, tensors):
 @pytest.fixture(scope="module")
 def checkpoint(tmp_path_factory):
     """The small model's checkpoint directory."""
-    path = tmp_path_factory.mktemp("qwen3_5-small")
+    path = tmp_path_factory.mktemp("qwen3_8-small")
     _write_checkpoint(path, _SMALL, random_checkpoint(_SMALL, seed=0))
     return path
 
@@ -129,7 +129,7 @@ def test_from_pretrained_refuses_a_tensor_it_does_not_read(tmp_path, extra, matc
     tensors[extra] = torch.zeros(1, dtype=torch.bfloat16)
     _write_checkpoint(tmp_path, _TINY, tensors)
     with pytest.raises(ValueError, match=match):
-        Qwen3_5ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
+        Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
 
 
 def test_from_pretrained_skips_the_vision_and_mtp_tensors(tmp_path):
@@ -137,7 +137,7 @@ def test_from_pretrained_skips_the_vision_and_mtp_tensors(tmp_path):
     assert any(n.startswith("model.visual.") for n in tensors)
     assert any(n.startswith("mtp.") for n in tensors)
     _write_checkpoint(tmp_path, _TINY, tensors)
-    model = Qwen3_5ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
+    model = Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
     assert model.lm_head.shape == (64, 64)
 
 
@@ -169,7 +169,7 @@ _REQUESTS = {
 @pytest.mark.parametrize(("chunks", "decode_steps"), list(_REQUESTS.values()), ids=list(_REQUESTS))
 def test_layers_logits_and_state_match_hf(checkpoint, chunks, decode_steps):
     """Every layer's output and the logits over every call, then the decoding state."""
-    mine = Qwen3_5ForCausalLM.from_pretrained(
+    mine = Qwen3_8ForCausalLM.from_pretrained(
         checkpoint, devices=[run_device()], max_seq_len=_MAX_SEQ_LEN
     )
     records = [[] for _ in mine.layers]
@@ -230,7 +230,7 @@ def test_forward_takes_one_request_in_order(checkpoint):
     prefill or out of order, and a sequence past ``max_seq_len``; a refused call leaves the
     request where it was."""
     max_seq_len = 18
-    model = Qwen3_5ForCausalLM.from_pretrained(
+    model = Qwen3_8ForCausalLM.from_pretrained(
         checkpoint, devices=[run_device()], max_seq_len=max_seq_len
     )
     ids = torch.zeros(1, max_seq_len + 1, dtype=torch.long, device=run_device())
@@ -262,7 +262,7 @@ def test_generate_takes_the_hf_argmax_until_eos(checkpoint):
     with an EOS id the run stops after that token."""
     g = torch.Generator().manual_seed(2)
     prompt = torch.randint(0, _SMALL["text_config"]["vocab_size"], (3,), generator=g).tolist()
-    mine = Qwen3_5ForCausalLM.from_pretrained(checkpoint, devices=[run_device()], max_seq_len=64)
+    mine = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[run_device()], max_seq_len=64)
     out = mine.generate(prompt, 12, eos_token_id=-1)
     assert len(out) == 12
     eos = out[5]

@@ -1,10 +1,10 @@
-"""The TileOPs ops one Qwen3.5-architecture model calls, built once and shared by its layers."""
+"""The TileOPs ops one Qwen3.8-27B model calls, built once and shared by its layers."""
 
 from __future__ import annotations
 
 import torch
 
-from models.qwen3_5.config import Qwen3_5Config
+from models.qwen3_8.config import Qwen3_8Config
 from tileops.attention import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
 from tileops.elementwise import MulFwdOp, SigmoidFwdOp, SiLUAndMulFwdOp
 from tileops.gemm import GEMMFwdOp
@@ -24,7 +24,7 @@ class ModelOps:
     DeltaNet output norm scales by ``w``.
     """
 
-    def __init__(self, cfg: Qwen3_5Config) -> None:
+    def __init__(self, cfg: Qwen3_8Config) -> None:
         eps = cfg.rms_norm_eps
         self.embedding = EmbeddingFwdOp()
         self.norm = RMSNormFwdOp((cfg.hidden_size,), eps, zero_centered=True)
@@ -56,7 +56,7 @@ class ModelOps:
         self.argmax = ArgmaxFwdOp(dim=-1)
 
 
-def rope_cos_sin(cfg: Qwen3_5Config, max_seq_len: int, device: torch.device) -> torch.Tensor:
+def rope_cos_sin(cfg: Qwen3_8Config, max_seq_len: int, device: torch.device) -> torch.Tensor:
     """``[max_seq_len, rotary_dim]`` float32: per position, the cosines then the sines of its
     ``rotary_dim / 2`` rotary angles."""
     dim = cfg.rotary_dim

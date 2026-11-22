@@ -1,4 +1,4 @@
-"""Qwen3.5-architecture text decoder hyperparameters, read from a Hugging Face ``config.json``."""
+"""Qwen3.8-27B text decoder hyperparameters, read from a Hugging Face ``config.json``."""
 
 from __future__ import annotations
 
@@ -6,15 +6,15 @@ import dataclasses
 import json
 from pathlib import Path
 
-__all__ = ["Qwen3_5Config"]
+__all__ = ["Qwen3_8Config"]
 
 FULL_ATTENTION = "full_attention"
 LINEAR_ATTENTION = "linear_attention"
 
 
 @dataclasses.dataclass(frozen=True)
-class Qwen3_5Config:
-    """The text decoder of a ``qwen3_5`` checkpoint, such as Qwen3.8-27B.
+class Qwen3_8Config:
+    """The Qwen3.8-27B text decoder, read from a Hugging Face ``qwen3_5`` config.
 
     Field names are the Hugging Face ``qwen3_5_text`` keys. ``layer_types[i]`` is
     ``"linear_attention"`` (Gated DeltaNet) or ``"full_attention"`` (gated GQA). The full
@@ -65,7 +65,7 @@ class Qwen3_5Config:
             )
 
     @classmethod
-    def from_hf(cls, config: dict) -> Qwen3_5Config:
+    def from_hf(cls, config: dict) -> Qwen3_8Config:
         """Read a ``qwen3_5`` config (its ``text_config``) or a bare ``qwen3_5_text`` one.
 
         Raises ``ValueError`` on another model type and on any setting this model does not
@@ -116,7 +116,7 @@ class Qwen3_5Config:
         )
 
     @classmethod
-    def from_pretrained(cls, path: str | Path) -> Qwen3_5Config:
+    def from_pretrained(cls, path: str | Path) -> Qwen3_8Config:
         """Read ``config.json`` from a checkpoint directory."""
         with open(Path(path) / "config.json") as f:
             return cls.from_hf(json.load(f))

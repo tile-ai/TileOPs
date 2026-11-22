@@ -1,4 +1,4 @@
-"""Hugging Face transformers' ``qwen3_5`` text model, the reference for ``models/qwen3_5``.
+"""Hugging Face transformers' ``qwen3_5`` text model, the reference for ``models/qwen3_8``.
 
 The model runs on its pure-torch paths only: ``torch_paths`` swaps the GDN, causal-conv1d and
 attention functions of ``modeling_qwen3_5``, which import fla and causal_conv1d kernels when
@@ -207,7 +207,7 @@ def reference_model(path: str | Path, dtype: torch.dtype, device: torch.device |
 
 
 class ReferenceRequest:
-    """One request through a ``reference_model``, call by call, as ``Qwen3_5ForCausalLM``
+    """One request through a ``reference_model``, call by call, as ``Qwen3_8ForCausalLM``
     takes it; records each decoder layer's output of the last call in ``layers``."""
 
     def __init__(self, model) -> None:
