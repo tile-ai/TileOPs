@@ -21,7 +21,7 @@ class DeepseekV4ForCausalLM:
     one at construction. Each run computes with its device current and builds the index metadata its
     layers share, a ``Step``, once; the streams move to the next device between runs, and a forward
     call leaves the current device as it found it. A forward call advances one request:
-    ``start_pos`` 0 is a prefill that resets the decoding state; any later ``start_pos`` is a decode
+    ``start_pos`` 0 is a prefill that starts a new request; any later ``start_pos`` is a decode
     step of one token and must be the number of tokens already passed. The MTP layer is not built.
     """
 
@@ -40,7 +40,9 @@ class DeepseekV4ForCausalLM:
         self.layer_devices = [
             self.devices[i * n_dev // config.n_layers] for i in range(config.n_layers)
         ]
-        self.layers = [Block(config, i, max_seq_len) for i in range(config.n_layers)]
+        self.layers = [
+            Block(config, i, max_seq_len, device) for i, device in enumerate(self.layer_devices)
+        ]
         ropes: dict[tuple[torch.device, bool], RoPETable] = {}
         for layer, device in zip(self.layers, self.layer_devices, strict=True):
             compressed = layer.attn.ratio != 0
@@ -83,9 +85,7 @@ class DeepseekV4ForCausalLM:
         return self.layer_devices[-1]
 
     def reset(self) -> None:
-        """Clear every layer's decoding state; the next call must be a prefill."""
-        for layer in self.layers:
-            layer.reset()
+        """End the request; the next call must be a prefill."""
         self._next_pos = None
 
     @torch.inference_mode()
@@ -113,18 +113,18 @@ class DeepseekV4ForCausalLM:
             raise ValueError(f"a decode step takes one token, got {seqlen}")
         ops = self.ops
         ids = input_ids.to(self.first_device)
-        with torch.cuda.device(self.first_device):
+        with torch.accelerator.device_index(self.first_device.index):
             x = ops.embedding(ids, self.embed)
             h = x.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         previous = None
         for layer, device in zip(self.layers, self.layer_devices, strict=True):
-            with torch.cuda.device(device):
+            with torch.accelerator.device_index(device.index):
                 if device != previous:
                     previous = device
                     step = Step.build(self.config, start_pos, seqlen, device)
                     h, ids = h.to(device), ids.to(device)
                 h = layer(ops, h, ids, step)
-        with torch.cuda.device(self.last_device):
+        with torch.accelerator.device_index(self.last_device.index):
             x = ops.hc_head(h[:, -1].contiguous(), *self.hc_head)
             logits = ops.gemm_f32(ops.norm(x, self.norm), self.head)
         self._next_pos = start_pos + seqlen
@@ -140,19 +140,20 @@ class DeepseekV4ForCausalLM:
         *,
         eos_token_id: int | None = None,
     ) -> list[int]:
-        """Greedily extend one prompt by up to ``max_new_tokens`` tokens; stops after EOS or
-        once the sequence fills ``max_seq_len``."""
+        """Greedily extend one prompt by up to ``max_new_tokens`` tokens; stops after an EOS
+        token (``config.eos_token_id`` unless given) or once the sequence fills
+        ``max_seq_len``."""
         eos = self.config.eos_token_id if eos_token_id is None else eos_token_id
         tokens = torch.tensor([list(prompt_ids)], dtype=torch.long, device=self.first_device)
         logits = self.forward(tokens, 0)
         pos = tokens.shape[1]
         out: list[int] = []
         for _ in range(max_new_tokens):
-            with torch.cuda.device(self.last_device):
+            with torch.accelerator.device_index(self.last_device.index):
                 nxt = self.ops.argmax(logits)
             token = int(nxt.item())
             out.append(token)
-            if token == eos or pos >= self.max_seq_len:
+            if token == eos or len(out) == max_new_tokens or pos >= self.max_seq_len:
                 break
             logits = self.forward(nxt.view(1, 1).to(self.first_device), pos)
             pos += 1
@@ -166,5 +167,5 @@ def _indexed(device: torch.device | str | int) -> torch.device:
         return torch.device("cuda", device)
     device = torch.device(device)
     if device.index is None:
-        return torch.device(device.type, torch.cuda.current_device())
+        return torch.device(device.type, torch.accelerator.current_device_index())
     return device

@@ -1,4 +1,8 @@
-"""Load a Hugging Face DeepSeek-V4 checkpoint into the layouts the model's ops read."""
+"""Load a Hugging Face DeepSeek-V4 checkpoint into the layouts the model's ops read.
+
+The checkpoint's FP8 weights carry one scale per ``_SCALE_BLOCK`` x ``_SCALE_BLOCK`` block, which
+the stacked and the dequantized weights both follow.
+"""
 
 from __future__ import annotations
 
@@ -24,31 +28,41 @@ _LAYER = re.compile(r"layers\.(\d+)\.")
 def load_weights(model: DeepseekV4ForCausalLM, path: Path) -> None:
     """Read every tensor of the checkpoint at ``path`` onto its layer's device.
 
-    Needs the ``safetensors`` package. The MTP layer's tensors are not read.
+    Needs the ``safetensors`` package. The MTP layer's tensors are not read; any other tensor
+    the model has no place for, and a checkpoint missing a layer, raise ``ValueError`` before a
+    tensor is read.
     """
     from safetensors import safe_open
 
     with open(path / "model.safetensors.index.json") as f:
         weight_map: dict[str, str] = json.load(f)["weight_map"]
     by_shard: dict[tuple[str, torch.device], list[str]] = defaultdict(list)
+    per_layer: dict[int, set[str]] = defaultdict(set)
+    unused = []
     for name, shard in weight_map.items():
+        if name.startswith("mtp."):
+            continue
         device = _device_of(model, name)
-        if device is not None:
-            by_shard[(shard, device)].append(name)
+        if device is None:
+            unused.append(name)
+            continue
+        by_shard[(shard, device)].append(name)
+        if m := _LAYER.match(name):
+            per_layer[int(m.group(1))].add(name)
+    if unused:
+        raise ValueError(f"unused checkpoint tensors: {sorted(unused)[:8]}")
+    missing = set(range(len(model.layers))) - set(per_layer)
+    if missing:
+        raise ValueError(f"the checkpoint holds no tensors of layers {sorted(missing)}")
     tensors: dict[str, torch.Tensor] = {}
-    pending_layers: dict[int, set[str]] = defaultdict(set)
-    for name in weight_map:
-        m = _LAYER.match(name)
-        if m:
-            pending_layers[int(m.group(1))].add(name)
     for (shard, device), names in sorted(by_shard.items(), key=lambda item: item[0][0]):
         with safe_open(str(path / shard), framework="pt", device=str(device)) as f:
             for name in names:
                 tensors[name] = f.get_tensor(name)
         for layer_id in sorted({int(m.group(1)) for n in names if (m := _LAYER.match(n))}):
-            if all(n in tensors for n in pending_layers[layer_id]):
+            if all(n in tensors for n in per_layer[layer_id]):
                 prefix = f"layers.{layer_id}."
-                own = {n[len(prefix) :]: tensors.pop(n) for n in pending_layers[layer_id]}
+                own = {n[len(prefix) :]: tensors.pop(n) for n in per_layer[layer_id]}
                 _load_block(model.layers[layer_id], own, model.config.n_routed_experts)
     model.embed = tensors.pop("embed.weight")
     model.norm = tensors.pop("norm.weight")
@@ -58,20 +72,18 @@ def load_weights(model: DeepseekV4ForCausalLM, path: Path) -> None:
         tensors.pop("hc_head_scale"),
         tensors.pop("hc_head_base"),
     )
-    if tensors:
-        raise ValueError(f"unused checkpoint tensors: {sorted(tensors)[:8]}")
 
 
 def _device_of(model: DeepseekV4ForCausalLM, name: str) -> torch.device | None:
     """The device a checkpoint tensor belongs on, or None for one the model does not read."""
-    if name.startswith("mtp."):
-        return None
-    m = _LAYER.match(name)
-    if m:
-        return model.layer_devices[int(m.group(1))]
-    if name.startswith("embed."):
+    if m := _LAYER.match(name):
+        layer_id = int(m.group(1))
+        return model.layer_devices[layer_id] if layer_id < len(model.layers) else None
+    if name == "embed.weight":
         return model.first_device
-    return model.last_device
+    if name in ("norm.weight", "head.weight", "hc_head_fn", "hc_head_scale", "hc_head_base"):
+        return model.last_device
+    return None
 
 
 def _fp8(t: dict[str, torch.Tensor], prefix: str) -> FP8Linear:

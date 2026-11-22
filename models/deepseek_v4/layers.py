@@ -1,7 +1,8 @@
 """DeepSeek-V4 blocks composed from TileOPs ops: attention with KV compression, MoE, mHC.
 
 Each layer holds its weights as tensors on one device, in the layouts the ops read, and the
-decoding state of one request, which advances from position 0.
+decoding state of one request, allocated once on that device. A request starting at position 0
+needs no clearing: every cached row a call selects or attends to was written by this request.
 """
 
 from __future__ import annotations
@@ -13,10 +14,10 @@ import torch
 from models.deepseek_v4.config import DeepseekV4Config
 from models.deepseek_v4.ops import ModelOps, RoPETable
 
-__all__ = ["Block", "FP8Linear", "Step"]
+__all__ = ["Attention", "Block", "Compressor", "FP8Linear", "Indexer", "MoE", "Step"]
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class Step:
     """The index metadata of one forward call on one device, shared by its layers.
 
@@ -80,25 +81,25 @@ class Compressor:
     compressor's entries are FP8 fake-quantized outside their trailing RoPE dimensions.
     """
 
-    def __init__(self, cfg: DeepseekV4Config, ratio: int, head_dim: int, rotate: bool) -> None:
+    def __init__(
+        self,
+        cfg: DeepseekV4Config,
+        ratio: int,
+        head_dim: int,
+        rotate: bool,
+        device: torch.device,
+    ) -> None:
         windows = 2 if cfg.indexed(ratio) else 1
         self.ratio = ratio
         self.rotate = rotate
         self.rope_dim = cfg.rope_head_dim
         self.width = windows * head_dim
-        self.state_rows = windows * ratio
         self.wkv_gate: torch.Tensor
         self.ape: torch.Tensor
         self.norm: torch.Tensor
-        self.kv_state: torch.Tensor
-        self.score_state: torch.Tensor
-
-    def reset(self) -> None:
-        """Allocate fresh pooling state."""
-        self.kv_state = torch.zeros(
-            1, self.state_rows, self.width, dtype=torch.float32, device=self.ape.device
-        )
-        self.score_state = torch.zeros_like(self.kv_state)
+        shape = (1, windows * ratio, self.width)
+        self.kv_state = torch.zeros(shape, dtype=torch.float32, device=device)
+        self.score_state = torch.zeros(shape, dtype=torch.float32, device=device)
 
     def __call__(
         self, ops: ModelOps, rope: RoPETable, x: torch.Tensor, step: Step
@@ -149,28 +150,21 @@ class Compressor:
 class Indexer:
     """The lightning indexer: selects each query's top compressed entries of an indexed layer."""
 
-    def __init__(self, cfg: DeepseekV4Config, ratio: int, max_entries: int) -> None:
+    def __init__(
+        self, cfg: DeepseekV4Config, ratio: int, max_entries: int, device: torch.device
+    ) -> None:
         self.n_heads = cfg.index_n_heads
         self.head_dim = cfg.index_head_dim
         self.rope_dim = cfg.rope_head_dim
         self.ratio = ratio
         self.max_entries = max_entries
-        self.weight_scale: torch.Tensor
-        self.compressor = Compressor(cfg, self.ratio, self.head_dim, rotate=True)
+        self.compressor = Compressor(cfg, ratio, self.head_dim, rotate=True, device=device)
         self.wq_b: FP8Linear
         self.weights_proj: torch.Tensor
-        self.cache: torch.Tensor
-
-    def reset(self) -> None:
-        """Allocate an empty entry cache."""
-        device = self.weights_proj.device
-        self.compressor.reset()
-        self.cache = torch.zeros(
-            1, self.max_entries, self.head_dim, dtype=torch.bfloat16, device=device
-        )
         self.weight_scale = torch.tensor(
             [self.head_dim**-0.5 * self.n_heads**-0.5], dtype=torch.float32, device=device
         )
+        self.cache = torch.zeros(1, max_entries, self.head_dim, dtype=torch.bfloat16, device=device)
 
     def __call__(
         self,
@@ -224,7 +218,9 @@ class Attention:
     back, projected per group by ``wo_a`` and mixed by ``wo_b``.
     """
 
-    def __init__(self, cfg: DeepseekV4Config, layer_id: int, max_seq_len: int) -> None:
+    def __init__(
+        self, cfg: DeepseekV4Config, layer_id: int, max_seq_len: int, device: torch.device
+    ) -> None:
         self.n_heads = cfg.n_heads
         self.head_dim = cfg.head_dim
         self.rope_dim = cfg.rope_head_dim
@@ -234,10 +230,12 @@ class Attention:
         self.ratio = cfg.compress_ratios[layer_id]
         self.max_entries = max_seq_len // self.ratio if self.ratio else 0
         self.compressor = (
-            Compressor(cfg, self.ratio, self.head_dim, rotate=False) if self.ratio else None
+            Compressor(cfg, self.ratio, self.head_dim, rotate=False, device=device)
+            if self.ratio
+            else None
         )
         self.indexer = (
-            Indexer(cfg, self.ratio, self.max_entries) if cfg.indexed(self.ratio) else None
+            Indexer(cfg, self.ratio, self.max_entries, device) if cfg.indexed(self.ratio) else None
         )
         self.wq_a: FP8Linear
         self.q_norm: torch.Tensor
@@ -247,21 +245,9 @@ class Attention:
         self.wo_a: torch.Tensor
         self.wo_b: FP8Linear
         self.attn_sink: torch.Tensor
-        self.kv_cache: torch.Tensor
-
-    def reset(self) -> None:
-        """Allocate an empty window ring and entry cache."""
         self.kv_cache = torch.zeros(
-            1,
-            self.window + self.max_entries,
-            self.head_dim,
-            dtype=torch.bfloat16,
-            device=self.attn_sink.device,
+            1, self.window + self.max_entries, self.head_dim, dtype=torch.bfloat16, device=device
         )
-        if self.compressor is not None:
-            self.compressor.reset()
-        if self.indexer is not None:
-            self.indexer.reset()
 
     def _entry_indices(self, step: Step, device: torch.device) -> torch.Tensor:
         """Each query's closed compressed entries on a layer without an indexer, ``[S, n]``."""
@@ -365,19 +351,17 @@ class MoE:
 class Block:
     """One decoder layer: mHC around attention and around the MoE, on ``hc_mult`` streams."""
 
-    def __init__(self, cfg: DeepseekV4Config, layer_id: int, max_seq_len: int) -> None:
+    def __init__(
+        self, cfg: DeepseekV4Config, layer_id: int, max_seq_len: int, device: torch.device
+    ) -> None:
         self.layer_id = layer_id
-        self.attn = Attention(cfg, layer_id, max_seq_len)
+        self.attn = Attention(cfg, layer_id, max_seq_len, device)
         self.ffn = MoE(cfg, layer_id)
         self.attn_norm: torch.Tensor
         self.ffn_norm: torch.Tensor
         self.hc_attn: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         self.hc_ffn: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         self.rope: RoPETable
-
-    def reset(self) -> None:
-        """Clear this layer's decoding state."""
-        self.attn.reset()
 
     def __call__(
         self, ops: ModelOps, h: torch.Tensor, input_ids: torch.Tensor, step: Step

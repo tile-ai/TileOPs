@@ -72,24 +72,49 @@ class DeepseekV4Config:
 
     @classmethod
     def from_hf(cls, config: dict) -> DeepseekV4Config:
-        """Map a Hugging Face ``deepseek_v4`` config dict onto the official field names."""
+        """Map a Hugging Face ``deepseek_v4`` config dict onto the official field names.
+
+        Raises ``ValueError`` on another model type and on any setting this model does not
+        compute: attention biases, more than one KV head, a gate other than SiLU, a rope
+        scaling other than YaRN, tied embeddings, a dtype other than bfloat16, routed experts
+        other than FP4, and weights other than FP8 e4m3 under UE8M0 128x128 block scales.
+        """
         if config.get("model_type") != "deepseek_v4":
             raise ValueError(f"model_type {config.get('model_type')!r} is not deepseek_v4")
-        rope = config.get("rope_scaling") or {}
+        rope = config["rope_scaling"]
+        quant = config.get("quantization_config", {})
+        refused = {
+            "attention_bias": config.get("attention_bias", False) is not False,
+            "num_key_value_heads": config.get("num_key_value_heads", 1) != 1,
+            "hidden_act": config.get("hidden_act", "silu") != "silu",
+            "rope_scaling": rope.get("type", "yarn") != "yarn",
+            "tie_word_embeddings": config.get("tie_word_embeddings", False) is not False,
+            "torch_dtype": config.get("torch_dtype", "bfloat16") != "bfloat16",
+            "expert_dtype": config.get("expert_dtype", "fp4") != "fp4",
+            "quantization_config": (
+                quant.get("quant_method"),
+                quant.get("fmt"),
+                quant.get("scale_fmt"),
+                quant.get("weight_block_size"),
+            )
+            != ("fp8", "e4m3", "ue8m0", [128, 128]),
+        }
+        if any(refused.values()):
+            raise ValueError(f"unsupported config: {[k for k, v in refused.items() if v]}")
         return cls(
             vocab_size=config["vocab_size"],
             dim=config["hidden_size"],
             moe_inter_dim=config["moe_intermediate_size"],
             n_layers=config["num_hidden_layers"],
-            n_hash_layers=config.get("num_hash_layers", 0),
-            n_mtp_layers=config.get("num_nextn_predict_layers", 0),
+            n_hash_layers=config["num_hash_layers"],
+            n_mtp_layers=config["num_nextn_predict_layers"],
             n_heads=config["num_attention_heads"],
             n_routed_experts=config["n_routed_experts"],
             n_shared_experts=config["n_shared_experts"],
             n_activated_experts=config["num_experts_per_tok"],
             score_func=config["scoring_func"],
             route_scale=config["routed_scaling_factor"],
-            swiglu_limit=config.get("swiglu_limit", 0.0),
+            swiglu_limit=config["swiglu_limit"],
             q_lora_rank=config["q_lora_rank"],
             head_dim=config["head_dim"],
             rope_head_dim=config["qk_rope_head_dim"],
@@ -99,18 +124,18 @@ class DeepseekV4Config:
             window_size=config["sliding_window"],
             compress_ratios=tuple(config["compress_ratios"]),
             compress_rope_theta=config["compress_rope_theta"],
-            original_seq_len=rope.get("original_max_position_embeddings", 0),
+            original_seq_len=rope["original_max_position_embeddings"],
             rope_theta=config["rope_theta"],
-            rope_factor=rope.get("factor", 1.0),
-            beta_fast=rope.get("beta_fast", 32),
-            beta_slow=rope.get("beta_slow", 1),
+            rope_factor=rope["factor"],
+            beta_fast=rope["beta_fast"],
+            beta_slow=rope["beta_slow"],
             index_n_heads=config["index_n_heads"],
             index_head_dim=config["index_head_dim"],
             index_topk=config["index_topk"],
             hc_mult=config["hc_mult"],
             hc_sinkhorn_iters=config["hc_sinkhorn_iters"],
             hc_eps=config["hc_eps"],
-            eos_token_id=config.get("eos_token_id", 1),
+            eos_token_id=config["eos_token_id"],
         )
 
     @classmethod

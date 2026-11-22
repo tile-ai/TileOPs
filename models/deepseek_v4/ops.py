@@ -17,7 +17,6 @@ from tileops.moe import (
     MoEGroupedGEMMMXFP4FwdOp,
     MoEPostPermuteFwdOp,
     MoEPrePermuteFwdOp,
-    RoutingEpilogueSpec,
 )
 from tileops.norm import RMSNormFwdOp
 from tileops.quantization import FP4QuantPerGroupFwdOp, FP8QuantPerTokenGroupFwdOp
@@ -34,26 +33,24 @@ __all__ = ["ModelOps", "RoPETable"]
 
 
 class ModelOps:
-    """One instance of every op the model calls; ops take their shapes from each call."""
+    """One instance of every op the model calls; ops take their shapes from each call.
 
-    _ACT_BLOCK = 128
-    _ACT_AMAX_FLOOR = 1e-4
-    _KV_QUANT_BLOCK = 64
-    _FP4_BLOCK = 32
+    The FP8 quantizations are the official model's ``act_quant``: power-of-two scales over
+    groups of 128 activations, 64 for the KV rows, with the group maximum floored at 1e-4. The
+    mHC post mix is doubled, as the official ``hc_split_sinkhorn`` doubles it.
+    """
 
     def __init__(self, cfg: DeepseekV4Config) -> None:
         eps = cfg.norm_eps
-        floor = self._ACT_AMAX_FLOOR
-        self.layout = ContiguousLayoutSpec.tight_physical_psum()
+        floor = 1e-4
+        layout = ContiguousLayoutSpec.tight_physical_psum()
         self.embedding = EmbeddingFwdOp()
-        self.act_quant = FP8QuantPerTokenGroupFwdOp(self._ACT_BLOCK, eps=floor, use_ue8m0=True)
+        self.act_quant = FP8QuantPerTokenGroupFwdOp(128, eps=floor, use_ue8m0=True)
         self.act_quant_e8m0 = FP8QuantPerTokenGroupFwdOp(
-            self._ACT_BLOCK, eps=floor, use_ue8m0=True, scale_dtype=torch.float8_e8m0fnu
+            128, eps=floor, use_ue8m0=True, scale_dtype=torch.float8_e8m0fnu
         )
-        self.kv_fake_quant = FP8QuantPerTokenGroupFwdOp(
-            self._KV_QUANT_BLOCK, eps=floor, use_ue8m0=True, inplace=True
-        )
-        self.fp4_fake_quant = FP4QuantPerGroupFwdOp(self._FP4_BLOCK, inplace=True)
+        self.kv_fake_quant = FP8QuantPerTokenGroupFwdOp(64, eps=floor, use_ue8m0=True, inplace=True)
+        self.fp4_fake_quant = FP4QuantPerGroupFwdOp(inplace=True)
         self.gemm_fp8 = GEMMFP8FwdOp()
         self.gemm = GEMMFwdOp()
         self.gemm_f32 = GEMMFwdOp(out_dtype=torch.float32)
@@ -67,13 +64,7 @@ class ModelOps:
             d: RMSNormFwdOp((d,), eps)
             for d in {cfg.dim, cfg.q_lora_rank, cfg.head_dim, cfg.index_head_dim}
         }
-        self.attention = DSADenseFwdOp(
-            dim_tail=0,
-            stride_kv=1,
-            q_start_index_s=0,
-            sm_scale=cfg.head_dim**-0.5,
-            is_causal=False,
-        )
+        self.attention = DSADenseFwdOp(dim_tail=0, stride_kv=1, q_start_index_s=0, is_causal=False)
         self.pools = {
             r: GatedPoolCompressFwdOp(r, overlap=cfg.indexed(r))
             for r in set(cfg.compress_ratios)
@@ -96,9 +87,9 @@ class ModelOps:
             routed_scaling_factor=cfg.route_scale,
         )
         self.swiglu = SiLUAndMulFwdOp(swiglu_limit=cfg.swiglu_limit)
-        self.permute = MoEPrePermuteFwdOp(self.layout, cfg.n_routed_experts)
-        self.expert_gemm = MoEGroupedGEMMMXFP4FwdOp(self.layout)
-        self.unpermute = MoEPostPermuteFwdOp(self.layout, RoutingEpilogueSpec(1.0))
+        self.permute = MoEPrePermuteFwdOp(layout, cfg.n_routed_experts)
+        self.expert_gemm = MoEGroupedGEMMMXFP4FwdOp(layout)
+        self.unpermute = MoEPostPermuteFwdOp(layout)
 
     def norm(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
         """RMS-normalize the last axis of ``x``, scaled by ``weight`` when given."""
@@ -108,7 +99,9 @@ class ModelOps:
 class RoPETable:
     """Per-position cosines and sines of one rotary setting, on one device.
 
-    ``yarn`` applies DeepSeek's YaRN frequency interpolation; ``neg_sin`` rotates back.
+    ``yarn`` applies DeepSeek's YaRN frequency interpolation, whose ramp over a zero-width
+    range of dimensions spans 0.001, as the official ``linear_ramp_factor``'s does;
+    ``neg_sin`` rotates back.
     """
 
     def __init__(
@@ -121,7 +114,7 @@ class RoPETable:
     ) -> None:
         dim = cfg.rope_head_dim
         freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
-        if yarn and cfg.original_seq_len > 0:
+        if yarn:
             low, high = _yarn_correction_range(
                 cfg.beta_fast, cfg.beta_slow, dim, base, cfg.original_seq_len
             )

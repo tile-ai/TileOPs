@@ -1,12 +1,14 @@
 """DeepSeek-V4's official ``inference/`` code, with torch in place of its TileLang kernels.
 
-``load_official`` imports the checkpoint repository's ``inference/model.py`` with a torch
-module standing in for its ``kernel.py``, so the reference shares no kernel with TileOPs.
-The environment variable ``INFERENCE_DIR_ENV`` names that ``inference/`` directory.
+``official_model`` imports the checkpoint repository's ``inference/model.py`` with a torch module
+standing in for its ``kernel.py``, so the reference shares no kernel with TileOPs.
+``DEEPSEEK_V4_FLASH_CONFIG`` is DeepSeek-V4-Flash's published ``config.json``.
 """
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import importlib.util
 import math
 import os
@@ -17,39 +19,35 @@ from pathlib import Path
 import torch
 
 from workloads.quantization.fp8_quant import fp8_quant_per_group
-from workloads.quantization.quantize import fp4_quant_per_group, fp8_quant_per_block, unpack_e2m1
+from workloads.quantization.quantize import fp4_quant_per_group, unpack_e2m1
 from workloads.sequence_modeling.hyper_connection import hc_split_mixes
 from workloads.transform import hadamard_transform
 
 __all__ = [
     "DEEPSEEK_V4_FLASH_CONFIG",
-    "INFERENCE_DIR_ENV",
-    "check_decode_state",
     "check_index_selection",
     "check_selection_agreement",
-    "load_official",
-    "official_args",
-    "official_state_dict",
+    "official_defaults",
+    "official_model",
     "random_checkpoint",
-    "sparse_attn",
 ]
-
-INFERENCE_DIR_ENV = "DEEPSEEK_V4_INFERENCE_DIR"
 
 
 def act_quant(
     x: torch.Tensor,
-    block_size: int = 128,
-    scale_fmt: str | None = None,
-    scale_dtype: torch.dtype = torch.float32,
+    block_size: int,
+    scale_fmt: str | None,
+    scale_dtype: torch.dtype,
     inplace: bool = False,
 ):
-    """``kernel.act_quant``: :func:`fp8_quant_per_group` with ``amax`` floored at 1e-4, scales
-    rounded up to a power of two when ``scale_fmt`` is set."""
-    return fp8_quant_per_group(x, block_size, 1e-4, scale_fmt is not None, scale_dtype, inplace)
+    """``kernel.act_quant`` as the official model calls it, with a ``scale_fmt``:
+    :func:`fp8_quant_per_group` with ``amax`` floored at 1e-4 and scales rounded up to a power of
+    two."""
+    assert scale_fmt is not None, "the official model quantizes activations under a scale_fmt"
+    return fp8_quant_per_group(x, block_size, 1e-4, True, scale_dtype, inplace)
 
 
-def fp4_act_quant(x: torch.Tensor, block_size: int = 32, inplace: bool = False):
+def fp4_act_quant(x: torch.Tensor, block_size: int, inplace: bool):
     """``kernel.fp4_act_quant`` as the official model calls it, ``inplace``: ``x`` overwritten
     by its e2m1 codes per ``block_size`` elements under a power-of-two scale, dequantized."""
     assert inplace, "the official model quantizes FP4 activations in place only"
@@ -68,18 +66,20 @@ def _dequant_blocks(w: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return _dequant_rows(w, scale.float().repeat_interleave(128, 0)[: w.shape[0]])
 
 
-def fp8_gemm(a, a_s, b, b_s, scale_dtype=torch.float32):
+def fp8_gemm(a, a_s, b, b_s, scale_dtype):
     """``kernel.fp8_gemm``: ``a @ b^T`` in float32 over dequantized FP8 operands, ``b`` under
-    128x128 block scales, returned in the default dtype."""
+    128x128 block scales, returned in the default dtype; the scales are read as float32
+    whatever their ``scale_dtype``."""
     k = a.shape[-1]
     a32 = _dequant_rows(a.reshape(-1, k), a_s.reshape(-1, a_s.shape[-1]))
     out = a32 @ _dequant_blocks(b, b_s).T
     return out.to(torch.get_default_dtype()).view(*a.shape[:-1], b.shape[0])
 
 
-def fp4_gemm(a, a_s, b, b_s, scale_dtype=torch.float32):
+def fp4_gemm(a, a_s, b, b_s, scale_dtype):
     """``kernel.fp4_gemm``: ``a @ b^T`` in float32, ``b`` e2m1 codes two per byte (even element
-    in the low nibble) under per-32 scales, returned in the default dtype."""
+    in the low nibble) under per-32 scales, returned in the default dtype; the scales are read as
+    float32 whatever their ``scale_dtype``."""
     k = a.shape[-1]
     a32 = _dequant_rows(a.reshape(-1, k), a_s.reshape(-1, a_s.shape[-1]))
     b32 = _dequant_rows(unpack_e2m1(b.view(torch.uint8)), b_s)
@@ -119,7 +119,7 @@ def sparse_attn(q, kv, attn_sink, topk_idxs, softmax_scale, p_dtype=None):
     return out
 
 
-def hc_split_sinkhorn(mixes, hc_scale, hc_base, hc_mult=4, sinkhorn_iters=20, eps=1e-6):
+def hc_split_sinkhorn(mixes, hc_scale, hc_base, hc_mult, sinkhorn_iters, eps):
     """``kernel.hc_split_sinkhorn``: :func:`hc_split_mixes` with one ``eps``, ``post`` doubled."""
     pre, post, comb = hc_split_mixes(mixes, hc_scale, hc_base, hc_mult, eps, eps, sinkhorn_iters)
     return pre, 2 * post, comb
@@ -133,7 +133,7 @@ def _torch_kernel_module() -> types.ModuleType:
     return module
 
 
-def load_official(inference_dir: str | os.PathLike) -> types.ModuleType:
+def _load_official(inference_dir: str | os.PathLike) -> types.ModuleType:
     """Import the official ``inference/model.py`` in ``inference_dir`` against
     :func:`_torch_kernel_module`. ``rotate_activation`` is replaced too, so
     ``fast_hadamard_transform`` is not needed."""
@@ -154,30 +154,46 @@ def load_official(inference_dir: str | os.PathLike) -> types.ModuleType:
 
 
 DEEPSEEK_V4_FLASH_CONFIG = {
-    "model_type": "deepseek_v4",
-    "vocab_size": 129280,
+    "architectures": ["DeepseekV4ForCausalLM"],
+    "attention_bias": False,
+    "attention_dropout": 0.0,
+    "bos_token_id": 0,
+    "eos_token_id": 1,
+    "expert_dtype": "fp4",
+    "hc_eps": 1e-06,
+    "hc_mult": 4,
+    "hc_sinkhorn_iters": 20,
+    "head_dim": 512,
+    "hidden_act": "silu",
     "hidden_size": 4096,
+    "index_head_dim": 128,
+    "index_n_heads": 64,
+    "index_topk": 512,
+    "initializer_range": 0.02,
+    "max_position_embeddings": 1048576,
+    "model_type": "deepseek_v4",
     "moe_intermediate_size": 2048,
-    "num_hidden_layers": 43,
-    "num_hash_layers": 3,
-    "num_nextn_predict_layers": 1,
-    "num_attention_heads": 64,
     "n_routed_experts": 256,
     "n_shared_experts": 1,
+    "norm_topk_prob": True,
+    "num_attention_heads": 64,
     "num_experts_per_tok": 6,
-    "scoring_func": "sqrtsoftplus",
-    "routed_scaling_factor": 1.5,
-    "swiglu_limit": 10.0,
-    "q_lora_rank": 1024,
-    "head_dim": 512,
-    "qk_rope_head_dim": 64,
-    "rms_norm_eps": 1e-6,
+    "num_hidden_layers": 43,
+    "num_hash_layers": 3,
+    "num_key_value_heads": 1,
+    "num_nextn_predict_layers": 1,
     "o_groups": 8,
     "o_lora_rank": 1024,
-    "sliding_window": 128,
-    "compress_ratios": [0, 0] + [4, 128] * 20 + [4, 0],
-    "compress_rope_theta": 160000,
-    "rope_theta": 10000,
+    "q_lora_rank": 1024,
+    "qk_rope_head_dim": 64,
+    "quantization_config": {
+        "activation_scheme": "dynamic",
+        "fmt": "e4m3",
+        "quant_method": "fp8",
+        "scale_fmt": "ue8m0",
+        "weight_block_size": [128, 128],
+    },
+    "rms_norm_eps": 1e-06,
     "rope_scaling": {
         "beta_fast": 32,
         "beta_slow": 1,
@@ -185,18 +201,23 @@ DEEPSEEK_V4_FLASH_CONFIG = {
         "original_max_position_embeddings": 65536,
         "type": "yarn",
     },
-    "index_n_heads": 64,
-    "index_head_dim": 128,
-    "index_topk": 512,
-    "hc_mult": 4,
-    "hc_sinkhorn_iters": 20,
-    "hc_eps": 1e-6,
-    "bos_token_id": 0,
-    "eos_token_id": 1,
+    "rope_theta": 10000,
+    "routed_scaling_factor": 1.5,
+    "scoring_func": "sqrtsoftplus",
+    "sliding_window": 128,
+    "swiglu_limit": 10.0,
+    "tie_word_embeddings": False,
+    "topk_method": "noaux_tc",
+    "torch_dtype": "bfloat16",
+    "transformers_version": "4.57.1",
+    "use_cache": True,
+    "vocab_size": 129280,
+    "compress_rope_theta": 160000,
+    "compress_ratios": [0, 0] + [4, 128] * 20 + [4, 0],
 }
 
 
-def official_args(module: types.ModuleType, config: dict, max_seq_len: int):
+def _official_args(module: types.ModuleType, config: dict, max_seq_len: int):
     """The official ``ModelArgs`` of a Hugging Face ``config`` dict for one request, without MTP
     layers."""
     rope = config["rope_scaling"]
@@ -254,7 +275,7 @@ def _official_tensor(name: str, tensor: torch.Tensor, scale: torch.Tensor | None
     return tensor
 
 
-def official_state_dict(tensors: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def _official_state_dict(tensors: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     """Checkpoint tensors in the dtypes the official modules hold, for their
     ``load_state_dict``; MTP tensors and ``wo_a`` scales are dropped."""
     out = {}
@@ -268,11 +289,50 @@ def official_state_dict(tensors: dict[str, torch.Tensor]) -> dict[str, torch.Ten
     return out
 
 
+@contextlib.contextmanager
+def official_defaults(device: torch.device | str):
+    """Make bfloat16 and ``device`` torch's defaults, which the official model is built and run
+    under, and restore the previous ones after."""
+    dtype, previous = torch.get_default_dtype(), torch.get_default_device()
+    torch.set_default_dtype(torch.bfloat16)
+    torch.set_default_device(device)
+    try:
+        yield
+    finally:
+        torch.set_default_dtype(dtype)
+        torch.set_default_device(previous)
+
+
+def official_model(
+    inference_dir: str | os.PathLike,
+    tensors: dict[str, torch.Tensor],
+    config: dict,
+    max_seq_len: int,
+    *,
+    rounded: bool = False,
+):
+    """The official ``Transformer`` of ``config`` from ``inference_dir``, for one request and
+    holding the checkpoint ``tensors``; ``rounded`` rounds its attention probabilities to
+    bfloat16, as its TileLang kernel does. Build and run it under :func:`official_defaults`."""
+    module = _load_official(inference_dir)
+    if rounded:
+        module.sparse_attn = functools.partial(sparse_attn, p_dtype=torch.bfloat16)
+    model = module.Transformer(_official_args(module, config, max_seq_len))
+    missing, unexpected = model.load_state_dict(_official_state_dict(tensors), strict=False)
+    buffers = ("kv_cache", "freqs_cis", "kv_state", "score_state")
+    assert [m for m in missing if not any(b in m for b in buffers)] == []
+    assert unexpected == []
+    return model
+
+
 def random_checkpoint(config: dict, seed: int) -> dict[str, torch.Tensor]:
     """Random weights for ``config`` under the official tensor names, dtypes and layouts.
 
-    Dense linears are FP8 under 128x128 block scales, routed experts e2m1 bytes under per-32
-    scales, magnitudes near the published checkpoint's. MTP tensors are not generated.
+    Dense linears are standard normal FP8 codes under one power-of-two scale near ``k ** -0.5``
+    per 128x128 block, routed experts uniformly random e2m1 bytes under per-32 power-of-two
+    scales near ``k ** -0.5 / 2.9``, 2.9 being the RMS of a uniformly random e2m1 code, each
+    jittered by up to an octave: magnitudes near the published checkpoint's. MTP tensors are
+    not generated.
     """
     g = torch.Generator().manual_seed(seed)
 
@@ -291,9 +351,14 @@ def random_checkpoint(config: dict, seed: int) -> dict[str, torch.Tensor]:
     mix = (2 + hc) * hc
     t: dict[str, torch.Tensor] = {}
 
+    def pow2_scale(shape, scale):
+        exponent = torch.full(shape, round(math.log2(scale)), dtype=torch.float32)
+        exponent += torch.randint(-1, 2, shape, generator=g)
+        return torch.exp2(exponent).to(torch.float8_e8m0fnu)
+
     def fp8_linear(name, n, k):
-        codes, scale = fp8_quant_per_block(normal(n, k, std=k**-0.5), ue8m0=True)
-        t[f"{name}.weight"], t[f"{name}.scale"] = codes, scale.to(torch.float8_e8m0fnu)
+        t[f"{name}.weight"] = normal(n, k).to(torch.float8_e4m3fn)
+        t[f"{name}.scale"] = pow2_scale((-(-n // 128), k // 128), k**-0.5)
 
     def norm(name, d):
         t[f"{name}.weight"] = normal(d, std=0.1, mean=1.0).bfloat16()
@@ -307,9 +372,7 @@ def random_checkpoint(config: dict, seed: int) -> dict[str, torch.Tensor]:
 
     def fp4_expert(name, n, k):
         t[f"{name}.weight"] = torch.randint(-128, 128, (n, k // 2), generator=g, dtype=torch.int8)
-        exponent = torch.full((n, k // 32), round(math.log2(k**-0.5 / 2.9)), dtype=torch.float32)
-        exponent += torch.randint(-1, 2, exponent.shape, generator=g)
-        t[f"{name}.scale"] = torch.exp2(exponent).to(torch.float8_e8m0fnu)
+        t[f"{name}.scale"] = pow2_scale((n, k // 32), k**-0.5 / 2.9)
 
     t["embed.weight"] = normal(config["vocab_size"], dim).bfloat16()
     for i, ratio in enumerate(config["compress_ratios"][: config["num_hidden_layers"]]):
@@ -355,57 +418,12 @@ def random_checkpoint(config: dict, seed: int) -> dict[str, torch.Tensor]:
     return t
 
 
-def check_decode_state(block, official_block, positions: int) -> None:
-    """Assert a TileOPs layer's decoding state matches the official block's after both took the
-    same inputs over ``positions`` tokens.
-
-    The window ring and the compressed entries hold FP8 fake-quantized rows and may differ by
-    1e-2 in relative L2, the indexer's entries FP4 fake-quantized ones and may differ by 2e-2;
-    entries are compared once a window has closed.
-    """
-    fp8_tol, fp4_tol = 1e-2, 2e-2
-    attn, official = block.attn, official_block.attn
-    window = attn.window
-    pairs = [
-        (
-            "window ring",
-            attn.kv_cache[:, :window],
-            official.kv_cache[:, :window],
-            fp8_tol,
-        )
-    ]
-    if attn.ratio and positions >= attn.ratio:
-        n = positions // attn.ratio
-        entries = slice(window, window + n)
-        pairs.append(
-            (
-                "entries",
-                attn.kv_cache[:, entries],
-                official.kv_cache[:, entries],
-                fp8_tol,
-            )
-        )
-    if attn.indexer is not None and positions >= attn.indexer.ratio:
-        n = positions // attn.indexer.ratio
-        pairs.append(
-            (
-                "indexer entries",
-                attn.indexer.cache[:, :n],
-                official.indexer.kv_cache[:, :n],
-                fp4_tol,
-            )
-        )
-    for name, actual, expected, tol in pairs:
-        rel = ((actual.float() - expected.float()).norm() / expected.float().norm()).item()
-        assert rel <= tol, f"{name}: {rel:.3e} relative L2 from the official state, bound {tol:.0e}"
-
-
 def check_index_selection(
     indices: torch.Tensor, start_pos: int, offset: int, ratio: int, top_k: int
 ) -> None:
     """Assert each query of a call starting at ``start_pos`` selects exactly
     ``min(top_k, visible)`` distinct compressed entries, all closed before or at it: the entry
-    of window ``j`` closes at position ``(j + 1) * ratio - 1``. ``indices`` (``[B, S, k]``) holds
+    of window ``j`` closes at position ``(j + 1) * ratio - 1``. ``indices`` (``[1, S, k]``) holds
     entry numbers plus ``offset``, -1 padding."""
     seqlen = indices.shape[1]
     pos = torch.arange(start_pos, start_pos + seqlen, device=indices.device).view(1, -1, 1)
@@ -422,17 +440,17 @@ def check_index_selection(
     )
 
 
-def check_selection_agreement(selections: list, official: list, ratio: int, top_k: int) -> None:
+def check_selection_agreement(selections: list, official: list, top_k: int) -> None:
     """Assert the indexer's selections agree with the official indexer's on the same inputs.
 
-    ``selections`` holds each call's ``(indices, start_pos, offset)`` and ``official`` the
+    ``selections`` holds each call's ``(indices, start_pos, offset, ratio)`` and ``official`` the
     official indexer's output for the same call. Over the queries that see more than ``top_k``
     closed entries, and so choose, on average at most ``top_k / 256`` of the entries kept may be
     missing from the official selection: FP4 rounding ties move a few entries across the cut,
     a scoring fault moves many.
     """
     differing = choosing = 0
-    for (indices, start_pos, _), theirs in zip(selections, official, strict=True):
+    for (indices, start_pos, _, ratio), theirs in zip(selections, official, strict=True):
         pos = torch.arange(start_pos, start_pos + indices.shape[1], device=indices.device)
         chooses = (pos + 1) // ratio > top_k
         if not chooses.any():

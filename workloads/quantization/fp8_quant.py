@@ -17,8 +17,8 @@ def fp8_quant_per_group(
     group_size: int,
     eps: float,
     use_ue8m0: bool | None,
-    scale_dtype: torch.dtype = torch.float32,
-    inplace: bool = False,
+    scale_dtype: torch.dtype,
+    inplace: bool,
 ):
     """Per ``group_size`` elements of the last axis: ``scale = max(amax, eps) / 448``, under
     ``use_ue8m0`` rounded up to a power of two no smaller than ``2 ** -126``, and
