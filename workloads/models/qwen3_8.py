@@ -238,7 +238,9 @@ class ReferenceRequest:
         return out.logits[:, -1].float()
 
 
-# How many times the reference's own bfloat16 rounding noise a model may differ from it.
+# How many times the reference's own bfloat16 rounding noise a model may differ from it. A model
+# rounds to bfloat16 at other points than the reference (fused ops, other accumulation orders), an
+# error of the same size as the reference's own rounding; 2 lets the two add.
 _NOISE_FACTOR = 2
 
 

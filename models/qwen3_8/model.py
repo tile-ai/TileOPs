@@ -103,8 +103,10 @@ class Qwen3_8ForCausalLM:
         x = ops.embedding(input_ids[0].to(self.first_device), self.embed)
         residual = None
         step = None
+        previous = None
         for layer, device in zip(self.layers, self.layer_devices, strict=True):
-            if step is None or step.cos_sin.device != device:
+            if device != previous:
+                previous = device
                 step = Step.build(start_pos, seqlen, self.cos_sin[device])
                 x = x.to(device)
                 residual = None if residual is None else residual.to(device)

@@ -16,7 +16,7 @@ import torch
 
 from models.qwen3_8 import Qwen3_8Config, Qwen3_8ForCausalLM
 from models.qwen3_8.layers import GatedDeltaNet
-from workloads.device import run_device
+from workloads.device import run_device, run_device_is_cuda
 from workloads.models.qwen3_8 import (
     QWEN3_8_27B_CONFIG,
     ReferenceRequest,
@@ -298,3 +298,19 @@ def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
     tokens: the last one completes the sequence without a forward call past position 7."""
     model = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[run_device()], max_seq_len=8)
     assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 6
+
+
+@pytest.mark.sm90
+def test_layers_split_over_two_devices_give_the_one_device_logits(checkpoint):
+    """The model spread over two devices moves the hidden state, the residual and each device's
+    position metadata between its layer runs, and returns the logits it returns on one device,
+    over a prefill and a decode step."""
+    if not run_device_is_cuda() or torch.cuda.device_count() < 2:
+        pytest.skip("needs two CUDA devices")
+    one = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[0], max_seq_len=64)
+    two = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[0, 1], max_seq_len=64)
+    assert {d.index for d in two.layer_devices} == {0, 1}
+    ids = torch.arange(1, 8).view(1, -1)
+    for step, pos in ((ids[:, :6], 0), (ids[:, 6:], 6)):
+        expected = one(step, pos)
+        torch.testing.assert_close(two(step, pos).to(expected.device), expected, rtol=0, atol=0)
