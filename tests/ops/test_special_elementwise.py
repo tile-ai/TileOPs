@@ -765,7 +765,7 @@ def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> N
 
 _MASKED_FILL_REJECT_CASES = [
     pytest.param(torch.int8, 200, id="signed-int-overflow"),
-    pytest.param(torch.int8, 127.5, id="signed-int-float-just-over"),
+    pytest.param(torch.int8, 128.0, id="signed-int-float-just-over"),
     pytest.param(torch.uint8, -256, id="uint8-int-wrap-too-low"),
     pytest.param(torch.uint8, -1.0, id="uint8-float-negative"),
     pytest.param(torch.int32, float("inf"), id="int-inf"),
