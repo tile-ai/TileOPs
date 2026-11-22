@@ -10,6 +10,8 @@ a row instead, each CTA's share held in registers; so do many 16-bit rows of who
 of eight vectors a thread, on a portable cluster. See :class:`SoftmaxClusterSplitKernel`.
 """
 
+import operator
+
 import tilelang
 import tilelang.language as T
 from tvm import DataType
@@ -56,6 +58,11 @@ def _softmax_on_chip_kernel(
     # The output's exponent is raised by this many before the exp2 and the result scaled
     # back by a multiply, which keeps a subnormal probability.
     exp_bias = 64
+    # A 16-bit row takes its warp's maximum before its terms, so the warp's sums add without
+    # a rescaling, which runs faster on SM90 for every 16-bit plan. An fp32 row folds the
+    # warp's (max, sum) pairs after its terms: the maximum taken first runs slower for two
+    # of its plans.
+    max_first = DataType(dtype).bits == 16
 
     @tilelang.jit(
         out_idx=[1],
@@ -146,6 +153,8 @@ def _softmax_on_chip_kernel(
                 stat[0] = T.cast(peaks[0], "float32")
                 for i in T.unroll(1, vec):
                     stat[0] = T.max(stat[0], T.cast(peaks[i], "float32"))
+                if max_first:
+                    warp_reduce(stat, T.max)
                 stat[1] = T.cast(0, "float32")
                 if stat[0] != neg_inf:
                     for j in T.unroll(held_vectors * vec):
@@ -155,7 +164,10 @@ def _softmax_on_chip_kernel(
                             piece[i] = tile[0, (v * threads + tx) * vec + i]
                         for i in T.unroll(vec):
                             stat[1] += term(piece[i], stat[0])
-                warp_reduce(stat, fold_max_sum_into, 2, peer=peer)
+                if max_first:
+                    warp_reduce(stat, operator.add, first=1)
+                else:
+                    warp_reduce(stat, fold_max_sum_into, 2, peer=peer)
                 if tx % WARP_LANES == 0:
                     sums[2 * (tx // WARP_LANES)] = stat[0]
                     sums[2 * (tx // WARP_LANES) + 1] = stat[1]
