@@ -179,10 +179,11 @@ class _Recorded:
         return out, residual
 
 
-# Per request: the lengths of the calls that prefill it, then the decode steps. GDN chunks and
-# KV-cache pages are 64 tokens: 130 ends 2 tokens into its third chunk, 67 starts there and ends
-# mid-chunk, and 64 crosses a chunk boundary without starting on one; 2100 walks 33 chunks and
-# pages and ends mid-chunk, so the recurrent state's rounding builds up over a long prefill.
+# Per request: the lengths of the calls that prefill it, then the decode steps. GDNFwdOp splits
+# each call into 64-token chunks from its first token: 130 is 64 + 64 + 2, 67 is 64 + 3, and 64 is
+# one whole chunk. The 64-row KV-cache pages count from position 0, so the 67- and 64-token calls
+# start mid-page, at 130 and 197. The 2100-token prefill runs 32 whole chunks and a 52-token tail,
+# so the recurrent state's rounding builds up over a long walk.
 _REQUESTS = {
     "short": ([5], 6),
     "chunked-prefill": ([130, 67, 64], 4),
