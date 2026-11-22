@@ -263,28 +263,29 @@ def test_marlin_baseline_reads_the_callers_group_size(monkeypatch, n, k, group_s
     assert reason is None if expected is None else expected in reason
 
 
-def _deepgemm_fp8_on_sm90(monkeypatch, m, n, k, out_dtype, mode):
+def _deepgemm_fp8_on(monkeypatch, arch, m, n, k, out_dtype, mode):
     from benchmarks.ops import bench_gemm
 
-    monkeypatch.setattr(bench_gemm, "get_sm_version", lambda: 90)
+    monkeypatch.setattr(bench_gemm, "get_sm_version", lambda: arch)
     monkeypatch.setattr(bench_gemm, "deepgemm_op", lambda name: None)
     workload = SimpleNamespace(m=m, n=n, k=k, out_dtype=out_dtype, scale_mode=mode, bias=False)
     return bench_gemm._deepgemm_fp8(workload)
 
 
 @pytest.mark.parametrize(
-    "m, n, k, out_dtype, mode",
+    "arch, m, n, k, out_dtype, mode",
     [
-        pytest.param(64, 64, 144, torch.bfloat16, "per_tensor", id="partial-scale-group"),
-        pytest.param(64, 68, 144, torch.float16, "per_tensor", id="fp32-intermediate"),
-        pytest.param(64, 68, 144, torch.bfloat16, "block128", id="element-scales"),
-        pytest.param(32, 64, 144, torch.bfloat16, "per_tensor", id="small-m-1d2d"),
+        pytest.param(90, 64, 64, 144, torch.bfloat16, "per_tensor", id="partial-scale-group"),
+        pytest.param(90, 64, 68, 144, torch.float16, "per_tensor", id="fp32-intermediate"),
+        pytest.param(90, 64, 68, 144, torch.bfloat16, "block128", id="element-scales"),
+        pytest.param(90, 32, 64, 144, torch.bfloat16, "per_tensor", id="small-m-1d2d"),
+        pytest.param(100, 32, 64, 144, torch.bfloat16, "block128", id="small-m-1d1d-sm100"),
     ],
 )
 def test_deepgemm_fp8_baseline_accepts_its_aligned_tail_domain(
-    monkeypatch, m, n, k, out_dtype, mode
+    monkeypatch, arch, m, n, k, out_dtype, mode
 ):
-    assert callable(_deepgemm_fp8_on_sm90(monkeypatch, m, n, k, out_dtype, mode))
+    assert callable(_deepgemm_fp8_on(monkeypatch, arch, m, n, k, out_dtype, mode))
 
 
 @pytest.mark.parametrize(
@@ -301,7 +302,7 @@ def test_deepgemm_fp8_baseline_refuses_rows_it_cannot_run(
     monkeypatch, m, n, k, out_dtype, mode, error
 ):
     with pytest.raises(ValueError, match=error):
-        _deepgemm_fp8_on_sm90(monkeypatch, m, n, k, out_dtype, mode)
+        _deepgemm_fp8_on(monkeypatch, 90, m, n, k, out_dtype, mode)
 
 
 @pytest.mark.parametrize(
