@@ -317,6 +317,15 @@ def aggregate_test_results(results: list[dict]) -> dict:
     return dict(ops)
 
 
+def _model_of(result: dict) -> str:
+    """The model a testcase tests: ``<model>`` of the ``tests.models.test_<model>`` module in
+    its classname, or in its name where a collection error leaves the classname empty."""
+    source = result["nodeid"].split("::")[0] or result["name"]
+    parts = source.split(".")
+    module = parts[parts.index("models") + 1] if "models" in parts[:-1] else source
+    return module.removeprefix("test_")
+
+
 def aggregate_model_results(results: list[dict]) -> dict[str, dict]:
     """Group model test results by model, the ``tests/models/test_<model>.py`` file each
     testcase comes from."""
@@ -324,8 +333,7 @@ def aggregate_model_results(results: list[dict]) -> dict[str, dict]:
         lambda: {"passed": 0, "failed": 0, "skipped": 0, "failing_tests": []}
     )
     for r in results:
-        module = r["nodeid"].split("::")[0].rsplit(".", 1)[-1]
-        d = models[module.removeprefix("test_")]
+        d = models[_model_of(r)]
         d[r["outcome"] if r["outcome"] in ("passed", "failed") else "skipped"] += 1
         if r["outcome"] == "failed":
             d["failing_tests"].append(r["name"])
@@ -1320,7 +1328,8 @@ def generate_report(
         )
         total_passed = sum(d["passed"] for d in (test_ops or {}).values())
 
-    model_failures = sum(d["failed"] for d in (models or {}).values())
+    # An empty result is a model run that wrote no testcase: it crashed or collected nothing.
+    model_failures = sum(d["failed"] for d in (models or {}).values()) or int(models == {})
     health = (
         _PASS
         if (
@@ -1367,7 +1376,13 @@ def generate_report(
     if models is not None:
         model_tests = sum(d["passed"] + d["failed"] + d["skipped"] for d in models.values())
         model_passed = sum(d["passed"] for d in models.values())
-        model_icon = _PASS if model_failures == 0 else f"{_FAIL} {model_failures} failed"
+        model_icon = (
+            f"{_FAIL} no results"
+            if not models
+            else _PASS
+            if model_failures == 0
+            else f"{_FAIL} {model_failures} failed"
+        )
         lines.append(
             f"| **Models** | {model_icon} &ensp; ({len(models)} models, "
             f"{model_passed}/{model_tests} tests) |"
@@ -1747,9 +1762,11 @@ def main():
         test_results = parse_test_xml(args.test_xml)
         test_ops = aggregate_test_results(test_results)
 
+    # Given but absent, the model run died before pytest wrote it: no results, not a pass.
     models = None
-    if args.model_test_xml and Path(args.model_test_xml).exists():
-        models = aggregate_model_results(parse_test_xml(args.model_test_xml))
+    if args.model_test_xml:
+        path = Path(args.model_test_xml)
+        models = aggregate_model_results(parse_test_xml(str(path))) if path.exists() else {}
 
     bench_ops = None
     bench_failures = []
