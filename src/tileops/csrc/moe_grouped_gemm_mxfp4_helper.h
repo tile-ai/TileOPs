@@ -113,6 +113,28 @@ __device__ __forceinline__ uint32_t mxfp4_e2m1x4_e4m3(uint32_t codes, uint2 row,
   return magnitude | ((signs << 1) & 0x80808080u);
 }
 
+// Eight e2m1 codes (``codes``: byte i holds k = 2i in its low nibble and
+// 2i + 1 in its high one) as e4m3 bytes in k order, k 0..3 in ``lo`` and
+// 4..7 in ``hi``: magnitudes from the byte row ``row`` as mxfp4_e2m1x4_e4m3
+// takes them. A code's sign is bit 3 of its nibble: a high nibble's is its
+// byte's top bit already, and ``codes << 4`` moves a low nibble's there, so
+// a byte permutation of the two words interleaves the signs in k order.
+__device__ __forceinline__ void mxfp4_e2m1x8_e4m3(uint32_t codes, uint2 row,
+                                                  uint32_t& lo, uint32_t& hi) {
+  uint32_t const magnitudes = codes & 0x77777777u;
+  uint32_t const low_signs = codes << 4;
+  // prmt itself: __byte_perm masks each selector nibble to three bits again.
+  uint32_t lo_magnitudes, hi_magnitudes;
+  asm("prmt.b32 %0, %1, %2, %3;"
+      : "=r"(lo_magnitudes)
+      : "r"(row.x), "r"(row.y), "r"(magnitudes));
+  asm("prmt.b32 %0, %1, %2, %3;"
+      : "=r"(hi_magnitudes)
+      : "r"(row.x), "r"(row.y), "r"(magnitudes >> 16));
+  lo = lo_magnitudes | (__byte_perm(low_signs, codes, 0x5140u) & 0x80808080u);
+  hi = hi_magnitudes | (__byte_perm(low_signs, codes, 0x7362u) & 0x80808080u);
+}
+
 // 16-byte chunk ``chunk`` (K steps 4 chunk .. 4 chunk + 3) of row ``row`` of
 // a task's code table that comes by TMA: Rows-row boxes of BoxBytes (64 or 128)
 // of each row, TMA-swizzled (16-byte chunk c of a row at byte offset o stored
@@ -573,7 +595,7 @@ __device__ __forceinline__ void mxfp4_warp_arrive(void* barrier) {
   }
 }
 
-// The magnitude byte rows (mxfp4_e2m1x4_e4m3's ``row``) of decode thread
+// The magnitude byte rows (mxfp4_e2m1x8_e4m3's ``row``) of decode thread
 // ``thread``'s units for K step ``kk``, two words a unit in
 // mxfp4_decode_shared's order: under ``fold`` each sub-block's rows carry
 // 2 ** (code - ref) of its row's reference (``unit_refs``); otherwise none. The
@@ -635,25 +657,19 @@ __device__ __forceinline__ void mxfp4_decode_shared(void const* packed_stage,
         static_cast<uint8_t const*>(packed_stage) + kWhole * Threads * 16 +
         thread * 8);
   }
-  // 0x80808080 (``thread`` < 2 ** 31) held in a per-thread register: as a
-  // uniform constant, NVCC rebuilds it with a copy before each of the eight
-  // prmts that read it a unit.
-  uint32_t const fill = 0x80808080u | (static_cast<uint32_t>(thread) >> 31);
 #pragma unroll
   for (int j = 0; j < kWhole; ++j) {
     int const unit = thread + Threads * j;
     int const row = unit >> 2;
     int const sub_block = unit & 3;
     uint2 const lut = make_uint2(luts[2 * j], luts[2 * j + 1]);
-    // The sub-block's 32 e2m1 codes (byte i holding k = 2i in its low nibble
-    // and 2i + 1 in its high one) as 32 e4m3 bytes in k order.
+    // The sub-block's 32 e2m1 codes as 32 e4m3 bytes in k order.
     uint32_t const words[4] = {packed[j].x, packed[j].y, packed[j].z,
                                packed[j].w};
     uint32_t out[8];
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
-      out[2 * i] = mxfp4_e2m1x4_e4m3(words[i], lut, fill);
-      out[2 * i + 1] = mxfp4_e2m1x4_e4m3(words[i] >> 16, lut, fill);
+      mxfp4_e2m1x8_e4m3(words[i], lut, out[2 * i], out[2 * i + 1]);
     }
     uint8_t* dst = static_cast<uint8_t*>(decoded_stage) + row * 128;
     int const swizzle = row & 7;
@@ -667,10 +683,9 @@ __device__ __forceinline__ void mxfp4_decode_shared(void const* packed_stage,
     int const half = thread & 1;
     int const row = unit >> 2;
     uint2 const lut = make_uint2(luts[2 * kWhole], luts[2 * kWhole + 1]);
-    uint32_t const out[4] = {mxfp4_e2m1x4_e4m3(half_packed.x, lut, fill),
-                             mxfp4_e2m1x4_e4m3(half_packed.x >> 16, lut, fill),
-                             mxfp4_e2m1x4_e4m3(half_packed.y, lut, fill),
-                             mxfp4_e2m1x4_e4m3(half_packed.y >> 16, lut, fill)};
+    uint32_t out[4];
+    mxfp4_e2m1x8_e4m3(half_packed.x, lut, out[0], out[1]);
+    mxfp4_e2m1x8_e4m3(half_packed.y, lut, out[2], out[3]);
     uint8_t* dst = static_cast<uint8_t*>(decoded_stage) + row * 128;
     *reinterpret_cast<uint4*>(dst +
                               (((2 * (unit & 3) + half) ^ (row & 7)) << 4)) =
