@@ -50,13 +50,11 @@ def act_quant(
 
 
 def fp4_act_quant(x: torch.Tensor, block_size: int = 32, inplace: bool = False):
-    """``kernel.fp4_act_quant``: per ``block_size`` elements, e2m1 codes under a power-of-two
-    scale; with ``inplace`` ``x`` overwritten by its dequantized codes."""
-    if inplace:
-        fp4_quant_per_group(x, block_size, inplace=True)
-        return x
-    codes, scale, _ = fp4_quant_per_group(x, block_size)
-    return codes.view(torch.float4_e2m1fn_x2), scale
+    """``kernel.fp4_act_quant`` as the official model calls it, ``inplace``: ``x`` overwritten
+    by its e2m1 codes per ``block_size`` elements under a power-of-two scale, dequantized."""
+    assert inplace, "the official model quantizes FP4 activations in place only"
+    fp4_quant_per_group(x, block_size, inplace=True)
+    return x
 
 
 def _dequant_rows(codes: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
@@ -198,11 +196,12 @@ DEEPSEEK_V4_FLASH_CONFIG = {
 }
 
 
-def official_args(module: types.ModuleType, config: dict, max_seq_len: int, max_batch_size: int):
-    """The official ``ModelArgs`` of a Hugging Face ``config`` dict, without MTP layers."""
+def official_args(module: types.ModuleType, config: dict, max_seq_len: int):
+    """The official ``ModelArgs`` of a Hugging Face ``config`` dict for one request, without MTP
+    layers."""
     rope = config["rope_scaling"]
     return module.ModelArgs(
-        max_batch_size=max_batch_size,
+        max_batch_size=1,
         max_seq_len=max_seq_len,
         dtype="fp8",
         scale_fmt="ue8m0",
@@ -244,7 +243,7 @@ def official_args(module: types.ModuleType, config: dict, max_seq_len: int, max_
     )
 
 
-def _official_tensor(name: str, tensor: torch.Tensor, scale: torch.Tensor | None = None):
+def _official_tensor(name: str, tensor: torch.Tensor, scale: torch.Tensor | None):
     """A checkpoint tensor in the dtype the official module holds it, as ``convert.py`` writes
     it: ``wo_a`` dequantized to bfloat16 (``scale`` is its block scale), routed-expert bytes as
     ``float4_e2m1fn_x2``."""
@@ -269,7 +268,7 @@ def official_state_dict(tensors: dict[str, torch.Tensor]) -> dict[str, torch.Ten
     return out
 
 
-def random_checkpoint(config: dict, seed: int = 0) -> dict[str, torch.Tensor]:
+def random_checkpoint(config: dict, seed: int) -> dict[str, torch.Tensor]:
     """Random weights for ``config`` under the official tensor names, dtypes and layouts.
 
     Dense linears are FP8 under 128x128 block scales, routed experts e2m1 bytes under per-32
@@ -296,8 +295,8 @@ def random_checkpoint(config: dict, seed: int = 0) -> dict[str, torch.Tensor]:
         codes, scale = fp8_quant_per_block(normal(n, k, std=k**-0.5), ue8m0=True)
         t[f"{name}.weight"], t[f"{name}.scale"] = codes, scale.to(torch.float8_e8m0fnu)
 
-    def norm(name, d, mean=1.0):
-        t[f"{name}.weight"] = normal(d, std=0.1, mean=mean).bfloat16()
+    def norm(name, d):
+        t[f"{name}.weight"] = normal(d, std=0.1, mean=1.0).bfloat16()
 
     def compressor(name, ratio, d):
         width = (2 if ratio == 4 else 1) * d

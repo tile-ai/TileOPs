@@ -148,7 +148,7 @@ def _official_model(tensors, max_seq_len, *, rounded=False):
     module = load_official(inference_dir)
     if rounded:
         module.sparse_attn = functools.partial(sparse_attn, p_dtype=torch.bfloat16)
-    model = module.Transformer(official_args(module, _SMALL, max_seq_len, 1))
+    model = module.Transformer(official_args(module, _SMALL, max_seq_len))
     missing, unexpected = model.load_state_dict(official_state_dict(tensors), strict=False)
     buffers = ("kv_cache", "freqs_cis", "kv_state", "score_state")
     assert [m for m in missing if not any(b in m for b in buffers)] == []
