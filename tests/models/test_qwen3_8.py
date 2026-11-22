@@ -194,7 +194,7 @@ _REQUESTS = {
 @pytest.mark.parametrize(("chunks", "decode_steps"), list(_REQUESTS.values()), ids=list(_REQUESTS))
 def test_layers_logits_and_state_match_hf(checkpoint, chunks, decode_steps):
     """Every layer's output and the logits over every call, then the decoding state."""
-    # Holds the longest request, 2109 tokens.
+    # Holds the longest request, 2103 tokens: the 2100-token prefill and three decode steps.
     mine = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[run_device()], max_seq_len=2304)
     records = [[] for _ in mine.layers]
     mine.layers = [_Recorded(layer, r) for layer, r in zip(mine.layers, records, strict=True)]
