@@ -82,9 +82,9 @@ def uncached(monkeypatch):
 
 @pytest.fixture
 def cache_dir(monkeypatch):
-    """A cache of stored results that starts empty, in TileLang's temporary directory."""
-    Path(tilelang.env.TILELANG_TMP_DIR).mkdir(parents=True, exist_ok=True)
-    path = Path(tempfile.mkdtemp(dir=tilelang.env.TILELANG_TMP_DIR))
+    """A cache of stored results that starts empty, on the file system of TileLang's cache."""
+    Path(tilelang.env.TILELANG_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+    path = Path(tempfile.mkdtemp(dir=tilelang.env.TILELANG_CACHE_DIR))
     monkeypatch.setattr(AutoTuner, "cache_dir", property(lambda self: path))
     monkeypatch.setattr(AutoTuner, "_memory_cache", {})
     monkeypatch.setattr(tilelang.env, "is_cache_enabled", lambda: True)
