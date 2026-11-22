@@ -1,8 +1,9 @@
 """The import directions between the package, the experimental ``models/`` tree and the repo.
 
 ``src/tileops`` ships and depends on no model or checkpoint package; ``models/`` reaches no private
-``tileops`` module; references, op tests and benchmarks do not depend on a model. Whether a model
-computes only through ops is a review question, not an import one.
+``tileops`` module; a model's reference imports no ``tileops``; references, op tests and
+benchmarks do not depend on a model. Whether a model computes only through ops is a review
+question, not an import one.
 """
 
 from __future__ import annotations
@@ -65,6 +66,12 @@ def _model_violations(root: Path) -> list[str]:
     return found
 
 
+def _reference_violations(root: Path) -> list[str]:
+    """Imports under ``root`` (model references) of ``tileops``: a reference that ran a TileOPs
+    kernel would check the model against the code under test."""
+    return [f"{at}: {name}" for at, name in _imports(root) if name.split(".")[0] == "tileops"]
+
+
 def _consumer_violations(root: Path) -> list[str]:
     """Imports under ``root`` (references, op tests or benchmarks) of a model."""
     return [f"{at}: {name}" for at, name in _imports(root) if name.split(".")[0] == "models"]
@@ -75,7 +82,8 @@ def _consumer_violations(root: Path) -> list[str]:
     [
         pytest.param(_package_violations, "src/tileops", id="package"),
         pytest.param(_model_violations, "models", id="models"),
-        pytest.param(_consumer_violations, "workloads", id="references"),
+        pytest.param(_reference_violations, "workloads/models", id="model-references"),
+        pytest.param(_consumer_violations, "workloads", id="workloads"),
         pytest.param(_consumer_violations, "tests/ops", id="op-tests"),
         pytest.param(_consumer_violations, "benchmarks", id="benchmarks"),
     ],
@@ -96,6 +104,7 @@ def test_the_repository_keeps_the_import_directions(check, tree):
         pytest.param(_model_violations, "from workloads.models import ref", id="model-reference"),
         pytest.param(_model_violations, "import tileops\ntileops._ops.G()", id="model-attribute"),
         pytest.param(_consumer_violations, "import models.deepseek_v4", id="consumer-model"),
+        pytest.param(_reference_violations, "from tileops.norm import N", id="reference-tileops"),
     ],
 )
 def test_a_forbidden_import_is_reported(tmp_path, check, source):
