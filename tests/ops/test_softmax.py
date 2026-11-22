@@ -865,17 +865,20 @@ def test_large_row_shifts_its_maximum_to_exactly_one() -> None:
     ],
 )
 @pytest.mark.parametrize(
-    "width, prefix",
+    "width, prefix, dtype",
     [
         # 16384-element tiles on the streaming kernel: the first tile and most of the
         # second are the -inf prefix.
-        pytest.param(40000, 28672, id="streaming", marks=pytest.mark.smoke),
+        pytest.param(40000, 28672, torch.float32, id="streaming", marks=pytest.mark.smoke),
+        # Two CTAs a row on the on-chip kernel, whose 16-bit rows take the warp maximum
+        # before their terms: the first CTA's share is the prefix.
+        pytest.param(65536, 32768, torch.float16, id="on-chip-fp16", marks=pytest.mark.smoke),
         # Eight CTAs a row on the on-chip kernel: the first CTA's share is the prefix.
-        pytest.param(40960, 5120, id="on-chip", marks=pytest.mark.full),
+        pytest.param(40960, 5120, torch.float32, id="on-chip", marks=pytest.mark.full),
     ],
 )
 def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(
-    op: type, reference, width: int, prefix: int
+    op: type, reference, width: int, prefix: int, dtype: torch.dtype
 ) -> None:
     """A row whose leading part holds only ``-inf`` still reduces its finite tail.
 
@@ -888,7 +891,7 @@ def test_leading_tiles_of_only_neg_inf_do_not_poison_a_row(
     device = run_device()
     torch.manual_seed(1235)
     # Too few rows dispatch to the split kernel instead.
-    x = torch.randn((264, width), dtype=torch.float32, device=device)
+    x = torch.randn((264, width), dtype=dtype, device=device)
     x[0, :prefix] = float("-inf")
     x[1, :] = float("-inf")
 
