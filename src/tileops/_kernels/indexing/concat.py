@@ -3,6 +3,7 @@
 import dataclasses
 import math
 from abc import abstractmethod
+from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -152,6 +153,93 @@ def _concat_kernel(vec, dtypes, out_dtype, per_thread):
     )
 
 
+@target_cache(maxsize=64)
+def _concat_flat_kernel(vec, dtype, n, per_thread):
+    """One launch of ``n`` same-dtype inputs over the flat output, viewed as ``rows * total``
+    16-byte vectors cut into runs of ``_THREADS * per_thread``, one a CTA, so a warp's stores
+    fill whole lines. A vector's row is its position times ``mul``, high word, shifted by
+    ``shr`` (the position itself where ``mul`` is 0); its input is a compare of its column.
+    """
+    rows = T.dynamic("rows", "int32")
+    total = T.dynamic("total", "int32")
+    cols = [T.dynamic(f"cols{k}", "int32") for k in range(n)]
+    offset = [0]
+    for k in range(n):
+        offset.append(offset[k] + cols[k])
+
+    def slot(k):
+        return T.Tensor((rows, cols[k], vec), dtype) if k < n else None
+
+    def inside(k, col):
+        return col < offset[k + 1] if k == 0 else T.And(col >= offset[k], col < offset[k + 1])
+
+    @T.macro
+    def load(x, k, held, u, row, col):
+        if inside(k, col):
+            # Evict-last, as the per-row program reads a whole vector.
+            load16_evict_last(held, (u, 0), x, (row, col - offset[k], 0))
+
+    @T.macro
+    def pick(k, held, value, u, col):
+        if inside(k, col):
+            for v in T.vectorized(vec):
+                value[v] = held[u, v]
+
+    @T.prim_func
+    def concat(
+        out: T.Tensor((rows, total, vec), dtype),  # type: ignore
+        mul: T.uint32,  # type: ignore
+        shr: T.uint32,  # type: ignore
+        x0: slot(0),  # type: ignore
+        x1: slot(1) = None,  # type: ignore
+        x2: slot(2) = None,  # type: ignore
+        x3: slot(3) = None,  # type: ignore
+    ):
+        with T.Kernel(T.ceildiv(rows * total, _THREADS * per_thread), threads=_THREADS) as bx:
+            # One register array an input: the loads of a vector's inputs, of which one reads,
+            # write different registers and issue together.
+            held0 = T.alloc_local((per_thread, vec), dtype)
+            held1 = T.alloc_local((per_thread, vec), dtype)
+            held2 = T.alloc_local((per_thread, vec), dtype)
+            held3 = T.alloc_local((per_thread, vec), dtype)
+            value = T.alloc_local((vec,), dtype)
+            row = T.alloc_local((per_thread,), "int32")
+            col = T.alloc_local((per_thread,), "int32")
+            for u in T.unroll(per_thread):
+                g = (bx * per_thread + u) * _THREADS + T.get_thread_binding()
+                q = T.call_pure_extern("uint32", "__umulhi", T.cast(g, "uint32"), mul)
+                row[u] = T.if_then_else(mul == 0, g, T.cast(T.shift_right(q, shr), "int32"))
+                col[u] = g - row[u] * total
+            # Every read of the thread issues before its first write.
+            for u in T.unroll(per_thread):
+                if row[u] < rows:
+                    load(x0, 0, held0, u, row[u], col[u])
+                    if n > 1:
+                        load(x1, 1, held1, u, row[u], col[u])
+                    if n > 2:
+                        load(x2, 2, held2, u, row[u], col[u])
+                    if n > 3:
+                        load(x3, 3, held3, u, row[u], col[u])
+            for u in T.unroll(per_thread):
+                if row[u] < rows:
+                    pick(0, held0, value, u, col[u])
+                    if n > 1:
+                        pick(1, held1, value, u, col[u])
+                    if n > 2:
+                        pick(2, held2, value, u, col[u])
+                    if n > 3:
+                        pick(3, held3, value, u, col[u])
+                    T.stg128(out[row[u], col[u], 0:vec], T.reinterpret(value[0:vec], "uint32x4"))
+
+    return tilelang.compile(
+        concat,
+        out_idx=[],
+        compile_flags=csrc_include("streaming_load.h"),
+        # Every access is inside its tensor by the row and column compares.
+        pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True},
+    )
+
+
 class ConcatKernel(Kernel, ConcatFwdInterface):
     """Each input copied into its columns of the output rows, converted on the way.
 
@@ -159,8 +247,14 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
     previous inputs'. A vector is the most elements, up to 16 bytes of the widest dtype, that
     divide every input's row width. A CTA copies one column tile of one input row. A program
     is built per vector, input dtypes and vectors per thread, and serves every row count and
-    width. Inputs share a launch ``_SLOTS`` at a time.
+    width. Inputs share a launch ``_SLOTS`` at a time. A launch past one resident wave that
+    copies every input, unconverted, in 16-byte vectors into output rows that end inside a line
+    takes ``_concat_flat_kernel`` instead, while its positions fit 32 bits.
     """
+
+    # Vectors a thread of the flat program copies, one CTA width apart, so the second row
+    # lookup overlaps the first read.
+    _FLAT_PER_THREAD: ClassVar[int] = 2
 
     @classmethod
     def entry_for(cls, call: ConcatCall) -> Entry:
@@ -193,6 +287,10 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         """The program of a launch whose inputs have *dtypes* and *per_thread* vectors."""
         return _concat_kernel(self.vec, dtypes, self.dtype_str, per_thread)
 
+    def _compile_flat(self, cfg: dict, inputs: int):
+        """The program of one launch of *inputs* inputs over the flat output."""
+        return _concat_flat_kernel(self.vec, self.dtype_str, inputs, self._FLAT_PER_THREAD)
+
     def forward(self, tensors: list[torch.Tensor]) -> torch.Tensor:
         shape = list(tensors[0].shape)
         shape[self.dim] = sum(t.shape[self.dim] for t in tensors)
@@ -208,6 +306,26 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         wave = self.sm_count * self.resident_ctas
         # The vectors of each input that hold 16 bytes.
         most = [VECTOR_ACCESS_BYTES // (self.vec * d.itemsize) for d in self.dtypes]
+        total = sum(widths)
+        # Rows that end inside a 128-byte L2 line make per-row tiles store lines in part; past
+        # one wave, CTAs over the flat output store whole lines for a row lookup a vector.
+        line_bytes = 128
+        if (
+            total * self.vec * self.dtype.itemsize % line_bytes
+            and len(groups) == 1
+            and self.vec * self.dtype.itemsize == VECTOR_ACCESS_BYTES
+            and all(d == self.dtype for d in self.dtypes)
+            # The positions, rounded up to a whole CTA run, stay below 2**31.
+            and rows * total + _THREADS * self._FLAT_PER_THREAD <= 2**31
+            and rows * sum(-(-widths[j] // _THREADS) for j in present) > wave
+        ):
+            # Row = (position * mul) >> (32 + shr) for every position below 2**31.
+            shift = (total - 1).bit_length()
+            mul = -(-(1 << (31 + shift)) // total) if total > 1 else 0
+            self.program(self._compile_flat, len(present))(
+                flat, mul, shift - 1 if total > 1 else 0, *(views[j] for j in present)
+            )
+            return out
         # A launch covers at most MAX_GRID_YZ_BLOCKS rows, the grid's y extent.
         for first in range(0, rows, MAX_GRID_YZ_BLOCKS):
             last = min(first + MAX_GRID_YZ_BLOCKS, rows)
