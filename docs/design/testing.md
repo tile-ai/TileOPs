@@ -144,6 +144,12 @@ No performance exploration, autotune sweep or duplicate code path.
 
 - A change to shared test infrastructure (`tests/workload_test_base.py`, common fixtures, the shared verifier) keeps default semantics unless every affected test migrates with it.
 
+### Model tests
+
+- [`tests/models/`](../../tests/models/) holds the tests of `tileops.models`; every one carries `nightly`, and collection fails otherwise.
+- A test builds the model with a few layers at the published widths, on random weights in the checkpoint's formats, and compares each layer's output and the logits with the authors' code that [`workloads/models/`](../../workloads/models/) runs.
+- The bound is the reference's own rounding noise: the gap between two runs of the reference that differ only in the rounding its kernels apply.
+
 ## Benchmarks
 
 → Boundary: [layer-boundaries.md §Benchmark](layer-boundaries.md#benchmark)

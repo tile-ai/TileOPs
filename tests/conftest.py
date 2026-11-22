@@ -368,6 +368,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             marker_errors.append(
                 f"{item.nodeid}: expected exactly one tier marker, found {tiers or 'none'}"
             )
+        elif "tests/models/" in str(item.path) and tiers != ["nightly"]:
+            # A model test builds whole decoder layers and runs the authors' reference beside
+            # them; that cost belongs to the nightly run, not to a pull request's gate.
+            marker_errors.append(f"{item.nodeid}: a test under tests/models is nightly")
 
     ops_groups: dict[tuple[str, str], list[pytest.Item]] = defaultdict(list)
     for item in items:
