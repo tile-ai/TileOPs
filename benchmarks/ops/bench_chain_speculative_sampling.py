@@ -43,47 +43,53 @@ def test_chain_speculative_sampling_bench(case) -> None:
         return result[0], _accepted_lengths(result, draft.shape[1]).to(torch.int32)
 
     implementations[FLASHINFER_TAG] = flashinfer_verify
-    rejection_sample = vllm_op("rejection_sample", "v1.sample.rejection_sampler")
-    random_sample = vllm_op("random_sample", "v1.sample.ops.topk_topp_sampler")
-    sampling_metadata = vllm_op("SamplingMetadata", "v1.sample.metadata")
+    rejection_sample = vllm_op(
+        "rejection_sample", "v1.worker.gpu.spec_decode.rejection_sampler_utils"
+    )
+    draft_logits_cache = vllm_op("DraftLogitsCache", "v1.worker.gpu.spec_decode.draft_logits")
 
-    def vllm_verify(draft, draft_ids, target, _seed, _offset):
-        """vllm's rejection sampler takes flattened draft positions and target logits."""
-        batch, num_draft, vocab = draft.shape
-        device = draft.device
-        metadata = sampling_metadata(
-            temperature=torch.ones(batch, device=device),
-            all_greedy=False,
-            all_random=True,
-            top_p=None,
-            top_k=None,
-            generators={},
-            max_num_logprobs=None,
-            no_penalties=True,
-            prompt_token_ids=None,
-            frequency_penalties=torch.zeros(batch, device=device),
-            presence_penalties=torch.zeros(batch, device=device),
-            repetition_penalties=torch.ones(batch, device=device),
-            output_token_ids=[[] for _ in range(batch)],
-            allowed_token_ids_mask=None,
-            bad_words_token_ids={},
-            logitsprocs=None,
-        )
-        bonus = random_sample(target[:, num_draft].clone(), {}).to(torch.int32)[:, None]
-        result = rejection_sample(
-            draft_ids.reshape(-1),
-            [num_draft] * batch,
-            num_draft,
-            torch.arange(1, batch + 1, dtype=torch.int32, device=device) * num_draft,
-            draft.reshape(batch * num_draft, vocab),
-            target[:, :num_draft].reshape(batch * num_draft, vocab).log(),
-            bonus,
-            metadata,
-        )
-        return result, _accepted_lengths(result, num_draft).to(torch.int32)
+    # vllm verifies logits: request b owns logits b * (N + 1) .. b * (N + 1) + N, the last
+    # one the bonus, and reads draft step i's token at flat position b * (N + 1) + i + 1.
+    # Everything is built from the case's inputs here, outside the timed call.
+    draft, draft_ids, target, seed, _offset = case.inputs
+    batch, num_draft, vocab = draft.shape
+    device = draft.device
+    cache = draft_logits_cache(
+        batch, num_draft, vocab, dtype=torch.float32, fill=0.0, device=device
+    )
+    torch.log(draft, out=cache.values)
+    target_logits = target.log().reshape(batch * (num_draft + 1), vocab)
+    draft_sampled = torch.zeros(batch, num_draft + 1, dtype=torch.int64, device=device)
+    draft_sampled[:, 1:] = draft_ids
+    requests = torch.arange(batch, dtype=torch.int32, device=device)
+    steps = torch.arange(num_draft + 1, dtype=torch.int32, device=device)
+    verify_args = (
+        target_logits,
+        cache,
+        draft_sampled.reshape(-1),
+        torch.arange(batch + 1, dtype=torch.int32, device=device) * (num_draft + 1),
+        torch.arange(batch * (num_draft + 1), dtype=torch.int64, device=device),
+        requests,
+        requests.repeat_interleave(num_draft + 1),
+        steps.repeat(batch),
+        torch.ones(batch, dtype=torch.float32, device=device),
+        torch.full((batch,), int(seed.item()), dtype=torch.int64, device=device),
+        num_draft,
+    )
+
+    def vllm_verify():
+        sampled, num_sampled = rejection_sample(*verify_args)
+        accepted = num_sampled - 1
+        # vllm leaves the positions after the drawn token unwritten; the op pads them with -1.
+        tokens = sampled.masked_fill(steps > accepted[:, None], -1).to(torch.int32)
+        return tokens, accepted
 
     implementations[VLLM_TAG] = bench.Implementation(
         run=vllm_verify,
-        noncomparable_reason="adapter uses vLLM's ambient RNG instead of the call's seed/offset",
+        args=(),
+        noncomparable_reason=(
+            "adapter runs on logits built from the case's inputs and draws from vLLM's "
+            "per-request seed and position streams instead of the call's seed/offset"
+        ),
     )
     bench.Runner(op, case).compare(implementations)
