@@ -45,6 +45,10 @@ dev = [
     "einops",
     # Linear-attention correctness references shared with benchmarks.
     "flash-linear-attention==0.5.2",
+    # Model checkpoints and references: models/ loads safetensors shards, and
+    # workloads/models/ runs the authors' transformers code.
+    "safetensors==0.8.0",
+    "transformers==5.15.0",
     "pre-commit",
     "pytest>=8.4",
     "pytest-cov>=5.0",
