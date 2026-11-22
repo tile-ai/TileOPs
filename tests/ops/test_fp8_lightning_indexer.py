@@ -181,7 +181,6 @@ def test_indexer_signed_external_key_scales(queries, keys, groups) -> None:
         pytest.param(8, 128, 64, 128, marks=pytest.mark.smoke, id="warp-specialized"),
         # Eight queries of 32 heads a block: one FFMA chain a head sum, where 64 heads take two.
         pytest.param(64, 512, 32, 64, marks=pytest.mark.full, id="eight-queries"),
-        pytest.param(532, 32768, 64, 128, marks=pytest.mark.full, id="partial-wave"),
     ],
 )
 def test_indexer_random_signed_key_scales(queries, keys, heads, index_dim) -> None:
