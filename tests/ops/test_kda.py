@@ -145,10 +145,8 @@ def test_kda_decode_matches_reference(batch: int) -> None:
 
 @pytest.mark.smoke
 def test_kda_decode_keeps_a_key_major_state_near_the_fp32_limit_finite() -> None:
-    """The key-major decode keeps main's order: the normalized key and query enter each product
-    over the key rows, so a finite state whose products with the unnormalized rows would pass
-    the FP32 limit stays finite. Main already behaves so; the case pins it against a decode
-    that applies the gains after the sums."""
+    """The normalized key and query enter each product over the key rows, so a 1e37 key-major
+    state, whose products with the unnormalized rows would pass the FP32 limit, stays finite."""
     test = KDAFwdTest(4, 1, 4, 128, torch.bfloat16)
     q, k, v, g, beta, state, *rest = test.gen_inputs()
     q.fill_(1.0)
