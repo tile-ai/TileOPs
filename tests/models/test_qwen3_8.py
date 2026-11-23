@@ -126,7 +126,7 @@ def test_from_pretrained_refuses_a_tensor_it_does_not_read(tmp_path, extra, matc
     tensors[extra] = torch.zeros(1, dtype=torch.bfloat16)
     write_checkpoint(tmp_path, _TINY, tensors)
     with pytest.raises(ValueError, match=match):
-        Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
+        Qwen3_8ForCausalLM.from_pretrained(tmp_path, device=run_device(), max_seq_len=64)
 
 
 def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
@@ -134,7 +134,7 @@ def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
     layer = "model.language_model.layers.1."
     write_checkpoint(tmp_path, _TINY, {n: t for n, t in tensors.items() if not n.startswith(layer)})
     with pytest.raises(ValueError, match="holds no tensors of layers \\[1\\]"):
-        Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
+        Qwen3_8ForCausalLM.from_pretrained(tmp_path, device=run_device(), max_seq_len=64)
 
 
 def test_from_pretrained_refuses_a_layer_missing_some_tensors(tmp_path):
@@ -142,7 +142,7 @@ def test_from_pretrained_refuses_a_layer_missing_some_tensors(tmp_path):
     del tensors["model.language_model.layers.1.self_attn.k_norm.weight"]
     write_checkpoint(tmp_path, _TINY, tensors)
     with pytest.raises(ValueError, match="layer 1: missing tensor 'self_attn.k_norm.weight'"):
-        Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
+        Qwen3_8ForCausalLM.from_pretrained(tmp_path, device=run_device(), max_seq_len=64)
 
 
 def test_from_pretrained_skips_the_vision_and_mtp_tensors(tmp_path):
@@ -150,7 +150,7 @@ def test_from_pretrained_skips_the_vision_and_mtp_tensors(tmp_path):
     assert any(n.startswith("model.visual.") for n in tensors)
     assert any(n.startswith("mtp.") for n in tensors)
     write_checkpoint(tmp_path, _TINY, tensors)
-    model = Qwen3_8ForCausalLM.from_pretrained(tmp_path, devices=[run_device()], max_seq_len=64)
+    model = Qwen3_8ForCausalLM.from_pretrained(tmp_path, device=run_device(), max_seq_len=64)
     assert model.lm_head.shape == (64, 64)
 
 
@@ -187,7 +187,7 @@ _REQUESTS = {
 def test_layers_logits_and_state_match_hf(checkpoint, chunks, decode_steps):
     """Every layer's output and the logits over every call, then the decoding state."""
     # Holds the longest request, 2103 tokens: the 2100-token prefill and three decode steps.
-    mine = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[run_device()], max_seq_len=2304)
+    mine = Qwen3_8ForCausalLM.from_pretrained(checkpoint, device=run_device(), max_seq_len=2304)
     records = [[] for _ in mine.layers]
     mine.layers = [_Recorded(layer, r) for layer, r in zip(mine.layers, records, strict=True)]
     lengths = chunks + [1] * decode_steps
@@ -247,7 +247,7 @@ def test_forward_takes_one_request_in_order(checkpoint):
     request where it was."""
     max_seq_len = 18
     model = Qwen3_8ForCausalLM.from_pretrained(
-        checkpoint, devices=[run_device()], max_seq_len=max_seq_len
+        checkpoint, device=run_device(), max_seq_len=max_seq_len
     )
     ids = torch.zeros(1, max_seq_len + 1, dtype=torch.long, device=run_device())
     refused = [
@@ -278,7 +278,7 @@ def test_generate_takes_the_hf_argmax_until_eos(checkpoint):
     with an EOS id the run stops after that token."""
     g = torch.Generator().manual_seed(2)
     prompt = torch.randint(0, _SMALL["text_config"]["vocab_size"], (3,), generator=g).tolist()
-    mine = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[run_device()], max_seq_len=64)
+    mine = Qwen3_8ForCausalLM.from_pretrained(checkpoint, device=run_device(), max_seq_len=64)
     forward, calls = mine.forward, []
     mine.forward = lambda *args: calls.append(args) or forward(*args)
     out = mine.generate(prompt, 12, eos_token_id=-1)
@@ -306,20 +306,5 @@ def test_generate_takes_the_hf_argmax_until_eos(checkpoint):
 def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
     """From a three-token prompt with ``max_seq_len`` 8 and no EOS, ``generate`` returns six
     tokens: the last one completes the sequence without a forward call past position 7."""
-    model = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=[run_device()], max_seq_len=8)
+    model = Qwen3_8ForCausalLM.from_pretrained(checkpoint, device=run_device(), max_seq_len=8)
     assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 6
-
-
-def test_layers_split_over_two_devices_give_the_one_device_logits(checkpoint, two_devices):
-    """The model spread over two devices moves the hidden state, the residual and each device's
-    position metadata between its layer runs, and returns the logits it returns on one device,
-    over a prefill and a decode step."""
-    if any(torch.cuda.get_device_capability(d)[0] != 9 for d in two_devices):
-        pytest.skip("needs two devices of compute capability 9.x")
-    one = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=two_devices[:1], max_seq_len=64)
-    two = Qwen3_8ForCausalLM.from_pretrained(checkpoint, devices=two_devices, max_seq_len=64)
-    assert set(two.layer_devices) == set(two_devices)
-    ids = torch.arange(1, 8).view(1, -1)
-    for step, pos in ((ids[:, :6], 0), (ids[:, 6:], 6)):
-        expected = one(step, pos)
-        torch.testing.assert_close(two(step, pos).to(expected.device), expected, rtol=0, atol=0)

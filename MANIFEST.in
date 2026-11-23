@@ -8,6 +8,7 @@ prune workloads
 prune models
 prune .github
 prune scripts
+prune third_party
 
 # Same rule, for root files rather than trees.
 exclude .clang-format

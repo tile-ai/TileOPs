@@ -1,7 +1,8 @@
 """DeepSeek-V4's official ``inference/`` code, with torch in place of its TileLang kernels.
 
-``official_model`` imports the checkpoint repository's ``inference/model.py`` with a torch module
-standing in for its ``kernel.py``, so the reference shares no kernel with TileOPs.
+``official_model`` imports the checkpoint repository's ``inference/model.py``, kept in
+``third_party/deepseek_v4_flash/``, with a torch module standing in for its ``kernel.py``, so
+the reference shares no kernel with TileOPs.
 ``DEEPSEEK_V4_FLASH_CONFIG`` is DeepSeek-V4-Flash's published ``config.json``.
 """
 
@@ -11,7 +12,6 @@ import contextlib
 import functools
 import importlib.util
 import math
-import os
 import sys
 import types
 from pathlib import Path
@@ -126,11 +126,18 @@ def hc_split_sinkhorn(mixes, hc_scale, hc_base, hc_mult, sinkhorn_iters, eps):
     return pre, 2 * post, comb
 
 
-def _load_official(inference_dir: str | os.PathLike) -> types.ModuleType:
-    """Import the official ``inference/model.py`` in ``inference_dir`` against a ``kernel``
-    module of this file's torch functions. ``rotate_activation`` is replaced too, so
-    ``fast_hadamard_transform`` is not needed."""
-    path = Path(inference_dir) / "model.py"
+# DeepSeek-V4-Flash's inference/model.py, unmodified at Hugging Face revision
+# 60d8d70770c6776ff598c94bb586a859a38244f1, under the MIT license beside it.
+_OFFICIAL_MODEL = (
+    Path(__file__).resolve().parents[2] / "third_party" / "deepseek_v4_flash" / "model.py"
+)
+
+
+def _load_official() -> types.ModuleType:
+    """Import the official ``model.py`` against a ``kernel`` module of this file's torch
+    functions. ``rotate_activation`` is replaced too, so ``fast_hadamard_transform`` is not
+    needed."""
+    path = _OFFICIAL_MODEL
     kernel = types.ModuleType("kernel")
     for fn in (act_quant, fp4_act_quant, fp8_gemm, fp4_gemm, sparse_attn, hc_split_sinkhorn):
         setattr(kernel, fn.__name__, fn)
@@ -291,17 +298,16 @@ def official_defaults(device: torch.device | str):
 
 
 def official_model(
-    inference_dir: str | os.PathLike,
     tensors: dict[str, torch.Tensor],
     config: dict,
     max_seq_len: int,
     *,
     rounded: bool = False,
 ):
-    """The official ``Transformer`` of ``config`` from ``inference_dir``, for one request and
-    holding the checkpoint ``tensors``; ``rounded`` rounds its attention probabilities to
-    bfloat16, as its TileLang kernel does. Build and run it under :func:`official_defaults`."""
-    module = _load_official(inference_dir)
+    """The official ``Transformer`` of ``config``, for one request and holding the checkpoint
+    ``tensors``; ``rounded`` rounds its attention probabilities to bfloat16, as its TileLang
+    kernel does. Build and run it under :func:`official_defaults`."""
+    module = _load_official()
     if rounded:
         module.sparse_attn = functools.partial(sparse_attn, p_dtype=torch.bfloat16)
     model = module.Transformer(_official_args(module, config, max_seq_len))

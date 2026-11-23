@@ -4,6 +4,8 @@ ci:
   autoupdate_commit_msg: "[CI] [pre-commit.ci] autoupdate"
   autoupdate_schedule: monthly
 default_stages: [pre-commit, pre-push, manual]
+# Third-party sources are kept as published.
+exclude: ^third_party/
 
 
 repos:

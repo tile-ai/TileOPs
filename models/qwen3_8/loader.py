@@ -27,8 +27,7 @@ def load_weights(model: Qwen3_8ForCausalLM, path: Path) -> None:
         path,
         prefix=_PREFIX,
         skipped=("model.visual.", "mtp."),
-        first=(f"{_PREFIX}embed_tokens.weight",),
-        last=(f"{_PREFIX}norm.weight", "lm_head.weight"),
+        outside=(f"{_PREFIX}embed_tokens.weight", f"{_PREFIX}norm.weight", "lm_head.weight"),
         load_layer=lambda i, t: _load_layer(model.layers[i], t),
     )
     model.embed = tensors.pop(f"{_PREFIX}embed_tokens.weight")

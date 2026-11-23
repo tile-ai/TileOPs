@@ -30,8 +30,14 @@ def load_weights(model: DeepseekV4ForCausalLM, path: Path) -> None:
         path,
         prefix="",
         skipped=("mtp.",),
-        first=("embed.weight",),
-        last=("norm.weight", "head.weight", "hc_head_fn", "hc_head_scale", "hc_head_base"),
+        outside=(
+            "embed.weight",
+            "norm.weight",
+            "head.weight",
+            "hc_head_fn",
+            "hc_head_scale",
+            "hc_head_base",
+        ),
         load_layer=lambda i, t: _load_block(model.layers[i], t, model.config.n_routed_experts),
     )
     model.embed = tensors.pop("embed.weight")
