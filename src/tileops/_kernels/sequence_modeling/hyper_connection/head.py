@@ -18,6 +18,12 @@ from tileops._utils import WARP_LANES
 
 __all__ = ["HyperConnectionHeadKernel"]
 
+# Bounds are checked only where written here; the clamped indices need none. TileLang 0.1.15's
+# check guards each clamped hidden_states row with rows >= 1, and nvcc unswitches the streamed
+# K loop on it: the copy for rows < 1, never run, holds every hc_fn vector at once, so at n = 4
+# and C = 4096 the program takes 255 registers and one CTA an SM in place of two.
+_UNCHECKED = {tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True}
+
 
 def _head_weights(n: int, bt: int, threads: int, k_total: int, rms_norm_eps: float, hc_eps: float):
     """A macro totalling each thread's partial dots and square sums over the CTA and writing
@@ -94,7 +100,7 @@ def _store_sum(n: int, vector: int):
 def _hyper_connection_head_resident_kernel(
     n: int, c: int, vector: int, rms_norm_eps: float, hc_eps: float
 ):
-    @tilelang.jit
+    @tilelang.jit(pass_configs=_UNCHECKED)
     def _hyper_connection_head_resident_fwd_func(threads, bt):
         column_vectors = c // vector
         per_thread = -(-column_vectors // threads)
@@ -182,7 +188,7 @@ def _hyper_connection_head_resident_kernel(
 def _hyper_connection_head_streamed_kernel(
     n: int, c: int, vector: int, rms_norm_eps: float, hc_eps: float
 ):
-    @tilelang.jit
+    @tilelang.jit(pass_configs=_UNCHECKED)
     def _hyper_connection_head_streamed_fwd_func(threads, bt):
         k_vectors = n * c // vector
         k_steps = -(-k_vectors // threads)
