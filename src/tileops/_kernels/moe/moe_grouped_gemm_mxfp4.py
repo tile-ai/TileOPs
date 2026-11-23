@@ -197,8 +197,15 @@ def _moe_grouped_gemm_mxfp4_kernel(
     contiguous = packing is not None
     tight = packing == "tight"
 
+    # Bounds are checked only where written here. Token scales: clamped rows, or on whole masked
+    # slabs (max_m % block_m == 0) first_row's clamped tile. B scales and their bulk copy: clamped
+    # indices. The walk's layout and ends loads: their loop's or branch's condition, or the search
+    # interval. A tight short tile's output: the C++ helper's row and column checks.
     @tilelang.jit(
-        pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
+        pass_configs={
+            PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+            PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True,
+        },
         compile_flags=[
             *CUDA_COMPILE_FLAGS,
             "--use_fast_math",
@@ -389,7 +396,10 @@ def _moe_grouped_gemm_mxfp4_kernel(
             K step, rows up to N's last, 16-byte aligned (N a multiple of 8, tiles of 64
             rows)."""
             tasks.walk_to_running(walk_source, task_id, ahead, ahead_tile)
-            if ahead[cur_g] < num_groups:
+            # Bound to a variable so TileLang merges the per-statement guards of the body back
+            # into one if; a condition that loads the cursor keeps them apart.
+            ahead_running = T.bind(ahead[cur_g] < num_groups)
+            if ahead_running:
                 if table_box:
                     copy_code_tables(
                         table_desc,
@@ -785,7 +795,9 @@ def _moe_grouped_gemm_mxfp4_kernel(
                         task_id = num_sms * wave + pid
                         # Skipped tasks must advance neither role's barriers.
                         walk(ends if recover else layout, task_id, cursor)
-                        if T.And(cursor[cur_g] < num_groups, producer_warp == 0):
+                        # Bound to a variable, as in copy_check.
+                        running = T.bind(T.And(cursor[cur_g] < num_groups, producer_warp == 0))
+                        if running:
                             tile_of(task_id, cursor, tile)
                             g = T.meta_var(tasks.expert(cursor))
                             m_start = T.meta_var(tasks.first_row(cursor, tile))
@@ -882,7 +894,9 @@ def _moe_grouped_gemm_mxfp4_kernel(
                     for wave in T.serial(max_waves):
                         task_id = num_sms * wave + pid
                         walk(ends if recover else layout, task_id, cursor)
-                        if cursor[cur_g] < num_groups:
+                        # Bound to a variable, as in copy_check.
+                        running = T.bind(cursor[cur_g] < num_groups)
+                        if running:
                             tile_of(task_id, cursor, tile)
                             g = T.meta_var(tasks.expert(cursor))
                             m_start = T.meta_var(tasks.first_row(cursor, tile))
