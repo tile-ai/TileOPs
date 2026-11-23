@@ -161,7 +161,7 @@ def _gemm_fp8_stream_kernel(
                 ab_full = T.alloc_barrier([128] * num_stages)
                 ab_empty = T.alloc_barrier([128] * num_stages)
                 # The ring step a unit starts at, held in a register: written as
-                # ``s * k_iters + ki``, the step makes some calls up to 8% slower.
+                # ``s * k_iters + ki``, the unit loop is scheduled slower.
                 unit_step = T.alloc_local((1,), "int32")
                 tx = T.get_thread_binding()
 

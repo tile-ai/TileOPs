@@ -71,7 +71,12 @@ class _HeuristicPolicy:
     shallow_tiles_per_sm: float = 2.5
     hiding_stages: int = 4
 
-    # A performance exclusion applied apart from the cost function.
+    # FIXME(staged-rollout): 192-wide tiles are excluded for a reason that no longer holds.
+    #
+    # Broken invariant: every tile the cost function prices is a candidate.
+    # Why: the exclusion was measured when a 192-wide WGMMA ran as three n64 instructions;
+    # TileLang now issues it as one.
+    # Cleanup: re-measure 192-wide tiles, then keep the exclusion with its reason or drop it.
     block_n_excluded: tuple[int, ...] = (192,)
 
     @property
@@ -398,6 +403,12 @@ class GroupedGEMMSpec:
             self.major_a is Major.K
             and self.major_b is Major.K
             and self.block_k == 64
+            # FIXME(staged-rollout): 192 and 224 take the helper for a reason that no longer holds.
+            #
+            # Broken invariant: a width T.wgmma_gemm issues as one WGMMA goes through it.
+            # Why: these widths were routed here when T.wgmma_gemm split them; its consumers
+            # also gate bias, fused activation and the output dtype on this property.
+            # Cleanup: route them to T.wgmma_gemm with those gates, under a no-regression A/B.
             and self.block_n in (192, 224)
             and (
                 (
