@@ -541,9 +541,10 @@ class GELUTanhAndMulFwdKernel(FusedGatedKernel):
         """gelu_tanh(x) in float32; a 16-bit *x* takes it as x / (1 + exp(-2 * inner)).
 
         That is the same function, ``1 + tanh(u) = 2 / (1 + exp(-2u))``, with no ``1 + tanh``
-        to cancel where tanh nears -1. One MUFU.EX2 and one reciprocal replace ``tanhf``'s
+        to cancel where tanh nears -1. One MUFU.EX2 and one MUFU.RCP replace ``tanhf``'s
         software sequence, which makes the body, not the memory stream, set the kernel's
-        time; ``_wide_silu`` explains why a 16-bit result skips the IEEE forms.
+        time. The reciprocal flushes to zero past a divisor of ``2**126``, where the float32
+        reference's ``1 + tanh`` is already zero.
         """
         x_f32 = T.cast(x, "float32")
         if x.dtype != "float32":
@@ -551,7 +552,8 @@ class GELUTanhAndMulFwdKernel(FusedGatedKernel):
             scale = -2.0 * LOG2E * _SQRT_2_OVER_PI
             cubic = T.cast(scale * _GELU_TANH_COEFF, "float32")
             exponent = x_f32 * (T.cast(scale, "float32") + cubic * x_f32 * x_f32)
-            return quartered_fdiv(x_f32, T.cast(1.0, "float32") + _approx_exp2(exponent))
+            den = T.cast(1.0, "float32") + _approx_exp2(exponent)
+            return x_f32 * T.call_extern("float32", "tileops::approx_rcp", den)
         sqrt_2_over_pi = T.cast(_SQRT_2_OVER_PI, "float32")
         coeff = T.cast(_GELU_TANH_COEFF, "float32")
         inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
