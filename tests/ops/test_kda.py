@@ -132,11 +132,31 @@ def test_kda_sm90_given_gate_lean_preparation_matches_reference(monkeypatch) -> 
     [
         pytest.param(8, marks=pytest.mark.smoke, id="b8"),
         pytest.param(1, marks=pytest.mark.full, id="b1"),
+        # Enough (sequence, head) pairs for blocks that each own a whole state.
+        pytest.param(32, marks=pytest.mark.full, id="b32-whole-state"),
+        # Two 64-column blocks a state.
+        pytest.param(16, marks=pytest.mark.full, id="b16-half-state"),
     ],
 )
 def test_kda_decode_matches_reference(batch: int) -> None:
     torch.manual_seed(42)
     _check(batch, 1, 4, 128, torch.bfloat16)
+
+
+@pytest.mark.smoke
+def test_kda_decode_keeps_a_key_major_state_near_the_fp32_limit_finite() -> None:
+    """The key-major decode's normalized key and query enter each product over the key rows, so
+    a finite state whose products with the unnormalized rows would pass the FP32 limit stays
+    finite."""
+    test = KDAFwdTest(4, 1, 4, 128, torch.bfloat16)
+    q, k, v, g, beta, state, *rest = test.gen_inputs()
+    q.fill_(1.0)
+    k.fill_(1.0)
+    v.zero_()
+    g.zero_()
+    beta.fill_(0.5)
+    state.fill_(1e37)
+    test.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), q, k, v, g, beta, state, *rest)
 
 
 @pytest.mark.smoke

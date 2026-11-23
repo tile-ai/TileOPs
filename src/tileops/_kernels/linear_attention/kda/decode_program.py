@@ -82,14 +82,51 @@ def decode_program(
                 )
             return T.exp2(T.cast(g[0, iseq, ihv, j], accum) * LOG2E)
 
+        def coordinates(block):
+            """The value tile, sequence, value head and key head of a block launched in the
+            state's memory order."""
+            iseq = block // (tiles * HV)
+            ihv = block // tiles - iseq * HV
+            return block % tiles, iseq, ihv, ihv // group
+
+        @T.macro
+        def stage_rows(q, k, g, a_log, dt_bias, iseq, ih, ihv, tx, q_s, k_s, d_s):
+            """Stage the query, key and decay rows in shared memory."""
+            for i in T.serial(T.ceildiv(K, threads)):
+                j = tx + i * threads
+                if j < K:
+                    q_s[j] = T.cast(q[0, iseq, ih, j], accum)
+                    k_s[j] = T.cast(k[0, iseq, ih, j], accum)
+                    d_s[j] = channel_decay(g, a_log, dt_bias, iseq, ihv, j)
+            T.sync_threads()
+
+        @T.macro
+        def row_gains(q_s, k_s, tx):
+            """The query and key gains: the scale, and under l2norm the inverse row norms."""
+            q_gain, k_gain = scale, 1.0
+            if l2norm:
+                q_square = T.alloc_var(accum, init=0.0)
+                k_square = T.alloc_var(accum, init=0.0)
+                # Every warp folds the whole row, so both norms land in every thread with no
+                # second pass over shared memory.
+                lane = tx % WARP_LANES
+                for i in T.serial(T.ceildiv(K, WARP_LANES)):
+                    j = lane + i * WARP_LANES
+                    if j < K:
+                        q_square += q_s[j] * q_s[j]
+                        k_square += k_s[j] * k_s[j]
+                for stage in T.unroll(WARP_SHUFFLE_STAGES):
+                    q_square += T.shfl_xor(q_square, 1 << stage, width=WARP_LANES)
+                    k_square += T.shfl_xor(k_square, 1 << stage, width=WARP_LANES)
+                q_gain = T.rsqrt(q_square + L2NORM_EPS) * scale
+                k_gain = T.rsqrt(k_square + L2NORM_EPS)
+            return q_gain, k_gain
+
         @T.macro
         def compute_value_major(q, k, v, g, beta, h0, o, ht, a_log, dt_bias, slots):
             with T.Kernel(num_seqs * HV * tiles, threads=threads) as (block,):
                 tx = T.get_thread_binding()
-                iv = block % tiles
-                iseq = block // (tiles * HV)
-                ihv = block // tiles - iseq * HV
-                ih = ihv // group
+                iv, iseq, ihv, ih = coordinates(block)
                 row = iv * BV + tx // lane_group
                 rank = tx % lane_group
                 q_s = T.alloc_shared([K], accum)
@@ -98,8 +135,6 @@ def decode_program(
                 state = T.alloc_local([key_chunk], accum)
                 old = T.alloc_var(accum, init=0.0)
                 out = T.alloc_var(accum, init=0.0)
-                q_square = T.alloc_var(accum, init=0.0)
-                k_square = T.alloc_var(accum, init=0.0)
 
                 # The state loads go out first, so they are in flight while the block forms its
                 # query, key and decay rows.
@@ -111,28 +146,8 @@ def decode_program(
                             row,
                             key_of(rank, run * key_run + e, lane_group, key_run),
                         ]
-                for i in T.serial(T.ceildiv(K, threads)):
-                    j = tx + i * threads
-                    if j < K:
-                        q_s[j] = T.cast(q[0, iseq, ih, j], accum)
-                        k_s[j] = T.cast(k[0, iseq, ih, j], accum)
-                        d_s[j] = channel_decay(g, a_log, dt_bias, iseq, ihv, j)
-                T.sync_threads()
-                q_gain, k_gain = scale, 1.0
-                if l2norm:
-                    # Every warp folds the whole row, so both norms land in every thread with
-                    # no second pass over shared memory.
-                    lane = tx % WARP_LANES
-                    for i in T.serial(T.ceildiv(K, WARP_LANES)):
-                        j = lane + i * WARP_LANES
-                        if j < K:
-                            q_square += q_s[j] * q_s[j]
-                            k_square += k_s[j] * k_s[j]
-                    for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                        q_square += T.shfl_xor(q_square, 1 << stage, width=WARP_LANES)
-                        k_square += T.shfl_xor(k_square, 1 << stage, width=WARP_LANES)
-                    q_gain = T.rsqrt(q_square + L2NORM_EPS) * scale
-                    k_gain = T.rsqrt(k_square + L2NORM_EPS)
+                stage_rows(q, k, g, a_log, dt_bias, iseq, ih, ihv, tx, q_s, k_s, d_s)
+                q_gain, k_gain = row_gains(q_s, k_s, tx)
 
                 for i in T.serial(key_chunk):
                     state[i] = state[i] * d_s[key_of(rank, i, lane_group, key_run)]
@@ -160,61 +175,91 @@ def decode_program(
                 if rank == 0:
                     o[0, iseq, ihv, row] = T.cast(out * q_gain, dtype)
 
+        # Over a key-major state, a lane owns a run of value columns that moves as one 16-byte
+        # vector of FP32; the lanes that share a column run split its key rows.
+        vector = 4
+        col_lanes = BV // vector
+        row_groups = threads // col_lanes
+        rows_per = K // row_groups
+
+        @T.macro
+        def share_sums(part, part_s, rank, lane):
+            """Publish a lane's partial sums of its column run for the other ranks."""
+            for e in T.unroll(vector):
+                part_s[rank, lane * vector + e] = part[e]
+            T.sync_threads()
+
+        @T.macro
+        def sum_ranks(part_s, lane, total):
+            """Sum the partial sums of the lane's column run over every rank."""
+            for e in T.unroll(vector):
+                total[e] = 0.0
+            for r in T.unroll(row_groups):
+                for e in T.unroll(vector):
+                    total[e] += part_s[r, lane * vector + e]
+
         @T.macro
         def compute(q, k, v, g, beta, h0, o, ht, a_log, dt_bias, slots):
-            with T.Kernel(num_seqs, HV, tiles, threads=threads) as (iseq, ihv, iv):
-                ih = ihv // group
+            # The blocks go in the state's memory order, so the blocks resident at once read
+            # neighbouring states.
+            with T.Kernel(num_seqs * HV * tiles, threads=threads) as (block,):
+                tx = T.get_thread_binding()
+                iv, iseq, ihv, ih = coordinates(block)
+                lane = tx % col_lanes
+                rank = tx // col_lanes
+                v0 = iv * BV + lane * vector
                 q_s = T.alloc_shared([K], accum)
                 k_s = T.alloc_shared([K], accum)
                 d_s = T.alloc_shared([K], accum)
-                qrow = T.alloc_fragment([1, K], accum)
-                krow = T.alloc_fragment([1, K], accum)
-                qsum = T.alloc_fragment([1], accum)
-                ksum = T.alloc_fragment([1], accum)
-                state = T.alloc_fragment([K, BV], accum)
-                part = T.alloc_fragment([K, BV], accum)
-                old = T.alloc_fragment([BV], accum)
-                out = T.alloc_fragment([BV], accum)
-                newv = T.alloc_fragment([BV], accum)
+                # One row of partial sums per lane rank; the second product reuses it.
+                part_s = T.alloc_shared([row_groups, BV], accum)
+                state = T.alloc_local([rows_per * vector], accum)
+                part = T.alloc_local([vector], accum)
+                written = T.alloc_local([vector], accum)
 
-                # The two row norms come off a block-wide reduction: a decode step
-                # is short enough that one thread summing K values is its tail.
-                for _i, j in T.Parallel(1, K):
-                    qrow[0, j] = T.cast(q[0, iseq, ih, j], accum)
-                    krow[0, j] = T.cast(k[0, iseq, ih, j], accum)
-                for _i, j in T.Parallel(1, K):
-                    qrow[0, j] = qrow[0, j] * qrow[0, j]
-                    krow[0, j] = krow[0, j] * krow[0, j]
-                T.reduce_sum(qrow, qsum, dim=1)
-                T.reduce_sum(krow, ksum, dim=1)
-                for _i, j in T.Parallel(1, K):
-                    q_s[j] = (
-                        T.cast(q[0, iseq, ih, j], accum)
-                        * (T.rsqrt(qsum[0] + L2NORM_EPS) if l2norm else 1.0)
-                        * scale
+                # The state loads go out first, so they are in flight while the block forms its
+                # query, key and decay rows.
+                for r in T.unroll(rows_per):
+                    for e in T.vectorized(vector):
+                        state[r * vector + e] = h0[
+                            state_row(slots, iseq), ihv, rank + r * row_groups, v0 + e
+                        ]
+                stage_rows(q, k, g, a_log, dt_bias, iseq, ih, ihv, tx, q_s, k_s, d_s)
+                q_gain, k_gain = row_gains(q_s, k_s, tx)
+
+                for e in T.unroll(vector):
+                    part[e] = 0.0
+                for r in T.unroll(rows_per):
+                    for e in T.unroll(vector):
+                        state[r * vector + e] = state[r * vector + e] * d_s[rank + r * row_groups]
+                        # The gains go into each product, as the normalized rows would: a
+                        # state near the FP32 limit stays finite.
+                        part[e] += state[r * vector + e] * (k_s[rank + r * row_groups] * k_gain)
+                share_sums(part, part_s, rank, lane)
+                sum_ranks(part_s, lane, written)
+                for e in T.unroll(vector):
+                    written[e] = T.cast(beta[0, iseq, ihv], accum) * (
+                        T.cast(v[0, iseq, ihv, v0 + e], accum) - written[e]
                     )
-                    k_s[j] = T.cast(k[0, iseq, ih, j], accum) * (
-                        T.rsqrt(ksum[0] + L2NORM_EPS) if l2norm else 1.0
-                    )
-                    d_s[j] = channel_decay(g, a_log, dt_bias, iseq, ihv, j)
+                    part[e] = 0.0
+                for r in T.unroll(rows_per):
+                    for e in T.unroll(vector):
+                        state[r * vector + e] = (
+                            state[r * vector + e] + k_s[rank + r * row_groups] * k_gain * written[e]
+                        )
+                        part[e] += state[r * vector + e] * (q_s[rank + r * row_groups] * q_gain)
+                for r in T.unroll(rows_per):
+                    for e in T.vectorized(vector):
+                        ht[state_row(slots, iseq), ihv, rank + r * row_groups, v0 + e] = state[
+                            r * vector + e
+                        ]
+                # Every lane has read the first sums before any lane overwrites them.
                 T.sync_threads()
-
-                # The decayed state, held for the whole step.
-                for i, j in T.Parallel(K, BV):
-                    state[i, j] = d_s[i] * h0[state_row(slots, iseq), ihv, i, iv * BV + j]
-                    part[i, j] = k_s[i] * state[i, j]
-                T.reduce_sum(part, old, dim=0)
-                for j in T.Parallel(BV):
-                    newv[j] = T.cast(beta[0, iseq, ihv], accum) * (
-                        T.cast(v[0, iseq, ihv, iv * BV + j], accum) - old[j]
-                    )
-                for i, j in T.Parallel(K, BV):
-                    state[i, j] = state[i, j] + k_s[i] * newv[j]
-                    part[i, j] = q_s[i] * state[i, j]
-                    ht[state_row(slots, iseq), ihv, i, iv * BV + j] = state[i, j]
-                T.reduce_sum(part, out, dim=0)
-                for j in T.Parallel(BV):
-                    o[0, iseq, ihv, iv * BV + j] = T.cast(out[j], dtype)
+                share_sums(part, part_s, rank, lane)
+                if rank == 0:
+                    sum_ranks(part_s, lane, written)
+                    for e in T.unroll(vector):
+                        o[0, iseq, ihv, v0 + e] = T.cast(written[e], dtype)
 
         body = compute_value_major if state_v_first else compute
         state_shape = [num_seqs, HV, V, K] if state_v_first else [num_seqs, HV, K, V]

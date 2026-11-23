@@ -291,6 +291,11 @@ def _split_scan(call, num_sequences, total, dtype, initial_state):
         initial_state=initial_state,
         state_v_first=call.state_v_first,
         pooled=call.pooled,
+        # Past one wave, a walk launched late finishes late. Launching each sequence's walks
+        # together launches every sequence's last walk no later than interleaving the
+        # sequences does; within one wave every walk starts at once and the order is kept.
+        # Like the crossovers above, the order is set for the SM90 walk.
+        sequence_major=call.arch == 90 and ctas > call.sm_count,
     )
     state_scan = CompiledProgram(state_scan)
     # A pooled walk takes the slots after the offsets and returns no state.

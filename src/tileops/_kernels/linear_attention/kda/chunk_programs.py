@@ -1048,6 +1048,7 @@ def chunk_state_program(
     initial_state: bool = True,
     state_v_first: bool = False,
     pooled: bool = False,
+    sequence_major: bool = False,
 ):
     """Build the sequential scan over the chunks, for one static packed shape.
 
@@ -1064,6 +1065,9 @@ def chunk_state_program(
     *state_v_first* lays the states out value-major, ``[N, HV, V, K]``. *pooled* reads
     sequence ``n``'s state from slot ``slots[n]`` of a state pool and writes its final state
     back there, so the program returns no state.
+
+    The grid launches every sequence's walks before the next sequence's under
+    *sequence_major*, and walks one head of every sequence before the next head otherwise.
     """
     if pooled and not initial_state:
         raise ValueError("a state pool holds the initial states")
@@ -1187,7 +1191,9 @@ def chunk_state_program(
 
         @T.macro
         def scan(w, u, qg, kg, aqk, dec, h0, cu_seqlens, h, vn, o, ht, slots):
-            with T.Kernel(num_seqs, HV, value_tiles, threads=threads) as (iseq, ihv, iv):
+            grid = (value_tiles, HV, num_seqs) if sequence_major else (num_seqs, HV, value_tiles)
+            with T.Kernel(*grid, threads=threads) as (fastest, ihv, slowest):
+                iseq, iv = (slowest, fastest) if sequence_major else (fastest, slowest)
                 v0 = iv * BV
                 tile_cum = T.alloc_shared([num_seqs + 1], "int32")
 
