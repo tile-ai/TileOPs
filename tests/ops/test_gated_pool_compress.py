@@ -330,6 +330,7 @@ def test_gated_pool_compress_long_window_decode_equals_prefill(n: int) -> None:
     assert torch.equal(steps_kv, once_kv) and torch.equal(steps_score, once_score)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "tokens",
     [
@@ -339,8 +340,8 @@ def test_gated_pool_compress_long_window_decode_equals_prefill(n: int) -> None:
 )
 def test_gated_pool_compress_flushes_subnormal_score_rows(tokens: int) -> None:
     """A float32 score below the normal range with zero ape leaves its ring rows' score + ape
-    at zero, as the kernel flushes subnormals: a request's only token and a longer request's
-    tokens alike."""
+    at zero, as the in-tree kernel's fast math flushes subnormals: a request's only token and
+    a longer request's tokens alike. The reference keeps them, so another target need not."""
     dim, ratio, start = 128, 4, 11
     kv = torch.randn(tokens, 2 * dim, device=run_device())
     score = torch.full((tokens, 2 * dim), 1e-39, device=run_device())
