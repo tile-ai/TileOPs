@@ -19,6 +19,17 @@ from tileops._kernels.mamba.call_spec import SSDDecodeCall, SSDDecodeFwdInterfac
 __all__ = ["SSDDecodeKernel"]
 
 
+def _row_layout(d_state: int) -> tuple[int, int, int]:
+    """How the lanes of a warp share one row of the state: (VEC, LANES, PIECES)."""
+    # A lane moves VEC consecutive float32 state elements: 16 bytes when d_state allows it.
+    vec = math.gcd(d_state, 4)
+    # LANES lanes of one warp share a row: as many as cover d_state, at most the warp.
+    lanes = min(32, 1 << math.ceil(math.log2(-(-d_state // vec))))
+    # A lane covers a row in PIECES VEC-wide pieces, LANES * VEC elements apart.
+    pieces = -(-d_state // (lanes * vec))
+    return vec, lanes, pieces
+
+
 @target_cache(maxsize=32)
 def _ssd_decode_kernel(
     batch: int,
@@ -37,12 +48,7 @@ def _ssd_decode_kernel(
     G = n_groups
     assert H % G == 0, f"n_heads ({H}) must be divisible by n_groups ({G})"
     HEADS_PER_GROUP = H // G
-    # A lane moves VEC consecutive float32 state elements: 16 bytes when d_state allows it.
-    VEC = math.gcd(N, 4)
-    # LANES lanes of one warp share a row: as many as cover d_state, at most the warp.
-    LANES = min(32, 1 << math.ceil(math.log2(-(-N // VEC))))
-    # A lane covers a row in PIECES VEC-wide pieces, LANES * VEC elements apart.
-    PIECES = -(-N // (LANES * VEC))
+    VEC, LANES, PIECES = _row_layout(N)
 
     @tilelang.jit(out_idx=[-1])
     def kernel_func(warps: int, rows_per_thread: int, pieces_per_chunk: int):
@@ -181,6 +187,7 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
     ) -> None:
         super().__init__()
         self.dtype = dtype
+        self.d_state = d_state
         self.kernel = _ssd_decode_kernel(
             batch,
             n_heads,
@@ -201,12 +208,14 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         # At most 4 rows and 4 pieces a thread: its registers hold at most 16 * VEC state and
-        # as many A values.
+        # as many A values. A chunk never holds more pieces than a lane has in a row, so each
+        # pieces_per_chunk is listed once per program it builds.
+        row_pieces = _row_layout(self.d_state)[2]
         return [
             {"warps": warps, "rows_per_thread": rows, "pieces_per_chunk": pieces}
             for warps in [1, 2, 4, 8]
             for rows in [1, 2, 4]
-            for pieces in [1, 2, 4]
+            for pieces in sorted({min(p, row_pieces) for p in (1, 2, 4)})
         ]
 
     def forward(
