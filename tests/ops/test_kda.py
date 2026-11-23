@@ -1080,6 +1080,16 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
     assert bool(runs) == chunked
 
 
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_kda_prefill_walks_equal_packed_lengths_in_the_interleaved_order() -> None:
+    """Three packed sequences of one length over 64 value heads are 192 state walks, past one
+    wave of the SM90's 132 SMs; with their lengths on the host, equal lengths take the
+    interleaved walk, which reads the offsets alone."""
+    torch.manual_seed(42)
+    _check(1, 0, 64, 128, torch.bfloat16, sequence_lengths=(130, 130, 130))
+
+
 @pytest.mark.smoke
 def test_kda_raw_gate_prefill_updates_its_slots_of_a_value_major_pool() -> None:
     """Packed raw-gate sequences, which only the chunk-parallel prefill serves, start from and

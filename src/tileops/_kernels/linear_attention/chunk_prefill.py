@@ -276,22 +276,13 @@ def _split_scan(call, num_sequences, total, dtype, initial_state):
     elif with_output and value_tile == 64:
         # Two warpgroups also share the output's products.
         threads = 256
-    # Past one wave, a walk launched late finishes late: packed sequences launch their walks
-    # sequence by sequence, longest first, so the longest walks start in the first wave.
-    # Within one wave every walk starts at once, and equal lengths or one sequence leave no
-    # order to choose; those keep the interleaved order. Like the crossovers above, the order
-    # is set for the SM90 walk.
+    # Past one wave, a walk launched late finishes late: packed sequences of different lengths
+    # launch their walks sequence by sequence, longest first, so the longest walks start in
+    # the first wave. Within one wave every walk starts at once, and one sequence or equal
+    # lengths leave no order to choose; those keep the interleaved order. Like the crossovers
+    # above, the order is set for the SM90 walk.
     sequence_major = call.arch == 90 and call.varlen and num_sequences > 1 and ctas > call.sm_count
-
-    def launch_table(offsets):
-        """The offsets the walk reads: under ``sequence_major``, followed by the sequences in
-        order of decreasing length."""
-        if not sequence_major:
-            return offsets
-        order = torch.argsort(offsets.diff(), descending=True, stable=True)
-        return torch.cat([offsets, order.to(offsets.dtype)])
-
-    state_scan = chunk_state_program(
+    walk_options = (
         call.value_heads,
         call.dim_k,
         call.dim_v,
@@ -301,22 +292,51 @@ def _split_scan(call, num_sequences, total, dtype, initial_state):
         num_sequences,
         value_tile,
         threads,
-        arch=call.arch,
-        with_output=with_output,
-        initial_state=initial_state,
-        state_v_first=call.state_v_first,
-        pooled=call.pooled,
-        sequence_major=sequence_major,
     )
+    walk_flags = {
+        "arch": call.arch,
+        "with_output": with_output,
+        "initial_state": initial_state,
+        "state_v_first": call.state_v_first,
+        "pooled": call.pooled,
+    }
+
+    def launch(offsets, host_offsets):
+        """The walk program for this call's lengths and the offsets it reads.
+
+        Lengths the host holds and finds equal keep the interleaved walk; otherwise the
+        sequence-major walk reads, after the offsets, the sequences by decreasing length.
+        """
+        if not sequence_major:
+            return state_scan, offsets
+        if host_offsets is not None:
+            lengths = host_offsets.diff()
+            if bool((lengths == lengths[0]).all()):
+                return interleaved(), offsets
+        order = torch.argsort(offsets.diff(), descending=True, stable=True)
+        return state_scan, torch.cat([offsets, order.to(offsets.dtype)])
+
+    # Built on the first packed call of equal lengths, for this kernel's target.
+    interleaved_walk = []
+
+    def interleaved():
+        """The walk in the interleaved order, for packed calls of equal lengths."""
+        if not interleaved_walk:
+            interleaved_walk.append(
+                CompiledProgram(chunk_state_program(*walk_options, **walk_flags))
+            )
+        return interleaved_walk[0]
+
+    state_scan = chunk_state_program(*walk_options, **walk_flags, sequence_major=sequence_major)
     state_scan = CompiledProgram(state_scan)
     # A pooled walk takes the slots after the offsets and returns no state.
     if with_output:
 
-        def walk(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
-            table = launch_table(offsets)
+        def walk(w, u, qg, kg, aqk, dec, h0, offsets, slots=None, *, host_offsets=None):
+            program, table = launch(offsets, host_offsets)
             if call.pooled:
-                return state_scan(w, u, qg, kg, aqk, dec, h0, table, slots), h0
-            return state_scan(w, u, qg, kg, aqk, dec, h0, table)
+                return program(w, u, qg, kg, aqk, dec, h0, table, slots), h0
+            return program(w, u, qg, kg, aqk, dec, h0, table)
 
         return walk
     output = CompiledProgram(
@@ -325,23 +345,27 @@ def _split_scan(call, num_sequences, total, dtype, initial_state):
         )
     )
 
-    def scan(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
-        table = launch_table(offsets)
+    def scan(w, u, qg, kg, aqk, dec, h0, offsets, slots=None, *, host_offsets=None):
+        program, table = launch(offsets, host_offsets)
         if call.pooled:
-            starts, values = state_scan(w, u, kg, dec, h0, table, slots)
+            starts, values = program(w, u, kg, dec, h0, table, slots)
             final_state = h0
         else:
-            starts, values, final_state = state_scan(w, u, kg, dec, h0, table)
+            starts, values, final_state = program(w, u, kg, dec, h0, table)
         return output(qg, aqk, starts, values, offsets), final_state
 
     return scan
 
 
-def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False, slots=None):
+def run_chunk_prefill(
+    kernel, call, inputs, *, gate_mode, split_output=False, slots=None, host_offsets=None
+):
     """Run one chunked prefill launch on the programs *kernel* holds for its facts.
 
     Under ``call.pooled`` the state in *inputs* is a pool and *slots* names each sequence's
-    slot; the pool is advanced in place and returned as the final state.
+    slot; the pool is advanced in place and returned as the final state. *host_offsets*, the
+    packed offsets on the CPU when the caller has them, let the state walk read the lengths
+    without the device.
     """
     q, k, v, g, beta, state, offsets, a_log, dt_bias = inputs
     total = call.batch * call.seq_len
@@ -387,7 +411,10 @@ def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False, sl
         )
         prepared = prepare(q, k, v, gate, beta, offsets, inverse)
     # Only the state walk reads a pool; the other scans take no slots.
+    walk = {"host_offsets": host_offsets} if gate_mode == "channel" or split_output else {}
     output, final_state = (
-        scan(*prepared, state, offsets, slots) if call.pooled else scan(*prepared, state, offsets)
+        scan(*prepared, state, offsets, slots, **walk)
+        if call.pooled
+        else scan(*prepared, state, offsets, **walk)
     )
     return output.reshape(call.batch, call.seq_len, call.value_heads, call.dim_v), final_state
