@@ -43,7 +43,9 @@ def _top_p_mask_kernel(
     """Build the mask of ``batch`` rows of ``vocab`` logits, ``parts`` blocks to a row.
 
     ``parts > 1`` takes one grid barrier per pass to meet the blocks of a row in
-    ``part_top`` and ``part_bins``; ``parts == 1`` takes none.
+    ``part_top`` and ``part_bins``; ``parts == 1`` takes none. Passes alternate between two
+    slices of ``part_bins``, so a pass never overwrites the slice its row's blocks read in
+    the pass before.
     """
     grid = batch * parts
     digit_bits = (search_bins - 1).bit_length()
@@ -80,7 +82,7 @@ def _top_p_mask_kernel(
             logits: T.Tensor((batch * vocab,), dtype),
             p: T.Tensor((batch,), "float32"),
             part_top: T.Tensor((grid,), "float32"),
-            part_bins: T.Tensor((grid * search_bins,), "float32"),
+            part_bins: T.Tensor((2 * grid * search_bins,), "float32"),
             masked: T.Tensor((batch * vocab,), dtype),
         ):
             with T.Kernel(grid, threads=threads) as bx:
@@ -177,17 +179,16 @@ def _top_p_mask_kernel(
 
                     if parts > 1:
                         if tx < search_bins:
-                            part_bins[bx * search_bins + tx] = suffix[tx]
+                            part_bins[(level % 2 * grid + bx) * search_bins + tx] = suffix[tx]
                         T.sync_grid()
                         if tx < search_bins:
                             fold_bins[0] = T.float32(0)
                             for c in T.serial(parts):
-                                fold_bins[0] += part_bins[(line * parts + c) * search_bins + tx]
+                                fold_bins[0] += part_bins[
+                                    (level % 2 * grid + line * parts + c) * search_bins + tx
+                                ]
                             suffix[tx] = fold_bins[0]
                         T.sync_threads()
-                        # Every block has read this pass's slice before the next pass
-                        # overwrites the block's own.
-                        T.sync_grid()
 
                     # Suffix sums, so one read gives the weight at or above any bin.
                     for stage in T.serial(digit_bits):
@@ -325,7 +326,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
         blocks = self.call.batch * self._parts
         part_top = torch.empty(blocks, dtype=torch.float32, device=logits.device)
         part_bins = torch.empty(
-            blocks * self._SEARCH_BINS, dtype=torch.float32, device=logits.device
+            2 * blocks * self._SEARCH_BINS, dtype=torch.float32, device=logits.device
         )
         masked = torch.empty_like(logits)
         self.program(self._compile)(logits.view(-1), p, part_top, part_bins, masked.view(-1))
