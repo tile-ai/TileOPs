@@ -71,8 +71,7 @@ class _HeuristicPolicy:
     shallow_tiles_per_sm: float = 2.5
     hiding_stages: int = 4
 
-    # A patch, not a fit: the cost function prices a tile by block_m + block_n
-    # and so reads a 192-wide tile as cheap, while its WGMMA issues twice.
+    # A performance exclusion applied apart from the cost function.
     block_n_excluded: tuple[int, ...] = (192,)
 
     @property
@@ -391,8 +390,6 @@ class GroupedGEMMSpec:
     def native_wgmma(self) -> bool:
         """Whether the template issues each K step through ``dense_wgmma_helper.h``.
 
-        TileLang 0.1.12 issues a ``T.wgmma_gemm`` of a width that does not divide 256 as
-        gcd(width, 256)-wide WGMMAs, each re-reading A: 192 as three n64, 224 as seven n32.
         The helper issues the widths it instantiates as one WGMMA per 16 of K, on a 64-row
         warp-group tile of K-major operands staged 64 wide along K: a dense tile's warp-group
         share, or a whole 64-row ping-pong tile.

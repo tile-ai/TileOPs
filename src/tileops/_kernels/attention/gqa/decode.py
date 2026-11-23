@@ -763,10 +763,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         """Shared memory one program allocates for *config*: the query rows, a K and a V
         tile per stage and, in the no-split program, the output rows.
 
-        Both programs stage their output rows. TileLang 0.1.12 places them in the query
-        rows' space, which the loop no longer reads, in the split program with two or more
-        splits and, for SM90, in the no-split program too; forward launches the split
-        program only with two or more.
+        The split program stages its output rows in the query rows' space; the no-split count
+        includes them, so it never undercounts.
         """
         rows = config["block_H"] + 2 * config["num_stages"] * config["block_N"]
         if not split:

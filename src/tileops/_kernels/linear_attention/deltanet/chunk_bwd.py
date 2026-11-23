@@ -252,9 +252,7 @@ def _dh_walk_tl(
             with T.Kernel(dim_v // block_v, batch, head, threads=threads) as (vid, bid, hid):
                 op_s = T.alloc_shared([dim_k, dim_k], dtype)
                 local_s = T.alloc_shared([dim_k, block_v], accum_dtype)
-                # Held transposed, so the matmul reads it K-major. Why: held MN-major, the
-                # 16-column walk returns wrong dh under TileLang 0.1.12.
-                dh_s = T.alloc_shared([block_v, dim_k], dtype)
+                dh_s = T.alloc_shared([dim_k, block_v], dtype)
                 dh_frag = T.alloc_fragment([dim_k, block_v], accum_dtype)
                 v0 = vid * block_v
 
@@ -263,12 +261,12 @@ def _dh_walk_tl(
                     c = num_chunks - 1 - t
                     T.copy(neg_wk[bid, hid, c, :, :], op_s, disable_tma=True)
                     T.copy(dh_local[bid, hid, c, :, v0 : v0 + block_v], local_s, disable_tma=True)
-                    for i, j in T.Parallel(dim_k, block_v):
-                        dh_s[j, i] = dh_frag[i, j]
-                    T.copy(dh_s, dh_out[bid, hid, c, v0 : v0 + block_v, :], disable_tma=True)
+                    T.copy(dh_frag, dh_s)
+                    for j, i in T.Parallel(block_v, dim_k):
+                        dh_out[bid, hid, c, v0 + j, i] = dh_s[i, j]
                     for i, j in T.Parallel(dim_k, block_v):
                         dh_frag[i, j] = dh_frag[i, j] + local_s[i, j]
-                    T.gemm(op_s, dh_s, dh_frag, transpose_B=True)
+                    T.gemm(op_s, dh_s, dh_frag)
 
         return dh_walk_kernel
 

@@ -147,7 +147,9 @@ No performance exploration, autotune sweep or duplicate code path.
 
 ### Model tests
 
-- Tests under [`tests/models/`](../../tests/models/) run nightly, not in a pull request's gate.
+- Tests under [`tests/models/`](../../tests/models/) run nightly, all of them, not in a pull request's gate.
+- A model test runs on random weights; it reads no real checkpoint and needs no network.
+- A model test's reference is a package the runner image installs or an unmodified, revision-pinned copy under [`third_party/`](../../third_party/). A missing reference fails the test.
 
 ## Benchmarks
 

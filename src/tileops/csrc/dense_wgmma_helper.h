@@ -8,12 +8,10 @@
 namespace tileops {
 
 // One 64-wide K step of a 64 x N output tile of a 16-bit NT GEMM, issued as one
-// N-wide WGMMA per 16 of K. TileLang 0.1.12 issues a ``T.wgmma_gemm`` of width
-// N as gcd(N, 256)-wide instructions, each re-reading A from shared memory: 176
-// runs as eleven n16 WGMMAs, 192 as three n64. The accumulator holds what those
-// narrower instructions would: a thread's column c sits in register
-// 4 * (c / 8) + c % 2 of its upper row and two past that of its lower row,
-// whatever the instruction width.
+// N-wide WGMMA per 16 of K. TileLang issues a ``T.wgmma_gemm`` whose width is 8
+// mod 16 as n8 WGMMAs, each re-reading A from shared memory. The accumulator
+// holds what ``T.wgmma_gemm`` writes: a thread's column c sits in register
+// 4 * (c / 8) + c % 2 of its upper row and two past that of its lower row.
 //
 // a_smem and b_smem are one stage's 64 x 64 A tile and N x 64 B tile, each in
 // the 128-byte swizzle ``make_swizzled_layout`` gives a 64-element 16-bit row.
@@ -62,9 +60,9 @@ TILEOPS_DENSE_WGMMA_64XN_K64_BOTH(256)
 #undef TILEOPS_DENSE_WGMMA_64XN_K64
 
 // One 64-wide K step of a 128 x N output tile, issued as one N-wide WGMMA per
-// 16 of K for each 64-row half (lo, hi), so a width that does not divide 256
-// reads each A row once. A_MN / B_MN say whether that operand's stage is
-// MN-major (K outer) rather than K-major; the transpose flags follow.
+// 16 of K for each 64-row half (lo, hi); coop2_swap has no other path. A_MN /
+// B_MN say whether that operand's stage is MN-major (K outer) rather than
+// K-major; the transpose flags follow.
 //
 // The stages are in the swizzle ``make_swizzled_layout`` gives them. K-major:
 // 64-element rows in the 128-byte swizzle. MN-major A: a 64 x 128 stage of two

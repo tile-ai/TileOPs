@@ -160,9 +160,8 @@ def _gemm_fp8_stream_kernel(
                 tensor_scale = T.alloc_local((1,), "float")
                 ab_full = T.alloc_barrier([128] * num_stages)
                 ab_empty = T.alloc_barrier([128] * num_stages)
-                # The ring step a unit starts at, held in a register: TileLang 0.1.12 folds
-                # ``(s * k_iters + k_iters - 1) % (2 * num_stages)`` over the unit loop to a
-                # wrong constant, which waits on the wrong barrier phase and hangs.
+                # The ring step a unit starts at, held in a register: written as
+                # ``s * k_iters + ki``, the step makes some calls up to 8% slower.
                 unit_step = T.alloc_local((1,), "int32")
                 tx = T.get_thread_binding()
 

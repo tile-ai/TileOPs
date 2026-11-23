@@ -12,7 +12,6 @@ no window, so the decode steps close the first.
 """
 
 import dataclasses
-import os
 
 import pytest
 import torch
@@ -111,14 +110,6 @@ def test_config_refuses_what_the_model_does_not_compute(config, match):
 
 
 @pytest.fixture(scope="module")
-def inference_dir():
-    """The official ``inference/`` directory, which ``DEEPSEEK_V4_INFERENCE_DIR`` names."""
-    path = os.environ.get("DEEPSEEK_V4_INFERENCE_DIR")
-    assert path, "DEEPSEEK_V4_INFERENCE_DIR names no DeepSeek-V4-Flash inference/ directory"
-    return path
-
-
-@pytest.fixture(scope="module")
 def checkpoint(tmp_path_factory):
     """The small model's checkpoint directory and its tensors."""
     path = tmp_path_factory.mktemp("dsv4-small")
@@ -145,7 +136,7 @@ def test_from_pretrained_refuses_a_checkpoint_it_cannot_read_whole(tmp_path, cha
         tensors[extra] = torch.zeros(1)
     write_checkpoint(tmp_path, config, tensors)
     with pytest.raises(ValueError, match=match):
-        DeepseekV4ForCausalLM.from_pretrained(tmp_path, devices=[run_device()])
+        DeepseekV4ForCausalLM.from_pretrained(tmp_path, device=run_device())
 
 
 def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
@@ -153,7 +144,7 @@ def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
     kept = {n: t for n, t in tensors.items() if not n.startswith("layers.0.")}
     write_checkpoint(tmp_path, _TINY, kept)
     with pytest.raises(ValueError, match="holds no tensors of layers \\[0\\]"):
-        DeepseekV4ForCausalLM.from_pretrained(tmp_path, devices=[run_device()])
+        DeepseekV4ForCausalLM.from_pretrained(tmp_path, device=run_device())
 
 
 def test_from_pretrained_refuses_a_layer_missing_some_tensors(tmp_path):
@@ -161,14 +152,14 @@ def test_from_pretrained_refuses_a_layer_missing_some_tensors(tmp_path):
     del tensors["layers.0.attn.kv_norm.weight"]
     write_checkpoint(tmp_path, _TINY, tensors)
     with pytest.raises(ValueError, match="layer 0: missing tensor 'attn.kv_norm.weight'"):
-        DeepseekV4ForCausalLM.from_pretrained(tmp_path, devices=[run_device()])
+        DeepseekV4ForCausalLM.from_pretrained(tmp_path, device=run_device())
 
 
 def test_from_pretrained_skips_the_mtp_tensors(tmp_path):
     tensors = random_checkpoint(_TINY, seed=0)
     tensors["mtp.0.norm.weight"] = torch.ones(_TINY["hidden_size"], dtype=torch.bfloat16)
     write_checkpoint(tmp_path, _TINY, tensors)
-    model = DeepseekV4ForCausalLM.from_pretrained(tmp_path, devices=[run_device()])
+    model = DeepseekV4ForCausalLM.from_pretrained(tmp_path, device=run_device())
     assert model.head.shape == (_TINY["vocab_size"], _TINY["hidden_size"])
 
 
@@ -219,9 +210,7 @@ class _Recorded:
     ("prompt_len", "decode_steps"),
     [pytest.param(2170, 8, id="long-prompt"), pytest.param(3, 6, id="short-prompt")],
 )
-def test_layers_and_logits_match_the_official_model(
-    checkpoint, inference_dir, prompt_len, decode_steps
-):
+def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, decode_steps):
     """Each layer, fed the official model's input to it, against that layer of the official model,
     over the prefill and over the decode steps, and its decoding state at the end; the entries
     the indexer selects, against the official indexer's; and the logits of the whole model.
@@ -229,15 +218,14 @@ def test_layers_and_logits_match_the_official_model(
     path, tensors = checkpoint
     max_seq_len = 2304
     mine, mine_tf = (
-        DeepseekV4ForCausalLM.from_pretrained(path, devices=[run_device()], max_seq_len=max_seq_len)
+        DeepseekV4ForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=max_seq_len)
         for _ in range(2)
     )
     with official_defaults(run_device()):
         on_device = {k: v.to(run_device()) for k, v in tensors.items()}
-        ref = official_model(inference_dir, on_device, _SMALL, max_seq_len)
+        ref = official_model(on_device, _SMALL, max_seq_len)
         rounded, rounded_tf = (
-            official_model(inference_dir, on_device, _SMALL, max_seq_len, rounded=True)
-            for _ in range(2)
+            official_model(on_device, _SMALL, max_seq_len, rounded=True) for _ in range(2)
         )
         trace, official_selections = [], []
         for i, layer in enumerate(ref.layers):
@@ -267,7 +255,7 @@ def test_layers_and_logits_match_the_official_model(
                     trace.clear()
                     for out, model in zip(logits, (mine, ref, rounded), strict=True):
                         out.append(model(tokens, pos))
-                    step = Step.build(mine_tf.config, pos, tokens.shape[1], mine_tf.first_device)
+                    step = Step.build(mine_tf.config, pos, tokens.shape[1], mine_tf.device)
                     for i, h_in, h_out in trace:
                         actual, expected, rnd = layers[i]
                         layer = mine_tf.layers[i]
@@ -294,7 +282,7 @@ def test_forward_takes_one_request_position_by_position(checkpoint):
     path, _ = checkpoint
     max_seq_len = 18
     model = DeepseekV4ForCausalLM.from_pretrained(
-        path, devices=[run_device()], max_seq_len=max_seq_len
+        path, device=run_device(), max_seq_len=max_seq_len
     )
     ids = torch.zeros(1, max_seq_len + 1, dtype=torch.long, device=run_device())
     refused = [
@@ -322,30 +310,7 @@ def test_forward_takes_one_request_position_by_position(checkpoint):
 
 
 @pytest.mark.sm90
-def test_layers_split_over_two_devices_give_the_one_device_logits(checkpoint, two_devices):
-    """The model spread over two devices, one named by its index, moves the streams and the token
-    ids between its layer runs, and returns the logits it returns on one device, over a prefill
-    that closes windows at both compression ratios, the ratio-128 one on the second device, and
-    a decode step; it leaves the current device as it found it."""
-    if any(torch.cuda.get_device_capability(d)[0] != 9 for d in two_devices):
-        pytest.skip("needs two devices of compute capability 9.x")
-    path, _ = checkpoint
-    one, two = (
-        DeepseekV4ForCausalLM.from_pretrained(path, devices=devices, max_seq_len=256)
-        for devices in (two_devices[:1], (two_devices[0].index, two_devices[1]))
-    )
-    assert two.layer_devices == [two_devices[0], two_devices[0], two_devices[1]]
-    g = torch.Generator().manual_seed(3)
-    ids = torch.randint(0, _SMALL["vocab_size"], (1, 131), generator=g)
-    current = torch.accelerator.current_device_index()
-    for step, pos in ((ids[:, :130], 0), (ids[:, 130:], 130)):
-        expected = one(step, pos)
-        torch.testing.assert_close(two(step, pos).to(expected.device), expected, rtol=0, atol=0)
-    assert torch.accelerator.current_device_index() == current
-
-
-@pytest.mark.sm90
-def test_generate_takes_the_official_argmax_until_eos(checkpoint, inference_dir):
+def test_generate_takes_the_official_argmax_until_eos(checkpoint):
     """``generate`` from a three-token prompt: each token's official logit, given the tokens
     before it, is the official maximum to within twice the reference's own bfloat16 rounding of
     the logits; with an EOS id, given or the config's, the run stops after that token."""
@@ -353,9 +318,7 @@ def test_generate_takes_the_official_argmax_until_eos(checkpoint, inference_dir)
     max_seq_len = 64
     g = torch.Generator().manual_seed(2)
     prompt = torch.randint(0, _SMALL["vocab_size"], (3,), generator=g).tolist()
-    mine = DeepseekV4ForCausalLM.from_pretrained(
-        path, devices=[run_device()], max_seq_len=max_seq_len
-    )
+    mine = DeepseekV4ForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=max_seq_len)
     forward, calls = mine.forward, []
     mine.forward = lambda *args: calls.append(args) or forward(*args)
     out = mine.generate(prompt, 12, eos_token_id=-1)
@@ -368,8 +331,7 @@ def test_generate_takes_the_official_argmax_until_eos(checkpoint, inference_dir)
     with official_defaults(run_device()), torch.inference_mode():
         on_device = {k: v.to(run_device()) for k, v in tensors.items()}
         ref, rounded = (
-            official_model(inference_dir, on_device, _SMALL, max_seq_len, rounded=r)
-            for r in (False, True)
+            official_model(on_device, _SMALL, max_seq_len, rounded=r) for r in (False, True)
         )
         ids = torch.tensor([prompt + out[:-1]])
         steps = [(ids[:, : len(prompt)], 0)]
@@ -385,5 +347,5 @@ def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
     """From a three-token prompt with ``max_seq_len`` 8 and no EOS, ``generate`` returns six
     tokens: the last one completes the sequence without a forward call past position 7."""
     path, _ = checkpoint
-    model = DeepseekV4ForCausalLM.from_pretrained(path, devices=[run_device()], max_seq_len=8)
+    model = DeepseekV4ForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=8)
     assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 6

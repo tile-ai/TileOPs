@@ -242,6 +242,34 @@ def test_gqa_paged_single_token_cut_key_tile() -> None:
     _check(GQAPagedFwdOp(is_causal=True), workload, workload.gen_inputs())
 
 
+@pytest.mark.parametrize(
+    ("q_len", "cache_len", "pool_pages"),
+    [
+        pytest.param(3, 13, 1, marks=pytest.mark.smoke, id="chunk-one-page"),
+        pytest.param(2100, 2100, 36, marks=pytest.mark.full, id="prefill-36-pages"),
+    ],
+)
+def test_gqa_paged_one_request_over_the_whole_pool(
+    q_len: int, cache_len: int, pool_pages: int
+) -> None:
+    """Qwen3.8-27B's attention calls: 24 query heads over 4 KV heads of 256, causal, bfloat16,
+    one request whose table spans the whole pool of 64-row pages. Guards their compile: the
+    pipelined wait's index reached codegen unfolded and failed with ``Downcast from tirx.Sub
+    to ir.IntImm``."""
+    workload = GQAPagedFwdWorkload(
+        24,
+        4,
+        256,
+        [q_len],
+        [cache_len],
+        64,
+        max_pages_per_req=pool_pages,
+        num_pages=pool_pages,
+        dtype=torch.bfloat16,
+    )
+    _check(GQAPagedFwdOp(is_causal=True), workload, workload.gen_inputs())
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_paged_refuses_a_head_dim_off_mma_k_slices() -> None:

@@ -9,10 +9,8 @@
 
 namespace tileops {
 
-// The 48-key WGMMAs of the MLA backward, one instruction per 16 of K. TileLang
-// 0.1.12 issues a ``T.wgmma_gemm`` of width 48 as three n16 WGMMAs (gcd(48,
-// 256)), each re-reading A; these issue n48. The accumulator registers are the
-// ones the three n16 instructions would write: a thread's column c sits in
+// The 48-key WGMMAs of the MLA backward, one n48 instruction per 16 of K. The
+// backward stores these registers directly: a thread's column c sits in
 // register 4 * (c / 8) + c % 2 of its upper row and two past that of its lower
 // row.
 //
