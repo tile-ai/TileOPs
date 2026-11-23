@@ -1086,11 +1086,12 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
     # batch's partial apart (SPLIT).
     LONG_WARPS = 16
     SPLIT_WARPS = 8
-    # The blocks an SM keeps of a long window's 16-warp program with a single batch live, and
-    # of its 8-warp program (SPLIT), each at 64 registers a thread: the kernel asks for them,
-    # and _program_facts counts a call's waves by them.
-    LONG_BLOCKS_PER_SM = 2
-    SPLIT_BLOCKS_PER_SM = 4
+    # The registers a thread of a long window's program takes, and the blocks an SM keeps at
+    # that of its full program with a single batch live and of its split program: the kernel
+    # asks for them, and _program_facts counts a call's waves by them.
+    LONG_REGS = 64
+    LONG_BLOCKS_PER_SM = 65536 // (LONG_WARPS * 32 * LONG_REGS)
+    SPLIT_BLOCKS_PER_SM = 65536 // (SPLIT_WARPS * 32 * LONG_REGS)
 
     @classmethod
     def _lane_vec(cls, ratio: int, overlap: bool, dim: int) -> "tuple[bool, int]":
