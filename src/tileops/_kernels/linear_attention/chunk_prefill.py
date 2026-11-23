@@ -3,6 +3,7 @@ solve, the chunk preparation and the scan, planned to the device's shared memory
 
 import torch
 
+from tileops._kernels.build_target import building_on
 from tileops._kernels.kernel_base import CompiledProgram
 from tileops._kernels.linear_attention.chunk_plan import (
     CHUNK_SIZE,
@@ -317,15 +318,15 @@ def _split_scan(call, num_sequences, total, dtype, initial_state):
         order = torch.argsort(offsets.diff(), descending=True, stable=True)
         return state_scan, torch.cat([offsets, order.to(offsets.dtype)])
 
-    # Built on the first packed call of equal lengths, for this kernel's target.
+    # Built on the first packed call of equal lengths, for the call's device.
     interleaved_walk = []
 
     def interleaved():
         """The walk in the interleaved order, for packed calls of equal lengths."""
         if not interleaved_walk:
-            interleaved_walk.append(
-                CompiledProgram(chunk_state_program(*walk_options, **walk_flags))
-            )
+            with building_on(call.device):
+                walk_program = chunk_state_program(*walk_options, **walk_flags)
+            interleaved_walk.append(CompiledProgram(walk_program))
         return interleaved_walk[0]
 
     state_scan = chunk_state_program(*walk_options, **walk_flags, sequence_major=sequence_major)
