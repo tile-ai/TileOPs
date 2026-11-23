@@ -267,7 +267,8 @@ def _moe_grouped_gemm_fp8_kernel(
                 tx = T.get_thread_binding()
                 if balances:
                     # The fewest CTAs that run the counts' tasks in as few waves as every SM
-                    # does take them; the others, spread over the grid, take none.
+                    # does take them; the others, spread over the grid, take none. Unlike the
+                    # static grid, this one keeps the wave count of the tasks that run.
                     grid = T.alloc_var("int32", init=num_sms)
                     # Each lane of a warp sums every 32nd slab's tiles.
                     tiles = T.alloc_var("int32", init=0)
@@ -803,6 +804,20 @@ class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8Fwd
         )
         self.init_config()
 
+    def _balanced_sms(self, block_m: int, block_n: int) -> int:
+        """The persistent grid: for masked slabs, the fewest SMs that run every slab tile in as
+        few waves as every SM does, when they take one tile each in every wave; otherwise, and
+        for contiguous layouts, every SM.
+
+        Each expert's weights stream from DRAM, and each SM launched adds load bandwidth. The
+        smaller grid is chosen only when it divides the slab tiles exactly at that wave count;
+        a grid of every SM balances the tasks the counts give at run time instead.
+        """
+        grid = super()._balanced_sms(block_m, block_n)
+        if self.call.kind == "contiguous" or self._slab_tiles(block_m, block_n) % grid == 0:
+            return grid
+        return self.sm_count
+
     def _refusal_inputs(self) -> dict:
         return {
             "sm_count": self.sm_count,
@@ -847,11 +862,14 @@ class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8Fwd
         # A tile wider than N computes only columns it does not store.
         widths = [n for n in self._BLOCK_N if n <= self.call.n]
         heights = [m for m in self._BLOCK_M if self.alignment % m == 0]
+        # The default rule's grid, every SM, and the fewest SMs that keep the slab tiles' wave
+        # count, which the default rule passes over when they do not divide the tiles exactly.
+        fewest = super()._balanced_sms
         configs = [
             {"block_m": m, "block_n": n, "num_stages": s, "num_sms": sms, "stage_scales": staged}
             for m, n, staged in itertools.product(heights, widths, (0, 1))
             for s in self._stages_for(m, n, staged)
-            for sms in sorted({self._balanced_sms(m, n), self.sm_count})
+            for sms in sorted({self._balanced_sms(m, n), fewest(m, n), self.sm_count})
         ]
         for config in configs:
             self._check_config(config)

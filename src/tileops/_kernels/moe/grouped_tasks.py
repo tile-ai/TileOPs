@@ -410,20 +410,16 @@ class GroupedGEMMConfigMixin:
         super().autotune(warmup=warmup, rep=rep)
         self._check_config(self.config)
 
-    def _balanced_sms(self, block_m: int, block_n: int) -> int:
-        """The persistent grid: for masked slabs, the fewest SMs that run every slab tile in as
-        few waves as every SM does, when they take one tile each in every wave; otherwise, and
-        for contiguous layouts, every SM.
-
-        The kernels stream each expert's weights from DRAM, and each SM launched adds load
-        bandwidth. The smaller grid is chosen only when it divides the slab tiles exactly at
-        that wave count, where every SM more would add a partly idle last wave.
-        """
+    def _slab_tiles(self, block_m: int, block_n: int) -> int:
+        """The tasks of every tile of every masked slab, each slab full."""
         call = self.call
-        if call.kind == "contiguous":
+        return call.num_groups * -(-call.max_m // block_m) * -(-call.n // block_n)
+
+    def _balanced_sms(self, block_m: int, block_n: int) -> int:
+        """Minimize idle blocks for masked slabs; use all SMs for contiguous layouts."""
+        if self.call.kind == "contiguous":
             return self.sm_count
-        tiles = call.num_groups * -(-call.max_m // block_m) * -(-call.n // block_n)
+        tiles = self._slab_tiles(block_m, block_n)
         if tiles == 0:
             return 1
-        waves = -(-tiles // self.sm_count)
-        return tiles // waves if tiles % waves == 0 else self.sm_count
+        return -(-tiles // -(-tiles // self.sm_count))

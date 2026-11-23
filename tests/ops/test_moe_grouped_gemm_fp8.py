@@ -165,30 +165,46 @@ def test_fp8_grouped_gemm_staged_scales_on_one_warp_group() -> None:
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "counts",
+    ("max_m", "n", "counts"),
     [
-        # S + 4 running slabs, one count past max_m: two waves of S / 2 + 2 CTAs.
+        # An odd count of one-tile tasks in two waves, so one CTA takes one task and the others
+        # two; a negative count and one past max_m.
         pytest.param(
-            lambda sms: [1] * (sms + 3) + [200] + [0] * (sms - 7),
+            64,
+            128,
+            lambda sms: [1] * (sms + 4 + sms % 2) + [-5, 200],
             marks=pytest.mark.smoke,
-            id="two-waves",
+            id="odd-running",
+        ),
+        # Slabs of 65 rows in one 128-row tile, ragged at max_m, by two column tiles, nearly
+        # all running: a count short of the tasks would leave the grid too small for them.
+        pytest.param(
+            65,
+            256,
+            lambda sms: [65, 1] * (sms // 2 + 1) + [0, -1],
+            marks=pytest.mark.full,
+            id="ragged-two-columns",
         ),
         # No running slab: every CTA idles.
-        pytest.param(lambda sms: [0] * (2 * sms - 3), marks=pytest.mark.full, id="none-running"),
+        pytest.param(64, 128, lambda sms: [0] * sms, marks=pytest.mark.full, id="none-running"),
     ],
 )
-def test_fp8_grouped_gemm_balances_a_full_grid_over_the_running_ctas(counts) -> None:
-    """2 S - 3 one-tile slabs, which no smaller grid runs in exact waves as few as every SM's,
-    launch every SM; the counts' tasks, fewer than the slabs, give the right output, and empty
-    slabs keep their rows."""
+def test_fp8_grouped_gemm_balances_a_full_grid_over_the_running_ctas(max_m, n, counts) -> None:
+    """Slabs whose tiles no smaller grid runs in exact waves as few as every SM's launch every
+    SM; the counts' tasks, fewer than the slabs' tiles, give the right output, and empty slabs
+    keep their rows."""
     sms = torch.cuda.get_device_properties(0).multi_processor_count
     counts = counts(sms)
-    workload = _workload(64, E=len(counts), N=128, K=512)
-    op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=64))
+    # Pad with empty slabs up to the fewest whose tiles no smaller grid runs in exact waves.
+    while len(counts) * (n // 128) % -(-len(counts) * (n // 128) // sms) == 0:
+        counts.append(0)
+    slabs = len(counts)
+    workload = _workload(max_m, E=slabs, N=n, K=512)
+    op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
     out = run_into_guarded_out(op, workload, *with_counts(workload, counts))
     (kernel,) = op.iter_kernels()
     assert kernel.config["num_sms"] == sms
-    assert all(bool((out[g] == SENTINEL).all()) for g, count in enumerate(counts) if count == 0)
+    assert all(bool((out[g] == SENTINEL).all()) for g, count in enumerate(counts) if count <= 0)
 
 
 def _contiguous_workload(layout: dict, sizes: list, **dims) -> MoEGroupedGEMMFP8Workload:
