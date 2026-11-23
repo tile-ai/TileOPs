@@ -78,18 +78,18 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_w
     LONG, VEC = K._lane_vec(ratio, overlap, dim)
     # A long window's warps, one per BATCH positions and at most long_warps (at least 3, as
     # SPAN > 16), and the batches each folds.
-    LONG_WARPS = min(long_warps, -(-SPAN // BATCH))
-    N_BATCH = -(-SPAN // (LONG_WARPS * BATCH))
+    WINDOW_WARPS = min(long_warps, -(-SPAN // BATCH))
+    N_BATCH = -(-SPAN // (WINDOW_WARPS * BATCH))
     # The 8-warp program keeps each batch's partial apart, the one a 16-warp block's warp
     # computes over the same BATCH positions, and merges them as the 16 warps' partials: a
     # window's entry is the same whichever program pools it. Rows of those partials.
-    SPLIT = long_warps < 16
-    PARTS = LONG_WARPS * N_BATCH if SPLIT else LONG_WARPS
+    SPLIT = long_warps < K.LONG_WARPS
+    PARTS = WINDOW_WARPS * N_BATCH if SPLIT else WINDOW_WARPS
     LANE_CH = 32 * VEC
     CHUNKS = -(-dim // LANE_CH)
     # Whether a long window's block slots cover its positions and its lanes a chunk's
     # channels exactly, with none to mask.
-    LONG_EXACT = LONG_WARPS * N_BATCH * BATCH == SPAN and dim % LANE_CH == 0
+    LONG_EXACT = WINDOW_WARPS * N_BATCH * BATCH == SPAN and dim % LANE_CH == 0
     # Short windows a block pools, a warp each: at least the C head windows a block owns.
     WARPS = 4
     # A request's only token, alone in its request, leaves the block's other warps idle: a
@@ -127,7 +127,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_w
         n_windows = t_q // ratio
 
         # A long window takes a block, a short one a warp of WARPS.
-        BLOCK_WARPS = LONG_WARPS if LONG else WARPS
+        BLOCK_WARPS = WINDOW_WARPS if LONG else WARPS
         n_units = n_windows if LONG else T.ceildiv(n_windows, BLOCK_WARPS)
         # The warps that write a request's ring rows: a long window's all, a short window's
         # those that pool no head window. The rows a thread carries from the call's tokens to
@@ -665,7 +665,7 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_w
                     T.annotate_min_blocks_per_sm(max(1, SM_WARPS // BLOCK_WARPS))
                 if LONG and N_BATCH == 1:
                     T.annotate_min_blocks_per_sm(K.LONG_BLOCKS_PER_SM)
-                elif LONG and long_warps < 16:
+                elif LONG and SPLIT:
                     T.annotate_min_blocks_per_sm(K.SPLIT_BLOCKS_PER_SM)
                 tx = T.get_thread_binding()
                 warp = tx // 32
@@ -1082,6 +1082,10 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
     WARP_VEC = 4
     REG_SPAN = 65536 // (SM_WARPS * 32) // (2 * WARP_VEC)
     BATCH = 8
+    # A long window's warps: the full program's, and the split program's, which keeps each
+    # batch's partial apart (SPLIT).
+    LONG_WARPS = 16
+    SPLIT_WARPS = 8
     # The blocks an SM keeps of a long window's 16-warp program with a single batch live, and
     # of its 8-warp program (SPLIT), each at 64 registers a thread: the kernel asks for them,
     # and _program_facts counts a call's waves by them.
@@ -1113,7 +1117,9 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
         self.overlap = overlap
         self.dim = dim
         self.dtype = dtype
-        self.kernel = _gated_pool_compress_kernel(ratio, overlap, dim, self.dtype_str, False, 16)
+        self.kernel = _gated_pool_compress_kernel(
+            ratio, overlap, dim, self.dtype_str, False, self.LONG_WARPS
+        )
         self.init_config()
 
     def forward(
@@ -1154,8 +1160,8 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
         blocks = (n + t_q // self.ratio) * -(-self.dim // (32 * vec))
         sms = self.build_target.sm_count
         one_split_wave = self.LONG_BLOCKS_PER_SM * sms < blocks <= self.SPLIT_BLOCKS_PER_SM * sms
-        eight = long and one_token and -(-span // self.BATCH) == 16 and one_split_wave
-        return one_token, 8 if eight else 16
+        eight = long and one_token and -(-span // self.BATCH) == self.LONG_WARPS and one_split_wave
+        return one_token, self.SPLIT_WARPS if eight else self.LONG_WARPS
 
     def _compile(self, cfg: dict, one_token: bool, long_warps: int):
         """The program for ``_program_facts``; the kernel takes no configuration."""
