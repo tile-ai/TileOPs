@@ -5,21 +5,27 @@
 // peer's warpgroup of the same role weighs it and its own and adds them. Both
 // warpgroups hold the same fragment layout, so a thread's 128 floats travel in
 // their register order: float4 q of thread t at slot q * 128 + t, a warp's 32
-// stores covering 512 contiguous bytes.
+// stores covering 512 contiguous bytes. The 64 KiB buffer may be held as two
+// 32 KiB halves, slots [0, 2048) in `lo` and [2048, 4096) in `hi`.
 
 namespace tileops {
 
 // Stores thread `t`'s 128 accumulator floats `frag` into peer CTA `peer`'s
-// shared memory at the address `base` names here, completing them on the peer's
-// mbarrier at the address `bar` names here.
-__device__ __forceinline__ void send_frag128(const float* frag, void* base,
-                                             int t, void* bar, int peer) {
-  unsigned s = static_cast<unsigned>(__cvta_generic_to_shared(base));
+// shared memory, in the halves at the addresses `lo` and `hi` name here,
+// completing them on the peer's mbarrier at the address `bar` names here.
+__device__ __forceinline__ void send_frag128_halves(const float* frag, void* lo,
+                                                    void* hi, int t, void* bar,
+                                                    int peer) {
+  unsigned sl = static_cast<unsigned>(__cvta_generic_to_shared(lo));
+  unsigned sh = static_cast<unsigned>(__cvta_generic_to_shared(hi));
   unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
-  unsigned rs, rm;
+  unsigned rl, rh, rm;
   asm volatile("mapa.shared::cluster.u32 %0, %1, %2;"
-               : "=r"(rs)
-               : "r"(s), "r"(peer));
+               : "=r"(rl)
+               : "r"(sl), "r"(peer));
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;"
+               : "=r"(rh)
+               : "r"(sh), "r"(peer));
   asm volatile("mapa.shared::cluster.u32 %0, %1, %2;"
                : "=r"(rm)
                : "r"(m), "r"(peer));
@@ -27,33 +33,53 @@ __device__ __forceinline__ void send_frag128(const float* frag, void* base,
   for (int q = 0; q < 32; ++q)
     asm volatile(
         "st.async.shared::cluster.mbarrier::complete_tx::bytes.v4.f32 "
-        "[%0], {%1, %2, %3, %4}, [%5];" ::"r"(rs + 16u * (q * 128 + t)),
+        "[%0], {%1, %2, %3, %4}, [%5];" ::"r"((q < 16 ? rl : rh) +
+                                              16u * (q % 16 * 128 + t)),
         "f"(frag[4 * q]), "f"(frag[4 * q + 1]), "f"(frag[4 * q + 2]),
         "f"(frag[4 * q + 3]), "r"(rm)
         : "memory");
 }
 
+// send_frag128_halves into one 64 KiB buffer at the address `base` names here.
+__device__ __forceinline__ void send_frag128(const float* frag, void* base,
+                                             int t, void* bar, int peer) {
+  send_frag128_halves(frag, base, static_cast<char*>(base) + 32768, t, bar,
+                      peer);
+}
+
 // Sets thread `t`'s 128 accumulator floats `frag` to frag * mine + peer *
-// theirs, the peer's floats being the ones its send_frag128 stored for `t` at
-// `base`. Thread t of the warpgroup holds rows r and r + 8 of the 64 x 256
-// WGMMA accumulator, r = t / 32 * 16 + t % 32 / 4; float v lies in row r when
-// v % 4 < 2 and in row r + 8 otherwise. `mine` and `theirs` hold each of the 64
-// rows' weight.
-__device__ __forceinline__ void merge_frag128(float* frag, const void* base,
-                                              int t, const float* mine,
-                                              const float* theirs) {
-  const float4* b = static_cast<const float4*>(base);
+// theirs, the peer's floats being the ones its send_frag128_halves stored for
+// `t` in `lo` and `hi`. Thread t of the warpgroup holds rows r and r + 8 of the
+// 64 x 256 WGMMA accumulator, r = t / 32 * 16 + t % 32 / 4; float v lies in row
+// r when v % 4 < 2 and in row r + 8 otherwise. `mine` and `theirs` hold each of
+// the 64 rows' weight.
+__device__ __forceinline__ void merge_frag128_halves(float* frag,
+                                                     const void* lo,
+                                                     const void* hi, int t,
+                                                     const float* mine,
+                                                     const float* theirs) {
+  const float4* bl = static_cast<const float4*>(lo);
+  const float4* bh = static_cast<const float4*>(hi);
   const int r = t / 32 * 16 + t % 32 / 4;
   const float m0 = mine[r], m1 = mine[r + 8], t0 = theirs[r],
               t1 = theirs[r + 8];
 #pragma unroll
   for (int q = 0; q < 32; ++q) {
-    float4 v = b[q * 128 + t];
+    float4 v = (q < 16 ? bl : bh)[q % 16 * 128 + t];
     frag[4 * q] = frag[4 * q] * m0 + v.x * t0;
     frag[4 * q + 1] = frag[4 * q + 1] * m0 + v.y * t0;
     frag[4 * q + 2] = frag[4 * q + 2] * m1 + v.z * t1;
     frag[4 * q + 3] = frag[4 * q + 3] * m1 + v.w * t1;
   }
+}
+
+// merge_frag128_halves reading the one 64 KiB buffer `base` send_frag128
+// stored the peer's floats in.
+__device__ __forceinline__ void merge_frag128(float* frag, const void* base,
+                                              int t, const float* mine,
+                                              const float* theirs) {
+  merge_frag128_halves(frag, base, static_cast<const char*>(base) + 32768, t,
+                       mine, theirs);
 }
 
 }  // namespace tileops

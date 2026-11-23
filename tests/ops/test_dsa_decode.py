@@ -55,6 +55,43 @@ class DSADecodeFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-fp16-tuned",
                 ),
+                # Every causal query sees topk keys, so no row is scanned for dead slots. More
+                # rows than SMs: each CTA runs one row after another.
+                pytest.param(
+                    1,
+                    64,
+                    300,
+                    1024,
+                    512,
+                    0,
+                    192,
+                    1,
+                    1,
+                    1024,
+                    None,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="rows-past-sms-see-topk",
+                ),
+                # Rows that fill fewer than half the SMs: a CTA pair shares each row's keys.
+                pytest.param(
+                    2,
+                    128,
+                    3,
+                    1024,
+                    512,
+                    0,
+                    512,
+                    1,
+                    1,
+                    1024,
+                    None,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="few-rows-see-topk",
+                ),
             ],
         ),
     ]
@@ -291,6 +328,52 @@ def test_dsa_decode_index_only(batch, seq_len, seq_len_kv, topk, with_sink) -> N
         sink[0], sink[1] = float("inf"), float("-inf")
         inputs.append(sink.to(q.device))
     test.check(DSADenseFwdOp(0, 1, 0, is_causal=False), *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("batch", "seq_len", "seq_len_kv", "heads", "topk", "is_causal"),
+    [
+        # The bf16-no-tail shape: a CTA a row.
+        pytest.param(1, 7, 256, 64, 128, False, marks=pytest.mark.smoke, id="bf16-no-tail-shape"),
+        # More rows than SMs: each CTA runs one row after another.
+        pytest.param(1, 300, 1024, 64, 200, False, marks=pytest.mark.full, id="rows-past-sms"),
+        # Rows that fill fewer than half the SMs: a CTA pair shares each row's keys.
+        pytest.param(4, 2, 1024, 64, 640, False, marks=pytest.mark.full, id="few-rows"),
+        pytest.param(2, 3, 1024, 128, 512, True, marks=pytest.mark.full, id="few-rows-causal"),
+        # More rows than SMs with an odd block count: a row of one block leaves consumer 1
+        # no odd block to score. A topk that is not a multiple of 4 scans one slot a thread.
+        pytest.param(1, 300, 1024, 64, 190, False, marks=pytest.mark.full, id="rows-past-sms-odd"),
+        pytest.param(
+            1, 300, 1024, 64, 192, True, marks=pytest.mark.full, id="rows-past-sms-causal"
+        ),
+        # Between half and all of the SMs: a CTA a row.
+        pytest.param(1, 100, 1024, 64, 640, False, marks=pytest.mark.full, id="row-per-cta"),
+    ],
+)
+def test_dsa_decode_skips_dead_tails(batch, seq_len, seq_len_kv, heads, topk, is_causal) -> None:
+    """Rows end in dead slots of every length, a row with none live included: the blocks
+    past a row's last live slot weigh nothing, however the rows are spread over the SMs."""
+    # Every causal row sees fewer than topk keys.
+    q_start = topk // 2 if is_causal else 0
+    test = DSADecodeTest(
+        batch, heads, seq_len, seq_len_kv, 512, 0, topk, 1, 1, q_start, is_causal=is_causal,
+        dtype=torch.bfloat16,
+    )  # fmt: skip
+    q, kv, _ = test.gen_inputs()
+    generator = torch.Generator().manual_seed(0)
+    rows = batch * seq_len
+    # A causal row pads with seq_len_kv, an index-only one with -1.
+    indices = torch.full((rows, topk), seq_len_kv if is_causal else -1, dtype=torch.int32)
+    for r, live in enumerate(torch.randint(0, topk + 1, (rows,), generator=generator)):
+        live = 0 if r == 0 else int(live)
+        indices[r, :live] = torch.randperm(seq_len_kv, generator=generator)[:live]
+    inputs = [q, kv, indices.view(batch, seq_len, 1, topk).to(q.device)]
+    if not is_causal:
+        sink = torch.randn(heads, generator=generator)
+        sink[0], sink[1] = float("inf"), float("-inf")
+        inputs.append(sink.to(q.device))
+    test.check(DSADenseFwdOp(0, 1, q_start, is_causal=is_causal), *inputs)
 
 
 @pytest.mark.sm90

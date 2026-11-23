@@ -74,7 +74,6 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
     @classmethod
     def entry_for(cls, call: DSADecodeCall) -> Entry:
         """The call spec is the identity; the kernel is built on its device."""
-        sink = {"has_attn_sink": call.has_attn_sink} if cls.serves_attn_sink else {}
         return call, lambda: cls(
             call.batch,
             call.seq_len,
@@ -90,8 +89,13 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
             call.sm_scale,
             call.is_causal,
             device_index=call.device_index,
-            **sink,
+            **cls.entry_options(call),
         )
+
+    @classmethod
+    def entry_options(cls, call: DSADecodeCall) -> dict:
+        """The keywords past the shape that the constructor takes for `call`."""
+        return {"has_attn_sink": call.has_attn_sink} if cls.serves_attn_sink else {}
 
     @staticmethod
     def shape_refusal(
