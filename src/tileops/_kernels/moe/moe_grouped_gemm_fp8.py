@@ -109,8 +109,14 @@ def _moe_grouped_gemm_fp8_kernel(
     contiguous = packing is not None
     tight = packing == "tight"
 
+    # Bounds are checked only where written here: each global load is in bounds by a clamped
+    # index or by the walk's task bound. TileLang's own check guards each clamped A-scale load
+    # with m >= 1, which nvcc keeps on every K step.
     @tilelang.jit(
-        pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
+        pass_configs={
+            PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+            PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True,
+        },
         compile_flags=[
             *CUDA_COMPILE_FLAGS,
             "--use_fast_math",
@@ -158,6 +164,9 @@ def _moe_grouped_gemm_fp8_kernel(
         last_scale_b_row = n // QUANT_SCALE_BLOCK - 1
         # The previous task's TMA store must have read shared_c before the next is staged.
         multi_wave = contiguous or max_waves > 1
+        # A masked grid of every SM, the default where no smaller grid divides the slab tiles
+        # at as few waves (``_balanced_sms``), balances the tasks the counts give at run time.
+        balances = not contiguous and num_sms == sm_count
         math_threads = block_m // WGMMA_ROWS * WARPGROUP_THREADS
         math_warps = math_threads // 32
         fragment_regs = WGMMA_ROWS * block_n // WARPGROUP_THREADS
@@ -256,6 +265,25 @@ def _moe_grouped_gemm_fp8_kernel(
                 for i in T.unroll(tasks.cursor_len):
                     cursor[i] = 0
                 tx = T.get_thread_binding()
+                if balances:
+                    # The fewest CTAs that run the counts' tasks in as few waves as every SM
+                    # does take them; the others, spread over the grid, take none.
+                    grid = T.alloc_var("int32", init=num_sms)
+                    # Each lane of a warp sums every 32nd slab's tiles.
+                    tiles = T.alloc_var("int32", init=0)
+                    for i in T.unroll(tilelang.cdiv(num_groups, 32)):
+                        if i * 32 + tx % 32 < num_groups:
+                            tiles = tiles + tasks.slab_tiles(layout[i * 32 + tx % 32])
+                    running = T.warp_reduce_sum(tiles) * tilelang.cdiv(n, block_n)
+                    if running > 0:
+                        grid = T.ceildiv(running, T.ceildiv(running, num_sms))
+                    idle = num_sms - grid
+                    before = pid * idle // num_sms
+                    worker = pid - before
+                    if (pid + 1) * idle // num_sms > before:
+                        cursor[cur_g] = num_groups
+                else:
+                    grid, worker = num_sms, T.meta_var(pid)
                 if recover:
                     # Each expert's end: the first row whose id is past it, ids not decreasing.
                     ends = T.alloc_shared((num_groups,), "int32", scope="shared")
@@ -300,10 +328,13 @@ def _moe_grouped_gemm_fp8_kernel(
                         T.uint32(0xFFFFFFFF), producer_tx // 32, 0, 32, 32
                     )
                     for wave in T.serial(max_waves):
-                        task_id = num_sms * wave + pid
+                        task_id = grid * wave + worker
                         # Skipped tasks must advance neither role's barriers.
                         walk(ends if recover else layout, task_id, cursor)
-                        if T.And(cursor[cur_g] < num_groups, producer_warp == 0):
+                        # A guard read from a buffer is split by TileLang into one branch per
+                        # statement of the task; a bound scalar keeps the task one branch.
+                        produces = T.And(cursor[cur_g] < num_groups, producer_warp == 0)
+                        if produces:
                             tile_of(task_id, cursor, tile)
                             g = T.meta_var(tasks.expert(cursor))
                             m_start = T.meta_var(tasks.first_row(cursor, tile))
@@ -446,9 +477,10 @@ def _moe_grouped_gemm_fp8_kernel(
                     # Read off ``tx``, which TileLang can bound, so the loads carry no guard.
                     acc_row0 = (tx // 32) * 16 + (tx % 32) // 4
                     for wave in T.serial(max_waves):
-                        task_id = num_sms * wave + pid
+                        task_id = grid * wave + worker
                         walk(ends if recover else layout, task_id, cursor)
-                        if cursor[cur_g] < num_groups:
+                        runs = cursor[cur_g] < num_groups
+                        if runs:
                             tile_of(task_id, cursor, tile)
                             g = T.meta_var(tasks.expert(cursor))
                             m_start = T.meta_var(tasks.first_row(cursor, tile))
@@ -582,105 +614,92 @@ class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8Fwd
     _BLOCK_N: ClassVar[tuple[int, ...]] = (64, 128, 160, 192)
     # Ring depths. A depth that divides the K steps runs the constant-slot ring.
     _NUM_STAGES: ClassVar[range] = range(3, 9)
-    # Calibrated configs keyed by (E, N, K, max_m); contiguous layouts use max_m=None.
+    # Calibrated tiles and rings keyed by (E, N, K, max_m); contiguous layouts use max_m=None.
+    # Each takes the default rule's grid, ``_balanced_sms``.
     _CONFIGS: ClassVar[dict[str, dict[tuple[int, int, int, int | None], dict[str, int]]]] = {
         "h200": {
             (8, 4096, 7168, 128): {
                 "block_m": 64,
                 "block_n": 128,
                 "num_stages": 7,
-                "num_sms": 132,
                 "stage_scales": 1,
             },
             (8, 7168, 2048, 128): {
                 "block_m": 128,
                 "block_n": 160,
                 "num_stages": 4,
-                "num_sms": 120,
                 "stage_scales": 1,
             },
             (32, 4096, 7168, 64): {
                 "block_m": 64,
                 "block_n": 192,
                 "num_stages": 4,
-                "num_sms": 118,
                 "stage_scales": 0,
             },
             (32, 7168, 2048, 64): {
                 "block_m": 64,
                 "block_n": 160,
                 "num_stages": 4,
-                "num_sms": 131,
                 "stage_scales": 1,
             },
             (32, 7168, 2048, 256): {
                 "block_m": 64,
                 "block_n": 160,
                 "num_stages": 4,
-                "num_sms": 132,
                 "stage_scales": 1,
             },
             (16, 3072, 4096, 64): {
                 "block_m": 64,
                 "block_n": 192,
                 "num_stages": 4,
-                "num_sms": 128,
                 "stage_scales": 1,
             },
             (16, 3072, 4096, 256): {
                 "block_m": 64,
                 "block_n": 192,
                 "num_stages": 4,
-                "num_sms": 128,
                 "stage_scales": 1,
             },
             (48, 4096, 7168, 64): {
                 "block_m": 64,
                 "block_n": 192,
                 "num_stages": 4,
-                "num_sms": 132,
                 "stage_scales": 0,
             },
             (48, 7168, 2048, 64): {
                 "block_m": 64,
                 "block_n": 160,
                 "num_stages": 4,
-                "num_sms": 128,
                 "stage_scales": 1,
             },
             (48, 4096, 7168, 256): {
                 "block_m": 64,
                 "block_n": 192,
                 "num_stages": 4,
-                "num_sms": 132,
                 "stage_scales": 0,
             },
             (48, 7168, 2048, 256): {
                 "block_m": 64,
                 "block_n": 192,
                 "num_stages": 4,
-                "num_sms": 132,
                 "stage_scales": 0,
             },
             (16, 1536, 2048, None): {
                 "block_m": 128,
                 "block_n": 192,
                 "num_stages": 4,
-                "num_sms": 132,
                 "stage_scales": 0,
             },
             (32, 4096, 7168, None): {
                 "block_m": 128,
                 "block_n": 128,
                 "num_stages": 4,
-                "num_sms": 132,
                 "stage_scales": 0,
             },
             (32, 7168, 2048, None): {
                 "block_m": 128,
                 "block_n": 160,
                 "num_stages": 4,
-                "num_sms": 132,
                 "stage_scales": 0,
             },
         },
@@ -759,6 +778,9 @@ class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8Fwd
         calibrated = self._CONFIGS.get(calibration, {}).get(
             (call.num_groups, call.n, call.k, call.max_m)
         )
+        if calibrated is not None:
+            grid = self._balanced_sms(calibrated["block_m"], calibrated["block_n"])
+            calibrated = {**calibrated, "num_sms": grid}
         # Calibrated configurations must satisfy this layout's resource and alignment limits.
         refused = calibrated is not None and self.config_refusal(
             calibrated,

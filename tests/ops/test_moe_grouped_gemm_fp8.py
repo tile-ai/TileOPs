@@ -19,6 +19,7 @@ from tileops._kernels.moe import (
 )
 from tileops._kernels.moe.moe_grouped_gemm_fp8 import _smem_bytes
 from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMFP8FwdOp
+from tileops._ops.moe.contracts import layout_call_fields
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
@@ -159,6 +160,35 @@ def test_fp8_grouped_gemm_staged_scales_on_one_warp_group() -> None:
     op = _forced_op(MaskedLayoutSpec(max_m=128), config)
     out = run_into_guarded_out(op, workload, *with_counts(workload, counts))
     assert bool((out[1] == SENTINEL).all())
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "counts",
+    [
+        # S + 4 running slabs, one count past max_m: two waves of S / 2 + 2 CTAs.
+        pytest.param(
+            lambda sms: [1] * (sms + 3) + [200] + [0] * (sms - 7),
+            marks=pytest.mark.smoke,
+            id="two-waves",
+        ),
+        # No running slab: every CTA idles.
+        pytest.param(lambda sms: [0] * (2 * sms - 3), marks=pytest.mark.full, id="none-running"),
+    ],
+)
+def test_fp8_grouped_gemm_balances_a_full_grid_over_the_running_ctas(counts) -> None:
+    """2 S - 3 one-tile slabs, which no smaller grid runs in exact waves as few as every SM's,
+    launch every SM; the counts' tasks, fewer than the slabs, give the right output, and empty
+    slabs keep their rows."""
+    sms = torch.cuda.get_device_properties(0).multi_processor_count
+    counts = counts(sms)
+    workload = _workload(64, E=len(counts), N=128, K=512)
+    op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=64))
+    out = run_into_guarded_out(op, workload, *with_counts(workload, counts))
+    (kernel,) = op.iter_kernels()
+    assert kernel.config["num_sms"] == sms
+    assert all(bool((out[g] == SENTINEL).all()) for g, count in enumerate(counts) if count == 0)
 
 
 def _contiguous_workload(layout: dict, sizes: list, **dims) -> MoEGroupedGEMMFP8Workload:
@@ -466,7 +496,10 @@ def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
     assert any(verdicts) and not all(verdicts)
     for (_, _, k, _), config in kernel._CONFIGS["h200"].items():
         refusal = kernel.config_refusal(
-            config, sm_count=sm_count, smem_limit=smem_limit, scale_k=k // 128
+            {**config, "num_sms": sm_count},
+            sm_count=sm_count,
+            smem_limit=smem_limit,
+            scale_k=k // 128,
         )
         assert refusal is None
 
@@ -549,6 +582,30 @@ def test_fp8_grouped_gemm_kernel_refuses_what_it_cannot_run(facts: dict, reason:
     op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=64))
     with pytest.raises(ValueError, match=reason):
         op.key_for(_KEY, _fp8_call(**facts))
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_fp8_grouped_gemm_grid_runs_slab_tiles_in_exact_waves() -> None:
+    """S - 4 one-tile slabs of 64 rows, two column tiles each, give 2 (S - 4) tasks: two exact
+    waves of S - 4 CTAs, which the masked call launches instead of every SM."""
+    sms = torch.cuda.get_device_properties(0).multi_processor_count
+    e = sms - 4
+    layout = MaskedLayoutSpec(max_m=64)
+    call = MGroupedGEMMFP8Call(
+        device=torch.device("cuda"),
+        **layout_call_fields(layout),
+        ab_dtype=torch.float8_e4m3fn,
+        num_groups=e,
+        m=e * 64,
+        n=256,
+        k=256,
+        a_scale_shape=(e, 64, 2),
+        b_scale_shape=(e, 2, 2),
+    )
+    kernel = MoEGroupedGEMMFP8FwdOp(layout).kernel_for(_KEY, lambda: call)
+    assert kernel.config["num_sms"] == sms - 4
 
 
 @pytest.mark.sm90
