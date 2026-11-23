@@ -1089,6 +1089,12 @@ def int8_w8a8_config(m: int, n: int, k: int, sm_count: int) -> dict:
     - ring depth: the deepest the shared memory holds, at most one stage a K step.
     """
     block_m = 64
+    # FIXME(staged-rollout): the multiples of 16 from 32 to 256 missing here (48, 80, 112, 144,
+    # 176, 192, 208, 224, 240) are left out for a reason that no longer holds.
+    #
+    # Broken invariant: every width the kernel issues as one WGMMA is a candidate.
+    # Why: they were dropped when TileLang split them into narrower WGMMAs.
+    # Cleanup: measure them, then add them or state why they stay out.
     widths = (32, 64, 96, 128, 160, 256)
     tiles_m = -(-m // block_m)
     block_n = next((w for w in widths if tiles_m * -(-n // w) <= sm_count), widths[-1])
