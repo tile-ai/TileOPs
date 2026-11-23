@@ -202,6 +202,21 @@ def test_gelu_and_mul_tails_are_exact(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+def test_gelu_tanh_and_mul_rounds_once_at_every_bfloat16_gate() -> None:
+    """Edge: every bfloat16 gate against a value of 16 matches the float32 reference.
+
+    The activation stays in float32 until the one rounding of the product. Rounding
+    ``tanh`` or ``1 + tanh`` to bfloat16 first cancels the activation to zero near gate
+    -3, where it is about -0.003, and the value of 16 carries that past the tolerance.
+    """
+    gate = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
+    gate = gate.view(torch.bfloat16)
+    x = torch.cat([gate, torch.full_like(gate, 16.0)])[None]
+    workload = ElementwiseWorkload("GELUAndMulFwdOp", (x,), approximate="tanh")
+    TestBase.check(workload, GELUAndMulFwdOp(approximate="tanh"), x)
+
+
+@pytest.mark.smoke
 def test_fused_gated_rejects_integer_dtype() -> None:
     """Fused gated ops are float-only; the rejection follows the tensor."""
     op = GELUAndMulFwdOp()

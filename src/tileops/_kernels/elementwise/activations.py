@@ -525,7 +525,7 @@ class GELUAndMulFwdKernel(FusedGatedKernel):
 
 
 class GELUTanhAndMulFwdKernel(FusedGatedKernel):
-    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value.
+    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value, in float32 and rounded once.
 
     Uses tanh approximation: gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
     """
@@ -540,9 +540,15 @@ class GELUTanhAndMulFwdKernel(FusedGatedKernel):
     def activation_func(x):
         sqrt_2_over_pi = T.cast(_SQRT_2_OVER_PI, "float32")
         coeff = T.cast(_GELU_TANH_COEFF, "float32")
-        half = T.cast(0.5, x.dtype)
-        one = T.cast(1.0, x.dtype)
-        x_f32 = T.Cast("float32", x)
+        half = T.cast(0.5, "float32")
+        one = T.cast(1.0, "float32")
+        x_f32 = T.cast(x, "float32")
         inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
-        tanh_val = T.Cast(x.dtype, T.tanh(inner))
-        return half * x * (one + tanh_val)
+        # A 16-bit result takes MUFU.TANH: its 2^-10.987 relative error moves the float32
+        # product by at most |gate * value| * 2^-11.987, and ``tanhf``'s software sequence
+        # makes the body, not the memory stream, set the kernel's time.
+        if x.dtype == "float32":
+            tanh = T.tanh(inner)
+        else:
+            tanh = T.call_extern("float32", "tileops::approx_tanh", inner)
+        return half * x_f32 * (one + tanh)
