@@ -55,6 +55,34 @@ class PagedKVCacheGatherFwdInterface(KernelInterface):
         """
 
 
+@T.macro
+def _row_slots(
+    slots, Cu, Table, Starts, first, total, batch, *, block_rows, page_size, small_batch, has_starts
+):
+    """Write the physical cache slot of packed rows first .. first + block_rows into *slots*.
+
+    The request search is O(log batch) per row, or a sum of comparisons for a small batch.
+    Repeated offsets skip empty requests.
+    """
+    for r in T.Parallel(block_rows):
+        row = first + r
+        if row < total:
+            lo = T.alloc_var("int32", init=0)
+            if small_batch:
+                for b in T.unroll(1, small_batch):
+                    lo += T.cast(Cu[b] <= row, "int32")
+            else:
+                hi = T.alloc_var("int32", init=batch)
+                while lo < hi:
+                    mid = (lo + hi) // 2
+                    if Cu[mid + 1] <= row:
+                        lo = mid + 1
+                    else:
+                        hi = mid
+            pos = T.cast(row - Cu[lo], "int64") + (Starts[lo] if has_starts else 0)
+            slots[r] = T.cast(Table[lo, pos // page_size], "int64") * page_size + pos % page_size
+
+
 @target_cache(maxsize=32)
 def _paged_cache_gather_kernel(page_size, row_width, dtype, out_dtype, has_starts, small_batch):
     quantized = dtype == "float8_e4m3fn"
@@ -81,28 +109,20 @@ def _paged_cache_gather_kernel(page_size, row_width, dtype, out_dtype, has_start
                 T.ceildiv(total, block_rows), T.ceildiv(row_width, block_cols), threads=threads
             ) as (bx, by):
                 slots = T.alloc_shared((block_rows,), "int64")
-                # Search packed offsets in O(log batch) per row, shared within this CTA.
-                # Other column CTAs repeat the lookup. Repeated offsets skip empty requests.
-                for r in T.Parallel(block_rows):
-                    row = bx * block_rows + r
-                    if row < total:
-                        lo = T.alloc_var("int32", init=0)
-                        if small_batch:
-                            for b in T.unroll(1, small_batch):
-                                lo += T.cast(Cu[b] <= row, "int32")
-                        else:
-                            hi = T.alloc_var("int32", init=batch)
-                            while lo < hi:
-                                mid = (lo + hi) // 2
-                                if Cu[mid + 1] <= row:
-                                    lo = mid + 1
-                                else:
-                                    hi = mid
-                        pos = T.cast(row - Cu[lo], "int64") + (Starts[lo] if has_starts else 0)
-                        slots[r] = (
-                            T.cast(Table[lo, pos // page_size], "int64") * page_size
-                            + pos % page_size
-                        )
+                # The slots are shared within this CTA; other column CTAs repeat the lookup.
+                _row_slots(
+                    slots,
+                    Cu,
+                    Table,
+                    Starts,
+                    bx * block_rows,
+                    total,
+                    batch,
+                    block_rows=block_rows,
+                    page_size=page_size,
+                    small_batch=small_batch,
+                    has_starts=has_starts,
+                )
                 T.sync_threads()
                 for r, c in T.Parallel(block_rows, block_cols):
                     row = bx * block_rows + r
@@ -159,26 +179,19 @@ def _paged_cache_gather_rows_kernel(
             with T.Kernel(T.ceildiv(total, block_rows), threads=threads) as bx:
                 slots = T.alloc_shared((block_rows,), "int64")
                 tx = T.get_thread_binding()
-                for r in T.Parallel(block_rows):
-                    row = bx * block_rows + r
-                    if row < total:
-                        lo = T.alloc_var("int32", init=0)
-                        if small_batch:
-                            for b in T.unroll(1, small_batch):
-                                lo += T.cast(Cu[b] <= row, "int32")
-                        else:
-                            hi = T.alloc_var("int32", init=batch)
-                            while lo < hi:
-                                mid = (lo + hi) // 2
-                                if Cu[mid + 1] <= row:
-                                    lo = mid + 1
-                                else:
-                                    hi = mid
-                        pos = T.cast(row - Cu[lo], "int64") + (Starts[lo] if has_starts else 0)
-                        slots[r] = (
-                            T.cast(Table[lo, pos // page_size], "int64") * page_size
-                            + pos % page_size
-                        )
+                _row_slots(
+                    slots,
+                    Cu,
+                    Table,
+                    Starts,
+                    bx * block_rows,
+                    total,
+                    batch,
+                    block_rows=block_rows,
+                    page_size=page_size,
+                    small_batch=small_batch,
+                    has_starts=has_starts,
+                )
                 T.sync_threads()
                 # Every load of a thread is issued before its first store.
                 held = T.alloc_local((steps, vec), dtype)
@@ -406,6 +419,9 @@ class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
 
     @property
     def default_config(self):
+        # Narrow column tiles sustain the 16-bit copies of two requests at width 1024 and above.
+        if self.small_batch == 2 and self.row_width >= 1024:
+            return {"block_rows": 4, "block_cols": 256, "threads": 128}
         return {"block_rows": 16, "block_cols": 128, "threads": 128}
 
     @property

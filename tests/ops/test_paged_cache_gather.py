@@ -166,18 +166,21 @@ def test_short_gather_packed_requests(lengths, dtype):
             id="wide-rows-thread-cap",
         ),
         pytest.param(
-            (1023,),
+            (1025,),
             torch.float16,
             None,
             PagedKVCacheGatherKernel,
-            {"block_rows": 16, "block_cols": 128, "threads": 128},
+            {"block_rows": 4, "block_cols": 256, "threads": 128},
             marks=pytest.mark.smoke,
             id="partial-vector-rows",
         ),
     ],
 )
 def test_gather_kernel_by_row_bytes(shape, dtype, out_dtype, kernel, config):
-    """Rows of whole 8-element vectors take eight rows per block and 32 bytes of loads per thread."""
+    """A row of whole 8-element vectors takes the row kernel, whose 16-byte stores fill whole sectors.
+
+    Any other row takes the general kernel.
+    """
     workload = PagedKVCacheGatherWorkload([17, 16], shape, 16, dtype, out_dtype)
     inputs = workload.gen_inputs()
     op = PagedKVCacheGatherFwdOp(out_dtype=out_dtype, target=BUILTIN)
