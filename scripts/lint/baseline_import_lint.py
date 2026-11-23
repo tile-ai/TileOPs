@@ -33,6 +33,7 @@ LIBRARIES = frozenset(
         "nvidia",
         "nvmath",
         "quack",
+        "tile_kernels",
         "vllm",
     }
 )
