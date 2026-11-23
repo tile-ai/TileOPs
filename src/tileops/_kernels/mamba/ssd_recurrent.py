@@ -103,42 +103,44 @@ def _ssd_decode_kernel(
                 # Each chunk issues all of its pieces' state and A loads before the first use;
                 # y, dt and dt * x carry across chunks.
                 for c in T.serial(chunks):
-                    for k in T.unroll(pieces):
-                        n0 = ((c * pieces + k) * LANES + lane) * VEC
+                    for j in T.unroll(pieces):
+                        n0 = ((c * pieces + j) * LANES + lane) * VEC
                         if n0 < N:
                             for v in T.vectorized(VEC):
-                                b_loc[k * VEC + v] = B_in[b, g, n0 + v]
+                                b_loc[j * VEC + v] = B_in[b, g, n0 + v]
                             for v in T.vectorized(VEC):
-                                c_loc[k * VEC + v] = C_in[b, g, n0 + v]
-                        for r in T.unroll(rows_per_thread):
-                            p = p0 + slot * rows_per_thread + r
-                            if c == 0 and k == 0:
-                                y_loc[r] = T.float32(0.0)
-                            if p < P:
-                                if c == 0 and k == 0:
-                                    dt_loc[r] = dt[b, h, p]
-                                    dtx[r] = dt_loc[r] * T.cast(x[b, h, p], accum_dtype)
+                                c_loc[j * VEC + v] = C_in[b, g, n0 + v]
+                    for r in T.unroll(rows_per_thread):
+                        p = p0 + slot * rows_per_thread + r
+                        if c == 0:
+                            y_loc[r] = T.float32(0.0)
+                        if p < P:
+                            if c == 0:
+                                dt_loc[r] = dt[b, h, p]
+                                dtx[r] = dt_loc[r] * T.cast(x[b, h, p], accum_dtype)
+                            for j in T.unroll(pieces):
+                                n0 = ((c * pieces + j) * LANES + lane) * VEC
                                 if n0 < N:
                                     for v in T.vectorized(VEC):
-                                        s_loc[(r * pieces + k) * VEC + v] = state[b, h, p, n0 + v]
+                                        s_loc[(r * pieces + j) * VEC + v] = state[b, h, p, n0 + v]
                                     for v in T.vectorized(VEC):
-                                        a_loc[(r * pieces + k) * VEC + v] = A[h, p, n0 + v]
+                                        a_loc[(r * pieces + j) * VEC + v] = A[h, p, n0 + v]
                     for r in T.unroll(rows_per_thread):
                         p = p0 + slot * rows_per_thread + r
                         if p < P:
-                            for k in T.unroll(pieces):
-                                n0 = ((c * pieces + k) * LANES + lane) * VEC
+                            for j in T.unroll(pieces):
+                                n0 = ((c * pieces + j) * LANES + lane) * VEC
                                 if n0 < N:
                                     for v in T.unroll(VEC):
-                                        i = (r * pieces + k) * VEC + v
-                                        b_v = T.cast(b_loc[k * VEC + v], accum_dtype)
-                                        c_v = T.cast(c_loc[k * VEC + v], accum_dtype)
+                                        i = (r * pieces + j) * VEC + v
+                                        b_v = T.cast(b_loc[j * VEC + v], accum_dtype)
+                                        c_v = T.cast(c_loc[j * VEC + v], accum_dtype)
                                         s_loc[i] = (
                                             T.exp(dt_loc[r] * a_loc[i]) * s_loc[i] + dtx[r] * b_v
                                         )
                                         y_loc[r] = y_loc[r] + s_loc[i] * c_v
                                     for v in T.vectorized(VEC):
-                                        state[b, h, p, n0 + v] = s_loc[(r * pieces + k) * VEC + v]
+                                        state[b, h, p, n0 + v] = s_loc[(r * pieces + j) * VEC + v]
 
                 # The LANES lanes of a row sum their partial y; lane 0 writes it.
                 for r in T.unroll(rows_per_thread):
