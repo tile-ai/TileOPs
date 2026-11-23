@@ -136,7 +136,25 @@ def test_short_gather_packed_requests(lengths, dtype):
             PagedKVCacheGatherRowsKernel,
             {"block_rows": 8, "threads": 144},
             marks=pytest.mark.smoke,
-            id="fp8-rows-two-loads-per-thread",
+            id="fp8-rows-four-loads-per-thread",
+        ),
+        pytest.param(
+            (328,),
+            torch.float8_e4m3fn,
+            torch.bfloat16,
+            PagedKVCacheGatherRowsKernel,
+            {"block_rows": 8, "threads": 82},
+            marks=pytest.mark.smoke,
+            id="fp8-rows-of-odd-vector-count",
+        ),
+        pytest.param(
+            (576,),
+            torch.bfloat16,
+            None,
+            PagedKVCacheGatherRowsKernel,
+            {"block_rows": 8, "threads": 288},
+            marks=pytest.mark.smoke,
+            id="bf16-rows-two-loads-per-thread",
         ),
         pytest.param(
             (2560,),
@@ -159,7 +177,7 @@ def test_short_gather_packed_requests(lengths, dtype):
     ],
 )
 def test_gather_kernel_by_row_bytes(shape, dtype, out_dtype, kernel, config):
-    """Rows of whole 16-byte vectors take eight rows per block and two loads per thread."""
+    """Rows of whole 8-element vectors take eight rows per block and 32 bytes of loads per thread."""
     workload = PagedKVCacheGatherWorkload([17, 16], shape, 16, dtype, out_dtype)
     inputs = workload.gen_inputs()
     op = PagedKVCacheGatherFwdOp(out_dtype=out_dtype, target=BUILTIN)

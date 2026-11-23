@@ -123,8 +123,10 @@ def _paged_cache_gather_rows_kernel(
     page_size, row_width, dtype, out_dtype, has_starts, small_batch
 ):
     quantized = dtype == "float8_e4m3fn"
-    # One 16-byte load per vector: 16 e4m3 or 8 16-bit elements.
-    vec = 16 if quantized else 8
+    # One 16-byte store per vector: 8 16-bit output elements, so each store instruction of a
+    # warp covers whole sectors. A 16-byte FP8 load would leave two stores per thread, each
+    # filling half of every sector it touches.
+    vec = 8
     lanes = row_width // vec
 
     @tilelang.jit(
@@ -191,16 +193,15 @@ def _paged_cache_gather_rows_kernel(
                     if v < vectors and row < total:
                         if quantized:
                             wide = T.alloc_local((vec,), out_dtype)
-                            for h in T.unroll(2):
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::dequant8<__half>"
-                                    if out_dtype == "float16"
-                                    else "tileops::dequant8<__nv_bfloat16>",
-                                    T.address_of(wide[h * 8]),
-                                    T.address_of(held[s, h * 8]),
-                                    Scale[0],
-                                )
+                            T.call_extern(
+                                "handle",
+                                "tileops::dequant8<__half>"
+                                if out_dtype == "float16"
+                                else "tileops::dequant8<__nv_bfloat16>",
+                                T.address_of(wide[0]),
+                                T.address_of(held[s, 0]),
+                                Scale[0],
+                            )
                             for i in T.vectorized(vec):
                                 Dst[row, v % lanes * vec + i] = wide[i]
                         else:
@@ -292,14 +293,14 @@ class PagedKVCacheGatherShortKernel(Kernel, PagedKVCacheGatherFwdInterface):
 
 
 class PagedKVCacheGatherRowsKernel(Kernel, PagedKVCacheGatherFwdInterface):
-    """Gather whole rows of 16-byte vectors, a few rows per block, dequantizing FP8 in registers."""
+    """Gather whole rows of 8-element vectors, a few rows per block, dequantizing FP8 in registers."""
 
     supported_archs = [90]
 
     @classmethod
     def refusal(cls, call: PagedKVCacheGatherCall) -> str | None:
-        if call.row_width * call.dtype.itemsize % 16:
-            return "requires rows of whole 16-byte vectors"
+        if call.row_width % 8:
+            return "requires rows of whole 8-element vectors"
         return super().refusal(call)
 
     @classmethod
@@ -340,10 +341,12 @@ class PagedKVCacheGatherRowsKernel(Kernel, PagedKVCacheGatherFwdInterface):
 
     @property
     def default_config(self):
-        # Eight rows per block, and two 16-byte loads in flight per thread: one load per thread
-        # leaves the 16-bit copies short of bandwidth, and wider blocks hold fewer blocks per SM.
-        lanes = self.row_width * self.dtype.itemsize // 16
-        return {"block_rows": 8, "threads": min(1024, 4 * lanes)}
+        # Eight rows per block, and 32 bytes of loads in flight per thread: two 16-bit or four
+        # FP8 vectors. Fewer bytes per thread leave the copies short of bandwidth, and wider
+        # blocks hold fewer blocks per SM.
+        loads = 32 // (8 * self.dtype.itemsize)
+        # A row holds row_width / 8 vectors, so eight rows hold row_width.
+        return {"block_rows": 8, "threads": min(1024, self.row_width // loads)}
 
     def forward(self, dst, cache, block_table, cu_seq_lens, seq_starts=None, scale=None) -> None:
         flat_cache = cache.view(cache.shape[0] * cache.shape[1], self.row_width)
