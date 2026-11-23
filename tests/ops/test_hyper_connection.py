@@ -10,6 +10,7 @@ import torch
 from tests.workload_test_base import TestBase, smoke_first
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sequence_modeling import HyperConnectionPreCall as PreCallSpec
+from tileops._kernels.sequence_modeling import HyperConnectionPreKernel
 from tileops.backend._dispatch import device_facts_of
 from tileops.sequence_modeling import (
     HyperConnectionHeadFwdOp,
@@ -171,7 +172,8 @@ def test_hyper_connection_pre_refuses_what_no_kernel_serves(n, c, params, reason
 @pytest.mark.in_tree_kernels
 def test_hyper_connection_pre_fits_its_projection_ring_to_shared_memory() -> None:
     """A block that takes less shared memory than six 128-token projection slots need is
-    still served, and one that cannot hold two is refused before a build."""
+    still served, with the five it holds, and one that cannot hold two is refused before a
+    build."""
     from tileops.backend import OpNotAvailableError
 
     (in_tree,) = Kernel.devices
@@ -184,6 +186,9 @@ def test_hyper_connection_pre_fits_its_projection_ring_to_shared_memory() -> Non
 
     op = HyperConnectionPreFwdOp(**_DSV4)
     op.key_for("hyper_connection_pre", call(160 * 1024))
+    _, build = HyperConnectionPreKernel.entry_for(call(160 * 1024))
+    block_m, num_stages, _ = build()._launch(4096)
+    assert (block_m, num_stages) == (128, 5)
     with pytest.raises(OpNotAvailableError, match="past the 49152"):
         op.key_for("hyper_connection_pre", call(48 * 1024))
 

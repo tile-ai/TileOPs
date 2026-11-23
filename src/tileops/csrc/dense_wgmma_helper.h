@@ -127,12 +127,12 @@ __device__ __forceinline__ void dense_load_a_64x64(const T* a_smem,
 }
 
 // One 64-wide K step of a 64 x N output tile as ``dense_wgmma_64xN_k64``
-// issues it, A from the registers ``dense_load_a_64x64`` fills.
+// issues it, A from the registers ``dense_load_a_64x64`` fills, into a fresh
+// accumulator.
 template <tl::DataType AB, int N, typename T>
 __device__ __forceinline__ void dense_wgmma_64xN_k64_rs(float* accumulator,
                                                         const uint32_t* a,
-                                                        T* b_smem,
-                                                        int accumulate) {
+                                                        T* b_smem) {
   tl::GmmaDescriptor desc_b;
   tl::initialize_wgmma_descriptor<1, 1, 64>(desc_b, b_smem);
   tl::warpgroup_fence_operand(accumulator, N / 2);
@@ -141,7 +141,7 @@ __device__ __forceinline__ void dense_wgmma_64xN_k64_rs(float* accumulator,
   for (int ki = 0; ki < 4; ++ki) {
     tl::wgmma_rs<AB, AB, tl::DataType::kFloat32, 64, N, 16, false, false>(
         a + 4 * ki, uint64_t(desc_b + ((ki * 32) >> 4)),
-        reinterpret_cast<uint32_t*>(accumulator), ki > 0 || accumulate != 0);
+        reinterpret_cast<uint32_t*>(accumulator), ki > 0);
   }
   tl::warpgroup_commit_batch();
   tl::warpgroup_fence_operand(accumulator, N / 2);

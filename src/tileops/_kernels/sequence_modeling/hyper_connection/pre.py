@@ -38,11 +38,6 @@ __all__ = ["HyperConnectionPreKernel"]
 # shared-memory count agree on it.
 _STEP = 64
 
-# The fewest slots of the projection's ring: two let one step's loads land while the step
-# before is consumed. ``refusal`` refuses a device that cannot hold them; ``_launch`` lowers
-# the ring to what the device holds.
-_MIN_STAGES = 2
-
 
 def _projection_smem(block_m: int, num_stages: int, q: int) -> int:
     """Shared bytes of a projection of ``block_m``-token tiles and ``num_stages`` slots, each
@@ -167,7 +162,7 @@ def _prenorm_gemm_kernel(
                         )
                         T.call_extern("handle", "tileops::hc_square_regs", a.data, squares.data)
                         T.call_extern(
-                            "handle", wgmma, tile.data, a.data, T.address_of(w_s[slot, 0, 0]), 0
+                            "handle", wgmma, tile.data, a.data, T.address_of(w_s[slot, 0, 0])
                         )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(tile, num_regs=regs)
@@ -357,6 +352,10 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
     """
 
     supported_archs: list[int] = [90]
+    # The fewest slots of the projection's ring: two let one step's loads land while the step
+    # before is consumed. ``refusal`` refuses a device that cannot hold them; ``_launch``
+    # lowers the ring to what the device holds.
+    _MIN_STAGES = 2
 
     @classmethod
     def refusal(cls, call: HyperConnectionPreCall) -> str | None:
@@ -367,10 +366,10 @@ class HyperConnectionPreKernel(Kernel, HyperConnectionPreFwdInterface):
         if call.sinkhorn_repeat < 1:
             return f"requires at least one Sinkhorn iteration, got {call.sinkhorn_repeat}"
         # A 128-token tile takes more than a 64-token one.
-        need = _projection_smem(2 * WGMMA_ROWS, _MIN_STAGES, call.n * call.n + 2 * call.n)
+        need = _projection_smem(2 * WGMMA_ROWS, cls._MIN_STAGES, call.n * call.n + 2 * call.n)
         if need > call.smem_budget:
             return (
-                f"needs {need} bytes of shared memory for {_MIN_STAGES} projection slots, "
+                f"needs {need} bytes of shared memory for {cls._MIN_STAGES} projection slots, "
                 f"past the {call.smem_budget} a block may take"
             )
         return super().refusal(call)
