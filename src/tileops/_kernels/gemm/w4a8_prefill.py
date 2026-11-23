@@ -947,17 +947,20 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
             waves, tail = divmod(tiles, workers)
             # Below long_k a 192-token tile runs data-parallel; from long_k stream-K pays when
             # under three quarters of the workers have a tile and the idle ones would have at
-            # least 28 K groups each, or when one wave ends at most half full.
+            # least 28 K groups each, or when one full wave leaves a tail.
             if block_m == 192 and k < long_k:
                 stream_k = 0
-            elif k >= long_k and (
-                (
-                    4 * tiles < 3 * workers
-                    and (k // W4A8_LAYOUT.tile_k) * (workers - tiles) >= 28 * workers
-                )
-                or (waves == 1 and 0 < tail <= workers // 2)
+            elif (
+                k >= long_k
+                and 4 * tiles < 3 * workers
+                and (k // W4A8_LAYOUT.tile_k) * (workers - tiles) >= 28 * workers
             ):
                 stream_k = 2
+            elif k >= long_k and waves == 1 and tail > 0:
+                # A tail of at most half a wave is split together with the full wave. A tail over
+                # half a wave leaves each worker over half a tile of K groups to spread already,
+                # so only the tail is split: splitting the full wave too adds only fixups.
+                stream_k = 2 if tail <= workers // 2 else 1
             else:
                 stream_k = 1 if 2 <= waves <= 4 and 0 < tail <= workers // 2 else 0
         return {

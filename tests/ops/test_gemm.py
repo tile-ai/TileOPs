@@ -1395,6 +1395,67 @@ def test_gemm_w4a8_prefill_runs_a_full_one_wave_grid_a_tile_a_cta(
     assert kernel.default_config["stream_k"] == stream_k
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "shape, grid",
+    [
+        # One row of 256-token tiles at a ragged token count: a full wave of 128-row tiles,
+        # then a tail one tile over half a wave.
+        pytest.param(
+            lambda sms: (200, (sms + sms // 2 + 1) * 128, 7168),
+            (256, 1, 1),
+            marks=pytest.mark.smoke,
+            id="tail-over-half-a-wave",
+        ),
+        pytest.param(
+            lambda sms: (200, (sms + sms // 2) * 128, 7168),
+            (256, 1, 2),
+            marks=pytest.mark.full,
+            id="tail-half-a-wave",
+        ),
+        pytest.param(
+            lambda sms: (200, (sms + sms // 2 + 1) * 128, 4096),
+            (256, 1, 0),
+            marks=pytest.mark.full,
+            id="short-k",
+        ),
+        pytest.param(
+            lambda sms: (200, (2 * sms + sms // 2 + 1) * 128, 7168),
+            (256, 1, 0),
+            marks=pytest.mark.full,
+            id="two-waves",
+        ),
+        # A row of 192-token tiles at a ragged token count, over 57 K groups.
+        pytest.param(
+            lambda sms: (129, (sms + sms // 2 + 1) * 128, 7296),
+            (192, 1, 1),
+            marks=pytest.mark.full,
+            id="192-token-odd-k",
+        ),
+        # Two-CTA clusters, one tile pair a 256-token row: the pairs run along M, over several
+        # M tiles.
+        pytest.param(
+            lambda sms: (256 * (sms // 2 + sms // 4 + 1), 256, 7296),
+            (256, 2, 1),
+            marks=pytest.mark.full,
+            id="cluster-pairs",
+        ),
+    ],
+)
+def test_gemm_w4a8_prefill_spreads_a_long_k_second_wave(shape, grid: tuple[int, int, int]) -> None:
+    """On the device's SMs the op runs each grid on the token tile, cluster and stream-K mode
+    ``grid`` names, and matches the reference: long-K grids of one full wave and a tail, and the
+    short-K and two-wave grids beside them, which stay data-parallel."""
+    m, n, k = shape(get_sm_count(torch.device(run_device()).index))
+    test = GEMMW4A8Test(m, n, k, 128)
+    op = GEMMW4A8FwdOp(target=BUILTIN)
+    test.check(op, *test.gen_inputs(), runs=_repacked(op))
+    (kernel,) = [kern for kern in op.iter_kernels() if isinstance(kern, GEMMW4A8PrefillKernel)]
+    cfg = kernel.config
+    assert (cfg["block_m"], cfg["cluster"], cfg["stream_k"]) == grid
+
+
 @GEMMW4A16Fixture
 def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GEMMW4A16Test(m, n, k, dtype)
