@@ -55,6 +55,11 @@ class PagedKVCacheGatherFwdInterface(KernelInterface):
         """
 
 
+# Elements per vector of the row kernel: one 16-byte store of 16-bit output, so each store
+# instruction of a warp covers whole sectors. Its builder, refusal and config agree on it.
+_ROW_VECTOR = 8
+
+
 @T.macro
 def _row_slots(
     slots, Cu, Table, Starts, first, total, batch, *, block_rows, page_size, small_batch, has_starts
@@ -143,10 +148,9 @@ def _paged_cache_gather_rows_kernel(
     page_size, row_width, dtype, out_dtype, has_starts, small_batch
 ):
     quantized = dtype == "float8_e4m3fn"
-    # One 16-byte store per vector: 8 16-bit output elements, so each store instruction of a
-    # warp covers whole sectors. A 16-byte FP8 load would leave two stores per thread, each
-    # filling half of every sector it touches.
-    vec = 8
+    # A 16-byte FP8 load would leave two stores per thread, each filling half of every sector
+    # it touches.
+    vec = _ROW_VECTOR
     lanes = row_width // vec
 
     @tilelang.jit(
@@ -312,8 +316,8 @@ class PagedKVCacheGatherRowsKernel(Kernel, PagedKVCacheGatherFwdInterface):
 
     @classmethod
     def refusal(cls, call: PagedKVCacheGatherCall) -> str | None:
-        if call.row_width % 8:
-            return "requires rows of whole 8-element vectors"
+        if call.row_width % _ROW_VECTOR:
+            return f"requires rows of whole {_ROW_VECTOR}-element vectors"
         return super().refusal(call)
 
     @classmethod
@@ -330,15 +334,7 @@ class PagedKVCacheGatherRowsKernel(Kernel, PagedKVCacheGatherFwdInterface):
         return (*args.values(), index), lambda: cls(**args, device_index=index)
 
     def __init__(
-        self,
-        page_size,
-        row_width,
-        dtype,
-        out_dtype,
-        has_starts=False,
-        small_batch=0,
-        config=None,
-        device_index=None,
+        self, page_size, row_width, dtype, out_dtype, has_starts, small_batch, *, device_index=None
     ):
         super().__init__(device_index=device_index)
         self.row_width, self.dtype = row_width, dtype
@@ -350,16 +346,17 @@ class PagedKVCacheGatherRowsKernel(Kernel, PagedKVCacheGatherFwdInterface):
             has_starts,
             small_batch,
         )
-        self.init_config(config)
+        self.init_config()
 
     @property
     def default_config(self):
-        # Eight rows per block, and 32 bytes of loads in flight per thread: two 16-bit or four
-        # FP8 vectors. Fewer bytes per thread leave the copies short of bandwidth, and wider
-        # blocks hold fewer blocks per SM.
-        loads = 32 // (8 * self.dtype.itemsize)
-        # A row holds row_width / 8 vectors, so eight rows hold row_width.
-        return {"block_rows": 8, "threads": min(1024, self.row_width // loads)}
+        # Eight rows per block, and 32 bytes of loads in flight per thread below the 1024-thread
+        # cap: two 16-bit or four FP8 vectors. Fewer bytes per thread leave the copies short of
+        # bandwidth, and wider blocks hold fewer blocks per SM.
+        rows = 8
+        loads = 32 // (_ROW_VECTOR * self.dtype.itemsize)
+        vectors = rows * (self.row_width // _ROW_VECTOR)
+        return {"block_rows": rows, "threads": min(1024, vectors // loads)}
 
     def forward(self, dst, cache, block_table, cu_seq_lens, seq_starts=None, scale=None) -> None:
         flat_cache = cache.view(cache.shape[0] * cache.shape[1], self.row_width)

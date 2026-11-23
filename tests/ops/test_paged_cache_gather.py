@@ -149,11 +149,11 @@ def test_short_gather_packed_requests(lengths, dtype):
         ),
         pytest.param(
             (2560,),
-            torch.bfloat16,
+            torch.float16,
             None,
             PagedKVCacheGatherRowsKernel,
             {"block_rows": 8, "threads": 1024},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="wide-rows-thread-cap",
         ),
         pytest.param(
