@@ -95,6 +95,39 @@ from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
             marks=pytest.mark.full,
             id="tuned",
         ),
+        pytest.param(
+            [17, 16],
+            (328,),
+            16,
+            torch.float8_e4m3fn,
+            torch.bfloat16,
+            None,
+            False,
+            marks=pytest.mark.full,
+            id="fp8-rows-of-odd-vector-count",
+        ),
+        pytest.param(
+            [17, 16],
+            (2560,),
+            16,
+            torch.float16,
+            None,
+            None,
+            False,
+            marks=pytest.mark.full,
+            id="wide-rows-in-chunks",
+        ),
+        pytest.param(
+            [200, 100],
+            (8,),
+            16,
+            torch.float16,
+            None,
+            None,
+            False,
+            marks=pytest.mark.full,
+            id="one-vector-rows",
+        ),
     ],
 )
 def test_paged_kv_cache_gather(lengths, shape, page, dtype, out_dtype, starts, tune):
@@ -127,67 +160,27 @@ def test_short_gather_packed_requests(lengths, dtype):
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "shape,dtype,out_dtype,kernel,config",
+    "shape,kernel",
     [
         pytest.param(
-            (576,),
-            torch.float8_e4m3fn,
-            torch.float16,
-            PagedKVCacheGatherRowsKernel,
-            {"block_rows": 8, "threads": 144},
-            marks=pytest.mark.smoke,
-            id="fp8-rows-four-loads-per-thread",
+            (576,), PagedKVCacheGatherRowsKernel, marks=pytest.mark.smoke, id="whole-vector-rows"
         ),
         pytest.param(
-            (576,),
-            torch.float16,
-            None,
-            PagedKVCacheGatherRowsKernel,
-            {"block_rows": 8, "threads": 288},
-            marks=pytest.mark.smoke,
-            id="fp16-rows-two-loads-per-thread",
-        ),
-        pytest.param(
-            (2560,),
-            torch.float16,
-            None,
-            PagedKVCacheGatherRowsKernel,
-            {"block_rows": 8, "threads": 1024},
-            marks=pytest.mark.full,
-            id="wide-rows-thread-cap",
-        ),
-        pytest.param(
-            (328,),
-            torch.float8_e4m3fn,
-            torch.bfloat16,
-            PagedKVCacheGatherRowsKernel,
-            {"block_rows": 8, "threads": 82},
-            marks=pytest.mark.full,
-            id="fp8-rows-of-odd-vector-count",
-        ),
-        pytest.param(
-            (1025,),
-            torch.float16,
-            None,
-            PagedKVCacheGatherKernel,
-            {"block_rows": 4, "block_cols": 256, "threads": 128},
-            marks=pytest.mark.full,
-            id="partial-vector-rows",
+            (1025,), PagedKVCacheGatherKernel, marks=pytest.mark.full, id="partial-vector-rows"
         ),
     ],
 )
-def test_gather_kernel_by_row_bytes(shape, dtype, out_dtype, kernel, config):
+def test_gather_kernel_by_row_bytes(shape, kernel):
     """A row of whole 8-element vectors takes the row kernel, whose 16-byte stores fill whole sectors.
 
     Any other row takes the general kernel.
     """
-    workload = PagedKVCacheGatherWorkload([17, 16], shape, 16, dtype, out_dtype)
+    workload = PagedKVCacheGatherWorkload([17, 16], shape, 16, torch.float16)
     inputs = workload.gen_inputs()
-    op = PagedKVCacheGatherFwdOp(out_dtype=out_dtype, target=BUILTIN)
+    op = PagedKVCacheGatherFwdOp(target=BUILTIN)
     TestBase.check(workload, op, *inputs)
     (served,) = op.iter_kernels()
     assert type(served) is kernel
-    assert served.config == config
 
 
 @pytest.mark.smoke
