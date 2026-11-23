@@ -1,4 +1,4 @@
-"""The TileOPs ops one DeepSeek-V4 model calls, built once and shared by its layers."""
+"""The TileOPs ops one DeepSeek-V4-Flash model calls, built once and shared by its layers."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 
 import torch
 
-from models.deepseek_v4.config import DeepseekV4Config
+from models.deepseek_v4_flash.config import DeepseekV4FlashConfig
 from tileops.attention import DSADenseFwdOp, GatedPoolCompressFwdOp, TopKSelectFwdOp
 from tileops.elementwise import MulFwdOp, ReLUFwdOp, SiLUAndMulFwdOp
 from tileops.gemm import BMMFwdOp, GEMMFP8FwdOp, GEMMFwdOp
@@ -40,7 +40,7 @@ class ModelOps:
     mHC post mix is doubled, as the official ``hc_split_sinkhorn`` doubles it.
     """
 
-    def __init__(self, cfg: DeepseekV4Config) -> None:
+    def __init__(self, cfg: DeepseekV4FlashConfig) -> None:
         eps = cfg.norm_eps
         floor = 1e-4
         layout = ContiguousLayoutSpec.tight_physical_psum()
@@ -106,7 +106,7 @@ class RoPETable:
 
     def __init__(
         self,
-        cfg: DeepseekV4Config,
+        cfg: DeepseekV4FlashConfig,
         base: float,
         yarn: bool,
         max_seq_len: int,

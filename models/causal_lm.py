@@ -59,20 +59,23 @@ class CausalLM:
         eos_token_id: int | Sequence[int] | None = None,
     ) -> list[int]:
         """Greedily extend one prompt by up to ``max_new_tokens`` tokens; stops after an EOS
-        token (``config.eos_token_id`` unless given) or once the sequence fills
+        token (``config.eos_token_id`` unless given) or once prompt and new tokens fill
         ``max_seq_len``."""
+        if max_new_tokens < 0:
+            raise ValueError(f"max_new_tokens must be >= 0, got {max_new_tokens}")
         eos = self.config.eos_token_id if eos_token_id is None else eos_token_id
         eos_ids = {eos} if isinstance(eos, int) else set(eos)
         tokens = torch.tensor([list(prompt_ids)], dtype=torch.long, device=self.device)
         logits = self.forward(tokens, 0)
         pos = tokens.shape[1]
+        budget = min(max_new_tokens, self.max_seq_len - pos)
         out: list[int] = []
-        for _ in range(max_new_tokens):
+        for _ in range(budget):
             with torch.accelerator.device_index(self.device.index):
                 nxt = self.ops.argmax(logits)
             token = int(nxt.item())
             out.append(token)
-            if token in eos_ids or len(out) == max_new_tokens or pos >= self.max_seq_len:
+            if token in eos_ids or len(out) == budget:
                 break
             logits = self.forward(nxt.view(1, 1), pos)
             pos += 1

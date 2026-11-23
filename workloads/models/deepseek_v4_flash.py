@@ -1,4 +1,4 @@
-"""DeepSeek-V4's official ``inference/`` code, with torch in place of its TileLang kernels.
+"""DeepSeek-V4-Flash's official ``inference/`` code, with torch in place of its TileLang kernels.
 
 ``official_model`` imports the checkpoint repository's ``inference/model.py``, kept in
 ``third_party/deepseek_v4_flash/``, with a torch module standing in for its ``kernel.py``, so
@@ -421,6 +421,9 @@ def check_index_selection(
     seqlen = indices.shape[1]
     pos = torch.arange(start_pos, start_pos + seqlen, device=indices.device).view(1, -1, 1)
     visible = (pos + 1) // ratio
+    assert bool(((indices == -1) | (indices >= offset)).all()), (
+        "an index is neither -1 padding nor a compressed entry"
+    )
     entries = torch.where(indices >= 0, indices - offset, -1)
     chosen = entries >= 0
     assert bool(((entries < visible) | ~chosen).all()), "an index selects an entry not yet closed"

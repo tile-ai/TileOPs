@@ -1,4 +1,4 @@
-"""DeepSeek-V4 causal language model composed from TileOPs ops."""
+"""DeepSeek-V4-Flash causal language model composed from TileOPs ops."""
 
 from __future__ import annotations
 
@@ -7,15 +7,15 @@ from pathlib import Path
 import torch
 
 from models.causal_lm import CausalLM, indexed_device
-from models.deepseek_v4.config import DeepseekV4Config
-from models.deepseek_v4.layers import Block, Step
-from models.deepseek_v4.ops import ModelOps, RoPETable
+from models.deepseek_v4_flash.config import DeepseekV4FlashConfig
+from models.deepseek_v4_flash.layers import Block, Step
+from models.deepseek_v4_flash.ops import ModelOps, RoPETable
 
-__all__ = ["DeepseekV4ForCausalLM"]
+__all__ = ["DeepseekV4FlashForCausalLM"]
 
 
-class DeepseekV4ForCausalLM(CausalLM):
-    """DeepSeek-V4 text decoder: embedding, mHC blocks, ``hc_head`` collapse and LM head.
+class DeepseekV4FlashForCausalLM(CausalLM):
+    """DeepSeek-V4-Flash text decoder: embedding, mHC blocks, ``hc_head`` collapse and LM head.
 
     Every weight and every layer's decoding state is on ``device``; a device without an index is
     the current one at construction. A forward call runs with ``device`` current and leaves the
@@ -26,7 +26,7 @@ class DeepseekV4ForCausalLM(CausalLM):
 
     def __init__(
         self,
-        config: DeepseekV4Config,
+        config: DeepseekV4FlashConfig,
         *,
         device: torch.device | str = "cuda",
         max_seq_len: int = 4096,
@@ -55,11 +55,13 @@ class DeepseekV4ForCausalLM(CausalLM):
         *,
         device: torch.device | str = "cuda",
         max_seq_len: int = 4096,
-    ) -> DeepseekV4ForCausalLM:
-        """Load a Hugging Face DeepSeek-V4 checkpoint directory (``safetensors`` shards)."""
-        from models.deepseek_v4.loader import load_weights
+    ) -> DeepseekV4FlashForCausalLM:
+        """Load a Hugging Face DeepSeek-V4-Flash checkpoint directory (``safetensors`` shards)."""
+        from models.deepseek_v4_flash.loader import load_weights
 
-        model = cls(DeepseekV4Config.from_pretrained(path), device=device, max_seq_len=max_seq_len)
+        model = cls(
+            DeepseekV4FlashConfig.from_pretrained(path), device=device, max_seq_len=max_seq_len
+        )
         load_weights(model, Path(path))
         return model
 

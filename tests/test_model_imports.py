@@ -103,7 +103,7 @@ def test_the_repository_keeps_the_import_directions(check, tree):
         pytest.param(_model_violations, "from tileops import _utils", id="model-private-name"),
         pytest.param(_model_violations, "from workloads.models import ref", id="model-reference"),
         pytest.param(_model_violations, "import tileops\ntileops._ops.G()", id="model-attribute"),
-        pytest.param(_consumer_violations, "import models.deepseek_v4", id="consumer-model"),
+        pytest.param(_consumer_violations, "import models.deepseek_v4_flash", id="consumer-model"),
         pytest.param(_reference_violations, "from tileops.norm import N", id="reference-tileops"),
     ],
 )
