@@ -104,6 +104,49 @@ __device__ __forceinline__ void dense_wgmma_128xN_k64(float* lo, float* hi,
   tl::warpgroup_fence_operand(hi, N / 2);
 }
 
+// One warpgroup's 64 x 64 16-bit A tile (64-element rows in the 128-byte
+// swizzle) in the registers a WGMMA reads A from: four per 16 of K, loaded by
+// one ldmatrix.x4. Register 4 * ki + j holds two adjacent K values of row
+// lane / 4 of the warp's 16 (plus 8 for odd j), from K 16 * ki + 2 * (lane % 4)
+// (plus 8 for j >= 2).
+template <typename T>
+__device__ __forceinline__ void dense_load_a_64x64(const T* a_smem,
+                                                   uint32_t* a) {
+  const int lane = threadIdx.x & 31;
+  const int row = ((threadIdx.x >> 5) & 3) * 16 + (lane & 15);
+  const uint32_t base = smem_ptr_to_uint(a_smem) + row * 128;
+#pragma unroll
+  for (int ki = 0; ki < 4; ++ki) {
+    const int chunk = 2 * ki + (lane >> 4);
+    asm volatile(
+        "ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0, %1, %2, %3}, [%4];\n"
+        : "=r"(a[4 * ki]), "=r"(a[4 * ki + 1]), "=r"(a[4 * ki + 2]),
+          "=r"(a[4 * ki + 3])
+        : "r"(base + ((chunk ^ (row & 7)) << 4)));
+  }
+}
+
+// One 64-wide K step of a 64 x N output tile as ``dense_wgmma_64xN_k64``
+// issues it, A from the registers ``dense_load_a_64x64`` fills, into a fresh
+// accumulator.
+template <tl::DataType AB, int N, typename T>
+__device__ __forceinline__ void dense_wgmma_64xN_k64_rs(float* accumulator,
+                                                        const uint32_t* a,
+                                                        T* b_smem) {
+  tl::GmmaDescriptor desc_b;
+  tl::initialize_wgmma_descriptor<1, 1, 64>(desc_b, b_smem);
+  tl::warpgroup_fence_operand(accumulator, N / 2);
+  tl::warpgroup_arrive();
+#pragma unroll
+  for (int ki = 0; ki < 4; ++ki) {
+    tl::wgmma_rs<AB, AB, tl::DataType::kFloat32, 64, N, 16, false, false>(
+        a + 4 * ki, uint64_t(desc_b + ((ki * 32) >> 4)),
+        reinterpret_cast<uint32_t*>(accumulator), ki > 0);
+  }
+  tl::warpgroup_commit_batch();
+  tl::warpgroup_fence_operand(accumulator, N / 2);
+}
+
 // Columns [8 * t0, 8 * t0 + Cols) of one warpgroup's 64-row fp32 WGMMA
 // accumulator, cast to T and stored transposed into a Cols x 64 shared tile in
 // the 128-byte swizzle: one stmatrix.trans per two 8-column groups and warp.

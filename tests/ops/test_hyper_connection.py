@@ -1,13 +1,16 @@
 """Public semantics of the manifold hyper-connection ops. Pre: each token count's path,
-leading shapes, a broadcast residual, one kernel serving every token count, and the calls no
-kernel serves. Post: each launch program, ragged columns, vector widths, stream counts and the
-mix dtypes. Head: each program, reached from the device's SM count, ragged columns, vector
-widths and stream counts."""
+leading shapes, a broadcast residual, one kernel serving every token count, capture and
+replay, and the calls no kernel serves. Post: each launch program, ragged columns, vector
+widths, stream counts and the mix dtypes. Head: each program, reached from the device's SM
+count, ragged columns, vector widths and stream counts."""
 
 import pytest
 import torch
 
 from tests.workload_test_base import TestBase, smoke_first
+from tileops._kernels.kernel_base import Kernel
+from tileops._kernels.sequence_modeling import HyperConnectionPreCall as PreCallSpec
+from tileops._kernels.sequence_modeling import HyperConnectionPreKernel
 from tileops.backend._dispatch import device_facts_of
 from tileops.sequence_modeling import (
     HyperConnectionHeadFwdOp,
@@ -59,15 +62,15 @@ _CASES = (
     _case([1], _SMOKE, "decode"),
     # A leading shape of two axes over a partial 64-token tile.
     _case([2, 31], _FULL, "leading-dims"),
-    # 128-token tiles, the last one partial, fn split in the projection.
+    # 128-token tiles, the last one partial.
     _case([300], _FULL, "128-token-tiles"),
-    # Past 512 tokens, behind the launch that splits fn.
-    _case([2500], _FULL, "split-launch"),
-    # Tiles enough to fill the SMs unsplit, mixed from registers past the staging bound.
+    # Splits that do not divide the 256 steps, six on 132 SMs.
+    _case([2500], _FULL, "uneven-splits"),
+    # Tiles enough to fill the SMs unsplit.
     _case([8500], _FULL, "one-split"),
     # The softmax and one column normalization.
     _case([5], _FULL, "one-sinkhorn-iteration", sinkhorn_repeat=1),
-    # Streams staged 128 channels at a time.
+    # Streams staged 128 channels at a time, and one step a split.
     _case([5], _FULL, "640-channels", c=640),
 )
 
@@ -113,6 +116,37 @@ def test_hyper_connection_pre_serves_new_token_counts_from_one_kernel(
     assert len(kernel._generation.programs) == program_sets
 
 
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="HyperConnectionPreFwdOp")
+@pytest.mark.smoke
+def test_hyper_connection_pre_can_be_captured_and_replayed() -> None:
+    """Two decode calls captured back to back consume changed inputs at their captured
+    addresses: each mix launch, which may start while its projection drains, reads that
+    replay's splits, and the second projection does not overwrite the first's early."""
+    call = _call([1], _DSV4)
+    test = HyperConnectionPreTest(call)
+    op = HyperConnectionPreFwdOp(**call.arguments())
+    first = test.gen_inputs()
+    second = tuple(t.clone() for t in first)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(*first)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        outputs = op(*first), op(*second)
+    first[0].add_(0.5)
+    second[1].mul_(0.5)
+    second[3].add_(0.25)
+    for output in outputs:
+        for tensor in output:
+            tensor.fill_(float("nan"))
+    graph.replay()
+    test.check(op, *first, runs=lambda *args: outputs[0])
+    test.check(op, *second, runs=lambda *args: outputs[1])
+
+
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
@@ -132,6 +166,31 @@ def test_hyper_connection_pre_refuses_what_no_kernel_serves(n, c, params, reason
     with pytest.raises(OpNotAvailableError, match=reason):
         op(*HyperConnectionPreTest(call).gen_inputs())
     assert not op._entries_built("hyper_connection_pre")
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_hyper_connection_pre_fits_its_projection_ring_to_shared_memory() -> None:
+    """A block that takes less shared memory than six 128-token projection slots need is
+    still served, with the five it holds, and one that cannot hold two is refused before a
+    build."""
+    from tileops.backend import OpNotAvailableError
+
+    (in_tree,) = Kernel.devices
+
+    def call(smem_budget):
+        return PreCallSpec(
+            arch=90, sm_count=132, smem_budget=smem_budget, n=4, c=4096, **_DSV4,
+            device=torch.device(in_tree),
+        )  # fmt: skip
+
+    op = HyperConnectionPreFwdOp(**_DSV4)
+    op.key_for("hyper_connection_pre", call(160 * 1024))
+    _, build = HyperConnectionPreKernel.entry_for(call(160 * 1024))
+    block_m, num_stages, _ = build()._launch(4096)
+    assert (block_m, num_stages) == (128, 5)
+    with pytest.raises(OpNotAvailableError, match="past the 49152"):
+        op.key_for("hyper_connection_pre", call(48 * 1024))
 
 
 @pytest.mark.parametrize(
