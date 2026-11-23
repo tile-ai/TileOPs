@@ -161,10 +161,8 @@ def _fp8_quant_kernel(
         out_dtype = T.float8_e4m3fn
         # An e8m0 scale is the exponent byte of its power-of-two float32 scale.
         scale_dtype = T.uint8 if e8m0_scales else T.float32
-        fp8_min = -FP8_E4M3_MAX
-        fp8_max = FP8_E4M3_MAX
         load_groups = _load_groups(block_m, group_size)
-        group_scales = _group_scales(block_m, eps, ue8m0, in_dtype if ue8m0 else "float32")
+        group_scales = _group_scales(block_m, eps, ue8m0, in_dtype)
         ue8m0_codes = _ue8m0_codes(block_m, group_size, in_dtype)
         store = store_groups(block_m, group_size, lambda scale, i: scale[i])
         # The group count is a runtime extent, so a new token count builds no program.
@@ -198,11 +196,11 @@ def _fp8_quant_kernel(
                     ue8m0_codes(input_local, recip_local, output_local)
                 else:
                     # Not the reference's divide by the scale; FP8QuantPerTokenGroupFwdOp
-                    # bounds the gap.
+                    # bounds the gap. No clamp: |x| is at most the floored maximum, whose
+                    # product with the reciprocal is within a few float32 ulps of 448, so a
+                    # product rounds to at most 448, as a clamped one does.
                     for i, j in T.Parallel(block_m, group_size):
-                        output_local[i, j] = T.clamp(
-                            input_local[i, j] * recip_local[i], fp8_min, fp8_max
-                        )
+                        output_local[i, j] = input_local[i, j] * recip_local[i]
 
                 store(scale_tensor, output_tensor, first, rows, scale_out, output_local)
 
