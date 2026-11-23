@@ -210,7 +210,7 @@ def test_board_plan_follows_the_sync_rules(board):
     rows["fail"] = {"op": "Failing", "reading": None, "failed": True}
     behind = {key for key, row in rows.items() if row["op"] in {e["op"] for e in queue}}
     caught = board.caught_up([rows], [behind])
-    changes = board.plan(current, queue, caught, date)
+    changes = board.plan(current, queue, caught, date, set())
     assert changes == {
         "New": {**measured, "Status": "Unclaimed"},
         "Back": {**measured, "Status": "Unclaimed"},
@@ -223,7 +223,7 @@ def test_board_plan_follows_the_sync_rules(board):
     assert next(iter(changes["Unarchived"])) == "Archived"
     for op, values in changes.items():
         current[op] = {**current.get(op, {}), **values}
-    assert board.plan(current, queue, caught, date) == {}
+    assert board.plan(current, queue, caught, date, set()) == {}
 
 
 def test_an_op_whose_behind_row_went_unmeasured_is_not_caught_up(tracker):
@@ -241,3 +241,54 @@ def test_an_op_whose_behind_row_went_unmeasured_is_not_caught_up(tracker):
         _, behind, nights = tracker.build_queue([tonight, previous])
         assert nights == 1
         assert tracker.caught_up([tonight, previous], behind) == caught
+
+
+def test_board_plan_tracks_regressions(board):
+    """A regressed op goes to Regressed, behind or not, and keeps the gap fields of its last
+    night behind. A Regressed op stays until moved by hand, caught up or not, unless it was
+    archived; a status set by hand stays. A Done item without a date gets one, so it
+    archives."""
+    date = "2026-11-07"
+    gap = {"Priority": "P0", "Measured": "2026-11-01"}
+    current = {
+        "Behind": {"Status": "Unclaimed"},
+        "WasBehind": {"Status": "Done", **gap},
+        "Claimed": {"Status": "In progress"},
+        "StillBehind": {"Status": "Regressed"},
+        "Ahead": {"Status": "Regressed"},
+        "Shelved": {"Status": "Regressed", "Archived": True},
+        "Closed": {"Status": "Done"},
+    }
+    queue = [_entry(op, 0.85, 1) for op in ("Behind", "StillBehind", "Shelved")]
+    caught = {"Fresh", "WasBehind", "Claimed", "Ahead", "Closed"}
+    regressed = {"Behind", "Fresh", "WasBehind", "Claimed"}
+    behind = {"Priority": "P2", "Worst ratio": 0.85, "Rows behind": 1, "Nightlies behind": 1}
+    behind |= {"Category": "cat", "Measured": date}
+    changes = board.plan(current, queue, caught, date, regressed)
+    assert changes == {
+        "Behind": {**behind, "Status": "Regressed"},
+        "Fresh": {"Status": "Regressed"},
+        "WasBehind": {"Status": "Regressed"},
+        "StillBehind": behind,
+        "Shelved": {"Archived": False, **behind, "Status": "Unclaimed"},
+        "Closed": {"Status": "Done", "Measured": date},
+    }
+    for op, values in changes.items():
+        current[op] = {**current.get(op, {}), **values}
+    assert board.plan(current, queue, caught, date, regressed) == {}
+    assert board.plan(current, queue, caught, date, set()) == {
+        "Claimed": {"Status": "Done", "Measured": date}
+    }
+
+
+def test_board_reads_the_regressed_ops_of_a_snapshot(board, tmp_path):
+    repo = _snapshots(tmp_path, [[]])
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    head = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    assert board.read_regressions(repo, head) == set()
+    records = [{"op": "A", "config": "x"}, {"op": "A", "config": "y"}, {"op": "B", "config": "z"}]
+    (repo / "regressions.json").write_text(json.dumps(records))
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "regressions"], check=True)
+    head = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    assert board.read_regressions(repo, head) == {"A", "B"}

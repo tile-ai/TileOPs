@@ -480,6 +480,7 @@ jobs:
           mkdir -p .perf_history
           python3 scripts/build_perf_history.py \
             --url https://github.com/tile-ai/TileOPs-nightly.git \
+            --exclude-run-id "${GITHUB_RUN_ID}" \
             --out .perf_history/perf_history.json
         shell: bash
 
@@ -525,6 +526,7 @@ jobs:
             --coverage-xml coverage.xml \
             --badge-output nightly-vs-baseline.json \
             --previous-bench-xml previous_bench_results.xml \
+            --regressions-output regressions.json \
             || echo "::warning::nightly_report.py failed"
         shell: bash
 
@@ -542,6 +544,7 @@ jobs:
           path: |
             nightly_report.md
             nightly-vs-baseline.json
+            regressions.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -602,6 +605,10 @@ jobs:
           done
           if [ -f _optest/coverage.xml ]; then
             cp _optest/coverage.xml _publish/coverage.xml
+          fi
+          # Absent without history to judge against.
+          if [ -f _report/regressions.json ]; then
+            cp _report/regressions.json _publish/regressions.json
           fi
           if [ "$ok" -eq 1 ]; then
             # The environment the benchmark job read off its own machine.

@@ -52,8 +52,9 @@ def _clone(url: str, ref: str, dest: Path) -> bool:
     return result.returncode == 0
 
 
-def _entry(repo: Path, sha: str, workdir: Path) -> dict | None:
-    """One history entry from a snapshot commit, or None where it carries none."""
+def _entry(repo: Path, sha: str, workdir: Path, exclude_run: str | None) -> dict | None:
+    """One history entry from a snapshot commit, or None where it carries none or is the
+    run *exclude_run*."""
     meta_text = _git(repo, "show", f"{sha}:meta.json")
     if meta_text is None:
         return None
@@ -62,6 +63,8 @@ def _entry(repo: Path, sha: str, workdir: Path) -> dict | None:
     except json.JSONDecodeError:
         return None
     if not all(meta.get(key) for key in ("date", "commit", "gpu")):
+        return None
+    if exclude_run is not None and str(meta.get("run_id")) == exclude_run:
         return None
 
     bench_text = _git(repo, "show", f"{sha}:bench_results.xml")
@@ -97,6 +100,9 @@ def main() -> int:
     source.add_argument("--repo", help="Read an existing clone instead of cloning")
     parser.add_argument("--ref", default="snapshots", help="Branch holding the snapshots")
     parser.add_argument("--out", required=True, help="Path to write perf_history.json")
+    parser.add_argument(
+        "--exclude-run-id", help="Leave out this run's snapshot, so a rerun is not its own history"
+    )
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -115,7 +121,7 @@ def main() -> int:
 
         entries = []
         for sha in reversed(listing.split()):
-            entry = _entry(repo, sha, workdir)
+            entry = _entry(repo, sha, workdir, args.exclude_run_id)
             if entry is not None:
                 entries.append(entry)
 
