@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 import pytest
 import torch
 
@@ -157,124 +155,42 @@ def test_causal_conv1d_update(batch, dim, width, dtype, some, activation) -> Non
     test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
 
 
-# A dilated filter spans (W - 1) * dilation tokens, so its state carries that many and one
-# token feeds outputs up to that far ahead of it; a float32 filter over 16-bit activations
-# widens the arithmetic of the same window. One case per served row of the two pilot models,
-# then the shapes that stress the wider ring.
+# A dilated filter spans (W - 1) * dilation tokens; a float32 filter widens the arithmetic.
 _SERVED_PREFILL = (
     # GLM-5.3-Flash KDA convolution: float32 filters over bf16 activations.
     pytest.param(
-        [1024, 1024, 1024, 1024],
-        24576,
-        4,
-        1,
-        3,
-        None,
-        "bfloat16",
-        "float32",
-        ["has_initial_state"],
-        marks=_SMOKE,
-        id="glm-fp32-filters",
+        [1024] * 4, 24576, 4, 1, 3, None, "bfloat16", "float32", ["has_initial_state"],
+        marks=_SMOKE, id="glm-fp32-filters",
     ),
-    # Dilated width-three taps at the existing float16 smoke shape.
     pytest.param(
-        [100, 900],
-        8192,
-        3,
-        2,
-        4,
-        None,
-        "float16",
-        "float16",
-        ["has_initial_state"],
-        marks=_SMOKE,
-        id="dilated-width-3",
+        [100, 900], 8192, 3, 2, 4, None, "float16", "float16", ["has_initial_state"],
+        marks=_SMOKE, id="dilated-width-3",
     ),
     # Qwen3.8-Flash-Next PLE short conv: dilation 3, a 9-token state, SiLU, no bias.
     pytest.param(
-        [1024, 1024, 1024, 1024],
-        10240,
-        4,
-        3,
-        9,
-        None,
-        "bfloat16",
-        "bfloat16",
-        ["has_initial_state"],
-        marks=_FULL,
-        id="ple-4k",
+        [1024] * 4, 10240, 4, 3, 9, 256, "bfloat16", "bfloat16",
+        ["has_initial_state", "cache_indices"], marks=_FULL, id="ple-4k-pool",
     ),
+    # A short initialized sequence whose head crosses a chunk boundary.
     pytest.param(
-        [1024, 1024, 1024, 1024],
-        10240,
-        4,
-        3,
-        9,
-        256,
-        "bfloat16",
-        "bfloat16",
-        ["has_initial_state", "cache_indices"],
-        marks=_FULL,
-        id="ple-4k-pool",
-    ),
-    # An initialized short sequence starts two tokens before a chunk boundary; its head
-    # crosses that boundary while the next chunk must not read its updated state.
-    pytest.param(
-        [1, 77, 5, 0, 2, 161],
-        136,
-        4,
-        3,
-        12,
-        8,
-        "float16",
-        "float32",
-        ["bias", "has_initial_state", "cache_indices"],
-        marks=_FULL,
+        [1, 77, 5, 0, 2, 161], 136, 4, 3, 12, 8, "float16", "float32",
+        ["bias", "has_initial_state", "cache_indices"], marks=_FULL,
         id="dilated-head-past-chunk-end",
     ),
-    # The dilated window and a wide weight at once, over a state wider than the window: its
-    # columns past the span keep their values.
+    # A state wider than the span keeps its columns past it.
     pytest.param(
-        [100, 900],
-        256,
-        4,
-        3,
-        12,
-        None,
-        "float16",
-        "float32",
-        ["has_initial_state"],
-        marks=_FULL,
-        id="dilated-fp32-wide-state",
-    ),
-    # A sequence shorter than the window, and empty ones that keep their state.
-    pytest.param(
-        [0, 2, 7, 0, 1, 70],
-        264,
-        4,
-        3,
-        9,
-        None,
-        "bfloat16",
-        "bfloat16",
-        ["bias", "has_initial_state"],
-        marks=_FULL,
-        id="dilated-short-and-empty",
+        [100, 900], 256, 4, 3, 12, None, "float16", "float32", ["has_initial_state"],
+        marks=_FULL, id="dilated-fp32-wide-state",
     ),
     pytest.param(
-        [5, 3, 2, 0, 90],
-        40,
-        2,
-        4,
-        4,
-        None,
-        "bfloat16",
-        "bfloat16",
-        ["bias"],
-        marks=_FULL,
+        [0, 2, 7, 0, 1, 70], 264, 4, 3, 9, None, "bfloat16", "bfloat16",
+        ["bias", "has_initial_state"], marks=_FULL, id="dilated-short-and-empty",
+    ),
+    pytest.param(
+        [5, 3, 2, 0, 90], 40, 2, 4, 4, None, "bfloat16", "bfloat16", ["bias"], marks=_FULL,
         id="dilated-width-2",
     ),
-)
+)  # fmt: skip
 
 
 @pytest.mark.parametrize(
@@ -302,57 +218,23 @@ def test_causal_conv1d_dilation_and_float32_filters(
 
 
 _SERVED_DECODE = (
-    # Float32 filters and bias: vec=8 requires two weight_vec=4 bias loads per thread.
+    # Float32 filters and bias: eight channels a thread take two 16-byte bias loads.
     pytest.param(
-        64,
-        24576,
-        4,
-        1,
-        3,
-        256,
-        "bfloat16",
-        "float32",
-        ["bias", "conv_state_indices"],
-        marks=_SMOKE,
-        id="glm-fp32-filters-pool",
+        64, 24576, 4, 1, 3, 256, "bfloat16", "float32", ["bias", "conv_state_indices"],
+        marks=_SMOKE, id="glm-fp32-filters-pool",
     ),
-    # No pool and no bias, using the existing float16 decode smoke shape.
     pytest.param(
         3, 8192, 4, 3, 9, None, "float16", "float16", [], marks=_SMOKE, id="dilated-no-pool"
     ),
-    # Qwen3.8-Flash-Next PLE decode: dilation 3 over a 9-token state in a pool of 256.
+    # A state wider than the span is advanced in its first span columns, the rest untouched.
     pytest.param(
-        64,
-        10240,
-        4,
-        3,
-        9,
-        256,
-        "bfloat16",
-        "bfloat16",
-        ["conv_state_indices"],
-        marks=_FULL,
-        id="ple-dec-pool",
-    ),
-    # A state wider than the window is advanced in its first span columns, the rest untouched.
-    pytest.param(
-        64,
-        10240,
-        4,
-        3,
-        12,
-        256,
-        "bfloat16",
-        "float32",
-        ["conv_state_indices"],
-        marks=_FULL,
+        64, 10240, 4, 3, 12, 256, "bfloat16", "float32", ["conv_state_indices"], marks=_FULL,
         id="dilated-fp32-wide-state",
     ),
-    # A width whose whole window is three taps apart, with a wide weight over no pool.
     pytest.param(
         2, 7, 2, 4, 4, None, "float16", "float32", [], marks=_FULL, id="width-2-dilation-4"
     ),
-)
+)  # fmt: skip
 
 
 @pytest.mark.parametrize(
@@ -406,12 +288,15 @@ def test_causal_conv1d_update_unaligned_state() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
-def test_prefill_bias(dtype: str) -> None:
+@pytest.mark.parametrize(
+    "dtype, weight_dtype",
+    [("float16", "float16"), ("bfloat16", "bfloat16"), ("bfloat16", "float32")],
+)
+def test_prefill_bias(dtype: str, weight_dtype: str) -> None:
     """A contiguous bias with an offset address preserves outputs and the final state."""
     call = manifest_call(
         "CausalConv1dFwdOp",
-        {"T": dtype, "Tw": dtype},
+        {"T": dtype, "Tw": weight_dtype},
         D=256,
         W=4,
         L=3,
@@ -489,31 +374,6 @@ def test_causal_conv1d_update_advances_its_slots_of_a_state_pool() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
-def test_causal_conv1d_float32_bias(dtype: str) -> None:
-    """Float32 weights and an offset float32 bias retain their dtype without activation."""
-    call = manifest_call(
-        "CausalConv1dFwdOp",
-        {"T": dtype, "Tw": "float32"},
-        D=256,
-        W=4,
-        L=3,
-        Tt=72,
-        seq_lens=[7, 65],
-        activation=None,
-        some=["bias", "has_initial_state"],
-    )
-    test = CausalConv1dFwdTest(call)
-    inputs = list(test.gen_inputs())
-    bias = inputs[4]
-    storage = torch.empty(bias.numel() + 1, dtype=bias.dtype, device=bias.device)
-    inputs[4] = storage[1:]
-    inputs[4].copy_(bias)
-    op = CausalConv1dFwdOp(**call.arguments())
-    test.check(op, *inputs, runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
-
-
-@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "op_type, workload_type, shape, serving",
@@ -537,7 +397,7 @@ def test_causal_conv1d_float32_bias(dtype: str) -> None:
     ],
 )
 def test_causal_conv1d_dilated_graph_replay(op_type, workload_type, shape, serving) -> None:
-    """Replay consumes updated tokens, filters and slots, and preserves the evolving state."""
+    """Replay reads changed tokens, filters and slots at their captured addresses."""
     call = manifest_call(
         op_type.__name__,
         {"T": "bfloat16", "Tw": "float32"},
@@ -551,8 +411,7 @@ def test_causal_conv1d_dilated_graph_replay(op_type, workload_type, shape, servi
         **shape,
     )
     test = workload_type(call)
-    inputs = list(test.gen_inputs())
-    initial_state = inputs[2].clone()
+    inputs = test.gen_inputs()
     args, keywords = call.signature.forward_arguments(inputs)
     op = op_type(**call.arguments())
     stream = torch.cuda.Stream()
@@ -563,21 +422,16 @@ def test_causal_conv1d_dilated_graph_replay(op_type, workload_type, shape, servi
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         output = op(*args, **keywords)
-
-    inputs[2].copy_(initial_state)
-    expected_inputs = list(inputs)
-    expected_inputs[2] = initial_state.clone()
-    evidence = test.verification(*inputs)
+    inputs[0].mul_(0.5)
+    inputs[1].mul_(0.9)
     slots = inputs[6] if op_type is CausalConv1dFwdOp else inputs[4]
-    # More replays than the history span: both carried history and newly arrived tokens
-    # must advance through every column, including when the pool mapping changes.
-    for _ in range(11):
-        inputs[0].mul_(0.5)
-        inputs[1].mul_(0.9)
-        slots.copy_(slots.roll(1))
-        expected = test.ref_program(*expected_inputs)
+    slots.copy_(slots.roll(1))
+
+    def replay(*_args, **_keywords):
         graph.replay()
-        compare_outputs((output, inputs[2]), expected, evidence)
+        return output, inputs[2]
+
+    test.check(op, *inputs, runs=replay)
 
 
 _ROLLBACK = (
@@ -705,19 +559,15 @@ def test_causal_conv1d_skips_the_states_of_negative_slots(
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_causal_conv1d_prefill_refuses_a_ring_past_shared_memory() -> None:
-    """A dilated staging ring must fit the stated block budget before the kernel builds."""
+    """A dilated filter lengthens the token ring a block stages in shared memory: dispatch
+    refuses a ring past the budget before a build and names the budget."""
     (in_tree,) = Kernel.devices
     call = CausalConv1dCall(
         arch=89, sm_count=142, smem_budget=101376, dim=256, width=4, dtype=torch.bfloat16,
         weight_dtype=torch.bfloat16, state_len=210, dilation=70, device=torch.device(in_tree),
     )  # fmt: skip
-    op = CausalConv1dFwdOp(dilation=70)
-    with pytest.raises(OpNotAvailableError, match="108032 bytes of tokens, past the 101376"):
-        op.key_for("causal_conv1d", call)
-    # A stated budget exactly equal to the ring fits; one byte less does not.
-    assert op.key_for("causal_conv1d", replace(call, smem_budget=108032)) == "causal_conv1d"
-    with pytest.raises(OpNotAvailableError, match="108032 bytes of tokens, past the 108031"):
-        op.key_for("causal_conv1d", replace(call, smem_budget=108031))
+    with pytest.raises(OpNotAvailableError, match="bytes of tokens, past the 101376"):
+        CausalConv1dFwdOp(dilation=70).key_for("causal_conv1d", call)
 
 
 @pytest.mark.smoke

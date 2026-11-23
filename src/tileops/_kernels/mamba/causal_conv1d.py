@@ -52,15 +52,10 @@ def _activate(acc, silu: bool):
     return approx_fdiv(acc, T.float32(1.0) + T.exp2(-acc * T.float32(LOG2E)))
 
 
-def _span(call: "CausalConv1dCall | CausalConv1dUpdateCall") -> int:
-    """The tokens a filter covers: ``(W - 1) * dilation``."""
-    return (call.width - 1) * call.dilation
-
-
 def _state_refusal(call: "CausalConv1dCall | CausalConv1dUpdateCall") -> str | None:
     """Why a state of fewer than ``(W - 1) * dilation`` token columns does not serve *call*,
     or ``None`` when it does."""
-    span = _span(call)
+    span = (call.width - 1) * call.dilation
     if call.state_len < span:
         return f"the filters span {span} tokens; a state of {call.state_len} columns is shorter"
     return None
@@ -72,32 +67,16 @@ def _vector(dim: int, dtype: torch.dtype) -> int:
     return next(v for v in (widest, 4, 2, 1) if v <= widest and dim % v == 0)
 
 
-def _prefill_config(
-    dim: int, width: int, dtype: torch.dtype, dilation: int, *, calibration: str | None
-) -> dict:
+def _prefill_config(dim: int, width: int, dtype: torch.dtype, dilation: int) -> dict:
     """Default launch geometry, shared by dispatch's memory check and the kernel build."""
-    ring = (width - 1) * dilation + 1
-    vec = _vector(dim, dtype)
-    # Target at most 64 scalar slots per thread for part (FP32) plus hold (FP16/BF16),
-    # conservatively budgeting one 32-bit register per slot before compiler packing.
-    # This is a register-pressure heuristic, not CUDA's 255-register/thread limit:
-    # leave room for filters, bias, temporaries and indexing as dilation grows.
-    # At vec=1 a larger window can exceed this target; allocation/spilling is compiler-owned.
-    while vec > 1 and vec * (ring + ring - 1) > 64:
-        vec //= 2
-    warps = 4
-    # H200 measurements of four taps at dilation 3 favor four channels in a one-warp
-    # CTA for both pooled and unpooled histories. Pair the wider vector with fewer
-    # warps: four-warp CTAs raise register pressure and slow the pooled path.
-    if calibration == "h200" and width == 4 and dilation == 3 and dim % 4 == 0:
-        vec, warps = 4, 1
-    return {
-        "vec": vec,
-        "warps": warps,
-        "seg": ring * max(1, 8 // ring),
-        "steps": 8,
-        "stages": 2,
-    }
+    sums = (width - 1) * dilation + 1
+    vec, warps = _vector(dim, dtype), 4
+    if dilation > 1:
+        # A thread holds vec * (2 * sums - 1) running sums and tokens, so a dilated filter
+        # keeps at most four channels a thread; its longer chunk leaves fewer chunks, so one
+        # warp a block keeps the grid wide.
+        vec, warps = min(vec, 4), 1
+    return {"vec": vec, "warps": warps, "seg": sums * max(1, 8 // sums), "steps": 8, "stages": 2}
 
 
 @target_cache(maxsize=64)
@@ -114,8 +93,8 @@ def _causal_conv1d_kernel(
     pooled: bool,
 ):
     span = (width - 1) * dilation
-    # One accumulator per output a token of the window can still feed: outputs n .. n + span.
-    ring = span + 1
+    # One running sum per output a token can still feed: outputs n .. n + span.
+    sums = span + 1
 
     # exp2 as one MUFU op, denormals flushed.
     @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS, "--use_fast_math"])
@@ -128,21 +107,21 @@ def _causal_conv1d_kernel(
         weight_vec = min(vec, 128 // DataType(weight_dtype).bits)
         chunk = seg * steps
         # Keeps every index into part a constant of the unrolled step.
-        if seg % ring:
-            raise ValueError(f"seg {seg} is not a multiple of the accumulator ring {ring}")
+        if seg % sums:
+            raise ValueError(f"seg {seg} is not a multiple of the running sums {sums}")
         # cp.async moves 4, 8 or 16 bytes.
         async_copy = vec * DataType(dtype).bits >= 32
 
         @T.macro
-        def stage(x, ring_buf, w, buf, t0, lane, c0, ce):
-            """Issue the copies of this lane's channels of tokens [t0, t0 + seg) into slot buf."""
+        def stage(x, ring, w, buf, t0, lane, c0, ce):
+            """Issue the copies of this lane's channels of tokens [t0, t0 + seg) into ring slot buf."""
             for i in T.unroll(seg):
                 j = t0 + i
                 live = T.And(c0 < dim, j < ce)
                 if async_copy:
                     # A slot past the chunk zero-fills; its address stays in bounds.
                     T.ptx_cp_async(
-                        T.access_ptr(ring_buf[w, buf, i, lane * vec], "w", vec),
+                        T.access_ptr(ring[w, buf, i, lane * vec], "w", vec),
                         T.access_ptr(
                             x[T.if_then_else(live, j, 0), T.if_then_else(live, c0, 0)], "r", vec
                         ),
@@ -151,7 +130,7 @@ def _causal_conv1d_kernel(
                     )
                 else:
                     for v in T.unroll(vec):
-                        ring_buf[w, buf, i, lane * vec + v] = T.if_then_else(
+                        ring[w, buf, i, lane * vec + v] = T.if_then_else(
                             live,
                             x[T.if_then_else(live, j, 0), T.if_then_else(live, c0, 0) + v],
                             T.cast(0, dtype),
@@ -168,11 +147,11 @@ def _causal_conv1d_kernel(
             """
             for d in T.unroll(span):
                 for v in T.unroll(vec):
-                    part[((n + d) % ring) * vec + v] = bf[v]
+                    part[((n + d) % sums) * vec + v] = bf[v]
             for k in T.unroll(width):
                 for d in T.unroll(span - k * dilation):
                     for v in T.unroll(vec):
-                        part[((n + d) % ring) * vec + v] += wf[v * width + k] * T.cast(
+                        part[((n + d) % sums) * vec + v] += wf[v * width + k] * T.cast(
                             hold[(d + k * dilation) * vec + v], "float32"
                         )
 
@@ -185,18 +164,18 @@ def _causal_conv1d_kernel(
             for v in T.unroll(vec):
                 xv = T.cast(prev[v], "float32")
                 for m in T.unroll(width):
-                    part[((n + m * dilation) % ring) * vec + v] += (
+                    part[((n + m * dilation) % sums) * vec + v] += (
                         wf[v * width + width - 1 - m] * xv
                     )
             for v in T.unroll(vec):
-                out[v] = T.cast(_activate(part[(n % ring) * vec + v], silu), dtype)
+                out[v] = T.cast(_activate(part[(n % sums) * vec + v], silu), dtype)
             for v in T.unroll(vec):
-                part[(n % ring) * vec + v] = bf[v]
+                part[(n % sums) * vec + v] = bf[v]
 
         @T.macro
         def walk(x, weight, bias, conv_state, cu_seqlens, has_initial_state, slots, y):
             # A warp walks `chunk` packed tokens of block_d channels; each lane reads only the
-            # slots it copied, so warps need no barrier.
+            # ring slots it copied, so warps need no barrier.
             #
             # Only the warp whose chunk holds a sequence's first token reads or writes that
             # sequence's state: it computes the sequence's first span outputs, even past its
@@ -206,7 +185,7 @@ def _causal_conv1d_kernel(
                 T.ceildiv(T.ceildiv(total, chunk), warps),
                 threads=WARP_LANES * warps,
             ) as (bd, bc):
-                ring_buf = T.alloc_shared((warps, stages, seg, block_d), dtype)
+                ring = T.alloc_shared((warps, stages, seg, block_d), dtype)
                 tx = T.get_thread_binding()
                 lane = tx % WARP_LANES
                 w = tx // WARP_LANES
@@ -214,8 +193,8 @@ def _causal_conv1d_kernel(
                 cs = (bc * warps + w) * chunk
                 ce = T.min(cs + chunk, total)
                 prev = T.alloc_local((vec,), dtype)
-                # part[(n % ring) * vec + v]: the running sum of the chunk's n-th output.
-                part = T.alloc_local((ring * vec,), "float32")
+                # part[(n % sums) * vec + v]: the running sum of the chunk's n-th output.
+                part = T.alloc_local((sums * vec,), "float32")
                 hold = T.alloc_local((span * vec,), dtype)
                 wgt = T.alloc_local((vec * width,), weight_dtype)
                 wf = T.alloc_local((vec * width,), "float32")
@@ -232,7 +211,7 @@ def _causal_conv1d_kernel(
                 if cs < total:
                     for q in T.unroll(stages - 1):
                         if q < steps:
-                            stage(x, ring_buf, w, q, cs + q * seg, lane, c0, ce)
+                            stage(x, ring, w, q, cs + q * seg, lane, c0, ce)
                         elif async_copy:
                             T.ptx_commit_group()
                     if c0 < dim:
@@ -297,7 +276,7 @@ def _causal_conv1d_kernel(
                         if st + stages - 1 < steps:
                             stage(
                                 x,
-                                ring_buf,
+                                ring,
                                 w,
                                 (st + stages - 1) % stages,
                                 t0 + (stages - 1) * seg,
@@ -315,8 +294,8 @@ def _causal_conv1d_kernel(
                                 if t < ce:
                                     # A sequence starts at t; empty ones are skipped.
                                     if t >= end:
-                                        # Only the sequence crossing cs borrows outputs from
-                                        # the previous chunk. This chunk owns each later head.
+                                        # Only the sequence crossing cs has outputs the chunk
+                                        # before computes.
                                         skip = t
                                         while end <= t:
                                             seq = seq + 1
@@ -332,7 +311,7 @@ def _causal_conv1d_kernel(
                                                     ]
                                         restart(part, hold, wf, bf, i)
                                     for v in T.vectorized(vec):
-                                        prev[v] = ring_buf[w, buf, i, lane * vec + v]
+                                        prev[v] = ring[w, buf, i, lane * vec + v]
                                     arrive(part, prev, wf, bf, out, i)
                                     if t >= skip:
                                         for v in T.vectorized(vec):
@@ -432,17 +411,9 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         reason = _state_refusal(call) or super().refusal(call)
         if reason is not None:
             return reason
-        cfg = _prefill_config(
-            call.dim, call.width, call.dtype, call.dilation, calibration=call.calibration
-        )
-        need = (
-            cfg["warps"]
-            * cfg["stages"]
-            * cfg["seg"]
-            * WARP_LANES
-            * cfg["vec"]
-            * call.dtype.itemsize
-        )
+        cfg = _prefill_config(call.dim, call.width, call.dtype, call.dilation)
+        tokens = cfg["warps"] * cfg["stages"] * cfg["seg"] * WARP_LANES * cfg["vec"]
+        need = tokens * call.dtype.itemsize
         if need > call.smem_budget:
             return f"a block stages {need} bytes of tokens, past the {call.smem_budget} a block has"
         return None
@@ -451,21 +422,13 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     def entry_for(cls, call: CausalConv1dCall) -> Entry:
         args = (call.dim, call.width, call.dtype, call.has_bias, call.has_init, call.silu)
         index = call.device_index
-        return (
-            *args,
-            call.pooled,
-            call.weight_dtype,
-            call.dilation,
-            call.state_len,
-            index,
-        ), lambda: cls(
-            *args,
-            device_index=index,
-            pooled=call.pooled,
-            dilation=call.dilation,
-            state_len=call.state_len,
-            weight_dtype=call.weight_dtype,
-        )
+        extra = {
+            "pooled": call.pooled,
+            "dilation": call.dilation,
+            "state_len": call.state_len,
+            "weight_dtype": call.weight_dtype,
+        }
+        return (*args, *extra.values(), index), lambda: cls(*args, device_index=index, **extra)
 
     def __init__(
         self,
@@ -485,33 +448,16 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     ) -> None:
         super().__init__(device_index=device_index)
         self.dim, self.width, self.dtype = dim, width, dtype
-        self.pooled = pooled
-        self.dilation = dilation
-        self.state_len = state_len
-        self.weight_dtype = weight_dtype
+        self.pooled, self.dilation = pooled, dilation
         self.kernel = _causal_conv1d_kernel(
-            dim,
-            width,
-            self.dtype_str,
-            self.dtype_to_str(self.weight_dtype),
-            dilation,
-            self.state_len,
-            has_bias,
-            has_init,
-            silu,
-            pooled,
-        )
+            dim, width, self.dtype_str, self.dtype_to_str(weight_dtype), dilation, state_len,
+            has_bias, has_init, silu, pooled,
+        )  # fmt: skip
         self.init_config(config)
 
     @property
     def default_config(self) -> dict:
-        return _prefill_config(
-            self.dim,
-            self.width,
-            self.dtype,
-            self.dilation,
-            calibration=self.build_target.calibration,
-        )
+        return _prefill_config(self.dim, self.width, self.dtype, self.dilation)
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
@@ -529,17 +475,16 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     ) -> torch.Tensor:
         y = torch.empty_like(x)
         batch = cu_seqlens.shape[0] - 1
-        # Absent optional inputs are never read. The bias placeholder uses the
-        # weight dtype, which may be wider than the activation dtype.
+        # An absent bias, has_initial_state or cache_indices is never read; a view of its
+        # shape and dtype fills the slot.
         if has_initial_state is None:
             flags = cu_seqlens.view(torch.uint8)[:batch]
         else:
             flags = has_initial_state.view(torch.uint8)
-        bias_arg = bias if bias is not None else weight.view(-1)[: x.shape[1]]
         self.program(self._compile)(
             x,
             weight.view(-1),
-            bias_arg,
+            bias if bias is not None else weight.view(-1)[: x.shape[1]],
             conv_state,
             cu_seqlens,
             flags,
@@ -581,7 +526,7 @@ def _causal_conv1d_update_kernel(
             # row is exactly its span.
             with T.Kernel(T.ceildiv(dim, block_d), batch, threads=threads) as (bd, b):
                 c0 = bd * block_d + T.get_thread_binding() * vec
-                # Both pooled and unpooled states use a row-indexed view.
+                # A state is indexed by its row, so a pool slot stays out of the flat offset.
                 base = c0 * state_len
                 st = T.alloc_local((vec * span,), dtype)
                 wraw = T.alloc_local((vec * width,), weight_dtype)
@@ -625,9 +570,8 @@ def _causal_conv1d_update_kernel(
                         y[b, c0 + v] = out[v]
                     # Shift each channel's window by one token.
                     for v in T.unroll(vec):
-                        if span > 1:
-                            for k in T.unroll(span - 1):
-                                st[v * span + k] = st[v * span + k + 1]
+                        for k in T.unroll(span - 1):
+                            st[v * span + k] = st[v * span + k + 1]
                         st[v * span + span - 1] = xv[v]
                     if packed:
                         for q in T.unroll(span):
@@ -689,21 +633,13 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
     def entry_for(cls, call: CausalConv1dUpdateCall) -> Entry:
         args = (call.dim, call.width, call.dtype, call.has_bias, call.silu)
         index = call.device_index
-        return (
-            *args,
-            call.pooled,
-            call.weight_dtype,
-            call.dilation,
-            call.state_len,
-            index,
-        ), lambda: cls(
-            *args,
-            device_index=index,
-            pooled=call.pooled,
-            dilation=call.dilation,
-            state_len=call.state_len,
-            weight_dtype=call.weight_dtype,
-        )
+        extra = {
+            "pooled": call.pooled,
+            "dilation": call.dilation,
+            "state_len": call.state_len,
+            "weight_dtype": call.weight_dtype,
+        }
+        return (*args, *extra.values(), index), lambda: cls(*args, device_index=index, **extra)
 
     def __init__(
         self,
@@ -723,21 +659,10 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         super().__init__(device_index=device_index)
         self.dim, self.width, self.dtype = dim, width, dtype
         self.pooled = pooled
-        self.dilation = dilation
-        self.state_len = state_len
-        self.weight_dtype = weight_dtype
         self.kernel = _causal_conv1d_update_kernel(
-            dim,
-            width,
-            self.dtype_str,
-            self.dtype_to_str(self.weight_dtype),
-            dilation,
-            self.state_len,
-            has_bias,
-            silu,
-            _vector(dim, dtype),
-            pooled,
-        )
+            dim, width, self.dtype_str, self.dtype_to_str(weight_dtype), dilation, state_len,
+            has_bias, silu, _vector(dim, dtype), pooled,
+        )  # fmt: skip
         self.init_config(config)
         # The slots an unpooled build leaves unread are declared one element wide.
         self._unread = torch.zeros(1, dtype=torch.int32, device=self._build_device)
@@ -762,7 +687,7 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
     ) -> torch.Tensor:
         del num_accepted_tokens, query_start_loc
         y = torch.empty_like(x)
-        # An absent bias is never read; its placeholder uses the weight dtype.
+        # An absent bias is never read; a view of its shape and dtype fills the slot.
         self.program(self._compile)(
             x,
             weight.view(-1),
