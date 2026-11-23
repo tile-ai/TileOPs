@@ -538,23 +538,27 @@ class GELUTanhAndMulFwdKernel(FusedGatedKernel):
 
     @staticmethod
     def activation_func(x):
-        """gelu_tanh(x) in float32; a 16-bit *x* takes it as x / (1 + exp(-2 * inner)).
+        """A 16-bit *x* takes ``1 + tanh(u)`` as ``2 / (1 + exp(-2u))``.
 
-        That is the same function, ``1 + tanh(u) = 2 / (1 + exp(-2u))``, with no ``1 + tanh``
-        to cancel where tanh nears -1. One MUFU.EX2 and one MUFU.RCP replace ``tanhf``'s
-        software sequence, which makes the body, not the memory stream, set the kernel's
-        time. The reciprocal flushes to zero past a divisor of ``2**126``, where the float32
-        reference's ``1 + tanh`` is already zero.
+        One MUFU.EX2 and one MUFU.RCP replace ``tanhf``'s software sequence, whose issue
+        cost would set the kernel's time instead of the memory stream.
+        ``(2 * rcp - 1) + 1`` rounds the quotient onto tanh's float32 grid near -1, as the
+        float32 reference's ``1 + tanh`` is, so down the negative tail the result keeps the
+        reference's steps and zeros.
         """
         x_f32 = T.cast(x, "float32")
+        one = T.cast(1.0, "float32")
         if x.dtype != "float32":
             # -2 * log2(e) * inner = x * (scale + scale * coeff * x^2)
             scale = -2.0 * LOG2E * _SQRT_2_OVER_PI
             cubic = T.cast(scale * _GELU_TANH_COEFF, "float32")
             exponent = x_f32 * (T.cast(scale, "float32") + cubic * x_f32 * x_f32)
-            den = T.cast(1.0, "float32") + _approx_exp2(exponent)
-            return x_f32 * T.call_extern("float32", "tileops::approx_rcp", den)
-        sqrt_2_over_pi = T.cast(_SQRT_2_OVER_PI, "float32")
-        coeff = T.cast(_GELU_TANH_COEFF, "float32")
-        inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
-        return T.cast(0.5, "float32") * x_f32 * (T.cast(1.0, "float32") + T.tanh(inner))
+            den = one + _approx_exp2(exponent)
+            rcp = T.call_extern("float32", "tileops::approx_rcp", den)
+            one_plus_tanh = (T.cast(2.0, "float32") * rcp - one) + one
+        else:
+            sqrt_2_over_pi = T.cast(_SQRT_2_OVER_PI, "float32")
+            coeff = T.cast(_GELU_TANH_COEFF, "float32")
+            inner = sqrt_2_over_pi * (x_f32 + coeff * x_f32 * x_f32 * x_f32)
+            one_plus_tanh = one + T.tanh(inner)
+        return T.cast(0.5, "float32") * x_f32 * one_plus_tanh

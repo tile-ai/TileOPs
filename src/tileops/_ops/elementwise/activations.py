@@ -332,8 +332,9 @@ class GELUAndMulFwdOp(FusedGatedOp):
     On float16 and bfloat16 the exact form evaluates the error function as a polynomial
     that saturates to exactly +/-1; its worst case over the real line is 1.7e-5, an
     order below half a float16 ulp at 1.0. float32 keeps `erff`. On float16 and bfloat16
-    the tanh form takes its tanh from MUFU.TANH, relative error 2^-10.987, and rounds once,
-    at the product; float32 keeps `tanhf`.
+    the tanh form evaluates in float32 and rounds once, at the product; down the negative
+    tail it keeps the zeros of torch's float32 form, and its NaN against an infinite value.
+    float32 keeps `tanhf`.
     """
 
     kernel_types = {
