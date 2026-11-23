@@ -18,7 +18,7 @@ from tileops._kernels.mamba import (
     CausalConv1dUpdateCall,
     CausalConv1dUpdateFwdInterface,
     CausalConv1dUpdateKernel,
-    CausalConv1dUpdateRollbackKernel,
+    CausalConv1dUpdateRegisterKernel,
 )
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -161,7 +161,7 @@ class CausalConv1dUpdateFwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "causal_conv1d_update": CausalConv1dUpdateKernel,
-        "causal_conv1d_update_rollback": CausalConv1dUpdateRollbackKernel,
+        "causal_conv1d_update_register": CausalConv1dUpdateRegisterKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "causal_conv1d_update": CausalConv1dUpdateFwdInterface

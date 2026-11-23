@@ -21,7 +21,7 @@ from tileops._kernels.mamba.call_spec import (
 from tileops._kernels.mamba.causal_conv1d import (
     CausalConv1dKernel,
     CausalConv1dUpdateKernel,
-    CausalConv1dUpdateRollbackKernel,
+    CausalConv1dUpdateRegisterKernel,
 )
 from tileops._kernels.mamba.selective_scan import SelectiveScanChunkKernel, SelectiveScanStepKernel
 from tileops._kernels.mamba.ssd_chunk_coupling import SSDChunkCouplingKernel
@@ -38,7 +38,7 @@ __all__ = [
     "CausalConv1dUpdateCall",
     "CausalConv1dUpdateFwdInterface",
     "CausalConv1dUpdateKernel",
-    "CausalConv1dUpdateRollbackKernel",
+    "CausalConv1dUpdateRegisterKernel",
     "SSDChunkCouplingCall",
     "SSDChunkCouplingFwdInterface",
     "SSDChunkCouplingKernel",
