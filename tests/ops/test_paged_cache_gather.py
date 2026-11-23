@@ -5,7 +5,11 @@ import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import TestBase
-from tileops._kernels.attention import PagedKVCacheGatherShortKernel
+from tileops._kernels.attention import (
+    PagedKVCacheGatherKernel,
+    PagedKVCacheGatherRowsKernel,
+    PagedKVCacheGatherShortKernel,
+)
 from tileops.attention import PagedKVCacheGatherFwdOp
 from tileops.backend import BUILTIN
 from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
@@ -48,6 +52,17 @@ from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
             id="fp8-bf16-scaled-starts",
         ),
         pytest.param(
+            [5, 0, 17, 64, 1, 33, 2, 9, 70],
+            (576,),
+            16,
+            torch.float8_e4m3fn,
+            torch.float16,
+            [3, 0, 15, 1, 0, 16, 7, 0, 2],
+            False,
+            marks=pytest.mark.smoke,
+            id="fp8-fp16-nine-requests",
+        ),
+        pytest.param(
             [7, 1],
             (),
             4,
@@ -60,7 +75,7 @@ from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
         ),
         pytest.param(
             [1, 33],
-            (320,),
+            (321,),
             7,
             torch.float8_e4m3fn,
             torch.float16,
@@ -71,7 +86,7 @@ from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
         ),
         pytest.param(
             [31, 65],
-            (320,),
+            (321,),
             16,
             torch.float16,
             None,
@@ -79,6 +94,39 @@ from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
             True,
             marks=pytest.mark.full,
             id="tuned",
+        ),
+        pytest.param(
+            [17, 16],
+            (328,),
+            16,
+            torch.float8_e4m3fn,
+            torch.bfloat16,
+            None,
+            False,
+            marks=pytest.mark.full,
+            id="fp8-rows-of-odd-vector-count",
+        ),
+        pytest.param(
+            [17, 16],
+            (2560,),
+            16,
+            torch.float16,
+            None,
+            None,
+            False,
+            marks=pytest.mark.full,
+            id="wide-rows-in-chunks",
+        ),
+        pytest.param(
+            [200, 100],
+            (8,),
+            16,
+            torch.float16,
+            None,
+            None,
+            False,
+            marks=pytest.mark.full,
+            id="one-vector-rows",
         ),
     ],
 )
@@ -109,21 +157,30 @@ def test_short_gather_packed_requests(lengths, dtype):
     assert [type(k) for k in op.iter_kernels()] == [PagedKVCacheGatherShortKernel]
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-def test_gather_two_requests_wide_rows():
-    """Two requests of 1024-element rows past two pages take the general kernel's 4x256 tile."""
-    from tileops._kernels.attention import PagedKVCacheGatherKernel
-    from tileops.backend import BUILTIN
+@pytest.mark.parametrize(
+    "shape,kernel",
+    [
+        pytest.param(
+            (576,), PagedKVCacheGatherRowsKernel, marks=pytest.mark.smoke, id="whole-vector-rows"
+        ),
+        pytest.param(
+            (1025,), PagedKVCacheGatherKernel, marks=pytest.mark.full, id="partial-vector-rows"
+        ),
+    ],
+)
+def test_gather_kernel_by_row_bytes(shape, kernel):
+    """A row of whole 8-element vectors takes the row kernel, whose 16-byte stores fill whole sectors.
 
-    workload = PagedKVCacheGatherWorkload([17, 16], (1024,), 16, torch.bfloat16)
+    Any other row takes the general kernel.
+    """
+    workload = PagedKVCacheGatherWorkload([17, 16], shape, 16, torch.float16)
     inputs = workload.gen_inputs()
     op = PagedKVCacheGatherFwdOp(target=BUILTIN)
     TestBase.check(workload, op, *inputs)
-    (kernel,) = op.iter_kernels()
-    assert type(kernel) is PagedKVCacheGatherKernel
-    assert kernel.config == {"block_rows": 4, "block_cols": 256, "threads": 128}
+    (served,) = op.iter_kernels()
+    assert type(served) is kernel
 
 
 @pytest.mark.smoke

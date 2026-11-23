@@ -86,6 +86,7 @@ from tileops._kernels.attention.paged_cache_gather import (
     PagedKVCacheGatherCall,
     PagedKVCacheGatherFwdInterface,
     PagedKVCacheGatherKernel,
+    PagedKVCacheGatherRowsKernel,
     PagedKVCacheGatherShortKernel,
 )
 from tileops._kernels.attention.paged_cache_write import PagedKVCacheWriteKernel
@@ -165,6 +166,7 @@ __all__ = [
     "PagedKVCacheGatherCall",
     "PagedKVCacheGatherFwdInterface",
     "PagedKVCacheGatherKernel",
+    "PagedKVCacheGatherRowsKernel",
     "PagedKVCacheGatherShortKernel",
     "PagedKVCacheWriteKernel",
     "TopKSelectCall",

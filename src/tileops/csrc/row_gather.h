@@ -3,6 +3,8 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
+#include <type_traits>
+
 namespace tileops {
 
 // Stores the 16 bytes at `src` into peer CTA `peer`'s shared memory at the
@@ -44,10 +46,14 @@ __device__ __forceinline__ void expect_bytes(void* bar, unsigned bytes) {
       : "memory");
 }
 
-// Dequantizes 8 float8_e4m3 values at `src` by `scale` into 8 bfloat16 values
-// at `dst`, rounding once to bfloat16.
+// Dequantizes 8 float8_e4m3 values at `src` by `scale` into 8 values of Out
+// (bfloat16 or half) at `dst`, rounding once to Out.
+template <typename Out = __nv_bfloat16>
 __device__ __forceinline__ void dequant8(void* dst, const void* src,
                                          float scale) {
+  static_assert(
+      std::is_same_v<Out, __nv_bfloat16> || std::is_same_v<Out, __half>,
+      "dequant8 writes bfloat16 or half");
   const unsigned* in = static_cast<const unsigned*>(src);
   unsigned* out = static_cast<unsigned*>(dst);
 #pragma unroll
@@ -61,10 +67,17 @@ __device__ __forceinline__ void dequant8(void* dst, const void* src,
         : "r"(in[w]));
     float2 a = __half22float2(*reinterpret_cast<__half2*>(&lo));
     float2 b = __half22float2(*reinterpret_cast<__half2*>(&hi));
-    __nv_bfloat162 pa = __floats2bfloat162_rn(a.x * scale, a.y * scale);
-    __nv_bfloat162 pb = __floats2bfloat162_rn(b.x * scale, b.y * scale);
-    out[2 * w] = *reinterpret_cast<unsigned*>(&pa);
-    out[2 * w + 1] = *reinterpret_cast<unsigned*>(&pb);
+    if constexpr (std::is_same_v<Out, __half>) {
+      __half2 pa = __floats2half2_rn(a.x * scale, a.y * scale);
+      __half2 pb = __floats2half2_rn(b.x * scale, b.y * scale);
+      out[2 * w] = *reinterpret_cast<unsigned*>(&pa);
+      out[2 * w + 1] = *reinterpret_cast<unsigned*>(&pb);
+    } else {
+      __nv_bfloat162 pa = __floats2bfloat162_rn(a.x * scale, a.y * scale);
+      __nv_bfloat162 pb = __floats2bfloat162_rn(b.x * scale, b.y * scale);
+      out[2 * w] = *reinterpret_cast<unsigned*>(&pa);
+      out[2 * w + 1] = *reinterpret_cast<unsigned*>(&pb);
+    }
   }
 }
 
