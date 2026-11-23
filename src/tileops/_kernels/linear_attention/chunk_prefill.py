@@ -276,10 +276,11 @@ def _split_scan(call, num_sequences, total, dtype, initial_state):
     elif with_output and value_tile == 64:
         # Two warpgroups also share the output's products.
         threads = 256
-    # Past one wave, a walk launched late finishes late: packed sequences of different lengths
-    # launch their walks sequence by sequence, longest first, so the longest walks start in
-    # the first wave. Within one wave every walk starts at once, and one sequence or equal
-    # lengths leave no order to choose; those keep the interleaved order. Like the crossovers
+    # Past one wave, a walk launched late finishes late: packed sequences launch their walks
+    # sequence by sequence, longest first, in an order sorted on the device, so the longest
+    # walks start in the first wave. Within one wave every walk starts at once, and one
+    # sequence leaves no order to choose; both keep the interleaved order, as do equal lengths
+    # when the caller passes the offsets on the host (`launch` below). Like the crossovers
     # above, the order is set for the SM90 walk.
     sequence_major = call.arch == 90 and call.varlen and num_sequences > 1 and ctas > call.sm_count
     walk_options = (
