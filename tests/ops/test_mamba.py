@@ -215,6 +215,52 @@ class SSDDecodeFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),
+                # A lane takes two 16-byte pieces of each row, and the last CTA of a head
+                # holds a partial row tile.
+                pytest.param(
+                    2,
+                    4,
+                    36,
+                    256,
+                    2,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                ),
+                # An odd d_state: a lane takes single elements, and the second sweep of each
+                # row holds one element, on lane 0.
+                pytest.param(
+                    2,
+                    4,
+                    64,
+                    33,
+                    1,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                ),
+                # d_state 1: one lane a row, so its y needs no shuffle.
+                pytest.param(
+                    1,
+                    4,
+                    64,
+                    1,
+                    1,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                ),
+                # Tuned: the op runs the config the tuner picks from the kernel's candidates.
+                pytest.param(
+                    1,
+                    4,
+                    64,
+                    16,
+                    1,
+                    torch.float16,
+                    True,
+                    marks=pytest.mark.full,
+                ),
             ],
         ),
     ]
