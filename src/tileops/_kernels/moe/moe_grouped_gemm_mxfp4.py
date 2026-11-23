@@ -197,10 +197,10 @@ def _moe_grouped_gemm_mxfp4_kernel(
     contiguous = packing is not None
     tight = packing == "tight"
 
-    # Bounds are checked only where written here: every global load is in bounds by a clamped
-    # index (the token scales, the B scales), its loop's or branch's condition (the walk's layout
-    # and ends loads) or the search interval (the layout loads that recover each expert's end).
-    # TileLang's own check would guard each of them again, on the walk of every task.
+    # Bounds are checked only where written here. Token scales: clamped rows, or on whole masked
+    # slabs (max_m % block_m == 0) first_row's clamped tile. B scales and their bulk copy: clamped
+    # indices. The walk's layout and ends loads: their loop's or branch's condition, or the search
+    # interval. A tight short tile's output: the C++ helper's row and column checks.
     @tilelang.jit(
         pass_configs={
             PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,

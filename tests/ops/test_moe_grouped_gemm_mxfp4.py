@@ -358,6 +358,15 @@ def test_mxfp4_grouped_gemm_folded_and_split_tasks_on_one_cta() -> None:
             marks=pytest.mark.full,
             id="tight-per-row-n136",
         ),
+        # Experts found from their row ends, a tight tail stored by rows clipped at an N tail.
+        pytest.param(
+            contiguous_layout("tight", "physical_psum"),
+            _E8M0,
+            136,
+            512,
+            marks=pytest.mark.full,
+            id="tight-psum-n136",
+        ),
     ],
 )
 def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
