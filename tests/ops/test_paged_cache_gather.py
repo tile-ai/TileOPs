@@ -75,7 +75,7 @@ from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
         ),
         pytest.param(
             [1, 33],
-            (320,),
+            (321,),
             7,
             torch.float8_e4m3fn,
             torch.float16,

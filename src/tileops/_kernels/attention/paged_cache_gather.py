@@ -55,11 +55,6 @@ class PagedKVCacheGatherFwdInterface(KernelInterface):
         """
 
 
-# Elements per vector of the row kernel: one 16-byte store of 16-bit output, so each store
-# instruction of a warp covers whole sectors. Its builder, refusal and config agree on it.
-_ROW_VECTOR = 8
-
-
 @T.macro
 def _row_slots(
     slots, Cu, Table, Starts, first, total, batch, *, block_rows, page_size, small_batch, has_starts
@@ -150,7 +145,7 @@ def _paged_cache_gather_rows_kernel(
     quantized = dtype == "float8_e4m3fn"
     # A 16-byte FP8 load would leave two stores per thread, each filling half of every sector
     # it touches.
-    vec = _ROW_VECTOR
+    vec = PagedKVCacheGatherRowsKernel.vector
     lanes = row_width // vec
 
     @tilelang.jit(
@@ -313,11 +308,14 @@ class PagedKVCacheGatherRowsKernel(Kernel, PagedKVCacheGatherFwdInterface):
     """Gather whole rows of 8-element vectors, a few rows per block, dequantizing FP8 in registers."""
 
     supported_archs = [90]
+    # Elements per vector: one 16-byte store of 16-bit output, so each store instruction of a
+    # warp covers whole sectors. The builder, the refusal and the config agree on it.
+    vector = 8
 
     @classmethod
     def refusal(cls, call: PagedKVCacheGatherCall) -> str | None:
-        if call.row_width % _ROW_VECTOR:
-            return f"requires rows of whole {_ROW_VECTOR}-element vectors"
+        if call.row_width % cls.vector:
+            return f"requires rows of whole {cls.vector}-element vectors"
         return super().refusal(call)
 
     @classmethod
@@ -354,8 +352,8 @@ class PagedKVCacheGatherRowsKernel(Kernel, PagedKVCacheGatherFwdInterface):
         # cap: two 16-bit or four FP8 vectors. Fewer bytes per thread leave the copies short of
         # bandwidth, and wider blocks hold fewer blocks per SM.
         rows = 8
-        loads = 32 // (_ROW_VECTOR * self.dtype.itemsize)
-        vectors = rows * (self.row_width // _ROW_VECTOR)
+        loads = 32 // (self.vector * self.dtype.itemsize)
+        vectors = rows * (self.row_width // self.vector)
         return {"block_rows": rows, "threads": min(1024, vectors // loads)}
 
     def forward(self, dst, cache, block_table, cu_seq_lens, seq_starts=None, scale=None) -> None:
