@@ -37,23 +37,19 @@ def _ssd_decode_kernel(
     G = n_groups
     assert H % G == 0, f"n_heads ({H}) must be divisible by n_groups ({G})"
     HEADS_PER_GROUP = H // G
+    # A lane moves VEC consecutive float32 state elements: 16 bytes when d_state allows it.
+    VEC = math.gcd(N, 4)
+    # LANES lanes of one warp share a row: as many as cover d_state, at most the warp.
+    LANES = min(32, 1 << math.ceil(math.log2(-(-N // VEC))))
+    STEPS = -(-N // (LANES * VEC))
 
     @tilelang.jit(out_idx=[-1])
-    def kernel_func(
-        block_p: int,
-        block_n: int,
-        threads: int,
-    ):
-        if not (block_n > 0 and (block_n & (block_n - 1)) == 0):
-            raise ValueError(
-                f"block_n must be a power of 2 for the log-depth tree reduction; got {block_n}"
-            )
-        if threads != block_p * block_n:
-            raise ValueError(
-                f"threads must be block_p * block_n ({block_p} * {block_n}) for the 2D "
-                f"T.Parallel layout; got {threads}"
-            )
-        _log_n = int(math.log2(block_n))
+    def kernel_func(warps: int, rows_per_thread: int):
+        threads = 32 * warps
+        slots = threads // LANES
+        rows = slots * rows_per_thread
+        row_tiles = -(-P // rows)
+        held = rows_per_thread * STEPS * VEC
 
         @T.prim_func
         def main(
@@ -65,90 +61,72 @@ def _ssd_decode_kernel(
             state: T.Tensor((B, H, P, N), accum_dtype),  # type: ignore  in-place
             y_out: T.Tensor((B, H, P), accum_dtype),  # type: ignore
         ):
-            # Grid: axis-0 fuses (batch, head); axis-1 tiles d_head. Thread (pp, nn) owns
-            # p = p0 + pp and n = n0 + nn of each n-chunk, so a pp row reads consecutive n.
-            # Each thread keeps a partial y; a tree reduction in shared memory sums them per pp.
-            with T.Kernel(B * H, T.ceildiv(P, block_p), threads=threads) as (bh, bp):
+            # A CTA owns `rows` rows of one (batch, head), and the row tile is the fastest
+            # grid index, so neighbouring CTAs stream neighbouring state. Thread `slot` takes
+            # rows p0 + slot * rows_per_thread + r; its `lane` takes VEC-wide pieces of each.
+            with T.Kernel(row_tiles * B * H, threads=threads) as bid:
+                bh = bid // row_tiles
+                p0 = bid % row_tiles * rows
                 b = bh // H
                 h = bh % H
                 g = h // HEADS_PER_GROUP
-                p0 = bp * block_p
+                tx = T.get_thread_binding()
+                slot = tx // LANES
+                lane = tx % LANES
 
-                y_frag = T.alloc_fragment((block_p, block_n), accum_dtype)
-                T.clear(y_frag)
+                s_loc = T.alloc_local((held,), accum_dtype)
+                a_loc = T.alloc_local((held,), accum_dtype)
+                b_loc = T.alloc_local((STEPS * VEC,), dtype)
+                c_loc = T.alloc_local((STEPS * VEC,), dtype)
+                dt_loc = T.alloc_local((rows_per_thread,), accum_dtype)
+                dtx = T.alloc_local((rows_per_thread,), accum_dtype)
+                y_loc = T.alloc_local((rows_per_thread,), accum_dtype)
 
-                # x and dt depend only on pp, so they load once before the n_blk loop.
-                x_frag = T.alloc_fragment((block_p,), accum_dtype)
-                dt_frag = T.alloc_fragment((block_p,), accum_dtype)
-                for pp in T.Parallel(block_p):
-                    p_idx = p0 + pp
-                    valid_p = p_idx < P
-                    x_frag[pp] = T.if_then_else(
-                        valid_p,
-                        T.cast(x[b, h, p_idx], accum_dtype),
-                        T.float32(0.0),
-                    )
-                    dt_frag[pp] = T.if_then_else(
-                        valid_p,
-                        dt[b, h, p_idx],
-                        T.float32(0.0),
-                    )
+                # Every load is issued before the first use, so a thread keeps all of its
+                # rows' state and A in flight at once.
+                for j in T.unroll(STEPS):
+                    n0 = (j * LANES + lane) * VEC
+                    if n0 < N:
+                        for v in T.vectorized(VEC):
+                            b_loc[j * VEC + v] = B_in[b, g, n0 + v]
+                        for v in T.vectorized(VEC):
+                            c_loc[j * VEC + v] = C_in[b, g, n0 + v]
+                for r in T.unroll(rows_per_thread):
+                    p = p0 + slot * rows_per_thread + r
+                    y_loc[r] = T.float32(0.0)
+                    if p < P:
+                        dt_loc[r] = dt[b, h, p]
+                        dtx[r] = dt_loc[r] * T.cast(x[b, h, p], accum_dtype)
+                        for j in T.unroll(STEPS):
+                            n0 = (j * LANES + lane) * VEC
+                            if n0 < N:
+                                for v in T.vectorized(VEC):
+                                    s_loc[(r * STEPS + j) * VEC + v] = state[b, h, p, n0 + v]
+                                for v in T.vectorized(VEC):
+                                    a_loc[(r * STEPS + j) * VEC + v] = A[h, p, n0 + v]
 
-                for n_blk in T.serial(T.ceildiv(N, block_n)):
-                    n0 = n_blk * block_n
-                    for pp, nn in T.Parallel(block_p, block_n):
-                        p_idx = p0 + pp
-                        n_idx = n0 + nn
-                        valid = (p_idx < P) and (n_idx < N)
+                for r in T.unroll(rows_per_thread):
+                    p = p0 + slot * rows_per_thread + r
+                    if p < P:
+                        for j in T.unroll(STEPS):
+                            n0 = (j * LANES + lane) * VEC
+                            if n0 < N:
+                                for v in T.unroll(VEC):
+                                    i = (r * STEPS + j) * VEC + v
+                                    b_v = T.cast(b_loc[j * VEC + v], accum_dtype)
+                                    c_v = T.cast(c_loc[j * VEC + v], accum_dtype)
+                                    s_loc[i] = T.exp(dt_loc[r] * a_loc[i]) * s_loc[i] + dtx[r] * b_v
+                                    y_loc[r] = y_loc[r] + s_loc[i] * c_v
+                                for v in T.vectorized(VEC):
+                                    state[b, h, p, n0 + v] = s_loc[(r * STEPS + j) * VEC + v]
 
-                        A_val = T.if_then_else(
-                            valid,
-                            A[h, p_idx, n_idx],
-                            T.float32(0.0),
-                        )
-                        B_val = T.if_then_else(
-                            valid,
-                            T.cast(B_in[b, g, n_idx], accum_dtype),
-                            T.float32(0.0),
-                        )
-                        C_val = T.if_then_else(
-                            valid,
-                            T.cast(C_in[b, g, n_idx], accum_dtype),
-                            T.float32(0.0),
-                        )
-                        old_s = T.if_then_else(
-                            valid,
-                            state[b, h, p_idx, n_idx],
-                            T.float32(0.0),
-                        )
-
-                        dA_val = T.exp(dt_frag[pp] * A_val)
-                        new_s = dA_val * old_s + dt_frag[pp] * x_frag[pp] * B_val
-                        if valid:
-                            state[b, h, p_idx, n_idx] = new_s
-
-                        y_frag[pp, nn] = y_frag[pp, nn] + new_s * C_val
-
-                # Round r: threads with nn < block_n>>(r+1) add the value at
-                # nn + block_n>>(r+1) into their cell.
-                y_smem = T.alloc_shared((block_p, block_n), accum_dtype)
-                for pp, nn in T.Parallel(block_p, block_n):
-                    y_smem[pp, nn] = y_frag[pp, nn]
-
-                T.sync_threads()
-
-                for _d in range(_log_n):
-                    _stride = block_n >> (_d + 1)
-                    for pp, nn in T.Parallel(block_p, block_n):
-                        if nn < _stride:
-                            y_smem[pp, nn] = y_smem[pp, nn] + y_smem[pp, nn + _stride]
-                    T.sync_threads()
-
-                for pp, nn in T.Parallel(block_p, block_n):
-                    if nn == 0:
-                        p_idx = p0 + pp
-                        if p_idx < P:
-                            y_out[b, h, p_idx] = y_smem[pp, 0]
+                # The LANES lanes of a row sum their partial y; lane 0 writes it.
+                for r in T.unroll(rows_per_thread):
+                    for d in T.unroll(int(math.log2(LANES))):
+                        y_loc[r] = y_loc[r] + T.shfl_xor(y_loc[r], LANES >> (d + 1), width=LANES)
+                    p = p0 + slot * rows_per_thread + r
+                    if lane == 0 and p < P:
+                        y_out[b, h, p] = y_loc[r]
 
         return main
 
@@ -201,21 +179,18 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # threads = block_p * block_n; block_n=32 gives one warp per pp-row.
-        return {
-            "block_p": 4,
-            "block_n": 32,
-            "threads": 128,
-        }
+        # Two rows a thread put both rows' state and A loads in flight together; four warps
+        # give a CTA 8 rows of a d_state=128 head, so neighbouring CTAs read whole 4 KiB spans.
+        return {"warps": 4, "rows_per_thread": 2}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # threads = block_p * block_n, at most 256; block_n is a power of 2.
+        # At most 4 rows a thread, which holds 4 * STEPS * VEC state and as many A values in
+        # registers.
         return [
-            {"block_p": bp, "block_n": bn, "threads": bp * bn}
-            for bn in [16, 32, 64, 128]
-            for bp in [1, 2, 4, 8]
-            if bp * bn <= 256
+            {"warps": warps, "rows_per_thread": rows}
+            for warps in [1, 2, 4, 8]
+            for rows in [1, 2, 4]
         ]
 
     def forward(
@@ -231,4 +206,4 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(cfg["block_p"], cfg["block_n"], cfg["threads"])
+        return self.kernel(cfg["warps"], cfg["rows_per_thread"])
