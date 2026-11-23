@@ -63,7 +63,14 @@ class MaskedScatterFwdInterface(KernelInterface):
 
 @target_cache(maxsize=32)
 def _masked_scatter_kernel(run_len, dtype):
-    @tilelang.jit(out_idx=[4])
+    # Bounds are checked only where written here: a mask byte before the block lies below
+    # `start`, the block's own runs and columns are tested, and a true run's source row exists
+    # by the op's contract. TileLang's own check on the mask chunk, whose bound it cannot
+    # derive from `bx`, splits each 16-byte load into 16 guarded byte loads.
+    @tilelang.jit(
+        out_idx=[4],
+        pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True},
+    )
     def _func(block_runs, col_tile, vec, threads, unroll, counted):
         runs = T.dynamic("runs", "int64")
         blocks = T.dynamic("blocks", "int64")
