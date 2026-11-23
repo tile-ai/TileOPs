@@ -862,14 +862,14 @@ class MoEGroupedGEMMFP8Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMFP8Fwd
         # A tile wider than N computes only columns it does not store.
         widths = [n for n in self._BLOCK_N if n <= self.call.n]
         heights = [m for m in self._BLOCK_M if self.alignment % m == 0]
-        # The default rule's grid, every SM, and the fewest SMs that keep the slab tiles' wave
-        # count, which the default rule passes over when they do not divide the tiles exactly.
+        # Every SM, and the fewest SMs that keep the slab tiles' wave count, which the default
+        # rule passes over when they do not divide the tiles exactly.
         fewest = super()._balanced_sms
         configs = [
             {"block_m": m, "block_n": n, "num_stages": s, "num_sms": sms, "stage_scales": staged}
             for m, n, staged in itertools.product(heights, widths, (0, 1))
             for s in self._stages_for(m, n, staged)
-            for sms in sorted({self._balanced_sms(m, n), fewest(m, n), self.sm_count})
+            for sms in sorted({fewest(m, n), self.sm_count})
         ]
         for config in configs:
             self._check_config(config)
