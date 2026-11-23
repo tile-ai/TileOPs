@@ -342,8 +342,8 @@ def test_dsa_decode_index_only(batch, seq_len, seq_len_kv, topk, with_sink) -> N
         pytest.param(4, 2, 1024, 64, 640, False, marks=pytest.mark.full, id="few-rows"),
         pytest.param(2, 3, 1024, 128, 512, True, marks=pytest.mark.full, id="few-rows-causal"),
         # More rows than SMs with an odd block count: a row of one block leaves consumer 1
-        # no odd block to score.
-        pytest.param(1, 300, 1024, 64, 192, False, marks=pytest.mark.full, id="rows-past-sms-odd"),
+        # no odd block to score. A topk that is not a multiple of 4 scans one slot a thread.
+        pytest.param(1, 300, 1024, 64, 190, False, marks=pytest.mark.full, id="rows-past-sms-odd"),
         pytest.param(
             1, 300, 1024, 64, 192, True, marks=pytest.mark.full, id="rows-past-sms-causal"
         ),
