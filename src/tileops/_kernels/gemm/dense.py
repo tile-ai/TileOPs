@@ -94,9 +94,9 @@ def _add_bias(acc, bias, start, n, *, by_row=False, helper_layout=False):
     """Add FP32 column bias, or row bias for a transposed output tile.
 
     Out-of-range lanes read the last bias and are excluded from output stores.
-    ``helper_layout`` uses the 64-row WGMMA fragment layout; its C++ helper
-    supports warpgroups outside threads ``[0, 128)``, unlike TileLang 0.1.12's
-    ``T.Parallel`` lowering for these fragments."""
+    ``helper_layout`` uses the 64-row WGMMA fragment layout through a C++ helper:
+    ``T.Parallel`` over a fragment whose layout starts at thread 0 but that a later
+    warpgroup holds drops the loop."""
     rows, cols = acc.shape
     if helper_layout:
         T.call_extern(
@@ -834,7 +834,7 @@ def _fp8_ws_plain_step(
     The release trails by one step because step ``ki``'s WGMMA still reads slot
     ``ki``; ``prev`` carries the slot the next release belongs to. A nonzero
     ``native_n`` issues the step as ``native_n``-wide WGMMAs through
-    ``dense_wgmma_helper.h`` instead of ``T.wgmma_gemm``'s ``gcd(block_n, 256)``-wide ones.
+    ``dense_wgmma_helper.h``.
     """
     T.barrier_wait(ab_full[slot], phase)
     if native_n:
@@ -972,8 +972,6 @@ def _gemm_fp8_ws_kernel(
 
         # One consumer warpgroup per 64 rows of the tile, beside the producer warpgroup.
         consumers = block_m // half_m
-        # T.wgmma_gemm issues ``gcd(block_n, 256)``-wide WGMMAs: a 176-wide tile takes
-        # eleven 16-wide ones a K step instead of one 176-wide one.
         # ``dense_wgmma_helper.h`` issues the tile's own width for the widths it
         # instantiates, under per-tensor scales, whose accumulator nothing else reads
         # inside the mainloop.
@@ -1549,9 +1547,9 @@ def _gemm_kernel(
     *dtype* when it is ``None``.
 
     A 64-row NT tile over 64-wide K steps whose width does not divide 256, with 16-byte
-    output rows, runs one ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K, not
-    TileLang's ``gcd(block_n, 256)``-wide ones. ``cluster_m`` launches that many M tiles of one
-    N column as a cluster, so the SMs reading the same B tile run together.
+    output rows, runs one ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K.
+    ``cluster_m`` launches that many M tiles of one N column as a cluster, so the SMs reading
+    the same B tile run together.
 
     Returns:
         JIT factory taking ``(block_m, block_n, block_k, num_stages, panel_size,
@@ -2162,8 +2160,7 @@ def _gemm_coop2_kernel(
     Ring counters carry across waves to overlap TMA stores with the next tile.
     K tails are TMA zero-filled; output tails use TMA stores where aligned and
     predicated row stores otherwise. Widths that do not divide 256 use
-    ``dense_wgmma_helper.h`` to keep WGMMA at the full N width. ``sm_count`` is part of the
-    cache key.
+    ``dense_wgmma_helper.h`` for 64-wide K steps. ``sm_count`` is part of the cache key.
 
     With ``narrow_n`` set, the last ``narrow_rows`` row tiles start with
     ``narrow_cols`` tiles ``narrow_n`` wide that run after every wide tile.
@@ -2225,10 +2222,9 @@ def _gemm_coop2_kernel(
         ctas = sm_count if mixed else _persistent_ctas(total_tiles, sm_count)
         max_waves = -(-total_tiles // ctas) + 1
         k_iters = T.ceildiv(k, block_k)
-        # TileLang 0.1.12 issues a ``T.wgmma_gemm`` of a width that does not divide 256
-        # as gcd(width, 256)-wide WGMMAs, each re-reading A: 176 as eleven n16, 192 as
-        # three n64. ``dense_wgmma_helper.h`` issues each such width as one N-wide WGMMA
-        # per 16 of K, over 64-wide K steps; other K steps keep T.wgmma_gemm.
+        # ``dense_wgmma_helper.h`` issues a width that does not divide 256, and a narrow
+        # tile's, as one N-wide WGMMA per 16 of K over 64-wide K steps; other K steps keep
+        # T.wgmma_gemm.
         wide_wgmma = (256 % block_n or mixed) and block_k == 64
         wgmma_helper = f"tileops::dense_wgmma_{wgmma_dtype_tag}_64x{block_n}_k64"
         narrow_helper = f"tileops::dense_wgmma_{wgmma_dtype_tag}_64x{narrow_n}_k64"
@@ -3659,8 +3655,8 @@ def _gemm_stream_kernel(
     stores each block's tile transposed while the producer streams the next block. A slot
     reads only 64 rows of ``B``, so the ring holds a long run of each row. A width 256
     does not divide, over K steps of whole 64-element WGMMA chunks, runs one
-    ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K, not TileLang's
-    ``gcd(mpad, 256)``-wide ones. *has_bias* builds the program taking ``bias[n]`` before C.
+    ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K; TileLang issues a width that
+    is 8 mod 16 as n8 WGMMAs. *has_bias* builds the program taking ``bias[n]`` before C.
     C is *out_dtype*, or *dtype* when it is ``None``.
 
     Returns:

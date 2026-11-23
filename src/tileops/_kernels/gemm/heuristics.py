@@ -1082,9 +1082,7 @@ def int8_w8a8_config(m: int, n: int, k: int, sm_count: int) -> dict:
     - ``block_n``: the narrowest of 32, 64, 96, 128, 160 and 256 whose grid fits one wave.
       A decode shape is bound by the bytes each SM reads, ``(64 + block_n) * k`` a tile, so
       the narrowest tile whose grid still has an SM for every tile reads the fewest. The
-      widths between are left out: TileLang issues a ``T.wgmma_gemm`` as
-      ``gcd(block_n, 256)``-wide instructions, so 48 runs as three n16 WGMMAs, each
-      re-reading A; the kernel issues 96 and 160 as one WGMMA of their own width.
+      kernel issues 96 and 160 as one WGMMA of their own width.
     - ``block_k``: 256 where ``a`` is exactly one full 64-row tile and the tile is at most
       160 wide, which halves the barrier round trips a K axis takes; 128 otherwise. At
       ``m = 1`` TileLang cannot lay out a one-row 256-byte box.

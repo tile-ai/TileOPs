@@ -288,7 +288,7 @@ def _gemm_int8_ws_kernel(
         store_rows = block_m if stage_store else 1
         # The consumer's epilogue staging barrier; ids below 8 belong to TileLang.
         bar = 8
-        # Avoid splitting these widths into n32 WGMMAs that each re-read A.
+        # These widths run one WGMMA of their own width through dense_wgmma_s8_64xN.
         native_n = block_n if block_n in (96, 160) else 0
 
         def consumer_acc_layout(buf):
@@ -485,11 +485,10 @@ def _gemm_int8_pingpong_kernel(
     one consumer's epilogue runs under the other's mainloop. That is what a short K axis
     needs, where an epilogue is a large share of a tile.
 
-    Tiles are 128 or 192 wide (:func:`int8_pingpong_grid`). TileLang issues a 192-wide
-    ``T.wgmma_gemm`` as three n64 WGMMAs, each re-reading A, so the 192-wide tile and its
-    narrow tiles issue one WGMMA of their own width through ``dense_wgmma_s8_64xN``; a
-    narrow tile's B box fills the first ``narrow_n`` rows of a ring stage and its
-    accumulator the registers of its first ``narrow_n`` columns.
+    Tiles are 128 or 192 wide (:func:`int8_pingpong_grid`). The 192-wide tile and its narrow
+    tiles issue one WGMMA of their own width through ``dense_wgmma_s8_64xN``; a narrow tile's
+    B box fills the first ``narrow_n`` rows of a ring stage and its accumulator the registers
+    of its first ``narrow_n`` columns.
 
     The epilogue holds no output fragment: it stages the tile's column scales and bias in
     shared memory and dequantizes each 64-row half straight into the staging tile the TMA
