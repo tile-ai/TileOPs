@@ -13,8 +13,9 @@ timing.
 Each head row times vLLM's ``hc_head_fused_kernel_tilelang``, the head it serves DeepSeek-V4
 with. TileKernels has no fused head: its row runs DeepGEMM's TF32 GEMM, then
 ``mhc_reduce_partials_and_rmsnorm_fwd``, ``mhc_head_compute_mix_fwd`` and
-``mhc_pre_apply_mix_fwd``, and the TF32 GEMM leaves it without a ratio. Both TileKernels
-projections take vLLM's ``compute_num_split`` as their split count.
+``mhc_pre_apply_mix_fwd``. Its output is bfloat16, so the TF32 GEMM stays within the case's
+tolerance and the row carries a ratio, as vLLM's head row does. Both TileKernels projections
+take vLLM's ``compute_num_split`` as their split count.
 """
 
 import pytest
@@ -213,7 +214,6 @@ def test_hyper_connection_head_bench(case) -> None:
             TILEKERNELS_TAG: bench.Implementation(
                 run=tilekernels_fn,
                 args=(hidden_states, padded_fn, hc_scale, hc_base),
-                noncomparable_reason="projects the streams in TF32",
             ),
             "torch-ref": case.torch,
             TORCH_COMPILE_TAG: compiled_reference(case.torch),
