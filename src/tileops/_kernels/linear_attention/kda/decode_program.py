@@ -180,6 +180,9 @@ def decode_program(
         vector = 4
         col_lanes = BV // vector
         row_groups = threads // col_lanes
+        assert threads % col_lanes == 0 and K % row_groups == 0, (
+            f"{threads} threads over {col_lanes} column runs do not split {K} key rows evenly"
+        )
         rows_per = K // row_groups
 
         @T.macro

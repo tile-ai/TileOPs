@@ -276,6 +276,21 @@ def _split_scan(call, num_sequences, total, dtype, initial_state):
     elif with_output and value_tile == 64:
         # Two warpgroups also share the output's products.
         threads = 256
+    # Past one wave, a walk launched late finishes late: packed sequences launch their walks
+    # sequence by sequence, longest first, so the longest walks start in the first wave.
+    # Within one wave every walk starts at once, and equal lengths or one sequence leave no
+    # order to choose; those keep the interleaved order. Like the crossovers above, the order
+    # is set for the SM90 walk.
+    sequence_major = call.arch == 90 and call.varlen and num_sequences > 1 and ctas > call.sm_count
+
+    def launch_table(offsets):
+        """The offsets the walk reads: under ``sequence_major``, followed by the sequences in
+        order of decreasing length."""
+        if not sequence_major:
+            return offsets
+        order = torch.argsort(offsets.diff(), descending=True, stable=True)
+        return torch.cat([offsets, order.to(offsets.dtype)])
+
     state_scan = chunk_state_program(
         call.value_heads,
         call.dim_k,
@@ -291,20 +306,17 @@ def _split_scan(call, num_sequences, total, dtype, initial_state):
         initial_state=initial_state,
         state_v_first=call.state_v_first,
         pooled=call.pooled,
-        # Past one wave, a walk launched late finishes late. Launching each sequence's walks
-        # together launches every sequence's last walk no later than interleaving the
-        # sequences does; within one wave every walk starts at once and the order is kept.
-        # Like the crossovers above, the order is set for the SM90 walk.
-        sequence_major=call.arch == 90 and ctas > call.sm_count,
+        sequence_major=sequence_major,
     )
     state_scan = CompiledProgram(state_scan)
     # A pooled walk takes the slots after the offsets and returns no state.
     if with_output:
 
         def walk(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
+            table = launch_table(offsets)
             if call.pooled:
-                return state_scan(w, u, qg, kg, aqk, dec, h0, offsets, slots), h0
-            return state_scan(w, u, qg, kg, aqk, dec, h0, offsets)
+                return state_scan(w, u, qg, kg, aqk, dec, h0, table, slots), h0
+            return state_scan(w, u, qg, kg, aqk, dec, h0, table)
 
         return walk
     output = CompiledProgram(
@@ -314,11 +326,12 @@ def _split_scan(call, num_sequences, total, dtype, initial_state):
     )
 
     def scan(w, u, qg, kg, aqk, dec, h0, offsets, slots=None):
+        table = launch_table(offsets)
         if call.pooled:
-            starts, values = state_scan(w, u, kg, dec, h0, offsets, slots)
+            starts, values = state_scan(w, u, kg, dec, h0, table, slots)
             final_state = h0
         else:
-            starts, values, final_state = state_scan(w, u, kg, dec, h0, offsets)
+            starts, values, final_state = state_scan(w, u, kg, dec, h0, table)
         return output(qg, aqk, starts, values, offsets), final_state
 
     return scan
