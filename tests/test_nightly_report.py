@@ -461,10 +461,10 @@ def _snapshot_repo(tmp_path, runs, coverage=None):
     return repo
 
 
-def _build_window(tmp_path, repo):
+def _build_window(tmp_path, repo, *more):
     out = tmp_path / "perf_history.json"
     result = subprocess.run(
-        [sys.executable, str(BUILD_SCRIPT), "--repo", str(repo), "--out", str(out)],
+        [sys.executable, str(BUILD_SCRIPT), "--repo", str(repo), "--out", str(out), *more],
         capture_output=True,
         text=True,
     )
@@ -494,6 +494,14 @@ def test_window_entries_carry_the_snapshot_provenance(tmp_path):
         (_meta(3, "1001")["date"], "c1001", "1001")
     ]
     assert runs[0]["coverage"]["op_branches"] == 0
+
+
+def test_a_rerun_leaves_its_own_snapshot_out_of_the_window(tmp_path):
+    """A rerun after its snapshot was published must not judge tonight against itself."""
+    runs = [(_meta(2, "1001"), _BENCH_XML), (_meta(0, "1002"), _BENCH_XML)]
+    repo = _snapshot_repo(tmp_path, runs)
+    window = _build_window(tmp_path, repo, "--exclude-run-id", "1002")
+    assert [r["run_id"] for r in window] == ["1001"]
 
 
 def test_the_window_is_the_period_and_one_run_per_date(tmp_path):
@@ -871,3 +879,23 @@ def test_a_missing_model_results_file_fails_the_report(tmp_path):
     md = out.read_text()
     assert md.startswith("# ❌")
     assert "| **Models** | ❌ no results" in md
+
+
+def test_regressions_output_holds_the_regressed_rows_only_with_history(tmp_path):
+    """The board's regressions file lists the rows slower than their 14-day median, and is
+    not written without history, where no row can be judged."""
+    bench = tmp_path / "bench.xml"
+    bench.write_text(_row_xml())
+    today = date.today().isoformat()
+    history = tmp_path / "history.json"
+    history.write_text(json.dumps({"runs": [{**_history_run(0.05), "date": today}]}))
+    out = tmp_path / "regressions.json"
+    common = ["--bench-xml", str(bench), "--output", str(tmp_path / "report.md")]
+    _run_script(*common, "--regressions-output", str(out)).check_returncode()
+    assert not out.exists()
+    _run_script(
+        *common, "--history", str(history), "--regressions-output", str(out)
+    ).check_returncode()
+    assert [(r["op"], r["config"], r["delta_pct"]) for r in json.loads(out.read_text())] == [
+        (_OP, _CONFIG, pytest.approx(100.0))
+    ]

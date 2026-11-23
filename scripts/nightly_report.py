@@ -1750,6 +1750,10 @@ def main():
         "--previous-bench-xml",
         help="The previous nightly's benchmark JUnit XML, for the badge's noise rule",
     )
+    parser.add_argument(
+        "--regressions-output",
+        help="Path to write the regressed rows to as JSON; not written without history",
+    )
     args = parser.parse_args()
 
     if args.history and not Path(args.history).exists():
@@ -1824,6 +1828,10 @@ def main():
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
+
+    if args.regressions_output and bench_ops and history_runs:
+        Path(args.regressions_output).write_text(json.dumps(regressions, indent=2) + "\n")
+        print(f"{len(regressions)} regressed rows written to {args.regressions_output}")
 
     if args.badge_output and args.bench_xml and Path(args.bench_xml).exists():
         previous = None

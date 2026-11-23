@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Sync the GitHub Project "Nightly Perf Tracker" with the nightly's perf gap queue.
 
-The queue is ``perf_tracker.build_queue``'s, the one the wiki's Perf Tracker page shows.
-The project holds one item per op, titled by the op. This script writes the measured
-fields of the ops in the queue, sets a queued op to Unclaimed when it is new, archived,
-Done, or without a status, moves a caught-up op to Done, and archives items Done for
-``ARCHIVE_DAYS``; the other statuses, assignees, and item bodies are edited by hand.
+The queue is ``perf_tracker.build_queue``'s, the one the wiki's Perf Tracker page shows; the
+regressed ops are those of the snapshot's ``regressions.json``, rows the nightly report found
+slower than their 14-day median. The project holds one item per op, titled by the op.
+
+This script writes the measured fields of the queued ops. It sets an item that is new,
+archived, Done, Unclaimed, or without a status to Regressed when the op regresses, else to
+Unclaimed while it is queued; moves a caught-up op to Done; and archives items Done for
+``ARCHIVE_DAYS``. A Regressed item stays until a maintainer moves it, because a slowdown
+that persists becomes its own 14-day median. The other statuses, assignees, and item
+bodies are edited by hand.
 Calls GraphQL through ``gh``, which reads its token from ``GH_TOKEN``.
 """
 
@@ -65,41 +70,62 @@ mutation($project: ID!, $item: ID!, $field: ID!, $value: ProjectV2FieldValue!) {
 }"""
 
 
-def plan(board: dict, queue: list[dict], caught: set, date: str) -> dict:
-    """``{op: {field: value}}`` that brings *board* to tonight's *queue* and *caught* ops.
+def plan(board: dict, queue: list[dict], caught: set, date: str, regressed: set) -> dict:
+    """``{op: {field: value}}`` that brings *board* to tonight's *queue*, *caught* and
+    *regressed* ops.
 
     *board* maps each item's title to its field values, with ``Archived`` among them.
-    An op in the queue without an item gets one; an archived one is unarchived. *caught*
-    holds the ops ``caught_up`` finds. Only a caught-up op moves to Done, and only a
-    caught-up op Done for ``ARCHIVE_DAYS`` is archived. ``Archived`` comes first in a change.
+    An op in the queue or regressed without an item gets one; an archived one is
+    unarchived. *caught* holds the ops ``caught_up`` finds. Only a caught-up op that is not
+    Regressed moves to Done, and only a caught-up op Done for ``ARCHIVE_DAYS`` is archived.
+    ``Archived`` comes first in a change.
     """
+    # The statuses this script sets; the others are set by hand.
+    set_here = (None, "Done", "Unclaimed", "Regressed")
+    held = regressed | {
+        op
+        for op, fields in board.items()
+        if fields.get("Status") == "Regressed" and not fields.get("Archived")
+    }
+    queued = {entry["op"]: entry for entry in queue}
     changes = {}
-    for entry in queue:
-        fields = board.get(entry["op"])
-        fields = fields or {}
+    for op in queued.keys() | regressed:
+        fields = board.get(op) or {}
         want = {"Archived": False} if fields.get("Archived") else {}
-        want |= {
-            "Priority": entry["label"],
-            "Worst ratio": round(entry["worst"], 4),
-            "Rows behind": len(entry["rows"]),
-            "Nightlies behind": entry["streak"],
-            "Category": entry["rows"][0]["category"],
-            "Measured": date,
-        }
-        if want.get("Archived") is False or fields.get("Status") in (None, "Done"):
-            want["Status"] = "Unclaimed"
+        if op in queued:
+            entry = queued[op]
+            want |= {
+                "Priority": entry["label"],
+                "Worst ratio": round(entry["worst"], 4),
+                "Rows behind": len(entry["rows"]),
+                "Nightlies behind": entry["streak"],
+                "Category": entry["rows"][0]["category"],
+                "Measured": date,
+            }
+        if want.get("Archived") is False or fields.get("Status") in set_here:
+            want["Status"] = "Regressed" if op in held else "Unclaimed"
         diff = {name: value for name, value in want.items() if fields.get(name) != value}
-        if entry["op"] not in board or diff:
-            changes[entry["op"]] = diff
+        if op not in board or diff:
+            changes[op] = diff
     cutoff = (date_type.fromisoformat(date) - timedelta(days=ARCHIVE_DAYS)).isoformat()
     for op, fields in board.items():
-        if fields.get("Archived") or op not in caught:
+        if fields.get("Archived") or op in held or op not in caught:
             continue
-        if fields.get("Status") != "Done":
+        if fields.get("Status") != "Done" or not fields.get("Measured"):
             changes[op] = {"Status": "Done", "Measured": date}
-        elif fields.get("Status") == "Done" and (fields.get("Measured") or date) <= cutoff:
+        elif fields["Measured"] <= cutoff:
             changes[op] = {"Archived": True}
     return changes
+
+
+def read_regressions(repo: Path, commit: str) -> set:
+    """The ops of a snapshot's ``regressions.json``; none when the snapshot has no such file."""
+    git = ["git", "-C", str(repo)]
+    files = subprocess.check_output([*git, "ls-tree", "--name-only", commit], text=True)
+    if "regressions.json" not in files.split():
+        return set()
+    out = subprocess.check_output([*git, "show", f"{commit}:regressions.json"])
+    return {record["op"] for record in json.loads(out)}
 
 
 def _graphql(query: str, **variables) -> dict:
@@ -160,11 +186,13 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print the changes only")
     args = parser.parse_args()
 
-    _, rows_by_run = load(args.snapshots, args.run_id, args.nights)
+    runs, rows_by_run = load(args.snapshots, args.run_id, args.nights)
     queue, behind, _ = build_queue(rows_by_run)
+    regressed = read_regressions(args.snapshots, runs[0]["commit"])
     project, fields, items = read_board()
     board = {title: values for title, (_, values) in items.items()}
-    changes = plan(board, queue, caught_up(rows_by_run, behind), args.date)
+    caught = caught_up(rows_by_run, behind)
+    changes = plan(board, queue, caught, args.date, regressed)
     for op, values in changes.items():
         print(f"{op}{'' if op in items else ' (new)'}: {json.dumps(values)}")
     if not args.dry_run:
