@@ -244,6 +244,41 @@ def test_clamp_number_bounds_every_16bit_value(dtype, min_val, max_val):
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("has_min, has_max", [(True, True), (True, False), (False, True)])
+@pytest.mark.parametrize(
+    "broadcast",
+    [
+        pytest.param(False, id="same-shape", marks=pytest.mark.smoke),
+        pytest.param(True, id="row-bounds", marks=pytest.mark.full),
+    ],
+)
+def test_clamp_tensor_bounds_every_16bit_value(dtype, has_min, has_max, broadcast):
+    """Tensor-bound ClampFwdOp equals torch.clamp at every 16-bit input pattern, NaN and inf too.
+
+    A 16-bit input is clamped in its own dtype. Same-shape bounds run the flat program and
+    are every pattern too, shifted against the input, so NaN and infinite bounds meet finite
+    inputs. Bounds of one element per row run the program that reads them in place.
+    """
+    from tileops._ops.elementwise import ClampFwdOp
+
+    x = Every16BitCase(dtype, "ClampFwdOp").gen_inputs()[0]
+    if broadcast:
+        x = x.view(256, 256)
+        lo = torch.tensor([float("nan"), float("-inf"), -1 / 3, 0.0], device=run_device())
+        hi = torch.tensor([2 / 3, float("nan"), float("inf"), -0.0], device=run_device())
+        lo, hi = (b.to(dtype).repeat(64).view(256, 1) for b in (lo, hi))
+    else:
+        lo, hi = x.roll(1), x.roll(-7)
+
+    op = ClampFwdOp()
+
+    workload = ElementwiseWorkload(
+        type(op).__name__, (x, lo if has_min else None, hi if has_max else None)
+    )
+    TestBase.check(workload, op, *workload.gen_inputs())
+
+
 # Regression: NaN propagation for Tensor-bound clamp variants.
 #
 # torch.clamp / torch.clamp_min / torch.clamp_max propagate NaN: if any of

@@ -98,10 +98,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max):
                     T.copy(hi[bx * block_size : (bx + 1) * block_size], hi_reg)
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         k = i * npt_arg + j
-                        x32 = T.cast(x_reg[k], "float32")
-                        lo32 = T.cast(lo_reg[k], "float32")
-                        hi32 = T.cast(hi_reg[k], "float32")
-                        x_reg[k] = T.Cast(dtype, _clamp(x32, lo32, hi32))
+                        x_reg[k] = _clamp(x_reg[k], lo_reg[k], hi_reg[k])
                     T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
             return main
@@ -125,10 +122,8 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max):
                 T.copy(bound[bx * block_size : (bx + 1) * block_size], bound_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    x32 = T.cast(x_reg[k], "float32")
-                    b32 = T.cast(bound_reg[k], "float32")
-                    r = _clamp(x32, b32, None) if has_min else _clamp(x32, None, b32)
-                    x_reg[k] = T.Cast(dtype, r)
+                    b = bound_reg[k]
+                    x_reg[k] = _clamp(x_reg[k], b, None) if has_min else _clamp(x_reg[k], None, b)
                 T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
@@ -142,6 +137,10 @@ class ClampTensorFwdKernel(MultiInputElementwiseKernel, ClampTensorFwdInterface)
     ``has_min`` / ``has_max`` select between the three forms used by the Tensor
     clamp, clamp_min and clamp_max ops; the bound a form omits is not a
     PrimFunc parameter.
+
+    Compares in the input's dtype, which the bounds share. A max or a min returns one of
+    its operands, so this equals torch's float32 comparison rounded at the store, and a
+    float16 or bfloat16 body is one NaN-propagating max or min per bound.
 
     NaN semantics match ``torch.clamp`` / ``torch.clamp_min`` /
     ``torch.clamp_max``: a NaN in ``x``, ``lo`` or ``hi`` makes the output NaN
@@ -172,10 +171,10 @@ class ClampTensorFwdKernel(MultiInputElementwiseKernel, ClampTensorFwdInterface)
         return (self.has_min, self.has_max)
 
     def _element(self, x, *bounds):
-        x32, *bounds32 = (T.cast(v, "float32") for v in (x, *bounds))
-        lo = bounds32.pop(0) if self.has_min else None
-        hi = bounds32.pop(0) if self.has_max else None
-        return T.Cast(self.dtype_str, _clamp(x32, lo, hi))
+        bounds = list(bounds)
+        lo = bounds.pop(0) if self.has_min else None
+        hi = bounds.pop(0) if self.has_max else None
+        return _clamp(x, lo, hi)
 
     def forward(self, x, lo=None, hi=None):
         return self._run(x=x, lo=lo, hi=hi)
