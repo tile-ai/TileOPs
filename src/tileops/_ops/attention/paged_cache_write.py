@@ -27,8 +27,10 @@ class PagedKVCacheWriteFwdOp(Op):
     The slots come from the caller as one flattened row index per token, ``-1`` skipping
     the token, so the pages a call writes need not be consecutive, need not be new, and
     need not belong to one request: a prefix-caching server reuses a page it already holds
-    and a chunked prefill writes the pages it was just given. Distinct non-negative slots
-    are the caller's obligation, and a call writes nothing outside the slots it names.
+    and a chunked prefill writes the pages it was just given. Distinct non-negative
+    slots below ``num_pages * page_size`` are the caller's obligation, and a call writes
+    nothing outside the slots it names; a slot past the pool is not checked and writes past
+    both pools.
     With an FP8 cache the rows are divided by their scale and cast to E4M3FN. NaN is
     preserved; finite overflow and infinities saturate to the largest finite magnitude
     with the same sign.
