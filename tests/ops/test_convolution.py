@@ -634,6 +634,22 @@ class Conv2dFixture(FixtureBase):
                     id="full-fp16-1x1-tuned",
                 ),
                 pytest.param(
+                    2,
+                    64,
+                    16,
+                    16,
+                    128,
+                    (3, 3),
+                    (1, 1),
+                    (1, 1),
+                    (1, 1),
+                    1,
+                    torch.float16,
+                    True,
+                    marks=pytest.mark.nightly,
+                    id="nightly-fp16-3x3-small-grid-tuned",
+                ),
+                pytest.param(
                     1,
                     64,
                     28,
@@ -850,6 +866,73 @@ def test_conv2d_highres_default_preserves_tile_constraints(shape):
     (kernel,) = op.iter_kernels()
     assert type(kernel) is Conv2dSymmetricKernel
     assert (kernel.config["block_m"], kernel.config["block_k"]) == (64, 32)
+
+
+def _has_gpu_profile() -> bool:
+    """Whether a calibrated GPU profile prices the run device's tensor cores and DRAM."""
+    from tileops._perf import find_profile
+
+    return find_profile(torch.cuda.get_device_name(run_device())) is not None
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "n,h,dtype,bias",
+    [
+        (2, 16, torch.float16, False),
+        (2, 16, torch.float16, True),
+        (1, 30, torch.bfloat16, True),
+        (2, 16, torch.float32, True),
+    ],
+    ids=["two-images-fp16", "two-images-fp16-bias", "tails-bf16-bias", "two-images-fp32-bias"],
+)
+def test_conv2d_symmetric_split_contraction(n: int, h: int, dtype: torch.dtype, bias: bool) -> None:
+    """A few output tiles leave most of the SMs idle, so on a device whose GPU profile prices
+    the split the symmetric kernel splits the contraction: each image's partial tiles land in
+    its own slice of the workspace, and the sum reads every split and adds the bias once. A
+    30x30 output ends inside an output tile."""
+    from tileops._kernels.convolution.conv2d import Conv2dSymmetricKernel
+    from tileops.backend import BUILTIN
+
+    if not _has_gpu_profile():
+        pytest.skip("the split is priced from the device's GPU profile, and this device has none")
+    test = Conv2dTest(n, 64, h, h, 128, (3, 3), (1, 1), (1, 1), (1, 1), 1, dtype, bias=bias)
+    x, weight, _ = test.gen_inputs()
+    # The workload's bias is zero, which would hide a sum that drops it.
+    bias_in = torch.randn(128, device=x.device, dtype=dtype) if bias else None
+    op = Conv2dFwdOp(padding=1, target=BUILTIN)
+    test.check(op, x, weight, bias_in)
+    (kernel,) = op.iter_kernels()
+    assert type(kernel) is Conv2dSymmetricKernel
+    assert kernel.config["split_k"] > 1
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "shape",
+    [
+        pytest.param((1, 64, 56, 56, 64), marks=pytest.mark.smoke, id="saving-below-partials"),
+        pytest.param((1, 512, 96, 96, 64), marks=pytest.mark.full, id="grid-fills-sms"),
+    ],
+)
+def test_conv2d_symmetric_keeps_whole_tiles(shape: tuple) -> None:
+    """The split rule reads the device's SM count and its GPU profile's tensor-core and DRAM
+    rates. A grid whose K blocks saved fall below the partials written and read back, or a
+    grid that fills the SMs, keeps one CTA per output tile."""
+    from tileops._kernels.convolution.conv2d import Conv2dSymmetricKernel
+    from tileops.backend import BUILTIN
+
+    n, c_in, h, w, c_out = shape
+    x = torch.randn(n, c_in, h, w, device=run_device(), dtype=torch.float16)
+    weight = torch.randn(c_out, c_in, 3, 3, device=x.device, dtype=x.dtype)
+    op = Conv2dFwdOp(padding=1, target=BUILTIN)
+    op(x, weight)
+    (kernel,) = op.iter_kernels()
+    assert type(kernel) is Conv2dSymmetricKernel
+    assert kernel.config["split_k"] == 1
 
 
 @pytest.mark.smoke
