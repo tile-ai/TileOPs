@@ -18,10 +18,10 @@ from tileops._utils import WARP_LANES
 
 __all__ = ["HyperConnectionHeadKernel"]
 
-# Bounds are checked only where written here; the clamped indices need none. TileLang 0.1.15's
-# check guards each clamped hidden_states row with rows >= 1, and nvcc unswitches the streamed
-# K loop on it: the copy for rows < 1, never run, holds every hc_fn vector at once, so at n = 4
-# and C = 4096 the program takes 255 registers and one CTA an SM in place of two.
+# Bounds are checked only where written here: every access is in bounds by a clamped index or
+# a written compare. TileLang's own check guards each clamped hidden_states row with rows >= 1,
+# and nvcc duplicates the streamed K loop on that guard; the copy that never runs holds every
+# hc_fn vector at once and sets the program's register count.
 _UNCHECKED = {tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True}
 
 
