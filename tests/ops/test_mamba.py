@@ -215,31 +215,31 @@ class SSDDecodeFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),
-                # A lane takes two 16-byte pieces of each row, and the last CTA of a head
-                # holds a partial row tile.
+                # Five pieces a lane make two chunks of each row, the second holding one piece,
+                # and d_head 37 ends the last CTA of a head inside a thread's pair of rows.
                 pytest.param(
                     2,
                     4,
-                    36,
-                    256,
+                    37,
+                    640,
                     2,
                     torch.float16,
                     False,
                     marks=pytest.mark.full,
                 ),
-                # An odd d_state: a lane takes single elements, and the second sweep of each
-                # row holds one element, on lane 0.
+                # d_state % 4 == 2: a lane takes 8-byte pieces, and only lane 0 holds a second
+                # piece of each row.
                 pytest.param(
                     2,
                     4,
                     64,
-                    33,
+                    66,
                     1,
                     torch.bfloat16,
                     False,
                     marks=pytest.mark.full,
                 ),
-                # d_state 1: one lane a row, so its y needs no shuffle.
+                # d_state 1: single-element pieces and one lane a row, so its y needs no shuffle.
                 pytest.param(
                     1,
                     4,
@@ -255,7 +255,7 @@ class SSDDecodeFixture(FixtureBase):
                     1,
                     4,
                     64,
-                    16,
+                    128,
                     1,
                     torch.float16,
                     True,

@@ -41,15 +41,27 @@ def _ssd_decode_kernel(
     VEC = math.gcd(N, 4)
     # LANES lanes of one warp share a row: as many as cover d_state, at most the warp.
     LANES = min(32, 1 << math.ceil(math.log2(-(-N // VEC))))
-    STEPS = -(-N // (LANES * VEC))
+    # A lane covers a row in PIECES VEC-wide pieces, LANES * VEC elements apart.
+    PIECES = -(-N // (LANES * VEC))
 
     @tilelang.jit(out_idx=[-1])
-    def kernel_func(warps: int, rows_per_thread: int):
+    def kernel_func(warps: int, rows_per_thread: int, pieces_per_chunk: int):
+        if not 0 < warps <= 32:
+            raise ValueError(
+                f"warps must be in [1, 32] for a CTA of at most 1024 threads; got {warps}"
+            )
+        if rows_per_thread <= 0:
+            raise ValueError(f"rows_per_thread must be positive; got {rows_per_thread}")
+        if pieces_per_chunk <= 0:
+            raise ValueError(f"pieces_per_chunk must be positive; got {pieces_per_chunk}")
+        # A chunk is `pieces` pieces of each of a thread's rows; registers hold one chunk.
+        pieces = min(pieces_per_chunk, PIECES)
+        chunks = -(-PIECES // pieces)
         threads = 32 * warps
         slots = threads // LANES
         rows = slots * rows_per_thread
         row_tiles = -(-P // rows)
-        held = rows_per_thread * STEPS * VEC
+        held = rows_per_thread * pieces * VEC
 
         @T.prim_func
         def main(
@@ -76,49 +88,51 @@ def _ssd_decode_kernel(
 
                 s_loc = T.alloc_local((held,), accum_dtype)
                 a_loc = T.alloc_local((held,), accum_dtype)
-                b_loc = T.alloc_local((STEPS * VEC,), dtype)
-                c_loc = T.alloc_local((STEPS * VEC,), dtype)
+                b_loc = T.alloc_local((pieces * VEC,), dtype)
+                c_loc = T.alloc_local((pieces * VEC,), dtype)
                 dt_loc = T.alloc_local((rows_per_thread,), accum_dtype)
                 dtx = T.alloc_local((rows_per_thread,), accum_dtype)
                 y_loc = T.alloc_local((rows_per_thread,), accum_dtype)
 
-                # Every load is issued before the first use, so a thread keeps all of its
-                # rows' state and A in flight at once.
-                for j in T.unroll(STEPS):
-                    n0 = (j * LANES + lane) * VEC
-                    if n0 < N:
-                        for v in T.vectorized(VEC):
-                            b_loc[j * VEC + v] = B_in[b, g, n0 + v]
-                        for v in T.vectorized(VEC):
-                            c_loc[j * VEC + v] = C_in[b, g, n0 + v]
-                for r in T.unroll(rows_per_thread):
-                    p = p0 + slot * rows_per_thread + r
-                    y_loc[r] = T.float32(0.0)
-                    if p < P:
-                        dt_loc[r] = dt[b, h, p]
-                        dtx[r] = dt_loc[r] * T.cast(x[b, h, p], accum_dtype)
-                        for j in T.unroll(STEPS):
-                            n0 = (j * LANES + lane) * VEC
-                            if n0 < N:
-                                for v in T.vectorized(VEC):
-                                    s_loc[(r * STEPS + j) * VEC + v] = state[b, h, p, n0 + v]
-                                for v in T.vectorized(VEC):
-                                    a_loc[(r * STEPS + j) * VEC + v] = A[h, p, n0 + v]
-
-                for r in T.unroll(rows_per_thread):
-                    p = p0 + slot * rows_per_thread + r
-                    if p < P:
-                        for j in T.unroll(STEPS):
-                            n0 = (j * LANES + lane) * VEC
-                            if n0 < N:
-                                for v in T.unroll(VEC):
-                                    i = (r * STEPS + j) * VEC + v
-                                    b_v = T.cast(b_loc[j * VEC + v], accum_dtype)
-                                    c_v = T.cast(c_loc[j * VEC + v], accum_dtype)
-                                    s_loc[i] = T.exp(dt_loc[r] * a_loc[i]) * s_loc[i] + dtx[r] * b_v
-                                    y_loc[r] = y_loc[r] + s_loc[i] * c_v
-                                for v in T.vectorized(VEC):
-                                    state[b, h, p, n0 + v] = s_loc[(r * STEPS + j) * VEC + v]
+                # Each chunk issues all of its pieces' state and A loads before the first use;
+                # y, dt and dt * x carry across chunks.
+                for c in T.serial(chunks):
+                    for k in T.unroll(pieces):
+                        n0 = ((c * pieces + k) * LANES + lane) * VEC
+                        if n0 < N:
+                            for v in T.vectorized(VEC):
+                                b_loc[k * VEC + v] = B_in[b, g, n0 + v]
+                            for v in T.vectorized(VEC):
+                                c_loc[k * VEC + v] = C_in[b, g, n0 + v]
+                        for r in T.unroll(rows_per_thread):
+                            p = p0 + slot * rows_per_thread + r
+                            if c == 0 and k == 0:
+                                y_loc[r] = T.float32(0.0)
+                            if p < P:
+                                if c == 0 and k == 0:
+                                    dt_loc[r] = dt[b, h, p]
+                                    dtx[r] = dt_loc[r] * T.cast(x[b, h, p], accum_dtype)
+                                if n0 < N:
+                                    for v in T.vectorized(VEC):
+                                        s_loc[(r * pieces + k) * VEC + v] = state[b, h, p, n0 + v]
+                                    for v in T.vectorized(VEC):
+                                        a_loc[(r * pieces + k) * VEC + v] = A[h, p, n0 + v]
+                    for r in T.unroll(rows_per_thread):
+                        p = p0 + slot * rows_per_thread + r
+                        if p < P:
+                            for k in T.unroll(pieces):
+                                n0 = ((c * pieces + k) * LANES + lane) * VEC
+                                if n0 < N:
+                                    for v in T.unroll(VEC):
+                                        i = (r * pieces + k) * VEC + v
+                                        b_v = T.cast(b_loc[k * VEC + v], accum_dtype)
+                                        c_v = T.cast(c_loc[k * VEC + v], accum_dtype)
+                                        s_loc[i] = (
+                                            T.exp(dt_loc[r] * a_loc[i]) * s_loc[i] + dtx[r] * b_v
+                                        )
+                                        y_loc[r] = y_loc[r] + s_loc[i] * c_v
+                                    for v in T.vectorized(VEC):
+                                        state[b, h, p, n0 + v] = s_loc[(r * pieces + k) * VEC + v]
 
                 # The LANES lanes of a row sum their partial y; lane 0 writes it.
                 for r in T.unroll(rows_per_thread):
@@ -179,18 +193,20 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # Two rows a thread put both rows' state and A loads in flight together; four warps
-        # give a CTA 8 rows of a d_state=128 head, so neighbouring CTAs read whole 4 KiB spans.
-        return {"warps": 4, "rows_per_thread": 2}
+        # A thread puts up to 4 pieces of each of its 2 rows in flight before the first use,
+        # 32 state and 32 A values at most; four warps a CTA keep it small enough that a
+        # single decode step still spreads across every SM.
+        return {"warps": 4, "rows_per_thread": 2, "pieces_per_chunk": 4}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # At most 4 rows a thread, which holds 4 * STEPS * VEC state and as many A values in
-        # registers.
+        # At most 4 rows and 4 pieces a thread: its registers hold at most 16 * VEC state and
+        # as many A values.
         return [
-            {"warps": warps, "rows_per_thread": rows}
+            {"warps": warps, "rows_per_thread": rows, "pieces_per_chunk": pieces}
             for warps in [1, 2, 4, 8]
             for rows in [1, 2, 4]
+            for pieces in [1, 2, 4]
         ]
 
     def forward(
@@ -206,4 +222,4 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(cfg["warps"], cfg["rows_per_thread"])
+        return self.kernel(cfg["warps"], cfg["rows_per_thread"], cfg["pieces_per_chunk"])
