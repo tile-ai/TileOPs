@@ -202,6 +202,29 @@ def test_gelu_and_mul_tails_are_exact(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bfloat16", "float16"])
+def test_gelu_tanh_and_mul_matches_the_tail_at_every_gate(dtype: torch.dtype) -> None:
+    """Edge: every 16-bit gate against large and infinite values matches the reference.
+
+    The largest finite value scales the activation past the tolerance's absolute term, so
+    the check holds the activation down its negative tail, where the reference's float32
+    ``1 + tanh`` falls to a few steps of its grid and then to zero; infinity turns each
+    zero into NaN. 1 holds the positive gates, whose product with the largest overflows.
+    """
+    # FIXME(staged-rollout): the gate sweep is built in tests/
+    #
+    # Broken invariant: workloads/ owns the input construction the manifest rows do not fix.
+    # Why: the perf change that adds this test may not edit workloads/.
+    # Cleanup: move the sweep into a GELUAndMulFwdOp workload in workloads/elementwise.py.
+    gate = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
+    gate = gate.view(dtype)
+    values = (1.0, torch.finfo(dtype).max, float("inf"))
+    x = torch.stack([torch.cat([gate, torch.full_like(gate, v)]) for v in values])
+    workload = ElementwiseWorkload("GELUAndMulFwdOp", (x,), approximate="tanh")
+    TestBase.check(workload, GELUAndMulFwdOp(approximate="tanh"), x)
+
+
+@pytest.mark.smoke
 def test_fused_gated_rejects_integer_dtype() -> None:
     """Fused gated ops are float-only; the rejection follows the tensor."""
     op = GELUAndMulFwdOp()
