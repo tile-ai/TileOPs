@@ -32,6 +32,7 @@ __all__ = [
     "FLASHINFER_TAG",
     "FLA_TAG",
     "QUACK_TAG",
+    "TILEKERNELS_TAG",
     "TORCH_COMPILE_TAG",
     "VLLM_GROUPED_TOPK_SIGMOID",
     "VLLM_TAG",
@@ -59,6 +60,7 @@ DEEPSPEED_TAG = "deepspeed"
 FLAGGEMS_TAG = "flaggems"
 FLASHINFER_TAG = "flashinfer"
 FLA_TAG = "fla"
+TILEKERNELS_TAG = "tilekernels"
 VLLM_TAG = "vllm"
 # vLLM's fused grouped_topk scoring_func argument: 1 applies the sigmoid to the logits.
 VLLM_GROUPED_TOPK_SIGMOID = 1
