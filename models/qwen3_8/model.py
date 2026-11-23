@@ -71,13 +71,14 @@ class Qwen3_8ForCausalLM(CausalLM):
         last token, ``[1, vocab_size]``."""
         seqlen = self._continue(input_ids, start_pos)
         ops = self.ops
-        x = ops.embedding(input_ids[0].to(self.device), self.embed)
-        residual = None
-        step = Step.build(start_pos, seqlen, self.cos_sin)
-        for layer in self.layers:
-            x, residual = layer(ops, x, residual, step)
-        h, _ = ops.add_norm(x[-1:], residual[-1:], self.norm)
-        logits = ops.gemm_f32(h, self.lm_head)
+        with torch.accelerator.device_index(self.device.index):
+            x = ops.embedding(input_ids[0].to(self.device), self.embed)
+            residual = None
+            step = Step.build(start_pos, seqlen, self.cos_sin)
+            for layer in self.layers:
+                x, residual = layer(ops, x, residual, step)
+            h, _ = ops.add_norm(x[-1:], residual[-1:], self.norm)
+            logits = ops.gemm_f32(h, self.lm_head)
         self._next_pos = start_pos + seqlen
         return logits
 

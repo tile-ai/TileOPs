@@ -1,4 +1,4 @@
-"""Load a Hugging Face DeepSeek-V4 checkpoint into the layouts the model's ops read.
+"""Load a Hugging Face DeepSeek-V4-Flash checkpoint into the layouts the model's ops read.
 
 The checkpoint's FP8 weights carry one scale per ``_SCALE_BLOCK`` x ``_SCALE_BLOCK`` block, which
 the stacked and the dequantized weights both follow.
@@ -11,18 +11,18 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from models.deepseek_v4.layers import Block, Compressor, FP8Linear
+from models.deepseek_v4_flash.layers import Block, Compressor, FP8Linear
 from models.loader import read_checkpoint
 
 if TYPE_CHECKING:
-    from models.deepseek_v4.model import DeepseekV4ForCausalLM
+    from models.deepseek_v4_flash.model import DeepseekV4FlashForCausalLM
 
 __all__ = ["load_weights"]
 
 _SCALE_BLOCK = 128
 
 
-def load_weights(model: DeepseekV4ForCausalLM, path: Path) -> None:
+def load_weights(model: DeepseekV4FlashForCausalLM, path: Path) -> None:
     """Read every tensor of the checkpoint at ``path`` onto its layer's device, as
     :func:`read_checkpoint` does. The MTP layer's tensors are not read."""
     tensors = read_checkpoint(

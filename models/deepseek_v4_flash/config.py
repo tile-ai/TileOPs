@@ -1,4 +1,4 @@
-"""DeepSeek-V4 hyperparameters, read from a Hugging Face ``config.json``."""
+"""DeepSeek-V4-Flash hyperparameters, read from a Hugging Face ``config.json``."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ import dataclasses
 import json
 from pathlib import Path
 
-__all__ = ["DeepseekV4Config"]
+__all__ = ["DeepseekV4FlashConfig"]
 
 
 @dataclasses.dataclass(frozen=True)
-class DeepseekV4Config:
-    """The hyperparameters a DeepSeek-V4 checkpoint's ``config.json`` states.
+class DeepseekV4FlashConfig:
+    """The hyperparameters a DeepSeek-V4-Flash checkpoint's ``config.json`` states.
 
     Field names are the official ``inference/model.py`` ``ModelArgs`` names; ``from_hf``
     maps the Hugging Face keys onto them. ``compress_ratios[i]`` is layer ``i``'s KV (the MTP
@@ -62,7 +62,7 @@ class DeepseekV4Config:
                 f"{self.n_layers} plus {self.n_mtp_layers} MTP"
             )
         if self.n_shared_experts != 1:
-            raise ValueError("DeepSeek-V4 has exactly one shared expert")
+            raise ValueError("DeepSeek-V4-Flash has exactly one shared expert")
 
     @staticmethod
     def indexed(ratio: int) -> bool:
@@ -71,7 +71,7 @@ class DeepseekV4Config:
         return ratio == 4
 
     @classmethod
-    def from_hf(cls, config: dict) -> DeepseekV4Config:
+    def from_hf(cls, config: dict) -> DeepseekV4FlashConfig:
         """Map a Hugging Face ``deepseek_v4`` config dict onto the official field names.
 
         Raises ``ValueError`` on another model type and on any setting this model does not
@@ -139,7 +139,7 @@ class DeepseekV4Config:
         )
 
     @classmethod
-    def from_pretrained(cls, path: str | Path) -> DeepseekV4Config:
+    def from_pretrained(cls, path: str | Path) -> DeepseekV4FlashConfig:
         """Read ``config.json`` from a checkpoint directory."""
         with open(Path(path) / "config.json") as f:
             return cls.from_hf(json.load(f))

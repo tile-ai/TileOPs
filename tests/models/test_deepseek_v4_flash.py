@@ -1,4 +1,4 @@
-"""DeepseekV4ForCausalLM against DeepSeek's official ``inference/model.py`` run on torch kernels.
+"""DeepseekV4FlashForCausalLM against DeepSeek's official ``inference/model.py`` run on torch kernels.
 
 A three-layer model (sliding window with hash routing, ratio-4 compressed attention with the
 indexer, ratio-128 compressed attention) at DeepSeek-V4-Flash's widths, on random weights in the
@@ -16,12 +16,12 @@ import dataclasses
 import pytest
 import torch
 
-from models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
-from models.deepseek_v4.layers import Step
-from models.deepseek_v4.ops import RoPETable
+from models.deepseek_v4_flash import DeepseekV4FlashConfig, DeepseekV4FlashForCausalLM
+from models.deepseek_v4_flash.layers import Step
+from models.deepseek_v4_flash.ops import RoPETable
 from workloads.device import run_device
 from workloads.models.checkpoint import write_checkpoint
-from workloads.models.deepseek_v4 import (
+from workloads.models.deepseek_v4_flash import (
     DEEPSEEK_V4_FLASH_CONFIG,
     check_index_selection,
     check_selection_agreement,
@@ -57,7 +57,7 @@ _TINY = {
 
 
 def test_config_reads_the_published_flash_config():
-    cfg = DeepseekV4Config.from_hf(DEEPSEEK_V4_FLASH_CONFIG)
+    cfg = DeepseekV4FlashConfig.from_hf(DEEPSEEK_V4_FLASH_CONFIG)
     assert (cfg.n_layers, cfg.n_hash_layers, cfg.n_routed_experts) == (43, 3, 256)
     assert cfg.compress_ratios[:4] == (0, 0, 4, 128)
     assert (cfg.rope_factor, cfg.original_seq_len, cfg.route_scale) == (16, 65536, 1.5)
@@ -67,7 +67,7 @@ def test_rope_table_takes_a_zero_width_yarn_range():
     """A YaRN setting whose interpolated dimensions span no width, here an original length of six
     positions, still gives finite cosines and sines."""
     rope = {**DEEPSEEK_V4_FLASH_CONFIG["rope_scaling"], "original_max_position_embeddings": 6}
-    cfg = DeepseekV4Config.from_hf({**DEEPSEEK_V4_FLASH_CONFIG, "rope_scaling": rope})
+    cfg = DeepseekV4FlashConfig.from_hf({**DEEPSEEK_V4_FLASH_CONFIG, "rope_scaling": rope})
     table = RoPETable(cfg, cfg.compress_rope_theta, True, 16, torch.device(run_device()))
     assert torch.isfinite(table.cos).all() and torch.isfinite(table.sin).all()
 
@@ -106,7 +106,7 @@ def _quantized(**changes) -> dict:
 )
 def test_config_refuses_what_the_model_does_not_compute(config, match):
     with pytest.raises(ValueError, match=match):
-        DeepseekV4Config.from_hf({**DEEPSEEK_V4_FLASH_CONFIG, **config})
+        DeepseekV4FlashConfig.from_hf({**DEEPSEEK_V4_FLASH_CONFIG, **config})
 
 
 @pytest.fixture(scope="module")
@@ -136,7 +136,7 @@ def test_from_pretrained_refuses_a_checkpoint_it_cannot_read_whole(tmp_path, cha
         tensors[extra] = torch.zeros(1)
     write_checkpoint(tmp_path, config, tensors)
     with pytest.raises(ValueError, match=match):
-        DeepseekV4ForCausalLM.from_pretrained(tmp_path, device=run_device())
+        DeepseekV4FlashForCausalLM.from_pretrained(tmp_path, device=run_device())
 
 
 def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
@@ -144,7 +144,7 @@ def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
     kept = {n: t for n, t in tensors.items() if not n.startswith("layers.0.")}
     write_checkpoint(tmp_path, _TINY, kept)
     with pytest.raises(ValueError, match="holds no tensors of layers \\[0\\]"):
-        DeepseekV4ForCausalLM.from_pretrained(tmp_path, device=run_device())
+        DeepseekV4FlashForCausalLM.from_pretrained(tmp_path, device=run_device())
 
 
 def test_from_pretrained_refuses_a_layer_missing_some_tensors(tmp_path):
@@ -152,14 +152,14 @@ def test_from_pretrained_refuses_a_layer_missing_some_tensors(tmp_path):
     del tensors["layers.0.attn.kv_norm.weight"]
     write_checkpoint(tmp_path, _TINY, tensors)
     with pytest.raises(ValueError, match="layer 0: missing tensor 'attn.kv_norm.weight'"):
-        DeepseekV4ForCausalLM.from_pretrained(tmp_path, device=run_device())
+        DeepseekV4FlashForCausalLM.from_pretrained(tmp_path, device=run_device())
 
 
 def test_from_pretrained_skips_the_mtp_tensors(tmp_path):
     tensors = random_checkpoint(_TINY, seed=0)
     tensors["mtp.0.norm.weight"] = torch.ones(_TINY["hidden_size"], dtype=torch.bfloat16)
     write_checkpoint(tmp_path, _TINY, tensors)
-    model = DeepseekV4ForCausalLM.from_pretrained(tmp_path, device=run_device())
+    model = DeepseekV4FlashForCausalLM.from_pretrained(tmp_path, device=run_device())
     assert model.head.shape == (_TINY["vocab_size"], _TINY["hidden_size"])
 
 
@@ -218,7 +218,9 @@ def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, deco
     path, tensors = checkpoint
     max_seq_len = 2304
     mine, mine_tf = (
-        DeepseekV4ForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=max_seq_len)
+        DeepseekV4FlashForCausalLM.from_pretrained(
+            path, device=run_device(), max_seq_len=max_seq_len
+        )
         for _ in range(2)
     )
     with official_defaults(run_device()):
@@ -281,7 +283,7 @@ def test_forward_takes_one_request_position_by_position(checkpoint):
     was."""
     path, _ = checkpoint
     max_seq_len = 18
-    model = DeepseekV4ForCausalLM.from_pretrained(
+    model = DeepseekV4FlashForCausalLM.from_pretrained(
         path, device=run_device(), max_seq_len=max_seq_len
     )
     ids = torch.zeros(1, max_seq_len + 1, dtype=torch.long, device=run_device())
@@ -318,7 +320,9 @@ def test_generate_takes_the_official_argmax_until_eos(checkpoint):
     max_seq_len = 64
     g = torch.Generator().manual_seed(2)
     prompt = torch.randint(0, _SMALL["vocab_size"], (3,), generator=g).tolist()
-    mine = DeepseekV4ForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=max_seq_len)
+    mine = DeepseekV4FlashForCausalLM.from_pretrained(
+        path, device=run_device(), max_seq_len=max_seq_len
+    )
     forward, calls = mine.forward, []
     mine.forward = lambda *args: calls.append(args) or forward(*args)
     out = mine.generate(prompt, 12, eos_token_id=-1)
@@ -344,8 +348,9 @@ def test_generate_takes_the_official_argmax_until_eos(checkpoint):
 
 @pytest.mark.sm90
 def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
-    """From a three-token prompt with ``max_seq_len`` 8 and no EOS, ``generate`` returns six
-    tokens: the last one completes the sequence without a forward call past position 7."""
+    """From a three-token prompt with ``max_seq_len`` 8 and no EOS, ``generate`` returns five
+    tokens to fill its eight positions, and none for ``max_new_tokens`` 0."""
     path, _ = checkpoint
-    model = DeepseekV4ForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=8)
-    assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 6
+    model = DeepseekV4FlashForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=8)
+    assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 5
+    assert model.generate([1, 2, 3], 0) == []

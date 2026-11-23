@@ -304,7 +304,8 @@ def test_generate_takes_the_hf_argmax_until_eos(checkpoint):
 
 @pytest.mark.sm90
 def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
-    """From a three-token prompt with ``max_seq_len`` 8 and no EOS, ``generate`` returns six
-    tokens: the last one completes the sequence without a forward call past position 7."""
+    """From a three-token prompt with ``max_seq_len`` 8 and no EOS, ``generate`` returns five
+    tokens to fill its eight positions, and none for ``max_new_tokens`` 0."""
     model = Qwen3_8ForCausalLM.from_pretrained(checkpoint, device=run_device(), max_seq_len=8)
-    assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 6
+    assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 5
+    assert model.generate([1, 2, 3], 0) == []

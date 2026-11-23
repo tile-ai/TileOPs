@@ -1,4 +1,4 @@
-"""DeepSeek-V4 blocks composed from TileOPs ops: attention with KV compression, MoE, mHC.
+"""DeepSeek-V4-Flash blocks composed from TileOPs ops: attention with KV compression, MoE, mHC.
 
 Each layer holds its weights as tensors on one device, in the layouts the ops read, and the
 decoding state of one request, allocated once on that device. A request starting at position 0
@@ -11,8 +11,8 @@ import dataclasses
 
 import torch
 
-from models.deepseek_v4.config import DeepseekV4Config
-from models.deepseek_v4.ops import ModelOps, RoPETable
+from models.deepseek_v4_flash.config import DeepseekV4FlashConfig
+from models.deepseek_v4_flash.ops import ModelOps, RoPETable
 
 __all__ = ["Attention", "Block", "Compressor", "FP8Linear", "Indexer", "MoE", "Step"]
 
@@ -38,7 +38,7 @@ class Step:
 
     @classmethod
     def build(
-        cls, cfg: DeepseekV4Config, start_pos: int, seqlen: int, device: torch.device
+        cls, cfg: DeepseekV4FlashConfig, start_pos: int, seqlen: int, device: torch.device
     ) -> Step:
         win = cfg.window_size
         if start_pos == 0:
@@ -88,7 +88,7 @@ class Compressor:
 
     def __init__(
         self,
-        cfg: DeepseekV4Config,
+        cfg: DeepseekV4FlashConfig,
         ratio: int,
         head_dim: int,
         rotate: bool,
@@ -156,7 +156,7 @@ class Indexer:
     """The lightning indexer: selects each query's top compressed entries of an indexed layer."""
 
     def __init__(
-        self, cfg: DeepseekV4Config, ratio: int, max_entries: int, device: torch.device
+        self, cfg: DeepseekV4FlashConfig, ratio: int, max_entries: int, device: torch.device
     ) -> None:
         self.n_heads = cfg.index_n_heads
         self.head_dim = cfg.index_head_dim
@@ -218,7 +218,7 @@ class Attention:
     """
 
     def __init__(
-        self, cfg: DeepseekV4Config, layer_id: int, max_seq_len: int, device: torch.device
+        self, cfg: DeepseekV4FlashConfig, layer_id: int, max_seq_len: int, device: torch.device
     ) -> None:
         self.n_heads = cfg.n_heads
         self.head_dim = cfg.head_dim
@@ -308,7 +308,7 @@ class MoE:
     output before the down projection, and the shared expert joins the float32 combine.
     """
 
-    def __init__(self, cfg: DeepseekV4Config, layer_id: int) -> None:
+    def __init__(self, cfg: DeepseekV4FlashConfig, layer_id: int) -> None:
         self.hash = layer_id < cfg.n_hash_layers
         self.gate: torch.Tensor
         self.bias: torch.Tensor | None = None
@@ -344,7 +344,7 @@ class Block:
     """One decoder layer: mHC around attention and around the MoE, on ``hc_mult`` streams."""
 
     def __init__(
-        self, cfg: DeepseekV4Config, layer_id: int, max_seq_len: int, device: torch.device
+        self, cfg: DeepseekV4FlashConfig, layer_id: int, max_seq_len: int, device: torch.device
     ) -> None:
         self.layer_id = layer_id
         self.attn = Attention(cfg, layer_id, max_seq_len, device)
