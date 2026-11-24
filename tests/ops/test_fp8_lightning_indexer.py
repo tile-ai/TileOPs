@@ -1,3 +1,5 @@
+import re
+
 import pytest
 import torch
 
@@ -175,6 +177,23 @@ def test_indexer_signed_external_key_scales(queries, keys, heads, index_dim, gro
     weights = torch.randn(weights.shape, device=weights.device)
     scales = torch.randn(scales.shape, device=scales.device) / 448.0
     test.check(FP8LightningIndexerFwdOp(), q, k, weights, starts, ends, scales)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+def test_indexer_loads_windows_and_weights_unguarded() -> None:
+    """The warp-specialized program builds without TileLang's bounds check, whose clamped
+    window and weight indices need none: no window bound or head weight is loaded into a
+    variable of its own under a bounds test, the form the check lowers such a load to. One
+    query, whose block's keys split over many CTAs."""
+    test = FP8LightningIndexerTest(1, 1, 64, 128, 16384, 1)
+    op = FP8LightningIndexerFwdOp()
+    test.check(op, *test.gen_weight_boundary_inputs())
+    (kernel,) = op._entries_built("fp8_lightning_indexer").values()
+    source = kernel.program(kernel._compile).get_kernel_source()
+    assert "CuSeqLenKS[" in source and "Weights[" in source
+    assert not re.search(r"=\s*(CuSeqLenKS|CuSeqLenKE|Weights)\[", source)
 
 
 @pytest.mark.in_tree_kernels

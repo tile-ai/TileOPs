@@ -492,6 +492,11 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         # The roles synchronize by mbarriers; an inserted CTA-wide barrier between the serving
         # warpgroup's loop and the consumers' would deadlock them.
         tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+        # Every global load outside TMA reads a query row below seq_len by its clamp, and not
+        # below 0 since each CTA's query block is below q_blocks. TileLang's own check, unable
+        # to bound that block, puts each window and weight load behind its own branch, which
+        # serializes the window loads before the CTA barrier.
+        tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True,
     },
     compile_flags=[
         *CUDA_COMPILE_FLAGS,
@@ -562,10 +567,6 @@ def _fp8_lightning_indexer_ws_kernel(
             for i in T.unroll(2):
                 col = 8 * j + 2 * (t % 4) + i
                 query = T.min(s0 + col // heads, seq_len - 1)
-                if mixed:
-                    # The clamp at 0 changes no index; it lets the compiler drop the bounds
-                    # checks a run-time CTA mapping would otherwise put on the loads.
-                    query = T.max(query, 0)
                 wt[2 * j + i] = T.call_extern(
                     "float32", "tileops::indexer_half_weight", Weights[query, col % heads]
                 )
@@ -659,8 +660,6 @@ def _fp8_lightning_indexer_ws_kernel(
             if tx < block_q:
                 # A row past seq_len has an empty window.
                 s = T.min(s0 + tx, seq_len - 1)
-                if mixed:
-                    s = T.max(s, 0)  # changes no index; drops the loads' bounds checks
                 lo = T.max(T.min(CuSeqLenKS[s], seq_len_kv), 0)
                 hi = T.max(T.min(CuSeqLenKE[s], seq_len_kv), lo)
                 Win[0, tx] = T.if_then_else(s0 + tx < seq_len, lo, seq_len_kv)
