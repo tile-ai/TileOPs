@@ -18,10 +18,10 @@ hbm:
   calibration: 0.9380        # = max(calibration_mixes)
   calibration_mixes: {copy: 0.8183, triad: 0.8427, read: 0.9380, write: 0.8926}
 
-# The busy time one more dependent kernel launch adds to a program: one-block kernels
-# chained one to five deep, timed as tuning candidates are (CUPTI device busy, L2 flushed
-# before each call, median of 200 calls); the median of 20 steps over 5 runs, steps
-# 0.83-1.06 us, clocks unlocked.
+# From benchmarks/hardware/launch/launch_latency.py: the busy time one more dependent
+# kernel launch adds to a program. One-block kernels chained one to five deep, timed as
+# tuning candidates are (CUPTI device busy, L2 flushed before each call, median of 200
+# calls); the median of 20 steps over 5 runs, steps 0.83-1.06 us, clocks unlocked.
 launch:
   latency: 0.928e-6          # s
 
