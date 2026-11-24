@@ -46,8 +46,9 @@ def _paged_cache_write_kernel(
     @tilelang.jit(
         out_idx=[],
         pass_configs={
-            # Every load is in bounds (the token index is clamped below); the guard would
-            # split the loads into branches that each recompute the address.
+            # Loads are bounded by the token clamp and stores by the slot predicate, which
+            # tests both ends of the pool; the guard would split the loads into branches
+            # that each recompute the address.
             tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True,
         },
     )
@@ -72,8 +73,8 @@ def _paged_cache_write_kernel(
                 token = T.min(vector // lanes, tokens - 1)
                 col = vector % lanes * vec
                 slot = Slots[token]
-                # A negative slot skips the token.
-                named = vector // lanes < tokens and slot >= 0
+                # A negative slot skips the token; a slot past the pool writes nothing.
+                named = vector // lanes < tokens and slot >= 0 and slot < physical_tokens
                 rows = T.alloc_local((2, vec), in_dtype)
                 stored = T.alloc_local((2, vec), cache_dtype)
                 # Both rows are loaded before either store. ptxas sinks a non-coherent

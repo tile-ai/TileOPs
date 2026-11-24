@@ -35,7 +35,7 @@ class PagedKVCacheWriteTest(PagedKVCacheWriteWorkload, TestBase):
         pytest.param(
             4,
             1,
-            32,
+            4,
             4,
             2,
             torch.bfloat16,
@@ -60,8 +60,8 @@ class PagedKVCacheWriteTest(PagedKVCacheWriteWorkload, TestBase):
         ),
         pytest.param(
             2,
-            4,
-            128,
+            1,
+            5,
             16,
             4,
             torch.float16,
@@ -139,7 +139,7 @@ class PagedKVCacheWriteTest(PagedKVCacheWriteWorkload, TestBase):
         pytest.param(
             6,
             2,
-            64,
+            3,
             7,
             3,
             torch.bfloat16,
