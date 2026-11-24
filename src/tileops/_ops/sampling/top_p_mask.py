@@ -26,6 +26,12 @@ class TopPMaskFwdOp(Op):
     the row's float32 sum, and masks the ones the sum rounds away with the zero-probability
     ones. A row whose maximum is not finite, a NaN or an infinity among its logits, has an
     all-NaN softmax, so nothing in it is masked and it passes through whole.
+
+    A row the kernel splits across thread blocks, as a small batch's rows are, sums its
+    probability weights exactly in fixed point before rounding the totals to float32 when its
+    fixed-point totals fit: fewer than 2^20 logits, and bins that fit the device's shared
+    memory. Its mask then does not depend on the order the blocks add in and repeats from call
+    to call.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"top_p_mask_fwd": TopPMaskFwdKernel}
