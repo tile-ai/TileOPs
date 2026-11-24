@@ -72,17 +72,26 @@ class DeepseekV4FlashForCausalLM(CausalLM):
         seqlen = self._continue(input_ids, start_pos)
         if start_pos and seqlen != 1:
             raise ValueError(f"a decode step takes one token, got {seqlen}")
-        ops = self.ops
         ids = input_ids.to(self.device)
         with torch.accelerator.device_index(self.device.index):
-            x = ops.embedding(ids, self.embed)
-            h = x.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
+            h = self.streams(ids)
             step = Step.build(self.config, start_pos, seqlen, self.device)
             for layer in self.layers:
-                h = layer(ops, h, ids, step)
-            x = ops.hc_head(h[:, -1].contiguous(), *self.hc_head)
-            logits = ops.gemm_f32(ops.norm(x, self.norm), self.head)
+                h = layer(self.ops, h, ids, step)
+            logits = self.logits(h)
         self._next_pos = start_pos + seqlen
         return logits
+
+    def streams(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """The ``hc_mult`` residual streams ``[1, S, hc_mult, dim]`` the layers take for
+        ``input_ids`` (``[1, S]`` on ``device``): copies of each token's embedding."""
+        x = self.ops.embedding(input_ids, self.embed)
+        return x.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
+
+    def logits(self, h: torch.Tensor) -> torch.Tensor:
+        """The float32 logits ``[1, vocab_size]`` of the last token of the layers' output
+        streams ``h``, collapsed by ``hc_head``."""
+        x = self.ops.hc_head(h[:, -1].contiguous(), *self.hc_head)
+        return self.ops.gemm_f32(self.ops.norm(x, self.norm), self.head)
 
     __call__ = forward

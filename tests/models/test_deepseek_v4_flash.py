@@ -12,12 +12,17 @@ no window, so the decode steps close the first.
 """
 
 import dataclasses
+import importlib.util
+import json
+import time
+from pathlib import Path
 
 import pytest
 import torch
 
 from models.deepseek_v4_flash import DeepseekV4FlashConfig, DeepseekV4FlashForCausalLM
 from models.deepseek_v4_flash.layers import Step
+from models.deepseek_v4_flash.loader import load_outside
 from models.deepseek_v4_flash.ops import RoPETable
 from workloads.device import run_device
 from workloads.models.checkpoint import write_checkpoint
@@ -353,3 +358,107 @@ def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
     path, _ = checkpoint
     model = DeepseekV4FlashForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=8)
     assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 5
+
+
+def _throughput_script():
+    """``scripts/model_throughput.py`` as a module."""
+    script = Path(__file__).resolve().parents[2] / "scripts" / "model_throughput.py"
+    spec = importlib.util.spec_from_file_location("model_throughput", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_throughput_run_samples_the_first_layer_of_each_kind():
+    """The throughput run gives every layer the weights of the first sampled layer of its kind,
+    and refuses a sample that leaves a kind out."""
+    throughput = _throughput_script()
+    kinds = ["window", "window", "ratio-4", "ratio-128", "ratio-4"]
+    assert throughput._first_of_each_kind(kinds, 4) == {"window": 0, "ratio-4": 2, "ratio-128": 3}
+    with pytest.raises(ValueError, match="ratio-128"):
+        throughput._first_of_each_kind(kinds, 3)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_the_throughput_run_refuses_non_finite_logits(bad):
+    """A run whose logits overflowed reports an error, not its tokens/s."""
+    throughput = _throughput_script()
+    throughput._check_finite([torch.zeros(2), torch.ones(2)])
+    with pytest.raises(ValueError, match="non-finite"):
+        throughput._check_finite([torch.zeros(2), torch.tensor([0.0, bad])])
+
+
+def test_a_layer_call_counts_the_seconds_one_more_call_adds(monkeypatch):
+    """Two calls less one reads one call and leaves out the start from an idle device: a call
+    that takes 20 ms, and 10 ms more when a synchronize has left the device idle, reads 20 ms."""
+    throughput = _throughput_script()
+    idle = [True]
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: idle.__setitem__(0, True))
+
+    def call():
+        time.sleep(0.03 if idle[0] else 0.02)
+        idle[0] = False
+
+    assert throughput._layer_call_seconds(call) == pytest.approx(0.02, abs=0.004)
+
+
+def test_a_throughput_run_killed_mid_model_leaves_that_model_an_error(monkeypatch, tmp_path):
+    """While each model is timed, the JSON on disk already holds the finished models' results
+    and an error for every other model, so a run killed there, even by SIGKILL, leaves the report
+    a row for each."""
+    throughput = _throughput_script()
+    output = tmp_path / "throughput.json"
+    on_disk = []
+
+    def done(device):
+        on_disk.append(json.loads(output.read_text()))
+        return {"run": "x"}
+
+    def killed(device):
+        on_disk.append(json.loads(output.read_text()))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(throughput, "_MODELS", {"done": done, "killed": killed})
+    monkeypatch.setattr(throughput, "indexed_device", lambda device: torch.device("cpu"))
+    monkeypatch.setattr("sys.argv", ["model_throughput.py", "--output", str(output)])
+    with pytest.raises(KeyboardInterrupt):
+        throughput.main()
+    unfinished = {"error": "the run did not finish"}
+    assert on_disk == [
+        {"done": unfinished, "killed": unfinished},
+        {"done": {"run": "x"}, "killed": unfinished},
+    ]
+
+
+@pytest.mark.sm90
+def test_a_layer_by_layer_run_gives_the_forward_logits(checkpoint):
+    """The nightly's layer-by-layer timing (``scripts/model_throughput.py``) runs what
+    ``forward`` runs: with each layer filled, run over the prefills and decode steps, and dropped
+    before the next, its logits of the prompt and of every decode step equal ``forward``'s."""
+    path, tensors = checkpoint
+    throughput = _throughput_script()
+    lengths, steps = (130, 260), 6
+    max_seq_len = lengths[-1] + steps
+    whole = DeepseekV4FlashForCausalLM.from_pretrained(
+        path, device=run_device(), max_seq_len=max_seq_len
+    )
+    alone = DeepseekV4FlashForCausalLM(
+        DeepseekV4FlashConfig.from_hf(_SMALL), device=run_device(), max_seq_len=max_seq_len
+    )
+    device = alone.device
+    load_outside(alone, throughput._sample_outside(tensors, device))
+    g = torch.Generator().manual_seed(0)
+    prompt = torch.randint(_SMALL["vocab_size"], (1, lengths[-1]), generator=g).to(device)
+    tokens = [
+        torch.randint(_SMALL["vocab_size"], (1, 1), generator=g).to(device) for _ in range(steps)
+    ]
+    with torch.accelerator.device_index(device.index), torch.inference_mode():
+        prefill, decode, logits = throughput.layer_by_layer(
+            alone, lambda i: throughput._sample_layer(tensors, i, device), prompt, tokens, lengths
+        )
+    expected = [whole(prompt, 0)]
+    expected += [whole(token, lengths[-1] + t) for t, token in enumerate(tokens)]
+    for got, want in zip(logits, expected, strict=True):
+        torch.testing.assert_close(got, want, rtol=0, atol=0)
+    assert alone.layers == [None] * len(alone.layers)
+    assert min(prefill.values()) > 0 and decode > 0

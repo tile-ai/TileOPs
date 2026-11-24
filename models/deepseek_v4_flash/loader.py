@@ -17,7 +17,7 @@ from models.loader import read_checkpoint
 if TYPE_CHECKING:
     from models.deepseek_v4_flash.model import DeepseekV4FlashForCausalLM
 
-__all__ = ["load_weights"]
+__all__ = ["load_layer", "load_outside", "load_weights"]
 
 _SCALE_BLOCK = 128
 
@@ -38,16 +38,17 @@ def load_weights(model: DeepseekV4FlashForCausalLM, path: Path) -> None:
             "hc_head_scale",
             "hc_head_base",
         ),
-        load_layer=lambda i, t: _load_block(model.layers[i], t, model.config.n_routed_experts),
+        load_layer=lambda i, t: load_layer(model.layers[i], t, model.config.n_routed_experts),
     )
-    model.embed = tensors.pop("embed.weight")
-    model.norm = tensors.pop("norm.weight")
-    model.head = tensors.pop("head.weight")
-    model.hc_head = (
-        tensors.pop("hc_head_fn"),
-        tensors.pop("hc_head_scale"),
-        tensors.pop("hc_head_base"),
-    )
+    load_outside(model, tensors)
+
+
+def load_outside(model: DeepseekV4FlashForCausalLM, t: dict[str, torch.Tensor]) -> None:
+    """Fill the embedding, the final norm, the LM head and ``hc_head`` from their tensors."""
+    model.embed = t.pop("embed.weight")
+    model.norm = t.pop("norm.weight")
+    model.head = t.pop("head.weight")
+    model.hc_head = (t.pop("hc_head_fn"), t.pop("hc_head_scale"), t.pop("hc_head_base"))
 
 
 def _fp8(t: dict[str, torch.Tensor], prefix: str) -> FP8Linear:
@@ -80,8 +81,9 @@ def _load_compressor(c: Compressor, t: dict[str, torch.Tensor], prefix: str) -> 
     c.norm = t.pop(f"{prefix}.norm.weight")
 
 
-def _load_block(block: Block, t: dict[str, torch.Tensor], n_experts: int) -> None:
-    """Fill one layer from its tensors, named relative to ``layers.<i>.``."""
+def load_layer(block: Block, t: dict[str, torch.Tensor], n_experts: int) -> None:
+    """Fill one layer, with ``n_experts`` routed experts, from its tensors, named relative to
+    ``layers.<i>.``."""
     block.attn_norm = t.pop("attn_norm.weight")
     block.ffn_norm = t.pop("ffn_norm.weight")
     block.hc_attn = (t.pop("hc_attn_fn"), t.pop("hc_attn_scale"), t.pop("hc_attn_base"))

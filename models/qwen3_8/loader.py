@@ -13,7 +13,7 @@ from models.qwen3_8.layers import DecoderLayer, GatedDeltaNet
 if TYPE_CHECKING:
     from models.qwen3_8.model import Qwen3_8ForCausalLM
 
-__all__ = ["load_weights"]
+__all__ = ["load_layer", "load_outside", "load_weights"]
 
 _PREFIX = "model.language_model."
 
@@ -28,14 +28,19 @@ def load_weights(model: Qwen3_8ForCausalLM, path: Path) -> None:
         prefix=_PREFIX,
         skipped=("model.visual.", "mtp."),
         outside=(f"{_PREFIX}embed_tokens.weight", f"{_PREFIX}norm.weight", "lm_head.weight"),
-        load_layer=lambda i, t: _load_layer(model.layers[i], t),
+        load_layer=lambda i, t: load_layer(model.layers[i], t),
     )
-    model.embed = tensors.pop(f"{_PREFIX}embed_tokens.weight")
-    model.norm = tensors.pop(f"{_PREFIX}norm.weight")
-    model.lm_head = tensors.pop("lm_head.weight")
+    load_outside(model, tensors)
 
 
-def _load_layer(layer: DecoderLayer, t: dict[str, torch.Tensor]) -> None:
+def load_outside(model: Qwen3_8ForCausalLM, t: dict[str, torch.Tensor]) -> None:
+    """Fill the embedding, the final norm and the LM head from their tensors."""
+    model.embed = t.pop(f"{_PREFIX}embed_tokens.weight")
+    model.norm = t.pop(f"{_PREFIX}norm.weight")
+    model.lm_head = t.pop("lm_head.weight")
+
+
+def load_layer(layer: DecoderLayer, t: dict[str, torch.Tensor]) -> None:
     """Fill one layer from its tensors, named relative to ``layers.<i>.``."""
     layer.input_norm = t.pop("input_layernorm.weight")
     layer.post_norm = t.pop("post_attention_layernorm.weight")

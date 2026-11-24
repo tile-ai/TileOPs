@@ -412,6 +412,15 @@ jobs:
           python3 -m pytest tests/models -m nightly -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=model_test_results.xml | tee tileops_model_test.log
         shell: bash
 
+      - name: Time the models on one GPU
+        id: model_throughput
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          python3 scripts/model_throughput.py --output model_throughput.json | tee tileops_model_throughput.log
+        shell: bash
+
       - name: Upload model test artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: ${{ always() }}
@@ -421,6 +430,8 @@ jobs:
           path: |
             model_test_results.xml
             tileops_model_test.log
+            model_throughput.json
+            tileops_model_throughput.log
           if-no-files-found: warn
           retention-days: 14
 
@@ -520,6 +531,7 @@ jobs:
           python3 scripts/nightly_report.py \
             --test-xml test_results.xml \
             --model-test-xml model_test_results.xml \
+            --model-throughput-json model_throughput.json \
             --bench-xml bench_results.xml \
             "${HISTORY_ARGS[@]}" \
             --output nightly_report.md \
