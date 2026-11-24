@@ -541,7 +541,16 @@ class LogicalReduceEdgeTwoPassKernel(_EdgeLogicalReduceKernelBase, LogicalReduce
         rows_pass = CompiledProgram(
             _fold_program(1, lead * kept, self.trail, self.op_kind, inner, None, *read)
         )
-        columns_pass = down_rows_launcher(lead, kept, *outer, 0.0, down_rows_splits(lead, kept))
+        facts = self.build_target
+        columns_pass = down_rows_launcher(
+            lead,
+            kept,
+            *outer,
+            0.0,
+            down_rows_splits(lead, kept),
+            arch=facts.arch,
+            sm_count=facts.sm_count,
+        )
 
         def launch(units: torch.Tensor) -> torch.Tensor:
             return columns_pass(rows_pass(units).reshape(lead, kept))

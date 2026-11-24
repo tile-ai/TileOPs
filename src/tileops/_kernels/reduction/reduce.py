@@ -382,8 +382,12 @@ class WelfordReduceKernel(RowReduceKernelBase, VarianceFwdInterface, VarMeanFwdI
 class ReduceLeadingKernel(ReduceKernelBase, ReduceFwdInterface, ProdFwdInterface):
     """A reduction down the leading axes in the tensor's own ``(N, M)`` layout.
 
-    The down-rows pass splits the reduced axis into row slices where one launch would
-    leave the grid short, and finishes the fp32 partials in a second launch.
+    Where one launch over the columns would leave the grid short, `down_rows_splits` splits
+    the reduced axis. Such a call runs in one launch where `down_rows_cluster` admits it,
+    and that function picks the cluster: above 1, the reduced axis splits across the CTAs
+    of a thread-block cluster, which fold their partials in shared memory; at 1, each CTA
+    walks every row of its tile. Elsewhere it runs as row slices whose fp32 partials a
+    second launch finishes.
     """
 
     preferred_over = frozenset({"reduce_fold"})
@@ -405,7 +409,15 @@ class ReduceLeadingKernel(ReduceKernelBase, ReduceFwdInterface, ProdFwdInterface
         """The down-rows reduction of the ``(N, M)`` input."""
         divisor = float(self.N) if self.op_kind == "mean" else 0.0
         return down_rows_launcher(
-            self.N, self.M, self.op_kind, self.dtype_str, self.out_dtype_str, divisor, self._splits
+            self.N,
+            self.M,
+            self.op_kind,
+            self.dtype_str,
+            self.out_dtype_str,
+            divisor,
+            self._splits,
+            arch=self.call.arch,
+            sm_count=self.call.sm_count,
         )
 
 
@@ -473,7 +485,15 @@ class ReduceEdgeKernel(EdgeReduceKernelBase, ReduceFwdInterface):
         # casting after costs a third kernel launch.
         splits = down_rows_splits(lead, kept)
         columns_pass = down_rows_launcher(
-            lead, kept, self.op_kind, "float32", self.out_dtype_str, divisor, splits
+            lead,
+            kept,
+            self.op_kind,
+            "float32",
+            self.out_dtype_str,
+            divisor,
+            splits,
+            arch=self.call.arch,
+            sm_count=self.call.sm_count,
         )
 
         def launch(x: torch.Tensor) -> torch.Tensor:

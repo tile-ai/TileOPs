@@ -514,12 +514,112 @@ def test_edge_axis_reduce_returns_the_storage_dtype(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("shape", [(768, 512), (1536, 512)], ids=["ragged-split", "exact-split"])
+@pytest.mark.parametrize("shape", [(769, 516)], ids=["ragged-split"])
 def test_leading_axis_split_reduces_every_row(shape):
-    """A split that does not divide the reduced extent still sums every row."""
+    """A split that does not divide the reduced extent still sums every row.
 
-    x = torch.randn(shape, dtype=torch.float32, device=run_device())
+    Rows of 516 fp16 are not whole 16-byte vectors, which the cluster pass refuses, so they
+    take the split launches on every board.
+    """
+
+    x = torch.randn(shape, dtype=torch.float16, device=run_device())
     compare_outputs(SumFwdOp(dim=0)(x), x.sum(dim=0), reduction_verification(x.dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_cluster_split_follows_the_sm_count() -> None:
+    """The cluster is the largest power of two keeping one CTA of one L2 line per SM, and
+    the one launch stands down where the portable cap leaves half the SMs idle, where rows
+    are not whole 16-byte vectors, and before thread-block clusters."""
+    from tileops._kernels.reduction._primitives import down_rows_cluster
+
+    # 4096 bf16 columns are 64 lines: 2 CTAs each fill 128 of 132 SMs.
+    assert down_rows_cluster(2048, 4096, "bfloat16", 90, 132) == 2
+    # 128 fp32 lines already hold a CTA per SM.
+    assert down_rows_cluster(2048, 4096, "float32", 90, 132) == 1
+    # 12 lines take the portable cap of 8: 96 CTAs.
+    assert down_rows_cluster(2048, 768, "bfloat16", 90, 132) == 8
+    # 8 lines at the cap reach 64 of 132 SMs.
+    assert down_rows_cluster(2048, 512, "bfloat16", 90, 132) == 0
+    assert down_rows_cluster(2048, 4100, "bfloat16", 90, 132) == 0
+    assert down_rows_cluster(2048, 4096, "bfloat16", 80, 108) == 0
+
+
+@pytest.mark.parametrize(
+    "shape, dtype",
+    [
+        pytest.param((2048, 4096), torch.bfloat16, marks=pytest.mark.smoke, id="cluster-2"),
+        pytest.param(
+            (1001, 4104), torch.float16, marks=pytest.mark.smoke, id="ragged-rows-and-line"
+        ),
+        pytest.param((1024, 512), torch.float32, marks=pytest.mark.smoke, id="cluster-8"),
+        pytest.param(
+            (1001, 4104), torch.float32, marks=pytest.mark.smoke, id="cluster-1-partial-line"
+        ),
+        pytest.param(
+            (3, 65536), torch.bfloat16, marks=pytest.mark.full, id="fewer-rows-than-groups"
+        ),
+        pytest.param((2048, 2048), torch.bfloat16, marks=pytest.mark.full, id="cluster-4"),
+        pytest.param(
+            (2, 128256), torch.bfloat16, marks=pytest.mark.full, id="band-wider-than-threads"
+        ),
+    ],
+)
+def test_leading_axis_cluster_reduces_every_row_and_column(shape, dtype) -> None:
+    """The one-launch cluster pass folds every row and column into each op's result.
+
+    The ragged shape gives the second CTA of the cluster one row fewer than the first,
+    leaves its row groups' last step short and its last line partial. Its fp32 twin spans
+    129 lines, so each CTA walks every row alone and the last CTA stores 8 of its 32
+    columns. The 3-row one takes a 2-CTA cluster of four row groups each 16 lines wide: the
+    first CTA reads two rows and the second one, so most groups get no row. The 2-row one
+    takes two row groups of 32 lines, so each CTA finishes more columns than it has threads.
+    """
+    # A sentinel row follows the reduced rows in memory: a read past them shows.
+    rows = torch.rand(shape[0] + 1, *shape[1:], dtype=dtype, device=run_device()) * 0.04 + 0.98
+    rows[-1] = 100.0
+    x = rows[:-1]
+    for op, ref in (
+        (SumFwdOp(dim=0), torch.sum(x.float(), dim=0)),
+        (MeanFwdOp(dim=0), torch.mean(x.float(), dim=0)),
+        (AmaxFwdOp(dim=0), torch.amax(x.float(), dim=0)),
+        (AminFwdOp(dim=0), torch.amin(x.float(), dim=0)),
+    ):
+        compare_outputs(op(x), ref.to(dtype), reduction_verification(dtype))
+    compare_outputs(
+        ProdFwdOp(dim=0)(x),
+        torch.prod(x.float(), dim=0).to(dtype),
+        reduction_verification(dtype, product=True),
+    )
+
+
+@pytest.mark.smoke
+def test_leading_axis_view_off_the_vector_boundary_reduces() -> None:
+    """A view that starts between 16-byte vectors, which the cluster pass reads whole,
+    reduces to the same sums."""
+    flat = torch.randn(2048 * 4096 + 1, dtype=torch.bfloat16, device=run_device())
+    x = flat[1:].view(2048, 4096)
+    compare_outputs(
+        SumFwdOp(dim=0)(x), x.float().sum(dim=0).bfloat16(), reduction_verification(x.dtype)
+    )
+
+
+@pytest.mark.smoke
+def test_edge_columns_pass_in_one_cluster_launch() -> None:
+    """The edge kernels' columns pass over enough fp32 partials takes the one launch, with
+    and without a square-root epilogue."""
+    x = torch.randn(40, 4096, 160, dtype=torch.float16, device=run_device())
+    compare_outputs(
+        SumFwdOp(dim=[0, 2])(x),
+        torch.sum(x.float(), dim=[0, 2]).to(x.dtype),
+        reduction_verification(x.dtype),
+    )
+    compare_outputs(
+        VectorNormFwdOp(ord=2, dim=[0, 2])(x),
+        torch.linalg.vector_norm(x.float(), 2, (0, 2)).to(x.dtype),
+        vector_norm_verification(x.dtype),
+    )
 
 
 def _vector_tiles_kept(dtype: torch.dtype) -> int:
@@ -550,12 +650,14 @@ def test_leading_axis_vector_tiles_reduce_every_column(dtype: torch.dtype) -> No
 @pytest.mark.in_tree_kernels
 def test_vector_tiles_take_whole_tiles_from_the_minimum() -> None:
     """The vector pass takes the minimum of whole tiles, not one tile fewer or a ragged width;
-    the logical and vector-norm callers' dtypes and epilogue reduce exactly on it."""
+    the logical and vector-norm callers' dtypes and epilogue reduce exactly on it, and the
+    logical callers' dtypes on split rows, which an SM90 board folds across a cluster."""
     from tileops._kernels.reduction._primitives import (
         _LEADING_POLICY,
         _vector_tiles,
         down_rows_launcher,
     )
+    from tileops._utils import device_facts
 
     kept = _vector_tiles_kept(torch.float16)
     tile = kept // _LEADING_POLICY.min_vector_blocks
@@ -568,13 +670,30 @@ def test_vector_tiles_take_whole_tiles_from_the_minimum() -> None:
         0, 2, (3, _vector_tiles_kept(torch.int8)), dtype=torch.int8, device=device
     )
     counts = torch.randint(0, 9, (3, _vector_tiles_kept(torch.float32)), device=device).float()
-    for op, dtypes, epilogue, x, ref in (
-        ("amin", ("int8", "int8"), "", flags, flags.amin(0)),
-        ("sum", ("float32", "int64"), "", counts, counts.sum(0).long()),
-        ("sum", ("float32", "float16"), "sqrt", counts, counts.sum(0).sqrt().half()),
+    # Split rows of the logical callers' dtypes: an SM90 board folds them across a cluster.
+    rare = (torch.rand(300, 4096, device=device) > 0.995).to(torch.int8)
+    tallies = torch.randint(0, 9, (300, 4096), device=device).float()
+    facts = device_facts(device.index)
+    for op, dtypes, epilogue, x, splits, ref in (
+        ("amin", ("int8", "int8"), "", flags, 1, flags.amin(0)),
+        ("sum", ("float32", "int64"), "", counts, 1, counts.sum(0).long()),
+        ("sum", ("float32", "float16"), "sqrt", counts, 1, counts.sum(0).sqrt().half()),
+        ("amax", ("int8", "int8"), "", rare, 2, rare.amax(0)),
+        ("amin", ("int8", "int8"), "", 1 - rare, 2, (1 - rare).amin(0)),
+        ("sum", ("float32", "int64"), "", tallies, 2, tallies.sum(0).long()),
     ):
         torch.testing.assert_close(
-            down_rows_launcher(*x.shape, op, *dtypes, 0.0, 1, epilogue)(x), ref
+            down_rows_launcher(
+                *x.shape,
+                op,
+                *dtypes,
+                0.0,
+                splits,
+                epilogue,
+                arch=facts.arch,
+                sm_count=facts.sm_count,
+            )(x),
+            ref,
         )
 
 
