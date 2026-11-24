@@ -1047,7 +1047,7 @@ def test_kda_sm90_fp16_prefill_walks_one_cta_only_for_one_chunk_in_one_wave(
 
 
 @pytest.mark.sm90
-@pytest.mark.full
+@pytest.mark.smoke
 def test_kda_sm90_fp16_one_cta_prefill_forms_a_strong_chunk_per_pair() -> None:
     """Sequences of one chunk in one wave take the SM90 fp16 one-CTA prefill; a chunk whose
     decay overflows fp16 rows centred on it takes per-pair entries beside centred ones."""
