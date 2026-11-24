@@ -227,6 +227,26 @@ def test_paged_kv_cache_write_skips_every_token():
 
 
 @pytest.mark.smoke
+def test_paged_kv_cache_write_past_the_pool_writes_nothing():
+    """A slot of ``num_pages * page_size`` writes neither pool nor the page after it."""
+    num_pages, page_size = 2, 16
+    workload = PagedKVCacheWriteTest(1, 2, 64, page_size, num_pages, torch.bfloat16)
+    k, v, k_cache, v_cache, _, k_scale, v_scale = workload.gen_inputs()
+    # Each pool is a view of a buffer one page longer, so a store past the pool lands in
+    # memory the test owns and can see.
+    k_buffer = torch.full(
+        (num_pages + 1, *k_cache.shape[1:]), 3.0, dtype=k_cache.dtype, device=k_cache.device
+    )
+    v_buffer = torch.full_like(k_buffer, -2.0)
+    before = (k_buffer.clone(), v_buffer.clone())
+    slots = torch.tensor([num_pages * page_size], dtype=torch.int64, device=k.device)
+    op = PagedKVCacheWriteFwdOp()
+    op(k, v, k_buffer[:num_pages], v_buffer[:num_pages], slots, k_scale, v_scale)
+    torch.cuda.synchronize()
+    assert torch.equal(k_buffer, before[0]) and torch.equal(v_buffer, before[1])
+
+
+@pytest.mark.smoke
 def test_paged_kv_cache_write_of_no_tokens_writes_nothing():
     """A call with no token writes neither pool; the caches it is handed are non-empty."""
     workload = PagedKVCacheWriteTest(0, 2, 64, 16, 2, torch.bfloat16)
