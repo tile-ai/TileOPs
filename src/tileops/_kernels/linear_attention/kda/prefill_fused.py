@@ -36,10 +36,19 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             return "serves a sequence of at least two tokens"
         if call.gate_in_kernel:
             return "raw gates use chunk-parallel preparation"
-        # On SM90 the chunk-parallel path prepares every chunk at once in the joint launch and
-        # walks only the states, while this CTA walks its sequence's chunks whole.
-        if referenced_form(call) and KDAChunkPrefillFwdKernel.refusal(call) is None:
-            return "SM90 prepares given gates of FP32's exponent range on the chunk-parallel path"
+        # On SM90 the chunk-parallel path prepares every chunk at once and walks only the
+        # states, while this CTA walks its sequence's chunks whole, each chunk's preparation on
+        # the walk's serial chain. Given gates of FP32's exponent range take the joint launch.
+        # Other given gates take the split launches, which outrun this CTA unless the call holds
+        # at most one chunk a sequence on average and its CTAs run in one wave: then this
+        # launch, too, prepares every chunk at once, in one launch instead of several.
+        if call.arch == 90 and KDAChunkPrefillFwdKernel.refusal(call) is None:
+            if referenced_form(call):
+                return "SM90 prepares given gates of FP32's exponent range in the joint launch"
+            one_chunk = call.batch * call.seq_len <= call.sequences * CHUNK_SIZE
+            one_wave = call.sequences * call.value_heads <= call.sm_count
+            if not (one_chunk and one_wave):
+                return "SM90 prepares chunks past one a sequence or one wave in the split launches"
         # A CTA per (sequence, value head) pays off only while those cover most SMs; a
         # compact 128-wide SM89 CTA fills one SM's shared memory.
         blocks = call.sequences * call.value_heads
