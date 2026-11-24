@@ -984,6 +984,45 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-pingpong-tails",
                 ),
+                # On 132 SMs (H200) the narrowest one-wave width of these N is 80, 112 and 192,
+                # each tile issued whole by T.wgmma_gemm: a column tail on each, a one-row A box
+                # at m = 1, a K tail at m = 64 and a partial row tile at m = 37.
+                pytest.param(
+                    1,
+                    10008,
+                    1040,
+                    False,
+                    True,
+                    torch.bfloat16,
+                    True,
+                    _INT8_WS,
+                    marks=pytest.mark.full,
+                    id="full-80-wide",
+                ),
+                pytest.param(
+                    64,
+                    13000,
+                    1040,
+                    True,
+                    True,
+                    torch.float16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.full,
+                    id="full-112-wide",
+                ),
+                pytest.param(
+                    37,
+                    22000,
+                    1040,
+                    True,
+                    False,
+                    torch.bfloat16,
+                    True,
+                    _INT8_WS,
+                    marks=pytest.mark.full,
+                    id="full-192-wide",
+                ),
                 # k off TMA's 16-byte unit: the fallback, which the off-16-byte-boundary test
                 # runs in smoke.
                 pytest.param(
