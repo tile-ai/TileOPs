@@ -864,17 +864,13 @@ class _LeadingAxisReducePolicy:
 
     min_vector_blocks: int = 64
 
+    # `_down_rows_cluster_kernel`'s block, which `down_rows_cluster` sizes its grid by: 512
+    # threads keeping 8 vector loads each in flight hold 64 KB per SM, several times what
+    # HBM bandwidth times its latency asks of one SM.
+    cluster_threads: int = 512
+
 
 _LEADING_POLICY = _LeadingAxisReducePolicy()
-
-# `_down_rows_cluster_kernel`'s block, which `down_rows_cluster` sizes its grid by: 512
-# threads keeping 8 vector loads each in flight hold 64 KB per SM, several times what HBM
-# bandwidth times its latency asks of one SM.
-_CLUSTER_THREADS = 512
-
-# Bytes of one L2 cache line, four 32-byte sectors: the narrowest read of a row that fills
-# whole lines, which bounds a cluster CTA's row groups.
-L2_LINE_BYTES = 128
 
 
 def _cluster_row_groups(reduced: int) -> int:
@@ -883,9 +879,10 @@ def _cluster_row_groups(reduced: int) -> int:
 
     Fewer rows take fewer, wider groups, so no thread waits on a row that is not there.
     """
-    return min(
-        _CLUSTER_THREADS * VECTOR_ACCESS_BYTES // L2_LINE_BYTES, 1 << (reduced - 1).bit_length()
-    )
+    # Bytes of one L2 cache line, four 32-byte sectors.
+    line_bytes = 128
+    widest = _LEADING_POLICY.cluster_threads * VECTOR_ACCESS_BYTES // line_bytes
+    return min(widest, 1 << (reduced - 1).bit_length())
 
 
 def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
@@ -1119,7 +1116,7 @@ def down_rows_cluster(reduced: int, kept: int, in_dtype: str, arch: int, sm_coun
     itemsize = getattr(torch, in_dtype).itemsize
     if arch < 90 or kept * itemsize % VECTOR_ACCESS_BYTES:
         return 0
-    lanes = _CLUSTER_THREADS // _cluster_row_groups(reduced)
+    lanes = _LEADING_POLICY.cluster_threads // _cluster_row_groups(reduced)
     tiles = ceil_div(kept * itemsize, lanes * VECTOR_ACCESS_BYTES)
     cluster = 1
     while cluster < MAX_PORTABLE_CLUSTER_BLOCKS and 2 * cluster * tiles <= sm_count:
@@ -1151,7 +1148,7 @@ def _down_rows_cluster_kernel(
     """
     itemsize = getattr(torch, in_dtype).itemsize
     vec = VECTOR_ACCESS_BYTES // itemsize
-    threads, unroll = _CLUSTER_THREADS, 8
+    threads, unroll = _LEADING_POLICY.cluster_threads, 8
     groups = _cluster_row_groups(A)
     lanes = threads // groups
     width = lanes * vec
