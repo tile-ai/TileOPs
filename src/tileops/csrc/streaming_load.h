@@ -97,6 +97,17 @@ __device__ __forceinline__ void cp_async16(void* dst, const void* src) {
                "l"(src));
 }
 
+// Loads 16 bytes of read-only global memory into dst through the non-coherent
+// path (ld.global.nc), with no cache hint. Not volatile: the source is
+// read-only for the kernel.
+__device__ __forceinline__ void load16_nc(void* dst, const void* src) {
+  uint4 v;
+  asm("ld.global.nc.v4.u32 {%0, %1, %2, %3}, [%4];"
+      : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+      : "l"(src));
+  __builtin_memcpy(dst, &v, 16);
+}
+
 // Loads 16 bytes of global memory into dst with the default cache policy.
 __device__ __forceinline__ void load16(void* dst, const void* src) {
   uint4 v = *reinterpret_cast<const uint4*>(src);

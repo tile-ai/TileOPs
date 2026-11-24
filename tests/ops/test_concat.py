@@ -4,6 +4,7 @@ import torch
 from tests.compile_contract import register_compile_contract
 from tests.workload_test_base import TestBase
 from tileops._kernels.indexing import ConcatKernel
+from tileops._kernels.indexing.concat import _GROUP, _THREADS
 from tileops.indexing import ConcatFwdOp
 from workloads.device import run_device
 from workloads.indexing import ConcatWorkload, TransposedConcatWorkload
@@ -97,6 +98,20 @@ _CASES = (
         marks=_FULL,
         id="flat-four-inputs",
     ),
+    # bfloat16 and float16 rows past one wave that are not whole groups: per-row tiles of
+    # 8-byte reads, not the widening program's 16-byte reads.
+    pytest.param(
+        [[16385, _GROUP // 2], [16385, 3 * _GROUP // 2]],
+        1,
+        [_BF16, _FP16],
+        marks=_FULL,
+        id="widen-part-groups",
+    ),
+    # Five bfloat16 and float16 inputs past one wave: more than one launch takes, so per-row
+    # tiles in two launches.
+    pytest.param(
+        [[16385, _GROUP]] * 5, 1, [_BF16, _FP16, _BF16, _FP16, _BF16], marks=_FULL, id="widen-five"
+    ),
     # Rows that end inside a line, with more output elements than a 32-bit offset reaches: the
     # flat program's element addresses.
     pytest.param(
@@ -114,6 +129,21 @@ def test_concat(S, dim, D) -> None:
     call = manifest_call("ConcatFwdOp", {"D": D}, S=S, dim=dim)
     test = ConcatTest(call)
     test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
+
+
+def _checked_launches(call, monkeypatch) -> list[tuple[str, tuple]]:
+    """Check the op on *call*'s inputs, and return each launch's program build and facts."""
+    test = ConcatTest(call)
+    launches = []
+    program = ConcatKernel.program
+
+    def record(self, build, *facts):
+        launches.append((build.__name__, facts))
+        return program(self, build, *facts)
+
+    monkeypatch.setattr(ConcatKernel, "program", record)
+    test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
+    return launches
 
 
 @pytest.mark.in_tree_kernels
@@ -136,18 +166,87 @@ def test_concat_flat_rows_within_one_wave_at_four(widths, monkeypatch) -> None:
     rows = resident_threads * ConcatKernel._FLAT_PER_THREAD // vectors + 1
     S = [[rows, w] for w in widths]
     call = manifest_call("ConcatFwdOp", {"D": [_FP16] * len(widths)}, S=S, dim=1)
-    test = ConcatTest(call)
-    launches = []
-    program = ConcatKernel.program
-
-    def record(self, build, *facts):
-        launches.append((build.__name__, facts[:2]))
-        return program(self, build, *facts)
-
-    monkeypatch.setattr(ConcatKernel, "program", record)
-    test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
+    launches = _checked_launches(call, monkeypatch)
     doubled = ("_compile_flat", (len(widths), 2 * ConcatKernel._FLAT_PER_THREAD))
-    assert launches and all(launch == doubled for launch in launches), launches
+    assert launches and all((name, facts[:2]) == doubled for name, facts in launches), launches
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "dtypes, widths",
+    [
+        # bfloat16 around float16: each group is widened by the dtype of the input it is read from.
+        # Rows of 2, 1 and 3 groups: each input's row offset scales by its own width.
+        pytest.param([_BF16, _FP16, _BF16], [2, 1, 3], marks=_SMOKE, id="three-inputs"),
+        # Four inputs, float16 first: every slot reads.
+        pytest.param([_FP16, _BF16, _FP16, _BF16], [1, 1, 1, 1], marks=_FULL, id="four-inputs"),
+        # An empty float16 input promotes one bfloat16 input: a group's row is its position.
+        pytest.param([_BF16, _FP16], [1, 0], marks=_FULL, id="one-bf16-input"),
+        # An empty bfloat16 input promotes one float16 input.
+        pytest.param([_FP16, _BF16], [1, 0], marks=_FULL, id="one-f16-input"),
+    ],
+)
+def test_concat_widen_rows(dtypes, widths, monkeypatch) -> None:
+    """bfloat16 and float16 rows of *widths* whole groups, promoted to float32, one row past one
+    resident wave of per-row tiles, which every launch widens. The last run is partial."""
+    props = torch.cuda.get_device_properties(run_device())
+    wave = props.multi_processor_count * props.max_threads_per_multi_processor // _THREADS
+    rows = wave // sum(1 for w in widths if w) + 1
+    S = [[rows, w * _GROUP] for w in widths]
+    call = manifest_call("ConcatFwdOp", {"D": dtypes}, S=S, dim=1)
+    launches = _checked_launches(call, monkeypatch)
+    assert launches and all(name == "_compile_widen" for name, _ in launches), launches
+
+
+# The bytes a row of bfloat16 and float16 inputs of 1024 elements each reads and writes: 2 x 1024
+# 2-byte elements in, 2048 4-byte ones out.
+_WIDE_ROW_BYTES = 2 * 1024 * 2 + 2048 * 4
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "rows, widths, program",
+    [
+        # Within half of L2: per-row tiles.
+        pytest.param(
+            lambda l2: l2 // 2 // _WIDE_ROW_BYTES + 1,
+            [1024, 1024],
+            "_compile",
+            marks=_SMOKE,
+            id="within-l2",
+        ),
+        # Inputs and output past the device's L2: the widening program.
+        pytest.param(
+            lambda l2: 2 * l2 // _WIDE_ROW_BYTES + 1,
+            [1024, 1024],
+            "_compile_widen",
+            marks=_FULL,
+            id="past-l2",
+        ),
+        # A bfloat16 input of 1024 elements fewer than 2**31: the widening program, its element
+        # offsets at the top of the 32-bit range.
+        pytest.param(
+            lambda l2: 2**21 - 1,
+            [1024, _GROUP],
+            "_compile_widen",
+            marks=_FULL,
+            id="near-32-bit-offsets",
+        ),
+        # A bfloat16 input of more elements than a 32-bit offset reaches: per-row tiles.
+        pytest.param(
+            lambda l2: 2**21 + 1, [1024, _GROUP], "_compile", marks=_FULL, id="past-32-bit-offsets"
+        ),
+    ],
+)
+def test_concat_widen_dispatch(rows, widths, program, monkeypatch) -> None:
+    """A bfloat16 and a float16 input of *widths*, promoted to float32, past one resident wave of
+    per-row tiles, with ``rows(l2)`` rows on a device of ``l2`` bytes of L2; every launch takes
+    *program*."""
+    l2 = torch.cuda.get_device_properties(run_device()).L2_cache_size
+    S = [[rows(l2), w] for w in widths]
+    call = manifest_call("ConcatFwdOp", {"D": [_BF16, _FP16]}, S=S, dim=1)
+    launches = _checked_launches(call, monkeypatch)
+    assert launches and all(name == program for name, _ in launches), launches
 
 
 @pytest.mark.smoke
