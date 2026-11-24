@@ -378,6 +378,15 @@ def test_the_throughput_run_samples_the_first_layer_of_each_kind():
         throughput._first_of_each_kind(kinds, 3)
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_the_throughput_run_refuses_non_finite_logits(bad):
+    """A run whose logits overflowed reports an error, not its tokens/s."""
+    throughput = _throughput_script()
+    throughput._check_finite([torch.zeros(2), torch.ones(2)])
+    with pytest.raises(ValueError, match="non-finite"):
+        throughput._check_finite([torch.zeros(2), torch.tensor([0.0, bad])])
+
+
 def test_a_layer_call_counts_the_seconds_one_more_call_adds(monkeypatch):
     """Two calls less one reads one call and leaves out the start from an idle device: a call
     that takes 20 ms, and 10 ms more when a synchronize has left the device idle, reads 20 ms."""

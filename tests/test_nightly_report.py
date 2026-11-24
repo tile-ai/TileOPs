@@ -918,11 +918,13 @@ def test_a_model_whose_tests_did_not_pass_has_its_throughput_withheld(report):
         "deepseek_v4_flash": _PASSED,
         "qwen3_8": {**_PASSED, "failed": 1, "failing_tests": ["test_x"]},
     }
-    md = _report(report, models=models, throughput=_THROUGHPUT)
+    throughput = {**_THROUGHPUT, "untested": _THROUGHPUT["deepseek_v4_flash"]}
+    md = _report(report, models=models, throughput=throughput)
     section = md[md.index("## Model Throughput") :]
     assert md.index("## Models") < md.index("## Model Throughput")
     assert "| **deepseek_v4_flash** | layer by layer | 3,000 |" in section
     assert "| ❌ **qwen3_8** | withheld: its model tests did not pass | — |" in section
+    assert "| ❌ **untested** | withheld: its model tests did not pass | — |" in section
 
 
 def test_a_run_without_throughput_has_no_throughput_section(report):
