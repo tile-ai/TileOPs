@@ -335,6 +335,46 @@ def aggregate_model_results(results: list[dict]) -> dict[str, dict]:
     return _tally(results, _model_of)
 
 
+def _table_cell(text: str) -> str:
+    """``text`` as one markdown table cell: whitespace runs, newlines among them, become one
+    space, pipes are escaped, and at most 120 characters remain."""
+    return " ".join(text.split()).replace("|", "\\|")[:120]
+
+
+def _throughput_section(throughput: dict[str, dict], models: dict[str, dict] | None) -> list[str]:
+    """The ``## Model Throughput`` section: per model, the tokens/s ``scripts/model_throughput.py``
+    wrote for each prefill length and decode context, or the error its run ended with. A model
+    whose tests did not all pass, given ``models``, has its numbers withheld."""
+    lines = ["## Model Throughput", "", "Batch 1 on one GPU with random weights, in tokens/s.", ""]
+    if not throughput:
+        return [*lines, f"{_FAIL} The timing run wrote no results.", ""]
+    columns = [
+        (key, n)
+        for key in ("prefill_tokens_per_s", "decode_tokens_per_s")
+        for n in sorted({int(n) for d in throughput.values() for n in d.get(key, {})})
+    ]
+    head = [
+        f"Prefill {n}" if key.startswith("prefill") else f"Decode ctx {n}" for key, n in columns
+    ]
+    lines.append("| Model | Run | " + " | ".join(head) + " |")
+    lines.append("|:------|:----|" + "------:|" * len(columns))
+    for model, d in sorted(throughput.items()):
+        if "error" in d:
+            cells = [f"{_FAIL} **{model}**", _table_cell(d["error"])] + ["—"] * len(columns)
+        elif models is not None and models.get(model, {"failed": 1})["failed"]:
+            cells = [f"{_FAIL} **{model}**", "withheld: its model tests did not pass"]
+            cells += ["—"] * len(columns)
+        else:
+            cells = [f"**{model}**", d["run"]]
+            for key, n in columns:
+                value = d[key].get(str(n))
+                fmt = ",.0f" if key.startswith("prefill") else ".2f"
+                cells.append("—" if value is None else format(value, fmt))
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
+
+
 def aggregate_bench_results(results: list[dict]) -> dict:
     """Group bench results by Op, keeping per-config perf data."""
     ops = defaultdict(lambda: {"module": None, "configs": []})
@@ -1306,6 +1346,7 @@ def generate_report(
     implemented: set[str] | None = None,
     new_ops: list[dict] | None = None,
     models: dict[str, dict] | None = None,
+    throughput: dict[str, dict] | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -1491,6 +1532,9 @@ def generate_report(
             )
         lines.append("")
 
+    if throughput is not None:
+        lines += _throughput_section(throughput, models)
+
     # ── Test Failures (only if any) ───────────────────────────────────────
     failed_ops = {op: d for op, d in (test_ops or {}).items() if d["failed"] > 0}
     if failed_ops:
@@ -1516,7 +1560,7 @@ def generate_report(
         lines.append("| Test | Message |")
         lines.append("|:-----|:--------|")
         for r in sorted(unattributed, key=lambda r: r["nodeid"])[:_UNATTRIBUTED_SHOWN]:
-            message = (r.get("failure_message") or "").replace("|", "\\|")[:120]
+            message = _table_cell(r.get("failure_message") or "")
             lines.append(f"| `{r['nodeid']}` | {message} |")
         if len(unattributed) > _UNATTRIBUTED_SHOWN:
             lines.append(f"| ... | (+{len(unattributed) - _UNATTRIBUTED_SHOWN} more) |")
@@ -1738,6 +1782,10 @@ def main():
     parser = argparse.ArgumentParser(description="Generate TileOPs nightly Op-level report")
     parser.add_argument("--test-xml", help="Path to correctness test JUnit XML")
     parser.add_argument("--model-test-xml", help="Path to the model tests' JUnit XML")
+    parser.add_argument(
+        "--model-throughput-json",
+        help="Path to the model tokens/s JSON scripts/model_throughput.py writes",
+    )
     parser.add_argument("--bench-xml", help="Path to benchmark JUnit XML")
     parser.add_argument("--history", help="Path to perf_history.json (input)")
     parser.add_argument("--output", required=True, help="Output markdown report path")
@@ -1770,6 +1818,11 @@ def main():
     if args.model_test_xml:
         path = Path(args.model_test_xml)
         models = aggregate_model_results(parse_test_xml(str(path))) if path.exists() else {}
+
+    throughput = None
+    if args.model_throughput_json:
+        path = Path(args.model_throughput_json)
+        throughput = json.loads(path.read_text()) if path.exists() else {}
 
     bench_ops = None
     bench_failures = []
@@ -1825,6 +1878,7 @@ def main():
         implemented=implemented,
         new_ops=new_ops,
         models=models,
+        throughput=throughput,
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")

@@ -881,6 +881,62 @@ def test_a_missing_model_results_file_fails_the_report(tmp_path):
     assert "| **Models** | ❌ no results" in md
 
 
+_THROUGHPUT = {
+    "deepseek_v4_flash": {
+        "run": "layer by layer",
+        "prefill_tokens_per_s": {"512": 3000.4, "4096": 13299.2},
+        "decode_tokens_per_s": {"4096": 7.019},
+    },
+    "qwen3_8": {
+        "run": "whole model",
+        "prefill_tokens_per_s": {"512": 10331.0, "4096": 11679.0},
+        "decode_tokens_per_s": {"512": 25.51, "4096": 25.46},
+    },
+    "broken": {"error": "RuntimeError: no kernel\n  for | this shape"},
+}
+_PASSED = {"passed": 1, "failed": 0, "skipped": 0, "failing_tests": []}
+
+
+def test_model_throughput_is_a_table_of_tokens_per_second(report):
+    """Each length a model reports is a column and one it does not report a dash; a model's
+    error, on one line with its pipes escaped, takes the place of its numbers."""
+    md = _report(report, throughput=_THROUGHPUT)
+    section = md[md.index("## Model Throughput") :]
+    header = "| Model | Run | Prefill 512 | Prefill 4096 | Decode ctx 512 | Decode ctx 4096 |"
+    assert header in section
+    assert "| **deepseek_v4_flash** | layer by layer | 3,000 | 13,299 | — | 7.02 |" in section
+    assert "| **qwen3_8** | whole model | 10,331 | 11,679 | 25.51 | 25.46 |" in section
+    assert (
+        "| ❌ **broken** | RuntimeError: no kernel for \\| this shape | — | — | — | — |" in section
+    )
+
+
+def test_a_model_whose_tests_did_not_pass_has_its_throughput_withheld(report):
+    """Numbers follow a passing correctness run: a model with a failed test, or with no test
+    results, shows no tokens/s. The section follows the Models table."""
+    models = {
+        "deepseek_v4_flash": _PASSED,
+        "qwen3_8": {**_PASSED, "failed": 1, "failing_tests": ["test_x"]},
+    }
+    md = _report(report, models=models, throughput=_THROUGHPUT)
+    section = md[md.index("## Model Throughput") :]
+    assert md.index("## Models") < md.index("## Model Throughput")
+    assert "| **deepseek_v4_flash** | layer by layer | 3,000 |" in section
+    assert "| ❌ **qwen3_8** | withheld: its model tests did not pass | — |" in section
+
+
+def test_a_run_without_throughput_has_no_throughput_section(report):
+    assert "## Model Throughput" not in _report(report)
+
+
+def test_a_missing_throughput_file_reports_no_results(tmp_path):
+    """A timing run killed before it writes its JSON reports that, not an empty table."""
+    out = tmp_path / "report.md"
+    missing = tmp_path / "model_throughput.json"
+    _run_script("--model-throughput-json", str(missing), "--output", str(out)).check_returncode()
+    assert "❌ The timing run wrote no results." in out.read_text()
+
+
 def test_regressions_output_holds_the_regressed_rows_only_with_history(tmp_path):
     """The board's regressions file lists the rows slower than their 14-day median, and is
     not written without history, where no row can be judged."""
