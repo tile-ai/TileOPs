@@ -154,11 +154,15 @@ def _concat_kernel(vec, dtypes, out_dtype, per_thread):
 
 
 @target_cache(maxsize=64)
-def _concat_flat_kernel(vec, dtype, n, per_thread):
+def _concat_flat_kernel(vec, dtype, n, per_thread, resident):
     """One launch of ``n`` same-dtype inputs over the flat output, viewed as ``rows * total``
     16-byte vectors cut into runs of ``_THREADS * per_thread``, one a CTA, so a warp's stores
     fill whole lines. A vector's row is its position times ``mul``, high word, shifted by
     ``shr`` (the position itself where ``mul`` is 0); its input is a compare of its column.
+
+    Without *resident*, each input's load of a vector issues into its own registers. With it,
+    for one or two inputs, a vector is one load from the address its column compare picks, and
+    nvcc holds the program to *resident* CTAs an SM.
     """
     rows = T.dynamic("rows", "int32")
     total = T.dynamic("total", "int32")
@@ -196,13 +200,6 @@ def _concat_flat_kernel(vec, dtype, n, per_thread):
         x3: slot(3) = None,  # type: ignore
     ):
         with T.Kernel(T.ceildiv(rows * total, _THREADS * per_thread), threads=_THREADS) as bx:
-            # One register array an input: the loads of a vector's inputs, of which one reads,
-            # write different registers and issue together.
-            held0 = T.alloc_local((per_thread, vec), dtype)
-            held1 = T.alloc_local((per_thread, vec), dtype)
-            held2 = T.alloc_local((per_thread, vec), dtype)
-            held3 = T.alloc_local((per_thread, vec), dtype)
-            value = T.alloc_local((vec,), dtype)
             row = T.alloc_local((per_thread,), "int32")
             col = T.alloc_local((per_thread,), "int32")
             for u in T.unroll(per_thread):
@@ -211,25 +208,59 @@ def _concat_flat_kernel(vec, dtype, n, per_thread):
                 row[u] = T.if_then_else(mul == 0, g, T.cast(T.shift_right(q, shr), "int32"))
                 col[u] = g - row[u] * total
             # Every read of the thread issues before its first write.
-            for u in T.unroll(per_thread):
-                if row[u] < rows:
-                    load(x0, 0, held0, u, row[u], col[u])
-                    if n > 1:
-                        load(x1, 1, held1, u, row[u], col[u])
-                    if n > 2:
-                        load(x2, 2, held2, u, row[u], col[u])
-                    if n > 3:
-                        load(x3, 3, held3, u, row[u], col[u])
-            for u in T.unroll(per_thread):
-                if row[u] < rows:
-                    pick(0, held0, value, u, col[u])
-                    if n > 1:
-                        pick(1, held1, value, u, col[u])
-                    if n > 2:
-                        pick(2, held2, value, u, col[u])
-                    if n > 3:
-                        pick(3, held3, value, u, col[u])
-                    T.stg128(out[row[u], col[u], 0:vec], T.reinterpret(value[0:vec], "uint32x4"))
+            if resident is not None:
+                # The address pick below reads input 1 for every column past input 0.
+                assert n <= 2, f"the held program copies one or two inputs, got {n}"
+                T.annotate_min_blocks_per_sm(resident)
+                held = T.alloc_local((per_thread, vec), dtype)
+                for u in T.unroll(per_thread):
+                    if row[u] < rows:
+                        T.call_extern(
+                            "handle",
+                            "tileops::load16_evict_last",
+                            T.address_of(held[u, 0]),
+                            T.address_of(x0[row[u], col[u], 0])
+                            if n == 1
+                            else T.if_then_else(
+                                col[u] < offset[1],
+                                T.address_of(x0[row[u], col[u], 0]),
+                                T.address_of(x1[row[u], col[u] - offset[1], 0]),
+                            ),
+                        )
+                for u in T.unroll(per_thread):
+                    if row[u] < rows:
+                        T.stg128(
+                            out[row[u], col[u], 0:vec], T.reinterpret(held[u, 0:vec], "uint32x4")
+                        )
+            else:
+                # One register array an input: the loads of a vector's inputs, of which one
+                # reads, write different registers and issue together.
+                held0 = T.alloc_local((per_thread, vec), dtype)
+                held1 = T.alloc_local((per_thread, vec), dtype)
+                held2 = T.alloc_local((per_thread, vec), dtype)
+                held3 = T.alloc_local((per_thread, vec), dtype)
+                value = T.alloc_local((vec,), dtype)
+                for u in T.unroll(per_thread):
+                    if row[u] < rows:
+                        load(x0, 0, held0, u, row[u], col[u])
+                        if n > 1:
+                            load(x1, 1, held1, u, row[u], col[u])
+                        if n > 2:
+                            load(x2, 2, held2, u, row[u], col[u])
+                        if n > 3:
+                            load(x3, 3, held3, u, row[u], col[u])
+                for u in T.unroll(per_thread):
+                    if row[u] < rows:
+                        pick(0, held0, value, u, col[u])
+                        if n > 1:
+                            pick(1, held1, value, u, col[u])
+                        if n > 2:
+                            pick(2, held2, value, u, col[u])
+                        if n > 3:
+                            pick(3, held3, value, u, col[u])
+                        T.stg128(
+                            out[row[u], col[u], 0:vec], T.reinterpret(value[0:vec], "uint32x4")
+                        )
 
     return tilelang.compile(
         concat,
@@ -249,11 +280,13 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
     is built per vector, input dtypes and vectors per thread, and serves every row count and
     width. Inputs share a launch ``_SLOTS`` at a time. A launch past one resident wave that
     copies every input, unconverted, in 16-byte vectors into output rows that end inside a line
-    takes ``_concat_flat_kernel`` instead, while its positions fit 32 bits.
+    takes ``_concat_flat_kernel`` instead, while its positions fit 32 bits. Such a launch of at
+    most two inputs that twice the flat program's vectors a thread bring within one wave takes
+    twice the vectors.
     """
 
-    # Vectors a thread of the flat program copies, one CTA width apart, so the second row
-    # lookup overlaps the first read.
+    # Vectors a thread of the flat program copies by default, one CTA width apart, so the
+    # second row lookup overlaps the first read.
     _FLAT_PER_THREAD: ClassVar[int] = 2
 
     @classmethod
@@ -287,9 +320,9 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         """The program of a launch whose inputs have *dtypes* and *per_thread* vectors."""
         return _concat_kernel(self.vec, dtypes, self.dtype_str, per_thread)
 
-    def _compile_flat(self, cfg: dict, inputs: int):
+    def _compile_flat(self, cfg: dict, inputs: int, per_thread: int, resident: int | None):
         """The program of one launch of *inputs* inputs over the flat output."""
-        return _concat_flat_kernel(self.vec, self.dtype_str, inputs, self._FLAT_PER_THREAD)
+        return _concat_flat_kernel(self.vec, self.dtype_str, inputs, per_thread, resident)
 
     def forward(self, tensors: list[torch.Tensor]) -> torch.Tensor:
         shape = list(tensors[0].shape)
@@ -322,7 +355,16 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
             # Row = (position * mul) >> (32 + shr) for every position below 2**31.
             shift = (total - 1).bit_length()
             mul = -(-(1 << (31 + shift)) // total) if total > 1 else 0
-            self.program(self._compile_flat, len(present))(
+            per_thread, resident = self._FLAT_PER_THREAD, None
+            # A launch past one resident wave runs its last CTAs after the first ones retire.
+            # Twice the vectors a thread bring it within one wave when the CTAs stay resident:
+            # one load a vector, from the address its column picks, held to the registers every
+            # resident CTA leaves a thread. ptxas fits that without spills for one or two
+            # inputs; with three it spills.
+            runs = [-(-rows * total // (_THREADS * p)) for p in (per_thread, 2 * per_thread)]
+            if len(present) <= 2 and runs[0] > wave >= runs[1]:
+                per_thread, resident = 2 * per_thread, self.resident_ctas
+            self.program(self._compile_flat, len(present), per_thread, resident)(
                 flat, mul, shift - 1 if total > 1 else 0, *(views[j] for j in present)
             )
             return out
