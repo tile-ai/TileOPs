@@ -24,8 +24,13 @@ class Step:
     ``window`` holds each query's sliding-window keys, -1 where none: token positions in a
     prefill, ``[S, min(S, window_size)]``, ring slots in a decode step, ``[1, window_size]``.
     ``offset`` is where the compressed entries start among a layer's keys: after the prompt in
-    a prefill, after the ring in a decode step. ``cu_seqlens``, ``starts`` and ``slots`` are the
-    int32 ``[0, S]``, ``[start_pos]`` and ``[0]`` the pooling ops read.
+    a prefill, after the ring in a decode step. ``cu_seqlens`` and ``slots`` are the int32
+    ``[0, S]`` and ``[0]`` the pooling ops read; ``starts``, int32 ``[start_pos]``, is the
+    position the pooling ops, the RoPE offsets, ``closed`` and the cache writes read. Past
+    telling a prefill from a decode step, a layer branches on ``start_pos`` only through
+    ``closes`` and ``has_entries`` and reads the position from the step's tensors, so a decode
+    step moved in place to a position where those two answer the same serves a CUDA graph
+    captured earlier.
     """
 
     start_pos: int
@@ -58,10 +63,25 @@ class Step:
             slots=torch.zeros(1, dtype=torch.int32, device=device),
         )
 
+    def closes(self, ratio: int) -> bool:
+        """Whether this decode step closes a window of ``ratio`` tokens."""
+        return (self.start_pos + 1) % ratio == 0
+
+    def has_entries(self, ratio: int) -> bool:
+        """Whether a window of ``ratio`` tokens has closed by this call's last token."""
+        return self.start_pos + self.seqlen >= ratio
+
     def closed(self, ratio: int) -> torch.Tensor:
         """``[S]``: how many compressed entries of ``ratio`` each query sees closed."""
-        end = self.start_pos + self.seqlen
-        return torch.arange(self.start_pos + 1, end + 1, device=self.window.device) // ratio
+        steps = torch.arange(1, self.seqlen + 1, device=self.window.device)
+        return (self.starts + steps) // ratio
+
+    def moved_to(self, start_pos: int) -> Step:
+        """This decode step at ``start_pos``: its tensors rewritten in place."""
+        slots = torch.arange(self.window.shape[-1], device=self.window.device)
+        self.window.copy_(torch.where(slots > start_pos, -1, slots))
+        self.starts.fill_(start_pos)
+        return dataclasses.replace(self, start_pos=start_pos)
 
 
 class FP8Linear:
@@ -132,10 +152,10 @@ class Compressor:
             first = 0
             cos, sin = rope.cos[: n * ratio : ratio], rope.sin[: n * ratio : ratio]
         else:
-            if (start_pos + 1) % ratio != 0:
+            if not step.closes(ratio):
                 return None
             closed = entries.view(1, 1, -1)
-            first = start_pos + 1 - ratio
+            first = step.starts + (1 - ratio)
             cos, sin = rope.cos, rope.sin
         closed = ops.norm(closed.contiguous(), self.norm)
         ops.rope(
@@ -183,21 +203,21 @@ class Indexer:
         ``step.offset`` and padded with -1."""
         start_pos, seqlen = step.start_pos, step.seqlen
         q = self.wq_b(ops, qr).view(1, seqlen, self.n_heads, self.head_dim)
-        ops.rope(q[..., -self.rope_dim :], rope.cos, rope.sin, seqlen_offsets=start_pos)
+        ops.rope(q[..., -self.rope_dim :], rope.cos, rope.sin, seqlen_offsets=step.starts)
         q = ops.hadamard(q)
         ops.fp4_fake_quant(q)
         entries = self.compressor(ops, rope, x, step)
-        if entries is not None:
-            first = start_pos // self.ratio
-            self.cache[:, first : first + entries.shape[1]] = entries
-        n_keys = (start_pos + seqlen) // self.ratio
-        if n_keys == 0:
+        if entries is not None and start_pos == 0:
+            self.cache[:, : entries.shape[1]] = entries
+        elif entries is not None:
+            self.cache.index_copy_(1, (step.starts // self.ratio).long(), entries)
+        if not step.has_entries(self.ratio):
             return torch.full(
                 (1, seqlen, ops.index_topk.top_k), -1, dtype=torch.int32, device=x.device
             )
         weights = ops.mul(ops.gemm(x, self.weights_proj).float(), self.weight_scale)
         weights = weights.to(torch.bfloat16)
-        width = n_keys if start_pos == 0 else self.max_entries
+        width = seqlen // self.ratio if start_pos == 0 else self.max_entries
         keys = self.cache[:, :width].transpose(1, 2).contiguous()
         scores = ops.bmm(q.view(1, seqlen * self.n_heads, self.head_dim), keys)
         scores = ops.relu(scores).view(seqlen, self.n_heads, width)
@@ -256,13 +276,13 @@ class Attention:
         qr = ops.norm(self.wq_a(ops, x), self.q_norm)
         q = self.wq_b(ops, qr).view(1, seqlen, self.n_heads, self.head_dim)
         q = ops.norm(q, None)
-        ops.rope(q[..., -rd:], rope.cos, rope.sin, seqlen_offsets=start_pos)
+        ops.rope(q[..., -rd:], rope.cos, rope.sin, seqlen_offsets=step.starts)
         kv = ops.norm(self.wkv(ops, x), self.kv_norm)
         ops.rope(
             kv.view(1, seqlen, 1, self.head_dim)[..., -rd:],
             rope.cos,
             rope.sin,
-            seqlen_offsets=start_pos,
+            seqlen_offsets=step.starts,
         )
         ops.kv_fake_quant(kv[:, :-rd])
         kv = kv.view(1, seqlen, self.head_dim)
@@ -286,14 +306,14 @@ class Attention:
                 self.kv_cache[:, win : win + entries.shape[1]] = entries
                 keys = torch.cat([kv, entries], dim=1)
         else:
-            self.kv_cache[:, start_pos % win] = kv[:, 0]
+            self.kv_cache.index_copy_(1, (step.starts % win).long(), kv)
             if entries is not None:
-                self.kv_cache[:, win + start_pos // self.ratio] = entries[:, 0]
+                self.kv_cache.index_copy_(1, (win + step.starts // self.ratio).long(), entries)
             keys = self.kv_cache
 
         idx = torch.cat(indices, dim=-1).to(torch.int32).view(1, seqlen, 1, -1)
         o = ops.attention(q, keys.unsqueeze(2).contiguous(), idx, attn_sink=self.attn_sink)
-        ops.rope(o[..., -rd:], rope.cos, rope.neg_sin, seqlen_offsets=start_pos)
+        ops.rope(o[..., -rd:], rope.cos, rope.neg_sin, seqlen_offsets=step.starts)
         grouped = o.view(seqlen, self.o_groups, -1).transpose(0, 1).contiguous()
         projected = ops.bmm(grouped, self.wo_a)
         projected = projected.transpose(0, 1).reshape(seqlen, self.o_groups * self.o_rank)

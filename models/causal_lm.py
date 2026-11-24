@@ -1,8 +1,9 @@
-"""The request bookkeeping and greedy generation every model here shares."""
+"""The request bookkeeping, decode-step CUDA graphs and greedy generation every model here
+shares."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from typing import Any
 
 import torch
@@ -14,8 +15,19 @@ class CausalLM:
     """A decoder on one device that advances one request at a time.
 
     A subclass sets ``config`` (with ``eos_token_id``), ``max_seq_len``, ``ops`` (with
-    ``argmax``), ``device`` and ``layers``, and its ``forward`` calls ``_continue`` first and
-    sets ``_next_pos`` to the position after its last token.
+    ``argmax``), ``device``, ``layers`` and ``cuda_graph``, and implements
+    ``_step(start_pos, seqlen)``, the index metadata of a call, and ``_run(ids, step)``, the
+    float32 logits ``[1, vocab_size]`` of the last of ``ids`` (``[1, S]`` on ``device``).
+
+    With ``cuda_graph`` on a CUDA device, decode steps, one token at ``start_pos > 0``, replay
+    CUDA graphs of ``_run`` on a token buffer and a step that the step's ``moved_to`` rewrites
+    in place for each position; the weights and the decoding state must keep the addresses the
+    graphs captured. A decode step's host-side branches, which ``_phase`` names, select one
+    graph per phase. The first decode step of a phase instead runs eagerly and then captures
+    the phase's graph, on the model's own stream; all phases share one memory pool. Replay
+    rests on each model's tests that it equals the eager step bitwise, not on
+    ``tests/cuda_graph_contract.py``: most ops a decode step calls are outside the CUDA Graph
+    support scope of ``docs/stability.md``.
     """
 
     config: Any
@@ -23,7 +35,13 @@ class CausalLM:
     ops: Any
     device: torch.device
     layers: list[Any]
+    cuda_graph: bool
     _next_pos: int | None = None
+    _graphs: dict[Hashable, tuple[torch.cuda.CUDAGraph, torch.Tensor]] | None = None
+    _graph_pool: tuple[int, int]
+    _graph_stream: torch.cuda.Stream
+    _graph_ids: torch.Tensor
+    _graph_step: Any
 
     def reset(self) -> None:
         """End the request; the next call must start at position 0."""
@@ -49,6 +67,49 @@ class CausalLM:
         elif start_pos != self._next_pos:
             raise ValueError(f"the request continues at position {self._next_pos}, got {start_pos}")
         return seqlen
+
+    def _phase(self, step: Any) -> Hashable:
+        """The host-side branches the decode step ``step`` takes; none by default."""
+        return ()
+
+    @torch.inference_mode()
+    def forward(self, input_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
+        """Run ``input_ids`` (``[1, S]``) from ``start_pos``; return the float32 logits of its
+        last token, ``[1, vocab_size]``."""
+        seqlen = self._continue(input_ids, start_pos)
+        ids = input_ids.to(self.device)
+        with torch.accelerator.device_index(self.device.index):
+            if self.cuda_graph and self.device.type == "cuda" and start_pos and seqlen == 1:
+                logits = self._replay(ids, start_pos)
+            else:
+                logits = self._run(ids, self._step(start_pos, seqlen))
+        self._next_pos = start_pos + seqlen
+        return logits
+
+    __call__ = forward
+
+    def _replay(self, ids: torch.Tensor, start_pos: int) -> torch.Tensor:
+        """The logits of the decode step of ``ids`` (``[1, 1]``) at ``start_pos``, replayed from
+        the graph of its phase; the first step of a phase runs eagerly, then captures it."""
+        if self._graphs is None:
+            self._graphs = {}
+            self._graph_pool = torch.cuda.graph_pool_handle()
+            self._graph_stream = torch.cuda.Stream(self.device)
+            self._graph_ids = torch.empty_like(ids)
+            self._graph_step = self._step(start_pos, 1)
+        self._graph_ids.copy_(ids)
+        step = self._graph_step.moved_to(start_pos)
+        phase = self._phase(step)
+        if phase in self._graphs:
+            graph, logits = self._graphs[phase]
+            graph.replay()
+            return logits.clone()
+        logits = self._run(ids, step)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, pool=self._graph_pool, stream=self._graph_stream):
+            out = self._run(self._graph_ids, step)
+        self._graphs[phase] = graph, out
+        return logits
 
     @torch.inference_mode()
     def generate(

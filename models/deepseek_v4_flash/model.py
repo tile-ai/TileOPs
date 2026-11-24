@@ -21,7 +21,10 @@ class DeepseekV4FlashForCausalLM(CausalLM):
     the current one at construction. A forward call runs with ``device`` current and leaves the
     current device as it found it. A forward call advances one request:
     ``start_pos`` 0 is a prefill that starts a new request; any later ``start_pos`` is a decode
-    step of one token and must be the number of tokens already passed. The MTP layer is not built.
+    step of one token and must be the number of tokens already passed. With ``cuda_graph`` on
+    a CUDA device, the decode steps of one phase, which compressors close a window and whether
+    the indexers hold an entry, share a CUDA graph: the first runs eagerly and captures it, the
+    later ones replay it. The MTP layer is not built.
     """
 
     def __init__(
@@ -30,12 +33,16 @@ class DeepseekV4FlashForCausalLM(CausalLM):
         *,
         device: torch.device | str = "cuda",
         max_seq_len: int = 4096,
+        cuda_graph: bool = True,
     ) -> None:
         self.config = config
         self.max_seq_len = max_seq_len
         self.device = indexed_device(device)
+        self.cuda_graph = cuda_graph
         self.ops = ModelOps(config)
         self.layers = [Block(config, i, max_seq_len, self.device) for i in range(config.n_layers)]
+        self._ratios = tuple(sorted({layer.attn.ratio for layer in self.layers} - {0}))
+        self._indexed_ratios = tuple(r for r in self._ratios if config.indexed(r))
         ropes: dict[bool, RoPETable] = {}
         for layer in self.layers:
             compressed = layer.attn.ratio != 0
@@ -55,32 +62,41 @@ class DeepseekV4FlashForCausalLM(CausalLM):
         *,
         device: torch.device | str = "cuda",
         max_seq_len: int = 4096,
+        cuda_graph: bool = True,
     ) -> DeepseekV4FlashForCausalLM:
         """Load a Hugging Face DeepSeek-V4-Flash checkpoint directory (``safetensors`` shards)."""
         from models.deepseek_v4_flash.loader import load_weights
 
         model = cls(
-            DeepseekV4FlashConfig.from_pretrained(path), device=device, max_seq_len=max_seq_len
+            DeepseekV4FlashConfig.from_pretrained(path),
+            device=device,
+            max_seq_len=max_seq_len,
+            cuda_graph=cuda_graph,
         )
         load_weights(model, Path(path))
         return model
 
-    @torch.inference_mode()
-    def forward(self, input_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
-        """Run ``input_ids`` (``[1, S]``) from ``start_pos``; return the float32 logits of its
-        last token, ``[1, vocab_size]``."""
-        seqlen = self._continue(input_ids, start_pos)
+    def _continue(self, input_ids: torch.Tensor, start_pos: int) -> int:
+        seqlen = super()._continue(input_ids, start_pos)
         if start_pos and seqlen != 1:
             raise ValueError(f"a decode step takes one token, got {seqlen}")
-        ids = input_ids.to(self.device)
-        with torch.accelerator.device_index(self.device.index):
-            h = self.streams(ids)
-            step = Step.build(self.config, start_pos, seqlen, self.device)
-            for layer in self.layers:
-                h = layer(self.ops, h, ids, step)
-            logits = self.logits(h)
-        self._next_pos = start_pos + seqlen
-        return logits
+        return seqlen
+
+    def _step(self, start_pos: int, seqlen: int) -> Step:
+        return Step.build(self.config, start_pos, seqlen, self.device)
+
+    def _run(self, ids: torch.Tensor, step: Step) -> torch.Tensor:
+        h = self.streams(ids)
+        for layer in self.layers:
+            h = layer(self.ops, h, ids, step)
+        return self.logits(h)
+
+    def _phase(self, step: Step) -> tuple[bool, ...]:
+        """For each compression ratio, whether ``step`` closes a window, then for each indexed
+        ratio, whether the indexer holds an entry."""
+        return tuple(step.closes(r) for r in self._ratios) + tuple(
+            step.has_entries(r) for r in self._indexed_ratios
+        )
 
     def streams(self, input_ids: torch.Tensor) -> torch.Tensor:
         """The ``hc_mult`` residual streams ``[1, S, hc_mult, dim]`` the layers take for
@@ -93,5 +109,3 @@ class DeepseekV4FlashForCausalLM(CausalLM):
         streams ``h``, collapsed by ``hc_head``."""
         x = self.ops.hc_head(h[:, -1].contiguous(), *self.hc_head)
         return self.ops.gemm_f32(self.ops.norm(x, self.norm), self.head)
-
-    __call__ = forward
