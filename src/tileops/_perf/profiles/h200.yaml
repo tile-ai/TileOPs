@@ -18,6 +18,13 @@ hbm:
   calibration: 0.9380        # = max(calibration_mixes)
   calibration_mixes: {copy: 0.8183, triad: 0.8427, read: 0.9380, write: 0.8926}
 
+# The busy time one more dependent kernel launch adds to a program: one-block kernels
+# chained one to five deep, timed as tuning candidates are (CUPTI device busy, L2 flushed
+# before each call, median of 200 calls); the median of 20 steps over 5 runs, steps
+# 0.83-1.06 us, clocks unlocked.
+launch:
+  latency: 0.928e-6          # s
+
 cuda_core:
   fp32:
     theoretical: 67.0e12     # FLOPS, spec sheet (non-tensor FMA, 2 FLOP per FMA, 1.98 GHz boost)

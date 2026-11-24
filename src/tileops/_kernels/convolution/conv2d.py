@@ -1,7 +1,5 @@
 """2-D convolution kernels: dense, grouped, depthwise, symmetric, and 1x1."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -17,7 +15,7 @@ from tileops._kernels.convolution._common import (
 )
 from tileops._kernels.convolution.call_spec import Conv2dCall, Conv2dFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._perf import find_profile, resolve_roof, tensor_core_roof
+from tileops._perf import tensor_core_roof
 from tileops._utils import WARP_LANES
 
 __all__ = [
@@ -518,6 +516,15 @@ def _conv2d_depthwise_kernel(
     return _conv2d_depthwise_func
 
 
+# The dtype of a split's partial sums: the accumulator's, whatever the operand dtype.
+_PARTIAL_DTYPE = torch.float32
+
+
+def _k_blocks(c_in: int, kernel_size: int, block_k: int) -> int:
+    """The number of ``block_k``-wide blocks of the symmetric kernel's contraction."""
+    return -(-(c_in * kernel_size * kernel_size) // block_k)
+
+
 @target_cache(maxsize=8)
 def _conv2d_symmetric_kernel(
     n: int,
@@ -618,6 +625,31 @@ def _conv2d_symmetric_kernel(
                         channel_lanes=w_lanes,
                     )
 
+        # A split of the contraction: grid z runs split_k CTAs over each output tile, each
+        # over its own contiguous k_blocks / split_k blocks, writing a partial tile.
+        k_blocks = _k_blocks(c_in, kernel_size, block_k)
+        if k_blocks % split_k:
+            raise ValueError(f"split_k={split_k} must divide the {k_blocks} k blocks")
+        k_split = k_blocks // split_k
+        partial_dtype = str(_PARTIAL_DTYPE).removeprefix("torch.")
+        # The partial sum runs one channel of one image per block row, four outputs a thread.
+        sum_threads = 128
+        sum_block = 4 * sum_threads
+
+        # Runs k_split K blocks from k_first of the (by, bx) output tile into out_local; the
+        # unsplit and split GEMMs share it.
+        @T.macro
+        def accumulate(x_nhwc, weight_flat, data_shared, weight_shared, out_local, bx, by, k_first):
+            T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
+            T.clear(out_local)
+
+            for k_iter in T.Pipelined(k_split, num_stages=num_stages):
+                T.im2col(
+                    x_nhwc, data_shared, by, k_first + k_iter, kernel_size, stride, dilation, pad
+                )
+                T.copy(weight_flat[bx * block_n, (k_first + k_iter) * block_k], weight_shared)
+                T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
+
         @T.macro
         def conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out, bias):
             with T.Kernel(
@@ -635,13 +667,7 @@ def _conv2d_symmetric_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
                 out_nchw = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
-                T.clear(out_local)
-
-                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    T.im2col(x_nhwc, data_shared, by, k_iter, kernel_size, stride, dilation, pad)
-                    T.copy(weight_flat[bx * block_n, k_iter * block_k], weight_shared)
-                    T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
+                accumulate(x_nhwc, weight_flat, data_shared, weight_shared, out_local, bx, by, 0)
 
                 for i, j in T.Parallel(block_m, block_n):
                     oc = bx * block_n + j
@@ -657,16 +683,6 @@ def _conv2d_symmetric_kernel(
                 m_base = by * block_m
                 T.copy(out_shared, out_nchw[m_base // out_hw, bx * block_n, m_base % out_hw])
 
-        # A split of the contraction: grid z runs split_k CTAs over each output tile, each
-        # over its own contiguous k_iters / split_k blocks, writing an f32 partial tile.
-        k_blocks = -(-k_total // block_k)
-        if k_blocks % split_k:
-            raise ValueError(f"split_k={split_k} must divide the {k_blocks} k blocks")
-        k_split = k_blocks // split_k
-        # The partial sum runs one channel of one image per block row, four outputs a thread.
-        sum_threads = 128
-        sum_block = 4 * sum_threads
-
         @T.macro
         def conv_nhwc_implicit_gemm_split(x_nhwc, weight_krsc, partial):
             with T.Kernel(
@@ -678,18 +694,13 @@ def _conv2d_symmetric_kernel(
                 data_shared = T.alloc_shared((block_m, block_k), dtype)
                 weight_shared = T.alloc_shared((block_n, block_k), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                out_shared = T.alloc_shared((block_n, block_m), accum_dtype)
+                out_shared = T.alloc_shared((block_n, block_m), partial_dtype)
 
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
 
-                T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
-                T.clear(out_local)
-
-                for k_iter in T.Pipelined(k_split, num_stages=num_stages):
-                    k_block = bz * k_split + k_iter
-                    T.im2col(x_nhwc, data_shared, by, k_block, kernel_size, stride, dilation, pad)
-                    T.copy(weight_flat[bx * block_n, k_block * block_k], weight_shared)
-                    T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
+                accumulate(
+                    x_nhwc, weight_flat, data_shared, weight_shared, out_local, bx, by, bz * k_split
+                )
 
                 for i, j in T.Parallel(block_m, block_n):
                     out_shared[j, i] = out_local[i, j]
@@ -741,7 +752,7 @@ def _conv2d_symmetric_kernel(
                     x_nhwc: T.Tensor((n, h, w, c_in), dtype),
                     weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
                     out: T.Tensor((n, c_out, out_h, out_w), dtype),
-                    partial: T.Tensor(partial_shape, accum_dtype),
+                    partial: T.Tensor(partial_shape, partial_dtype),
                     bias: T.Tensor((c_out,), dtype),
                 ):
                     _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, partial, bias)
@@ -755,7 +766,7 @@ def _conv2d_symmetric_kernel(
                 x_nhwc: T.Tensor((n, h, w, c_in), dtype),
                 weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
                 out: T.Tensor((n, c_out, out_h, out_w), dtype),
-                partial: T.Tensor(partial_shape, accum_dtype),
+                partial: T.Tensor(partial_shape, partial_dtype),
             ):
                 _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, partial, None)
 
@@ -969,61 +980,73 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
                 }
         return {**tile, "split_k": self.split_k(tile)}
 
-    @functools.cached_property
-    def device_rates(self) -> tuple[float, float] | None:
-        """The calibrated tensor-core rate for this dtype, in flop/s, and DRAM rate, in
-        bytes/s, of the build device's GPU profile; ``None`` for a device without one."""
-        device = self._build_device
-        if device is None or device.type != "cuda":
-            return None
-        profile = find_profile(torch.cuda.get_device_name(device))
-        roof = None if profile is None else resolve_roof(profile, tensor_core_roof(self.dtype))
-        if roof is None or "effective" not in profile.get("hbm", {}):
-            return None
-        return roof["effective"], profile["hbm"]["effective"]
-
     def split_k(self, tile: dict) -> int:
         """How many CTAs share the contraction of each output tile of *tile*'s grid.
 
         A grid of ``tiles`` output tiles leaves ``sm_count - tiles`` SMs idle through the
         whole K loop. Split ``s`` ways, each CTA runs ``k_blocks / s`` of the K blocks and
         ``tiles * s`` CTAs stay in one wave. A split saves the ``k_blocks - k_blocks / s``
-        blocks a CTA no longer runs, each priced at one SM's share of the tensor-core rate,
-        and costs the f32 partials written and read back at the DRAM rate. ``s`` is the
-        divisor of ``k_blocks`` that saves the most, 1 when none saves anything or the
-        device has no GPU profile to price them. The partial tile is staged in shared
-        memory beside the pipeline, so a split that does not fit there is not taken.
+        blocks a CTA no longer runs, each priced at one SM's share of the tensor-core rate.
+        It costs the partials written and read back, priced at the DRAM rate though they
+        mostly stay in L2, and the fixed latency of the launch that sums them. All three
+        are the build target's GPU-profile facts. ``s`` is the divisor of ``k_blocks`` that
+        saves the most, 1 when none saves anything or the device has no profile. The partial
+        tile is staged in shared memory beside the pipeline, so a split that does not fit
+        there is not taken.
         """
-        rates = self.device_rates
+        target = self.build_target
+        flops = dict(target.tensor_core_rates).get(tensor_core_roof(self.dtype).split(".")[1])
+        if not self._split_fits(tile) or not flops or not target.hbm_rate:
+            return 1
         tiles = -(-self.c_out // tile["block_n"]) * -(
             -(self.n * self.out_h * self.out_w) // tile["block_m"]
         )
-        k_blocks = self.c_in * self.kernel_size**2 // tile["block_k"]
-        pipeline_bytes = (
+        k_blocks = _k_blocks(self.c_in, self.kernel_size, tile["block_k"])
+        block_s = (
+            2 * tile["block_m"] * tile["block_n"] * tile["block_k"] / (flops / target.sm_count)
+        )
+        partial_bytes = self.n * self.c_out * self.out_h * self.out_w * _PARTIAL_DTYPE.itemsize
+
+        def saved_s(split: int) -> float:
+            run = (k_blocks - k_blocks // split) * block_s
+            return run - 2 * split * partial_bytes / target.hbm_rate - target.launch_latency
+
+        most = min(target.sm_count // tiles, k_blocks // tile["num_stages"])
+        splits = [s for s in range(2, most + 1) if k_blocks % s == 0 and saved_s(s) > 0]
+        return max(splits, key=saved_s, default=1)
+
+    def _split_fits(self, tile: dict) -> bool:
+        """Whether *tile*'s pipeline and its partial tile fit in a block's shared memory."""
+        pipeline = (
             tile["num_stages"]
             * (tile["block_m"] + tile["block_n"])
             * tile["block_k"]
             * self.dtype.itemsize
         )
-        partial_bytes = tile["block_m"] * tile["block_n"] * 4
-        if rates is None or pipeline_bytes + partial_bytes > self.build_target.smem_budget:
-            return 1
-        flops, dram = rates
-        block_s = (
-            2
-            * tile["block_m"]
-            * tile["block_n"]
-            * tile["block_k"]
-            / (flops / self.build_target.sm_count)
-        )
-        outputs = self.n * self.c_out * self.out_h * self.out_w
+        partial = tile["block_m"] * tile["block_n"] * _PARTIAL_DTYPE.itemsize
+        return pipeline + partial <= self.build_target.smem_budget
 
-        def saved_s(split: int) -> float:
-            return (k_blocks - k_blocks // split) * block_s - 2 * split * outputs * 4 / dram
+    def init_config(self, config: dict | None = None) -> None:
+        """Set the config; a config that leaves ``split_k`` out takes its tile's split.
 
-        most = min(self.build_target.sm_count // tiles, k_blocks // tile["num_stages"])
-        splits = [s for s in range(2, most + 1) if k_blocks % s == 0 and saved_s(s) > 0]
-        return max(splits, key=saved_s, default=1)
+        Raises:
+            ValueError: ``split_k`` does not divide the tile's K blocks, or a split tile's
+                partial tile does not fit in shared memory beside its pipeline.
+        """
+        if config is not None and config.get("split_k") is None:
+            tile = {k: config.get(k, v) for k, v in self.default_config.items() if k != "split_k"}
+            tile = {k: v if v is not None else self.default_config[k] for k, v in tile.items()}
+            config = {**config, "split_k": self.split_k(tile)}
+        super().init_config(config)
+        split_k = self.config["split_k"]
+        k_blocks = _k_blocks(self.c_in, self.kernel_size, self.config["block_k"])
+        if k_blocks % split_k:
+            raise ValueError(f"split_k={split_k} must divide the {k_blocks} K blocks")
+        if split_k > 1 and not self._split_fits(self.config):
+            raise ValueError(
+                f"split_k={split_k}: the partial tile does not fit in shared memory beside "
+                "the pipeline"
+            )
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -1071,7 +1094,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         partial = torch.empty(
             (split_k, self.n, self.c_out, self.out_h * self.out_w),
             device=x.device,
-            dtype=torch.float32,
+            dtype=_PARTIAL_DTYPE,
         )
         return launch(self, x, weight, x_nhwc, weight_krsc, partial, bias=bias)
 
