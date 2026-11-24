@@ -867,9 +867,25 @@ class _LeadingAxisReducePolicy:
 
 _LEADING_POLICY = _LeadingAxisReducePolicy()
 
-# Bytes of one L2 cache line, four 32-byte sectors: the columns one CTA of
-# `_down_rows_cluster_kernel` owns, which `down_rows_cluster` counts its CTAs by.
+# `_down_rows_cluster_kernel`'s block, which `down_rows_cluster` sizes its grid by: 512
+# threads keeping 8 vector loads each in flight hold 64 KB per SM, several times what HBM
+# bandwidth times its latency asks of one SM.
+_CLUSTER_THREADS = 512
+
+# Bytes of one L2 cache line, four 32-byte sectors: the narrowest read of a row that fills
+# whole lines, which bounds a cluster CTA's row groups.
 L2_LINE_BYTES = 128
+
+
+def _cluster_row_groups(reduced: int) -> int:
+    """Row groups of a `_down_rows_cluster_kernel` CTA over *reduced* rows: one per row up to
+    the count whose groups each read one L2 line of a row, the narrowest whole-line read.
+
+    Fewer rows take fewer, wider groups, so no thread waits on a row that is not there.
+    """
+    return min(
+        _CLUSTER_THREADS * VECTOR_ACCESS_BYTES // L2_LINE_BYTES, 1 << (reduced - 1).bit_length()
+    )
 
 
 def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
@@ -1090,19 +1106,21 @@ def _down_rows_vector_kernel(
     return _func
 
 
-def down_rows_cluster(kept: int, in_dtype: str, arch: int, sm_count: int) -> int:
+def down_rows_cluster(reduced: int, kept: int, in_dtype: str, arch: int, sm_count: int) -> int:
     """CTAs of one cluster `_down_rows_cluster_kernel` splits a ``(reduced, kept)`` buffer's
     reduced axis into, or 0 where it does not serve the buffer.
 
     It serves rows of whole 16-byte vectors on an architecture with thread-block clusters.
-    Each CTA owns one L2 line's worth of columns; the cluster is the largest power of two
-    that keeps one CTA per SM, up to the portable cluster size. Where that cap leaves half
-    the SMs or more without a CTA, the split launches keep the device busier.
+    Each CTA owns the columns one read of each of its row groups covers; the cluster is the
+    largest power of two that keeps one CTA per SM, up to the portable cluster size. Where
+    that cap leaves half the SMs or more without a CTA, the split launches keep the device
+    busier. Two CTAs fit an SM, so every such grid is resident at once.
     """
     itemsize = getattr(torch, in_dtype).itemsize
     if arch < 90 or kept * itemsize % VECTOR_ACCESS_BYTES:
         return 0
-    tiles = ceil_div(kept * itemsize, L2_LINE_BYTES)
+    lanes = _CLUSTER_THREADS // _cluster_row_groups(reduced)
+    tiles = ceil_div(kept * itemsize, lanes * VECTOR_ACCESS_BYTES)
     cluster = 1
     while cluster < MAX_PORTABLE_CLUSTER_BLOCKS and 2 * cluster * tiles <= sm_count:
         cluster *= 2
@@ -1123,9 +1141,9 @@ def _down_rows_cluster_kernel(
     """Build a one-launch reduce down the rows of an ``(A, B)`` buffer of whole 16-byte
     vectors, its reduced axis split across the ``cluster`` CTAs of a thread-block cluster.
 
-    Each CTA owns one L2 line of columns of ``ceil(A / cluster)`` rows. Its threads form row
-    groups of one line each, which walk interleaved rows folding one 16-byte vector a thread
-    per row; the groups' partials meet in shared memory. Each CTA then stores its partial of
+    Each CTA owns a band of columns of ``ceil(A / cluster)`` rows. Its threads form
+    `_cluster_row_groups` row groups, each as wide as the band, which walk interleaved rows
+    folding one 16-byte vector a thread per row; the groups' partials meet in shared memory. Each CTA then stores its partial of
     every column into the shared memory of the CTA that finishes that column, and after one
     cluster barrier each CTA folds its columns' ``cluster`` partials, in rank order, and
     writes them. The arguments are `_down_rows_kernel`'s with one split; the input must
@@ -1133,12 +1151,12 @@ def _down_rows_cluster_kernel(
     """
     itemsize = getattr(torch, in_dtype).itemsize
     vec = VECTOR_ACCESS_BYTES // itemsize
-    width = L2_LINE_BYTES // itemsize
-    lanes = width // vec
-    # 512 threads keeping 8 vector loads each in flight hold 64 KB per SM, several times
-    # what HBM bandwidth times its latency asks of one SM.
-    threads, unroll = 512, 8
-    groups = threads // lanes
+    threads, unroll = _CLUSTER_THREADS, 8
+    groups = _cluster_row_groups(A)
+    lanes = threads // groups
+    width = lanes * vec
+    # Columns of the band each thread folds the groups' partials of, and finishes.
+    folds = ceil_div(width, threads)
     tiles = ceil_div(B, width)
     rows = ceil_div(A, cluster)
     steps = ceil_div(rows, groups)
@@ -1172,7 +1190,9 @@ def _down_rows_cluster_kernel(
                 out_local = T.alloc_local((1,), out_dtype)
                 # One buffer for the groups' partials and the peers' landing slots: a peer
                 # may store into its slots while this CTA still reads the partials.
-                scratch = T.alloc_shared((groups * width + cluster * owned,), "float32")
+                scratch = T.alloc_shared(
+                    (groups * width + (cluster * owned if cluster > 1 else 0),), "float32"
+                )
                 if cluster > 1:
                     # Every CTA of the cluster has started before a peer stores into it.
                     T.cluster_arrive_relaxed()
@@ -1195,31 +1215,36 @@ def _down_rows_cluster_kernel(
                     scratch[group * width + tx % lanes * vec + j] = acc[j]
                 T.sync_threads()
 
-                if tx < width:
-                    total[0] = identity
-                    for k in T.unroll(groups):
-                        combine(total, 0, scratch[k * width + tx])
-                if cluster == 1:
-                    if tx < width and tile * width + tx < B:
-                        finish(out_local, 0, total[0])
-                        out[tile * width + tx] = out_local[0]
-                else:
+                if cluster > 1:
                     T.cluster_wait()
-                    if tx < width:
-                        T.call_extern(
-                            "handle",
-                            "tileops::cluster_store_f32",
-                            T.address_of(scratch[groups * width + rank * owned + tx % owned]),
-                            tx // owned,
-                            total[0],
-                        )
-                    T.cluster_sync()
-                    if tx < owned and tile * width + rank * owned + tx < B:
+                for f in T.unroll(folds):
+                    c = f * threads + tx
+                    if folds * threads == width or c < width:
                         total[0] = identity
-                        for p in T.unroll(cluster):
-                            combine(total, 0, scratch[groups * width + p * owned + tx])
-                        finish(out_local, 0, total[0])
-                        out[tile * width + rank * owned + tx] = out_local[0]
+                        for k in T.unroll(groups):
+                            combine(total, 0, scratch[k * width + c])
+                        if cluster == 1:
+                            if tile * width + c < B:
+                                finish(out_local, 0, total[0])
+                                out[tile * width + c] = out_local[0]
+                        else:
+                            T.call_extern(
+                                "handle",
+                                "tileops::cluster_store_f32",
+                                T.address_of(scratch[groups * width + rank * owned + c % owned]),
+                                c // owned,
+                                total[0],
+                            )
+                if cluster > 1:
+                    T.cluster_sync()
+                    for f in T.unroll(ceil_div(owned, threads)):
+                        c = f * threads + tx
+                        if c < owned and tile * width + rank * owned + c < B:
+                            total[0] = identity
+                            for p in T.unroll(cluster):
+                                combine(total, 0, scratch[groups * width + p * owned + c])
+                            finish(out_local, 0, total[0])
+                            out[tile * width + rank * owned + c] = out_local[0]
 
         return main
 
@@ -1279,7 +1304,7 @@ def down_rows_launcher(
             )()
         )
 
-    cluster = down_rows_cluster(kept, in_dtype, arch, sm_count)
+    cluster = down_rows_cluster(reduced, kept, in_dtype, arch, sm_count)
     if cluster:
         return CompiledProgram(
             _down_rows_cluster_kernel(

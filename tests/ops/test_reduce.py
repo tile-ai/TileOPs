@@ -170,12 +170,12 @@ def test_extrema_preserves_nan(shape, axes, dtype, kind) -> None:
             (1024, 256), torch.float32, "amin", marks=pytest.mark.smoke, id="split-tail-f32"
         ),
         pytest.param((1024, 512), torch.float16, "amax", marks=pytest.mark.full, id="split-f16"),
-        pytest.param((1024, 512), torch.float32, "amin", marks=pytest.mark.full, id="split-f32"),
+        pytest.param((1024, 512), torch.float32, "amin", marks=pytest.mark.full, id="rows-f32"),
         pytest.param(
             (1025, 512), torch.float16, "amax", marks=pytest.mark.full, id="split-ragged-f16"
         ),
         pytest.param(
-            (1025, 512), torch.float32, "amin", marks=pytest.mark.full, id="split-ragged-f32"
+            (1025, 512), torch.float32, "amin", marks=pytest.mark.full, id="ragged-rows-f32"
         ),
         pytest.param((2, 524288), torch.float16, "amax", marks=pytest.mark.full, id="vector-f16"),
         pytest.param((2, 524288), torch.float32, "amin", marks=pytest.mark.full, id="vector-f32"),
@@ -190,6 +190,7 @@ def test_extrema_leading_preserves_nan(shape, dtype, kind) -> None:
     the cluster's one launch.
 
     The row slices split a column tail, divide the rows, or leave the last slice short;
+    2 KB rows of fp32 take an 8-CTA cluster on SM90 and the row slices elsewhere;
     columns of whole 16-byte-vector tiles take the one-launch vector walk. A 2-byte and a
     4-byte element are walked to different depths. Rows of whole vectors wide enough to
     fill the device fold in one launch across a thread-block cluster, which merges NaNs
