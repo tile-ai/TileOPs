@@ -360,7 +360,7 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
             # Twice the vectors a thread bring it within one wave when the CTAs stay resident:
             # one load a vector, from the address its column picks, held to the registers every
             # resident CTA leaves a thread. ptxas fits that without spills for one or two
-            # inputs; with three it spills (12 bytes at 32 registers on sm_90).
+            # inputs; with three it spills.
             runs = [-(-rows * total // (_THREADS * p)) for p in (per_thread, 2 * per_thread)]
             if len(present) <= 2 and runs[0] > wave >= runs[1]:
                 per_thread, resident = 2 * per_thread, self.resident_ctas
