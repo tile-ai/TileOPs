@@ -1,3 +1,5 @@
+import re
+
 import pytest
 import torch
 
@@ -577,6 +579,56 @@ def test_causal_conv1d_prefill_refuses_a_ring_past_shared_memory() -> None:
     )  # fmt: skip
     with pytest.raises(OpNotAvailableError, match="bytes of tokens, past the 101376"):
         CausalConv1dFwdOp(dilation=70).key_for("causal_conv1d", call)
+
+
+# Float16 builds: a dilated build's 832 blocks of one warp, which hold more than 128 registers'
+# worth; 256-channel by 256-token blocks: 512 (4 an H200 SM), 480 (4, the same program) and 256
+# (2); 640, whose 5 an SM would leave a thread 102 registers, and 40, one an SM, sharing one
+# unbounded program.
+_RESIDENCY = (
+    pytest.param(8192, 3, ([100, 900],), marks=_SMOKE, id="dilated"),
+    pytest.param(
+        8192, 1, ([2500, 1000, 500, 96], [2000, 1800], [1000, 1048]), marks=_FULL,
+        id="one-wave-and-reuse",
+    ),
+    pytest.param(10240, 1, ([3000, 1000, 96], [200]), marks=_FULL, id="register-floor-one-block"),
+)  # fmt: skip
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dim, dilation, runs", _RESIDENCY)
+def test_causal_conv1d_prefill_holds_a_one_wave_grid_resident(dim, dilation, runs) -> None:
+    """An undilated grid asks ptxas to hold ceil(blocks / SMs) blocks an SM, unless that is one,
+    leaves a thread fewer than 128 registers or overfills shared memory; a dilated one asks for
+    none. One kernel serves
+    token counts that ask different residencies, a residency seen before reuses its program,
+    and every call's output and state stay right."""
+    props = torch.cuda.get_device_properties(run_device())
+    sms, regs = props.multi_processor_count, props.regs_per_multiprocessor
+    smem = props.shared_memory_per_multiprocessor
+    op = None
+    expected = set()
+    for seq_lens in runs:
+        call = manifest_call(
+            "CausalConv1dFwdOp", {"T": "float16", "Tw": "float16"}, D=dim, W=4, L=3 * dilation,
+            Tt=sum(seq_lens), seq_lens=seq_lens, dilation=dilation, some=["has_initial_state"],
+            bias=None,
+        )  # fmt: skip
+        test = CausalConv1dFwdTest(call)
+        op = op or CausalConv1dFwdOp(**call.arguments())
+        test.check(
+            op,
+            *test.gen_inputs(),
+            runs=lambda *args, op=op, **kw: conv_state_result(op, *args, **kw),
+        )
+        held = -(-(dim // 256 * -(-sum(seq_lens) // 256)) // sms)
+        # A block's ring: 4 warps x 2 stages x 8 tokens x 256 float16 channels.
+        asked = held > 1 and regs // (held * 128) >= 128 and held * 32768 <= smem
+        expected.add("32, 1" if dilation > 1 else f"128, {held if asked else 1}")
+    (kernel,) = op._entries_built("causal_conv1d").values()
+    sources = [program.get_kernel_source() for program in kernel._generation.programs.values()]
+    bounds = [b for s in sources for b in re.findall(r"__launch_bounds__\(([\d, ]+)\)", s)]
+    assert sorted(bounds) == sorted(expected)
 
 
 @pytest.mark.smoke

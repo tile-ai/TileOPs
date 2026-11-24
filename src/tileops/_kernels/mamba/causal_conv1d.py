@@ -80,6 +80,11 @@ def _prefill_config(dim: int, width: int, dtype: torch.dtype, dilation: int) -> 
     return {"vec": vec, "warps": warps, "seg": sums * max(1, 8 // sums), "steps": 8, "stages": 2}
 
 
+def _ring_bytes(cfg: dict, itemsize: int) -> int:
+    """Shared memory a block's token ring takes under *cfg*."""
+    return cfg["warps"] * cfg["stages"] * cfg["seg"] * WARP_LANES * cfg["vec"] * itemsize
+
+
 @target_cache(maxsize=64)
 def _causal_conv1d_kernel(
     dim: int,
@@ -99,7 +104,7 @@ def _causal_conv1d_kernel(
 
     # exp2 as one MUFU op, denormals flushed.
     @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS, "--use_fast_math"])
-    def _func(vec: int, warps: int, seg: int, steps: int, stages: int):
+    def _func(vec: int, warps: int, seg: int, steps: int, stages: int, resident: int):
         total = T.dynamic("total")
         batch = T.dynamic("batch")
         pool = T.dynamic("pool")
@@ -186,6 +191,8 @@ def _causal_conv1d_kernel(
                 T.ceildiv(T.ceildiv(total, chunk), warps),
                 threads=WARP_LANES * warps,
             ) as (bd, bc):
+                if resident:
+                    T.annotate_min_blocks_per_sm(resident)
                 ring = T.alloc_shared((warps, stages, seg, block_d), dtype)
                 tx = T.get_thread_binding()
                 lane = tx % WARP_LANES
@@ -387,7 +394,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
 
     A warp walks ``seg * steps`` packed tokens of ``32 * vec`` channels through a
     ``stages``-slot cp.async ring in shared memory. The sequence count and lengths are runtime
-    values: one build serves every batch.
+    values: one build serves every batch whose grid asks ptxas for the same blocks an SM.
 
     Args:
         dim: Channels, ``D``.
@@ -413,8 +420,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         if reason is not None:
             return reason
         cfg = _prefill_config(call.dim, call.width, call.dtype, call.dilation)
-        tokens = cfg["warps"] * cfg["stages"] * cfg["seg"] * WARP_LANES * cfg["vec"]
-        need = tokens * call.dtype.itemsize
+        need = _ring_bytes(cfg, call.dtype.itemsize)
         if need > call.smem_budget:
             return f"a block stages {need} bytes of tokens, past the {call.smem_budget} a block has"
         return None
@@ -460,9 +466,9 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     def default_config(self) -> dict:
         return _prefill_config(self.dim, self.width, self.dtype, self.dilation)
 
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)
+    def _compile(self, cfg: dict, resident: int):
+        """The program ``forward`` launches, compiled from *cfg* for *resident* blocks an SM."""
+        return self.kernel(**cfg, resident=resident)
 
     def forward(
         self,
@@ -482,7 +488,27 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
             flags = cu_seqlens.view(torch.uint8)[:batch]
         else:
             flags = has_initial_state.view(torch.uint8)
-        self.program(self._compile)(
+        # ptxas may give a thread more registers than ceil(grid / SMs) blocks an SM leave it,
+        # and the blocks that then do not fit run as a second wave; so a grid of a few blocks
+        # an SM asks for that many (__launch_bounds__). A thread of the widest undilated build
+        # (8 channels, 4 taps, float32 filters) fits in 128 registers without spilling, so a
+        # smaller share asks for none; a dilated thread holds more, and asks for none. Nor does
+        # a grid whose blocks' rings do not fit an SM's shared memory that many at once.
+        cfg, target = self.config, self.build_target
+        threads = WARP_LANES * cfg["warps"]
+        ring_bytes = _ring_bytes(cfg, x.element_size())
+        chunks = (x.shape[0] + cfg["seg"] * cfg["steps"] - 1) // (cfg["seg"] * cfg["steps"])
+        strips = (self.dim + WARP_LANES * cfg["vec"] - 1) // (WARP_LANES * cfg["vec"])
+        grid = strips * ((chunks + cfg["warps"] - 1) // cfg["warps"])
+        resident = (grid + target.sm_count - 1) // target.sm_count
+        if (
+            self.dilation > 1
+            or resident < 2
+            or target.regs_per_sm // (resident * threads) < 128
+            or resident * ring_bytes > target.smem_per_sm
+        ):
+            resident = 0
+        self.program(self._compile, resident)(
             x,
             weight.view(-1),
             bias if bias is not None else weight.view(-1)[: x.shape[1]],
