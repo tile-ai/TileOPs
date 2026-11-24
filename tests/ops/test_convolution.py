@@ -907,6 +907,8 @@ def test_conv2d_symmetric_keeps_whole_tiles(shape: tuple, profiled: bool) -> Non
     from tileops._kernels.convolution.conv2d import Conv2dSymmetricKernel
     from tileops.backend import BUILTIN
 
+    if profiled and not _has_gpu_profile():
+        pytest.skip("the saving is priced from the device's GPU profile, and this device has none")
     n, c_in, h, w, c_out = shape
     x = torch.randn(n, c_in, h, w, device=run_device(), dtype=torch.float16)
     weight = torch.randn(c_out, c_in, 3, 3, device=x.device, dtype=x.dtype)
