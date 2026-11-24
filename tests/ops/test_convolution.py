@@ -864,14 +864,15 @@ def _has_gpu_profile() -> bool:
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "n,h,dtype,bias",
-    [(2, 16, torch.float16, False), (1, 30, torch.bfloat16, True)],
+    [(2, 16, torch.float16, False), (1, 31, torch.bfloat16, True)],
     ids=["two-images-fp16", "tails-bf16-bias"],
 )
 def test_conv2d_symmetric_split_contraction(n: int, h: int, dtype: torch.dtype, bias: bool) -> None:
     """A few output tiles leave most of the SMs idle, so on a device whose GPU profile prices
     the split the symmetric kernel splits the contraction: each image's partial tiles land in
     its own slice of the workspace, and the sum reads every split and adds the bias once. A
-    30x30 output ends inside an output tile."""
+    31x31 output ends inside an output tile, and its 961-element rows are not a multiple of the
+    sum's vector width."""
     from tileops._kernels.convolution.conv2d import Conv2dSymmetricKernel
     from tileops.backend import BUILTIN
 
