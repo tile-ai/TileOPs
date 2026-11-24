@@ -218,7 +218,7 @@ def test_causal_conv1d_dilation_and_float32_filters(
 
 
 _SERVED_DECODE = (
-    # Float32 filters and bias: eight channels a thread take two 16-byte bias loads.
+    # Float32 filters and bias over bfloat16 activations, on a state pool.
     pytest.param(
         64, 24576, 4, 1, 3, 256, "bfloat16", "float32", ["bias", "conv_state_indices"],
         marks=_SMOKE, id="glm-fp32-filters-pool",
@@ -530,6 +530,15 @@ _PADDED_ROLLBACK = {"D": 264, "L": 6, "Tt": 15, "seq_lens": [4, 1, 0, 3, 2, 4, 1
             4,
             marks=_FULL,
         ),
+        # A state row longer than one 128-byte L2 line runs the per-thread decode kernel.
+        pytest.param(
+            CausalConv1dUpdateFwdOp,
+            CausalConv1dUpdateFwdTest,
+            {"B": 8, "D": 264, "L": 480},
+            ["bias", "conv_state_indices"],
+            4,
+            marks=_FULL,
+        ),
         pytest.param(
             CausalConv1dUpdateFwdOp,
             CausalConv1dUpdateFwdTest,
@@ -539,7 +548,7 @@ _PADDED_ROLLBACK = {"D": 264, "L": 6, "Tt": 15, "seq_lens": [4, 1, 0, 3, 2, 4, 1
             marks=_FULL,
         ),
     ],
-    ids=["prefill", "update", "rollback"],
+    ids=["prefill", "update", "update-long-state", "rollback"],
 )
 def test_causal_conv1d_skips_the_states_of_negative_slots(
     op_type, test_type, row, some, slots_at
@@ -583,3 +592,65 @@ def test_causal_conv1d_update_refuses_a_state_past_shared_memory() -> None:
     )  # fmt: skip
     with pytest.raises(OpNotAvailableError, match="bytes of state, past the 232448"):
         CausalConv1dUpdateFwdOp().key_for("causal_conv1d_update", call)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_causal_conv1d_update_stages_rows_of_one_cache_line() -> None:
+    """A decode step whose state rows each fill one 128-byte L2 line (64 bf16 columns) stages
+    them through shared memory."""
+    (in_tree,) = Kernel.devices
+    spec = CausalConv1dUpdateCall(
+        arch=90, sm_count=132, smem_budget=232448, dim=256, width=4, dtype=torch.bfloat16,
+        weight_dtype=torch.bfloat16, state_len=64, pooled=True, device=torch.device(in_tree),
+    )  # fmt: skip
+    assert CausalConv1dUpdateFwdOp().key_for("causal_conv1d_update", spec) == (
+        "causal_conv1d_update"
+    )
+
+
+_LONG_STATE = (
+    # One column past a 128-byte row: width 2, two channels a thread, no bias, no activation.
+    pytest.param(2, 6, 2, 1, 65, "float16", "float16", [], None, marks=_SMOKE, id="fp16-width-2-plain"),
+    # A state exactly its span; eight channels a thread take two 16-byte bias loads.
+    pytest.param(
+        3, 8, 4, 152, 456, "bfloat16", "float32", ["bias"], "silu", marks=_SMOKE,
+        id="span-fp32-filters",
+    ),
+)  # fmt: skip
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "batch, dim, width, dilation, state_len, dtype, weight_dtype, some, activation", _LONG_STATE
+)
+def test_causal_conv1d_update_holds_a_long_state_in_registers(
+    batch, dim, width, dilation, state_len, dtype, weight_dtype, some, activation
+) -> None:
+    """A decode step whose state rows are longer than one 128-byte L2 line runs the kernel
+    that holds each thread's state tokens in registers, and advances its first
+    (W - 1) * dilation columns."""
+    (in_tree,) = Kernel.devices
+    spec = CausalConv1dUpdateCall(
+        arch=90, sm_count=132, smem_budget=232448, dim=dim, width=width,
+        dtype=getattr(torch, dtype), weight_dtype=getattr(torch, weight_dtype),
+        state_len=state_len, dilation=dilation, has_bias="bias" in some,
+        silu=activation is not None, device=torch.device(in_tree),
+    )  # fmt: skip
+    op = CausalConv1dUpdateFwdOp(activation=activation, dilation=dilation)
+    assert op.key_for("causal_conv1d_update", spec) == "causal_conv1d_update_register"
+    call = manifest_call(
+        "CausalConv1dUpdateFwdOp",
+        {"T": dtype, "Tw": weight_dtype},
+        B=batch,
+        D=dim,
+        W=width,
+        L=state_len,
+        dilation=dilation,
+        activation=activation,
+        some=some,
+        **({} if "bias" in some else {"bias": None}),
+    )
+    test = CausalConv1dUpdateFwdTest(call)
+    op = CausalConv1dUpdateFwdOp(**call.arguments())
+    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
