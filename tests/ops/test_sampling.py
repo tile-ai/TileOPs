@@ -237,30 +237,91 @@ def test_top_p_mask_rows_at_the_contract_endpoints(vocab: int):
 
 
 @pytest.mark.parametrize(
-    "vocab",
+    ("vocab", "tail", "kept"),
     [
-        pytest.param(32000, marks=pytest.mark.smoke),
-        pytest.param(512, marks=pytest.mark.full),
+        pytest.param(32000, -20.0, False, marks=pytest.mark.smoke),
+        pytest.param(32000, -16.0, True, marks=pytest.mark.full),
+        pytest.param(512, -20.0, False, marks=pytest.mark.full),
+        pytest.param(512, -16.0, True, marks=pytest.mark.full),
     ],
 )
-def test_top_p_mask_at_one_masks_what_the_sum_rounds_away(vocab: int):
-    """``p = 1`` masks a token whose probability the row's float32 sum rounds away.
+def test_top_p_mask_at_one_keeps_what_the_sum_keeps(vocab: int, tail: float, kept: bool):
+    """``p = 1`` masks a token whose probability the row's float32 sum rounds away, and keeps
+    one the sum keeps.
 
-    The row holds a logit of 0 and one of -20, the rest ``-inf``: ``1 + exp(-20)`` rounds to 1
-    in float32, so the weight strictly above the -20 already reaches ``p`` times the total.
+    The row holds a logit of 0 and one of ``tail``, the rest ``-inf``. ``1 + exp(-20)`` rounds
+    to 1 in float32, so the weight strictly above the -20 already reaches ``p`` times the
+    total; ``1 + exp(-16)`` rounds above 1, so the weight above the -16 falls short of it.
     ``V`` picks a row split across blocks, which meets them per pass across a grid barrier,
     and a row one block holds.
     """
     device = run_device()
     logits = torch.full((1, vocab), -_INF, device=device)
     logits[0, 0] = 0.0
-    logits[0, vocab // 2] = -20.0
+    logits[0, vocab // 2] = tail
     p = torch.ones(1, device=device)
     ref = top_p_mask(logits, p)
     assert ref[0, 0] == 0.0
-    assert (ref[0, 1:] == -_INF).all()
+    assert (ref[0, vocab // 2] == tail) == kept
     out = _run(TopPMaskFwdOp(), logits, p)
     assert torch.equal(out, ref)
+
+
+@pytest.mark.smoke
+def test_top_p_mask_at_one_keeps_a_tail_of_tiny_weights():
+    """``p = 1`` keeps a tail whose tokens each weigh too little to count alone.
+
+    One logit of 0 and 31999 of -19 in a row split across blocks: each tail token weighs
+    ``exp(-19)``, about 5.6e-9, and together they hold about 1.8e-4 of the total, so the
+    weight above them falls short of it and the tail is kept.
+    """
+    device = run_device()
+    logits = torch.full((1, 32000), -19.0, device=device)
+    logits[0, 0] = 0.0
+    p = torch.ones(1, device=device)
+    ref = top_p_mask(logits, p)
+    assert (ref != -_INF).all()
+    out = _run(TopPMaskFwdOp(), logits, p)
+    assert torch.equal(out, ref)
+
+
+@pytest.mark.parametrize(
+    ("batch", "vocab"),
+    [
+        pytest.param(64, 201088, marks=pytest.mark.smoke),
+        pytest.param(2, 1 << 20, marks=pytest.mark.full),
+    ],
+)
+def test_top_p_mask_split_rows_cut_where_the_reference_does(batch: int, vocab: int):
+    """Split rows whose weights need three fixed-point pieces (``batch = 64`` at
+    ``V = 201088``, on a device whose shared memory holds them), and split rows too long for a
+    64-bit fixed-point total (``V = 2^20``), which add float32 weights, cut where the reference
+    does."""
+    device = run_device()
+    logits = torch.randn(batch, vocab, device=device)
+    p = torch.rand(batch, device=device) * 0.45 + 0.5
+    p[0] = 1.0
+    out = _run(TopPMaskFwdOp(), logits, p)
+    compare_outputs(out, top_p_mask(logits, p), top_p_mask_verification(logits, p))
+
+
+@pytest.mark.smoke
+def test_top_p_mask_split_row_repeats_its_mask():
+    """A row split across blocks gets the same mask on every call.
+
+    The blocks add their bins in whatever order they reach the atomics; a long tail of logits
+    uniform in [-30, 0] at ``p = 1`` puts the cut where a different rounding of the bins'
+    totals would move it.
+    """
+    device = run_device()
+    generator = torch.Generator(device=device).manual_seed(0)
+    logits = -30 * torch.rand(1, 128256, device=device, generator=generator)
+    p = torch.ones(1, device=device)
+    op = TopPMaskFwdOp()
+    first = _run(op, logits, p)
+    compare_outputs(first, top_p_mask(logits, p), top_p_mask_verification(logits, p))
+    for _ in range(8):
+        assert torch.equal(op(logits, p), first)
 
 
 @pytest.mark.smoke
