@@ -46,6 +46,9 @@ class BuildTarget(NamedTuple):
     regs_per_sm: int
     smem_per_sm: int
     l2_bytes: int
+    tensor_core_rates: tuple[tuple[str, float], ...]
+    hbm_rate: float
+    launch_latency: float
 
 
 def target_of(device: torch.device | None) -> BuildTarget:

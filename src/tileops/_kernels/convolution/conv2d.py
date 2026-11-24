@@ -15,6 +15,7 @@ from tileops._kernels.convolution._common import (
 )
 from tileops._kernels.convolution.call_spec import Conv2dCall, Conv2dFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._perf import tensor_core_roof
 from tileops._utils import WARP_LANES
 
 __all__ = [
@@ -515,6 +516,15 @@ def _conv2d_depthwise_kernel(
     return _conv2d_depthwise_func
 
 
+# The dtype of a split's partial sums: the accumulator's, whatever the operand dtype.
+_PARTIAL_DTYPE = torch.float32
+
+
+def _k_blocks(c_in: int, kernel_size: int, block_k: int) -> int:
+    """The number of ``block_k``-wide blocks of the symmetric kernel's contraction."""
+    return -(-(c_in * kernel_size * kernel_size) // block_k)
+
+
 @target_cache(maxsize=8)
 def _conv2d_symmetric_kernel(
     n: int,
@@ -547,6 +557,7 @@ def _conv2d_symmetric_kernel(
         num_stages: int,
         threads: int,
         enable_rasterization: bool,
+        split_k: int,
     ):
         # One kernel stages both operands: each is the same transpose over a plane of
         # (channel, spatial), and the block index selects which one a block serves.
@@ -614,6 +625,31 @@ def _conv2d_symmetric_kernel(
                         channel_lanes=w_lanes,
                     )
 
+        # A split of the contraction: grid z runs split_k CTAs over each output tile, each
+        # over its own contiguous k_blocks / split_k blocks, writing a partial tile.
+        k_blocks = _k_blocks(c_in, kernel_size, block_k)
+        if k_blocks % split_k:
+            raise ValueError(f"split_k={split_k} must divide the {k_blocks} k blocks")
+        k_split = k_blocks // split_k
+        partial_dtype = str(_PARTIAL_DTYPE).removeprefix("torch.")
+        # The partial sum runs one channel of one image per block row, four outputs a thread.
+        sum_threads = 128
+        sum_block = 4 * sum_threads
+
+        # Runs k_split K blocks from k_first of the (by, bx) output tile into out_local; the
+        # unsplit and split GEMMs share it.
+        @T.macro
+        def accumulate(x_nhwc, weight_flat, data_shared, weight_shared, out_local, bx, by, k_first):
+            T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
+            T.clear(out_local)
+
+            for k_iter in T.Pipelined(k_split, num_stages=num_stages):
+                T.im2col(
+                    x_nhwc, data_shared, by, k_first + k_iter, kernel_size, stride, dilation, pad
+                )
+                T.copy(weight_flat[bx * block_n, (k_first + k_iter) * block_k], weight_shared)
+                T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
+
         @T.macro
         def conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out, bias):
             with T.Kernel(
@@ -631,13 +667,7 @@ def _conv2d_symmetric_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
                 out_nchw = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(SWIZZLE_PANEL, enable=enable_rasterization)
-                T.clear(out_local)
-
-                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
-                    T.im2col(x_nhwc, data_shared, by, k_iter, kernel_size, stride, dilation, pad)
-                    T.copy(weight_flat[bx * block_n, k_iter * block_k], weight_shared)
-                    T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
+                accumulate(x_nhwc, weight_flat, data_shared, weight_shared, out_local, bx, by, 0)
 
                 for i, j in T.Parallel(block_m, block_n):
                     oc = bx * block_n + j
@@ -654,9 +684,93 @@ def _conv2d_symmetric_kernel(
                 T.copy(out_shared, out_nchw[m_base // out_hw, bx * block_n, m_base % out_hw])
 
         @T.macro
-        def _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, bias):
+        def conv_nhwc_implicit_gemm_split(x_nhwc, weight_krsc, partial):
+            with T.Kernel(
+                T.ceildiv(c_out, block_n),
+                T.ceildiv(n * out_h * out_w, block_m),
+                split_k,
+                threads=threads,
+            ) as (bx, by, bz):
+                data_shared = T.alloc_shared((block_m, block_k), dtype)
+                weight_shared = T.alloc_shared((block_n, block_k), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_n, block_m), partial_dtype)
+
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
+
+                accumulate(
+                    x_nhwc, weight_flat, data_shared, weight_shared, out_local, bx, by, bz * k_split
+                )
+
+                for i, j in T.Parallel(block_m, block_n):
+                    out_shared[j, i] = out_local[i, j]
+
+                m_base = by * block_m
+                T.copy(out_shared, partial[bz, m_base // out_hw, bx * block_n, m_base % out_hw])
+
+        def partial_sum(partial, bias, image, c, spatial):
+            """The split_k partials of one output element, summed, plus its bias."""
+            total = partial[0, image, c, spatial]
+            for s in range(1, split_k):
+                total = total + partial[s, image, c, spatial]
+            if bias is not None:
+                total = total + T.cast(bias[c], accum_dtype)
+            return total
+
+        @T.macro
+        def sum_partials(partial, out, bias):
+            out_nchw = T.Tensor((n, c_out, out_hw), dtype, out.data)
+            with T.Kernel(T.ceildiv(out_hw, sum_block), c_out, n, threads=sum_threads) as (
+                bx,
+                c,
+                image,
+            ):
+                for t in T.Parallel(sum_block):
+                    spatial = bx * sum_block + t
+                    if spatial < out_hw:
+                        out_nchw[image, c, spatial] = T.cast(
+                            partial_sum(partial, bias, image, c, spatial), dtype
+                        )
+
+        @T.macro
+        def _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, partial, bias):
             stage_operands(x, weight, x_nhwc, weight_krsc)
-            conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out, bias)
+            if split_k == 1:
+                conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out, bias)
+            else:
+                conv_nhwc_implicit_gemm_split(x_nhwc, weight_krsc, partial)
+                sum_partials(partial, out, bias)
+
+        if split_k > 1:
+            partial_shape = (split_k, n, c_out, out_hw)
+            if has_bias:
+
+                @T.prim_func
+                def _conv2d_symmetric_split_bias_main(
+                    x: T.Tensor((n, c_in, h, w), dtype),
+                    weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
+                    x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+                    weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
+                    out: T.Tensor((n, c_out, out_h, out_w), dtype),
+                    partial: T.Tensor(partial_shape, partial_dtype),
+                    bias: T.Tensor((c_out,), dtype),
+                ):
+                    _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, partial, bias)
+
+                return _conv2d_symmetric_split_bias_main
+
+            @T.prim_func
+            def _conv2d_symmetric_split_main(
+                x: T.Tensor((n, c_in, h, w), dtype),
+                weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
+                x_nhwc: T.Tensor((n, h, w, c_in), dtype),
+                weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
+                out: T.Tensor((n, c_out, out_h, out_w), dtype),
+                partial: T.Tensor(partial_shape, partial_dtype),
+            ):
+                _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, partial, None)
+
+            return _conv2d_symmetric_split_main
 
         if has_bias:
 
@@ -669,7 +783,7 @@ def _conv2d_symmetric_kernel(
                 out: T.Tensor((n, c_out, out_h, out_w), dtype),
                 bias: T.Tensor((c_out,), dtype),
             ):
-                _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, bias)
+                _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, None, bias)
 
             return _conv2d_symmetric_bias_main
 
@@ -681,7 +795,7 @@ def _conv2d_symmetric_kernel(
             weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
             out: T.Tensor((n, c_out, out_h, out_w), dtype),
         ):
-            _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, None)
+            _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, None, None)
 
         return _conv2d_symmetric_main
 
@@ -822,9 +936,23 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
     @property
     def default_config(self) -> dict:
         block_m, block_n, block_k = min(self.block_m_candidates), 256, 32
+        # The output tile reuses the pipeline's shared memory, so the stages are all of
+        # it: two where three do not fit (float32 on SM89's 99 KB).
+        stage_bytes = (block_m + block_n) * block_k * self.dtype.itemsize
+        fits = 3 * stage_bytes <= self.build_target.smem_budget
+        tile = {
+            "block_m": block_m,
+            "block_n": block_n,
+            "block_k": block_k,
+            "num_stages": 3 if fits else 2,
+            "threads": 256,
+            "enable_rasterization": True,
+        }
         if self.build_target.arch == 90 and self.dtype in (torch.float16, torch.bfloat16):
+            # The wide tile for large channel counts.
+            wide_m, wide_n, wide_k, wide_stages = 128, 256, 64, 3
             if self.c_out <= 64:
-                return {
+                tile = {
                     "block_m": block_m,
                     "block_n": 64,
                     "block_k": 32,
@@ -832,9 +960,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
                     "threads": 128,
                     "enable_rasterization": True,
                 }
-            # The wide tile for large channel counts.
-            wide_m, wide_n, wide_k, wide_stages = 128, 256, 64, 3
-            if (
+            elif (
                 self.c_out >= 256
                 and self.c_in >= 256
                 and self.out_h * self.out_w >= 8192
@@ -844,7 +970,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
                 and wide_stages * (wide_m + wide_n) * wide_k * self.dtype.itemsize
                 <= self.build_target.smem_budget
             ):
-                return {
+                tile = {
                     "block_m": wide_m,
                     "block_n": wide_n,
                     "block_k": wide_k,
@@ -852,23 +978,85 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
                     "threads": 256,
                     "enable_rasterization": False,
                 }
-        # The output tile reuses the pipeline's shared memory, so the stages are all of
-        # it: two where three do not fit (float32 on SM89's 99 KB).
-        stage_bytes = (block_m + block_n) * block_k * self.dtype.itemsize
-        fits = 3 * stage_bytes <= self.build_target.smem_budget
-        return {
-            "block_m": block_m,
-            "block_n": block_n,
-            "block_k": block_k,
-            "num_stages": 3 if fits else 2,
-            "threads": 256,
-            "enable_rasterization": True,
-        }
+        return {**tile, "split_k": self.split_k(tile)}
+
+    def split_k(self, tile: dict) -> int:
+        """How many CTAs share the contraction of each output tile of *tile*'s grid.
+
+        A grid of ``tiles`` output tiles leaves ``sm_count - tiles`` SMs idle through the
+        whole K loop. Split ``s`` ways, each CTA runs ``k_blocks / s`` of the K blocks and
+        ``tiles * s`` CTAs stay in one wave. A split saves the ``k_blocks - k_blocks / s``
+        blocks a CTA no longer runs, each priced at one SM's share of the tensor-core rate.
+        It costs the partials written and read back, priced at the DRAM rate though they
+        mostly stay in L2, and the fixed latency of the launch that sums them. All three
+        are the build target's GPU-profile facts. ``s`` is the divisor of ``k_blocks`` that
+        saves the most, 1 when none saves anything or the profile lacks any of the three.
+        The partial tile is staged in shared memory beside the pipeline, so a split that does
+        not fit there is not taken.
+        """
+        target = self.build_target
+        flops = dict(target.tensor_core_rates).get(tensor_core_roof(self.dtype).split(".")[1])
+        if (
+            not self._split_fits(tile)
+            or not flops
+            or not target.hbm_rate
+            or not target.launch_latency
+        ):
+            return 1
+        tiles = -(-self.c_out // tile["block_n"]) * -(
+            -(self.n * self.out_h * self.out_w) // tile["block_m"]
+        )
+        k_blocks = _k_blocks(self.c_in, self.kernel_size, tile["block_k"])
+        block_s = (
+            2 * tile["block_m"] * tile["block_n"] * tile["block_k"] / (flops / target.sm_count)
+        )
+        partial_bytes = self.n * self.c_out * self.out_h * self.out_w * _PARTIAL_DTYPE.itemsize
+
+        def saved_s(split: int) -> float:
+            run = (k_blocks - k_blocks // split) * block_s
+            return run - 2 * split * partial_bytes / target.hbm_rate - target.launch_latency
+
+        most = min(target.sm_count // tiles, k_blocks // tile["num_stages"])
+        splits = [s for s in range(2, most + 1) if k_blocks % s == 0 and saved_s(s) > 0]
+        return max(splits, key=saved_s, default=1)
+
+    def _split_fits(self, tile: dict) -> bool:
+        """Whether *tile*'s pipeline and its partial tile fit in a block's shared memory."""
+        pipeline = (
+            tile["num_stages"]
+            * (tile["block_m"] + tile["block_n"])
+            * tile["block_k"]
+            * self.dtype.itemsize
+        )
+        partial = tile["block_m"] * tile["block_n"] * _PARTIAL_DTYPE.itemsize
+        return pipeline + partial <= self.build_target.smem_budget
+
+    def init_config(self, config: dict | None = None) -> None:
+        """Set the config, and refuse a split the program cannot run.
+
+        Raises:
+            ValueError: ``split_k`` does not divide the tile's K blocks, or a split tile's
+                partial tile does not fit in shared memory beside its pipeline.
+        """
+        super().init_config(config)
+        if config is not None and config.get("split_k") is None:
+            # The default's split is priced for the default tile; price the tile named here.
+            self.config = {**self.config, "split_k": self.split_k(self.config)}
+        split_k = self.config["split_k"]
+        k_blocks = _k_blocks(self.c_in, self.kernel_size, self.config["block_k"])
+        if k_blocks % split_k:
+            raise ValueError(f"split_k={split_k} must divide the {k_blocks} K blocks")
+        if split_k > 1 and not self._split_fits(self.config):
+            raise ValueError(
+                f"split_k={split_k}: the partial tile does not fit in shared memory beside "
+                "the pipeline"
+            )
 
     @property
     def autotune_configs(self) -> list[dict]:
         # No block_k of 16: the region already requires c_in to be a multiple of 32,
-        # so a 32-wide k tile always divides it.
+        # so a 32-wide k tile always divides it. Each tile is offered whole and, where
+        # its grid leaves SMs idle, split.
         configs = conv_autotune_configs(
             self.dtype,
             self.build_target.smem_budget,
@@ -876,11 +1064,16 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
             block_k=[32, 64],
         )
         out_hw = self.out_h * self.out_w
-        return [
+        tiles = [
             c
             for c in configs
             if self.c_in % c["block_k"] == 0
             and self.tile_stays_in_one_image(self.n, out_hw, c["block_m"])
+        ]
+        return [
+            {**tile, "split_k": split}
+            for tile in tiles
+            for split in sorted({1, self.split_k(tile)})
         ]
 
     def forward(
@@ -899,7 +1092,15 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
             device=weight.device,
             dtype=weight.dtype,
         )
-        return launch(self, x, weight, x_nhwc, weight_krsc, bias=bias)
+        split_k = self.config["split_k"]
+        if split_k == 1:
+            return launch(self, x, weight, x_nhwc, weight_krsc, bias=bias)
+        partial = torch.empty(
+            (split_k, self.n, self.c_out, self.out_h * self.out_w),
+            device=x.device,
+            dtype=_PARTIAL_DTYPE,
+        )
+        return launch(self, x, weight, x_nhwc, weight_krsc, partial, bias=bias)
 
 
 class Conv2dKernel(Kernel, Conv2dFwdInterface):

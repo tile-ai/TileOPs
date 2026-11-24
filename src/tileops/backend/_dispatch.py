@@ -25,6 +25,10 @@ class TuningFacts(NamedTuple):
     # Shared memory of one SM, in bytes.
     smem_per_sm: int
     l2_bytes: int
+    # The GPU profile's calibrated rates and launch latency (``tileops._utils.CudaFacts``).
+    tensor_core_rates: tuple[tuple[str, float], ...]
+    hbm_rate: float
+    launch_latency: float
 
 
 def detect_target(device: torch.device) -> str | None:
@@ -135,7 +139,14 @@ def device_facts_and_tuning(device: torch.device | None) -> tuple[DeviceFacts, T
     # A device type nobody registered reports no architecture, compute units or memory.
     no_facts = DeviceFacts(arch=-1, sm_count=0, smem_budget=0)
     no_tuning = TuningFacts(
-        calibration=None, threads_per_sm=0, regs_per_sm=0, smem_per_sm=0, l2_bytes=0
+        calibration=None,
+        threads_per_sm=0,
+        regs_per_sm=0,
+        smem_per_sm=0,
+        l2_bytes=0,
+        tensor_core_rates=(),
+        hbm_rate=0.0,
+        launch_latency=0.0,
     )
     device = current_device() if device is None else on_current_index(device)
     if device is None:
@@ -150,6 +161,9 @@ def device_facts_and_tuning(device: torch.device | None) -> tuple[DeviceFacts, T
                 regs_per_sm=facts.regs_per_sm,
                 smem_per_sm=facts.smem_per_sm,
                 l2_bytes=facts.l2_bytes,
+                tensor_core_rates=facts.tensor_core_rates,
+                hbm_rate=facts.hbm_rate,
+                launch_latency=facts.launch_latency,
             ),
         )
     registry.ensure_loaded()

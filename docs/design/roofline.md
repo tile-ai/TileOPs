@@ -262,6 +262,10 @@ Hardware parameters are theoretical values with calibration factors from one-tim
 
 Every calibration is the **envelope** over the conditions its microbenchmark measures: the maximum, never a typical value. A ceiling some legitimate kernel can exceed is not a ceiling, and readings above 100% must stay reserved for formula errors; a legitimate kernel above the ceiling means the measured conditions must widen. Each condition's own fraction is kept as data, so a future per-condition ceiling reads it rather than re-measuring. The conditions each calibration sweeps are the microbenchmark's choice, documented with it.
 
+A profile may also hold a measured hardware latency, a quantity with no datasheet value: `launch.latency` is the device-busy time one more dependent kernel launch adds to a program. It is stored as the measured value, in seconds, with its method beside it, and `benchmarks/hardware/launch/launch_latency.py` measures it. A latency is the median, not an envelope: kernel selection charges it as a typical cost, and an envelope would bias every comparison it enters.
+
+Kernel selection reads profile values only through the device facts. A device whose profile lacks a value a kernel prices a choice with keeps that kernel's unpriced default.
+
 ### 5.2 Benchmark–Roofline Decoupling
 
 The benchmark produces per-workload records containing raw time and the `(flops, bytes)` from `op.eval_roofline()`. The roofline tool is a separate step that reads those records and the GPU profile to compute efficiency. This separation enables:
