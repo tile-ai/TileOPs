@@ -180,6 +180,9 @@ class IsnanFwdKernel(FloatPredicateKernel, UnaryPredicateFwdInterface):
 class IsinfFwdKernel(FloatPredicateKernel, UnaryPredicateFwdInterface):
     """Element-wise isinf with torch-style bool output."""
 
+    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+    lane_mask_func = staticmethod(lane_compare("isinf"))
+
     @staticmethod
     def op_func(x):
         return T.isinf(T.cast(x, "float32"))

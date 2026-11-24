@@ -80,6 +80,94 @@ def test_isfinite(n_total: int, dtype: torch.dtype) -> None:
 # Edge values
 
 
+# The 16-bit encodings isinf must tell apart: both infinities, the largest finite values and
+# their neighbours, NaNs of the smallest and the quiet payload of either sign and of the largest
+# positive payload, zeros, the smallest subnormal and normal, and ones.
+_ISINF_ENCODINGS = {
+    torch.float16: (
+        0x7C00,
+        0xFC00,
+        0x7BFF,
+        0xFBFF,
+        0x7BFE,
+        0x7C01,
+        0xFC01,
+        0x7E00,
+        0xFE00,
+        0x7FFF,
+        0x0000,
+        0x8000,
+        0x0001,
+        0x0400,
+        0x3C00,
+        0xBC00,
+        0x5BFF,
+    ),
+    torch.bfloat16: (
+        0x7F80,
+        0xFF80,
+        0x7F7F,
+        0xFF7F,
+        0x7F7E,
+        0x7F81,
+        0xFF81,
+        0x7FC0,
+        0xFFC0,
+        0x7FFF,
+        0x0000,
+        0x8000,
+        0x0001,
+        0x0080,
+        0x3F80,
+        0xBF80,
+        0x5F7F,
+    ),
+}
+
+
+def _cycled_encodings(n, dtype):
+    """``_ISINF_ENCODINGS`` repeated end to end. Seventeen of them, coprime to every power of
+    two, so each encoding lands at every position modulo 4, 8 and 16."""
+    codes = torch.tensor(_ISINF_ENCODINGS[dtype], dtype=torch.int32, device=run_device())
+    index = torch.arange(n, device=run_device()).remainder(codes.numel())
+    return codes[index].to(torch.int16).view(dtype)
+
+
+class SpecialEncodingFixture(FixtureBase):
+    """Sizes taking each run length a launch picks for a 16-bit input, the widest block a
+    long grid of whole runs takes, and a partial block."""
+
+    PARAMS = [
+        (
+            "n_total, dtype",
+            [
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(4_194_304, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(262_144, torch.float16, marks=pytest.mark.full),
+                pytest.param(131_072, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(1_000_003, torch.float16, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@SpecialEncodingFixture
+def test_isinf_encodings(n_total: int, dtype: torch.dtype) -> None:
+    """Infinities beside the largest finite values and NaNs of several payloads, each encoding
+    at every position of a thread's run."""
+    _make_special_test(n_total, dtype, IsinfFwdOp, gen_fn=_cycled_encodings)
+
+
+@pytest.mark.smoke
+def test_isinf_tuned() -> None:
+    """Tuned mode picks a launch whose result matches the reference."""
+    test = SpecialTest(1_048_576, torch.bfloat16, "IsinfFwdOp", gen_fn=_cycled_encodings)
+    op = IsinfFwdOp()
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
 @SpecialEdgeFixture
 def test_isnan_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all NaN input."""

@@ -3,6 +3,8 @@
 #include <cutlass/bfloat16.h>
 #include <cutlass/half.h>
 
+#include <type_traits>
+
 namespace tileops {
 
 // a != b, true when either is NaN, as torch.ne answers: one HSETP2.NEU.
@@ -63,6 +65,14 @@ template <typename H2>
 __device__ __forceinline__ unsigned or_lanes(unsigned a, unsigned b) {
   return __hneu2_mask(__habs2(lanes_of<H2>(a)),
                       __hneg2(__habs2(lanes_of<H2>(b))));
+}
+
+// x infinite: |x| equals +infinity, in H2's encoding; a NaN compares unequal.
+template <typename H2>
+__device__ __forceinline__ unsigned isinf_lanes(unsigned x) {
+  constexpr unsigned inf =
+      std::is_same_v<H2, __half2> ? 0x7c007c00u : 0x7f807f80u;
+  return __heq2_mask(__habs2(lanes_of<H2>(x)), lanes_of<H2>(inf));
 }
 
 // a and b nonzero; a NaN is nonzero.

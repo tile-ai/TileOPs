@@ -41,6 +41,15 @@ def _fast_of(op_func):
     return op_func.fast if isinstance(op_func, GuardedOpFunc) else None
 
 
+def lane_mask_of(op_func, num_per_thread):
+    """The two-lane form a ``LaneMaskedOpFunc`` carries, or ``None``.
+
+    A run built from it takes four elements a word pair, so it needs a multiple of four.
+    """
+    lanes_fit = isinstance(op_func, LaneMaskedOpFunc) and num_per_thread % 4 == 0
+    return op_func.lanes if lanes_fit else None
+
+
 def _narrows(dtype, out_dtype):
     """Whether a result is stored narrower than its operand."""
     return DataType(out_dtype).bits < DataType(dtype).bits
@@ -111,6 +120,9 @@ def make_unary_regcopy(N, dtype, op_name, out_dtype, headers, full_occupancy):
         # block, or a thread holding part of a vector, runs the body per element.
         whole = not ragged and npt_arg % vec == 0
         fast = _fast_of(op_func) if whole and not contiguous else None
+        # A body over two 16-bit lanes (``LaneMaskedOpFunc``) builds the run's bool bytes
+        # four a word, from two lane masks.
+        lane_mask = lane_mask_of(op_func, npt_arg)
 
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
@@ -118,11 +130,23 @@ def make_unary_regcopy(N, dtype, op_name, out_dtype, headers, full_occupancy):
                 if contiguous:
                     base = bx * block_size + T.get_thread_binding() * npt_arg
                     x_run = T.alloc_local((npt_arg,), dtype)
-                    y_run = T.alloc_local((npt_arg,), out_dtype)
                     for v in T.vectorized(npt_arg):
                         x_run[v] = x[base + v]
-                    for v in T.unroll(npt_arg):
-                        y_run[v] = op_func(x_run[v])
+                    if lane_mask is not None:
+                        x_word = T.view(x_run, (npt_arg // 2,), "uint32")
+                        y_word = T.alloc_local((npt_arg // 4,), "uint32")
+                        for w in T.unroll(npt_arg // 4):
+                            y_word[w] = T.call_extern(
+                                "uint32",
+                                "tileops::lane_mask_bytes",
+                                lane_mask(x_word[2 * w]),
+                                lane_mask(x_word[2 * w + 1]),
+                            )
+                        y_run = T.view(y_word, (npt_arg,), out_dtype)
+                    else:
+                        y_run = T.alloc_local((npt_arg,), out_dtype)
+                        for v in T.unroll(npt_arg):
+                            y_run[v] = op_func(x_run[v])
                     for v in T.vectorized(npt_arg):
                         y[base + v] = y_run[v]
                 else:
@@ -273,9 +297,7 @@ def _row_broadcast_prim(
 
     # A body over two 16-bit lanes (``LaneMaskedOpFunc``) builds a run's bool bytes four a
     # word, from two lane masks.
-    lane_mask = (
-        op_func.lanes if isinstance(op_func, LaneMaskedOpFunc) and num_per_thread % 4 == 0 else None
-    )
+    lane_mask = lane_mask_of(op_func, num_per_thread)
 
     def both_lanes(x):
         """A uint32 word holding the 16 bits of *x* in each of its two lanes."""

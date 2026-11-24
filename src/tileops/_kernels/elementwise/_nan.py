@@ -97,8 +97,8 @@ def ne_unordered(a, b):
 def lane_compare(name):
     """A body's form over two 16-bit lanes of a word: ``half_compare.h``'s ``<name>_lanes``.
 
-    The form maps two uint32 words of *dtype* lanes to a mask, 0xffff a lane where the
-    body holds. ``None`` for a dtype without a 16-bit float pair type.
+    The form maps one uint32 word of *dtype* lanes per operand to a mask, 0xffff a lane
+    where the body holds. ``None`` for a dtype without a 16-bit float pair type.
     """
 
     # The CUDA pair type of a 16-bit float, as ``half_compare.h``'s lane compares take it.
@@ -108,6 +108,6 @@ def lane_compare(name):
         pair = pair_types.get(str(dtype))
         if pair is None:
             return None
-        return lambda a, b: T.call_extern("uint32", f"tileops::{name}_lanes<{pair}>", a, b)
+        return lambda *words: T.call_extern("uint32", f"tileops::{name}_lanes<{pair}>", *words)
 
     return form
