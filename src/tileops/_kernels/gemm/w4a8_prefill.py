@@ -657,6 +657,10 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                     ) // WARP_LANES * W4A8_LAYOUT.unit_rows + tx % WARP_LANES // 4
                     ops = (acc, a_s, w_s, tab_s, full, empty, wg, tx, hs)
                     for s in T.serial(max_segs + dp_waves):
+                        # Without a reconvergence point ptxas keeps the ring stage index and WGMMA
+                        # descriptor in vector registers and copies them to uniform registers
+                        # before every WGMMA.
+                        T.sync_warp()
                         segment(w, s, seg, segments)
                         if seg[2] > seg[1]:
                             tile_coords(seg[0], mt, nt)
