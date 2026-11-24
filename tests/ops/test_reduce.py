@@ -190,7 +190,8 @@ def test_extrema_leading_preserves_nan(shape, dtype, kind) -> None:
     the cluster's one launch.
 
     The row slices split a column tail, divide the rows, or leave the last slice short;
-    2 KB rows of fp32 take an 8-CTA cluster on SM90 and the row slices elsewhere;
+    2 KB rows of fp32 take a thread-block cluster on SM90, up to 8 CTAs on 132 SMs, and
+    the row slices before SM90;
     columns of whole 16-byte-vector tiles take the one-launch vector walk. A 2-byte and a
     4-byte element are walked to different depths. Rows of whole vectors wide enough to
     fill the device fold in one launch across a thread-block cluster, which merges NaNs
