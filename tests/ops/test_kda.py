@@ -132,11 +132,30 @@ def test_kda_sm90_given_gate_lean_preparation_matches_reference(monkeypatch) -> 
     [
         pytest.param(8, marks=pytest.mark.smoke, id="b8"),
         pytest.param(1, marks=pytest.mark.full, id="b1"),
+        # Enough (sequence, head) pairs for blocks that each own a whole state.
+        pytest.param(32, marks=pytest.mark.full, id="b32-whole-state"),
+        # Two 64-column blocks a state.
+        pytest.param(16, marks=pytest.mark.full, id="b16-half-state"),
     ],
 )
 def test_kda_decode_matches_reference(batch: int) -> None:
     torch.manual_seed(42)
     _check(batch, 1, 4, 128, torch.bfloat16)
+
+
+@pytest.mark.smoke
+def test_kda_decode_keeps_a_key_major_state_near_the_fp32_limit_finite() -> None:
+    """The normalized key and query enter each product over the key rows, so a 1e37 key-major
+    state, whose products with the unnormalized rows would pass the FP32 limit, stays finite."""
+    test = KDAFwdTest(4, 1, 4, 128, torch.bfloat16)
+    q, k, v, g, beta, state, *rest = test.gen_inputs()
+    q.fill_(1.0)
+    k.fill_(1.0)
+    v.zero_()
+    g.zero_()
+    beta.fill_(0.5)
+    state.fill_(1e37)
+    test.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), q, k, v, g, beta, state, *rest)
 
 
 @pytest.mark.smoke
@@ -1057,6 +1076,16 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
     )  # fmt: skip
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
     assert bool(runs) == chunked
+
+
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_kda_prefill_walks_equal_packed_lengths_in_the_interleaved_order() -> None:
+    """Three packed sequences of one length over 64 value heads are 192 state walks, past one
+    wave of the SM90's 132 SMs; with their lengths on the host, equal lengths take the
+    interleaved walk, which reads the offsets alone."""
+    torch.manual_seed(42)
+    _check(1, 0, 64, 128, torch.bfloat16, sequence_lengths=(130, 130, 130))
 
 
 @pytest.mark.smoke

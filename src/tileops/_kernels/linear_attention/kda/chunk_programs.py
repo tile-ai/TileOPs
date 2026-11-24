@@ -1048,6 +1048,7 @@ def chunk_state_program(
     initial_state: bool = True,
     state_v_first: bool = False,
     pooled: bool = False,
+    sequence_major: bool = False,
 ):
     """Build the sequential scan over the chunks, for one static packed shape.
 
@@ -1064,6 +1065,11 @@ def chunk_state_program(
     *state_v_first* lays the states out value-major, ``[N, HV, V, K]``. *pooled* reads
     sequence ``n``'s state from slot ``slots[n]`` of a state pool and writes its final state
     back there, so the program returns no state.
+
+    The grid walks one head of every sequence before the next head. Under *sequence_major* it
+    launches every sequence's walks before the next sequence's, longest sequence first:
+    ``cu_seqlens`` then holds, after its ``num_seqs + 1`` offsets, the sequences by
+    decreasing length.
     """
     if pooled and not initial_state:
         raise ValueError("a state pool holds the initial states")
@@ -1187,7 +1193,13 @@ def chunk_state_program(
 
         @T.macro
         def scan(w, u, qg, kg, aqk, dec, h0, cu_seqlens, h, vn, o, ht, slots):
-            with T.Kernel(num_seqs, HV, value_tiles, threads=threads) as (iseq, ihv, iv):
+            grid = (value_tiles, HV, num_seqs) if sequence_major else (num_seqs, HV, value_tiles)
+            with T.Kernel(*grid, threads=threads) as (fastest, ihv, slowest):
+                if sequence_major:
+                    iseq = T.cast(cu_seqlens[num_seqs + 1 + slowest], "int32")
+                    iv = fastest
+                else:
+                    iseq, iv = fastest, slowest
                 v0 = iv * BV
                 tile_cum = T.alloc_shared([num_seqs + 1], "int32")
 
@@ -1282,6 +1294,7 @@ def chunk_state_program(
                         ht[state_row(slots, iseq), ihv, i, v0 + j] = state_f[i, j]
 
         state_shape = [HV, V, K] if state_v_first else [HV, K, V]
+        offsets_len = num_seqs + 1 + (num_seqs if sequence_major else 0)
         if pooled:
             if with_output:
 
@@ -1294,7 +1307,7 @@ def chunk_state_program(
                     aqk: T.Tensor([1, total_tokens, HV, BT], dtype),
                     dec: T.Tensor([num_chunks, HV, K], accum),
                     h0: T.Tensor([T.dynamic("pool"), *state_shape], accum),
-                    cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
+                    cu_seqlens: T.Tensor([offsets_len], "int64"),
                     slots: T.Tensor([num_seqs], "int32"),
                     o: T.Tensor([1, total_tokens, HV, V], dtype),
                 ):
@@ -1309,7 +1322,7 @@ def chunk_state_program(
                     kg: T.Tensor([1, total_tokens, HV, K], dtype),
                     dec: T.Tensor([num_chunks, HV, K], accum),
                     h0: T.Tensor([T.dynamic("pool"), *state_shape], accum),
-                    cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
+                    cu_seqlens: T.Tensor([offsets_len], "int64"),
                     slots: T.Tensor([num_seqs], "int32"),
                     h: T.Tensor([num_chunks, HV, K, V], dtype),
                     vn: T.Tensor([1, total_tokens, HV, V], dtype),
@@ -1327,7 +1340,7 @@ def chunk_state_program(
                 aqk: T.Tensor([1, total_tokens, HV, BT], dtype),
                 dec: T.Tensor([num_chunks, HV, K], accum),
                 h0: T.Tensor([num_seqs, *state_shape], accum),
-                cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
+                cu_seqlens: T.Tensor([offsets_len], "int64"),
                 o: T.Tensor([1, total_tokens, HV, V], dtype),
                 ht: T.Tensor([num_seqs, *state_shape], accum),
             ):
@@ -1342,7 +1355,7 @@ def chunk_state_program(
                 kg: T.Tensor([1, total_tokens, HV, K], dtype),
                 dec: T.Tensor([num_chunks, HV, K], accum),
                 h0: T.Tensor([num_seqs, *state_shape], accum),
-                cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
+                cu_seqlens: T.Tensor([offsets_len], "int64"),
                 h: T.Tensor([num_chunks, HV, K, V], dtype),
                 vn: T.Tensor([1, total_tokens, HV, V], dtype),
                 ht: T.Tensor([num_seqs, *state_shape], accum),
