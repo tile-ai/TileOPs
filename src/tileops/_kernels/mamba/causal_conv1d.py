@@ -665,12 +665,14 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
     def refusal(cls, call: CausalConv1dUpdateCall) -> str | None:
         if call.varlen and not call.rollback:
             return "query_start_loc comes with num_accepted_tokens; it is not served alone"
-        # A decode step reads only a row's first span columns, and a read of any column moves
-        # its 128-byte cache line; staging moves the whole row, so it serves a decode step
-        # whose rows each fit one line.
+        # The per-thread kernel touches at least one L2 line of every state row, whatever its
+        # length; staging moves the whole row. A row of at most one line costs staging no line
+        # the per-thread kernel does not touch, so a decode step stages its rows up to that
+        # length; past it, which kernel is faster depends on the grid.
+        line = 128  # bytes of an L2 cache line
         row = call.state_len * call.dtype.itemsize
-        if not call.rollback and row > 128:
-            return f"a decode step reads its span of a {row}-byte state row, past one 128-byte line"
+        if not call.rollback and row > line:
+            return f"a decode step's {row}-byte state rows are longer than one {line}-byte L2 line"
         threads, vec = _update_block(call.dim)
         need = threads * vec * call.state_len * call.dtype.itemsize
         if need > call.smem_budget:
@@ -857,8 +859,8 @@ def _causal_conv1d_update_register_kernel(
 
 class CausalConv1dUpdateRegisterKernel(Kernel, CausalConv1dUpdateFwdInterface):
     """One decode token per sequence, a CTA a run of channels of one sequence, each thread's
-    state tokens held in registers: the decode steps whose block of state rows outgrows the
-    shared memory ``CausalConv1dUpdateKernel`` stages it in.
+    state tokens held in registers: the decode steps whose state rows are longer than one
+    128-byte L2 line, which ``CausalConv1dUpdateKernel`` does not stage.
 
     Args:
         dim: Channels, ``D``.

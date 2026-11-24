@@ -530,12 +530,12 @@ _PADDED_ROLLBACK = {"D": 264, "L": 6, "Tt": 15, "seq_lens": [4, 1, 0, 3, 2, 4, 1
             4,
             marks=_FULL,
         ),
-        # A state past the shared-memory budget runs the per-thread decode kernel.
+        # A state row longer than one 128-byte L2 line runs the per-thread decode kernel.
         pytest.param(
             CausalConv1dUpdateFwdOp,
             CausalConv1dUpdateFwdTest,
             {"B": 8, "D": 264, "L": 480},
-            ["conv_state_indices"],
+            ["bias", "conv_state_indices"],
             4,
             marks=_FULL,
         ),
@@ -596,36 +596,25 @@ def test_causal_conv1d_update_refuses_a_state_past_shared_memory() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "state_len, key",
-    [(64, "causal_conv1d_update"), (65, "causal_conv1d_update_register")],
-    ids=["one-line", "past-one-line"],
-)
-def test_causal_conv1d_update_stages_rows_of_one_cache_line(state_len: int, key: str) -> None:
-    """A decode step stages its state rows while each fits one 128-byte line (64 bf16
-    columns); a longer row runs the kernel that reads only the span's columns."""
+def test_causal_conv1d_update_stages_rows_of_one_cache_line() -> None:
+    """A decode step whose state rows each fill one 128-byte L2 line (64 bf16 columns) stages
+    them through shared memory."""
     (in_tree,) = Kernel.devices
     spec = CausalConv1dUpdateCall(
         arch=90, sm_count=132, smem_budget=232448, dim=256, width=4, dtype=torch.bfloat16,
-        weight_dtype=torch.bfloat16, state_len=state_len, pooled=True,
-        device=torch.device(in_tree),
+        weight_dtype=torch.bfloat16, state_len=64, pooled=True, device=torch.device(in_tree),
     )  # fmt: skip
-    assert CausalConv1dUpdateFwdOp().key_for("causal_conv1d_update", spec) == key
+    assert CausalConv1dUpdateFwdOp().key_for("causal_conv1d_update", spec) == (
+        "causal_conv1d_update"
+    )
 
 
 _LONG_STATE = (
+    # One column past a 128-byte row: width 2, two channels a thread, no bias, no activation.
+    pytest.param(2, 6, 2, 1, 65, "float16", "float16", [], None, marks=_SMOKE, id="fp16-width-2-plain"),
+    # A state exactly its span; eight channels a thread take two 16-byte bias loads.
     pytest.param(
-        4, 256, 4, 1, 480, 8, "bfloat16", "bfloat16", ["bias"], "silu", marks=_SMOKE,
-        id="pooled-wide-state",
-    ),
-    # Width 2, unpooled, two channels a thread, no bias and no activation.
-    pytest.param(
-        2, 6, 2, 1, 960, None, "float16", "float16", [], None, marks=_SMOKE,
-        id="fp16-width-2-plain",
-    ),
-    # A state exactly its span, unpooled; eight channels a thread take two 16-byte bias loads.
-    pytest.param(
-        3, 8, 4, 152, 456, None, "bfloat16", "float32", ["bias"], "silu", marks=_FULL,
+        3, 8, 4, 152, 456, "bfloat16", "float32", ["bias"], "silu", marks=_SMOKE,
         id="span-fp32-filters",
     ),
 )  # fmt: skip
@@ -633,21 +622,20 @@ _LONG_STATE = (
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "batch, dim, width, dilation, state_len, pool, dtype, weight_dtype, some, activation",
-    _LONG_STATE,
+    "batch, dim, width, dilation, state_len, dtype, weight_dtype, some, activation", _LONG_STATE
 )
 def test_causal_conv1d_update_holds_a_long_state_in_registers(
-    batch, dim, width, dilation, state_len, pool, dtype, weight_dtype, some, activation
+    batch, dim, width, dilation, state_len, dtype, weight_dtype, some, activation
 ) -> None:
-    """A decode step whose block of state rows outgrows shared memory runs the kernel that
-    holds each thread's state tokens in registers, and advances its first (W - 1) * dilation
-    columns."""
+    """A decode step whose state rows are longer than one 128-byte L2 line runs the kernel
+    that holds each thread's state tokens in registers, and advances its first
+    (W - 1) * dilation columns."""
     (in_tree,) = Kernel.devices
     spec = CausalConv1dUpdateCall(
         arch=90, sm_count=132, smem_budget=232448, dim=dim, width=width,
         dtype=getattr(torch, dtype), weight_dtype=getattr(torch, weight_dtype),
-        state_len=state_len, dilation=dilation, pooled=pool is not None,
-        has_bias="bias" in some, silu=activation is not None, device=torch.device(in_tree),
+        state_len=state_len, dilation=dilation, has_bias="bias" in some,
+        silu=activation is not None, device=torch.device(in_tree),
     )  # fmt: skip
     op = CausalConv1dUpdateFwdOp(activation=activation, dilation=dilation)
     assert op.key_for("causal_conv1d_update", spec) == "causal_conv1d_update_register"
@@ -660,9 +648,8 @@ def test_causal_conv1d_update_holds_a_long_state_in_registers(
         L=state_len,
         dilation=dilation,
         activation=activation,
-        some=some + ([] if pool is None else ["conv_state_indices"]),
+        some=some,
         **({} if "bias" in some else {"bias": None}),
-        **({} if pool is None else {"P": pool}),
     )
     test = CausalConv1dUpdateFwdTest(call)
     op = CausalConv1dUpdateFwdOp(**call.arguments())
