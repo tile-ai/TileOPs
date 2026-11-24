@@ -911,6 +911,16 @@ def test_model_throughput_is_a_table_of_tokens_per_second(report):
     )
 
 
+def test_a_throughput_run_without_numbers_is_still_a_table(report):
+    """A run killed during its first model leaves only errors and no length column; the header
+    then has the delimiter row's two cells, so the errors still render as a table."""
+    unfinished = {"error": "the run did not finish"}
+    md = _report(report, throughput={"deepseek_v4_flash": unfinished, "qwen3_8": unfinished})
+    section = md[md.index("## Model Throughput") :]
+    assert "| Model | Run |\n|:------|:----|\n" in section
+    assert "| ❌ **qwen3_8** | the run did not finish |" in section
+
+
 def test_a_model_whose_tests_did_not_pass_has_its_throughput_withheld(report):
     """Numbers follow a passing correctness run: a model with a failed test, or with no test
     results, shows no tokens/s. The section follows the Models table."""

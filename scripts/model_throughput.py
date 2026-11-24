@@ -271,13 +271,15 @@ _MODELS = {"deepseek_v4_flash": _deepseek_v4_flash, "qwen3_8": _qwen3_8}
 
 
 def main() -> int:
-    """Time each model and write ``{model: result}`` to ``--output`` after each one; exit 1 if
-    a model failed, its result then ``{"error": ...}``."""
+    """Time each model and write ``{model: result}`` to ``--output`` before the runs and after
+    each one; a model not yet timed reads ``{"error": "the run did not finish"}``, so a run killed
+    midway still lists it. Exit 1 if a model failed, its result then ``{"error": ...}``."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--output", required=True, help="Path of the JSON to write")
     output = Path(parser.parse_args().output)
     device = indexed_device("cuda")
-    results: dict[str, dict] = {}
+    results = {name: {"error": "the run did not finish"} for name in _MODELS}
+    output.write_text(json.dumps(results, indent=2) + "\n")
     for name, run in _MODELS.items():
         try:
             with torch.inference_mode():

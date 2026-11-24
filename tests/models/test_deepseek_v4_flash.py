@@ -13,6 +13,7 @@ no window, so the decode steps close the first.
 
 import dataclasses
 import importlib.util
+import json
 import time
 from pathlib import Path
 
@@ -399,6 +400,34 @@ def test_a_layer_call_counts_the_seconds_one_more_call_adds(monkeypatch):
         idle[0] = False
 
     assert throughput._layer_call_seconds(call) == pytest.approx(0.02, abs=0.004)
+
+
+def test_a_throughput_run_killed_mid_model_leaves_that_model_an_error(monkeypatch, tmp_path):
+    """While each model is timed, the JSON on disk already holds the finished models' results
+    and an error for every other model, so a run killed there, even by SIGKILL, leaves the report
+    a row for each."""
+    throughput = _throughput_script()
+    output = tmp_path / "throughput.json"
+    on_disk = []
+
+    def done(device):
+        on_disk.append(json.loads(output.read_text()))
+        return {"run": "x"}
+
+    def killed(device):
+        on_disk.append(json.loads(output.read_text()))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(throughput, "_MODELS", {"done": done, "killed": killed})
+    monkeypatch.setattr(throughput, "indexed_device", lambda device: torch.device("cpu"))
+    monkeypatch.setattr("sys.argv", ["model_throughput.py", "--output", str(output)])
+    with pytest.raises(KeyboardInterrupt):
+        throughput.main()
+    unfinished = {"error": "the run did not finish"}
+    assert on_disk == [
+        {"done": unfinished, "killed": unfinished},
+        {"done": {"run": "x"}, "killed": unfinished},
+    ]
 
 
 @pytest.mark.sm90

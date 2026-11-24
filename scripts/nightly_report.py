@@ -356,7 +356,7 @@ def _throughput_section(throughput: dict[str, dict], models: dict[str, dict] | N
     head = [
         f"Prefill {n}" if key.startswith("prefill") else f"Decode ctx {n}" for key, n in columns
     ]
-    lines.append("| Model | Run | " + " | ".join(head) + " |")
+    lines.append("| " + " | ".join(["Model", "Run", *head]) + " |")
     lines.append("|:------|:----|" + "------:|" * len(columns))
     for model, d in sorted(throughput.items()):
         if "error" in d:
