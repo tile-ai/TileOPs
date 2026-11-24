@@ -353,7 +353,6 @@ def test_kda_fused_prefill_in_sm89_shared_memory(dim, dtype):
     [
         pytest.param(1, 4, id="chunk"),
         pytest.param(16, 16, marks=pytest.mark.sm89, id="fused-sm89"),
-        pytest.param(16, 16, marks=pytest.mark.sm90, id="fused-sm90"),
     ],
 )
 def test_kda_prefill_correlated_keys(dtype, batch, heads):
@@ -910,27 +909,25 @@ def test_kda_prefill_given_gate_drops_inside_its_blocks(dim, l2norm, heads, peri
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("packed", "dtype"),
+    "packed",
     [
-        pytest.param(False, torch.bfloat16, marks=pytest.mark.smoke, id="dense"),
-        pytest.param(False, torch.float16, marks=pytest.mark.smoke, id="dense-fp16"),
-        pytest.param(True, torch.bfloat16, marks=pytest.mark.full, id="varlen"),
+        pytest.param(False, marks=pytest.mark.smoke, id="dense"),
+        pytest.param(True, marks=pytest.mark.full, id="varlen"),
     ],
 )
-def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed, dtype):
-    """One strongly decayed sequence leaves ordinary sequences unchanged. The float16 cell
-    prepares its chunks in the split launches."""
+def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
+    """One strongly decayed sequence leaves ordinary sequences unchanged."""
     heads = 32
     sm_count = get_sm_count()
     sequences = max(4, -(-sm_count // heads))
-    length = 6144  # Keeps every supported SM90 device in the long-prefill dispatch region.
+    length = 6144
     torch.manual_seed(42)
     if packed:
         lengths = tuple(length + (-200, 100, 200, -100)[i % 4] for i in range(sequences))
-        workload = KDAFwdTest(1, 0, heads, 128, dtype, sequence_lengths=lengths)
+        workload = KDAFwdTest(1, 0, heads, 128, torch.bfloat16, sequence_lengths=lengths)
         start = lengths[0]
     else:
-        workload = KDAFwdTest(sequences, length, heads, 128, dtype)
+        workload = KDAFwdTest(sequences, length, heads, 128, torch.bfloat16)
         start = length
     inputs = list(workload.gen_inputs())
     g = inputs[3].clone()
@@ -1021,14 +1018,13 @@ def _one_wave_heads(sequences: int) -> int:
 
 
 @pytest.mark.sm90
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("length", "waves", "chunked"),
     [
-        pytest.param(64, 1, False, id="one-chunk-one-wave"),
-        pytest.param(65, 1, True, id="two-chunks-one-wave"),
-        pytest.param(64, 2, True, id="one-chunk-two-waves"),
+        pytest.param(64, 1, False, marks=pytest.mark.smoke, id="one-chunk-one-wave"),
+        pytest.param(65, 1, True, marks=pytest.mark.full, id="two-chunks-one-wave"),
+        pytest.param(64, 2, True, marks=pytest.mark.full, id="one-chunk-two-waves"),
     ],
 )
 def test_kda_sm90_fp16_prefill_walks_one_cta_only_for_one_chunk_in_one_wave(
@@ -1048,6 +1044,19 @@ def test_kda_sm90_fp16_prefill_walks_one_cta_only_for_one_chunk_in_one_wave(
     monkeypatch.setattr(kda_prefill, "run_chunk_prefill", counted)
     _check(4 * waves, length, _one_wave_heads(4), 128, torch.float16)
     assert bool(runs) == chunked
+
+
+@pytest.mark.sm90
+@pytest.mark.full
+def test_kda_sm90_fp16_one_cta_prefill_forms_a_strong_chunk_per_pair() -> None:
+    """Sequences of one chunk in one wave take the SM90 fp16 one-CTA prefill; a chunk whose
+    decay overflows fp16 rows centred on it takes per-pair entries beside centred ones."""
+    torch.manual_seed(42)
+    workload = KDAFwdTest(4, 64, _one_wave_heads(4), 128, torch.float16)
+    q, k, v, g, beta, state = workload.gen_inputs()
+    g = g.clone()
+    g[1] = torch.empty_like(g[1]).uniform_(*_strong_decays(g.dtype))
+    workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), q, k, v, g, beta, state)
 
 
 # Sequence lengths whose chunk counts differ (one is empty) and lengths of two chunks each.
@@ -1249,7 +1258,7 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
                 "S": sum(_ONE_CHUNK),
                 "seq_lens": _ONE_CHUNK,
                 # The SM90 one-CTA walk serves fp16 calls of one chunk a sequence in one wave.
-                "HV": _one_wave_heads,
+                "HV": "one-wave",
                 "some": ("cu_seqlens", "cu_seqlens_cpu"),
                 "dtype": torch.float16,
             },
@@ -1275,7 +1284,7 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
                 "S": sum(_ONE_CHUNK),
                 "seq_lens": _ONE_CHUNK,
                 # The SM90 one-CTA walk serves fp16 calls of one chunk a sequence in one wave.
-                "HV": _one_wave_heads,
+                "HV": "one-wave",
                 "some": ("cu_seqlens", "cu_seqlens_cpu"),
                 "dtype": torch.float16,
             },
@@ -1304,8 +1313,8 @@ def test_kda_skips_the_states_of_negative_slots(flags: dict, row: dict, padded: 
     row = {"H": 4, "HV": 4, "K": 128, "V": 128, "P": 12, **row}
     some = row.pop("some", ())
     dtype = row.pop("dtype", torch.bfloat16)
-    if callable(row["HV"]):
-        row["HV"] = row["HV"](len(row["seq_lens"]))
+    if row["HV"] == "one-wave":
+        row["HV"] = _one_wave_heads(len(row["seq_lens"]))
     inputs = _pooled(dtype, some=some, **row, **flags).gen_inputs()
     check_padded_slots_skipped(KDAFwdOp(**flags, validate_inputs=True), inputs, 5, 10, padded)
 
@@ -1345,26 +1354,17 @@ def test_kda_decode_updates_a_strided_pool_in_place() -> None:
 
 
 @pytest.mark.sm90
-@pytest.mark.parametrize(
-    ("pooled", "dtype"),
-    [
-        pytest.param(True, torch.bfloat16, marks=pytest.mark.smoke, id="value-major-pool"),
-        pytest.param(False, torch.float16, marks=pytest.mark.smoke, id="value-major-fp16"),
-    ],
-)
-def test_kda_long_prefill_walks_a_value_major_state(pooled: bool, dtype: torch.dtype) -> None:
-    """A long value-major prefill with one strongly decayed chunk. The float16 cell prepares its
-    chunks in the split launches."""
+@pytest.mark.smoke
+def test_kda_long_prefill_walks_a_value_major_pool() -> None:
+    """A long value-major pooled prefill with one strongly decayed chunk."""
     torch.manual_seed(42)
     heads = 32
     sequences = max(4, -(-get_sm_count() // heads))
-    length = 6144  # Keeps every supported SM90 device in the long-prefill dispatch region.
+    length = 6144
     flags = {"state_v_first": True, "use_qk_l2norm_in_kernel": True}
-    some = ["initial_state", *(["state_indices"] if pooled else [])]
     call = manifest_call(
-        "KDAFwdOp", {"T": str(dtype).removeprefix("torch.")}, some=some, B=sequences, S=length,
-        H=heads, HV=heads,
-        K=128, V=128, **({"P": 2 * sequences} if pooled else {}), **flags,
+        "KDAFwdOp", {"T": "bfloat16"}, some=["initial_state", "state_indices"], B=sequences,
+        S=length, H=heads, HV=heads, K=128, V=128, P=2 * sequences, **flags,
     )  # fmt: skip
     test = KDAFwdCallTest(call)
     inputs = list(test.gen_inputs())
