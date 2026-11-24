@@ -1,22 +1,25 @@
 """Scatter new K/V rows into the page pool their slots name.
 
-One block owns a tile of tokens and a column tile of their rows. A token whose slot is
-``-1`` is skipped; every other token reads its slot once and writes the same columns of
-its key and value rows, so the guard and the slot load are paid once for the two stores.
-An FP8 cache divides by the scale and uses a saturating cast that preserves NaN.
+A thread owns one vector of a token's row: it loads the token's slot and the vector of the
+key and of the value row together, then stores both where the slot names, or nothing for a
+slot of ``-1``. An FP8 cache divides by the scale and uses a saturating cast that preserves
+NaN.
 """
 
+import math
 from collections.abc import Callable
 
 import tilelang
 import tilelang.language as T
 import torch
+from tvm import DataType
 
 from tileops._kernels.attention.call_spec import (
     PagedKVCacheWriteCall,
     PagedKVCacheWriteFwdInterface,
 )
 from tileops._kernels.build_target import target_cache
+from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = ["PagedKVCacheWriteKernel"]
@@ -30,12 +33,78 @@ def _paged_cache_write_kernel(
     cache_dtype: str,
 ) -> Callable:
     quantized = cache_dtype == "float8_e4m3fn"
+    # A thread loads one 16-byte vector of an input row, or the widest smaller power of
+    # two that divides the row, so no vector straddles two rows.
+    in_bytes = DataType(in_dtype).bits // 8
+    vec = math.gcd(row_width, VECTOR_ACCESS_BYTES // in_bytes)
+    lanes = row_width // vec
+    # A vector of 4, 8 or 16 bytes moves through PTX vector loads and predicated stores;
+    # a narrower one keeps element loads and a branched store.
+    loaded_bytes = vec * in_bytes
+    stored_bytes = vec * DataType(cache_dtype).bits // 8
 
-    @tilelang.jit(out_idx=[])
-    def _func(block_rows: int, block_cols: int, threads: int) -> Callable:
+    @tilelang.jit(
+        out_idx=[],
+        pass_configs={
+            # Loads are bounded by the token clamp and stores by the slot predicate, which
+            # tests both ends of the pool; the guard would split the loads into branches
+            # that each recompute the address.
+            tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True,
+        },
+    )
+    def _func(threads: int) -> Callable:
         # The tokens written are a dynamic extent: a decode step writes one row per
         # running request, and a kernel built per token count would compile every step.
-        tokens = T.dynamic("tokens")
+        # It is 64-bit because the vector count, tokens * lanes, can pass 2**31.
+        tokens = T.dynamic("tokens", "int64")
+
+        @T.macro
+        def write_rows(K, V, KPages, VPages, Slots, KScale, VScale):
+            load = {16: T.ldg128, 8: T.ldg64, 4: T.ldg32}.get(loaded_bytes)
+            store, word_dtype = {
+                16: (T.stg128, "uint32x4"),
+                8: (T.stg64, "uint32x2"),
+                4: (T.stg32, "uint32"),
+            }.get(stored_bytes, (None, None))
+            with T.Kernel(T.ceildiv(tokens * lanes, threads), threads=threads) as bx:
+                vector = T.cast(bx, "int64") * threads + T.get_thread_binding()
+                # A thread past the last token loads the last token's row and stores
+                # nothing, so every load is unconditional.
+                token = T.min(vector // lanes, tokens - 1)
+                col = vector % lanes * vec
+                slot = Slots[token]
+                # A negative slot skips the token; a slot past the pool writes nothing.
+                named = vector // lanes < tokens and slot >= 0 and slot < physical_tokens
+                rows = T.alloc_local((2, vec), in_dtype)
+                stored = T.alloc_local((2, vec), cache_dtype)
+                # Both rows are loaded before either store. ptxas sinks a non-coherent
+                # (`.nc`) load whose only use is a predicated store below the slot test,
+                # which serializes the slot load and the row loads; a coherent load may
+                # not pass the other row's store, so the slot and both rows are in flight
+                # together and a thread waits on memory once.
+                for r, src in ((0, K), (1, V)):
+                    if load is not None:
+                        rows[r, T.Ramp(0, 1, vec)] = T.reinterpret(
+                            load(src[token, col]), f"{in_dtype}x{vec}"
+                        )
+                    else:
+                        for i in T.vectorized(vec):
+                            rows[r, i] = src[token, col + i]
+                for r, scale in ((0, KScale), (1, VScale)):
+                    for i in T.vectorized(vec):
+                        if quantized:
+                            # TileLang's FP8 cast saturates finite overflow and
+                            # infinities while preserving NaN.
+                            stored[r, i] = T.Cast("float32", rows[r, i]) / scale[0]
+                        else:
+                            stored[r, i] = rows[r, i]
+                for r, pages in ((0, KPages), (1, VPages)):
+                    if store is not None:
+                        held = T.BufferLoad(stored, [r, T.Ramp(0, 1, vec)])
+                        store(pages[slot, col], T.reinterpret(held, word_dtype), pred=named)
+                    elif named:
+                        for i in T.vectorized(vec):
+                            pages[slot, col + i] = stored[r, i]
 
         if quantized:
 
@@ -49,21 +118,7 @@ def _paged_cache_write_kernel(
                 KScale: T.Tensor((1,), "float32"),  # type: ignore
                 VScale: T.Tensor((1,), "float32"),  # type: ignore
             ) -> None:
-                with T.Kernel(
-                    T.ceildiv(tokens, block_rows),
-                    T.ceildiv(row_width, block_cols),
-                    threads=threads,
-                ) as (row_tile, col_tile):
-                    for i, c in T.Parallel(block_rows, block_cols):
-                        token = row_tile * block_rows + i
-                        col = col_tile * block_cols + c
-                        if token < tokens and col < row_width:
-                            slot = Slots[token]
-                            if slot >= 0:
-                                # TileLang's FP8 cast saturates finite overflow and
-                                # infinities while preserving NaN.
-                                KPages[slot, col] = T.Cast("float32", K[token, col]) / KScale[0]
-                                VPages[slot, col] = T.Cast("float32", V[token, col]) / VScale[0]
+                write_rows(K, V, KPages, VPages, Slots, KScale, VScale)
 
             return _paged_cache_write_fp8
 
@@ -75,19 +130,7 @@ def _paged_cache_write_kernel(
             VPages: T.Tensor((physical_tokens, row_width), cache_dtype),  # type: ignore
             Slots: T.Tensor((tokens,), "int64"),  # type: ignore
         ) -> None:
-            with T.Kernel(
-                T.ceildiv(tokens, block_rows),
-                T.ceildiv(row_width, block_cols),
-                threads=threads,
-            ) as (row_tile, col_tile):
-                for i, c in T.Parallel(block_rows, block_cols):
-                    token = row_tile * block_rows + i
-                    col = col_tile * block_cols + c
-                    if token < tokens and col < row_width:
-                        slot = Slots[token]
-                        if slot >= 0:
-                            KPages[slot, col] = K[token, col]
-                            VPages[slot, col] = V[token, col]
+            write_rows(K, V, KPages, VPages, Slots, None, None)
 
         return _paged_cache_write_16bit
 
@@ -95,7 +138,7 @@ def _paged_cache_write_kernel(
 
 
 class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
-    """One pass over the tokens, a row tile and a column tile per block."""
+    """One vector of a token's key and value rows per thread, in one pass over the tokens."""
 
     @classmethod
     def entry_for(cls, call: PagedKVCacheWriteCall) -> Entry:
@@ -130,7 +173,7 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
             page_size: Rows in a page.
             dtype: Torch dtype of the rows the call passes in.
             cache_dtype: Torch dtype of the page pool; float8_e4m3fn quantizes on write.
-            config: Tile sizes and thread count, or None for ``default_config``.
+            config: Threads per block, or None for ``default_config``.
             device_index: The device the program is built for, or None for the current one.
         """
         super().__init__(device_index=device_index)
@@ -148,25 +191,13 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
 
     @property
     def default_config(self):
-        # A modest row tile exposes parallelism for small token counts; a 128-column tile
-        # keeps contiguous stores while masking narrower rows.
-        return {"block_rows": 16, "block_cols": 128, "threads": 128}
+        # Four warps per block: a block covers 128 vectors, 2 KiB of 16-bit rows, so even a
+        # short decode step spreads over many SMs.
+        return {"threads": 128}
 
     @property
     def autotune_configs(self):
-        return [
-            dict(block_rows=r, block_cols=c, threads=t)
-            for r, c, t in [
-                (16, 128, 128),
-                (32, 128, 128),
-                (8, 256, 128),
-                (4, 512, 128),
-                (2, 1024, 128),
-                (16, 256, 256),
-                (8, 512, 256),
-                (4, 1024, 256),
-            ]
-        ]
+        return [dict(threads=t) for t in (64, 128, 256, 512)]
 
     @property
     def autotune_supply_prog(self):

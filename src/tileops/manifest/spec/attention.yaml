@@ -806,8 +806,8 @@ MLAVarlenBwdOp:
 
 PagedKVCacheWriteFwdOp:
   # Scatters token n's k and v rows into slot slot_mapping[n] of k_cache and v_cache; -1
-  # skips the token, and distinct non-negative slots are the caller's obligation. An FP8
-  # cache stores (k / k_scale) and (v / v_scale) with a saturating cast.
+  # skips the token, and distinct non-negative slots below NP * PS are the caller's
+  # obligation. An FP8 cache stores (k / k_scale) and (v / v_scale) with a saturating cast.
   family: attention
   status: implemented
   ref_api: vllm._custom_ops.reshape_and_cache_flash

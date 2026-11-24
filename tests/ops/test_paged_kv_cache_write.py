@@ -35,7 +35,7 @@ class PagedKVCacheWriteTest(PagedKVCacheWriteWorkload, TestBase):
         pytest.param(
             4,
             1,
-            32,
+            4,
             4,
             2,
             torch.bfloat16,
@@ -60,8 +60,8 @@ class PagedKVCacheWriteTest(PagedKVCacheWriteWorkload, TestBase):
         ),
         pytest.param(
             2,
-            4,
-            128,
+            1,
+            5,
             16,
             4,
             torch.float16,
@@ -98,9 +98,48 @@ class PagedKVCacheWriteTest(PagedKVCacheWriteWorkload, TestBase):
             id="fp16-prefill-sweep",
         ),
         pytest.param(
+            5,
+            3,
+            4,
+            4,
+            2,
+            torch.float16,
+            torch.float8_e4m3fn,
+            [0, -1, 7, 2, 5],
+            False,
+            marks=pytest.mark.full,
+            id="fp8-eight-byte-load-four-byte-store",
+        ),
+        pytest.param(
+            5,
+            1,
+            3,
+            4,
+            2,
+            torch.float16,
+            torch.float16,
+            [7, -1, 0, 4, 3],
+            False,
+            marks=pytest.mark.full,
+            id="fp16-odd-row-element-copy",
+        ),
+        pytest.param(
+            5,
+            1,
+            6,
+            4,
+            2,
+            torch.bfloat16,
+            torch.float8_e4m3fn,
+            [6, 0, -1, 3, 7],
+            False,
+            marks=pytest.mark.full,
+            id="fp8-two-byte-vector-branched-store",
+        ),
+        pytest.param(
             6,
             2,
-            64,
+            3,
             7,
             3,
             torch.bfloat16,
@@ -185,6 +224,26 @@ def test_paged_kv_cache_write_skips_every_token():
         v_scale,
         runs=lambda *args: paged_cache_write_result(op, *args),
     )
+
+
+@pytest.mark.smoke
+def test_paged_kv_cache_write_past_the_pool_writes_nothing():
+    """A slot of ``num_pages * page_size`` writes neither pool nor the page after it."""
+    num_pages, page_size = 2, 16
+    workload = PagedKVCacheWriteTest(1, 2, 64, page_size, num_pages, torch.bfloat16)
+    k, v, k_cache, v_cache, _, k_scale, v_scale = workload.gen_inputs()
+    # Each pool is a view of a buffer one page longer, so a store past the pool lands in
+    # memory the test owns and can see.
+    k_buffer = torch.full(
+        (num_pages + 1, *k_cache.shape[1:]), 3.0, dtype=k_cache.dtype, device=k_cache.device
+    )
+    v_buffer = torch.full_like(k_buffer, -2.0)
+    before = (k_buffer.clone(), v_buffer.clone())
+    slots = torch.tensor([num_pages * page_size], dtype=torch.int64, device=k.device)
+    op = PagedKVCacheWriteFwdOp()
+    op(k, v, k_buffer[:num_pages], v_buffer[:num_pages], slots, k_scale, v_scale)
+    torch.cuda.synchronize()
+    assert torch.equal(k_buffer, before[0]) and torch.equal(v_buffer, before[1])
 
 
 @pytest.mark.smoke
