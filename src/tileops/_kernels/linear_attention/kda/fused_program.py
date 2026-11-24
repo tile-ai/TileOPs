@@ -49,9 +49,6 @@ def fused_chunk_program(
 ):
     """Build the fused chunk program for one static packed shape.
 
-    For precomputed gates, each chunk is checked against ``centred_bounds`` and a chunk past
-    them takes per-pair entries.
-
     *state_v_first* lays the states out value-major, ``[N, HV, V, K]``. *pooled* reads
     sequence ``n``'s state from slot ``slots[n]`` of a state pool and writes its final state
     back there, returning only the output.
@@ -111,7 +108,7 @@ def fused_chunk_program(
         gram = raw_gate_gram(BT, K, scratch_load)
 
         # Past the block ends (compact scratch) or the beta row (metadata): each row's
-        # exponent bound for unnormalized rows, then the one-launch chunk flag.
+        # exponent bound for unnormalized rows, then the chunk flag.
         def row_bound(metadata, scratch, i):
             return scratch_load(scratch, 2 * NC, i) if compact else metadata[BT + 1 + i]
 

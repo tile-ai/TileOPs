@@ -1002,7 +1002,7 @@ def test_kda_decode_steps_a_value_major_state() -> None:
     test.check(KDAFwdOp(state_v_first=True), *test.gen_inputs())
 
 
-# Enough (sequence, value head) pairs for the one-kernel prefill on any SM89 or SM90 device.
+# Enough (sequence, value head) pairs for the one-kernel prefill on any SM89 device.
 _FUSED_HEADS = 64
 # SM89 builds the one-kernel prefill's compact program, SM90 its full one.
 _FUSED_ARCHS = [
@@ -1030,10 +1030,8 @@ def _one_wave_heads(sequences: int) -> int:
 def test_kda_sm90_fp16_prefill_walks_one_cta_only_for_one_chunk_in_one_wave(
     length: int, waves: int, chunked: bool, monkeypatch
 ) -> None:
-    """On SM90 the chunk-parallel prefill prepares an fp16 given gate's chunks in several
-    launches before its state walk. The one-CTA prefill prepares each chunk on its walk in one
-    launch, which finishes first only while each CTA prepares one chunk and every CTA runs in
-    one wave."""
+    """On SM90 an fp16 given-gate prefill takes the one-CTA prefill only while its sequences
+    average one chunk and its (sequence, value head) pairs fit one wave of SMs."""
     torch.manual_seed(42)
     runs = []
 
