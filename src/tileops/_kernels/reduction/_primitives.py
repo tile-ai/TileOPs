@@ -869,6 +869,8 @@ class _LeadingAxisReducePolicy:
     # HBM bandwidth times its latency asks of one SM.
     cluster_threads: int = 512
 
+    cluster_unroll: int = 8
+
 
 _LEADING_POLICY = _LeadingAxisReducePolicy()
 
@@ -877,7 +879,9 @@ def _cluster_row_groups(reduced: int) -> int:
     """Row groups of a `_down_rows_cluster_kernel` CTA over *reduced* rows: one per row up to
     the count whose groups each read one L2 line of a row, the narrowest whole-line read.
 
-    Fewer rows take fewer, wider groups, so no thread waits on a row that is not there.
+    Fewer rows take fewer, wider groups. The groups follow the call's rows, not a CTA's
+    share of them: a cluster that splits fewer rows than twice its groups leaves some of
+    each CTA's groups without a row.
     """
     # Bytes of one L2 cache line, four 32-byte sectors.
     line_bytes = 128
@@ -1148,7 +1152,7 @@ def _down_rows_cluster_kernel(
     """
     itemsize = getattr(torch, in_dtype).itemsize
     vec = VECTOR_ACCESS_BYTES // itemsize
-    threads, unroll = _LEADING_POLICY.cluster_threads, 8
+    threads, unroll = _LEADING_POLICY.cluster_threads, _LEADING_POLICY.cluster_unroll
     groups = _cluster_row_groups(A)
     lanes = threads // groups
     width = lanes * vec

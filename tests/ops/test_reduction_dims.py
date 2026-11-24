@@ -514,12 +514,12 @@ def test_edge_axis_reduce_returns_the_storage_dtype(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("shape", [(769, 512)], ids=["ragged-split"])
+@pytest.mark.parametrize("shape", [(769, 516)], ids=["ragged-split"])
 def test_leading_axis_split_reduces_every_row(shape):
     """A split that does not divide the reduced extent still sums every row.
 
-    Rows of 1 KB give the cluster pass 8 CTAs, which leave half the SMs idle even in an
-    8-CTA cluster, so they take the split launches on every board.
+    Rows of 516 fp16 are not whole 16-byte vectors, which the cluster pass refuses, so they
+    take the split launches on every board.
     """
 
     x = torch.randn(shape, dtype=torch.float16, device=run_device())
