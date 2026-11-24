@@ -836,7 +836,7 @@ def test_kda_prefill_given_gate_mixes_ordinary_and_strong_chunks(
     first and ninth, which puts the blocks' reference rows far apart, and a steady 6 (log2) per
     token, which bf16 rows centre within a 16-row block and which overflows them centred on a
     whole chunk. One sequence reaches the chunk program; 256 (sequence, head) pairs of six chunks
-    reach the fused program on SM89 and the chunk program elsewhere.
+    reach the fused program on SM89 and the chunk program on SM90.
     """
     torch.manual_seed(42)
     workload = KDAFwdTest(
@@ -1020,32 +1020,35 @@ def _one_wave_heads(sequences: int) -> int:
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("dtype", "batch", "seq_len", "sequences", "heads", "key"),
+    ("dtype", "batch", "seq_len", "sequences", "key"),
     [
         pytest.param(
-            torch.float16, 4, 64, 4, 33, "kda_fused_prefill", id="fp16-64-tokens-132-pairs"
+            torch.float16, 132, 64, 132, "kda_fused_prefill", id="fp16-64-tokens-132-pairs"
         ),
-        pytest.param(torch.float16, 4, 65, 4, 33, "kda_chunk_prefill", id="fp16-65-tokens"),
-        pytest.param(torch.float16, 7, 64, 7, 19, "kda_chunk_prefill", id="fp16-133-pairs"),
+        pytest.param(torch.float16, 132, 65, 132, "kda_chunk_prefill", id="fp16-65-tokens"),
+        pytest.param(torch.float16, 133, 64, 133, "kda_chunk_prefill", id="fp16-133-pairs"),
         pytest.param(
-            torch.float16, 1, 256, 4, 33, "kda_fused_prefill", id="fp16-packed-64-on-average"
+            torch.float16, 1, 132 * 64, 132, "kda_fused_prefill", id="fp16-packed-64-on-average"
         ),
-        pytest.param(torch.float16, 1, 257, 4, 33, "kda_chunk_prefill", id="fp16-packed-past-64"),
-        pytest.param(torch.bfloat16, 4, 64, 4, 33, "kda_chunk_prefill", id="bf16"),
+        pytest.param(
+            torch.float16, 1, 132 * 64 + 1, 132, "kda_chunk_prefill", id="fp16-packed-past-64"
+        ),
+        pytest.param(torch.bfloat16, 132, 64, 132, "kda_chunk_prefill", id="bf16"),
     ],
 )
 def test_kda_sm90_given_gate_prefill_walks_one_cta_for_one_chunk_in_one_wave(
-    dtype: torch.dtype, batch: int, seq_len: int, sequences: int, heads: int, key: str
+    dtype: torch.dtype, batch: int, seq_len: int, sequences: int, key: str
 ) -> None:
     """On SM90 an fp16 given-gate prefill takes the one-CTA prefill only while its sequences
     average at most one 64-token chunk and its (sequence, value head) pairs fit one wave of the
-    device's SMs; bf16 given gates take the chunk-parallel prefill."""
+    device's SMs; bf16 given gates take the chunk-parallel prefill. One value head makes the
+    pairs the sequences."""
     call = KDACall(
         batch=batch,
         seq_len=seq_len,
         sequences=sequences,
-        heads=heads,
-        value_heads=heads,
+        heads=1,
+        value_heads=1,
         dim_k=128,
         dim_v=128,
         dtype=dtype,
