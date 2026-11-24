@@ -291,7 +291,16 @@ class VectorNormEdgeKernel(EdgeReduceKernelBase, VectorNormFwdInterface):
             epilogue = "sqrt" if self.op_kind == "l2" else ""
             splits = down_rows_splits(lead, kept)
             fold = down_rows_launcher(
-                lead, kept, "sum", "float32", self.out_dtype_str, 0.0, splits, epilogue
+                lead,
+                kept,
+                "sum",
+                "float32",
+                self.out_dtype_str,
+                0.0,
+                splits,
+                epilogue,
+                arch=self.call.arch,
+                sm_count=self.call.sm_count,
             )
 
         def launch(x: torch.Tensor) -> torch.Tensor:

@@ -688,3 +688,28 @@ def test_count_nonzero_unaligned_innermost(dim) -> None:
         f"CountNonzeroFwdOp dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
     )
     compare_outputs(y, ref, reduction_verification(ref.dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["any", "all", "count_nonzero"])
+def test_logical_reduce_edge_over_many_partials(op_kind: str) -> None:
+    """A reduced prefix and suffix around 4096 kept positions, over 40 leading segments.
+
+    A board that fuses the edge pass reads it in one kernel; one that does not reduces
+    the 40 x 4096 partials down their rows, which takes the one launch split across a
+    thread-block cluster on SM90.
+    """
+    x = torch.rand(40, 4096, 160, device=run_device())
+    # Each threshold leaves some kept positions with a flag and some without.
+    inputs = {
+        "any": lambda: x > 0.9999,
+        "all": lambda: x > 0.0001,
+        "count_nonzero": lambda: torch.where(x > 0.5, x, 0.0).half(),
+    }[op_kind]()
+    op = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}[op_kind]
+    ref = {
+        "any": lambda t: t.any(dim=(0, 2)),
+        "all": lambda t: t.all(dim=(0, 2)),
+        "count_nonzero": lambda t: torch.count_nonzero(t, dim=(0, 2)),
+    }[op_kind](inputs)
+    compare_outputs(op(dim=[0, 2])(inputs), ref, reduction_verification(ref.dtype))

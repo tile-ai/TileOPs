@@ -179,14 +179,21 @@ def test_extrema_preserves_nan(shape, axes, dtype, kind) -> None:
         ),
         pytest.param((2, 524288), torch.float16, "amax", marks=pytest.mark.full, id="vector-f16"),
         pytest.param((2, 524288), torch.float32, "amin", marks=pytest.mark.full, id="vector-f32"),
+        pytest.param((2048, 4096), torch.float16, "amax", marks=pytest.mark.full, id="cluster-f16"),
+        pytest.param(
+            (1000, 4104), torch.float16, "amin", marks=pytest.mark.full, id="cluster-ragged-f16"
+        ),
     ],
 )
 def test_extrema_leading_preserves_nan(shape, dtype, kind) -> None:
-    """NaNs survive leading-axis reductions split across row slices, and the vector walk.
+    """NaNs survive leading-axis reductions split across row slices, the vector walk and
+    the cluster's one launch.
 
     The row slices split a column tail, divide the rows, or leave the last slice short;
     columns of whole 16-byte-vector tiles take the one-launch vector walk. A 2-byte and a
-    4-byte element are walked to different depths.
+    4-byte element are walked to different depths. Rows of whole vectors wide enough to
+    fill the device fold in one launch across a thread-block cluster, which merges NaNs
+    held by different CTAs.
     """
 
     test = ExtremaNanTest(shape, dtype, (0,), kind)

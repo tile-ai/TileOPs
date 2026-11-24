@@ -27,6 +27,7 @@ from tileops._kernels.autotune import candidate_busy_ms
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
+    MAX_PORTABLE_CLUSTER_BLOCKS,
     STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
 )
@@ -866,6 +867,10 @@ class _LeadingAxisReducePolicy:
 
 _LEADING_POLICY = _LeadingAxisReducePolicy()
 
+# Bytes of one L2 cache line, four 32-byte sectors: the columns one CTA of
+# `_down_rows_cluster_kernel` owns, which `down_rows_cluster` counts its CTAs by.
+L2_LINE_BYTES = 128
+
 
 def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
     """Split *axes* into ``(leading, trailing)`` counts when they hug both edges.
@@ -1085,6 +1090,142 @@ def _down_rows_vector_kernel(
     return _func
 
 
+def down_rows_cluster(kept: int, in_dtype: str, arch: int, sm_count: int) -> int:
+    """CTAs of one cluster `_down_rows_cluster_kernel` splits a ``(reduced, kept)`` buffer's
+    reduced axis into, or 0 where it does not serve the buffer.
+
+    It serves rows of whole 16-byte vectors on an architecture with thread-block clusters.
+    Each CTA owns one L2 line's worth of columns; the cluster is the largest power of two
+    that keeps one CTA per SM, up to the portable cluster size. Where that cap leaves half
+    the SMs or more without a CTA, the split launches keep the device busier.
+    """
+    itemsize = getattr(torch, in_dtype).itemsize
+    if arch < 90 or kept * itemsize % VECTOR_ACCESS_BYTES:
+        return 0
+    tiles = ceil_div(kept * itemsize, L2_LINE_BYTES)
+    cluster = 1
+    while cluster < MAX_PORTABLE_CLUSTER_BLOCKS and 2 * cluster * tiles <= sm_count:
+        cluster *= 2
+    return cluster if 2 * cluster * tiles > sm_count else 0
+
+
+@target_cache(maxsize=32)
+def _down_rows_cluster_kernel(
+    A: int,
+    B: int,
+    op_kind: str,
+    in_dtype: str,
+    out_dtype: str,
+    divisor: float,
+    epilogue: str,
+    cluster: int,
+):
+    """Build a one-launch reduce down the rows of an ``(A, B)`` buffer of whole 16-byte
+    vectors, its reduced axis split across the ``cluster`` CTAs of a thread-block cluster.
+
+    Each CTA owns one L2 line of columns of ``ceil(A / cluster)`` rows. Its threads form row
+    groups of one line each, which walk interleaved rows folding one 16-byte vector a thread
+    per row; the groups' partials meet in shared memory. Each CTA then stores its partial of
+    every column into the shared memory of the CTA that finishes that column, and after one
+    cluster barrier each CTA folds its columns' ``cluster`` partials, in rank order, and
+    writes them. The arguments are `_down_rows_kernel`'s with one split; the input must
+    start on a 16-byte boundary.
+    """
+    itemsize = getattr(torch, in_dtype).itemsize
+    vec = VECTOR_ACCESS_BYTES // itemsize
+    width = L2_LINE_BYTES // itemsize
+    lanes = width // vec
+    # 512 threads keeping 8 vector loads each in flight hold 64 KB per SM, several times
+    # what HBM bandwidth times its latency asks of one SM.
+    threads, unroll = 512, 8
+    groups = threads // lanes
+    tiles = ceil_div(B, width)
+    rows = ceil_div(A, cluster)
+    steps = ceil_div(rows, groups)
+    owned = width // cluster
+    exact_rows = steps * groups == rows and rows * cluster == A
+    exact_cols = B % width == 0
+    _, combine, finish = _down_rows_ops(op_kind, divisor, out_dtype, epilogue)
+    identity = T.cast(identity_for(op_kind), "float32")
+
+    @tilelang.jit(
+        out_idx=[1],
+        compile_flags=csrc_include("streaming_load.h", "cluster_store.h", "nan_extrema.h"),
+    )
+    def _func():
+        @T.prim_func
+        def main(x: T.Tensor((A, B), in_dtype), out: T.Tensor((B,), out_dtype)):
+            with (
+                T.Kernel(tiles, threads=threads)
+                if cluster == 1
+                else T.ClusterKernel(tiles * cluster, cluster_dims=cluster, threads=threads)
+            ) as bx:
+                tx = T.get_thread_binding()
+                # A 1-D cluster's ranks are consecutive blocks.
+                rank = bx % cluster
+                tile = bx // cluster
+                group = tx // lanes
+                col = tile * width + tx % lanes * vec
+                held = T.alloc_local((vec,), in_dtype)
+                acc = T.alloc_local((vec,), "float32")
+                total = T.alloc_local((1,), "float32")
+                out_local = T.alloc_local((1,), out_dtype)
+                # One buffer for the groups' partials and the peers' landing slots: a peer
+                # may store into its slots while this CTA still reads the partials.
+                scratch = T.alloc_shared((groups * width + cluster * owned,), "float32")
+                if cluster > 1:
+                    # Every CTA of the cluster has started before a peer stores into it.
+                    T.cluster_arrive_relaxed()
+
+                for j in T.unroll(vec):
+                    acc[j] = identity
+                for step in T.unroll(steps, unroll_factor=unroll):
+                    row = rank * rows + step * groups + group
+                    if (
+                        exact_rows
+                        and exact_cols
+                        or step * groups + group < rows
+                        and row < A
+                        and col < B
+                    ):
+                        load16(held, 0, x, (row, col))
+                        for j in T.unroll(vec):
+                            combine(acc, j, T.cast(held[j], "float32"))
+                for j in T.unroll(vec):
+                    scratch[group * width + tx % lanes * vec + j] = acc[j]
+                T.sync_threads()
+
+                if tx < width:
+                    total[0] = identity
+                    for k in T.unroll(groups):
+                        combine(total, 0, scratch[k * width + tx])
+                if cluster == 1:
+                    if tx < width and tile * width + tx < B:
+                        finish(out_local, 0, total[0])
+                        out[tile * width + tx] = out_local[0]
+                else:
+                    T.cluster_wait()
+                    if tx < width:
+                        T.call_extern(
+                            "handle",
+                            "tileops::cluster_store_f32",
+                            T.address_of(scratch[groups * width + rank * owned + tx % owned]),
+                            tx // owned,
+                            total[0],
+                        )
+                    T.cluster_sync()
+                    if tx < owned and tile * width + rank * owned + tx < B:
+                        total[0] = identity
+                        for p in T.unroll(cluster):
+                            combine(total, 0, scratch[groups * width + p * owned + tx])
+                        finish(out_local, 0, total[0])
+                        out[tile * width + rank * owned + tx] = out_local[0]
+
+        return main
+
+    return _func
+
+
 def down_rows_splits(reduced: int, kept: int) -> int:
     """Row slices a down-rows reduction of ``(reduced, kept)`` runs as; 1 is one launch.
 
@@ -1110,13 +1251,17 @@ def down_rows_launcher(
     divisor: float,
     splits: int,
     epilogue: str = "",
+    *,
+    arch: int,
+    sm_count: int,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     """The compiled reduction of a ``(reduced, kept)`` buffer down its rows, writing one
-    *out_dtype* row.
+    *out_dtype* row, on a device of architecture *arch* with *sm_count* SMs.
 
     With *splits* 1 it is one launch, `_down_rows_vector_kernel` where `_vector_tiles`
-    admits the columns. Above 1 each of *splits* row slices leaves an fp32
-    partial row, and a second launch reduces those rows; only that launch applies
+    admits the columns. Above 1 it is `_down_rows_cluster_kernel`'s one launch where
+    `down_rows_cluster` admits the buffer; otherwise each of *splits* row slices leaves an
+    fp32 partial row, and a second launch reduces those rows; only that launch applies
     ``divisor`` and ``epilogue``. The partials are a few thousand values against the
     millions the first launch reads.
     """
@@ -1131,6 +1276,14 @@ def down_rows_launcher(
         return CompiledProgram(
             _down_rows_kernel(
                 reduced, kept, op_kind, in_dtype, out_dtype, threads, 1, divisor, epilogue
+            )()
+        )
+
+    cluster = down_rows_cluster(kept, in_dtype, arch, sm_count)
+    if cluster:
+        return CompiledProgram(
+            _down_rows_cluster_kernel(
+                reduced, kept, op_kind, in_dtype, out_dtype, divisor, epilogue, cluster
             )()
         )
     partial = CompiledProgram(
