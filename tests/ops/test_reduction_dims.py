@@ -558,14 +558,19 @@ def test_cluster_split_follows_the_sm_count() -> None:
             (3, 65536), torch.bfloat16, marks=pytest.mark.full, id="fewer-rows-than-groups"
         ),
         pytest.param((2048, 2048), torch.bfloat16, marks=pytest.mark.full, id="cluster-4"),
+        pytest.param(
+            (2, 128256), torch.bfloat16, marks=pytest.mark.full, id="band-wider-than-threads"
+        ),
     ],
 )
 def test_leading_axis_cluster_reduces_every_row_and_column(shape, dtype) -> None:
     """The one-launch cluster pass folds every row and column into each op's result.
 
     The ragged shape gives the second CTA of the cluster one row fewer than the first,
-    leaves its row groups' last step short and its last line partial; the 3-row one
-    takes four row groups, one without a row, each four lines wide.
+    leaves its row groups' last step short and its last line partial. The 3-row one takes
+    a 2-CTA cluster of four row groups each 16 lines wide: the first CTA reads two rows and
+    the second one, so most groups get no row. The 2-row one takes two row groups of 32
+    lines, so each CTA finishes more columns than it has threads.
     """
     # A sentinel row follows the reduced rows in memory: a read past them shows.
     rows = torch.rand(shape[0] + 1, *shape[1:], dtype=dtype, device=run_device()) * 0.04 + 0.98
