@@ -378,13 +378,18 @@ def test_the_throughput_run_samples_the_first_layer_of_each_kind():
         throughput._first_of_each_kind(kinds, 3)
 
 
-@pytest.mark.sm90
-def test_a_layer_call_counts_the_seconds_one_more_call_adds():
-    """Two calls less one reads one call: a call that sleeps 20 ms reads 20 ms, not the 40 ms of
-    two calls or the one call plus the idle device it starts from."""
+def test_a_layer_call_counts_the_seconds_one_more_call_adds(monkeypatch):
+    """Two calls less one reads one call and leaves out the start from an idle device: a call
+    that takes 20 ms, and 10 ms more when a synchronize has left the device idle, reads 20 ms."""
     throughput = _throughput_script()
-    seconds = throughput._layer_call_seconds(lambda: time.sleep(0.02))
-    assert seconds == pytest.approx(0.02, rel=0.2)
+    idle = [True]
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: idle.__setitem__(0, True))
+
+    def call():
+        time.sleep(0.03 if idle[0] else 0.02)
+        idle[0] = False
+
+    assert throughput._layer_call_seconds(call) == pytest.approx(0.02, abs=0.004)
 
 
 @pytest.mark.sm90
