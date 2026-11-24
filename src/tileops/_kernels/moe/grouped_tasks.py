@@ -1,10 +1,11 @@
 """Task walk and launch-config plumbing shared by the persistent M-grouped GEMM kernels.
 
-A persistent CTA walks tasks ``num_sms * wave + pid``; each task is one ``block_m``-row tile of
-one expert's rows by one ``block_n``-column tile. ``task_walk`` builds the TileLang pieces that
-resolve a task id to its expert and tile for masked slabs and for tight or aligned contiguous
-runs, store a task's output tile, and describe row and expert-weight tiles to TMA;
-``GroupedGEMMConfigMixin`` holds the config checks the kernels share.
+A persistent CTA walks tasks a grid apart, ``num_sms * wave + pid``, or ``grid * wave + worker``
+over the working CTAs of a grid that balances its tasks at run time; each task is one
+``block_m``-row tile of one expert's rows by one ``block_n``-column tile. ``task_walk`` builds
+the TileLang pieces that resolve a task id to its expert and tile for masked slabs and for tight
+or aligned contiguous runs, store a task's output tile, and describe row and expert-weight tiles
+to TMA; ``GroupedGEMMConfigMixin`` holds the config checks the kernels share.
 """
 
 from collections.abc import Mapping
@@ -52,7 +53,8 @@ def task_walk(
         ``walk(layout_or_ends, task_id, cursor)`` (resolves a task to an expert, ``num_groups``
         marking exhaustion), ``tile_of(task_id, cursor, tile)``,
         ``walk_to_running(layout_or_ends, task_id, cursor, tile)`` (the first running task a
-        wave apart from ``task_id`` on, resolved and tiled), the task's clamped
+        wave apart from ``task_id`` on, resolved and tiled), ``slab_tiles(count)`` (a masked
+        slab's row tiles, its count clamped to ``[0, max_m]``), the task's clamped
         ``expert(cursor)``, ``first_row(cursor, tile)`` and ``first_col(tile)``,
         ``store_tile(...)``, ``row_tiles_descriptor(...)``, ``expert_rows_descriptor(...)``,
         ``recover_ends(layout, ends, tx, threads)`` and the flag ``recover`` (tight per-row
@@ -87,13 +89,15 @@ def task_walk(
         rows_shape = (num_groups, max_m)
     cur = CURSOR
 
+    def slab_tiles(count):
+        """The row tiles of a masked slab of ``count`` rows, ``count`` clamped to ``[0, max_m]``."""
+        return (T.max(T.min(count, max_m), 0) + block_m - 1) // block_m
+
     @T.macro
     def walk_to(layout, task_id, cursor):
         """Resolve a masked task to an expert; ``num_groups`` marks exhaustion."""
         while cursor[cur.g] < num_groups:
-            cursor[cur.tiles] = (
-                T.max(T.min(layout[cursor[cur.g]], max_m), 0) + block_m - 1
-            ) // block_m
+            cursor[cur.tiles] = slab_tiles(layout[cursor[cur.g]])
             if task_id < (cursor[cur.m] + cursor[cur.tiles]) * n_tiles:
                 break
             cursor[cur.m] = cursor[cur.m] + cursor[cur.tiles]
@@ -324,6 +328,7 @@ def task_walk(
         cursor_len=5 if contiguous else 3,
         walk=walk,
         walk_to_running=walk_to_running,
+        slab_tiles=slab_tiles,
         tile_of=tile_of,
         expert=expert,
         first_row=first_row,
@@ -405,12 +410,16 @@ class GroupedGEMMConfigMixin:
         super().autotune(warmup=warmup, rep=rep)
         self._check_config(self.config)
 
+    def _slab_tiles(self, block_m: int, block_n: int) -> int:
+        """The tasks of every tile of every masked slab, each slab full."""
+        call = self.call
+        return call.num_groups * -(-call.max_m // block_m) * -(-call.n // block_n)
+
     def _balanced_sms(self, block_m: int, block_n: int) -> int:
         """Minimize idle blocks for masked slabs; use all SMs for contiguous layouts."""
-        call = self.call
-        if call.kind == "contiguous":
+        if self.call.kind == "contiguous":
             return self.sm_count
-        tiles = call.num_groups * -(-call.max_m // block_m) * -(-call.n // block_n)
+        tiles = self._slab_tiles(block_m, block_n)
         if tiles == 0:
             return 1
         return -(-tiles // -(-tiles // self.sm_count))
