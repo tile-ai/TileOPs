@@ -1259,7 +1259,10 @@ def _build_prepare_h_kernel(
                 else T.ceildiv(seq_end_idx - seq_start_idx, block_S)
             )
 
-            calc_mt = T.alloc_var("bool")
+            # A bound value, not a local variable: TileLang 0.1.15 lifts the warp groups'
+            # barriers out of a branch on a local and splits the branch around them, and ptxas
+            # spills the split loops of the X and Y warp groups. The value is taken before
+            # seq_start_idx moves to the warmup start below.
             calc_mt = is_cp and num_iters >= T.ceildiv(seq_end_idx - seq_start_idx, block_S)
             seq_start_idx = seq_end_idx - num_iters * block_S if is_cp else seq_start_idx
 
