@@ -990,13 +990,18 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         It costs the partials written and read back, priced at the DRAM rate though they
         mostly stay in L2, and the fixed latency of the launch that sums them. All three
         are the build target's GPU-profile facts. ``s`` is the divisor of ``k_blocks`` that
-        saves the most, 1 when none saves anything or the device has no profile. The partial
-        tile is staged in shared memory beside the pipeline, so a split that does not fit
-        there is not taken.
+        saves the most, 1 when none saves anything or the profile lacks any of the three.
+        The partial tile is staged in shared memory beside the pipeline, so a split that does
+        not fit there is not taken.
         """
         target = self.build_target
         flops = dict(target.tensor_core_rates).get(tensor_core_roof(self.dtype).split(".")[1])
-        if not self._split_fits(tile) or not flops or not target.hbm_rate:
+        if (
+            not self._split_fits(tile)
+            or not flops
+            or not target.hbm_rate
+            or not target.launch_latency
+        ):
             return 1
         tiles = -(-self.c_out // tile["block_n"]) * -(
             -(self.n * self.out_h * self.out_w) // tile["block_m"]

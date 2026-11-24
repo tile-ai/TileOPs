@@ -892,18 +892,32 @@ def test_conv2d_symmetric_split_contraction(n: int, h: int, dtype: torch.dtype, 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "shape,profiled",
+    "shape,stated,profiled",
     [
-        pytest.param((2, 64, 16, 16, 128), False, marks=pytest.mark.smoke, id="no-gpu-profile"),
         pytest.param(
-            (1, 32, 16, 16, 128), True, marks=pytest.mark.full, id="saving-below-partials"
+            (2, 64, 16, 16, 128),
+            {"tensor_core_rates": (), "hbm_rate": 0.0, "launch_latency": 0.0},
+            False,
+            marks=pytest.mark.smoke,
+            id="no-gpu-profile",
+        ),
+        pytest.param(
+            (2, 64, 16, 16, 128),
+            {"launch_latency": 0.0},
+            True,
+            marks=pytest.mark.full,
+            id="profile-without-launch-latency",
+        ),
+        pytest.param(
+            (1, 32, 16, 16, 128), {}, True, marks=pytest.mark.full, id="saving-below-partials"
         ),
     ],
 )
-def test_conv2d_symmetric_keeps_whole_tiles(shape: tuple, profiled: bool) -> None:
+def test_conv2d_symmetric_keeps_whole_tiles(shape: tuple, stated: dict, profiled: bool) -> None:
     """The split rule reads the device's SM count and its GPU profile's tensor-core rate,
     DRAM rate and launch latency. A grid whose K blocks saved fall below the partials and
-    the summing launch, or a device without a GPU profile, keeps one CTA per output tile."""
+    the summing launch, or a device whose GPU profile lacks any of the three, keeps one CTA
+    per output tile. The two-image grid splits when all three are present."""
     from tests.build_target_facts import described
     from tileops._kernels.convolution.conv2d import Conv2dSymmetricKernel
     from tileops.backend import BUILTIN
@@ -913,8 +927,7 @@ def test_conv2d_symmetric_keeps_whole_tiles(shape: tuple, profiled: bool) -> Non
     n, c_in, h, w, c_out = shape
     x = torch.randn(n, c_in, h, w, device=run_device(), dtype=torch.float16)
     weight = torch.randn(c_out, c_in, 3, 3, device=x.device, dtype=x.dtype)
-    no_profile = {"tensor_core_rates": (), "hbm_rate": 0.0, "launch_latency": 0.0}
-    with described({} if profiled else {x.device.index or 0: no_profile}):
+    with described({x.device.index or 0: stated}):
         op = Conv2dFwdOp(padding=1, target=BUILTIN)
         op(x, weight)
         (kernel,) = op.iter_kernels()

@@ -264,7 +264,7 @@ Every calibration is the **envelope** over the conditions its microbenchmark mea
 
 A profile may also hold a measured hardware latency, a quantity with no datasheet value: `launch.latency` is the device-busy time one more dependent kernel launch adds to a program. It is stored as the measured value, in seconds, with its method beside it. A latency is the median, not an envelope: kernel selection charges it as a typical cost, and an envelope would bias every comparison it enters.
 
-Kernel selection reads profile values only through the device facts: the device-facts reader takes the effective tensor-core rates, the effective HBM rate and the launch latency from the profile, and a kernel reads them from its build target. A device without a profile has none, and a kernel that prices a choice with them keeps its unpriced default.
+Kernel selection reads profile values only through the device facts. A device whose profile lacks a value a kernel prices a choice with keeps that kernel's unpriced default.
 
 ### 5.2 Benchmark–Roofline Decoupling
 
