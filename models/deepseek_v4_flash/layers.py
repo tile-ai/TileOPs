@@ -216,7 +216,11 @@ class Compressor:
 
 
 class Indexer:
-    """The lightning indexer: selects each query's top compressed entries of an indexed layer."""
+    """The lightning indexer: selects each query's top compressed entries of an indexed layer.
+
+    ``cache`` holds the entries as columns, ``[1, index_head_dim, max_entries]``, the layout the
+    scores' BMM reads, so a decode step reads it in place.
+    """
 
     def __init__(
         self, cfg: DeepseekV4FlashConfig, ratio: int, max_entries: int, device: torch.device
@@ -232,7 +236,7 @@ class Indexer:
         self.weight_scale = torch.tensor(
             [self.head_dim**-0.5 * self.n_heads**-0.5], dtype=torch.float32, device=device
         )
-        self.cache = torch.zeros(1, max_entries, self.head_dim, dtype=torch.bfloat16, device=device)
+        self.cache = torch.zeros(1, self.head_dim, max_entries, dtype=torch.bfloat16, device=device)
 
     def __call__(
         self,
@@ -251,9 +255,9 @@ class Indexer:
         ops.fp4_fake_quant(q)
         entries = self.compressor(ops, rope, x, step)
         if entries is not None and start_pos == 0:
-            self.cache[:, : entries.shape[1]] = entries
+            self.cache[..., : entries.shape[1]] = entries.transpose(1, 2)
         elif entries is not None:
-            self.cache.index_copy_(1, (step.starts // self.ratio).long(), entries)
+            self.cache.index_copy_(2, (step.starts // self.ratio).long(), entries.transpose(1, 2))
         if not step.has_entries(self.ratio):
             return torch.full(
                 (1, seqlen, ops.index_topk.top_k), -1, dtype=torch.int32, device=x.device
@@ -261,7 +265,7 @@ class Indexer:
         weights = ops.mul(ops.gemm(x, self.weights_proj).float(), self.weight_scale)
         weights = weights.to(torch.bfloat16)
         width = seqlen // self.ratio if start_pos == 0 else self.max_entries
-        keys = self.cache[:, :width].transpose(1, 2).contiguous()
+        keys = self.cache[..., :width]
         scores = ops.bmm(q.view(1, seqlen * self.n_heads, self.head_dim), keys)
         scores = ops.relu(scores).view(seqlen, self.n_heads, width)
         logits = ops.bmm(weights.view(seqlen, 1, self.n_heads), scores)

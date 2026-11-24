@@ -187,7 +187,8 @@ def _check_decode_state(block, official_block, positions: int) -> None:
         pairs.append(("entries", attn.kv_cache[:, entries], official.kv_cache[:, entries], fp8_tol))
     if attn.indexer is not None and positions >= attn.indexer.ratio:
         n = positions // attn.indexer.ratio
-        actual, expected = attn.indexer.cache[:, :n], official.indexer.kv_cache[:, :n]
+        actual = attn.indexer.cache[..., :n].transpose(1, 2)
+        expected = official.indexer.kv_cache[:, :n]
         pairs.append(("indexer entries", actual, expected, fp4_tol))
     for name, actual, expected, tol in pairs:
         rel = ((actual.float() - expected.float()).norm() / expected.float().norm()).item()
