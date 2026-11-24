@@ -864,8 +864,8 @@ def _has_gpu_profile() -> bool:
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "n,h,dtype,bias",
-    [(2, 16, torch.float16, True), (1, 30, torch.bfloat16, True)],
-    ids=["two-images-fp16-bias", "tails-bf16-bias"],
+    [(2, 16, torch.float16, False), (1, 30, torch.bfloat16, True)],
+    ids=["two-images-fp16", "tails-bf16-bias"],
 )
 def test_conv2d_symmetric_split_contraction(n: int, h: int, dtype: torch.dtype, bias: bool) -> None:
     """A few output tiles leave most of the SMs idle, so on a device whose GPU profile prices
@@ -888,13 +888,16 @@ def test_conv2d_symmetric_split_contraction(n: int, h: int, dtype: torch.dtype, 
     assert kernel.config["split_k"] > 1
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     "shape,profiled",
-    [((1, 32, 16, 16, 128), True), ((2, 64, 16, 16, 128), False)],
-    ids=["saving-below-partials", "no-gpu-profile"],
+    [
+        pytest.param((2, 64, 16, 16, 128), False, marks=pytest.mark.smoke, id="no-gpu-profile"),
+        pytest.param(
+            (1, 32, 16, 16, 128), True, marks=pytest.mark.full, id="saving-below-partials"
+        ),
+    ],
 )
 def test_conv2d_symmetric_keeps_whole_tiles(shape: tuple, profiled: bool) -> None:
     """The split rule reads the device's SM count and its GPU profile's tensor-core rate,

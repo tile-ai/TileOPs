@@ -1027,16 +1027,12 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         return pipeline + partial <= self.build_target.smem_budget
 
     def init_config(self, config: dict | None = None) -> None:
-        """Set the config; a config that leaves ``split_k`` out takes its tile's split.
+        """Set the config, and refuse a split the program cannot run.
 
         Raises:
             ValueError: ``split_k`` does not divide the tile's K blocks, or a split tile's
                 partial tile does not fit in shared memory beside its pipeline.
         """
-        if config is not None and config.get("split_k") is None:
-            tile = {k: config.get(k, v) for k, v in self.default_config.items() if k != "split_k"}
-            tile = {k: v if v is not None else self.default_config[k] for k, v in tile.items()}
-            config = {**config, "split_k": self.split_k(tile)}
         super().init_config(config)
         split_k = self.config["split_k"]
         k_blocks = _k_blocks(self.c_in, self.kernel_size, self.config["block_k"])
