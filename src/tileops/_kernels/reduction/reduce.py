@@ -382,10 +382,11 @@ class WelfordReduceKernel(RowReduceKernelBase, VarianceFwdInterface, VarMeanFwdI
 class ReduceLeadingKernel(ReduceKernelBase, ReduceFwdInterface, ProdFwdInterface):
     """A reduction down the leading axes in the tensor's own ``(N, M)`` layout.
 
-    Where one launch over the columns would leave the grid short, the down-rows pass splits
-    the reduced axis: where `down_rows_cluster` admits the call, across the CTAs of a
-    thread-block cluster, which fold their partials in shared memory within the one launch;
-    elsewhere into row slices whose fp32 partials a second launch finishes.
+    A call `down_rows_cluster` admits runs in one launch. Where it returns more than 1, the
+    reduced axis splits across the CTAs of a thread-block cluster, which fold their partials
+    in shared memory; at 1, each CTA walks every row of its tile. Elsewhere, where one launch
+    over the columns would leave the grid short, the down-rows pass splits the reduced axis
+    into row slices whose fp32 partials a second launch finishes.
     """
 
     preferred_over = frozenset({"reduce_fold"})
