@@ -2,7 +2,10 @@
 
 A persistent CTA walks tasks a grid apart, ``num_sms * wave + pid``, or ``grid * wave + worker``
 over the working CTAs of a grid that balances its tasks at run time; each task is one
-``block_m``-row tile of one expert's rows by one ``block_n``-column tile. ``task_walk`` builds
+``block_m``-row tile of one expert's rows by one ``block_n``-column tile. An aligned layout whose
+alignment ``block_m / 2`` divides but ``block_m`` does not is walked in paired tiles over each
+expert's run: two ``block_m / 2``-row halves, a run of an odd count of halves ending in a tile of
+one. ``task_walk`` builds
 the TileLang pieces that resolve a task id to its expert and tile for masked slabs and for tight
 or aligned contiguous runs, store a task's output tile, and describe row and expert-weight tiles
 to TMA; ``GroupedGEMMConfigMixin`` holds the config checks the kernels share.
@@ -38,7 +41,8 @@ def task_walk(
 
     Args:
         num_groups: Experts.
-        block_m: Rows of a row tile; under aligned packing it divides ``alignment``.
+        block_m: Rows of a row tile; under aligned packing it or its half divides
+            ``alignment``.
         block_n: Columns of a column tile, ``n_tiles`` of which make the fastest task index.
         n: Columns of the output.
         num_sms: Persistent CTAs.
@@ -56,15 +60,20 @@ def task_walk(
         wave apart from ``task_id`` on, resolved and tiled), ``slab_tiles(count)`` (a masked
         slab's row tiles, its count clamped to ``[0, max_m]``), the task's clamped
         ``expert(cursor)``, ``first_row(cursor, tile)`` and ``first_col(tile)``,
-        ``store_tile(...)``, ``row_tiles_descriptor(...)``, ``expert_rows_descriptor(...)``,
-        ``recover_ends(layout, ends, tx, threads)`` and the flag ``recover`` (tight per-row
-        ids need each expert's end recovered first).
+        ``store_tile(...)``, ``row_tiles_descriptor(...)``,
+        ``expert_rows_descriptor(...)``, ``recover_ends(layout, ends, tx, threads)`` and the
+        flags ``recover`` (tight or paired per-row ids need each expert's end recovered first)
+        and ``paired``.
     """
     contiguous = packing is not None
     tight = packing == "tight"
-    # Aligned per-row ids name each row tile's expert; tight ones need each expert's end.
-    rows_walk = metadata_kind == "per_row" and not tight
-    recover = metadata_kind == "per_row" and tight
+    # Tiles of two alignment units of a run, its last tile perhaps of one.
+    paired = packing == "aligned" and alignment % block_m != 0
+    half_m = block_m // 2
+    # Aligned per-row ids name each row tile's expert; tight ones, and paired tiles' runs, need
+    # each expert's end.
+    rows_walk = metadata_kind == "per_row" and not tight and not paired
+    recover = metadata_kind == "per_row" and (tight or paired)
     # M tiles grouped to share weight tiles within a wave.
     swizzle_m_tiles = 16
     n_tiles = tilelang.cdiv(n, block_n)
@@ -74,9 +83,9 @@ def task_walk(
     if contiguous:
         m = T.dynamic("m")
         m_tiles = T.ceildiv(m, block_m)
-        # A tight expert's last tile may hold fewer than block_m rows; aligned runs tile their
-        # padded extent exactly.
-        max_waves = T.ceildiv((m_tiles + (num_groups if tight else 0)) * n_tiles, num_sms)
+        # A tight expert's last tile may hold fewer than block_m rows, as may a paired tile at a
+        # run's end; other aligned runs tile their padded extent exactly.
+        max_waves = T.ceildiv((m_tiles + (num_groups if tight or paired else 0)) * n_tiles, num_sms)
         rows_shape = (m,)
         tiles_per_slab = ragged_slab = None
     else:
@@ -185,7 +194,9 @@ def task_walk(
     def store_tile(output_desc, shared_c, C, cursor, tile, box_cols, box_count, tx, threads):
         """Store the task's staged ``block_m x block_n`` bfloat16 tile from ``shared_c``, boxes of
         ``box_cols`` columns: one TMA store a box by threads ``tx < box_count``, boxes past N
-        skipped; a tight tail tile, by rows, so the next expert's rows stay as they are."""
+        skipped; a tight tail tile, by rows, so the next expert's rows stay as they are. A paired
+        tile stores each box a half at a time (``output_desc`` boxes of ``block_m / 2`` rows) by
+        threads ``tx < 2 * box_count``, its upper half only where it holds the tile's rows."""
         g = T.meta_var(expert(cursor))
         m_start = T.meta_var(first_row(cursor, tile))
         n_start = T.meta_var(first_col(tile))
@@ -194,7 +205,24 @@ def task_walk(
         else:
             store_box = tx < box_count
         short_tile = T.meta_var(cursor[cur.rows] - tile[0] * block_m < block_m) if tight else False
-        if not contiguous:
+        if paired:
+            box, upper = tx // 2, tx % 2
+            # A box past N issues too: the TMA store writes none of its columns.
+            stored = T.And(
+                T.Or(upper == 0, cursor[cur.rows] - tile[0] * block_m > half_m),
+                tx < 2 * box_count,
+            )
+            if stored:
+                T.call_extern(
+                    "handle",
+                    "tileops::moe_fp8_tma_store_2d_issue",
+                    output_desc,
+                    T.address_of(shared_c[box * block_m * box_cols + upper * half_m * box_cols]),
+                    n_start + box * box_cols,
+                    m_start + upper * half_m,
+                )
+                T.tma_store_arrive()
+        elif not contiguous:
             if store_box:
                 T.call_extern(
                     "handle",
@@ -247,12 +275,14 @@ def task_walk(
                             hi = mid
                 ends[group] = lo
 
-    def row_tiles_descriptor(dtype, tensor, row, row_bytes, box_row, swizzle, promotion):
-        """A TMA descriptor of ``block_m``-row tiles of a tensor laid out like ``a``.
+    def row_tiles_descriptor(
+        dtype, tensor, row, row_bytes, box_row, swizzle, promotion, box_rows=block_m
+    ):
+        """A TMA descriptor of ``box_rows``-row tiles of a tensor laid out like ``a``.
 
         Its rows are ``row`` elements over ``row_bytes`` bytes: ``[m, row]`` for contiguous
         rows, ``[E, max_m, row]`` for masked slabs; a box is ``box_row`` elements of each of
-        ``block_m`` rows.
+        ``box_rows`` rows.
         """
         if contiguous:
             return T.create_tma_descriptor(
@@ -264,7 +294,7 @@ def task_walk(
                 1,
                 row_bytes,
                 box_row,
-                block_m,
+                box_rows,
                 1,
                 1,
                 TMA_INTERLEAVE_NONE,
@@ -283,7 +313,7 @@ def task_walk(
             row_bytes,
             max_m * row_bytes,
             box_row,
-            block_m,
+            box_rows,
             1,
             1,
             1,
@@ -338,6 +368,7 @@ def task_walk(
         row_tiles_descriptor=row_tiles_descriptor,
         expert_rows_descriptor=expert_rows_descriptor,
         recover=recover,
+        paired=paired,
     )
 
 

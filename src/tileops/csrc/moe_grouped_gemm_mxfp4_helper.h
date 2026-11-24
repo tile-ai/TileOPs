@@ -504,13 +504,15 @@ constexpr uint32_t kMxfp4RowSpan = kMxfp4FoldSpan + kMxfp4FoldRise;
 // top - kMxfp4FoldRise, goes to ``refs[row]`` and 2 ** (ref - 127) to
 // ``column_scales[row]``. A token row folds when each of its codes is 0
 // (2 ** -127, which the promotion flushes to zero, as the register-fragment
-// path does) or lies in [kMxfp4CodeLow, kMxfp4CodeHigh]. ``table`` is
-// mxfp4_table_chunk's; ``tokens`` holds rows of Steps codes back to back.
+// path does) or lies in [kMxfp4CodeLow, kMxfp4CodeHigh]; token rows from
+// ``rows`` on (a 256-row tile's unstored upper unit) are not scanned. ``table``
+// is mxfp4_table_chunk's; ``tokens`` holds rows of Steps codes back to back.
 template <int Steps, int BoxBytes, int BlockN, int BlockM, int Threads>
 __device__ __forceinline__ bool mxfp4_scan_task(void const* table,
                                                 uint8_t const* tokens,
                                                 int* refs, float* column_scales,
-                                                int last, int thread) {
+                                                int last, int rows,
+                                                int thread) {
   static_assert(BoxBytes > 0, "the code table comes by TMA in boxes");
   bool fast = true;
 #pragma unroll
@@ -544,7 +546,7 @@ __device__ __forceinline__ bool mxfp4_scan_task(void const* table,
 #pragma unroll
   for (int j = 0; j < (BlockM + Threads - 1) / Threads; ++j) {
     int const row = Threads - 1 - thread + Threads * j;
-    if (row < BlockM) {
+    if (row < BlockM && row < rows) {
 #pragma unroll
       for (int c = 0; c < Steps / 16; ++c) {
         uint4 const words =
@@ -710,24 +712,25 @@ __device__ __forceinline__ void mxfp4_wgmma_ss_slice(float* accumulator,
   tl::warpgroup_fence_operand(accumulator, BlockN / 2);
 }
 
-// final += step * weight scale * token scale over a warp-group's 64 x BlockN
-// SS accumulator for sub-block ``sub_block`` of K step ``kk``, each product by
-// mxfp4_scaled_exact: the thread's rows take ``token0`` and ``token1``, its
-// columns (weight rows) their codes from mxfp4_table_word's table.
-template <int Steps, int BoxBytes, int BlockN>
+// final += step * weight scale * token scale over a warp-group's 64 x Cols SS
+// accumulator of the tile's columns ``col0`` on, for sub-block ``sub_block``
+// of K step ``kk``, each product by mxfp4_scaled_exact: the thread's rows take
+// ``token0`` and ``token1``, its columns (weight rows) their codes from
+// mxfp4_table_word's table of BlockN rows.
+template <int Steps, int BoxBytes, int BlockN, int Cols>
 __device__ __forceinline__ void mxfp4_promote_exact(float const* step,
                                                     float* final_accum,
                                                     void const* table, int kk,
                                                     int sub_block, float token0,
-                                                    float token1) {
+                                                    float token1, int col0) {
   int const pair = (static_cast<int>(threadIdx.x) & 3) * 2;
 #pragma unroll
-  for (int i = 0; i < BlockN / 8; ++i) {
+  for (int i = 0; i < Cols / 8; ++i) {
 #pragma unroll
     for (int e = 0; e < 2; ++e) {
       float const weight = mxfp4_e8m0_value(
           __byte_perm(mxfp4_table_word<Steps, BoxBytes, BlockN>(
-                          table, i * 8 + pair + e, kk),
+                          table, col0 + i * 8 + pair + e, kk),
                       0, 0x4440u + sub_block));
       final_accum[i * 4 + e] +=
           mxfp4_scaled_exact(step[i * 4 + e], weight, token0);

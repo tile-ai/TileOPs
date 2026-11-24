@@ -475,6 +475,97 @@ def test_mxfp4_grouped_gemm_decodes_aligned_rows_into_shared_memory(
     run_into_guarded_out(_shared_decode_op(workload, inputs), workload, *inputs)
 
 
+# Expert runs of 3, 8, 2, 0 and 9 units of 128 rows, 563 rows an expert on average: 256-row tiles
+# pair each run's units from its start, so the runs of 3 and 9 units end in a tile of one, and
+# expert 3 has none.
+_PAIRED_SIZES = [300, 1000, 129, 0, 1100]
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("metadata_kind", "align", "n", "unfolded", "pad"),
+    [
+        # Per-row ids ending in a padding unit marked E, past the last run's tile of one; the
+        # last weight tile holds 8 of N's columns, its second 64-column store box none.
+        pytest.param("per_row", 128, 264, False, 128, marks=pytest.mark.smoke, id="padding-n264"),
+        # Random codes on weight row 100 spanning past eleven binades: its tiles contract
+        # sub-block by sub-block, row 100 in the second 64-column part of each step. 288 tasks on
+        # persistent CTAs, so a CTA runs an unfolded task, then folded ones.
+        pytest.param("per_row", 128, 3072, True, 0, marks=pytest.mark.full, id="per-row-unfolded"),
+        # Runs found from their stated ends rather than recovered from per-row ids.
+        pytest.param("physical_psum", 128, 256, False, 0, marks=pytest.mark.full, id="psum"),
+        # Runs of whole 256-row tiles: no tile of one, every store a whole box.
+        pytest.param("per_row", 256, 256, False, 0, marks=pytest.mark.full, id="aligned-256"),
+    ],
+)
+def test_mxfp4_grouped_gemm_shared_decode_pairs_units_into_256_row_tiles(
+    metadata_kind: str, align: int, n: int, unfolded: bool, pad: int
+) -> None:
+    """Aligned runs averaging four 128-row units take 256-row tiles over each expert's run, a run
+    of an odd unit count ending in a tile of one, whose upper unit is not stored. Every expert's
+    rows match the reference and no store reaches past them."""
+    rows = sum(-(-size // align) * align for size in _PAIRED_SIZES)
+    stated = {"P": rows} if metadata_kind == "physical_psum" else {}
+    workload = MoEGroupedGEMMMXFP4Workload(
+        manifest_call(
+            _OP,
+            _E8M0,
+            layout=contiguous_layout("aligned", metadata_kind, align),
+            E=len(_PAIRED_SIZES),
+            sizes=_PAIRED_SIZES,
+            N=n,
+            K=2048,
+            **stated,
+        )
+    )
+    a, a_scale, b, b_scale, metadata = workload.gen_inputs()
+    if unfolded:
+        codes = b_scale.view(torch.uint8).clone()
+        codes[:, 100] = torch.randint_like(codes[:, 100], 110, 135)
+        b_scale = codes.view(b_scale.dtype)
+    if pad:
+        a, a_scale = torch.cat([a, a[:pad]]), torch.cat([a_scale, a_scale[:pad]])
+        padding = torch.full((pad,), len(_PAIRED_SIZES), dtype=metadata.dtype)
+        metadata = torch.cat([metadata, padding.to(metadata.device)])
+    inputs = (a, a_scale, b, b_scale, metadata)
+    op = _shared_decode_op(workload, inputs)
+    assert next(op.iter_kernels())._launch_facts(a) == (True,)
+    run_into_guarded_out(op, workload, *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_tile_of_one_folds_on_its_own_rows() -> None:
+    """Expert 0's run of three units ends in a 256-row tile of one, whose unstored upper unit
+    holds expert 1's rows under token code 191, past the fold. The tile still folds on its own
+    rows: their token code 0 flushes, so every output of expert 0 is 0, where the sub-block
+    contraction would keep K * 2 ** -127 = 2 ** -116."""
+    workload = MoEGroupedGEMMMXFP4Workload(
+        manifest_call(
+            _OP,
+            _E8M0,
+            layout=contiguous_layout("aligned", "per_row", 128),
+            E=len(_PAIRED_SIZES),
+            sizes=_PAIRED_SIZES,
+            N=256,
+            K=2048,
+        )
+    )
+    a, a_scale, b, b_scale, ids = workload.gen_inputs()
+    a = torch.ones_like(a.float()).to(a.dtype)
+    a_codes = torch.full_like(a_scale.view(torch.uint8), 191)
+    a_codes[ids == 0] = 0
+    b = torch.full_like(b, 0x22)
+    b_codes = torch.full_like(b_scale.view(torch.uint8), 127)
+    inputs = (a, a_codes.view(a_scale.dtype), b, b_codes.view(b_scale.dtype), ids)
+    op = _shared_decode_op(workload, inputs)
+    assert next(op.iter_kernels())._launch_facts(a) == (True,)
+    out = op(*inputs)
+    assert bool((out[ids == 0] == 0).all())
+
+
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
@@ -819,11 +910,24 @@ _SM90_SMEM_LIMIT = (
 )
 
 
-def _shared_decode_refusal(num_stages: int, scale_k: int, smem_limit: int) -> str | None:
-    """Why a 128 x 128 shared-decode config of ``num_stages`` is refused on 132 SMs."""
-    config = {"block_m": 128, "block_n": 128, "num_stages": num_stages, "num_sms": 132}
+def _shared_decode_refusal(
+    num_stages: int,
+    scale_k: int,
+    smem_limit: int,
+    block_m: int = 128,
+    alignment: int = 128,
+    num_groups: int = 4,
+) -> str | None:
+    """Why a ``block_m`` x 128 shared-decode config of ``num_stages`` is refused on 132 SMs."""
+    config = {"block_m": block_m, "block_n": 128, "num_stages": num_stages, "num_sms": 132}
     return MoEGroupedGEMMMXFP4SharedDecodeKernel.config_refusal(
-        config, sm_count=132, smem_limit=smem_limit, scale_k=scale_k, alignment=128
+        config,
+        sm_count=132,
+        smem_limit=smem_limit,
+        scale_k=scale_k,
+        alignment=alignment,
+        num_groups=num_groups,
+        metadata_kind="per_row",
     )
 
 
@@ -850,21 +954,31 @@ def _aligned_kernel(k: int):
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "k",
+    ("k", "paired"),
     [
-        pytest.param(2048, marks=pytest.mark.smoke, id="k2048"),
-        pytest.param(4096, marks=pytest.mark.full, id="k4096"),
+        pytest.param(2048, False, marks=pytest.mark.smoke, id="k2048"),
+        # The 256-row config, beside the experts' recovered ends.
+        pytest.param(2048, True, marks=pytest.mark.smoke, id="k2048-paired"),
+        pytest.param(4096, False, marks=pytest.mark.full, id="k4096"),
     ],
 )
-def test_mxfp4_grouped_gemm_shared_decode_smem_model_matches_the_build(k: int) -> None:
-    """``_shared_decode_smem_bytes``, which the dispatch, the config refusal and the stage choice
-    read, counts the shared memory the built program takes, plus 1024 bytes of code-table
-    alignment."""
+def test_mxfp4_grouped_gemm_shared_decode_smem_model_matches_the_build(
+    k: int, paired: bool
+) -> None:
+    """``_shared_decode_smem_bytes``, with the experts' recovered ends where a 256-row tile pairs
+    per-row units, which the dispatch, the config refusal and the stage choice read, counts the
+    shared memory the built program takes, plus 1024 bytes of code-table alignment."""
     kernel = _aligned_kernel(k)
     assert isinstance(kernel, MoEGroupedGEMMMXFP4SharedDecodeKernel)
-    config = kernel.default_config
-    modelled = _shared_decode_smem_bytes(config["block_n"], config["num_stages"], kernel.scale_k)
-    assert modelled - _compiled_smem(kernel.kernel(**config)) == 1024
+    config = kernel.paired_config if paired else kernel.default_config
+    call = kernel.call
+    ends = kernel.ends_bytes(
+        call.num_groups, call.metadata_kind, kernel.alignment, config["block_m"]
+    )
+    modelled = _shared_decode_smem_bytes(
+        config["block_m"], config["block_n"], config["num_stages"], kernel.scale_k
+    )
+    assert modelled + ends - _compiled_smem(kernel.kernel(**config)) == 1024
 
 
 @pytest.mark.sm90
@@ -872,16 +986,40 @@ def test_mxfp4_grouped_gemm_shared_decode_smem_model_matches_the_build(k: int) -
 @pytest.mark.smoke
 def test_mxfp4_grouped_gemm_shared_decode_takes_the_modelled_shared_memory() -> None:
     """A shared-decode config is refused one byte under the shared memory
-    ``_shared_decode_smem_bytes`` models and taken at it; a call whose shallowest ring does not
-    fit (K = 16384, whose code tables alone pass 160 KiB) keeps the register-fragment kernel."""
+    ``_shared_decode_smem_bytes`` models, with the recovered ends of a tile that pairs per-row
+    units, and taken at it; a call whose shallowest ring does not fit (K = 16384, whose code
+    tables alone pass 160 KiB) keeps the register-fragment kernel."""
     scale_k = 4096 // 128
-    need = _shared_decode_smem_bytes(128, 4, scale_k)
+    need = _shared_decode_smem_bytes(128, 128, 4, scale_k)
     assert "shared memory" in _shared_decode_refusal(4, scale_k, need - 1)
     assert _shared_decode_refusal(4, scale_k, need) is None
-    # The tuning candidates at K = 2048 are the ring depths that fit beside the tiles and whose
-    # unrolled loop tiles its 16 steps; depth 8 tiles them but does not fit.
-    assert [c["num_stages"] for c in _aligned_kernel(2048).autotune_configs] == [2, 4]
+    # A 256-row tile pairing units of 128-aligned runs takes 32 experts' recovered ends beside
+    # its stages; under a 256-row alignment it pairs nothing and takes none.
+    need = _shared_decode_smem_bytes(256, 128, 2, 2048 // 128)
+    assert "shared memory" in _shared_decode_refusal(2, 16, need + 127, 256, num_groups=32)
+    assert _shared_decode_refusal(2, 16, need + 128, 256, num_groups=32) is None
+    assert _shared_decode_refusal(2, 16, need, 256, alignment=256, num_groups=32) is None
+    # The tuning candidates at K = 2048 are the 128-row ring depths that fit and whose unrolled
+    # loop tiles its 16 steps; depth 8 tiles them but does not fit. The 256-row config a launch
+    # may take is depth 2: depth 4 does not fit beside it.
+    kernel = _aligned_kernel(2048)
+    assert [c["num_stages"] for c in kernel.autotune_configs] == [2, 4]
+    assert (kernel.paired_config["block_m"], kernel.paired_config["num_stages"]) == (256, 2)
     assert not isinstance(_aligned_kernel(16384), MoEGroupedGEMMMXFP4SharedDecodeKernel)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_pairs_units_where_runs_average_a_pair() -> None:
+    """One kernel, its call's rows aside, decides per launch: a launch whose rows average four
+    128-row units an expert (2048 rows of four experts at K = 2048) takes the 256-row tile, one
+    of fewer (1536 rows) the 128-row default, and none does where a 256-row tile's ring does not
+    fit beside its code tables (K = 4096)."""
+    kernel = _aligned_kernel(2048)
+    assert kernel._launch_facts(torch.empty(2048, 0)) == (True,)
+    assert kernel._launch_facts(torch.empty(1536, 0)) == (False,)
+    assert _aligned_kernel(4096)._launch_facts(torch.empty(2048, 0)) == (False,)
 
 
 @pytest.mark.smoke
