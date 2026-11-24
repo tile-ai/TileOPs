@@ -2,7 +2,7 @@
 
 import torch
 
-from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     KDACall,
     KDAFwdInterface,
@@ -36,10 +36,20 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             return "serves a sequence of at least two tokens"
         if call.gate_in_kernel:
             return "raw gates use chunk-parallel preparation"
-        # On SM90 the chunk-parallel path prepares every chunk at once in the joint launch and
-        # walks only the states, while this CTA walks its sequence's chunks whole.
-        if referenced_form(call) and KDAChunkPrefillFwdKernel.refusal(call) is None:
-            return "SM90 prepares given gates of FP32's exponent range on the chunk-parallel path"
+        # This CTA prepares each of its sequence's chunks on the walk's serial chain, which the
+        # SM90 chunk-parallel path prepares at once. Outside FP32's exponent range that path
+        # takes several launches, so this one launch is shorter only at about one chunk a
+        # sequence in one wave. The average is the only length a packed call states here.
+        if call.arch == 90 and KDAChunkPrefillFwdKernel.refusal(call) is None:
+            if referenced_form(call):
+                return "on SM90 serves only given gates outside FP32's exponent range"
+            one_chunk = call.batch * call.seq_len <= call.sequences * CHUNK_SIZE
+            one_wave = call.sequences * call.value_heads <= call.sm_count
+            if not (one_chunk and one_wave):
+                return (
+                    f"on SM90 serves at most {CHUNK_SIZE} tokens a sequence on average in at "
+                    f"most {call.sm_count} (sequence, value head) blocks"
+                )
         # A CTA per (sequence, value head) pays off only while those cover most SMs; a
         # compact 128-wide SM89 CTA fills one SM's shared memory.
         blocks = call.sequences * call.value_heads
@@ -52,16 +62,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     def entry_for(cls, call: KDACall) -> Entry:
         index = call.device_index
         compact = call.arch == 89 and call.dim_k == 128
-        # A second SM90 launch amortizes its switch cost above this per-SM workload. A state
-        # pool takes the one-launch program: the second launch restarts a pair from its
-        # initial state, which the first has overwritten in the pool.
-        two_launch_tokens_per_sm = 3072
-        two_launch = (
-            call.arch == 90
-            and not call.pooled
-            and call.batch * call.seq_len * call.value_heads
-            >= two_launch_tokens_per_sm * call.sm_count
-        )
         identity = (
             call.batch,
             call.seq_len,
@@ -75,7 +75,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.dtype,
             index,
             compact,
-            two_launch,
             call.state_v_first,
             call.pooled,
         )
@@ -89,7 +88,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             dtype=call.dtype,
             device_index=index,
             compact=compact,
-            two_launch=two_launch,
             state_v_first=call.state_v_first,
             pooled=call.pooled,
         )
@@ -106,7 +104,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         *,
         device_index: int | None = None,
         compact: bool = False,
-        two_launch: bool = False,
         state_v_first: bool = False,
         pooled: bool = False,
     ) -> None:
@@ -120,7 +117,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.scale = scale
         self.l2norm = l2norm
         self.dtype = dtype
-        self.two_launch = two_launch
         self.state_v_first = state_v_first
         self.pooled = pooled
 
@@ -168,9 +164,8 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         return o.reshape(batch, seq_len, HV, V), final_state
 
     def _launcher(self, cfg: dict, H: int, HV: int, K: int, V: int, total: int, num_seqs: int):
-        """What one launch over *total* packed tokens in *num_seqs* sequences runs: the
-        fused program, or the checking launch and the rerun of the flagged pairs."""
-        shape = (
+        """The fused program of one launch over *total* packed tokens in *num_seqs* sequences."""
+        return fused_chunk_program(
             H,
             HV,
             K,
@@ -181,16 +176,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             self.l2norm,
             total,
             num_seqs,
+            compact=self.compact,
+            pooled=self.pooled,
+            state_v_first=self.state_v_first,
         )
-        layout = {"state_v_first": self.state_v_first}
-        if not self.two_launch:
-            return fused_chunk_program(*shape, compact=self.compact, pooled=self.pooled, **layout)
-        check = CompiledProgram(fused_chunk_program(*shape, stage="check", **layout))
-        rerun = CompiledProgram(fused_chunk_program(*shape, stage="rerun", **layout))
-
-        def two_launch(qf, kf, vf, gf, bf, state, offsets):
-            o, final_state, flags = check(qf, kf, vf, gf, bf, state, offsets)
-            rerun(qf, kf, vf, gf, bf, state, offsets, o, final_state, flags)
-            return o, final_state
-
-        return two_launch

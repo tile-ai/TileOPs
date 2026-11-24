@@ -44,16 +44,10 @@ def fused_chunk_program(
     threads: int = 256,
     compact: bool = False,
     *,
-    stage: str | None = None,
     state_v_first: bool = False,
     pooled: bool = False,
 ):
     """Build the fused chunk program for one static packed shape.
-
-    For precomputed gates, *stage* ``None`` checks each chunk and takes per-pair entries for
-    that chunk alone. ``"check"`` forms every chunk from centred tiles and flags each
-    (sequence, value head) with a chunk past the bound; ``"rerun"`` walks the flagged ones
-    again from their initial state on per-pair entries, overwriting their outputs.
 
     *state_v_first* lays the states out value-major, ``[N, HV, V, K]``. *pooled* reads
     sequence ``n``'s state from slot ``slots[n]`` of a state pool and writes its final state
@@ -61,8 +55,6 @@ def fused_chunk_program(
     """
     if compact and (dim_k != 128 or dim_v != 128 or chunk_size != 64):
         raise ValueError("compact storage requires a 64-token chunk and 128-wide state")
-    if compact and stage is not None:
-        raise ValueError("compact storage serves only the one-launch precomputed-gate program")
     BT = chunk_size
     BC = REFERENCE_BLOCK
     NC = BT // BC
@@ -70,14 +62,10 @@ def fused_chunk_program(
     H, HV, K, V = heads, value_heads, dim_k, dim_v
     group = HV // H
     accum = "float32"
-    guarded = stage is None
-    checked = stage != "rerun"
     bounds = centred_bounds(dtype, scale)
-    checkers = threads - BT
-    ends = 2 * NC * K
 
     @tilelang.jit(
-        out_idx=[-1] if pooled else {"rerun": [], "check": [-3, -2, -1]}.get(stage, [-2, -1]),
+        out_idx=[-1] if pooled else [-2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         # Not CUDA_COMPILE_FLAGS: ptxas's output for this program changes with any added
         # flag, a warning flag included.
@@ -120,7 +108,7 @@ def fused_chunk_program(
         gram = raw_gate_gram(BT, K, scratch_load)
 
         # Past the block ends (compact scratch) or the beta row (metadata): each row's
-        # exponent bound for unnormalized rows, then the one-launch chunk flag.
+        # exponent bound for unnormalized rows, then the chunk flag.
         def row_bound(metadata, scratch, i):
             return scratch_load(scratch, 2 * NC, i) if compact else metadata[BT + 1 + i]
 
@@ -172,27 +160,16 @@ def fused_chunk_program(
                 if past_bound(gc_s, metadata, scratch, e // 2, e % 2, j):
                     store_chunk_flag(metadata, scratch, T.float32(1.0))
 
-        @T.macro
-        def flag_sequence(t, gc_s, metadata, scratch, flags, iseq, ihv):
-            """Run by the threads the diagonal solves leave idle, so it adds no step."""
-            for e in T.serial(T.ceildiv(ends, checkers)):
-                index = e * checkers + t
-                if index < ends and past_bound(
-                    gc_s, metadata, scratch, index // (2 * K), (index // K) % 2, index % K
-                ):
-                    flags[iseq, ihv] = 1
-
         invert = inverse_program(
             chunk_size=BT,
             block_size=BC,
             threads=threads,
             dtype=dtype,
             output_offset=BT if compact else 0,
-            idle=flag_sequence if stage == "check" else None,
         )
 
         def centred(per_pair):
-            return per_pair[0] == 0 if guarded else stage == "check"
+            return per_pair[0] == 0
 
         def step(bt, i):
             return bt[(NC + 1) * K + i] if compact else bt[i]
@@ -348,7 +325,7 @@ def fused_chunk_program(
                 T.sync_threads()
 
         @T.macro
-        def walk(q, k, v, g, beta, h0, cu_seqlens, o, ht, flags, slots, iseq, ihv):
+        def walk(q, k, v, g, beta, h0, cu_seqlens, o, ht, slots, iseq, ihv):
             ih = ihv // group
             origin = T.cast(cu_seqlens[iseq], "int32")
             length = T.cast(cu_seqlens[iseq + 1], "int32") - origin
@@ -379,15 +356,13 @@ def fused_chunk_program(
                 p_s = T.alloc_shared([BT, BT], dtype)
                 state_s = T.alloc_shared([K, V], dtype)
                 gc_s = T.alloc_shared([BT, K], accum)
-                bt_s = T.alloc_shared(
-                    [BT + (int(guarded) + (0 if l2norm else 1 + BT) if checked else 0)], accum
-                )
+                bt_s = T.alloc_shared([BT + 1 + (0 if l2norm else 1 + BT)], accum)
                 metadata = bt_s
 
             akk = T.alloc_fragment([BT, BT], accum)
             aq = T.alloc_fragment([BT, BT], accum)
             tkk = T.alloc_fragment([BT, BT], accum)
-            tqk = T.alloc_fragment([BT, BT], accum) if checked else None
+            tqk = T.alloc_fragment([BT, BT], accum)
             acc = T.alloc_fragment([BT, K], accum)
             if compact:
                 norm_f = T.alloc_fragment([BT, K], accum)
@@ -410,7 +385,7 @@ def fused_chunk_program(
             o_f = T.alloc_fragment([BT, V], accum)
             upd = T.alloc_fragment([K, V], accum)
             # One flag per chunk keeps the branch on it uniform across the CTA.
-            per_pair = T.alloc_local([1], "int32") if guarded else None
+            per_pair = T.alloc_local([1], "int32")
 
             prefix_s = kb_s if compact else m_s
             causal_s = qa_s if compact else m_s
@@ -420,8 +395,6 @@ def fused_chunk_program(
                     state_f[i, j] = h0[state_row(slots, iseq), ihv, j, i]
                 else:
                     state_f[i, j] = h0[state_row(slots, iseq), ihv, i, j]
-            if stage == "check":
-                flags[iseq, ihv] = 0
 
             for ic in T.serial(T.ceildiv(length, BT)):
                 bos = origin + ic * BT
@@ -436,8 +409,7 @@ def fused_chunk_program(
                     bt_s[(NC + 1) * K + i if compact else i] = T.if_then_else(
                         i < rows, T.cast(beta[0, bos + i, ihv], accum), T.cast(0, accum)
                     )
-                if guarded:
-                    store_chunk_flag(metadata, state_s, T.float32(0.0))
+                store_chunk_flag(metadata, state_s, T.float32(0.0))
                 if not compact:
                     # The walk is serial, so each chunk would first wait on its own rows' loads;
                     # bringing the next chunk's rows into L2 now overlaps that wait with this chunk.
@@ -458,7 +430,7 @@ def fused_chunk_program(
                             metadata[(i // BC) * K + j] = acc[i, j] * LOG2E
                         if i == rows - 1:
                             metadata[NC * K + j] = acc[i, j] * LOG2E
-                        if checked and (i % BC == 0 or i % BC == BC - 1):
+                        if i % BC == 0 or i % BC == BC - 1:
                             # Unscaled: a product shared with the centred factors would
                             # change the exponents they contract it into.
                             scratch_store(
@@ -471,7 +443,7 @@ def fused_chunk_program(
                 for i, j in T.Parallel(BT, K):
                     norm_f[i, j] = T.cast(qa_s[i, j], accum) * T.cast(qa_s[i, j], accum)
                 T.reduce_sum(norm_f, rowsum, dim=1)
-                if checked and not l2norm:
+                if not l2norm:
                     for i in T.Parallel(BT):
                         store_row_bound(
                             metadata,
@@ -491,7 +463,7 @@ def fused_chunk_program(
                 for i, j in T.Parallel(BT, K):
                     norm_f[i, j] = T.cast(ka_s[i, j], accum) * T.cast(ka_s[i, j], accum)
                 T.reduce_sum(norm_f, rowsum, dim=1)
-                if checked and not l2norm:
+                if not l2norm:
                     for i in T.Parallel(BT):
                         store_row_bound(
                             metadata,
@@ -507,27 +479,22 @@ def fused_chunk_program(
                         * (T.rsqrt(rowsum[i] + L2NORM_EPS) if l2norm else 1.0),
                         dtype,
                     )
-                if guarded and l2norm:
+                if l2norm:
                     flag_chunk(gc_s, metadata, state_s)
                 T.sync_threads()
 
-                if guarded:
-                    if not l2norm:
-                        # The block bounds read rows other threads stored.
-                        flag_chunk(gc_s, metadata, state_s)
+                if not l2norm:
+                    # The block bounds read rows other threads stored.
+                    flag_chunk(gc_s, metadata, state_s)
+                    T.sync_threads()
+                per_pair[0] = T.if_then_else(chunk_flag(metadata, state_s) != 0.0, 1, 0)
+                if per_pair[0] != 0:
+                    if compact:
+                        # Every thread has read the flag before the prefix overwrites it.
                         T.sync_threads()
-                    per_pair[0] = T.if_then_else(chunk_flag(metadata, state_s) != 0.0, 1, 0)
-                    if per_pair[0] != 0:
-                        if compact:
-                            # Every thread has read the flag before the prefix overwrites it.
-                            T.sync_threads()
-                        per_pair_gram(qa_s, ka_s, kb_s, gc_s, acc, akk, aq, rows)
-                    else:
-                        centred_gram(qa_s, ka_s, kb_s, b_s, gc_s, metadata, acc, akk, aq, tkk, tqk)
-                elif stage == "check":
-                    centred_gram(qa_s, ka_s, kb_s, b_s, gc_s, metadata, acc, akk, aq, tkk, tqk)
-                else:
                     per_pair_gram(qa_s, ka_s, kb_s, gc_s, acc, akk, aq, rows)
+                else:
+                    centred_gram(qa_s, ka_s, kb_s, b_s, gc_s, metadata, acc, akk, aq, tkk, tqk)
                 if compact:
                     prepare_key(b_s, ka_s, gc_s, metadata, bt_s, centred(per_pair))
                 for i, j in T.Parallel(BT, BT):
@@ -535,10 +502,7 @@ def fused_chunk_program(
                         T.if_then_else(i > j, -akk[i, j] * step(bt_s, i), 0.0), dtype
                     )
                 T.sync_threads()
-                if stage == "check":
-                    invert(m_s, p_s, tkk, (gc_s, metadata, state_s, flags, iseq, ihv))
-                else:
-                    invert(m_s, p_s, tkk)
+                invert(m_s, p_s, tkk)
 
                 # The chunk's step over the state this CTA carries.
                 if not compact:
@@ -597,11 +561,9 @@ def fused_chunk_program(
                     ht[state_row(slots, iseq), ihv, i, j] = state_f[i, j]
 
         @T.macro
-        def compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, flags, slots):
+        def compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, slots):
             with T.Kernel(num_seqs, HV, threads=threads) as (iseq, ihv):
-                # A rerun walks only the sequences the first launch flagged.
-                if stage != "rerun" or flags[iseq, ihv] != 0:
-                    walk(q, k, v, g, beta, h0, cu_seqlens, o, ht, flags, slots, iseq, ihv)
+                walk(q, k, v, g, beta, h0, cu_seqlens, o, ht, slots, iseq, ihv)
 
         state_shape = [num_seqs, HV, V, K] if state_v_first else [num_seqs, HV, K, V]
         if pooled:
@@ -618,23 +580,7 @@ def fused_chunk_program(
                 slots: T.Tensor([num_seqs], "int32"),
                 o: T.Tensor([1, total_tokens, HV, V], dtype),
             ):
-                compute(q, k, v, g, beta, h0, cu_seqlens, o, h0, None, slots)
-        elif stage is not None:
-
-            @T.prim_func
-            def main(
-                q: T.Tensor([1, total_tokens, H, K], dtype),
-                k: T.Tensor([1, total_tokens, H, K], dtype),
-                v: T.Tensor([1, total_tokens, HV, V], dtype),
-                g: T.Tensor([1, total_tokens, HV, K], dtype),
-                beta: T.Tensor([1, total_tokens, HV], dtype),
-                h0: T.Tensor(state_shape, accum),
-                cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
-                o: T.Tensor([1, total_tokens, HV, V], dtype),
-                ht: T.Tensor(state_shape, accum),
-                flags: T.Tensor([num_seqs, HV], "int32"),
-            ):
-                compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, flags, None)
+                compute(q, k, v, g, beta, h0, cu_seqlens, o, h0, slots)
         else:
 
             @T.prim_func
@@ -649,7 +595,7 @@ def fused_chunk_program(
                 o: T.Tensor([1, total_tokens, HV, V], dtype),
                 ht: T.Tensor(state_shape, accum),
             ):
-                compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, None, None)
+                compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, None)
 
         return main
 
