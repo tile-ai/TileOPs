@@ -819,10 +819,10 @@ def _strong_decays(dtype):
             id="unnormalized-64-fp16",
         ),
         pytest.param(
-            torch.bfloat16, 16, 16, 16, 128, False, 9.0, marks=pytest.mark.full, id="fused-bf16"
+            torch.bfloat16, 16, 16, 16, 128, False, 9.0, marks=pytest.mark.full, id="256-pairs-bf16"
         ),
         pytest.param(
-            torch.float16, 16, 16, 16, 128, True, 1.5, marks=pytest.mark.full, id="fused-fp16"
+            torch.float16, 16, 16, 16, 128, True, 1.5, marks=pytest.mark.full, id="256-pairs-fp16"
         ),
     ],
 )
@@ -835,9 +835,8 @@ def test_kda_prefill_given_gate_mixes_ordinary_and_strong_chunks(
     one-row tail), *boundary_decay* (log2) per token on every row of each 16-row block but its
     first and ninth, which puts the blocks' reference rows far apart, and a steady 6 (log2) per
     token, which bf16 rows centre within a 16-row block and which overflows them centred on a
-    whole chunk. One sequence reaches the chunk program; 256 (sequence, head) pairs reach the
-    fused program wherever it serves the call's dtype and architecture, the chunk program
-    elsewhere.
+    whole chunk. One sequence reaches the chunk program; 256 (sequence, head) pairs of six chunks
+    reach the fused program on SM89 and the chunk program elsewhere.
     """
     torch.manual_seed(42)
     workload = KDAFwdTest(
@@ -1017,21 +1016,57 @@ def _one_wave_heads(sequences: int) -> int:
     return 4 * (get_sm_count() // (4 * sequences))
 
 
+@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("length", "waves", "chunked"),
+    ("dtype", "batch", "seq_len", "sequences", "heads", "key"),
     [
-        pytest.param(64, 1, False, marks=pytest.mark.smoke, id="one-chunk-one-wave"),
-        pytest.param(65, 1, True, marks=pytest.mark.full, id="two-chunks-one-wave"),
-        pytest.param(64, 2, True, marks=pytest.mark.full, id="one-chunk-two-waves"),
+        pytest.param(
+            torch.float16, 4, 64, 4, 33, "kda_fused_prefill", id="fp16-64-tokens-132-pairs"
+        ),
+        pytest.param(torch.float16, 4, 65, 4, 33, "kda_chunk_prefill", id="fp16-65-tokens"),
+        pytest.param(torch.float16, 7, 64, 7, 19, "kda_chunk_prefill", id="fp16-133-pairs"),
+        pytest.param(
+            torch.float16, 1, 256, 4, 33, "kda_fused_prefill", id="fp16-packed-64-on-average"
+        ),
+        pytest.param(torch.float16, 1, 257, 4, 33, "kda_chunk_prefill", id="fp16-packed-past-64"),
+        pytest.param(torch.bfloat16, 4, 64, 4, 33, "kda_chunk_prefill", id="bf16"),
     ],
 )
-def test_kda_sm90_fp16_prefill_walks_one_cta_only_for_one_chunk_in_one_wave(
-    length: int, waves: int, chunked: bool, monkeypatch
+def test_kda_sm90_given_gate_prefill_walks_one_cta_for_one_chunk_in_one_wave(
+    dtype: torch.dtype, batch: int, seq_len: int, sequences: int, heads: int, key: str
 ) -> None:
     """On SM90 an fp16 given-gate prefill takes the one-CTA prefill only while its sequences
-    average one chunk and its (sequence, value head) pairs fit one wave of SMs."""
+    average at most one 64-token chunk and its (sequence, value head) pairs fit one wave of the
+    device's SMs; bf16 given gates take the chunk-parallel prefill."""
+    call = KDACall(
+        batch=batch,
+        seq_len=seq_len,
+        sequences=sequences,
+        heads=heads,
+        value_heads=heads,
+        dim_k=128,
+        dim_v=128,
+        dtype=dtype,
+        scale=128**-0.5,
+        varlen=batch != sequences,
+        l2norm=True,
+        sm_count=132,
+        arch=90,
+        calibration=None,
+        smem_budget=232448,
+    )
+    assert KDAFwdOp(use_qk_l2norm_in_kernel=True).key_for("kda", call) == key
+
+
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_kda_sm90_fp16_one_cta_prefill_forms_a_strong_chunk_per_pair(monkeypatch) -> None:
+    """Sequences of one chunk in one wave of value heads take the SM90 fp16 one-CTA prefill; a
+    chunk whose decay overflows fp16 rows centred on it takes per-pair entries beside centred
+    ones."""
     torch.manual_seed(42)
     runs = []
 
@@ -1040,26 +1075,19 @@ def test_kda_sm90_fp16_prefill_walks_one_cta_only_for_one_chunk_in_one_wave(
         return run_chunk_prefill(*args, **kwargs)
 
     monkeypatch.setattr(kda_prefill, "run_chunk_prefill", counted)
-    _check(4 * waves, length, _one_wave_heads(4), 128, torch.float16)
-    assert bool(runs) == chunked
-
-
-@pytest.mark.sm90
-@pytest.mark.smoke
-def test_kda_sm90_fp16_one_cta_prefill_forms_a_strong_chunk_per_pair() -> None:
-    """Sequences of one chunk in one wave take the SM90 fp16 one-CTA prefill; a chunk whose
-    decay overflows fp16 rows centred on it takes per-pair entries beside centred ones."""
-    torch.manual_seed(42)
     workload = KDAFwdTest(4, 64, _one_wave_heads(4), 128, torch.float16)
     q, k, v, g, beta, state = workload.gen_inputs()
     g = g.clone()
     g[1] = torch.empty_like(g[1]).uniform_(*_strong_decays(g.dtype))
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), q, k, v, g, beta, state)
+    assert not runs
 
 
 # Sequence lengths whose chunk counts differ (one is empty) and lengths of two chunks each.
 _UNEVEN = [100, 0, 37, 64]
 _EVEN = [100, 70, 120, 66]
+# Lengths of at most one chunk, one of them empty, for the SM90 fp16 one-CTA walk.
+_ONE_CHUNK = [64, 0, 37, 64]
 
 
 @pytest.mark.in_tree_kernels
@@ -1076,7 +1104,7 @@ _EVEN = [100, 70, 120, 66]
         ),
         pytest.param(
             False, torch.float16, False,
-            marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-fp16-sm90-key-major",
+            marks=[pytest.mark.sm90, pytest.mark.smoke], id="one-chunk-fp16-sm90-key-major",
         ),
         pytest.param(
             True, torch.bfloat16, False,
@@ -1088,7 +1116,7 @@ _EVEN = [100, 70, 120, 66]
         ),
         pytest.param(
             True, torch.float16, False,
-            marks=[pytest.mark.sm90, pytest.mark.full], id="uneven-chunks-fp16-sm90-value-major",
+            marks=[pytest.mark.sm90, pytest.mark.full], id="one-chunk-fp16-sm90-value-major",
         ),
     ],
 )  # fmt: skip
@@ -1101,8 +1129,7 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
     """Packed sequences start from and end in their slots, in either state layout; an empty
     sequence leaves its slot as it was. Enough (sequence, value head) pairs for the one-CTA
     walk of each sequence on SM89; on SM90 the chunk-parallel prefill serves bf16 given gates,
-    and the one-CTA walk fp16 ones of at most one chunk a sequence on average in one wave,
-    carrying the longest sequence's state across its two chunks."""
+    and the one-CTA walk fp16 ones of at most one chunk a sequence in one wave."""
     torch.manual_seed(42)
     runs = []
 
@@ -1112,9 +1139,13 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
 
     monkeypatch.setattr(kda_prefill, "run_chunk_prefill", counted)
     flags = {"state_v_first": state_v_first, "use_qk_l2norm_in_kernel": True}
-    heads = _one_wave_heads(len(_UNEVEN)) if dtype == torch.float16 else _FUSED_HEADS
+    lengths, heads = (
+        (_ONE_CHUNK, _one_wave_heads(len(_ONE_CHUNK)))
+        if dtype == torch.float16
+        else (_UNEVEN, _FUSED_HEADS)
+    )
     test = _pooled(
-        dtype, some=("cu_seqlens", "cu_seqlens_cpu"), B=1, S=sum(_UNEVEN), seq_lens=_UNEVEN,
+        dtype, some=("cu_seqlens", "cu_seqlens_cpu"), B=1, S=sum(lengths), seq_lens=lengths,
         H=4, HV=heads, K=128, V=128, P=12, **flags,
     )  # fmt: skip
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
@@ -1248,10 +1279,9 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
             {},
             {
                 "B": 1,
-                "S": sum(_UNEVEN),
-                "seq_lens": _UNEVEN,
-                # The SM90 one-CTA walk serves fp16 calls of one chunk a sequence on average in
-                # one wave.
+                "S": sum(_ONE_CHUNK),
+                "seq_lens": _ONE_CHUNK,
+                # The SM90 one-CTA walk serves fp16 calls of one chunk a sequence in one wave.
                 "HV": "one-wave",
                 "some": ("cu_seqlens", "cu_seqlens_cpu"),
                 "dtype": torch.float16,
@@ -1275,10 +1305,9 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
             {"state_v_first": True},
             {
                 "B": 1,
-                "S": sum(_UNEVEN),
-                "seq_lens": _UNEVEN,
-                # The SM90 one-CTA walk serves fp16 calls of one chunk a sequence on average in
-                # one wave.
+                "S": sum(_ONE_CHUNK),
+                "seq_lens": _ONE_CHUNK,
+                # The SM90 one-CTA walk serves fp16 calls of one chunk a sequence in one wave.
                 "HV": "one-wave",
                 "some": ("cu_seqlens", "cu_seqlens_cpu"),
                 "dtype": torch.float16,
