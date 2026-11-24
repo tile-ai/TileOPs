@@ -194,10 +194,24 @@ def _logical_fold_kernel(
         # first warp shuffles them.
         lane_fold_max_warps = 16
 
+        def _vector_flag(held):
+            """The or of a vector's flags, taken pairwise.
+
+            The accumulator then waits on one or per vector access rather than one per element.
+            A vector holds a power of two of elements, so every level pairs them all.
+            """
+            terms = [T.cast(_fold_term(held, e), acc_dtype) for e in range(vec // components)]
+            while len(terms) > 1:
+                terms = [a | b for a, b in zip(terms[0::2], terms[1::2], strict=True)]
+            return terms[0]
+
         @T.macro
         def fold_held(held, acc):
-            for e in T.unroll(vec // components):
-                acc[0] = fold_combine(acc[0], _fold_term(held, e))
+            if counts:
+                for e in T.unroll(vec // components):
+                    acc[0] = fold_combine(acc[0], _fold_term(held, e))
+            else:
+                acc[0] = fold_combine(acc[0], _vector_flag(held))
 
         @T.prim_func
         def main(
@@ -208,7 +222,8 @@ def _logical_fold_kernel(
                 tx = T.get_thread_binding()
                 held = T.alloc_local((vec,), unit_dtype)
                 acc = T.alloc_local((1,), acc_dtype)
-                warp_acc = T.alloc_shared((num_warps,), acc_dtype)
+                # Only a count folds its warps through shared memory.
+                warp_acc = T.alloc_shared((num_warps,), acc_dtype) if counts else None
 
                 acc[0] = T.cast(0, acc_dtype)
                 for lead_idx in T.serial(lead):
@@ -232,33 +247,40 @@ def _logical_fold_kernel(
                             )
                         fold_held(held, acc)
 
-                warp_reduce(acc, fold_combine, high_first=True, serial=True)
-                if num_warps > 1:
-                    if tx % WARP_LANES == 0:
-                        warp_acc[tx // WARP_LANES] = acc[0]
-                    T.sync_threads()
-                    if num_warps <= lane_fold_max_warps:
-                        # Lane 0 already holds warp 0's value and folds the others in.
-                        if tx == 0:
-                            for w in T.unroll(1, num_warps):
-                                acc[0] = fold_combine(acc[0], warp_acc[w])
-                    else:
-                        # The whole first warp shuffles; lanes past the warp count hold the
-                        # identity, and xor offsets below the warp count never reach them.
-                        if tx < WARP_LANES:
-                            acc[0] = T.if_then_else(
-                                tx < num_warps, warp_acc[tx % num_warps], T.cast(0, acc_dtype)
-                            )
-                            warp_reduce(
-                                acc, fold_combine, lanes=num_warps, high_first=True, serial=True
-                            )
-                if tx == 0:
-                    if counts:
+                if counts:
+                    warp_reduce(acc, fold_combine, high_first=True, serial=True)
+                    if num_warps > 1:
+                        if tx % WARP_LANES == 0:
+                            warp_acc[tx // WARP_LANES] = acc[0]
+                        T.sync_threads()
+                        if num_warps <= lane_fold_max_warps:
+                            # Lane 0 already holds warp 0's value and folds the others in.
+                            if tx == 0:
+                                for w in T.unroll(1, num_warps):
+                                    acc[0] = fold_combine(acc[0], warp_acc[w])
+                        else:
+                            # The whole first warp shuffles; lanes past the warp count hold
+                            # the identity, and xor offsets below the warp count never reach
+                            # them.
+                            if tx < WARP_LANES:
+                                acc[0] = T.if_then_else(
+                                    tx < num_warps, warp_acc[tx % num_warps], T.cast(0, acc_dtype)
+                                )
+                                warp_reduce(
+                                    acc, fold_combine, lanes=num_warps, high_first=True, serial=True
+                                )
+                    if tx == 0:
                         out[row] = T.cast(acc[0], out_dtype)
-                    elif op_kind == "any":
-                        out[row] = T.cast(acc[0] != T.cast(0, acc_dtype), out_dtype)
-                    else:
-                        out[row] = T.cast(acc[0] == T.cast(0, acc_dtype), out_dtype)
+                else:
+                    # A flag decides the row wherever some lane holds one, so the barrier's
+                    # own or folds the block, every lane taking part.
+                    flagged = T.alloc_local((1,), "int32")
+                    flagged[0] = T.syncthreads_or(acc[0] != T.cast(0, acc_dtype))
+                    if tx == 0:
+                        decided = flagged[0] != 0
+                        out[row] = T.cast(
+                            decided if op_kind == "any" else T.Not(decided), out_dtype
+                        )
 
         return main
 
