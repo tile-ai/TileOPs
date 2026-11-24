@@ -236,6 +236,33 @@ def test_top_p_mask_rows_at_the_contract_endpoints(vocab: int):
     compare_outputs(out, ref, top_p_mask_verification(logits, p))
 
 
+@pytest.mark.parametrize(
+    "vocab",
+    [
+        pytest.param(32000, marks=pytest.mark.smoke),
+        pytest.param(512, marks=pytest.mark.full),
+    ],
+)
+def test_top_p_mask_at_one_masks_what_the_sum_rounds_away(vocab: int):
+    """``p = 1`` masks a token whose probability the row's float32 sum rounds away.
+
+    The row holds a logit of 0 and one of -20, the rest ``-inf``: ``1 + exp(-20)`` rounds to 1
+    in float32, so the weight strictly above the -20 already reaches ``p`` times the total.
+    ``V`` picks a row split across blocks, which meets them per pass across a grid barrier,
+    and a row one block holds.
+    """
+    device = run_device()
+    logits = torch.full((1, vocab), -_INF, device=device)
+    logits[0, 0] = 0.0
+    logits[0, vocab // 2] = -20.0
+    p = torch.ones(1, device=device)
+    ref = top_p_mask(logits, p)
+    assert ref[0, 0] == 0.0
+    assert (ref[0, 1:] == -_INF).all()
+    out = _run(TopPMaskFwdOp(), logits, p)
+    assert torch.equal(out, ref)
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", _DTYPES)
 def test_top_k_top_p_mask(dtype):
