@@ -126,10 +126,10 @@ def test_concat(S, dim, D) -> None:
         pytest.param([8], marks=_FULL, id="one-input"),
     ],
 )
-def test_concat_flat_rows_within_one_wave_at_four(widths) -> None:
+def test_concat_flat_rows_within_one_wave_at_four(widths, monkeypatch) -> None:
     """float16 rows that end inside a line, one row past the flat program's default vectors a
     thread for every resident thread: past one wave at the default and within it at twice
-    that. The last run is partial."""
+    that, which every launch takes. The last run is partial."""
     props = torch.cuda.get_device_properties(run_device())
     resident_threads = props.multi_processor_count * props.max_threads_per_multi_processor
     vectors = sum(widths) // 8
@@ -137,7 +137,17 @@ def test_concat_flat_rows_within_one_wave_at_four(widths) -> None:
     S = [[rows, w] for w in widths]
     call = manifest_call("ConcatFwdOp", {"D": [_FP16] * len(widths)}, S=S, dim=1)
     test = ConcatTest(call)
+    launches = []
+    program = ConcatKernel.program
+
+    def record(self, build, *facts):
+        launches.append((build.__name__, facts[:2]))
+        return program(self, build, *facts)
+
+    monkeypatch.setattr(ConcatKernel, "program", record)
     test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
+    doubled = ("_compile_flat", (len(widths), 2 * ConcatKernel._FLAT_PER_THREAD))
+    assert launches and all(launch == doubled for launch in launches), launches
 
 
 @pytest.mark.smoke

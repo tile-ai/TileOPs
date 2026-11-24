@@ -209,6 +209,8 @@ def _concat_flat_kernel(vec, dtype, n, per_thread, resident):
                 col[u] = g - row[u] * total
             # Every read of the thread issues before its first write.
             if resident is not None:
+                # The address pick below reads input 1 for every column past input 0.
+                assert n <= 2, f"the held program copies one or two inputs, got {n}"
                 T.annotate_min_blocks_per_sm(resident)
                 held = T.alloc_local((per_thread, vec), dtype)
                 for u in T.unroll(per_thread):
@@ -356,8 +358,9 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
             per_thread, resident = self._FLAT_PER_THREAD, None
             # A launch past one resident wave runs its last CTAs after the first ones retire.
             # Twice the vectors a thread bring it within one wave when the CTAs stay resident:
-            # one load a vector, from the address its column picks, fits the registers that
-            # every resident CTA leaves a thread with two inputs, not with more.
+            # one load a vector, from the address its column picks, held to the registers every
+            # resident CTA leaves a thread. ptxas fits that without spills for one or two
+            # inputs; with three it spills (12 bytes at 32 registers on sm_90).
             runs = [-(-rows * total // (_THREADS * p)) for p in (per_thread, 2 * per_thread)]
             if len(present) <= 2 and runs[0] > wave >= runs[1]:
                 per_thread, resident = 2 * per_thread, self.resident_ctas
