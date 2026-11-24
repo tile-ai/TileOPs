@@ -1053,38 +1053,50 @@ def test_kda_sm90_fp16_prefill_walks_one_cta_only_for_one_chunk_in_one_wave(
 # Sequence lengths whose chunk counts differ (one is empty) and lengths of two chunks each.
 _UNEVEN = [100, 0, 37, 64]
 _EVEN = [100, 70, 120, 66]
+# Lengths of at most one chunk, one of them empty, for the SM90 fp16 one-CTA walk.
+_ONE_CHUNK = [64, 0, 37, 64]
 
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("state_v_first", "chunked"),
+    ("state_v_first", "dtype", "chunked"),
     [
         pytest.param(
-            False, False, marks=[pytest.mark.sm89, pytest.mark.smoke],
-            id="uneven-chunks-sm89-key-major",
+            False, torch.bfloat16, False,
+            marks=[pytest.mark.sm89, pytest.mark.smoke], id="uneven-chunks-sm89-key-major",
         ),
         pytest.param(
-            False, True, marks=[pytest.mark.sm90, pytest.mark.smoke],
-            id="uneven-chunks-sm90-key-major",
+            False, torch.bfloat16, True,
+            marks=[pytest.mark.sm90, pytest.mark.smoke], id="uneven-chunks-sm90-key-major",
         ),
         pytest.param(
-            True, False, marks=[pytest.mark.sm89, pytest.mark.full],
-            id="uneven-chunks-sm89-value-major",
+            False, torch.float16, False,
+            marks=[pytest.mark.sm90, pytest.mark.smoke], id="one-chunk-fp16-sm90-key-major",
         ),
         pytest.param(
-            True, True, marks=[pytest.mark.sm90, pytest.mark.full],
-            id="uneven-chunks-sm90-value-major",
+            True, torch.bfloat16, False,
+            marks=[pytest.mark.sm89, pytest.mark.full], id="uneven-chunks-sm89-value-major",
+        ),
+        pytest.param(
+            True, torch.bfloat16, True,
+            marks=[pytest.mark.sm90, pytest.mark.full], id="uneven-chunks-sm90-value-major",
+        ),
+        pytest.param(
+            True, torch.float16, False,
+            marks=[pytest.mark.sm90, pytest.mark.full], id="one-chunk-fp16-sm90-value-major",
         ),
     ],
 )  # fmt: skip
 def test_kda_prefill_updates_its_slots_of_a_state_pool(
     state_v_first: bool,
+    dtype: torch.dtype,
     chunked: bool,
     monkeypatch,
 ) -> None:
     """Packed sequences start from and end in their slots, in either state layout; an empty
     sequence leaves its slot as it was. Enough (sequence, value head) pairs for the one-CTA
-    walk of each sequence on SM89; on SM90 the chunk-parallel prefill serves these lengths."""
+    walk of each sequence on SM89; on SM90 the chunk-parallel prefill serves bf16 given gates,
+    and the one-CTA walk fp16 ones of at most one chunk a sequence in one wave."""
     torch.manual_seed(42)
     runs = []
 
@@ -1094,9 +1106,14 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
 
     monkeypatch.setattr(kda_prefill, "run_chunk_prefill", counted)
     flags = {"state_v_first": state_v_first, "use_qk_l2norm_in_kernel": True}
+    lengths, heads = (
+        (_ONE_CHUNK, _one_wave_heads(len(_ONE_CHUNK)))
+        if dtype == torch.float16
+        else (_UNEVEN, _FUSED_HEADS)
+    )
     test = _pooled(
-        torch.bfloat16, some=("cu_seqlens", "cu_seqlens_cpu"), B=1, S=sum(_UNEVEN),
-        seq_lens=_UNEVEN, H=4, HV=_FUSED_HEADS, K=128, V=128, P=12, **flags,
+        dtype, some=("cu_seqlens", "cu_seqlens_cpu"), B=1, S=sum(lengths), seq_lens=lengths,
+        H=4, HV=heads, K=128, V=128, P=12, **flags,
     )  # fmt: skip
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
     assert bool(runs) == chunked
@@ -1226,6 +1243,20 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
             marks=[pytest.mark.sm89, pytest.mark.full],
         ),
         pytest.param(
+            {},
+            {
+                "B": 1,
+                "S": sum(_ONE_CHUNK),
+                "seq_lens": _ONE_CHUNK,
+                # The SM90 one-CTA walk serves fp16 calls of one chunk a sequence in one wave.
+                "HV": _one_wave_heads,
+                "some": ("cu_seqlens", "cu_seqlens_cpu"),
+                "dtype": torch.float16,
+            },
+            [0, 2],
+            marks=[pytest.mark.sm90, pytest.mark.full],
+        ),
+        pytest.param(
             {"state_v_first": True},
             {
                 "B": 1,
@@ -1237,6 +1268,20 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
             [0, 2],
             marks=[pytest.mark.sm89, pytest.mark.full],
         ),
+        pytest.param(
+            {"state_v_first": True},
+            {
+                "B": 1,
+                "S": sum(_ONE_CHUNK),
+                "seq_lens": _ONE_CHUNK,
+                # The SM90 one-CTA walk serves fp16 calls of one chunk a sequence in one wave.
+                "HV": _one_wave_heads,
+                "some": ("cu_seqlens", "cu_seqlens_cpu"),
+                "dtype": torch.float16,
+            },
+            [0, 2],
+            marks=[pytest.mark.sm90, pytest.mark.full],
+        ),
     ],
     ids=[
         "decode-key-major",
@@ -1246,7 +1291,9 @@ def test_kda_chunk_prefill_walks_a_value_major_state(pooled: bool, length: int, 
         "chunk-prefill-value-major-sm80",
         "chunk-prefill-value-major-sm90",
         "fused-prefill-key-major-sm89",
+        "fused-prefill-key-major-sm90",
         "fused-prefill-value-major-sm89",
+        "fused-prefill-value-major-sm90",
     ],
 )
 def test_kda_skips_the_states_of_negative_slots(flags: dict, row: dict, padded: list) -> None:
@@ -1256,7 +1303,10 @@ def test_kda_skips_the_states_of_negative_slots(flags: dict, row: dict, padded: 
     torch.manual_seed(42)
     row = {"H": 4, "HV": 4, "K": 128, "V": 128, "P": 12, **row}
     some = row.pop("some", ())
-    inputs = _pooled(torch.bfloat16, some=some, **row, **flags).gen_inputs()
+    dtype = row.pop("dtype", torch.bfloat16)
+    if callable(row["HV"]):
+        row["HV"] = row["HV"](len(row["seq_lens"]))
+    inputs = _pooled(dtype, some=some, **row, **flags).gen_inputs()
     check_padded_slots_skipped(KDAFwdOp(**flags, validate_inputs=True), inputs, 5, 10, padded)
 
 

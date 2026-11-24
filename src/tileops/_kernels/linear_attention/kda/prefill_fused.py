@@ -40,8 +40,10 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         # states, while this CTA walks its sequence's chunks whole, each chunk's preparation on
         # the walk's serial chain. Given gates of FP32's exponent range take the joint launch.
         # Other given gates take the split launches, which outrun this CTA unless the call holds
-        # at most one chunk a sequence on average and its CTAs run in one wave: then this
-        # launch, too, prepares every chunk at once, in one launch instead of several.
+        # at most one chunk a sequence on average and its CTAs run in one wave: then this CTA's
+        # walk is about one chunk long, and it prepares in one launch instead of several. Only
+        # the token count of a packed call is known here, so the average stands for the
+        # longest sequence.
         if call.arch == 90 and KDAChunkPrefillFwdKernel.refusal(call) is None:
             if referenced_form(call):
                 return "SM90 prepares given gates of FP32's exponent range in the joint launch"
