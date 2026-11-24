@@ -3,6 +3,7 @@ import torch
 
 from tests.compile_contract import register_compile_contract
 from tests.workload_test_base import TestBase
+from tileops._kernels.indexing import ConcatKernel
 from tileops.indexing import ConcatFwdOp
 from workloads.device import run_device
 from workloads.indexing import ConcatWorkload, TransposedConcatWorkload
@@ -111,6 +112,30 @@ _CASES = (
 @pytest.mark.parametrize("S, dim, D", _CASES)
 def test_concat(S, dim, D) -> None:
     call = manifest_call("ConcatFwdOp", {"D": D}, S=S, dim=dim)
+    test = ConcatTest(call)
+    test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "widths",
+    [
+        # Two inputs: each vector is read from the input its column picks.
+        pytest.param([8, 24], marks=_SMOKE, id="two-inputs"),
+        # One input: a vector's row is its position.
+        pytest.param([8], marks=_FULL, id="one-input"),
+    ],
+)
+def test_concat_flat_rows_within_one_wave_at_four(widths) -> None:
+    """float16 rows that end inside a line, one row past the flat program's default vectors a
+    thread for every resident thread: past one wave at the default and within it at twice
+    that. The last run is partial."""
+    props = torch.cuda.get_device_properties(run_device())
+    resident_threads = props.multi_processor_count * props.max_threads_per_multi_processor
+    vectors = sum(widths) // 8
+    rows = resident_threads * ConcatKernel._FLAT_PER_THREAD // vectors + 1
+    S = [[rows, w] for w in widths]
+    call = manifest_call("ConcatFwdOp", {"D": [_FP16] * len(widths)}, S=S, dim=1)
     test = ConcatTest(call)
     test.check(ConcatFwdOp(**call.arguments()), *test.gen_inputs())
 
