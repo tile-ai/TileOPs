@@ -133,7 +133,8 @@ def test_fp8_quant_ue8m0_floors_scales_at_two_to_the_minus_126(
     """A group whose ``max(amax, eps) / 448`` is subnormal or zero takes the scale
     ``2 ** -126``, as ``act_quant`` gives a subnormal one."""
     params = {"eps": eps, "use_ue8m0": True, "scale_dtype": scale_dtype, "inplace": inplace}
-    test = FP8QuantScaleFloorTest((80, 512), 128, dtype, **params)
+    # 79 rows leave a last block the block does not fill.
+    test = FP8QuantScaleFloorTest((79, 512), 128, dtype, **params)
     op = FP8QuantPerTokenGroupFwdOp(128, **params)
     test.check(op, *test.gen_inputs())
 
