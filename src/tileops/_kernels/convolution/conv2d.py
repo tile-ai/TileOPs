@@ -1039,6 +1039,9 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
                 partial tile does not fit in shared memory beside its pipeline.
         """
         super().init_config(config)
+        if config is not None and config.get("split_k") is None:
+            # The default's split is priced for the default tile; price the tile named here.
+            self.config = {**self.config, "split_k": self.split_k(self.config)}
         split_k = self.config["split_k"]
         k_blocks = _k_blocks(self.c_in, self.kernel_size, self.config["block_k"])
         if k_blocks % split_k:

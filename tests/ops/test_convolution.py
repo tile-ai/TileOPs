@@ -889,6 +889,28 @@ def test_conv2d_symmetric_split_contraction(n: int, h: int, dtype: torch.dtype, 
     assert kernel.config["split_k"] > 1
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+def test_conv2d_symmetric_prices_the_split_for_the_stated_tile() -> None:
+    """A config that names a tile but no split gets the split priced for that tile, not the
+    default tile's: a 64-wide k tile leaves 9 K blocks, which the default's split need not
+    divide."""
+    from tileops._kernels.convolution.conv2d import Conv2dSymmetricKernel
+
+    kernel = Conv2dSymmetricKernel(  # lint: test-placement allow: states a partial config
+        2, 64, 16, 16, 128, 3, 1, 1, 1, torch.float16, config={"block_k": 64}
+    )
+    assert kernel.config["block_k"] == 64
+    assert kernel.config["split_k"] == kernel.split_k(kernel.config)
+    assert 9 % kernel.config["split_k"] == 0
+    x = torch.randn(2, 64, 16, 16, device=run_device(), dtype=torch.float16)
+    weight = torch.randn(128, 64, 3, 3, device=x.device, dtype=x.dtype)
+    torch.testing.assert_close(
+        kernel(x, weight), torch.nn.functional.conv2d(x, weight, padding=1), atol=1e-2, rtol=1e-2
+    )
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
