@@ -572,12 +572,12 @@ def test_causal_conv1d_prefill_refuses_a_ring_past_shared_memory() -> None:
         CausalConv1dFwdOp(dilation=70).key_for("causal_conv1d", call)
 
 
-# Float16 builds: a dilated build's 400 blocks of one warp, which hold more than 128 registers'
+# Float16 builds: a dilated build's 832 blocks of one warp, which hold more than 128 registers'
 # worth; 256-channel by 256-token blocks: 512 (4 an H200 SM), 480 (4, the same program) and 256
 # (2); 640, whose 5 an SM would leave a thread 102 registers, and 40, one an SM, sharing one
 # unbounded program.
 _RESIDENCY = (
-    pytest.param(10240, 3, ([400],), marks=_SMOKE, id="dilated"),
+    pytest.param(8192, 3, ([100, 900],), marks=_SMOKE, id="dilated"),
     pytest.param(
         8192, 1, ([2500, 1000, 500, 96], [2000, 1800], [1000, 1048]), marks=_FULL,
         id="one-wave-and-reuse",

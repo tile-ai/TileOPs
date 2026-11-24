@@ -79,6 +79,11 @@ def _prefill_config(dim: int, width: int, dtype: torch.dtype, dilation: int) -> 
     return {"vec": vec, "warps": warps, "seg": sums * max(1, 8 // sums), "steps": 8, "stages": 2}
 
 
+def _ring_bytes(cfg: dict, itemsize: int) -> int:
+    """Shared memory a block's token ring takes under *cfg*."""
+    return cfg["warps"] * cfg["stages"] * cfg["seg"] * WARP_LANES * cfg["vec"] * itemsize
+
+
 @target_cache(maxsize=64)
 def _causal_conv1d_kernel(
     dim: int,
@@ -414,8 +419,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         if reason is not None:
             return reason
         cfg = _prefill_config(call.dim, call.width, call.dtype, call.dilation)
-        tokens = cfg["warps"] * cfg["stages"] * cfg["seg"] * WARP_LANES * cfg["vec"]
-        need = tokens * call.dtype.itemsize
+        need = _ring_bytes(cfg, call.dtype.itemsize)
         if need > call.smem_budget:
             return f"a block stages {need} bytes of tokens, past the {call.smem_budget} a block has"
         return None
@@ -491,7 +495,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         # a grid whose blocks' rings do not fit an SM's shared memory that many at once.
         cfg, target = self.config, self.build_target
         threads = WARP_LANES * cfg["warps"]
-        ring_bytes = threads * cfg["stages"] * cfg["seg"] * cfg["vec"] * x.element_size()
+        ring_bytes = _ring_bytes(cfg, x.element_size())
         chunks = (x.shape[0] + cfg["seg"] * cfg["steps"] - 1) // (cfg["seg"] * cfg["steps"])
         strips = (self.dim + WARP_LANES * cfg["vec"] - 1) // (WARP_LANES * cfg["vec"])
         grid = strips * ((chunks + cfg["warps"] - 1) // cfg["warps"])
