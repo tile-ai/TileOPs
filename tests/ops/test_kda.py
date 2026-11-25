@@ -480,9 +480,11 @@ def test_kda_raw_gate_matches_reference(
     ],
 )
 def test_kda_raw_gate_graph_replay(seqlen, lower_bound):
-    """Replay reads changed gates and initial state and overwrites both returned tensors."""
+    """Replay reads changed gates, dt_bias and initial state and overwrites both returned
+    tensors. In the unbounded 65-token call two draws of dt_bias agree within the tolerance, so
+    the replay lowers it by 1."""
     test, op = _raw_gate_test(1, seqlen, 64, lower_bound, ["initial_state", "dt_bias"])
-    check_replay(test, op)
+    check_replay(test, op, [x - 1 if i == 9 else x for i, x in enumerate(test.gen_inputs())])
 
 
 @pytest.mark.smoke

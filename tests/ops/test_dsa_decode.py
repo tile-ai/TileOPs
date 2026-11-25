@@ -362,7 +362,7 @@ def test_dsa_decode_graph_replay(seq_len_kv, topk) -> None:
     q, kv, _ = test.gen_inputs()
     indices = _padded_topk_indices(1, 1, 1, topk, seq_len_kv, -1, torch.Generator().manual_seed(0))
     sinks = torch.randn(test.heads, device=run_device()) + torch.tensor(topk).log()
-    inputs = (q, kv, indices.to(q.device), sinks)
+    inputs = (q, kv, indices, sinks)
     graph.renew(inputs)
     graph.replay()
     test.check(op, *inputs, runs=lambda *args, **kwargs: graph.outputs[0])

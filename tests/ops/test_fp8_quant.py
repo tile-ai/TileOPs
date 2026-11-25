@@ -192,13 +192,19 @@ def test_fp8_quant_fake_quantizes_a_strided_view_in_place(wide_shape, index) -> 
             (1, 1024), torch.float32, marks=pytest.mark.full,
             id="deepseek-v4-flash-wq-b-indexer-wq-b",
         ),
-        pytest.param((1, 8 * 1024), torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-wo-b"),
-        pytest.param((1, 2048), torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w2"),
         pytest.param(
-            (6, 4096), torch.float8_e8m0fnu, marks=pytest.mark.full, id="deepseek-v4-flash-routed-w13"
+            (1, 8 * 1024), torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-wo-b"
         ),
         pytest.param(
-            (6, 2048), torch.float8_e8m0fnu, marks=pytest.mark.full, id="deepseek-v4-flash-routed-w2"
+            (1, 2048), torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w2"
+        ),
+        pytest.param(
+            (6, 4096), torch.float8_e8m0fnu, marks=pytest.mark.full,
+            id="deepseek-v4-flash-routed-w13",
+        ),
+        pytest.param(
+            (6, 2048), torch.float8_e8m0fnu, marks=pytest.mark.full,
+            id="deepseek-v4-flash-routed-w2",
         ),
     ],
 )  # fmt: skip
@@ -220,16 +226,9 @@ def test_fp8_quant_graph_replay(shape, scale_dtype) -> None:
 def test_fp8_quant_in_place_graph_replay(wide_shape) -> None:
     """DeepSeek-V4-Flash's decode-step fake quantization in place of a KV row's columns before
     its RoPE dimensions."""
-    columns = (..., slice(None, -64))
-    test = FP8QuantViewTest(
-        wide_shape,
-        columns,
-        torch.empty(wide_shape, device="meta")[columns].shape,
-        64,
-        torch.bfloat16,
-        inplace=True,
-        **_UE8M0,
-    )
+    index = (..., slice(None, -64))
+    x_shape = torch.empty(wide_shape, device="meta")[index].shape
+    test = FP8QuantViewTest(wide_shape, index, x_shape, 64, torch.bfloat16, inplace=True, **_UE8M0)
     check_replay(test, FP8QuantPerTokenGroupFwdOp(64, inplace=True, **_UE8M0))
 
 

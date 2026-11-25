@@ -28,25 +28,20 @@ from workloads.device import run_device
 from workloads.norm import (
     FusedAddRMSNormWorkload,
     FusedAddRMSNormZeroCenteredOffsetWorkload,
+    NormCall,
     RMSNormWorkload,
     RMSNormZeroCenteredOffsetWorkload,
     norm_verification,
     normalization_verification,
 )
 from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 register_compile_contract(RMSNormFwdOp)
 
 
 class RMSNormTest(RMSNormWorkload, TestBase):
     pass
-
-
-class RMSNormWithoutWeightTest(RMSNormTest):
-    """An RMSNormTest call that passes no weight."""
-
-    def gen_inputs(self) -> tuple[torch.Tensor, None]:
-        return super().gen_inputs()[0], None
 
 
 class RMSNormFixture(FixtureBase):
@@ -159,29 +154,29 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="RMSNormFwdOp")
 @pytest.mark.parametrize(
-    "test",
+    "T, B, n, row",
     [
-        pytest.param(RMSNormTest(1024, 4096, torch.float16), marks=pytest.mark.smoke, id="fp16"),
+        pytest.param("float16", 1024, 4096, {}, marks=pytest.mark.smoke, id="fp16"),
         *(
-            pytest.param(test, marks=pytest.mark.full, id=f"deepseek-v4-flash-{name}")
-            for name, test in (
-                ("hidden", RMSNormTest(1, 4096, torch.bfloat16)),
-                ("query-lora", RMSNormTest(1, 1024, torch.bfloat16)),
-                ("kv", RMSNormTest(1, 512, torch.bfloat16)),
-                ("indexer-entry", RMSNormTest(1, 128, torch.bfloat16)),
-                ("query-heads", RMSNormWithoutWeightTest(64, 512, torch.bfloat16)),
+            pytest.param("bfloat16", *case, marks=pytest.mark.full, id=f"deepseek-v4-flash-{name}")
+            for name, *case in (
+                ("hidden", 1, 4096, {}),
+                ("query-lora", 1, 1024, {}),
+                ("kv", 1, 512, {}),
+                ("indexer-entry", 1, 128, {}),
+                ("query-heads", 64, 512, {"some": []}),
             )
         ),
         pytest.param(
-            RMSNormTest(1, 5120, torch.bfloat16, zero_centered=True),
-            marks=pytest.mark.full,
-            id="qwen3.8-27b",
+            "bfloat16", 1, 5120, {"zero_centered": True}, marks=pytest.mark.full, id="qwen3.8-27b"
         ),
     ],
 )
-def test_rms_norm_graph_replay(test) -> None:
+def test_rms_norm_graph_replay(T, B, n, row) -> None:
     """Replay consumes changed input and weight contents at their captured addresses."""
-    check_replay(test, RMSNormFwdOp((test.n,), test.eps, zero_centered=test.zero_centered))
+    row = {"eps": 1e-6, "some": ["weight"], **row}
+    call = manifest_call("RMSNormFwdOp", {"T": T}, B=[B], normalized_shape=[n], **row)
+    check_replay(NormCall(call), RMSNormFwdOp(**call.arguments()))
 
 
 @pytest.mark.smoke

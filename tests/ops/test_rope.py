@@ -826,24 +826,26 @@ def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(columns) -> None:
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="RoPECosSinFwdOp")
 @pytest.mark.parametrize(
-    "heads, width",
+    "heads, width, P",
     [
-        pytest.param(64, 512, marks=_SMOKE, id="deepseek-v4-flash-query"),
-        pytest.param(1, 512, marks=_FULL, id="deepseek-v4-flash-key"),
-        pytest.param(64, 128, marks=_FULL, id="deepseek-v4-flash-indexer-query"),
-        pytest.param(1, 128, marks=_FULL, id="deepseek-v4-flash-indexer-key"),
+        pytest.param(64, 512, 4096, marks=_SMOKE, id="deepseek-v4-flash-query"),
+        pytest.param(64, 512, 4128, marks=_FULL, id="deepseek-v4-flash-query-4128"),
+        pytest.param(1, 512, 4096, marks=_FULL, id="deepseek-v4-flash-key"),
+        pytest.param(64, 128, 4096, marks=_FULL, id="deepseek-v4-flash-indexer-query"),
+        pytest.param(1, 128, 4096, marks=_FULL, id="deepseek-v4-flash-indexer-key"),
     ],
 )
-def test_rope_cos_sin_graph_replay(heads, width) -> None:
+def test_rope_cos_sin_graph_replay(heads, width, P) -> None:
     """DeepSeek-V4-Flash's decode rotation of the trailing columns of a token's query or key
-    heads, the attention's or the indexer's, at an int32 device offset. The replay rotates at
-    the table's last position, which no draw of the offset reaches."""
+    heads, the attention's or the indexer's, at an int32 device offset into the tables of
+    max_seq_len 4096 or 4128. The replay rotates at the table's last position, which no draw
+    of the offset reaches."""
     test = RoPECosSinViewTest(
         manifest_call(
             "RoPECosSinFwdOp",
             {"T": "bfloat16", **_F32_TABLES, "O": "int32"},
             **_dense(
-                1, 1, heads, 64, 32, P=4096, interleaved=True, inplace=True, some=["seqlen_offsets"]
+                1, 1, heads, 64, 32, P=P, interleaved=True, inplace=True, some=["seqlen_offsets"]
             ),
         ),
         width,

@@ -288,9 +288,11 @@ def test_varlen_sinks_rejects_non_fp32_dtype():
     ],
 )
 def test_varlen_sinks_graph_replay(dtype, options):
-    """A captured call reads updated sink values, including calls with RoPE. The replay holds
-    the offsets, which set the case's packing."""
+    """A captured call reads updated sinks and RoPE tables. Every draw repeats the sinks and two
+    draws of the tables agree within the tolerance, so the replay swaps the tables and reverses
+    the last four sinks, which stay as heavy as the scores so that a stale FP8 scale still
+    shows. The replay holds the offsets, which set the case's packing."""
     w, op = _sink_case(dtype, 128, [129, 1], [257, 33], options)
-    inputs = w.gen_inputs()
-    inputs[-1][4:].add_(1)
-    check_replay(w, op, inputs, held=(3, 4))
+    *inputs, cos, sin, sinks = w.gen_inputs()
+    sinks[4:] = sinks[4:].flip(0)
+    check_replay(w, op, (*inputs, sin, cos, sinks), held=(3, 4))

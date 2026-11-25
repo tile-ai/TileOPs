@@ -1157,7 +1157,9 @@ def test_gqa_paged_packed_query_lengths(
     "batch, longest, call",
     [
         pytest.param(2, 4096, {"heads": 32, "dim": 128}, marks=pytest.mark.smoke, id="dynamic"),
-        pytest.param(1, 4096, {"heads": 32, "dim": 128}, marks=pytest.mark.full, id="single-request"),
+        pytest.param(
+            1, 4096, {"heads": 32, "dim": 128}, marks=pytest.mark.full, id="single-request"
+        ),
         pytest.param(
             1, 4096, {"heads": 24, "dim": 256, "dtype": torch.bfloat16}, marks=pytest.mark.full,
             id="qwen3.8-27b",

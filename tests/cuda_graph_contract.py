@@ -60,9 +60,9 @@ class CapturedGraph:
     inputs, an op's in signature order; ``outputs`` holds what each call returned.
 
     Each call first runs on a side stream on copies of its inputs at other addresses, so no
-    call may reach the inputs before the capture. The copies hold the captured values as long as the
-    graph lives: an op that keeps anything of its first call's tensors reads those values at
-    replay, not the ones the test wrote.
+    call may reach the inputs before the capture. The copies hold the captured values as long
+    as the graph lives: an op that keeps anything of its first call's tensors reads those
+    values at replay, not the ones the test wrote.
     """
 
     def __init__(self, *calls: tuple[Callable[..., Any], Sequence[Any]]) -> None:
