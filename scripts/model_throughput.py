@@ -9,7 +9,7 @@ prefill; its steps take one token each with no host read between them, replay CU
 are timed as one run of ``DECODE_STEPS`` steps, which spreads the run's start from an idle
 device over them. DeepSeek-V4-Flash's per-layer graphs leave out what a whole-model replay adds
 each step: the host work of moving the step and copying the token in and the logits out, and
-the derivation of the step's key indices.
+the derivation of the step's key indices, which its prefill seconds leave out as well.
 
 Usage: ``python scripts/model_throughput.py --output model_throughput.json``
 """
@@ -146,9 +146,9 @@ def layer_by_layer(
     timed call starts from, which a layer inside a whole forward never meets. The embedding,
     ``Step.build`` and the head of a prefill are timed once per call. A layer's decode steps
     replay one CUDA graph, and so do the embedding, the head and the argmax that feeds the next
-    step of every decode step. The key indices of each decode step, which a whole-model replay
-    derives in its graph, are derived once, by the eager run of the first layer that reads them,
-    outside every graph.
+    step of every decode step. Each step's key indices, which a whole forward derives once per
+    call, are derived here once per step, by the untimed first call of the first layer that reads
+    them, so neither the prefill nor the decode seconds include them.
     """
     cfg, ops, device = model.config, model.ops, model.device
     total = prompt.shape[1]
