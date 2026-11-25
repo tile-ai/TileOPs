@@ -290,13 +290,15 @@ def test_top_p_mask_at_one_keeps_a_tail_of_tiny_weights():
     [
         pytest.param(64, 201088, marks=pytest.mark.smoke),
         pytest.param(2, 1 << 20, marks=pytest.mark.full),
+        pytest.param(17, 50257, marks=pytest.mark.full),
     ],
 )
 def test_top_p_mask_split_rows_cut_where_the_reference_does(batch: int, vocab: int):
     """Split rows whose weights need three fixed-point pieces (``batch = 64`` at
-    ``V = 201088``, on a device whose shared memory holds them), and split rows too long for a
-    64-bit fixed-point total (``V = 2^20``), which add float32 weights, cut where the reference
-    does."""
+    ``V = 201088``, on a device whose shared memory holds them), split rows too long for a
+    64-bit fixed-point total (``V = 2^20``), which add float32 weights, and split rows read
+    element by element (``batch = 17`` at ``V = 50257``), whose bins a block clears outside
+    the threads that fold them, cut where the reference does."""
     device = run_device()
     logits = torch.randn(batch, vocab, device=device)
     p = torch.rand(batch, device=device) * 0.45 + 0.5
