@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._utils import STR_TO_DTYPE
 from tileops.attention import TopKSelectFwdOp
@@ -247,3 +248,28 @@ def test_topk_select_few_rows_in_registers(case: str) -> None:
         kernel.config = {**kernel.config, **config}
         out = op(scores, starts, ends)
         compare_outputs(out, reference, workload.verification(scores, starts, ends))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="TopKSelectFwdOp")
+@pytest.mark.parametrize(
+    "seq_len_kv",
+    [
+        pytest.param(4096 // 4, marks=pytest.mark.smoke, id="deepseek-v4-flash-indexer"),
+        pytest.param(4128 // 4, marks=pytest.mark.full, id="deepseek-v4-flash-indexer-4128"),
+    ],
+)
+def test_topk_select_graph_replay(seq_len_kv: int) -> None:
+    """DeepSeek-V4-Flash's indexer top-k of a decode token's ratio-4 entries at max_seq_len 4096
+    and 4128, replayed at a window end below top_k, which fills the rest with -1, and above
+    it. The replays hold the window start, 0 in every decode step."""
+    test = TopKSelectTest(1, 1, seq_len_kv, 1, 512, torch.float32, torch.int32, -1)
+    op = TopKSelectFwdOp(test.topk, fill_value=test.fill_value)
+    inputs = test.gen_inputs()
+    graph = CapturedGraph((op, inputs))
+    for end in (test.topk // 2, seq_len_kv * 3 // 4):
+        fresh = test.gen_inputs()
+        fresh[2].fill_(end)
+        graph.renew(fresh)
+        graph.replay(held=[inputs[1]])
+        test.check(op, *fresh, runs=lambda *args, **kwargs: graph.outputs[0])

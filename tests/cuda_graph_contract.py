@@ -15,10 +15,12 @@ QUALIFIED_OPS = frozenset(
         "CausalConv1dFwdOp",
         "CausalConv1dUpdateFwdOp",
         "Conv1dFwdOp",
+        "DSADenseFwdOp",
         "EmbeddingFwdOp",
         "FP4QuantPerGroupFwdOp",
         "FP8QuantPerTokenGroupFwdOp",
         "FusedMoEExpertsFwdOp",
+        "GatedPoolCompressFwdOp",
         "GEMMFP8FwdOp",
         "GEMMFwdOp",
         "GEMMW4A8FwdOp",
@@ -33,9 +35,11 @@ QUALIFIED_OPS = frozenset(
         "PagedKVCacheGatherFwdOp",
         "ReLUFwdOp",
         "RMSNormFwdOp",
+        "RoPECosSinFwdOp",
         "RoPEFwdOp",
         "SigmoidFwdOp",
         "SiLUAndMulFwdOp",
+        "TopKSelectFwdOp",
     }
 )
 
@@ -84,8 +88,8 @@ class CapturedGraph:
                     x.copy_(value)
 
     def replay(self, held: Collection[torch.Tensor] = ()) -> None:
-        """Fill each output that is no input with NaN, or where it holds integers with its
-        dtype's minimum, since several ops fill or pad with -1; then replay.
+        """Fill each output that is no input with NaN, or where it holds integers or booleans
+        with its dtype's minimum, since several ops fill or pad with -1; then replay.
 
         Raises:
             AssertionError: An input other than the *held* ones holds its captured value, which
@@ -100,7 +104,11 @@ class CapturedGraph:
         assert not unchanged, f"rewrite or hold each input at its captured value: {unchanged}"
         for tensor in self._poisoned:
             tensor.fill_(
-                float("nan") if tensor.is_floating_point() else torch.iinfo(tensor.dtype).min
+                float("nan")
+                if tensor.is_floating_point()
+                else False
+                if tensor.dtype == torch.bool
+                else torch.iinfo(tensor.dtype).min
             )
         self._graph.replay()
 

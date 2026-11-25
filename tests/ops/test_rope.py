@@ -9,7 +9,7 @@ not start at 0.
 import pytest
 import torch
 
-from tests.cuda_graph_contract import CapturedGraph
+from tests.cuda_graph_contract import CapturedGraph, check_replay
 from tests.workload_test_base import TestBase
 from tileops.rope import RoPECosSinFwdOp
 from workloads.device import run_device
@@ -821,6 +821,37 @@ def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(columns) -> None:
     before = wide.clone()
     op(*inputs)
     assert torch.equal(wide, before)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="RoPECosSinFwdOp")
+@pytest.mark.parametrize(
+    "heads, width",
+    [
+        pytest.param(64, 512, marks=_SMOKE, id="deepseek-v4-flash-query"),
+        pytest.param(1, 512, marks=_FULL, id="deepseek-v4-flash-key"),
+        pytest.param(64, 128, marks=_FULL, id="deepseek-v4-flash-indexer-query"),
+        pytest.param(1, 128, marks=_FULL, id="deepseek-v4-flash-indexer-key"),
+    ],
+)
+def test_rope_cos_sin_graph_replay(heads, width) -> None:
+    """DeepSeek-V4-Flash's decode rotation of the trailing columns of a token's query or key
+    heads, the attention's or the indexer's, at an int32 device offset. The replay rotates at
+    the table's last position, which no draw of the offset reaches."""
+    test = RoPECosSinViewTest(
+        manifest_call(
+            "RoPECosSinFwdOp",
+            {"T": "bfloat16", **_F32_TABLES, "O": "int32"},
+            **_dense(
+                1, 1, heads, 64, 32, P=4096, interleaved=True, inplace=True, some=["seqlen_offsets"]
+            ),
+        ),
+        width,
+        slice(-64, None),
+    )
+    inputs = test.gen_inputs()
+    inputs[4].fill_(inputs[1].shape[0] - 1)
+    check_replay(test, RoPECosSinFwdOp(**test.arguments()), inputs)
 
 
 _OFFSETS = _dense(2, 19, 3, 128, 64, P=32, some=["seqlen_offsets"])
