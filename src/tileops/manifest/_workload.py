@@ -241,7 +241,7 @@ def _tensor(spec: TensorSpec, device: Any) -> Any:
             dtype
         )
     high = 2 if dtype == torch.bool else 8
-    return torch.randint(0, high, spec.shape, device=place).to(dtype)
+    return torch.randint(0, high, spec.shape, device=place, dtype=dtype)
 
 
 def _constructor_value(sig: Signature, type_text: str, value: Any) -> Any:
