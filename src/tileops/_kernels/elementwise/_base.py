@@ -18,6 +18,7 @@ from tileops._kernels.elementwise._broadcast import (
     row_broadcast_split,
 )
 from tileops._kernels.elementwise._builders import (
+    lane_mask_of,
     make_binary_direct,
     make_binary_explicit,
     make_binary_register_copy,
@@ -121,6 +122,15 @@ class _StrategyKernel(_ElementwiseKernel):
 
     # Integer tensors are data; uint8 cond/mask tensors only select results.
     autotune_accepts_random_int_inputs: bool = True
+    # A bool body's form over two 16-bit lanes, by dtype (``lane_compare``): see
+    # ``LaneMaskedOpFunc``.
+    lane_mask_func = None
+
+    def _int8_body(self):
+        """``op_func`` with its bool result stored as int8, with its two-lane form if any."""
+        body = store_bool_as_int8(self.op_func)
+        lanes = self.lane_mask_func(self.dtype_str) if self.lane_mask_func else None
+        return body if lanes is None else LaneMaskedOpFunc(body, lanes)
 
     @property
     def default_config(self) -> dict:
@@ -217,7 +227,7 @@ class UnaryKernel(_StrategyKernel):
         """The op body this kernel builds with, and the name that identifies it."""
         name = self._op_func_name()
         if self._bool_via_int8:
-            return name, store_bool_as_int8(self.op_func)
+            return name, self._int8_body()
         if self.fast_func is not None:
             return name, GuardedOpFunc(self.op_func, self.fast_func)
         return name, self.op_func
@@ -239,6 +249,25 @@ class UnaryKernel(_StrategyKernel):
         """Whether *n_total* elements of *bytes_per_element* fit three quarters of L2; the
         other quarter is left to other cache traffic."""
         return 4 * n_total * bytes_per_element <= 3 * l2_bytes
+
+    @property
+    def default_config(self) -> dict:
+        cfg = super().default_config
+        # A run built from a two-lane form (``LaneMaskedOpFunc``) spends a few instructions
+        # on its elements, so a 128-thread block ends soon after its loads land and block
+        # dispatch, not DRAM, paces a long grid of them. CUDA's largest block takes an eighth
+        # of the dispatches. It is used where every block stays a whole run and the grid
+        # keeps ``TARGET_BLOCKS`` blocks.
+        widest_threads = 1024
+        npt = cfg.get("num_per_thread", 0)
+        wide_block = widest_threads * npt
+        if (
+            lane_mask_of(self._get_effective_op_func()[1], npt) is not None
+            and self.N_total % wide_block == 0
+            and self.N_total >= wide_block * TARGET_BLOCKS
+        ):
+            cfg["threads"] = widest_threads
+        return cfg
 
     def _op_func_name(self) -> str:
         """Name every input that changes the op body: see ``register_op_func``.
@@ -318,9 +347,6 @@ class BinaryKernel(_StrategyKernel):
 
     # A cheaper form of ``op_func``, as a static method: see ``GuardedOpFunc``.
     fast_func = None
-    # A bool body's form over two 16-bit lanes, by dtype (``lane_compare``): see
-    # ``LaneMaskedOpFunc``.
-    lane_mask_func = None
     # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
     CSRC_HEADERS: tuple[str, ...] = ()
 
@@ -384,9 +410,7 @@ class BinaryKernel(_StrategyKernel):
         """The op body this kernel builds with, and the name that identifies it."""
         name = self._op_func_name()
         if self._bool_via_int8:
-            body = store_bool_as_int8(self.op_func)
-            lanes = self.lane_mask_func(self.dtype_str) if self.lane_mask_func else None
-            return name, body if lanes is None else LaneMaskedOpFunc(body, lanes)
+            return name, self._int8_body()
         if self.fast_func is not None:
             return name, GuardedOpFunc(self.op_func, self.fast_func)
         return name, self.op_func
