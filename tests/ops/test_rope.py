@@ -168,6 +168,17 @@ def test_rope_runs_after_a_tuning_request(first) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("key_heads", [None, 1], ids=["query-only", "with-key"])
+def test_rope_zero_tokens(key_heads) -> None:
+    dtype = torch.bfloat16
+    op, params = _op("RoPEFwdOp", dtype, head_size=80, rotary_dim=32)
+    positions, query, key = _inputs("RoPEFwdOp", params, 0, 2, key_heads, dtype)
+    ref = _reference("RoPEFwdOp", params, positions, query, key)
+    compare_outputs(ref, (query, key), rope_verification())
+    compare_outputs(op(positions, query, key), ref, rope_verification())
+
+
+@pytest.mark.smoke
 def test_rope_takes_batched_positions_and_a_query_alone() -> None:
     dtype = torch.bfloat16
     op, params = _op("RoPEFwdOp", dtype)
