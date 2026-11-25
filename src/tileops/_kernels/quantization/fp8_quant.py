@@ -80,9 +80,13 @@ class FP8QuantFwdInterface(KernelInterface):
         """
 
 
-def _load_groups(block_m: int, group_size: int):
+def _load_groups(block_m: int, group_size: int, predicated: bool):
     """A macro loading the groups at column ``col`` of rows ``first`` onward of ``rows`` into a
-    ``[block_m, group_size]`` fragment."""
+    ``[block_m, group_size]`` fragment.
+
+    With *predicated*, the last block loads no row past ``rows``, for a program built with
+    ``TL_ENABLE_LOWER_LDGSTG_PREDICATED``; otherwise it re-reads the last row there.
+    """
 
     @T.macro
     def load_groups(input_tensor, first, rows, col, input_local):
@@ -91,6 +95,12 @@ def _load_groups(block_m: int, group_size: int):
         if first + block_m <= rows:
             for i, j in T.Parallel(block_m, group_size):
                 input_local[i, j] = input_tensor[first + i, col + j]
+        elif predicated:
+            # The zeros in place of the rows past the last reach no store.
+            for i, j in T.Parallel(block_m, group_size):
+                input_local[i, j] = T.if_then_else(
+                    first + i < rows, input_tensor[first + i, col + j], T.cast(0, input_local.dtype)
+                )
         else:
             # The last block re-reads its last row; the stores drop those rows.
             for i, j in T.Parallel(block_m, group_size):
@@ -161,7 +171,7 @@ def _fp8_quant_kernel(
         out_dtype = T.float8_e4m3fn
         # An e8m0 scale is the exponent byte of its power-of-two float32 scale.
         scale_dtype = T.uint8 if e8m0_scales else T.float32
-        load_groups = _load_groups(block_m, group_size)
+        load_groups = _load_groups(block_m, group_size, False)
         group_scales = _group_scales(block_m, eps, ue8m0, in_dtype)
         ue8m0_codes = _ue8m0_codes(block_m, group_size, in_dtype)
         store = store_groups(block_m, group_size, lambda scale, i: scale[i])
@@ -213,9 +223,14 @@ def _fp8_quant_kernel(
 def _fp8_fake_quant_kernel(
     group_size: int, in_dtype: str, threads: int, eps: float, row_groups: int, row_stride: int
 ):
-    @tilelang.jit
+    # Lowers a bounded load to one predicated load, so a partial block's threads past the last
+    # row issue no load and take no branch. Its inline assembly costs every load of the program
+    # the read-only data path, which this program, writing its input, never has.
+    predicated_loads = {tilelang.PassConfigKey.TL_ENABLE_LOWER_LDGSTG_PREDICATED: True}
+
+    @tilelang.jit(pass_configs=predicated_loads)
     def _fp8_fake_quant_fwd_func(block_m):
-        load_groups = _load_groups(block_m, group_size)
+        load_groups = _load_groups(block_m, group_size, True)
         group_scales = _group_scales(block_m, eps, True, in_dtype)
         ue8m0_codes = _ue8m0_codes(block_m, group_size, in_dtype)
         width = row_groups * group_size
