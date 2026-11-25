@@ -57,7 +57,7 @@ class ModelOps:
         self.bmm = BMMFwdOp()
         self.rope = RoPECosSinFwdOp(interleaved=True, inplace=True)
         self.hadamard = HadamardTransformFwdOp()
-        self.relu = ReLUFwdOp(inplace=True)
+        self.relu = ReLUFwdOp()
         self.mul = MulFwdOp()
         self.argmax = ArgmaxFwdOp(dim=-1)
         self.norms = {
