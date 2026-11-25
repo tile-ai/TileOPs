@@ -106,9 +106,10 @@ def _decode_after_prefill(
     steps: Sequence[Step],
 ) -> tuple[torch.Tensor, list[torch.Tensor], float]:
     """Run ``layer``'s decode steps on ``inputs`` once eagerly, so they compile, on the state its
-    last prefill of the whole prompt left, and capture them in one CUDA graph; prefill it on
-    ``prefill`` (streams, ids, step), which starts the request afresh, and time a replay. Return
-    the prefill's output, the steps' outputs and the replay's seconds."""
+    last prefill of the whole prompt left, capture them in one CUDA graph and replay it once,
+    which uploads it to the device; prefill the layer on ``prefill`` (streams, ids, step), which
+    starts the request afresh, and time a second replay. Return the prefill's output, the steps'
+    outputs and the second replay's seconds."""
 
     def run() -> list[torch.Tensor]:
         return [layer(ops, x, tok, s) for x, tok, s in zip(inputs, tokens, steps, strict=True)]
@@ -117,6 +118,7 @@ def _decode_after_prefill(
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         outputs = run()
+    graph.replay()
     out = layer(ops, *prefill)
     _, seconds = _timed(graph.replay)
     return out, outputs, seconds
