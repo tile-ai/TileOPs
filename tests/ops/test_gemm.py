@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
@@ -3545,7 +3546,9 @@ def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
     k: int,
     run_mode: str,
 ) -> None:
-    """Changed inputs survive entry reuse, persistent waves and poisoned graph replays."""
+    """Changed inputs survive entry reuse, persistent waves and poisoned graph replays. A replay
+    holds the packed weight and scales, which every call shares, and every other replay the
+    activation, which alternates back to its captured values."""
     op = GEMMW4A8FwdOp(target=BUILTIN)
     if n is None:
         group_size = op.group_size
@@ -3564,17 +3567,13 @@ def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
         compare_outputs(op(*inputs), references[0], evidence[0])
         torch.cuda.synchronize()
         if run_mode == "graph":
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
-                captured = op(*inputs)
+            graph = CapturedGraph((op, inputs))
         for iteration in range(repeats):
             index = (iteration + 1) % 2
             activation.copy_(logical_inputs[index][0])
             if run_mode == "graph":
-                # A skipped store must not pass because an old result remained.
-                captured.fill_(float("nan"))
-                graph.replay()
-                actual = captured
+                graph.replay(held=inputs[1:] if index else inputs)
+                actual = graph.outputs[0]
             else:
                 actual = op(*inputs)
             torch.cuda.synchronize()

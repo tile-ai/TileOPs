@@ -5,6 +5,7 @@ import dataclasses
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.attention import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
 from tileops.backend import OpNotAvailableError
@@ -1155,20 +1156,20 @@ def test_gqa_paged_packed_query_lengths(
 @pytest.mark.cuda_graph(op="GQAPagedFwdOp")
 @pytest.mark.parametrize("batch", [2, 1], ids=["dynamic", "single-request"])
 def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
-    """Dispatch is static; packed lengths and cache lengths remain replay inputs."""
+    """Dispatch is static; packed lengths and cache lengths remain replay inputs.
+
+    A single request holds the one packing of its one query token, and skips the captured
+    cache length, at which its cache lengths would hold their captured values.
+    """
     workload = _decode(batch, 32, 4, [4096, 64][:batch], 128, 64)
     inputs = workload.gen_inputs()
     inputs[4][0] = 128  # A mostly empty table must also be safe on the split path.
     workload.cache_lens[0] = 128
     op = GQAPagedFwdOp(is_causal=True)
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(*inputs)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        output = op(*inputs)
+    graph = CapturedGraph((op, inputs))
+    graph.renew(workload.gen_inputs())
+    pages = torch.randperm(inputs[1].shape[0], device=inputs[3].device)
+    inputs[3].copy_(pages[inputs[3]])
     # Same tensor addresses and shapes, different sequence boundaries. The dynamic
     # path must not keep the uniform packing it saw during warmup or capture.
     if batch == 2:
@@ -1178,15 +1179,15 @@ def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
         workload.cache_lens[-1] = 63
     v_cache, block_table, page_size = inputs[2], inputs[3][0], inputs[2].shape[1]
     live_values = v_cache.clone()
-    for length in (128, 2048, 63, 0):
+    for length in (128, 2048, 63, 0)[2 - batch :]:
         inputs[4][0] = length
         workload.cache_lens[0] = length
         # Slots past the cache keep stale contents; a non-finite one must not reach the output.
         v_cache.copy_(live_values)
         slots = torch.arange(length, block_table.numel() * page_size, device=v_cache.device)
         v_cache[block_table[slots // page_size], slots % page_size] = float("nan")
-        graph.replay()
-        TestBase.check(workload, op, *inputs, runs=lambda *args: output)
+        graph.replay(held=[inputs[5]] if batch == 1 else [])
+        TestBase.check(workload, op, *inputs, runs=lambda *args: graph.outputs[0])
 
 
 @pytest.mark.smoke

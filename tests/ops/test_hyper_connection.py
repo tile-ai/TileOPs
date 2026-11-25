@@ -7,6 +7,7 @@ count, ragged columns, vector widths and stream counts."""
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.workload_test_base import TestBase, smoke_first
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sequence_modeling import HyperConnectionPreCall as PreCallSpec
@@ -126,25 +127,12 @@ def test_hyper_connection_pre_can_be_captured_and_replayed() -> None:
     call = _call([1], _DSV4)
     test = HyperConnectionPreTest(call)
     op = HyperConnectionPreFwdOp(**call.arguments())
-    first = test.gen_inputs()
-    second = tuple(t.clone() for t in first)
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(*first)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        outputs = op(*first), op(*second)
-    first[0].add_(0.5)
-    second[1].mul_(0.5)
-    second[3].add_(0.25)
-    for output in outputs:
-        for tensor in output:
-            tensor.fill_(float("nan"))
+    first, second = test.gen_inputs(), test.gen_inputs()
+    graph = CapturedGraph((op, first), (op, second))
+    graph.renew(test.gen_inputs(), test.gen_inputs())
     graph.replay()
-    test.check(op, *first, runs=lambda *args: outputs[0])
-    test.check(op, *second, runs=lambda *args: outputs[1])
+    test.check(op, *first, runs=lambda *args: graph.outputs[0])
+    test.check(op, *second, runs=lambda *args: graph.outputs[1])
 
 
 @pytest.mark.smoke

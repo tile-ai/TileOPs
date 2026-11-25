@@ -9,6 +9,7 @@ not start at 0.
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.workload_test_base import TestBase
 from tileops.rope import RoPECosSinFwdOp
 from workloads.device import run_device
@@ -254,23 +255,13 @@ def test_rope_graph_replay(neox) -> None:
     """Replay rotates changed positions, query and key into the captured outputs."""
     dtype = torch.bfloat16
     op, params = _op("RoPEFwdOp", dtype, is_neox_style=neox)
-    positions, query, key = _inputs("RoPEFwdOp", params, 64, 8, 2, dtype, first=100)
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(positions, query, key)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        got_q, got_k = op(positions, query, key)
-    for _ in range(2):
-        positions.add_(1000)
-        query.neg_()
-        key.mul_(0.5)
-        got_q.fill_(float("nan"))
-        got_k.fill_(float("nan"))
+    inputs = _inputs("RoPEFwdOp", params, 64, 8, 2, dtype, first=100)
+    graph = CapturedGraph((op, inputs))
+    got_q, got_k = graph.outputs[0]
+    for first in (1100, 2100):
+        graph.renew(_inputs("RoPEFwdOp", params, 64, 8, 2, dtype, first=first))
         graph.replay()
-        ref_q, ref_k = _reference("RoPEFwdOp", params, positions, query, key)
+        ref_q, ref_k = _reference("RoPEFwdOp", params, *inputs)
         compare_outputs(got_q, ref_q, rope_verification())
         compare_outputs(got_k, ref_k, rope_verification())
 

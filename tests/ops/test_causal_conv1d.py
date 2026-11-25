@@ -3,6 +3,7 @@ import re
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.state_pool_guard import check_padded_slots_skipped
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
@@ -414,26 +415,13 @@ def test_causal_conv1d_dilated_graph_replay(op_type, workload_type, shape, servi
     )
     test = workload_type(call)
     inputs = test.gen_inputs()
-    args, keywords = call.signature.forward_arguments(inputs)
-    op = op_type(**call.arguments())
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(*args, **keywords)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        output = op(*args, **keywords)
-    inputs[0].mul_(0.5)
-    inputs[1].mul_(0.9)
     slots = inputs[6] if op_type is CausalConv1dFwdOp else inputs[4]
     slots.copy_(slots.roll(1))
-
-    def replay(*_args, **_keywords):
-        graph.replay()
-        return output, inputs[2]
-
-    test.check(op, *inputs, runs=replay)
+    if op_type is CausalConv1dFwdOp:
+        bounds, initial = inputs[3], inputs[5]
+        bounds.copy_(bounds[-1] - bounds.flip(0))
+        initial.logical_not_()
+    check_replay(test, op_type(**call.arguments()), inputs, result=conv_state_result)
 
 
 _ROLLBACK = (

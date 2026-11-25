@@ -3,6 +3,7 @@
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tileops._ops.moe.abc import WeightedReduceNoOp
 from tileops._ops.moe.fused_moe import FusedMoEFwdOp
 from tileops._ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
@@ -225,18 +226,10 @@ class TestFusedMoEExpertsFwdOp:
     def test_small_route_dispatch_replays_in_cuda_graph(self):
         experts, args = _small_route_case([[0, 1], [2, 3], [4, 5], [6, 7]])
         out = torch.empty_like(args[0])
-        assert experts(*args, out=out) is out
-        torch.cuda.synchronize()
-
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            experts(*args, out=out)
-
-        args[4].copy_(
-            torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device=run_device())
-        )
+        graph = CapturedGraph((lambda *inputs: experts(*inputs, out=out), args))
+        assert graph.outputs[0] is out
+        graph.renew(_small_route_case([[0, 1], [0, 1], [0, 2], [0, 2]])[1])
         graph.replay()
-        torch.cuda.synchronize()
         compare_outputs(out, ref_routed_experts(*args), moe_verification(2))
 
     @pytest.mark.parametrize(

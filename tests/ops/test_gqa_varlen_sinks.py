@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import TestBase
 from tileops.attention import GQAVarlenFwdOp
 from workloads.attention.gqa.varlen import GQAVarlenSinkWorkload
@@ -287,13 +288,9 @@ def test_varlen_sinks_rejects_non_fp32_dtype():
     ],
 )
 def test_varlen_sinks_graph_replay(dtype, options):
-    """A captured call reads updated sink values, including calls with RoPE."""
+    """A captured call reads updated sink values, including calls with RoPE. The replay holds
+    the offsets, which set the case's packing."""
     w, op = _sink_case(dtype, 128, [129, 1], [257, 33], options)
     inputs = w.gen_inputs()
-    TestBase.check(w, op, *inputs)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        output = op(*inputs)
     inputs[-1][4:].add_(1)
-    graph.replay()
-    TestBase.check(w, op, *inputs, runs=lambda *args: output)
+    check_replay(w, op, inputs, held=(3, 4))

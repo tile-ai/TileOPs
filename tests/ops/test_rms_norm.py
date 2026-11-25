@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.cuda_graph_contract import check_replay
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.kernel_base import Kernel
@@ -155,20 +156,7 @@ def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
     """Replay consumes changed input and weight contents at their captured addresses."""
     test = RMSNormTest(1024, 4096, torch.float16)
     op = RMSNormFwdOp(normalized_shape=(4096,))
-    inputs = test.gen_inputs()
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(*inputs)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        output = op(*inputs)
-    inputs[0].add_(0.5)
-    inputs[1].mul_(0.5)
-    output.fill_(float("nan"))
-    graph.replay()
-    test.check(op, *inputs, runs=lambda *args: output)
+    check_replay(test, op)
 
 
 @pytest.mark.smoke

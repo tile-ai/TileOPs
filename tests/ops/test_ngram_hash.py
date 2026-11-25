@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.cuda_graph_contract import CapturedGraph
 from tests.workload_test_base import TestBase
 from tileops.sequence_modeling import NGramHashFwdOp
 from workloads.numerics import compare_outputs
@@ -180,14 +181,7 @@ def test_ngram_hash_graph_metadata():
     )
     inputs = workload.gen_inputs()
     op = NGramHashFwdOp(workload.eos_token_id)
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(*inputs)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        result = op(*inputs)
+    graph = CapturedGraph((op, inputs))
     inputs[0].add_(11)
     inputs[1].add_(13)
     inputs[2].sub_(2)
@@ -198,4 +192,4 @@ def test_ngram_hash_graph_metadata():
     inputs[7].copy_(torch.tensor([2, 3, 1], dtype=torch.int32, device=inputs[7].device))
     expected = workload.ref_program(*inputs)
     graph.replay()
-    compare_outputs((result, inputs[1]), expected, workload.verification(*inputs))
+    compare_outputs((graph.outputs[0], inputs[1]), expected, workload.verification(*inputs))

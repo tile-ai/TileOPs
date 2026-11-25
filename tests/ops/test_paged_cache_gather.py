@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.cuda_graph_contract import CapturedGraph
 from tests.workload_test_base import TestBase
 from tileops._kernels.attention import (
     PagedKVCacheGatherKernel,
@@ -202,25 +203,20 @@ def test_paged_kv_cache_gather_strided_destination():
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="PagedKVCacheGatherFwdOp")
 def test_paged_kv_cache_gather_graph_metadata():
+    """The replay holds ``out``, which the op only writes, at NaN, its captured value."""
     workload = PagedKVCacheGatherWorkload(
         [17, 0, 33], (576,), 16, torch.float8_e4m3fn, torch.bfloat16, [1, 0, 3], table_width=5
     )
     inputs = workload.gen_inputs()
     op = PagedKVCacheGatherFwdOp(out_dtype=torch.bfloat16)
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(*inputs[:5], out=inputs[5])
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        op(*inputs[:5], out=inputs[5])
+    graph = CapturedGraph((op, inputs))
+    inputs[0].copy_(torch.randn(inputs[0].shape, device=inputs[0].device))
     inputs[1].copy_(inputs[1].flip(-1))
     inputs[2].copy_(torch.tensor([0, 1, 49, 50], device=inputs[2].device, dtype=torch.int32))
     inputs[3].fill_(7)
     inputs[4].fill_(0.75)
     inputs[5].fill_(float("nan"))
-    graph.replay()
+    graph.replay(held=[inputs[5]])
     TestBase.check(workload, op, *inputs, runs=lambda *args, **kwargs: inputs[5])
 
 
