@@ -115,7 +115,7 @@ def _rotate(
     Each token reads cache row *index*; the rotation is float32, rounded once.
     """
     tokens = index.numel()
-    heads = x.reshape(tokens, -1, head_size)
+    heads = x.reshape(tokens, x.shape[-1] // head_size, head_size)
     c, s = cos[index.reshape(-1)].unsqueeze(1).float(), sin[index.reshape(-1)].unsqueeze(1).float()
     rotated = rotate_pairs(heads[..., :rotary_dim].float(), c, s, neox)
     out = torch.cat((rotated.to(x.dtype), heads[..., rotary_dim:]), dim=-1)
