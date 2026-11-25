@@ -24,10 +24,10 @@ class CausalLM:
     in place for each position; the weights and the decoding state must keep the addresses the
     graphs captured. A decode step's host-side branches, which ``_phase`` names, select one
     graph per phase. The first decode step of a phase instead runs eagerly and then captures
-    the phase's graph, on the model's own stream; all phases share one memory pool. Replay
-    rests on each model's tests that it equals the eager step bitwise, not on
-    ``tests/cuda_graph_contract.py``: most ops a decode step calls are outside the CUDA Graph
-    support scope of ``docs/stability.md``.
+    the phase's graph, on the model's own stream; all phases share one memory pool. The ops a
+    decode step calls are qualified in ``tests/cuda_graph_contract.py`` for DeepSeek-V4-Flash's
+    and Qwen3.8-27B's decode calls at max_seq_len 4096 and 4128; at other lengths and configs,
+    replay rests on each model's tests that it equals the eager step bitwise.
     """
 
     config: Any
