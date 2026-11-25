@@ -8,6 +8,8 @@ needs no clearing: no row an earlier request left in the state reaches a call's 
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -21,7 +23,7 @@ __all__ = ["Attention", "Block", "Compressor", "FP8Linear", "Indexer", "MoE", "S
 class Step:
     """The index metadata of one forward call on one device, shared by its layers.
 
-    ``window`` holds each query's sliding-window keys, -1 where none: token positions in a
+    ``window`` holds each query's sliding-window keys, int32, -1 where none: token positions in a
     prefill, ``[S, min(S, window_size)]``, ring slots in a decode step, ``[1, window_size]``.
     ``offset`` is where the compressed entries start among a layer's keys: after the prompt in
     a prefill, after the ring in a decode step. ``cu_seqlens`` and ``slots`` are the int32
@@ -31,6 +33,9 @@ class Step:
     ``closes`` and ``has_entries`` and reads the position from the step's tensors, so a decode
     step moved in place to a position where those two answer the same serves a CUDA graph
     captured earlier.
+
+    The index tensors many layers read are derived once per ``Step`` object, by the first layer
+    that reads them; ``moved_to`` returns a new object, whose first use derives them again.
     """
 
     start_pos: int
@@ -40,6 +45,9 @@ class Step:
     cu_seqlens: torch.Tensor
     starts: torch.Tensor
     slots: torch.Tensor
+    _derived: dict[tuple, Any] = dataclasses.field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def build(
@@ -57,7 +65,7 @@ class Step:
             start_pos=start_pos,
             seqlen=seqlen,
             offset=seqlen if start_pos == 0 else win,
-            window=window,
+            window=window.to(torch.int32),
             cu_seqlens=torch.tensor([0, seqlen], dtype=torch.int32, device=device),
             starts=torch.tensor([start_pos], dtype=torch.int32, device=device),
             slots=torch.zeros(1, dtype=torch.int32, device=device),
@@ -71,10 +79,45 @@ class Step:
         """Whether a window of ``ratio`` tokens has closed by this call's last token."""
         return self.start_pos + self.seqlen >= ratio
 
+    def _once(self, key: tuple, derive: Callable[[], Any]) -> Any:
+        """``derive()``, computed the first time this object is asked for ``key``."""
+        if key not in self._derived:
+            self._derived[key] = derive()
+        return self._derived[key]
+
     def closed(self, ratio: int) -> torch.Tensor:
-        """``[S]``: how many compressed entries of ``ratio`` each query sees closed."""
-        steps = torch.arange(1, self.seqlen + 1, device=self.window.device)
-        return (self.starts + steps) // ratio
+        """``[1, S]`` int32: how many compressed entries of ``ratio`` each query sees closed."""
+
+        def derive() -> torch.Tensor:
+            steps = torch.arange(1, self.seqlen + 1, device=self.window.device)
+            return ((self.starts + steps) // ratio).int().unsqueeze(0)
+
+        return self._once(("closed", ratio), derive)
+
+    def first_entries(self) -> torch.Tensor:
+        """``[1, S]`` int32 zeros: the first compressed entry each query may select."""
+        device = self.window.device
+        return self._once(
+            ("first",), lambda: torch.zeros(1, self.seqlen, dtype=torch.int32, device=device)
+        )
+
+    def key_indices(self, ratio: int, width: int) -> torch.Tensor:
+        """``[1, S, 1, W + width]`` int32, ``W`` the window's width: each query's window keys,
+        then the first ``width`` compressed entries of ``ratio`` from ``offset``, -1 where the
+        query does not see one closed: the keys of a layer that attends to every entry it sees
+        closed."""
+
+        def derive() -> torch.Tensor:
+            idx = torch.arange(width, dtype=torch.int32, device=self.window.device)
+            closed = self.closed(ratio).view(-1, 1)
+            entries = torch.where(idx < closed, idx + self.offset, -1)
+            return torch.cat([self.window, entries], dim=-1).view(1, self.seqlen, 1, -1)
+
+        return self._once(("key_indices", ratio, width), derive)
+
+    def ring(self) -> torch.Tensor:
+        """``[1]`` int64: the window ring slot a decode step's token takes."""
+        return self._once(("ring",), lambda: (self.starts % self.window.shape[-1]).long())
 
     def moved_to(self, start_pos: int) -> Step:
         """This decode step at ``start_pos``: its tensors rewritten in place."""
@@ -173,7 +216,11 @@ class Compressor:
 
 
 class Indexer:
-    """The lightning indexer: selects each query's top compressed entries of an indexed layer."""
+    """The lightning indexer: selects each query's top compressed entries of an indexed layer.
+
+    ``cache`` holds the entries as columns, ``[1, index_head_dim, max_entries]``, the layout the
+    scores' BMM reads, so a decode step reads it in place.
+    """
 
     def __init__(
         self, cfg: DeepseekV4FlashConfig, ratio: int, max_entries: int, device: torch.device
@@ -189,7 +236,7 @@ class Indexer:
         self.weight_scale = torch.tensor(
             [self.head_dim**-0.5 * self.n_heads**-0.5], dtype=torch.float32, device=device
         )
-        self.cache = torch.zeros(1, max_entries, self.head_dim, dtype=torch.bfloat16, device=device)
+        self.cache = torch.zeros(1, self.head_dim, max_entries, dtype=torch.bfloat16, device=device)
 
     def __call__(
         self,
@@ -208,9 +255,9 @@ class Indexer:
         ops.fp4_fake_quant(q)
         entries = self.compressor(ops, rope, x, step)
         if entries is not None and start_pos == 0:
-            self.cache[:, : entries.shape[1]] = entries
+            self.cache[..., : entries.shape[1]] = entries.transpose(1, 2)
         elif entries is not None:
-            self.cache.index_copy_(1, (step.starts // self.ratio).long(), entries)
+            self.cache.index_copy_(2, (step.starts // self.ratio).long(), entries.transpose(1, 2))
         if not step.has_entries(self.ratio):
             return torch.full(
                 (1, seqlen, ops.index_topk.top_k), -1, dtype=torch.int32, device=x.device
@@ -218,14 +265,12 @@ class Indexer:
         weights = ops.mul(ops.gemm(x, self.weights_proj).float(), self.weight_scale)
         weights = weights.to(torch.bfloat16)
         width = seqlen // self.ratio if start_pos == 0 else self.max_entries
-        keys = self.cache[:, :width].transpose(1, 2).contiguous()
+        keys = self.cache[..., :width]
         scores = ops.bmm(q.view(1, seqlen * self.n_heads, self.head_dim), keys)
         scores = ops.relu(scores).view(seqlen, self.n_heads, width)
         logits = ops.bmm(weights.view(seqlen, 1, self.n_heads), scores)
         logits = logits.float().view(1, seqlen, width, 1)
-        ends = step.closed(self.ratio).to(torch.int32).unsqueeze(0)
-        starts = torch.zeros_like(ends)
-        idx = ops.index_topk(logits, starts, ends).squeeze(2)
+        idx = ops.index_topk(logits, step.first_entries(), step.closed(self.ratio)).squeeze(2)
         return torch.where(idx >= 0, idx + step.offset, idx)
 
 
@@ -287,15 +332,14 @@ class Attention:
         ops.kv_fake_quant(kv[:, :-rd])
         kv = kv.view(1, seqlen, self.head_dim)
 
-        indices = [step.window]
         if self.indexer is not None:
-            indices.append(self.indexer(ops, rope, x, qr, step)[0])
+            selected = self.indexer(ops, rope, x, qr, step)[0]
+            idx = torch.cat([step.window, selected], dim=-1).view(1, seqlen, 1, -1)
         elif self.ratio:
-            # Without an indexer a query attends to every compressed entry it sees closed.
             width = seqlen // self.ratio if start_pos == 0 else self.max_entries
-            idx = torch.arange(width, device=device)
-            closed = step.closed(self.ratio).unsqueeze(1)
-            indices.append(torch.where(idx < closed, idx + step.offset, -1))
+            idx = step.key_indices(self.ratio, width)
+        else:
+            idx = step.window.view(1, seqlen, 1, -1)
 
         entries = self.compressor(ops, rope, x, step) if self.compressor is not None else None
         if start_pos == 0:
@@ -306,12 +350,11 @@ class Attention:
                 self.kv_cache[:, win : win + entries.shape[1]] = entries
                 keys = torch.cat([kv, entries], dim=1)
         else:
-            self.kv_cache.index_copy_(1, (step.starts % win).long(), kv)
+            self.kv_cache.index_copy_(1, step.ring(), kv)
             if entries is not None:
                 self.kv_cache.index_copy_(1, (win + step.starts // self.ratio).long(), entries)
             keys = self.kv_cache
 
-        idx = torch.cat(indices, dim=-1).to(torch.int32).view(1, seqlen, 1, -1)
         o = ops.attention(q, keys.unsqueeze(2).contiguous(), idx, attn_sink=self.attn_sink)
         ops.rope(o[..., -rd:], rope.cos, rope.neg_sin, seqlen_offsets=step.starts)
         grouped = o.view(seqlen, self.o_groups, -1).transpose(0, 1).contiguous()
