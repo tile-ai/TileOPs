@@ -914,6 +914,108 @@ def test_gqa_paged_warp_specialized_query_tiles(
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
+    ("heads", "heads_kv", "dim", "q_lens", "cache_lens", "page_size", "dtype", "semantics"),
+    [
+        pytest.param(
+            24, 4, 256, [300, 3, 0, 130], [900, 1500, 64, 131], 64, torch.bfloat16, {},
+            marks=pytest.mark.smoke, id="group-6",
+        ),
+        pytest.param(
+            24, 4, 128, [200, 9, 450], [700, 333, 900], 48, torch.bfloat16,
+            {"pos_encoding_mode": "rope", "rotary_dim": 64, "window_size_left": 256},
+            marks=pytest.mark.full, id="group-6-rope-window",
+        ),
+        pytest.param(
+            24, 4, 128, [200, 1, 450], [700, 333, 900], 64, torch.bfloat16,
+            {"pos_encoding_mode": "rope", "rotary_dim": 64, "cache_dtype": torch.float8_e4m3fn},
+            marks=pytest.mark.full, id="group-6-fp8-cache-rope",
+        ),
+        pytest.param(
+            24, 4, 128, [250, 309], [250, 309], 64, torch.bfloat16, {"has_sinks": True},
+            marks=pytest.mark.full, id="group-6-sinks",
+        ),
+        pytest.param(
+            12, 4, 128, [800, 1, 300], [901, 40, 301], 16, torch.bfloat16, {},
+            marks=pytest.mark.full, id="group-3",
+        ),
+        pytest.param(
+            24, 2, 128, [600, 2, 33], [1100, 1200, 40], 64, torch.bfloat16, {},
+            marks=pytest.mark.full, id="group-12",
+        ),
+        pytest.param(
+            48, 2, 128, [280, 70], [700, 333], 64, torch.bfloat16, {},
+            marks=pytest.mark.full, id="group-24-over-two-kv-heads",
+        ),
+        pytest.param(
+            24, 4, 128, [44] * 129 + [1], [1100] * 129 + [1500], 64, torch.bfloat16, {},
+            marks=pytest.mark.full, id="group-6-claimed-in-order-130",
+        ),
+    ],
+)  # fmt: skip
+def test_gqa_paged_warp_specialized_head_groups(
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    q_lens: list[int],
+    cache_lens: list[int],
+    page_size: int,
+    dtype: torch.dtype,
+    semantics: dict,
+) -> None:
+    """A query group whose heads cannot each take whole swizzle atoms of a query tile is cut
+    into head groups, each its own work item over its KV head's key tiles. Ragged requests end
+    inside a page whose later rows are NaN; a request of a few tokens over a long cache splits
+    its key tiles between the warpgroups; keys past each request's first query position carry
+    large values, so a row that sees a later key, or takes another head's sink, stands out."""
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
+    workload = _paged(
+        q_lens, cache_lens, page_size, dtype, heads=heads, heads_kv=heads_kv, dim=dim, **semantics
+    )
+    op_kwargs = {k: v for k, v in semantics.items() if k not in ("has_sinks", "cache_dtype")}
+    op = GQAPagedFwdOp(is_causal=True, **op_kwargs)
+    inputs = _causal_canary(workload, _poisoned_inputs(workload))
+    assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)
+    _check(op, workload, inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("heads", "heads_kv", "dim", "batch", "q_len", "rope", "kernel_name"),
+    [
+        pytest.param(24, 4, 128, 9, 22, False, "GQAPagedFwdWSKernel", id="one-wave-a-third-full"),
+        pytest.param(28, 4, 128, 4, 40, False, "GQAPagedFwdKernel", id="under-a-third-full"),
+        pytest.param(24, 4, 128, 8, 22, False, "GQAPagedFwdKernel", id="partly-idle-wave"),
+        pytest.param(24, 4, 128, 22, 22, False, "GQAPagedFwdKernel", id="thin-tiles-two-waves"),
+        pytest.param(24, 4, 128, 22, 44, False, "GQAPagedFwdWSKernel", id="fuller-tiles-two-waves"),
+        pytest.param(24, 4, 256, 8, 22, False, "GQAPagedFwdWSKernel", id="dim-256-one-wave"),
+        pytest.param(24, 4, 256, 7, 24, False, "GQAPagedFwdKernel", id="dim-256-partial-wave"),
+        pytest.param(24, 4, 128, 6, 22, True, "GQAPagedFwdWSKernel", id="rope-half-a-wave"),
+        pytest.param(24, 4, 128, 5, 22, True, "GQAPagedFwdKernel", id="rope-under-half-a-wave"),
+        pytest.param(24, 4, 64, 11, 22, False, "GQAPagedFwdKernel", id="dimension-64"),
+    ],
+)
+def test_gqa_paged_split_group_dispatch(
+    heads: int, heads_kv: int, dim: int, batch: int, q_len: int, rope: bool, kernel_name: str
+) -> None:
+    """A split query group takes the warp-specialized kernel only where its head-group tiles
+    are full enough and fill the waves of multiprocessors they take, and not at dimension 64;
+    otherwise the key splits of ``GQAPagedFwdKernel`` keep it. The packings sit on either side
+    of those bounds for a device of 132 multiprocessors, as the H200 has."""
+    semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64} if rope else {}
+    workload = _paged(
+        [q_len] * batch, [512] * batch, 64, torch.bfloat16, heads=heads, heads_kv=heads_kv,
+        dim=dim, **semantics,
+    )  # fmt: skip
+    op = GQAPagedFwdOp(is_causal=True, **semantics)
+    assert type(_kernel(op, workload.gen_inputs())).__name__ == kernel_name
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
     "batch",
     [
         pytest.param(64, marks=pytest.mark.smoke, id="batch-64"),
