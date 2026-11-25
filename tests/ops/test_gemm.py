@@ -1692,6 +1692,25 @@ def test_gemm_fp8_short_call_streams_b_in_64_row_blocks(
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GEMMFP8FwdOp")
+@pytest.mark.parametrize(
+    "n, k",
+    [
+        pytest.param(1024, 4096, marks=pytest.mark.smoke, id="deepseek-v4-flash-wq-a"),
+        pytest.param(64 * 512, 1024, marks=pytest.mark.full, id="deepseek-v4-flash-wq-b"),
+        pytest.param(512, 4096, marks=pytest.mark.full, id="deepseek-v4-flash-wkv"),
+        pytest.param(4096, 8 * 1024, marks=pytest.mark.full, id="deepseek-v4-flash-wo-b"),
+        pytest.param(64 * 128, 1024, marks=pytest.mark.full, id="deepseek-v4-flash-indexer-wq-b"),
+        pytest.param(2 * 2048, 4096, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w13"),
+        pytest.param(4096, 2048, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w2"),
+    ],
+)
+def test_gemm_fp8_graph_replay(n: int, k: int) -> None:
+    """DeepSeek-V4-Flash's block-scaled FP8 linears of one decode token."""
+    check_replay(GEMMFP8Test(1, n, k, torch.float8_e4m3fn, "block128x128"), GEMMFP8FwdOp())
+
+
 @pytest.mark.parametrize(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )

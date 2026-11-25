@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
@@ -258,6 +259,37 @@ def test_bmm_pingpong_matches_the_reference(
     assert op.key_for("bmm", call) == "bmm_pingpong"
     test = BMMTest(batch, m, n, k, dtype)
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="BMMFwdOp")
+@pytest.mark.parametrize(
+    "batch, m, n, k",
+    [
+        pytest.param(
+            1, 64, 4096 // 4, 128, marks=pytest.mark.smoke,
+            id="deepseek-v4-flash-indexer-scores",
+        ),
+        pytest.param(
+            1, 64, 4128 // 4, 128, marks=pytest.mark.full,
+            id="deepseek-v4-flash-indexer-scores-4128",
+        ),
+        pytest.param(
+            1, 1, 4096 // 4, 64, marks=pytest.mark.full, id="deepseek-v4-flash-indexer-logits"
+        ),
+        pytest.param(
+            1, 1, 4128 // 4, 64, marks=pytest.mark.full,
+            id="deepseek-v4-flash-indexer-logits-4128",
+        ),
+        pytest.param(
+            8, 1, 1024, 64 * 512 // 8, marks=pytest.mark.full, id="deepseek-v4-flash-wo-a"
+        ),
+    ],
+)  # fmt: skip
+def test_bmm_graph_replay(batch: int, m: int, n: int, k: int) -> None:
+    """DeepSeek-V4-Flash's decode-step indexer scores and logits over the compressed entries of
+    max_seq_len 4096 and 4128, and its grouped output projection."""
+    check_replay(BMMTest(batch, m, n, k, torch.bfloat16), BMMFwdOp())
 
 
 class BMMFP8Fixture(FixtureBase):
