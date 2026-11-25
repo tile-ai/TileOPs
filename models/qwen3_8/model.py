@@ -21,7 +21,8 @@ class Qwen3_8ForCausalLM(CausalLM):
     one request: ``start_pos`` 0 starts a new
     request and clears the decoding state; a later call continues it from ``start_pos``, which
     must be the number of tokens already passed, with one token (a decode step) or several (a
-    chunk of a chunked prefill).
+    chunk of a chunked prefill). With ``cuda_graph`` on a CUDA device, the first decode step
+    runs eagerly and captures a CUDA graph that every later decode step replays.
     """
 
     def __init__(
@@ -30,10 +31,12 @@ class Qwen3_8ForCausalLM(CausalLM):
         *,
         device: torch.device | str = "cuda",
         max_seq_len: int = 4096,
+        cuda_graph: bool = True,
     ) -> None:
         self.config = config
         self.max_seq_len = max_seq_len
         self.device = indexed_device(device)
+        self.cuda_graph = cuda_graph
         self.ops = ModelOps(config)
         self.layers = [
             DecoderLayer(config, i, max_seq_len, self.device)
@@ -51,11 +54,17 @@ class Qwen3_8ForCausalLM(CausalLM):
         *,
         device: torch.device | str = "cuda",
         max_seq_len: int = 4096,
+        cuda_graph: bool = True,
     ) -> Qwen3_8ForCausalLM:
         """Load a Hugging Face ``qwen3_5`` checkpoint directory (``safetensors`` shards)."""
         from models.qwen3_8.loader import load_weights
 
-        model = cls(Qwen3_8Config.from_pretrained(path), device=device, max_seq_len=max_seq_len)
+        model = cls(
+            Qwen3_8Config.from_pretrained(path),
+            device=device,
+            max_seq_len=max_seq_len,
+            cuda_graph=cuda_graph,
+        )
         load_weights(model, Path(path))
         return model
 
@@ -65,21 +74,14 @@ class Qwen3_8ForCausalLM(CausalLM):
             layer.reset()
         super().reset()
 
-    @torch.inference_mode()
-    def forward(self, input_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
-        """Run ``input_ids`` (``[1, S]``) from ``start_pos``; return the float32 logits of its
-        last token, ``[1, vocab_size]``."""
-        seqlen = self._continue(input_ids, start_pos)
-        ops = self.ops
-        with torch.accelerator.device_index(self.device.index):
-            x = ops.embedding(input_ids[0].to(self.device), self.embed)
-            residual = None
-            step = Step.build(start_pos, seqlen, self.cos_sin)
-            for layer in self.layers:
-                x, residual = layer(ops, x, residual, step)
-            h, _ = ops.add_norm(x[-1:], residual[-1:], self.norm)
-            logits = ops.gemm_f32(h, self.lm_head)
-        self._next_pos = start_pos + seqlen
-        return logits
+    def _step(self, start_pos: int, seqlen: int) -> Step:
+        return Step.build(start_pos, seqlen, self.cos_sin)
 
-    __call__ = forward
+    def _run(self, ids: torch.Tensor, step: Step) -> torch.Tensor:
+        ops = self.ops
+        x = ops.embedding(ids[0], self.embed)
+        residual = None
+        for layer in self.layers:
+            x, residual = layer(ops, x, residual, step)
+        h, _ = ops.add_norm(x[-1:], residual[-1:], self.norm)
+        return ops.gemm_f32(h, self.lm_head)

@@ -187,7 +187,9 @@ _REQUESTS = {
 def test_layers_logits_and_state_match_hf(checkpoint, chunks, decode_steps):
     """Every layer's output and the logits over every call, then the decoding state."""
     # Holds the longest request, 2103 tokens: the 2100-token prefill and three decode steps.
-    mine = Qwen3_8ForCausalLM.from_pretrained(checkpoint, device=run_device(), max_seq_len=2304)
+    mine = Qwen3_8ForCausalLM.from_pretrained(
+        checkpoint, device=run_device(), max_seq_len=2304, cuda_graph=False
+    )
     records = [[] for _ in mine.layers]
     mine.layers = [_Recorded(layer, r) for layer, r in zip(mine.layers, records, strict=True)]
     lengths = chunks + [1] * decode_steps
@@ -300,6 +302,34 @@ def test_generate_takes_the_hf_argmax_until_eos(checkpoint):
             check_argmax_within_rounding(
                 token, exact(step, pos)[0], rounded(step, pos)[0], f"position {pos}"
             )
+
+
+@pytest.mark.sm90
+def test_decode_replays_the_eager_step_bitwise(checkpoint, graph_calls):
+    """Decode steps replayed from one CUDA graph return the eager step's logits bitwise, each
+    kept past the steps after it, over two requests: the first crosses a KV-cache page, the
+    second, after a chunked prefill, replays the graph the first captured. The first decode
+    step captures the graph and every later one replays it."""
+    eager, graph = (
+        Qwen3_8ForCausalLM.from_pretrained(
+            checkpoint, device=run_device(), max_seq_len=256, cuda_graph=cuda_graph
+        )
+        for cuda_graph in (False, True)
+    )
+    g = torch.Generator().manual_seed(3)
+    ids = torch.randint(0, _SMALL["text_config"]["vocab_size"], (1, 256), generator=g)
+    ids = ids.to(run_device())
+    requests = ([3] + [1] * 70, [70, 60] + [1] * 6)
+    for lengths in requests:
+        logits, start = {}, 0
+        for n in lengths:
+            step = ids[:, start : start + n]
+            logits[start] = eager(step, start), graph(step, start)
+            start += n
+        for start, (expected, actual) in logits.items():
+            assert torch.equal(actual, expected), f"call at position {start}"
+    decode_steps = sum(lengths.count(1) for lengths in requests)
+    assert graph_calls == {"capture_end": 1, "replay": decode_steps - 1}
 
 
 @pytest.mark.sm90

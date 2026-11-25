@@ -5,8 +5,10 @@ The weights are random: like a model test, the run reads no checkpoint. Qwen3.8-
 runs whole. DeepSeek-V4-Flash (156 GB) does not fit one H200, so it runs one layer at a time
 (:func:`layer_by_layer`). A whole-model call is timed from an idle device to an idle device.
 The prefills cover ``PREFILL_LENGTHS``, a short, a medium and a long prompt. Decode follows a
-prefill; its steps take one token each with no host read between them, and are timed as one
-run of ``DECODE_STEPS`` steps, which spreads the run's start from an idle device over them.
+prefill; its steps take one token each with no host read between them, replay CUDA graphs, and
+are timed as one run of ``DECODE_STEPS`` steps, which spreads the run's start from an idle
+device over them. DeepSeek-V4-Flash's per-layer graphs leave out the host work a whole-model
+replay adds each step: moving the step and copying the token in and the logits out.
 
 Usage: ``python scripts/model_throughput.py --output model_throughput.json``
 """
@@ -103,17 +105,22 @@ def _decode_after_prefill(
     tokens: Sequence[torch.Tensor],
     steps: Sequence[Step],
 ) -> tuple[torch.Tensor, list[torch.Tensor], float]:
-    """Run ``layer``'s decode steps on ``inputs`` once untimed, so they compile, on the state its
-    last prefill of the whole prompt left; prefill it on ``prefill`` (streams, ids, step), which
-    starts the request afresh, and time the steps. Return the prefill's output, the steps'
-    outputs and the steps' seconds."""
+    """Run ``layer``'s decode steps on ``inputs`` once eagerly, so they compile, on the state its
+    last prefill of the whole prompt left, capture them in one CUDA graph and replay it once,
+    which uploads it to the device; prefill the layer on ``prefill`` (streams, ids, step), which
+    starts the request afresh, and time a second replay. Return the prefill's output, the steps'
+    outputs and the second replay's seconds."""
 
     def run() -> list[torch.Tensor]:
         return [layer(ops, x, tok, s) for x, tok, s in zip(inputs, tokens, steps, strict=True)]
 
     run()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        outputs = run()
+    graph.replay()
     out = layer(ops, *prefill)
-    outputs, seconds = _timed(run)
+    _, seconds = _timed(graph.replay)
     return out, outputs, seconds
 
 
@@ -136,8 +143,9 @@ def layer_by_layer(
     what layer ``i - 1`` returned, and is dropped: ``model`` holds no layer afterwards. A
     layer's prefill counts the time of two calls less that of one, leaving out the idle device a
     timed call starts from, which a layer inside a whole forward never meets. The embedding,
-    ``Step.build``, the head and, for a decode step, the argmax that feeds the next step are
-    timed once per call.
+    ``Step.build`` and the head of a prefill are timed once per call. A layer's decode steps
+    replay one CUDA graph, and so do the embedding, the head and the argmax that feeds the next
+    step of every decode step.
     """
     cfg, ops, device = model.config, model.ops, model.device
     total = prompt.shape[1]
@@ -156,13 +164,15 @@ def layer_by_layer(
         return model.logits(h)
 
     def outside_decode() -> None:
-        for t, token in enumerate(tokens):
-            h = model.streams(token)
-            Step.build(cfg, total + t, 1, device)
-            ops.argmax(model.logits(h))
+        for token in tokens:
+            ops.argmax(model.logits(model.streams(token)))
 
     prefill = {n: _seconds(lambda n=n: outside_prefill(n)) for n in lengths}
-    decode = _seconds(outside_decode) / len(tokens)
+    outside_decode()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        outside_decode()
+    decode = _seconds(graph.replay) / len(tokens)
     h = model.streams(prompt)
     hd = [model.streams(token) for token in tokens]
     for i, layer in enumerate(model.layers):

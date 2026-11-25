@@ -22,7 +22,7 @@ import torch
 
 from models.deepseek_v4_flash import DeepseekV4FlashConfig, DeepseekV4FlashForCausalLM
 from models.deepseek_v4_flash.layers import Step
-from models.deepseek_v4_flash.loader import load_outside
+from models.deepseek_v4_flash.loader import load_outside, load_weights
 from models.deepseek_v4_flash.ops import RoPETable
 from workloads.device import run_device
 from workloads.models.checkpoint import write_checkpoint
@@ -349,6 +349,44 @@ def test_generate_takes_the_official_argmax_until_eos(checkpoint):
             check_argmax_within_rounding(
                 token, ref(step, pos)[0].float(), rounded(step, pos)[0].float(), f"position {pos}"
             )
+
+
+@pytest.mark.sm90
+def test_decode_replays_the_eager_step_bitwise_in_every_phase(checkpoint, graph_calls):
+    """Decode steps replayed from CUDA graphs return the eager step's logits bitwise, each kept
+    past the steps after it, and leave the eager steps' KV and indexer caches, over two requests.
+    The first, from a one-token prompt, takes every phase twice or more: no indexer entry yet,
+    no window closing, a ratio-4 window closing, and ratio-4 and ratio-128 windows closing
+    together; the second starts afresh after it and replays the graphs the first captured. Each
+    of the four phases is captured once, by its first decode step, and every other decode step
+    replays a graph. The indexer keeps 8 entries, fewer than it soon holds, so its scores reach
+    the logits."""
+    path, _ = checkpoint
+    config = dataclasses.replace(DeepseekV4FlashConfig.from_pretrained(path), index_topk=8)
+    eager, graph = (
+        DeepseekV4FlashForCausalLM(
+            config, device=run_device(), max_seq_len=264, cuda_graph=cuda_graph
+        )
+        for cuda_graph in (False, True)
+    )
+    for model in (eager, graph):
+        load_weights(model, path)
+    g = torch.Generator().manual_seed(3)
+    ids = torch.randint(0, _SMALL["vocab_size"], (1, 264), generator=g).to(run_device())
+    requests = ((1, 264), (130, 140))
+    for prompt_len, end in requests:
+        logits = {}
+        for pos in [0, *range(prompt_len, end)]:
+            tokens = ids[:, :prompt_len] if pos == 0 else ids[:, pos : pos + 1]
+            logits[pos] = eager(tokens, pos), graph(tokens, pos)
+        for pos, (expected, actual) in logits.items():
+            assert torch.equal(actual, expected), f"request of {prompt_len}, position {pos}"
+        for i, (mine, ref) in enumerate(zip(graph.layers, eager.layers, strict=True)):
+            assert torch.equal(mine.attn.kv_cache, ref.attn.kv_cache), f"layer {i} KV cache"
+            if ref.attn.indexer is not None:
+                assert torch.equal(mine.attn.indexer.cache, ref.attn.indexer.cache), f"layer {i}"
+    decode_steps = sum(end - prompt_len for prompt_len, end in requests)
+    assert graph_calls == {"capture_end": 4, "replay": decode_steps - 4}
 
 
 @pytest.mark.sm90

@@ -23,6 +23,9 @@ class Step:
     ``positions`` is ``[3, T]`` int64, each token's position repeated over the temporal,
     height and width axes, as text tokens take it; ``cu_seqlens`` is int32 ``[0, T]``;
     ``cache_seqlens`` is int32 ``[start_pos + T]``; ``cos_sin`` is the device's RoPE table.
+    A layer's one host-side branch on ``start_pos``, whether a call is a decode step, goes the
+    same way for every decode step, and the layers read the position from these tensors, so a
+    decode step moved in place to a new position serves a CUDA graph captured at an earlier one.
     """
 
     start_pos: int
@@ -43,9 +46,17 @@ class Step:
             cos_sin=cos_sin,
         )
 
+    def moved_to(self, start_pos: int) -> Step:
+        """This one-token step at ``start_pos``: its tensors rewritten in place. Filling
+        ``positions[0]`` moves all three rows, which are one row expanded with stride 0."""
+        self.positions[0].fill_(start_pos)
+        self.cache_seqlens.fill_(start_pos + 1)
+        return dataclasses.replace(self, start_pos=start_pos)
+
 
 class GatedDeltaNet:
-    """Gated DeltaNet token mixer with its causal-conv and float32 recurrent states.
+    """Gated DeltaNet token mixer with its causal-conv and float32 recurrent states, both
+    advanced in place.
 
     ``in_proj`` stacks the rows of HF's ``in_proj_qkv``, ``in_proj_z``, ``in_proj_b`` and
     ``in_proj_a``. ``A_log`` and ``dt_bias`` are float32.
@@ -72,6 +83,7 @@ class GatedDeltaNet:
             1, self.value_heads, self.head_dim, self.head_dim, dtype=torch.float32, device=device
         )
         self.has_state = torch.ones(1, dtype=torch.bool, device=device)
+        self.slot = torch.zeros(1, dtype=torch.int32, device=device)
 
     def reset(self) -> None:
         self.conv_state.zero_()
@@ -89,7 +101,7 @@ class GatedDeltaNet:
                 mixed, self.conv_weight, self.conv_state, step.cu_seqlens, None, self.has_state
             )
         q, k, v = mixed.split([self.key_dim, self.key_dim, self.value_dim], dim=-1)
-        o, self.state = ops.gdn(
+        o, _ = ops.gdn(
             q.view(1, tokens, self.heads, dim),
             k.view(1, tokens, self.heads, dim),
             v.view(1, tokens, hv, dim),
@@ -98,6 +110,7 @@ class GatedDeltaNet:
             self.state,
             A_log=self.A_log,
             dt_bias=self.dt_bias,
+            state_indices=self.slot,
         )
         o = ops.gated_norm(o.view(-1, dim), self.norm, None, z.reshape(-1, dim))
         return ops.gemm(o.view(tokens, self.value_dim), self.out_proj)
