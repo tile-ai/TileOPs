@@ -298,6 +298,17 @@ def test_rope_graph_replay(neox) -> None:
         pytest.param(
             "RoPEFwdOp", True, torch.float16, 64, 24, (1100, 8), 512, marks=_FULL, id="block-limit"
         ),
+        pytest.param(
+            "RoPEFwdOp",
+            False,
+            torch.float16,
+            64,
+            24,
+            (1, 1),
+            65537,
+            marks=_FULL,
+            id="tokens-past-grid-y",
+        ),
     ],
 )
 def test_rope_stages_each_row_where_heads_copy_columns(
@@ -310,7 +321,8 @@ def test_rope_stages_each_row_where_heads_copy_columns(
     single columns, and its 3-head query row of 390 bytes is no whole number of 16-byte
     vectors; its key row is shorter than its query row. LongRoPE's offsets move each token's
     table row. A 140800-byte query row takes more threads than a block has, so its block holds
-    1024.
+    1024. 65537 tokens are more than a grid's second or third dimension holds. The first two
+    tokens read before and past the table, and read its nearest rows.
     """
     changes = {"head_size": head_size, "rotary_dim": rotary_dim, "is_neox_style": neox}
     if name == "LongRoPEFwdOp":
@@ -318,8 +330,10 @@ def test_rope_stages_each_row_where_heads_copy_columns(
     op, params = _op(name, dtype, **changes)
     positions, query, key = _inputs(name, params, tokens, *heads, dtype)
     positions = positions.flip(0) % 4096
+    positions[:2] = torch.tensor([-(1 << 20), 1 << 20])
+    rows = rope_tables(name, params, query)[0].shape[0]
     (got_q, got_k), read = _call_with_offsets(name, op, positions, query, key)
-    ref_q, ref_k = _reference(name, params, read, query, key)
+    ref_q, ref_k = _reference(name, params, read.clamp(0, rows - 1), query, key)
     compare_outputs(got_q, ref_q, rope_verification())
     compare_outputs(got_k, ref_k, rope_verification())
 
