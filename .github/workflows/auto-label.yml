@@ -20,7 +20,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
-          EVENT_PATH: ${{ github.event_path }}
         run: |
           set -euo pipefail
 
@@ -29,7 +28,7 @@ jobs:
             exit 0
           fi
 
-          if ! jq -e '.changes | has("title")' "$EVENT_PATH" >/dev/null; then
+          if ! jq -e '.changes | has("title")' "$GITHUB_EVENT_PATH" >/dev/null; then
             echo "Body-only edit detected; skipping label sync."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             exit 0
