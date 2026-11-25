@@ -42,6 +42,13 @@ class RMSNormTest(RMSNormWorkload, TestBase):
     pass
 
 
+class RMSNormWithoutWeightTest(RMSNormTest):
+    """An RMSNormTest call that passes no weight."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, None]:
+        return super().gen_inputs()[0], None
+
+
 class RMSNormFixture(FixtureBase):
     PARAMS = [
         (
@@ -151,12 +158,25 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
 
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="RMSNormFwdOp")
-@pytest.mark.smoke
-def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
+@pytest.mark.parametrize(
+    "test",
+    [
+        pytest.param(RMSNormTest(1024, 4096, torch.float16), marks=pytest.mark.smoke, id="fp16"),
+        *(
+            pytest.param(test, marks=pytest.mark.full, id=f"deepseek-v4-flash-{name}")
+            for name, test in (
+                ("hidden", RMSNormTest(1, 4096, torch.bfloat16)),
+                ("query-lora", RMSNormTest(1, 1024, torch.bfloat16)),
+                ("kv", RMSNormTest(1, 512, torch.bfloat16)),
+                ("indexer-entry", RMSNormTest(1, 128, torch.bfloat16)),
+                ("query-heads", RMSNormWithoutWeightTest(64, 512, torch.bfloat16)),
+            )
+        ),
+    ],
+)
+def test_rms_norm_graph_replay(test) -> None:
     """Replay consumes changed input and weight contents at their captured addresses."""
-    test = RMSNormTest(1024, 4096, torch.float16)
-    op = RMSNormFwdOp(normalized_shape=(4096,))
-    check_replay(test, op)
+    check_replay(test, RMSNormFwdOp((test.n,), test.eps, zero_centered=test.zero_centered))
 
 
 @pytest.mark.smoke

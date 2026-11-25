@@ -10,6 +10,7 @@ import functools
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.elementwise import (
     AddFwdOp,
@@ -28,6 +29,7 @@ from workloads.elementwise import (
     AddBroadcastWorkload,
     BinaryPositiveCase,
     BinarySameShapeCase,
+    ElementwiseCall,
     ElementwiseWorkload,
     Float16DivisorClassesWorkload,
     LerpCancellationWorkload,
@@ -35,6 +37,7 @@ from workloads.elementwise import (
     PowPositiveWorkload,
 )
 from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 # coalesce_broadcast_dims unit tests
 
@@ -316,6 +319,25 @@ def test_binary_arith_op(op_cls, make_test, n_total: int, dtype: torch.dtype) ->
     test = make_test(n_total, dtype)
     op = op_cls()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="MulFwdOp")
+@pytest.mark.parametrize(
+    "T, A, B",
+    [
+        pytest.param(
+            "float32", [1, 64], [1], marks=pytest.mark.smoke, id="deepseek-v4-flash-indexer"
+        ),
+        pytest.param(
+            "bfloat16", [1, 24 * 256], [1, 24 * 256], marks=pytest.mark.full,
+            id="qwen3.8-27b-attention-gate",
+        ),
+    ],
+)  # fmt: skip
+def test_mul_graph_replay(T: str, A: list[int], B: list[int]) -> None:
+    """A decode step's product of two operands."""
+    check_replay(ElementwiseCall(manifest_call("MulFwdOp", {"T": T}, A=A, B=B)), MulFwdOp())
 
 
 class FloorDivideFixture(FixtureBase):

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tests.cuda_graph_contract import CapturedGraph
+from tests.cuda_graph_contract import CapturedGraph, check_replay
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
@@ -2371,6 +2371,50 @@ def test_gemm_float32_output_on_pilot_model_rows(m: int, n: int) -> None:
     test = GEMMTest(m, n, 4096, torch.bfloat16, False, True, out_dtype=torch.float32)
     op = GEMMFwdOp(out_dtype=torch.float32, target=BUILTIN)
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GEMMFwdOp")
+@pytest.mark.parametrize(
+    ("n", "k", "out_dtype"),
+    [
+        pytest.param(64, 4096, None, marks=pytest.mark.smoke, id="deepseek-v4-flash-indexer"),
+        pytest.param(
+            256, 4096, torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-router"
+        ),
+        pytest.param(
+            2 * 2 * 512, 4096, torch.float32, marks=pytest.mark.full,
+            id="deepseek-v4-flash-ratio-4-compressor",
+        ),
+        pytest.param(
+            2 * 2 * 128, 4096, torch.float32, marks=pytest.mark.full,
+            id="deepseek-v4-flash-indexer-compressor",
+        ),
+        pytest.param(
+            2 * 512, 4096, torch.float32, marks=pytest.mark.full,
+            id="deepseek-v4-flash-ratio-128-compressor",
+        ),
+        pytest.param(
+            129280, 4096, torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-lm-head"
+        ),
+        pytest.param(
+            2 * 16 * 128 + 2 * 48 * 128 + 2 * 48, 5120, None, marks=pytest.mark.full,
+            id="qwen3.8-27b-deltanet-in",
+        ),
+        pytest.param(
+            (24 + 2 * 4) * 256, 5120, None, marks=pytest.mark.full, id="qwen3.8-27b-attention-qkv"
+        ),
+        pytest.param(24 * 256, 5120, None, marks=pytest.mark.full, id="qwen3.8-27b-attention-gate"),
+        pytest.param(5120, 24 * 256, None, marks=pytest.mark.full, id="qwen3.8-27b-mixer-out"),
+        pytest.param(2 * 17408, 5120, None, marks=pytest.mark.full, id="qwen3.8-27b-mlp-gate-up"),
+        pytest.param(5120, 17408, None, marks=pytest.mark.full, id="qwen3.8-27b-mlp-down"),
+        pytest.param(248320, 5120, torch.float32, marks=pytest.mark.full, id="qwen3.8-27b-lm-head"),
+    ],
+)  # fmt: skip
+def test_gemm_graph_replay(n: int, k: int, out_dtype: torch.dtype | None) -> None:
+    """A one-token bfloat16 NT projection of a decode step."""
+    test = GEMMTest(1, n, k, torch.bfloat16, trans_b=True, out_dtype=out_dtype)
+    check_replay(test, GEMMFwdOp(out_dtype=out_dtype))
 
 
 @pytest.mark.in_tree_kernels

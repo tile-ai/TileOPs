@@ -10,20 +10,27 @@ from tests.workload_test_base import TestBase, _by_signature
 
 QUALIFIED_OPS = frozenset(
     {
+        "ArgmaxFwdOp",
         "CausalConv1dFwdOp",
         "CausalConv1dUpdateFwdOp",
         "Conv1dFwdOp",
+        "EmbeddingFwdOp",
         "FusedMoEExpertsFwdOp",
         "GQAPagedFwdOp",
         "GQAVarlenFwdOp",
+        "GEMMFwdOp",
         "GEMMW4A8FwdOp",
         "HyperConnectionPreFwdOp",
         "KDAFwdOp",
         "MergeAttentionStatesFwdOp",
+        "MulFwdOp",
         "NGramHashFwdOp",
         "PagedKVCacheGatherFwdOp",
+        "ReLUFwdOp",
         "RMSNormFwdOp",
         "RoPEFwdOp",
+        "SigmoidFwdOp",
+        "SiLUAndMulFwdOp",
     }
 )
 

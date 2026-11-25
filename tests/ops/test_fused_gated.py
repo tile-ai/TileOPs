@@ -6,10 +6,12 @@ Covers L1 smoke correctness, multi-dtype coverage, and strategy selection.
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.elementwise import GELUAndMulFwdOp, SiLUAndMulFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
+    ElementwiseCall,
     ElementwiseWorkload,
     GELUAndMulCase,
     GELUAndMulTailWorkload,
@@ -18,6 +20,7 @@ from workloads.elementwise import (
     SiLUAndMulEdgeWorkload,
     SiLUAndMulGateSweepWorkload,
 )
+from workloads.workload_base import manifest_call
 
 
 class SiLUAndMulFixture(FixtureBase):
@@ -143,6 +146,30 @@ def test_silu_and_mul_clamp_keeps_nan(dtype: torch.dtype) -> None:
     workload = SiLUAndMulClampEdgeWorkload(dtype)
     x, scale = workload.gen_inputs()
     TestBase.check(workload, SiLUAndMulFwdOp(swiglu_limit=10.0), x, scale)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="SiLUAndMulFwdOp")
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param(
+            {"M": 6, "N": 2048, "swiglu_limit": 10.0, "some": ["scale"]},
+            marks=pytest.mark.smoke,
+            id="deepseek-v4-flash-routed-experts",
+        ),
+        pytest.param(
+            {"M": 1, "N": 2048, "swiglu_limit": 10.0},
+            marks=pytest.mark.full,
+            id="deepseek-v4-flash-shared-expert",
+        ),
+        pytest.param({"M": 1, "N": 17408}, marks=pytest.mark.full, id="qwen3.8-27b-mlp"),
+    ],
+)
+def test_silu_and_mul_graph_replay(row: dict) -> None:
+    """A decode step's bfloat16 SiLU-and-mul call."""
+    call = manifest_call("SiLUAndMulFwdOp", {"T": "bfloat16"}, **row)
+    check_replay(ElementwiseCall(call), SiLUAndMulFwdOp(**call.arguments()))
 
 
 class GELUAndMulFixture(FixtureBase):
