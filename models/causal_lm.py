@@ -90,7 +90,9 @@ class CausalLM:
 
     def _replay(self, ids: torch.Tensor, start_pos: int) -> torch.Tensor:
         """The logits of the decode step of ``ids`` (``[1, 1]``) at ``start_pos``, replayed from
-        the graph of its phase; the first step of a phase runs eagerly, then captures it."""
+        the graph of its phase. The first step of a phase runs eagerly on a step of its own, so
+        that the step the graph captures derives anything it caches inside the capture, then
+        captures it."""
         if self._graphs is None:
             self._graphs = {}
             self._graph_pool = torch.cuda.graph_pool_handle()
@@ -104,7 +106,7 @@ class CausalLM:
             graph, logits = self._graphs[phase]
             graph.replay()
             return logits.clone()
-        logits = self._run(ids, step)
+        logits = self._run(ids, self._step(start_pos, 1))
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, pool=self._graph_pool, stream=self._graph_stream):
             out = self._run(self._graph_ids, step)
