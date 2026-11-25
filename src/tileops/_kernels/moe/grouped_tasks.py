@@ -5,7 +5,8 @@ over the working CTAs of a grid that balances its tasks at run time; each task i
 ``block_m``-row tile of one expert's rows by one ``block_n``-column tile. ``task_walk`` builds
 the TileLang pieces that resolve a task id to its expert and tile for masked slabs and for tight
 or aligned contiguous runs, store a task's output tile, and describe row and expert-weight tiles
-to TMA; ``GroupedGEMMConfigMixin`` holds the config checks the kernels share.
+to TMA; ``table_task_walk`` finds the same tasks' experts from a per-CTA prefix of the experts'
+row tiles instead; ``GroupedGEMMConfigMixin`` holds the config checks the kernels share.
 """
 
 from collections.abc import Mapping
@@ -16,7 +17,14 @@ import tilelang.language as T
 
 from tileops._kernels.constants import TMA_INTERLEAVE_NONE, TMA_OOB_FILL_NONE
 
-__all__ = ["CURSOR", "GroupedGEMMConfigMixin", "task_walk"]
+__all__ = [
+    "CURSOR",
+    "GroupedGEMMConfigMixin",
+    "table_task_walk",
+    "task_walk",
+    "walk_refusal",
+    "walk_smem_bytes",
+]
 
 # Cursor fields: expert, preceding M tiles, expert tiles, first row, row count.
 CURSOR = SimpleNamespace(g=0, m=1, tiles=2, row0=3, rows=4)
@@ -51,10 +59,8 @@ def task_walk(
         A namespace of the launch extents (``m``, the dynamic row count of contiguous rows;
         ``rows_shape``, ``ragged_slab``, ``max_waves``, ``cursor_len``),
         ``walk(layout_or_ends, task_id, cursor)`` (resolves a task to an expert, ``num_groups``
-        marking exhaustion), ``tile_of(task_id, cursor, tile)``,
-        ``walk_to_running(layout_or_ends, task_id, cursor, tile)`` (the first running task a
-        wave apart from ``task_id`` on, resolved and tiled), ``slab_tiles(count)`` (a masked
-        slab's row tiles, its count clamped to ``[0, max_m]``), the task's clamped
+        marking exhaustion), ``tile_of(task_id, cursor, tile)``, ``slab_tiles(count)`` (a
+        masked slab's row tiles, its count clamped to ``[0, max_m]``), the task's clamped
         ``expert(cursor)``, ``first_row(cursor, tile)`` and ``first_col(tile)``,
         ``store_tile(...)``, ``row_tiles_descriptor(...)``, ``expert_rows_descriptor(...)``,
         ``recover_ends(layout, ends, tx, threads)`` and the flag ``recover`` (tight per-row
@@ -156,18 +162,6 @@ def task_walk(
             tile[1] = T.truncdiv(in_group, group_m_tiles)
 
     walk = walk_rows if rows_walk else walk_ends if contiguous else walk_to
-
-    @T.macro
-    def walk_to_running(layout_or_ends, task_id, cursor, tile):
-        """Walk ``cursor`` on to the first task from ``task_id`` on, a wave apart, that runs, and
-        map it to ``tile``; ``cursor`` marks exhaustion when none of the CTA's tasks does."""
-        next_task = T.alloc_var("int32", init=task_id)
-        walk(layout_or_ends, next_task, cursor)
-        while T.And(cursor[cur.g] >= num_groups, next_task + num_sms < max_waves * num_sms):
-            next_task = next_task + num_sms
-            walk(layout_or_ends, next_task, cursor)
-        if cursor[cur.g] < num_groups:
-            tile_of(next_task, cursor, tile)
 
     # Bounds inline in each use, which spares TileLang's guards on the loads they index.
     def expert(cursor):
@@ -327,7 +321,6 @@ def task_walk(
         max_waves=max_waves,
         cursor_len=5 if contiguous else 3,
         walk=walk,
-        walk_to_running=walk_to_running,
         slab_tiles=slab_tiles,
         tile_of=tile_of,
         expert=expert,
@@ -338,6 +331,229 @@ def task_walk(
         row_tiles_descriptor=row_tiles_descriptor,
         expert_rows_descriptor=expert_rows_descriptor,
         recover=recover,
+    )
+
+
+def walk_smem_bytes(num_groups: int, packing: str | None, metadata_kind: str | None) -> int:
+    """Shared memory ``table_task_walk`` keeps beside a kernel's tiles: each expert's tile end,
+    and under tight per-row ids each expert's row end; aligned per-row ids name each row tile's
+    expert and keep none."""
+    if packing == "aligned" and metadata_kind == "per_row":
+        return 0
+    return 4 * num_groups * (2 if packing == "tight" and metadata_kind == "per_row" else 1)
+
+
+def walk_refusal(
+    num_groups: int, packing: str | None, metadata_kind: str | None, room: int
+) -> str | None:
+    """Why ``num_groups`` experts' table-walk state does not fit in the ``room`` bytes of shared
+    memory a kernel leaves beside its default tile on the shallowest ring, or ``None``."""
+    per_expert = walk_smem_bytes(1, packing, metadata_kind)
+    if not per_expert or per_expert * num_groups <= room:
+        return None
+    return (
+        f"keeps task-walk state in shared memory, {per_expert} bytes an expert: at most "
+        f"{room // per_expert} experts fit beside the default tile, got {num_groups}"
+    )
+
+
+def table_task_walk(
+    *,
+    num_groups: int,
+    block_m: int,
+    block_n: int,
+    n: int,
+    num_sms: int,
+    max_m: int | None,
+    packing: str | None,
+    metadata_kind: str | None,
+    alignment: int,
+):
+    """``task_walk``'s tasks and tiles, each task's expert found from shared memory.
+
+    A CTA first sums the experts' row tiles into shared memory, unless aligned per-row ids name
+    each row tile's expert; a walk then passes up to a warp's width of experts a step, and over
+    contiguous rows the CTA runs as many waves as its tasks, so neither grows with experts that
+    hold no rows. The FP8 kernel keeps ``task_walk``: the table's prologue runs between the layout load and
+    its first TMA load, where ``task_walk`` compares one expert's tiles, and costs its decode
+    rows more than the walk saves.
+
+    Takes ``task_walk``'s arguments.
+
+    Returns:
+        ``task_walk``'s launch extents (``m``, ``rows_shape``, ``ragged_slab``,
+        ``cursor_len``), ``tile_of``, ``expert``, ``first_row``, ``first_col``, ``store_tile``
+        and descriptors, with ``prepare(layout, tx, threads)`` (the walk's ``source``, filled
+        by all of the block's ``threads``), ``waves(source, worker, grid)``,
+        ``walk(source, task_id, cursor)`` (walks a zeroed ``cursor`` on to a task's expert,
+        ``num_groups`` marking exhaustion; a cursor's tasks come in increasing order) and
+        ``walk_to_running(source, task_id, cursor, tile)`` (the first running task a wave apart
+        from ``task_id`` on, resolved and tiled).
+    """
+    tasks = task_walk(
+        num_groups=num_groups,
+        block_m=block_m,
+        block_n=block_n,
+        n=n,
+        num_sms=num_sms,
+        max_m=max_m,
+        packing=packing,
+        metadata_kind=metadata_kind,
+        alignment=alignment,
+    )
+    contiguous = packing is not None
+    tight = packing == "tight"
+    rows_walk = metadata_kind == "per_row" and not tight
+    recover = metadata_kind == "per_row" and tight
+    n_tiles = tilelang.cdiv(n, block_n)
+    m_tiles = T.ceildiv(tasks.m, block_m) if contiguous else None
+    runs = -(-num_groups // 32)
+    cur = CURSOR
+
+    def run_of(ends, group):
+        """The first row and the row count of contiguous expert ``group``'s run."""
+        prev_end = T.if_then_else(group > 0, ends[T.max(group - 1, 0)], 0)
+        row0 = prev_end if tight else T.ceildiv(prev_end, alignment) * alignment
+        return row0, T.max(ends[group] - row0, 0)
+
+    def expert_tiles(rows, group):
+        """The row tiles of expert ``group``."""
+        if contiguous:
+            return (run_of(rows, group)[1] + block_m - 1) // block_m
+        return tasks.slab_tiles(rows[group])
+
+    @T.macro
+    def tile_prefix(rows, tile_ends, tx, threads):
+        """``tile_ends[g]``, the row tiles of experts ``0 .. g``: each warp scans runs of a warp's
+        width of experts by shuffles, then each expert adds the totals of the runs before its
+        own."""
+        warps = threads // 32
+        lane = tx % 32
+        tiles = T.alloc_var("int32")
+        for step in T.unroll(-(-runs // warps)):
+            group = (step * warps + tx // 32) * 32 + lane
+            tiles = 0
+            if group < num_groups:
+                tiles = expert_tiles(rows, group)
+            for offset in (1, 2, 4, 8, 16):
+                shifted = T.shfl_up(tiles, offset)
+                if lane >= offset:
+                    tiles = tiles + shifted
+            if group < num_groups:
+                tile_ends[group] = tiles
+        if runs > 1:
+            per_thread = -(-num_groups // threads)
+            held = T.alloc_local((per_thread,), "int32")
+            T.sync_threads()
+            for step in T.unroll(per_thread):
+                group = step * threads + tx
+                held[step] = tile_ends[T.min(group, num_groups - 1)]
+                for run in T.unroll(runs - 1):
+                    if run < group // 32:
+                        held[step] = held[step] + tile_ends[run * 32 + 31]
+            T.sync_threads()
+            for step in T.unroll(per_thread):
+                group = step * threads + tx
+                if group < num_groups:
+                    tile_ends[group] = held[step]
+
+    def prepare(layout, tx, threads):
+        """Fill the shared memory the walk reads and sync the block's ``threads``, every one of
+        which runs this; return the walk's source: the rows' metadata, each expert's end
+        recovered under tight per-row ids, and each expert's tile end unless aligned per-row ids
+        name each row tile's expert."""
+        rows = layout
+        if recover:
+            rows = T.alloc_shared((num_groups,), "int32", scope="shared")
+            tasks.recover_ends(layout, rows, tx, threads)
+            T.sync_threads()
+        tile_ends = None
+        if not rows_walk:
+            tile_ends = T.alloc_shared((num_groups,), "int32", scope="shared")
+            tile_prefix(rows, tile_ends, tx, threads)
+        T.sync_threads()
+        return SimpleNamespace(rows=rows, tile_ends=tile_ends)
+
+    def task_count(source):
+        """The tasks of the call: every row tile of every expert, or of the rows under per-row
+        ids, by every column tile."""
+        if rows_walk:
+            return m_tiles * n_tiles
+        return source.tile_ends[num_groups - 1] * n_tiles
+
+    def waves(source, worker, grid):
+        """The waves CTA ``worker`` of ``grid`` runs, ``worker < grid``: over contiguous rows as
+        many as its tasks; over masked slabs ``max_waves``, the walk marking each task past the
+        last as not running."""
+        if not contiguous:
+            return tasks.max_waves
+        count = T.ceildiv(task_count(source) - worker, grid)
+        return count if rows_walk else T.alloc_var("int32", init=count)
+
+    @T.macro
+    def walk_tile_ends(source, task_id, cursor):
+        """Walk ``cursor`` on to a task's expert, retaining its tile count and, for contiguous
+        rows, its row bounds; ``num_groups`` marks a task past every expert's tiles. Every lane
+        of the warp runs this: each step, lane ``i`` compares the ``i``-th expert's tile end
+        from the cursor on, and every expert ending at or before the task's row tile is passed,
+        up to a warp's width a step."""
+        row_tile = task_id // n_tiles
+        lane = T.get_lane_idx()
+        passed = T.alloc_var("int32", init=32)
+        while T.And(passed == 32, cursor[cur.g] < num_groups):
+            member = cursor[cur.g] + lane
+            end = source.tile_ends[T.min(member, num_groups - 1)]
+            passed = T.Cast(
+                "int32", T.popcount(T.ballot(T.And(member < num_groups, end <= row_tile)))
+            )
+            if passed > 0:
+                cursor[cur.m] = T.shfl_sync(end, passed - 1)
+            cursor[cur.tiles] = T.shfl_sync(end, T.min(passed, 31)) - cursor[cur.m]
+            cursor[cur.g] = cursor[cur.g] + passed
+        if contiguous:
+            running = T.bind(cursor[cur.g] < num_groups)
+            if running:
+                row0, rows = run_of(source.rows, cursor[cur.g])
+                cursor[cur.row0] = row0
+                cursor[cur.rows] = rows
+
+    @T.macro
+    def walk_rows(source, task_id, cursor):
+        """Resolve an aligned row tile from its first expert id, as ``task_walk`` does."""
+        tasks.walk(source.rows, task_id, cursor)
+
+    walk = walk_rows if rows_walk else walk_tile_ends
+
+    @T.macro
+    def walk_to_running(source, task_id, cursor, tile):
+        """Walk ``cursor`` on to the first task from ``task_id`` on, a wave apart, that runs, and
+        map it to ``tile``; ``cursor`` marks exhaustion when none of the CTA's tasks does. Only
+        an aligned row tile of padding is skipped: every other task before the last runs."""
+        next_task = T.alloc_var("int32", init=task_id)
+        walk(source, next_task, cursor)
+        if rows_walk:
+            while T.And(cursor[cur.g] >= num_groups, next_task + num_sms < task_count(source)):
+                next_task = next_task + num_sms
+                walk(source, next_task, cursor)
+        if cursor[cur.g] < num_groups:
+            tasks.tile_of(next_task, cursor, tile)
+
+    return SimpleNamespace(
+        m=tasks.m,
+        rows_shape=tasks.rows_shape,
+        ragged_slab=tasks.ragged_slab,
+        cursor_len=tasks.cursor_len,
+        prepare=prepare,
+        waves=waves,
+        walk=walk,
+        walk_to_running=walk_to_running,
+        tile_of=tasks.tile_of,
+        expert=tasks.expert,
+        first_row=tasks.first_row,
+        first_col=tasks.first_col,
+        store_tile=tasks.store_tile,
+        row_tiles_descriptor=tasks.row_tiles_descriptor,
+        expert_rows_descriptor=tasks.expert_rows_descriptor,
     )
 
 
