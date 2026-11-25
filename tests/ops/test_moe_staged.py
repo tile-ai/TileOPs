@@ -513,6 +513,14 @@ def _check_every_defined_row_written(layout, sizes, activation, some, n, k=512):
 
 
 @pytest.mark.smoke
+def test_grouped_gemm_adds_the_bias_on_skewed_experts_past_the_pingpong_band():
+    """Skewed experts past the ping-pong band with a bias: on H200 the 64x192 ping-pong tile,
+    its last column tile 80 columns, every group's ragged last row tile included."""
+    sizes = [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55]
+    _check_every_defined_row_written(_TIGHT_MOE_GROUPED_GEMM, sizes, None, ("bias",), n=1040, k=768)
+
+
+@pytest.mark.smoke
 def test_grouped_gemm_writes_every_defined_row_of_short_experts_on_pingpong_tiles():
     """16 experts of a few rows, one past a 64-row tile, at the width where H200's selector
     takes 64x256 ping-pong tiles: a CTA's two warp-groups run partly filled tiles of

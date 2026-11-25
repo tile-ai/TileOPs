@@ -1079,23 +1079,19 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
 def int8_w8a8_config(m: int, n: int, k: int, sm_count: int) -> dict:
     """Tile width, ring depth and K step for the 64-row warp-specialized INT8 GEMM.
 
-    - ``block_n``: the narrowest of 32, 64, 96, 128, 160 and 256 whose grid fits one wave.
-      A decode shape is bound by the bytes each SM reads, ``(64 + block_n) * k`` a tile, so
-      the narrowest tile whose grid still has an SM for every tile reads the fewest. The
-      kernel issues 96 and 160 as one WGMMA of their own width.
+    - ``block_n``: the narrowest listed width whose grid fits one wave. A decode shape is
+      bound by the bytes each SM reads, ``(64 + block_n) * k`` a tile, so the narrowest tile
+      whose grid still has an SM for every tile reads the fewest. The kernel issues each
+      width as one WGMMA of its own width.
     - ``block_k``: 256 where ``a`` is exactly one full 64-row tile and the tile is at most
       160 wide, which halves the barrier round trips a K axis takes; 128 otherwise. At
       ``m = 1`` TileLang cannot lay out a one-row 256-byte box.
     - ring depth: the deepest the shared memory holds, at most one stage a K step.
     """
     block_m = 64
-    # FIXME(staged-rollout): the multiples of 16 from 32 to 256 missing here (48, 80, 112, 144,
-    # 176, 192, 208, 224, 240) are left out for a reason that no longer holds.
-    #
-    # Broken invariant: every width the kernel issues as one WGMMA is a candidate.
-    # Why: they were dropped when TileLang split them into narrower WGMMAs.
-    # Cleanup: measure them, then add them or state why they stay out.
-    widths = (32, 64, 96, 128, 160, 256)
+    # The multiples of 16 from 32 to 256, less 48, 144, 176, 208, 224 and 240, each slower
+    # than the next listed width on a call that picks it.
+    widths = (32, 64, 80, 96, 112, 128, 160, 192, 256)
     tiles_m = -(-m // block_m)
     block_n = next((w for w in widths if tiles_m * -(-n // w) <= sm_count), widths[-1])
     block_k = 256 if m == block_m and block_n <= 160 else 128
