@@ -1151,17 +1151,30 @@ def test_gqa_paged_packed_query_lengths(
     _check(GQAPagedFwdOp(**{"is_causal": True, **op_kwargs}), workload, workload.gen_inputs())
 
 
-@pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="GQAPagedFwdOp")
-@pytest.mark.parametrize("batch", [2, 1], ids=["dynamic", "single-request"])
-def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
+@pytest.mark.parametrize(
+    "batch, longest, call",
+    [
+        pytest.param(2, 4096, {"heads": 32, "dim": 128}, marks=pytest.mark.smoke, id="dynamic"),
+        pytest.param(1, 4096, {"heads": 32, "dim": 128}, marks=pytest.mark.full, id="single-request"),
+        pytest.param(
+            1, 4096, {"heads": 24, "dim": 256, "dtype": torch.bfloat16}, marks=pytest.mark.full,
+            id="qwen3.8-27b",
+        ),
+        pytest.param(
+            1, 4128, {"heads": 24, "dim": 256, "dtype": torch.bfloat16}, marks=pytest.mark.full,
+            id="qwen3.8-27b-4128",
+        ),
+    ],
+)  # fmt: skip
+def test_gqa_paged_graph_replay(batch: int, longest: int, call: dict) -> None:
     """Dispatch is static; packed lengths and cache lengths remain replay inputs.
 
     A single request holds the one packing of its one query token, and skips the captured
     cache length, at which its cache lengths would hold their captured values.
     """
-    workload = _decode(batch, 32, 4, [4096, 64][:batch], 128, 64)
+    workload = _decode(batch, heads_kv=4, cache_lens=[longest, 64][:batch], page_size=64, **call)
     inputs = workload.gen_inputs()
     inputs[4][0] = 128  # A mostly empty table must also be safe on the split path.
     workload.cache_lens[0] = 128
@@ -1179,7 +1192,7 @@ def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
         workload.cache_lens[-1] = 63
     v_cache, block_table, page_size = inputs[2], inputs[3][0], inputs[2].shape[1]
     live_values = v_cache.clone()
-    for length in (128, 2048, 63, 0)[2 - batch :]:
+    for length in (128, 2048, longest, 63, 0)[2 - batch :]:
         inputs[4][0] = length
         workload.cache_lens[0] = length
         # Slots past the cache keep stale contents; a non-finite one must not reach the output.

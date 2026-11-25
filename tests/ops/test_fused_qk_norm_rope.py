@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import TestBase
 from tileops.backend import OpNotAvailableError
 from tileops.manifest.primitives import stacked_positions
@@ -218,6 +219,23 @@ def test_fused_qk_norm_rope_mrope(
         mrope_interleaved=True,
     )
     test.check(op, *test.gen_inputs(), runs=lambda *args: fused_qk_norm_rope_result(op, *args))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="FusedQKNormRoPEFwdOp")
+@pytest.mark.smoke
+def test_fused_qk_norm_rope_graph_replay() -> None:
+    """Qwen3.8-27B's decode call, one text token with zero-centered norms and interleaved
+    multimodal RoPE (MRoPE) on part of each head. Every draw repeats its values, so the replay
+    flips them and moves the position by one."""
+    mrope = {"zero_centered": True, "mrope_section": [11, 11, 10], "mrope_interleaved": True}
+    test = FusedQKNormRoPETest(
+        [[17]] * 3, 24, 4, 256, 64, 4096, torch.bfloat16, torch.float32, **mrope
+    )
+    qkv, q_weight, k_weight, cos_sin, positions = test.gen_inputs()
+    inputs = (qkv.flip(-1), q_weight.flip(-1), k_weight.flip(-1), cos_sin.flip(0), positions + 1)
+    op = FusedQKNormRoPEFwdOp(24, 4, **mrope)
+    check_replay(test, op, inputs, result=fused_qk_norm_rope_result)
 
 
 @pytest.mark.parametrize(

@@ -376,47 +376,52 @@ def test_causal_conv1d_update_advances_its_slots_of_a_state_pool() -> None:
     test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
 
 
-@pytest.mark.smoke
+_DILATED = {"D": 100, "W": 4, "L": 12, "P": 4, "dilation": 3, "activation": None}
+
+
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "op_type, workload_type, shape, serving",
+    "op_type, workload_type, weight, row",
     [
         pytest.param(
             CausalConv1dFwdOp,
             CausalConv1dFwdTest,
-            {"Tt": 87, "seq_lens": [2, 85]},
-            ["has_initial_state", "cache_indices"],
-            marks=pytest.mark.cuda_graph(op="CausalConv1dFwdOp"),
+            "float32",
+            {
+                **_DILATED,
+                "Tt": 87,
+                "seq_lens": [2, 85],
+                "some": ["bias", "has_initial_state", "cache_indices"],
+            },
+            marks=[_SMOKE, pytest.mark.cuda_graph(op="CausalConv1dFwdOp")],
             id="prefill",
         ),
         pytest.param(
             CausalConv1dUpdateFwdOp,
             CausalConv1dUpdateFwdTest,
-            {"B": 2},
-            ["conv_state_indices"],
-            marks=pytest.mark.cuda_graph(op="CausalConv1dUpdateFwdOp"),
+            "float32",
+            {**_DILATED, "B": 2, "some": ["bias", "conv_state_indices"]},
+            marks=[_FULL, pytest.mark.cuda_graph(op="CausalConv1dUpdateFwdOp")],
             id="decode",
+        ),
+        pytest.param(
+            CausalConv1dUpdateFwdOp,
+            CausalConv1dUpdateFwdTest,
+            "bfloat16",
+            {"B": 1, "D": 10240, "W": 4, "L": 3},
+            marks=[_FULL, pytest.mark.cuda_graph(op="CausalConv1dUpdateFwdOp")],
+            id="qwen3.8-27b",
         ),
     ],
 )
-def test_causal_conv1d_dilated_graph_replay(op_type, workload_type, shape, serving) -> None:
+def test_causal_conv1d_graph_replay(op_type, workload_type, weight, row) -> None:
     """Replay reads changed tokens, filters and slots at their captured addresses."""
-    call = manifest_call(
-        op_type.__name__,
-        {"T": "bfloat16", "Tw": "float32"},
-        D=100,
-        W=4,
-        L=12,
-        P=4,
-        dilation=3,
-        activation=None,
-        some=["bias", *serving],
-        **shape,
-    )
+    call = manifest_call(op_type.__name__, {"T": "bfloat16", "Tw": weight}, **row)
     test = workload_type(call)
     inputs = test.gen_inputs()
     slots = inputs[6] if op_type is CausalConv1dFwdOp else inputs[4]
-    slots.copy_(slots.roll(1))
+    if slots is not None:
+        slots.copy_(slots.roll(1))
     if op_type is CausalConv1dFwdOp:
         bounds, initial = inputs[3], inputs[5]
         bounds.copy_(bounds[-1] - bounds.flip(0))

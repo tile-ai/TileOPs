@@ -172,6 +172,11 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
                 ("query-heads", RMSNormWithoutWeightTest(64, 512, torch.bfloat16)),
             )
         ),
+        pytest.param(
+            RMSNormTest(1, 5120, torch.bfloat16, zero_centered=True),
+            marks=pytest.mark.full,
+            id="qwen3.8-27b",
+        ),
     ],
 )
 def test_rms_norm_graph_replay(test) -> None:
@@ -596,6 +601,15 @@ def test_fused_add_rms_norm_zero_centered() -> None:
 def test_fused_add_rms_norm_zero_centered_float16() -> None:
     test = FusedAddRMSNormTest(1024, 4096, torch.float16, zero_centered=True)
     test.check(FusedAddRMSNormFwdOp(zero_centered=True), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="FusedAddRMSNormFwdOp")
+@pytest.mark.smoke
+def test_fused_add_rms_norm_graph_replay() -> None:
+    """Qwen3.8-27B's decode call, one zero-centered bfloat16 row."""
+    test = FusedAddRMSNormTest(1, 5120, torch.bfloat16, zero_centered=True)
+    check_replay(test, FusedAddRMSNormFwdOp(zero_centered=True))
 
 
 class FusedAddRMSNormNonContigFixture(FixtureBase):
