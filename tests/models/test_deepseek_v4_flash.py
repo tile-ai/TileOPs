@@ -8,7 +8,8 @@ output and the logits are compared over the prefill and over the decode steps by
 probabilities rounded to bfloat16, as its TileLang kernel rounds them. The long prompt is longer
 than four times the indexer's top-k, so the indexer selects from more entries than it keeps, and
 leaves partial windows that the decode steps close at both compression ratios; the short one closes
-no window, so the decode steps close the first.
+no window, so the decode steps close the first; the third is twice the sliding window, so the
+prefill writes the whole window ring from its first slot.
 """
 
 import dataclasses
@@ -214,7 +215,11 @@ class _Recorded:
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     ("prompt_len", "decode_steps"),
-    [pytest.param(2170, 8, id="long-prompt"), pytest.param(3, 6, id="short-prompt")],
+    [
+        pytest.param(2170, 8, id="long-prompt"),
+        pytest.param(3, 6, id="short-prompt"),
+        pytest.param(256, 2, id="two-windows-prompt"),
+    ],
 )
 def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, decode_steps):
     """Each layer, fed the official model's input to it, against that layer of the official model,
