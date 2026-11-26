@@ -9,6 +9,7 @@ from tests.workload_test_base import TestBase
 from tileops.attention import GatedPoolCompressFwdOp
 from workloads.attention.gated_pool_compress import (
     GatedPoolCompressFwdCall,
+    GatedPoolCompressStridedCall,
     gated_pool_compress_result,
 )
 from workloads.device import run_device
@@ -16,6 +17,10 @@ from workloads.workload_base import manifest_call
 
 
 class GatedPoolCompressFwdTest(GatedPoolCompressFwdCall, TestBase):
+    pass
+
+
+class GatedPoolCompressStridedTest(GatedPoolCompressStridedCall, TestBase):
     pass
 
 
@@ -166,40 +171,6 @@ def test_gated_pool_compress_matches_reference(
     )
 
 
-class _StridedRowsTest(GatedPoolCompressFwdTest):
-    """``kv`` and ``score`` laid out by ``layout``: ``halves``, the column halves of one
-    ``[T_q, 2 * C * D]`` projection, as DeepSeek-V4-Flash's compressor passes them;
-    ``padded``, the leading columns of two tensors whose rows are two elements wider, off a
-    lane's vector; ``broadcast``, one row each repeated over the tokens by a zero stride;
-    ``broadcast-kv``, ``kv`` so repeated and ``score`` the second column half of a
-    ``[T_q, 2 * C * D]`` projection, rows of two strides; ``transposed``, the transposes of
-    ``[C * D, T_q]`` tensors, whose channels lie ``T_q`` elements apart."""
-
-    def __init__(self, call, layout: str) -> None:
-        super().__init__(call)
-        self.layout = layout
-
-    def gen_inputs(self) -> tuple:
-        kv, score, *rest = super().gen_inputs()
-        width = kv.shape[1]
-        if self.layout == "halves":
-            both = torch.cat([kv, score], dim=1)
-            return both[:, :width], both[:, width:], *rest
-        if self.layout == "padded":
-            rows = []
-            for t in (kv, score):
-                wide = torch.zeros(t.shape[0], width + 2, dtype=t.dtype, device=t.device)
-                wide[:, :width] = t
-                rows.append(wide[:, :width])
-            return *rows, *rest
-        if self.layout == "broadcast":
-            return kv[:1].expand_as(kv), score[:1].expand_as(score), *rest
-        if self.layout == "transposed":
-            return kv.t().contiguous().t(), score.t().contiguous().t(), *rest
-        both = torch.cat([kv, score], dim=1)
-        return kv[:1].expand_as(kv), both[:, width:], *rest
-
-
 @pytest.mark.parametrize(
     "dtype, dim, ratio, overlap, seq_lens, positions, layout",
     [
@@ -308,7 +279,7 @@ def test_gated_pool_compress_reads_strided_rows(
     call = _test(
         dtype, dim=dim, ratio=ratio, overlap=overlap, seq_lens=seq_lens, positions=positions
     ).call
-    _check(_StridedRowsTest(call, layout))
+    _check(GatedPoolCompressStridedTest(call, layout))
 
 
 @pytest.mark.smoke
@@ -318,7 +289,7 @@ def test_gated_pool_compress_builds_a_program_for_each_row_stride() -> None:
     call = _test(torch.float32, dim=512, ratio=4, overlap=True, seq_lens=[67], positions=[0]).call
     contiguous = GatedPoolCompressFwdTest(call)
     op = GatedPoolCompressFwdOp(**contiguous.arguments())
-    for test in (contiguous, _StridedRowsTest(call, "halves"), contiguous):
+    for test in (contiguous, GatedPoolCompressStridedTest(call, "halves"), contiguous):
         test.check(op, *test.gen_inputs(), runs=lambda *args: gated_pool_compress_result(op, *args))
 
 
