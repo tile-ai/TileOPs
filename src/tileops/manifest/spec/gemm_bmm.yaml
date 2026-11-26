@@ -12,7 +12,7 @@ BMMFwdOp:
       a: {dtype: T, shape: "[B, M, K]"}
       b: {dtype: T, shape: "[B, K, N]"}
     outputs:
-      d: {dtype: T, shape: "[B, M, N]"}
+      d: {dtype: T, shape: "[B, M, N]", buffer: out}
 
   workloads:
   # Small and large batch counts, decode and prefill.

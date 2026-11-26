@@ -53,13 +53,15 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
             ``"bfloat16"``).
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_m, block_n,
-        block_k, num_stages, threads)`` returns the compiled ``prim_func``.
+        A ``@tilelang.jit`` factory; calling it with ``(block_m, block_n, block_k,
+        num_stages, threads)``, and ``a_strides`` and ``c_strides``, the element strides of
+        ``A`` and ``C`` ending in 1 or empty for contiguous storage, returns the compiled
+        ``prim_func``, which takes ``(a, b, c)``.
     """
     accum_dtype = "float"
 
     @tilelang.jit(
-        out_idx=[-1],
+        out_idx=[],
         pass_configs={"tl.disable_warp_specialized": True},
         compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
@@ -69,7 +71,19 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
         block_k: int = 64,
         num_stages: int = 3,
         threads: int = 128,
+        a_strides: tuple = (),
+        c_strides: tuple = (),
     ) -> Callable:
+        a_param = (
+            T.StridedTensor((batch, m, k), a_strides, dtype)
+            if a_strides
+            else T.Tensor((batch, m, k), dtype)
+        )
+        c_param = (
+            T.StridedTensor((batch, m, n), c_strides, dtype)
+            if c_strides
+            else T.Tensor((batch, m, n), dtype)
+        )
         if (
             (block_m, block_n, block_k, threads) == (16, 64, 64, 64)
             and k == 128
@@ -79,9 +93,9 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
 
             @T.prim_func
             def two_panels(
-                a: T.Tensor((batch, m, k), dtype),
+                a: a_param,
                 b: T.Tensor((batch, k, n), dtype),
-                c: T.Tensor((batch, m, n), dtype),
+                c: c_param,
             ):
                 with T.Kernel(n // block_n, m // block_m, batch, threads=threads) as (bx, by, bz):
                     a0 = T.alloc_shared((block_m, block_k), dtype)
@@ -107,9 +121,9 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
 
         @T.prim_func
         def _bmm_main(
-            a: T.Tensor((batch, m, k), dtype),
+            a: a_param,
             b: T.Tensor((batch, k, n), dtype),
-            c: T.Tensor((batch, m, n), dtype),
+            c: c_param,
         ) -> None:
             with T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), batch, threads=threads) as (
                 bx,
@@ -666,6 +680,11 @@ def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> C
     return _bmm_fp8_transpose_func
 
 
+def _declared_strides(t: torch.Tensor) -> tuple:
+    """The strides a program declares for *t*: none where it is contiguous, else its own."""
+    return () if t.is_contiguous() else t.stride()
+
+
 class BMMKernel(Kernel, BMMFwdInterface):
     """Batched dense GEMM kernel.
 
@@ -761,12 +780,18 @@ class BMMKernel(Kernel, BMMFwdInterface):
             configs.append(default)
         return [c for c in configs if self.k % c["block_k"] == 0]
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return self.program(self._compile)(a, b)
+    def forward(
+        self, a: torch.Tensor, b: torch.Tensor, out: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        if out is None:
+            out = torch.empty(self.batch, self.m, self.n, dtype=self.dtype, device=a.device)
+        self.program(self._compile, _declared_strides(a), _declared_strides(out))(a, b, out)
+        return out
 
-    def _compile(self, cfg: dict) -> Callable:
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)
+    def _compile(self, cfg: dict, a_strides: tuple, c_strides: tuple) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg* for ``a`` and ``out``
+        storage of *a_strides* and *c_strides*."""
+        return self.kernel(**cfg, a_strides=a_strides, c_strides=c_strides)
 
 
 class _PersistentBand(NamedTuple):
@@ -868,10 +893,12 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
             return physical_sms
         return self._full_wave_grid(self._tiles(band, batch, m, n), physical_sms)
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, a: torch.Tensor, b: torch.Tensor, out: torch.Tensor | None = None
+    ) -> torch.Tensor:
         b_nk = b.transpose(-2, -1)
         template = self.program(self._template)
-        out = template(a, b_nk)
+        out = template(a, b_nk, out=out)
         if not self.config:
             # Publish the instantiation the launch ran, whole, so the next generation's
             # template compiles the same one.

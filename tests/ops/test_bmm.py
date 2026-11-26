@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.cuda_graph_contract import check_replay
+from tests.cuda_graph_contract import CapturedGraph, check_replay
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
@@ -9,6 +9,7 @@ from tileops._kernels.gemm import BMMCall
 from tileops.gemm import BMMFP8FwdOp, BMMFwdOp
 from workloads.device import run_device
 from workloads.gemm import BMMFP8Workload, BMMWorkload
+from workloads.numerics import compare_outputs
 
 # Covering the [B,K,N] path is the point of these tests, so the perf hint
 # BMMFP8FwdOp emits for it is expected output, not a signal.
@@ -261,6 +262,99 @@ def test_bmm_pingpong_matches_the_reference(
     test.check(op, *test.gen_inputs())
 
 
+class _BatchStridedBMMTest(BMMTest):
+    """``a`` is the batch-major view of an ``[M, B, K]`` tensor, so its batches lie ``K``
+    elements apart and its rows ``B * K``."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a, b = super().gen_inputs()
+        return a.transpose(0, 1).contiguous().transpose(0, 1), b
+
+
+@pytest.mark.parametrize(
+    "batch, m, n, k, key",
+    [
+        pytest.param(4, 128, 128, 128, "bmm", marks=pytest.mark.smoke, id="two-panels"),
+        pytest.param(
+            16, 512, 512, 1280, "bmm_persistent", marks=pytest.mark.smoke, id="persistent"
+        ),
+        pytest.param(8, 64, 1024, 4096, "bmm", marks=pytest.mark.full, id="deepseek-wo-a-64"),
+        pytest.param(8, 1024, 1024, 1024, "bmm_pingpong", marks=pytest.mark.full, id="pingpong"),
+        pytest.param(
+            3, 1000, 1000, 1024, "bmm_persistent", marks=pytest.mark.full, id="ragged-tiles"
+        ),
+    ],
+)
+def test_bmm_reads_and_writes_batch_strided_views(
+    batch: int, m: int, n: int, k: int, key: str
+) -> None:
+    """DeepSeek-V4-Flash's grouped output projection: ``a`` and ``out`` are the batch-major
+    views of ``[M, B, K]`` and ``[M, B, N]`` tensors, read and written where they lie, the
+    product equal bit for bit to the contiguous call's."""
+    op = BMMFwdOp()
+    call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
+    if key != "bmm" and (call.calibration != "h200" or call.sm_count != 132):
+        pytest.skip("the persistent and ping-pong paths are calibrated on a 132-SM H200")
+    assert op.key_for("bmm", call) == key
+    test = _BatchStridedBMMTest(batch, m, n, k, torch.bfloat16)
+    test.check(op, *test.gen_inputs())
+    a, b = test.gen_inputs()
+    rows = torch.full((m, batch, n), float("nan"), dtype=a.dtype, device=a.device)
+    out = rows.transpose(0, 1)
+    assert op(a, b, out=out) is out
+    assert torch.equal(out, op(a.contiguous(), b))
+
+
+@pytest.mark.parametrize(
+    "batch, m, n, k",
+    [
+        pytest.param(4, 128, 128, 128, marks=pytest.mark.smoke, id="general"),
+        pytest.param(32, 512, 512, 1280, marks=pytest.mark.full, id="persistent-two-waves"),
+    ],
+)
+def test_bmm_takes_operands_of_any_strides(batch: int, m: int, n: int, k: int):
+    """``a`` and ``out`` whose rows lie four elements past their width, 8 bytes, which the
+    general kernel reads and writes where they lie and the persistent one, whose TMA row
+    pitch and asynchronous stores take whole 16-byte steps, through contiguous copies; ``a``
+    of every other element, which the op copies; and ``out`` transposed in its last two axes.
+    Each gives the contiguous call's product."""
+    test = BMMTest(batch, m, n, k, torch.bfloat16)
+    a, b = test.gen_inputs()
+    op = BMMFwdOp()
+    expected = op(a, b)
+    a_rows = torch.zeros(batch, m, k + 4, dtype=a.dtype, device=a.device)
+    a_rows[..., :k] = a
+    out_rows = torch.full((batch, m, n + 4), float("nan"), dtype=a.dtype, device=a.device)
+    out = out_rows[..., :n]
+    assert op(a_rows[..., :k], b, out=out) is out
+    assert torch.equal(out, expected)
+    assert out_rows[..., n:].isnan().all()
+    a_wide = torch.zeros(batch, m, 2 * k, dtype=a.dtype, device=a.device)
+    a_wide[..., ::2] = a
+    out = torch.full((batch, n, m), float("nan"), dtype=a.dtype, device=a.device).mT
+    assert op(a_wide[..., ::2], b, out=out) is out
+    assert torch.equal(out, expected)
+
+
+@pytest.mark.parametrize(
+    "tune",
+    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
+)
+def test_bmm_under_tuning(tune: bool) -> None:
+    """A contiguous call and a batch-strided one on the general kernel, untuned and in tuned
+    mode, where TileLang's tuner first times the kernel's candidate configurations; the
+    persistent and ping-pong kernels have none to tune."""
+    batch, m, n, k = 4, 128, 128, 128
+    op = BMMFwdOp()
+    call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
+    assert op.key_for("bmm", call) == "bmm"
+    if tune:
+        op.request_tune()
+    for test in (BMMTest, _BatchStridedBMMTest):
+        workload = test(batch, m, n, k, torch.bfloat16)
+        workload.check(op, *workload.gen_inputs())
+
+
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="BMMFwdOp")
 @pytest.mark.parametrize(
@@ -281,15 +375,40 @@ def test_bmm_pingpong_matches_the_reference(
             1, 1, 4128 // 4, 64, marks=pytest.mark.full,
             id="deepseek-v4-flash-indexer-logits-4128",
         ),
-        pytest.param(
-            8, 1, 1024, 64 * 512 // 8, marks=pytest.mark.full, id="deepseek-v4-flash-wo-a"
-        ),
     ],
 )  # fmt: skip
 def test_bmm_graph_replay(batch: int, m: int, n: int, k: int) -> None:
     """DeepSeek-V4-Flash's decode-step indexer scores and logits over the compressed entries of
-    max_seq_len 4096 and 4128, and its grouped output projection."""
+    max_seq_len 4096 and 4128."""
     check_replay(BMMTest(batch, m, n, k, torch.bfloat16), BMMFwdOp())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="BMMFwdOp")
+@pytest.mark.parametrize(
+    "batch, m, n, k",
+    [
+        pytest.param(4, 128, 128, 128, marks=pytest.mark.smoke, id="two-panels"),
+        pytest.param(
+            8, 1, 1024, 64 * 512 // 8, marks=pytest.mark.full, id="deepseek-v4-flash-wo-a"
+        ),
+        pytest.param(16, 512, 512, 1280, marks=pytest.mark.full, id="persistent"),
+    ],
+)
+def test_bmm_graph_replay_into_batch_strided_views(batch: int, m: int, n: int, k: int) -> None:
+    """A replay reading ``a`` and writing ``out`` as batch-strided views, as DeepSeek-V4-Flash's
+    decode step calls its grouped output projection: ``a`` the group-major view of the
+    attention output, ``out`` that of the token-major buffer ``wo_b`` reads."""
+    test = _BatchStridedBMMTest(batch, m, n, k, torch.bfloat16)
+    op = BMMFwdOp()
+    a, b = test.gen_inputs()
+    out = torch.empty(m, batch, n, dtype=a.dtype, device=a.device).transpose(0, 1)
+    graph = CapturedGraph((lambda *inputs: op(*inputs, out=out), (a, b)))
+    assert graph.outputs[0] is out
+    fresh = test.gen_inputs()
+    graph.renew(fresh)
+    graph.replay()
+    compare_outputs(out, test.ref_program(*fresh), test.verification(*fresh))
 
 
 class BMMFP8Fixture(FixtureBase):

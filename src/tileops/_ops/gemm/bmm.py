@@ -39,9 +39,11 @@ class BMMFwdOp(Op):
     Shapes are strictly 3D: ``a`` is $[B \\times M \\times K]$, ``b`` is
     $[B \\times K \\times N]$ as in ``torch.bmm``, and ``d`` is $[B \\times M \\times N]$.
     The layout is fixed: the in-tree kernels read only $[B \\times K \\times N]$, so the op
-    takes no transpose flag. A kernel is
-    compiled on first use for each ``(batch, m, n, k, dtype)`` combination and cached.
-    The in-tree kernels need $K$ to be a multiple of 16 and refuse other calls when built.
+    takes no transpose flag. ``a`` and ``out`` may be strided: a batch-strided view, such as
+    the transpose of an $[M \\times B \\times K]$ tensor, is read or written where it lies.
+    Each ``(batch, m, n, k, dtype)``, and each strided layout of ``a`` and ``out`` read or
+    written in place, compiles a kernel on first use, which is cached. The in-tree kernels
+    need $K$ to be a multiple of 16 and refuse other calls when built.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -64,15 +66,20 @@ class BMMFwdOp(Op):
         """
         super().__init__(target=target)
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, a: torch.Tensor, b: torch.Tensor, *, out: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """Multiply the two batches, one GEMM per batch item.
 
         Args:
-            a: Left operand, $[B \\times M \\times K]$.
+            a: Left operand, $[B \\times M \\times K]$; any strides.
             b: Right operand, $[B \\times K \\times N]$.
+            out: $[B \\times M \\times N]$ buffer the product is written to, any strides,
+                or None.
 
         Returns:
-            The product, $[B \\times M \\times N]$, in the dtype of the inputs.
+            The product, $[B \\times M \\times N]$, in the dtype of the inputs: ``out``
+            where given.
 
         Example:
             ```python linenums="1"
@@ -81,13 +88,14 @@ class BMMFwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        a, b = a.contiguous(), b.contiguous()
+        a = a if a.stride(-1) == 1 else a.contiguous()
+        b = b.contiguous()
         batch, m, k = a.shape
         kernel = self.kernel_for(
             "bmm",
             lambda: BMMCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device),
         )
-        return kernel(a, b)
+        return kernel(a, b, out)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

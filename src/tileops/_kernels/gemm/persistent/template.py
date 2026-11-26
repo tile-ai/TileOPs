@@ -3,6 +3,7 @@
 Inputs and output shapes are documented by ``GEMMTemplate``.
 """
 
+import dataclasses
 from collections.abc import Callable
 
 import tilelang
@@ -64,8 +65,11 @@ def _make_prim_func(
     group_starts: bool,
     native_wgmma: bool,
     vector_row_store: bool,
+    a_strides: tuple,
+    c_strides: tuple,
 ):
-    """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
+    """Build the ``@T.prim_func`` for one spec; parameters are the spec's fields, scalars and
+    the stride tuples of a strided batched A or C."""
 
     def _num_1d_blocks_per_group(block_m: int, block_n: int, num_sms: int) -> int:
         """Return the number of M tiles in one L2 swizzle group."""
@@ -175,6 +179,10 @@ def _make_prim_func(
     # [G, N / 2, 2] like B.
     bias_shape = (num_groups, c_cols, 2) if interleaved else (num_groups, n)
     c_shape = (num_groups, m, c_cols) if c_has_group else (m, c_cols)
+    a_param = T.StridedTensor(a_shape, a_strides, dtype) if a_strides else T.Tensor(a_shape, dtype)
+    c_param = (
+        T.StridedTensor(c_shape, c_strides, cd_dtype) if c_strides else T.Tensor(c_shape, cd_dtype)
+    )
     if gtype in PER_ROW_TYPES:
         layout_shape = (m,)
     elif per_group or k_grouped:
@@ -1023,9 +1031,9 @@ def _make_prim_func(
 
         @T.prim_func
         def grouped_gemm(
-            A: T.Tensor(a_shape, dtype),  # type: ignore
+            A: a_param,  # type: ignore
             B: T.Tensor(b_shape, dtype),  # type: ignore
-            C: T.Tensor(c_shape, cd_dtype),  # type: ignore
+            C: c_param,  # type: ignore
             grouped_layout: T.Tensor(layout_shape, "int32"),  # type: ignore
             Bias: T.Tensor(bias_shape, dtype),  # type: ignore
         ):
@@ -1036,9 +1044,9 @@ def _make_prim_func(
 
         @T.prim_func
         def grouped_gemm(
-            A: T.Tensor(a_shape, dtype),  # type: ignore
+            A: a_param,  # type: ignore
             B: T.Tensor(b_shape, dtype),  # type: ignore
-            C: T.Tensor(c_shape, cd_dtype),  # type: ignore
+            C: c_param,  # type: ignore
             grouped_layout: T.Tensor(layout_shape, "int32"),  # type: ignore
         ):
             with T.Kernel(num_sms, threads=threads) as pid:
@@ -1047,16 +1055,16 @@ def _make_prim_func(
     return grouped_gemm
 
 
-# maxsize=None: an entry is one compiled kernel, so evicting it would only
-# force a recompile. The key space is the specs the selector emits, a few
-# hundred layouts per (gemm_type, majors, dtypes, static n and k), plus any
-# explicit config a caller pins.
 @target_cache(maxsize=None)
 def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
     """JIT factory for one ``spec``; ``_grouped_gemm_kernel(spec)()`` compiles it.
 
-    The builder closes over the spec's scalars only, so TileLang's cache key
-    is exactly the template parameter pack.
+    The builder closes over the spec's fields only, scalars and the stride tuples of a
+    strided batched A or C, so TileLang's cache key is exactly the template parameter pack.
+    The cache is unbounded: an entry is one compiled kernel, so evicting it would only force
+    a recompile. Its keys are the specs the selector emits, a few hundred layouts per
+    (gemm_type, majors, dtypes, static n and k), any explicit config a caller pins, and a spec
+    for each strided layout of a batched A or C a caller passes.
     """
     gemm_type = spec.gemm_type.value
     a_k_major = spec.major_a is Major.K
@@ -1079,6 +1087,7 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
     group_starts = spec.group_starts
     native_wgmma = spec.native_wgmma
     vector_row_store = spec.vector_row_store
+    a_strides, c_strides = spec.a_strides, spec.c_strides
     headers = []
     if native_wgmma:
         headers.append("dense_wgmma_helper.h")
@@ -1125,6 +1134,8 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
             group_starts,
             native_wgmma,
             vector_row_store,
+            a_strides,
+            c_strides,
         )
 
     return _func
@@ -1135,7 +1146,11 @@ class GEMMTemplate(Kernel):
 
     ``C = A @ B^T`` per group on bf16 or fp16 operands with fp32 accumulation and
     a ``C`` in the operand dtype or fp32. Majorness is read off the operands'
-    strides; batched operands may use either layout and m-grouped types need a K-major ``A``. Operand shapes per
+    strides; batched operands may use either layout and m-grouped types need a K-major ``A``.
+    A batched ``A`` with one of its last two dims unit-stride, and a batched ``C``, may also
+    lie strided: storage whose last stride is 1 and whose others are whole 16-byte steps, as
+    TMA addresses it, is read and written in place, other storage through a contiguous copy;
+    an ``A`` with neither of its last two dims unit-stride is refused. Operand shapes per
     ``gemm_type`` (logical; an MN-major
     operand is a transposed view):
 
@@ -1376,6 +1391,11 @@ class GEMMTemplate(Kernel):
     ) -> torch.Tensor:
         """Run dense ``C = A @ B^T`` or its grouped/batched forms.
 
+        The kernel takes each operand's physical storage, an MN-major operand's being the
+        transpose of its logical view. That storage must be contiguous, since a dynamic dim
+        hides a stride from TileLang's ABI check, except a batched A's and C's, which may be
+        strided as the class docstring states.
+
         Args:
             a: ``[M, K]``, ``[G, M, K]`` for masked/batched, or ``[M, sum_k]``
                 for K-grouped.
@@ -1383,7 +1403,7 @@ class GEMMTemplate(Kernel):
                 ``[N, sum_k]`` for K-grouped.
             grouped_layout: int32 metadata per the class table; none for dense/batched.
             out: Optional preallocated output in ``cd_dtype``, sharing no byte with a tensor
-                the kernel reads.
+                the kernel reads; contiguous, or strided as the class docstring states.
             bias: Optional ``[G, N]`` bias in ``b``'s row order and dtype; M-grouped only.
         """
         self._require_devices(a=a, b=b, grouped_layout=grouped_layout, out=out, bias=bias)
@@ -1397,12 +1417,12 @@ class GEMMTemplate(Kernel):
             self._check_bias(b, bias)
         desc = self.describe(a, b, bias is not None)
         self._check_layout(desc, grouped_layout)
-        # The kernel takes the physical storage: an MN-major operand's contiguous
-        # tensor is the transpose of its logical view. A dynamic dim hides a stride
-        # from TileLang's ABI check, so require contiguity here.
         a_phys = a if desc.major_a is Major.K else a.transpose(-2, -1)
         b_phys = b if desc.major_b is Major.K else b.transpose(-2, -1)
-        if not a_phys.is_contiguous() or not b_phys.is_contiguous():
+        a_strides = self._declared_strides(a_phys)
+        if a_strides is None and self.gemm_type is GEMMType.BATCHED:
+            a_phys, a_strides = a_phys.contiguous(), ()
+        if a_strides is None or not b_phys.is_contiguous():
             raise ValueError("a and b must be contiguous in their physical (K- or MN-major) layout")
         if grouped_layout is None:
             if self._empty_layout is None or self._empty_layout.device != a.device:
@@ -1413,30 +1433,61 @@ class GEMMTemplate(Kernel):
         cd_dtype = self.output_dtype(a)
         if out is None:
             out = torch.empty(c_shape, dtype=cd_dtype, device=a.device)
+            c_strides = ()
         else:
-            if tuple(out.shape) != c_shape or out.dtype != cd_dtype or not out.is_contiguous():
-                raise ValueError(f"out must be a contiguous {list(c_shape)} {cd_dtype}")
+            c_strides = self._declared_strides(out)
+            if (
+                tuple(out.shape) != c_shape
+                or out.dtype != cd_dtype
+                or (c_strides is None and self.gemm_type is not GEMMType.BATCHED)
+            ):
+                raise ValueError(
+                    f"out must be a {list(c_shape)} {cd_dtype} tensor, contiguous unless the "
+                    "GEMM is batched"
+                )
         if out.numel() == 0:  # no rows or no columns: nothing to launch
             return out
         if desc.k == 0:  # K-grouped with no tokens in any group: every product is zero
             return out.zero_()
+        target = out
+        if c_strides is None:
+            target, c_strides = torch.empty(c_shape, dtype=cd_dtype, device=a.device), ()
         # The selector's tile layout follows the call's description, so it selects the program.
-        fn = self.program(self._compile, desc)
+        fn = self.program(self._compile, desc, a_strides, c_strides)
         if self.activation in INTERLEAVED_ACTIVATIONS:
             # The kernel takes an interleaved B as [.., N / 2, 2, K] and its bias as
             # [.., N / 2, 2].
             b_phys = b_phys.unflatten(-2, (-1, 2))
             bias = None if bias is None else bias.unflatten(-1, (-1, 2))
         if bias is None:
-            fn(a_phys, b_phys, out, grouped_layout)
+            fn(a_phys, b_phys, target, grouped_layout)
         else:
-            fn(a_phys, b_phys, out, grouped_layout, bias)
-        return out
+            fn(a_phys, b_phys, target, grouped_layout, bias)
+        return out if target is out else out.copy_(target)
 
-    def _compile(self, cfg: dict, desc: GEMMDesc) -> Callable:
+    def _declared_strides(self, t: torch.Tensor) -> "tuple[int, ...] | None":
+        """The strides the program declares for the storage *t*: none where it is contiguous,
+        its own where a batched GEMM's TMA addresses them, a unit last stride and the others
+        positive whole 16-byte steps, and ``None`` where neither holds."""
+        if t.is_contiguous():
+            return ()
+        step = 16 // t.element_size()
+        strides = t.stride()
+        if (
+            self.gemm_type is GEMMType.BATCHED
+            and strides[-1] == 1
+            and all(s > 0 and s % step == 0 for s in strides[:-1])
+        ):
+            return strides
+        return None
+
+    def _compile(self, cfg: dict, desc: GEMMDesc, a_strides: tuple, c_strides: tuple) -> Callable:
         """The program of the template instantiation *cfg* pins for *desc*, or the selector
-        picks when *cfg* is empty."""
-        return _grouped_gemm_kernel(self._spec_of(cfg, desc))()
+        picks when *cfg* is empty, over A and C storage of *a_strides* and *c_strides*."""
+        spec = self._spec_of(cfg, desc)
+        if a_strides or c_strides:
+            spec = dataclasses.replace(spec, a_strides=a_strides, c_strides=c_strides)
+        return _grouped_gemm_kernel(spec)()
 
 
 GroupedGEMMTemplate = GEMMTemplate
