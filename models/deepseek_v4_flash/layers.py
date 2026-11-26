@@ -357,7 +357,7 @@ class Attention:
 
         o = ops.attention(q, keys.unsqueeze(2).contiguous(), idx, attn_sink=self.attn_sink)
         ops.rope(o[..., -rd:], rope.cos, rope.neg_sin, seqlen_offsets=step.starts)
-        grouped = o.view(seqlen, self.o_groups, -1).transpose(0, 1).contiguous()
+        grouped = o.view(seqlen, self.o_groups, -1).transpose(0, 1)
         projected = ops.bmm(grouped, self.wo_a)
         projected = projected.transpose(0, 1).reshape(seqlen, self.o_groups * self.o_rank)
         return self.wo_b(ops, projected)
