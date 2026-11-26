@@ -145,10 +145,16 @@ def test_kda_decode_matches_reference(batch: int) -> None:
 
 
 @pytest.mark.smoke
-def test_kda_decode_keeps_a_key_major_state_near_the_fp32_limit_finite() -> None:
-    """The normalized key and query enter each product over the key rows, so a 1e37 key-major
-    state, whose products with the unnormalized rows would pass the FP32 limit, stays finite."""
-    test = KDAFwdTest(4, 1, 4, 128, torch.bfloat16)
+@pytest.mark.parametrize("state_v_first", [False, True], ids=["key-major", "value-major"])
+def test_kda_decode_keeps_a_state_near_the_fp32_limit_finite(state_v_first: bool) -> None:
+    """A 1e37 state, whose sums over the unnormalized rows pass the FP32 limit, gives a finite
+    output and state in either layout, as the reference does."""
+    flags = {"use_qk_l2norm_in_kernel": True, "state_v_first": state_v_first}
+    call = manifest_call(
+        "KDAFwdOp", {"T": "bfloat16"}, some=["initial_state"], B=4, S=1, H=4, HV=4, K=128,
+        V=128, **flags,
+    )  # fmt: skip
+    test = KDAFwdCallTest(call)
     q, k, v, g, beta, state, *rest = test.gen_inputs()
     q.fill_(1.0)
     k.fill_(1.0)
@@ -156,7 +162,24 @@ def test_kda_decode_keeps_a_key_major_state_near_the_fp32_limit_finite() -> None
     g.zero_()
     beta.fill_(0.5)
     state.fill_(1e37)
-    test.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), q, k, v, g, beta, state, *rest)
+    test.check(KDAFwdOp(**flags), q, k, v, g, beta, state, *rest)
+
+
+@pytest.mark.smoke
+def test_kda_value_major_decode_keeps_a_scaled_output_finite_without_l2norm() -> None:
+    """Without l2norm, a 1e37 state whose sum over the raw query row passes the FP32 limit,
+    while the scaled sum does not, gives a finite output, as the reference does."""
+    call = manifest_call(
+        "KDAFwdOp", {"T": "bfloat16"}, some=["initial_state"], B=4, S=1, H=4, HV=4, K=128,
+        V=128, state_v_first=True,
+    )  # fmt: skip
+    test = KDAFwdCallTest(call)
+    q, k, v, g, beta, state, *rest = test.gen_inputs()
+    q.fill_(1.0)
+    k.zero_()
+    g.zero_()
+    state.fill_(1e37)
+    test.check(KDAFwdOp(state_v_first=True), q, k, v, g, beta, state, *rest)
 
 
 @pytest.mark.smoke
