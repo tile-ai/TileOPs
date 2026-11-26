@@ -880,8 +880,8 @@ _COLUMN_FLAGS = {"use_qk_l2norm_in_kernel": True, "use_beta_sigmoid_in_kernel": 
             marks=(pytest.mark.smoke, pytest.mark.sm90), id="prefill",
         ),
         pytest.param(
-            {"B": 1, "S": 200}, _QWEN_FLAGS, "unaligned", marks=pytest.mark.full,
-            id="unpooled-prefill",
+            {"B": 1, "S": 200}, _QWEN_FLAGS, "unaligned",
+            marks=(pytest.mark.full, pytest.mark.sm89), id="unpooled-prefill",
         ),
         pytest.param(
             {"B": 1, "S": 200, "P": 4}, _QWEN_FLAGS, "padded-heads",
@@ -908,11 +908,11 @@ def test_gdn_copies_projection_columns_it_cannot_read_in_place(
     reference all the same.
 
     The cells: a pooled SM90 prefill whose tokens lie 10244 elements apart, off 16-byte
-    alignment; an unpooled prefill of such tokens, which SM89 serves with the chunk prefill
-    and SM90 with the dense prefill; a pooled prefill with q's heads 136 elements apart, so a
-    token's heads are not packed, and one with an expanded v, its tokens zero elements
-    apart; a decode step of three pooled sequences, which the dense decode reads packed; and
-    a decode step of two sequences in batch order, which the column decode reads packed.
+    alignment; on SM89, an unpooled prefill of such tokens, which the chunk prefill copies at
+    its entry; a pooled prefill with q's heads 136 elements apart, so a token's heads are not
+    packed, and one with an expanded v, its tokens zero elements apart; a decode step of
+    three pooled sequences, which the dense decode reads packed; and a decode step of two
+    sequences in batch order, which the column decode reads packed.
     """
     torch.manual_seed(42)
     row = {"H": 16, "HV": 48, "K": 128, "V": 128, **row}
