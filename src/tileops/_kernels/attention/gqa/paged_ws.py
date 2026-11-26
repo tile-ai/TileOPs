@@ -57,7 +57,7 @@ def claim_work(Sched, lane, work):
 def _gqa_paged_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
     dtype, block_n, stages, num_ctas, window_left, window_right, has_sinks, split_small,
-    split_min_tiles, flat, tile_heads, rope_cols=0, rope_rows=0,
+    split_min_tiles, rope_cols=0, rope_rows=0, *, flat, tile_heads,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, consumer warpgroups run it.
 
@@ -1103,10 +1103,10 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             has_sinks,
             split_small,
             cls._SPLIT_MIN_TILES,
-            cls._flat(heads, heads_kv),
-            cls._tile_heads(heads, heads_kv),
             rope_cols,
             rope_rows,
+            flat=cls._flat(heads, heads_kv),
+            tile_heads=cls._tile_heads(heads, heads_kv),
         )
 
     @classmethod

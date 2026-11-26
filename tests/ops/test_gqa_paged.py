@@ -966,7 +966,9 @@ def test_gqa_paged_warp_specialized_head_groups(
     into head groups, each its own work item over its KV head's key tiles. Ragged requests end
     inside a page whose later rows are NaN; a request of a few tokens over a long cache splits
     its key tiles between the warpgroups; keys past each request's first query position carry
-    large values, so a row that sees a later key, or takes another head's sink, stands out."""
+    large values, so a row that sees a later key, or takes another head's sink, stands out.
+    The op selects this kernel for each call on the 132 multiprocessors of an H200, and the
+    kernel runs on the test's device whatever that device would select."""
     from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 
     workload = _paged(
@@ -975,42 +977,50 @@ def test_gqa_paged_warp_specialized_head_groups(
     op_kwargs = {k: v for k, v in semantics.items() if k not in ("has_sinks", "cache_dtype")}
     op = GQAPagedFwdOp(is_causal=True, **op_kwargs)
     inputs = _causal_canary(workload, _poisoned_inputs(workload))
-    assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)
-    _check(op, workload, inputs)
+    q, k_cache, v_cache, block_table, cache_seqlens, cu_seqlens_q, *scales, cos, sin, sinks = inputs
+    call = op._paged_call(q, k_cache, block_table, scales[1], cos, sinks)
+    assert op.key_for("gqa_paged", dataclasses.replace(call, sm_count=132)) == "gqa_paged_ws_kernel"
+    _, build = GQAPagedFwdWSKernel.entry_for(call)
+    pools = k_cache.flatten(0, 1), v_cache.flatten(0, 1)
+    output = build()(q, *pools, cache_seqlens, block_table, cu_seqlens_q, *scales, cos, sin, sinks)
+    TestBase.check(workload, op, *inputs, runs=lambda *args: output)
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
-@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("heads", "heads_kv", "dim", "batch", "q_len", "rope", "kernel_name"),
+    ("heads", "heads_kv", "dim", "batch", "q_len", "rope", "served"),
     [
-        pytest.param(24, 4, 128, 9, 22, False, "GQAPagedFwdWSKernel", id="one-wave-a-third-full"),
-        pytest.param(28, 4, 128, 4, 40, False, "GQAPagedFwdKernel", id="under-a-third-full"),
-        pytest.param(24, 4, 128, 8, 22, False, "GQAPagedFwdKernel", id="partly-idle-wave"),
-        pytest.param(24, 4, 128, 22, 22, False, "GQAPagedFwdKernel", id="thin-tiles-two-waves"),
-        pytest.param(24, 4, 128, 22, 44, False, "GQAPagedFwdWSKernel", id="fuller-tiles-two-waves"),
-        pytest.param(24, 4, 256, 8, 22, False, "GQAPagedFwdWSKernel", id="dim-256-one-wave"),
-        pytest.param(24, 4, 256, 7, 24, False, "GQAPagedFwdKernel", id="dim-256-partial-wave"),
-        pytest.param(24, 4, 128, 6, 22, True, "GQAPagedFwdWSKernel", id="rope-half-a-wave"),
-        pytest.param(24, 4, 128, 5, 22, True, "GQAPagedFwdKernel", id="rope-under-half-a-wave"),
-        pytest.param(24, 4, 64, 11, 22, False, "GQAPagedFwdKernel", id="dimension-64"),
+        pytest.param(24, 4, 128, 9, 22, False, True, id="one-wave-a-third-full"),
+        pytest.param(28, 4, 128, 4, 40, False, False, id="under-a-third-full"),
+        pytest.param(24, 4, 128, 8, 22, False, False, id="partly-idle-wave"),
+        pytest.param(24, 4, 128, 22, 22, False, False, id="thin-tiles-two-waves"),
+        pytest.param(24, 4, 128, 22, 44, False, True, id="fuller-tiles-two-waves"),
+        pytest.param(24, 4, 256, 8, 22, False, True, id="dim-256-one-wave"),
+        pytest.param(24, 4, 256, 7, 24, False, False, id="dim-256-partial-wave"),
+        pytest.param(24, 4, 128, 6, 22, True, True, id="rope-half-a-wave"),
+        pytest.param(24, 4, 128, 5, 22, True, False, id="rope-under-half-a-wave"),
+        pytest.param(24, 4, 64, 11, 22, False, False, id="dimension-64"),
     ],
 )
 def test_gqa_paged_split_group_dispatch(
-    heads: int, heads_kv: int, dim: int, batch: int, q_len: int, rope: bool, kernel_name: str
+    heads: int, heads_kv: int, dim: int, batch: int, q_len: int, rope: bool, served: bool
 ) -> None:
-    """A split query group takes the warp-specialized kernel only where its head-group tiles
-    are full enough and fill the waves of multiprocessors they take, and not at dimension 64;
-    otherwise the key splits of ``GQAPagedFwdKernel`` keep it. The packings sit on either side
-    of those bounds for a device of 132 multiprocessors, as the H200 has."""
+    """The warp-specialized kernel serves a split query group only where its head-group tiles
+    are full enough and fill the waves of multiprocessors they take, and not at dimension 64,
+    leaving the rest to the key splits of ``GQAPagedFwdKernel``. The packings sit on either
+    side of those bounds for the 132 multiprocessors of an H200, which the call states."""
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
     semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64} if rope else {}
-    workload = _paged(
-        [q_len] * batch, [512] * batch, 64, torch.bfloat16, heads=heads, heads_kv=heads_kv,
-        dim=dim, **semantics,
-    )  # fmt: skip
-    op = GQAPagedFwdOp(is_causal=True, **semantics)
-    assert type(_kernel(op, workload.gen_inputs())).__name__ == kernel_name
+    meta = torch.device("meta")
+    q = torch.empty(batch * q_len, heads, dim, dtype=torch.bfloat16, device=meta)
+    k_pages = torch.empty(batch * 8, 64, heads_kv, dim, dtype=torch.bfloat16, device=meta)
+    table = torch.empty(batch, 8, dtype=torch.int32, device=meta)
+    rope_cos = torch.empty(512, 32, device=meta) if rope else None
+    call = GQAPagedFwdOp(is_causal=True, **semantics)._paged_call(q, k_pages, table, None, rope_cos)
+    call = dataclasses.replace(call, sm_count=132)
+    refusal = GQAPagedFwdWSKernel.refusal(call)
+    assert (refusal is None) == served, refusal
 
 
 @pytest.mark.sm90
