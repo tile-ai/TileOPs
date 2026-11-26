@@ -28,12 +28,17 @@ def _paged_cache_write_kernel(
     physical_tokens: int,
     in_dtype: str,
     cache_dtype: str,
+    k_stride: int,
+    v_stride: int,
 ) -> Callable:
+    """The builder of the program writing rows of *row_width* elements from k and v rows
+    *k_stride* and *v_stride* elements apart. A vector also divides both strides, so every
+    load of every row stays aligned to its width."""
     quantized = cache_dtype == "float8_e4m3fn"
     # A thread loads one 16-byte vector of an input row, or the widest smaller power of
     # two that divides the row, so no vector straddles two rows.
     in_bytes = DataType(in_dtype).bits // 8
-    vec = math.gcd(row_width, VECTOR_ACCESS_BYTES // in_bytes)
+    vec = math.gcd(row_width, VECTOR_ACCESS_BYTES // in_bytes, k_stride, v_stride)
     lanes = row_width // vec
     # A vector of 4, 8 or 16 bytes moves through PTX vector loads and predicated stores;
     # a narrower one keeps element loads and a branched store.
@@ -107,8 +112,8 @@ def _paged_cache_write_kernel(
 
             @T.prim_func
             def _paged_cache_write_fp8(
-                K: T.Tensor((tokens, row_width), in_dtype),  # type: ignore
-                V: T.Tensor((tokens, row_width), in_dtype),  # type: ignore
+                K: T.StridedTensor((tokens, row_width), (k_stride, 1), in_dtype),  # type: ignore
+                V: T.StridedTensor((tokens, row_width), (v_stride, 1), in_dtype),  # type: ignore
                 KPages: T.Tensor((physical_tokens, row_width), cache_dtype),  # type: ignore
                 VPages: T.Tensor((physical_tokens, row_width), cache_dtype),  # type: ignore
                 Slots: T.Tensor((tokens,), "int64"),  # type: ignore
@@ -121,8 +126,8 @@ def _paged_cache_write_kernel(
 
         @T.prim_func
         def _paged_cache_write_16bit(
-            K: T.Tensor((tokens, row_width), in_dtype),  # type: ignore
-            V: T.Tensor((tokens, row_width), in_dtype),  # type: ignore
+            K: T.StridedTensor((tokens, row_width), (k_stride, 1), in_dtype),  # type: ignore
+            V: T.StridedTensor((tokens, row_width), (v_stride, 1), in_dtype),  # type: ignore
             KPages: T.Tensor((physical_tokens, row_width), cache_dtype),  # type: ignore
             VPages: T.Tensor((physical_tokens, row_width), cache_dtype),  # type: ignore
             Slots: T.Tensor((tokens,), "int64"),  # type: ignore
@@ -135,7 +140,11 @@ def _paged_cache_write_kernel(
 
 
 class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
-    """One vector of a token's key and value rows per thread, in one pass over the tokens."""
+    """One vector of a token's key and value rows per thread, in one pass over the tokens.
+
+    A token's key and value rows are read where they lie when each is contiguous, so the
+    columns of a fused projection need no copy; a program serves one pair of row strides.
+    """
 
     @classmethod
     def entry_for(cls, call: PagedKVCacheWriteCall) -> Entry:
@@ -183,6 +192,8 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
             self.physical_tokens,
             self.dtype_str,
             self.dtype_to_str(cache_dtype),
+            self.row_width,
+            self.row_width,
         )
         self.init_config(config)
 
@@ -232,17 +243,39 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
             return
         # A slot indexes the page pool as one flat run of rows, so the kernel reads the
         # four-dimensional tensors the manifest declares as rows of row_width elements.
+        (k_rows, k_stride), (v_rows, v_stride) = self._rows(k), self._rows(v)
         args = [
-            k.view(k.shape[0], self.row_width),
-            v.view(v.shape[0], self.row_width),
+            k_rows,
+            v_rows,
             k_pages.view(self.physical_tokens, self.row_width),
             v_pages.view(self.physical_tokens, self.row_width),
             slot_mapping,
         ]
         if self.quantized:
             args += [k_scale, v_scale]
-        self.program(self._compile)(*args)
+        self.program(self._compile, k_stride, v_stride)(*args)
 
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(**cfg)
+    def _rows(self, t: torch.Tensor) -> tuple[torch.Tensor, int]:
+        """*t*, ``(tokens, heads_kv, dim)``, as rows of ``row_width`` elements, and the
+        elements between two of them: a view where each token's row is contiguous, as the
+        columns of a fused projection are, else a contiguous copy. A single row's stride is
+        no layout, and it reads as packed."""
+        try:
+            rows = t.view(t.shape[0], self.row_width)
+        except RuntimeError:
+            rows = t.contiguous().view(t.shape[0], self.row_width)
+        if rows.stride(1) != 1:
+            return rows.contiguous(), self.row_width
+        return rows, rows.stride(0) if rows.shape[0] > 1 else self.row_width
+
+    def _compile(self, cfg: dict, k_stride: int, v_stride: int):
+        """The program ``forward`` launches, compiled from *cfg* for rows of k and of v
+        *k_stride* and *v_stride* elements apart."""
+        return _paged_cache_write_kernel(
+            self.row_width,
+            self.physical_tokens,
+            self.dtype_str,
+            self.dtype_to_str(self.cache_dtype),
+            k_stride,
+            v_stride,
+        )(**cfg)

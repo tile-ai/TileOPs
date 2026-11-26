@@ -1029,7 +1029,7 @@ class PagedKVCacheWriteFwdInterface(KernelInterface):
 
         Args:
             k: ``(tokens, call.heads_kv, call.dim)`` in ``call.dtype`` on ``call.device``,
-                contiguous. The row count is dynamic; a call of no tokens writes nothing.
+                of any layout. The row count is dynamic; a call of no tokens writes nothing.
             v: The same rows of values.
             k_pages: ``(call.num_pages, call.page_size, call.heads_kv, call.dim)`` in
                 ``call.cache_dtype``, contiguous, written in place. Of the tokens with a
