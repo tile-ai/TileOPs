@@ -386,18 +386,24 @@ class BMMFwdInterface(KernelInterface):
     request = BMMCall
 
     @abstractmethod
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Multiply the two batches; nothing is written in place.
+    def forward(
+        self, a: torch.Tensor, b: torch.Tensor, out: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Multiply the two batches into ``out``, or into a new tensor.
 
-        Both operands are contiguous on ``call.device`` in ``call.dtype``, which is
-        ``float16`` or ``bfloat16``; the contraction accumulates in ``float32``.
+        Both operands are on ``call.device`` in ``call.dtype``, which is ``float16`` or
+        ``bfloat16``; the contraction accumulates in ``float32``. ``b`` is contiguous; ``a``
+        has a unit stride along its last axis and any other strides; ``out`` has any strides.
 
         Args:
             a: ``(call.batch, call.m, call.k)``.
             b: ``(call.batch, call.k, call.n)``.
+            out: ``(call.batch, call.m, call.n)`` in ``call.dtype``, sharing no byte with
+                ``a`` or ``b``, or None.
 
         Returns:
-            A new ``(call.batch, call.m, call.n)`` tensor in ``call.dtype``.
+            ``out`` holding the product, or a new contiguous
+            ``(call.batch, call.m, call.n)`` tensor in ``call.dtype`` without one.
         """
 
 

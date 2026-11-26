@@ -186,7 +186,9 @@ class GroupedGEMMSpec:
 
     Every field is a compile-time parameter of the kernel; two specs that
     differ in any field are two distinct compiled kernels. ``shape_m`` /
-    ``shape_n`` / ``shape_k`` are ``0`` for a dimension left dynamic.
+    ``shape_n`` / ``shape_k`` are ``0`` for a dimension left dynamic. ``a_strides`` and
+    ``c_strides`` are the element strides of a batched GEMM's A and C storage, ending in 1;
+    empty for contiguous storage.
     """
 
     gemm_type: GEMMType
@@ -221,6 +223,8 @@ class GroupedGEMMSpec:
     # A tight psum ``grouped_layout`` holds each group's start row rather than its end; the
     # last group ends at ``m``.
     group_starts: bool = False
+    a_strides: tuple[int, ...] = ()
+    c_strides: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.activation not in ACTIVATIONS:
