@@ -48,7 +48,10 @@ class DeepseekV4FlashForCausalLM(CausalLM):
             compressed = layer.attn.ratio != 0
             if compressed not in ropes:
                 base = config.compress_rope_theta if compressed else config.rope_theta
-                ropes[compressed] = RoPETable(config, base, compressed, max_seq_len, self.device)
+                ratios = self._ratios if compressed else ()
+                ropes[compressed] = RoPETable(
+                    config, base, compressed, max_seq_len, self.device, ratios
+                )
             layer.rope = ropes[compressed]
         self.embed: torch.Tensor
         self.norm: torch.Tensor
