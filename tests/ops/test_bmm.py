@@ -267,30 +267,38 @@ def test_bmm_pingpong_matches_the_reference(
 
 
 @pytest.mark.parametrize(
-    "batch, m, n, k, key",
+    "tune, batch, m, n, k, key",
     [
-        pytest.param(4, 128, 128, 128, "bmm", marks=pytest.mark.smoke, id="two-panels"),
+        pytest.param(False, 4, 128, 128, 128, "bmm", marks=pytest.mark.smoke, id="two-panels"),
         pytest.param(
-            16, 512, 512, 1280, "bmm_persistent", marks=pytest.mark.smoke, id="persistent"
+            False, 16, 512, 512, 1280, "bmm_persistent", marks=pytest.mark.smoke, id="persistent"
         ),
-        pytest.param(8, 64, 1024, 4096, "bmm", marks=pytest.mark.full, id="deepseek-wo-a-64"),
-        pytest.param(8, 1024, 1024, 1024, "bmm_pingpong", marks=pytest.mark.full, id="pingpong"),
+        pytest.param(True, 4, 128, 128, 128, "bmm", marks=pytest.mark.full, id="two-panels-tuned"),
         pytest.param(
-            3, 1000, 1000, 1024, "bmm_persistent", marks=pytest.mark.full, id="ragged-tiles"
+            False, 8, 64, 1024, 4096, "bmm", marks=pytest.mark.full, id="deepseek-wo-a-64"
+        ),
+        pytest.param(
+            False, 8, 1024, 1024, 1024, "bmm_pingpong", marks=pytest.mark.full, id="pingpong"
+        ),
+        pytest.param(
+            False, 3, 1000, 1000, 1024, "bmm_persistent", marks=pytest.mark.full, id="ragged-tiles"
         ),
     ],
 )
 def test_bmm_reads_and_writes_batch_strided_views(
-    batch: int, m: int, n: int, k: int, key: str
+    tune: bool, batch: int, m: int, n: int, k: int, key: str
 ) -> None:
     """DeepSeek-V4-Flash's grouped output projection: ``a`` and ``out`` are the batch-major
     views of ``[M, B, K]`` and ``[M, B, N]`` tensors, read and written where they lie, the
-    product equal bit for bit to the contiguous call's."""
+    product equal bit for bit to the contiguous call's; with ``tune``, on an op in tuned mode,
+    where TileLang's tuner first times the general kernel's candidate configurations."""
     op = BMMFwdOp()
     call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
     if key != "bmm" and (call.calibration != "h200" or call.sm_count != 132):
         pytest.skip("the persistent and ping-pong paths are calibrated on a 132-SM H200")
     assert op.key_for("bmm", call) == key
+    if tune:
+        op.request_tune()
     test = BMMBatchStridedTest(batch, m, n, k, torch.bfloat16)
     test.check(op, *test.gen_inputs())
     a, b = test.gen_inputs()
@@ -329,25 +337,6 @@ def test_bmm_takes_operands_of_any_strides(batch: int, m: int, n: int, k: int):
     out = torch.full((batch, n, m), float("nan"), dtype=a.dtype, device=a.device).mT
     assert op(a_wide[..., ::2], b, out=out) is out
     assert torch.equal(out, expected)
-
-
-@pytest.mark.parametrize(
-    "tune",
-    [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
-)
-def test_bmm_under_tuning(tune: bool) -> None:
-    """A contiguous call and a batch-strided one on the general kernel, untuned and in tuned
-    mode, where TileLang's tuner first times the kernel's candidate configurations; the
-    persistent and ping-pong kernels have none to tune."""
-    batch, m, n, k = 4, 128, 128, 128
-    op = BMMFwdOp()
-    call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
-    assert op.key_for("bmm", call) == "bmm"
-    if tune:
-        op.request_tune()
-    for test in (BMMTest, BMMBatchStridedTest):
-        workload = test(batch, m, n, k, torch.bfloat16)
-        workload.check(op, *workload.gen_inputs())
 
 
 @pytest.mark.sm90
