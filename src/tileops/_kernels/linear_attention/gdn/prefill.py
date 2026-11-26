@@ -68,8 +68,8 @@ def _token_stride(tensor: torch.Tensor) -> int | None:
 class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     """SM90 BTHD inference prefill: the one-kernel prefill, or the block solve and the
     partitioned walk. ``q``, ``k``, ``v``, ``g`` and ``beta`` are read in place when each
-    token's row is packed and their tokens lie a whole number of 16-byte vectors apart; the
-    one-kernel prefill reads packed copies."""
+    token's row is packed and their tokens lie a whole number of 16-byte vectors apart and
+    at least a row; the one-kernel prefill reads packed copies."""
 
     supported_archs = [90]
 
