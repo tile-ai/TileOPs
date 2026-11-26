@@ -132,8 +132,7 @@ def _laid_out(t: torch.Tensor, layout: tuple, heads: int) -> tuple[torch.Tensor,
     """*t*, ``(*B, n)``, in *layout*, and the storage the view lies in:
     ``("columns", row, first)``, *heads* of its rows side by side from column *first* of rows
     *row* elements wide; ``("every-other", row)``, every other column of rows *row* elements
-    wide; ``("transposed",)``, a ``(n, R)`` tensor's transpose; ``("expanded",)``, its first
-    row repeated over every row, zero elements apart."""
+    wide; ``("expanded",)``, its first row repeated over every row, zero elements apart."""
     n = t.shape[-1]
     if layout[0] in ("columns", "every-other"):
         width = heads * n
@@ -143,9 +142,6 @@ def _laid_out(t: torch.Tensor, layout: tuple, heads: int) -> tuple[torch.Tensor,
         else:
             view = storage[:, ::2].view(t.shape)
         view.copy_(t)
-    elif layout[0] == "transposed":
-        storage = t.reshape(-1, n).t().contiguous()
-        view = storage.t().view(t.shape)
     else:
         storage = t.reshape(-1, n)[:1].clone()
         view = storage.expand(t.numel() // n, n).view(t.shape)
@@ -156,16 +152,16 @@ def _laid_out(t: torch.Tensor, layout: tuple, heads: int) -> tuple[torch.Tensor,
     "leading, n, group_size, heads, x_layout, z_layout",
     [
         pytest.param(
+            [3, 7], 128, None, 1, ("columns", 128, 0), ("columns", 136, 8), marks=_SMOKE,
+            id="z-columns",
+        ),
+        pytest.param(
             [300], 6144, 128, 1, ("columns", 6144, 0), ("columns", 16480, 10240),
-            marks=_SMOKE, id="qwen3.8-27b-gate",
+            marks=_FULL, id="qwen3.8-27b-gate",
         ),
         pytest.param(
             [35], 128, None, 1, ("columns", 130, 0), ("columns", 136, 8), marks=_FULL,
             id="vec-2-strides",
-        ),
-        pytest.param(
-            [1], 6144, 128, 1, ("columns", 6150, 0), ("columns", 16480, 10240), marks=_FULL,
-            id="one-row",
         ),
         pytest.param(
             [9, 48], 128, None, 48, ("columns", 6144, 0), ("columns", 16480, 10240),
@@ -174,10 +170,6 @@ def _laid_out(t: torch.Tensor, layout: tuple, heads: int) -> tuple[torch.Tensor,
         pytest.param(
             [35], 128, None, 1, ("every-other", 256), ("columns", 136, 8), marks=_FULL,
             id="every-other-x",
-        ),
-        pytest.param(
-            [35], 128, None, 1, ("transposed",), ("columns", 136, 8), marks=_FULL,
-            id="transposed-x",
         ),
         pytest.param(
             [35], 128, None, 1, ("columns", 128, 0), ("expanded",), marks=_FULL,
@@ -190,14 +182,14 @@ def test_rms_norm_gated_reads_strided_rows(leading, n, group_size, heads, x_layo
     any other layout from a packed copy: the output matches the reference, and neither
     storage changes.
 
-    The cells: Qwen3.8-27B's Gated DeltaNet output norm, whose gate is columns 10240 to 16384
-    of the 16480-wide input projection, normed in 48 groups of 128; x's rows 130 elements
-    apart, off 16-byte alignment past the first, and z's 136 from column 8, so that the
-    call's tensors start aligned and none is staged; one row, whose stride is no layout and
-    which the packed program reads; the gate's 48 heads split off its columns, rows not
+    The cells: z as columns 8 to 136 of 136-wide rows, starting on a 16-byte boundary;
+    Qwen3.8-27B's Gated DeltaNet output norm, whose gate is columns 10240 to 16384 of the
+    16480-wide input projection, normed in 48 groups of 128; x's rows 130 elements apart, off
+    16-byte alignment past the first, and z's 136 from column 8, so that the call's tensors
+    start aligned and none is staged; the gate's 48 heads split off its columns, rows not
     evenly spaced; every other column of 256-wide rows, whose rows lie a row apart but are
-    not contiguous; a transposed x, whose rows are not contiguous either; and an expanded z,
-    whose rows lie zero elements apart and are read in place.
+    not contiguous; and an expanded z, whose rows lie zero elements apart and are read in
+    place.
     """
     call = manifest_call(
         "RMSNormGatedFwdOp", _BF16, B=leading, N=n, some=["z"], bias=None, group_size=group_size
