@@ -24,7 +24,7 @@ from tileops._kernels.attention.gqa.paged_rope_prepare import _gqa_paged_rope_pr
 from tileops._kernels.attention.online_softmax import make_apply_softcap, make_sink_scale
 from tileops._kernels.attention.stream_counter import stream_counter
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
-from tileops._kernels.constants import LOG2E, WGMMA_ROWS
+from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES, WGMMA_ROWS
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 
@@ -57,7 +57,7 @@ def claim_work(Sched, lane, work):
 def _gqa_paged_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
     dtype, block_n, stages, num_ctas, window_left, window_right, has_sinks, split_small,
-    split_min_tiles, rope_cols=0, rope_rows=0, *, flat, tile_heads,
+    split_min_tiles, rope_cols=0, rope_rows=0, *, flat, tile_heads, q_stride,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, consumer warpgroups run it.
 
@@ -68,7 +68,9 @@ def _gqa_paged_ws_kernel(
     every query head of the one KV head: row q0 + r is query (q0 + r) // tile_heads of head
     (q0 + r) % tile_heads.
 
-    With *rope_cols*, a key's first rope_cols channels come from KR (rope_rows rows a request)."""
+    With *rope_cols*, a key's first rope_cols channels come from KR (rope_rows rows a request).
+    With *q_stride*, Q's tokens lie *q_stride* elements apart, each token's heads packed, as
+    the columns of a wider projection do; Q is packed without it."""
     has_window = window_left >= 0 or window_right >= 0
     meta_count = 8 if has_window else 7
     use_softcap = softcap > 0.0
@@ -666,6 +668,11 @@ def _gqa_paged_ws_kernel(
 
     # Flat rows read Q and write O as (total_q * heads, dim) matrices.
     q_shape = [total_q * heads, dim] if flat else [total_q, heads, dim]
+    q_type = (
+        T.Tensor(q_shape, dtype)
+        if q_stride is None
+        else T.StridedTensor(q_shape, (q_stride, dim, 1), dtype)
+    )
 
     @T.macro
     def cta(Q, K, V, KR, cache_seqlens, page_table, CuQ, O, Sched, Sinks):
@@ -746,7 +753,7 @@ def _gqa_paged_ws_kernel(
 
         @T.prim_func
         def main(
-            Q: T.Tensor(q_shape, dtype),
+            Q: q_type,
             K: T.Tensor([pool_rows, heads_kv, dim], dtype),
             V: T.Tensor([pool_rows, heads_kv, dim], dtype),
             KR: T.Tensor([rotated_rows, heads_kv, rope_cols], dtype),
@@ -764,7 +771,7 @@ def _gqa_paged_ws_kernel(
 
         @T.prim_func
         def main(
-            Q: T.Tensor(q_shape, dtype),
+            Q: q_type,
             K: T.Tensor([pool_rows, heads_kv, dim], dtype),
             V: T.Tensor([pool_rows, heads_kv, dim], dtype),
             cache_seqlens: T.Tensor([batch], "int32"),
@@ -1077,9 +1084,12 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         rope_cols: int = 0,
         rope_rows: int = 0,
         key_pages: int | None = None,
+        *,
+        q_stride: int | None,
     ):
         """The persistent program for one geometry over a table *max_pages_per_req* wide;
-        *key_pages* bounds a request's key pages (the table width by default)."""
+        *key_pages* bounds a request's key pages (the table width by default), and
+        *q_stride* is the elements between two tokens of Q, ``None`` where it is packed."""
         split_small = cls.splits_small(
             heads, heads_kv, dim, page_size, key_pages or max_pages_per_req, window_size_left,
             window_size_right, has_sinks,
@@ -1107,6 +1117,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             rope_rows,
             flat=cls._flat(heads, heads_kv),
             tile_heads=cls._tile_heads(heads, heads_kv),
+            q_stride=q_stride,
         )
 
     @classmethod
@@ -1157,7 +1168,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         """Run *program* over the pools, claiming work from the stream's counter in
         *counters*: a new output of q's shape and dtype. *k_rotated* feeds a rope_cols build."""
         heads, dim = q.shape[1], q.shape[2]
-        out = torch.empty_like(q)
+        out = q.new_empty(q.shape)
         if cls._flat(heads, k_pool.shape[1]):
             q, out = q.view(-1, dim), out.view(-1, dim)
         rotated = () if k_rotated is None else (k_rotated,)
@@ -1178,10 +1189,11 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     @property
     def kernel(self):
         """The persistent program, which profiling reads."""
-        return self.program(self._compile)[0]
+        return self.program(self._compile, None)[0]
 
-    def _compile(self, cfg: dict) -> tuple:
-        """The persistent program, and the RoPE preparation ahead of it or ``None``."""
+    def _compile(self, cfg: dict, q_stride: int | None) -> tuple:
+        """The persistent program over Q's tokens *q_stride* elements apart (``None`` where
+        they lie back to back), and the RoPE preparation ahead of it or ``None``."""
         # Whole rotated pages replace the cache and its table; rotated leading channels keep both.
         attention = self.build_program(
             self.batch,
@@ -1201,6 +1213,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self._rope_cols,
             self._rope_pages * self.page_size if self._rope_cols else 0,
             self._rope_pages,
+            q_stride=q_stride,
         )
         if not self.fuse_rope:
             return CompiledProgram(attention), None
@@ -1227,6 +1240,24 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         )
         return CompiledProgram(attention), CompiledProgram(prepare)
 
+    def _query_rows(self, q: torch.Tensor) -> tuple[torch.Tensor, int | None]:
+        """*q* and the elements between two of its tokens, ``None`` where they lie back to
+        back. Q is read in place when each token's heads are packed and the tokens lie apart
+        by a whole number of 16-byte vectors, at least a row, as the columns of a wider
+        projection do; RoPE preparation and flat rows read a packed copy, as does any other
+        layout."""
+        row = self.heads * self.dim
+        stride = q.stride(0) if q.shape[0] > 1 else row
+        if (
+            self.fuse_rope
+            or self._flat(self.heads, self.heads_kv)
+            or not q[0].is_contiguous()
+            or stride < row
+            or stride * q.element_size() % VECTOR_ACCESS_BYTES
+        ):
+            return q.contiguous(), None
+        return q, None if stride == row else stride
+
     def forward(
         self,
         q: torch.Tensor,
@@ -1244,7 +1275,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     ) -> torch.Tensor:
         if q.shape[0] == 0:
             return torch.empty(q.shape, dtype=self.dtype, device=q.device)
-        attention, prepare = self.program(self._compile)
+        q, q_stride = self._query_rows(q)
+        attention, prepare = self.program(self._compile, q_stride)
         if prepare is not None:
             q, k_rotated, v_rotated = prepare(
                 q,

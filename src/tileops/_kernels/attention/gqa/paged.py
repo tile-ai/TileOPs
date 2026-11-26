@@ -1220,6 +1220,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         rope_sin: torch.Tensor | None = None,
         sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        q = q.contiguous()
         sinks = sinks if self.has_sinks else self._unused_sinks
         rope_cos = rope_cos if self.fuse_rope else self._unused_rope
         rope_sin = rope_sin if self.fuse_rope else self._unused_rope

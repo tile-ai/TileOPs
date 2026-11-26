@@ -987,6 +987,112 @@ def test_gqa_paged_warp_specialized_head_groups(
     TestBase.check(workload, op, *inputs, runs=lambda *args: output)
 
 
+def _laid_out_queries(q: torch.Tensor, layout: tuple) -> tuple[torch.Tensor, torch.Tensor]:
+    """*q*, ``(tokens, heads, dim)``, in *layout*, and the storage the view lies in:
+    ``("columns", row)``, the leading columns of rows *row* elements wide;
+    ``("padded-heads", pad)``, each head followed by *pad* elements of another tensor;
+    ``("expanded",)``, its first token repeated over every token."""
+    tokens, heads, dim = q.shape
+    if layout[0] == "expanded":
+        storage = q[:1].clone()
+        return storage.expand(q.shape), storage
+    if layout[0] == "columns":
+        storage = torch.randn(tokens, layout[1], dtype=q.dtype, device=q.device)
+        view = storage[:, : heads * dim].view(q.shape)
+    else:
+        storage = torch.randn(tokens, heads, dim + layout[1], dtype=q.dtype, device=q.device)
+        view = storage[:, :, :dim]
+    view.copy_(q)
+    return view, storage
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("heads", "heads_kv", "dim", "dtype", "q_lens", "cache_lens", "semantics", "layout", "key"),
+    [
+        pytest.param(
+            24, 4, 256, torch.bfloat16, [300, 3, 0, 130], [900, 1500, 64, 131], {},
+            ("columns", 8192), "gqa_paged_ws_kernel", marks=pytest.mark.smoke, id="qwen3.8-27b",
+        ),
+        pytest.param(
+            32, 4, 128, torch.float16, [1], [4096], {}, ("padded-heads", 8),
+            "gqa_decode_paged_bs1_kernel", marks=pytest.mark.smoke, id="batch-1-decode",
+        ),
+        pytest.param(
+            24, 4, 256, torch.bfloat16, [600, 5], [700, 40], {}, ("columns", 6148),
+            "gqa_paged_ws_kernel", marks=pytest.mark.full, id="unaligned-tokens",
+        ),
+        pytest.param(
+            24, 4, 256, torch.bfloat16, [600, 5], [700, 40], {}, ("padded-heads", 8),
+            "gqa_paged_ws_kernel", marks=pytest.mark.full, id="padded-heads",
+        ),
+        pytest.param(
+            24, 4, 256, torch.bfloat16, [600, 5], [700, 40], {}, ("expanded",),
+            "gqa_paged_ws_kernel", marks=pytest.mark.full, id="expanded",
+        ),
+        pytest.param(
+            24, 4, 256, torch.bfloat16, [600, 5], [700, 40],
+            {"pos_encoding_mode": "rope", "rotary_dim": 64}, ("columns", 8192),
+            "gqa_paged_ws_kernel", marks=pytest.mark.full, id="rope",
+        ),
+        pytest.param(
+            32, 1, 256, torch.bfloat16, [400, 3], [500, 30], {}, ("columns", 8448),
+            "gqa_paged_ws_kernel", marks=pytest.mark.full, id="flat-rows",
+        ),
+        pytest.param(
+            24, 4, 256, torch.bfloat16, [1] * 8, [300] * 8, {}, ("columns", 8192),
+            "gqa_paged_varlen_kernel", marks=pytest.mark.full, id="split-scan",
+        ),
+        pytest.param(
+            32, 8, 128, torch.bfloat16, [1] * 4, [300] * 4, {"cache_dtype": torch.float8_e4m3fn},
+            ("columns", 8192), "gqa_paged_fp8_decode_kernel", marks=pytest.mark.full,
+            id="fp8-decode",
+        ),
+        pytest.param(
+            32, 8, 128, torch.bfloat16, [600, 5], [700, 40], {"cache_dtype": torch.float8_e4m3fn},
+            ("columns", 8192), "gqa_paged_fp8_ws_kernel", marks=pytest.mark.full,
+            id="fp8-prefill",
+        ),
+    ],
+)  # fmt: skip
+def test_gqa_paged_reads_projection_columns(
+    heads, heads_kv, dim, dtype, q_lens, cache_lens, semantics, layout, key
+) -> None:
+    """q whose tokens' heads are packed and lie a whole number of 16-byte vectors apart is
+    read in place by the warp-specialized kernel; every other layout, the RoPE preparation,
+    flat rows and the other kernels read a packed copy: the output matches the reference,
+    and q's storage stays as it was.
+
+    The cells: four ragged requests whose q is the first 6144 columns of Qwen3.8-27B's fused
+    8192-wide q/k/v projection, among them short requests over long caches, whose key tiles
+    split between the warpgroups, which load their queries directly rather than by TMA;
+    tokens 6148 elements apart, off 16-byte alignment; heads 264
+    elements apart, so a token's heads are not packed; an expanded q, its tokens zero
+    elements apart; RoPE preparation, which rotates a packed copy; flat rows over one KV
+    head; decode tokens of many requests, through the split scan; one request's decode
+    token with its heads 136 elements apart, through the batch-1 decode kernel; and an FP8
+    cache's decode and prefill, through the FP8 kernels.
+    """
+    workload = _paged(
+        q_lens, cache_lens, 64, dtype, heads=heads, heads_kv=heads_kv, dim=dim, **semantics
+    )
+    op = GQAPagedFwdOp(is_causal=True, **{k: v for k, v in semantics.items() if k != "cache_dtype"})
+    q, *rest = _poisoned_inputs(workload)
+    q, storage = _laid_out_queries(q, layout)
+    before = storage.clone()
+    k_cache, block_table, cos, sinks = rest[0], rest[2], rest[8], rest[10]
+    call = op._paged_call(q, k_cache, block_table, rest[6], cos, sinks)
+    assert op.key_for("gqa_paged", dataclasses.replace(call, sm_count=132)) == key
+
+    def run(*args):
+        out = op(*args)
+        assert torch.equal(storage, before)
+        return out
+
+    TestBase.check(workload, op, q, *rest, runs=run)
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("heads", "heads_kv", "dim", "batch", "q_len", "rope", "served"),

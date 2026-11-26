@@ -208,7 +208,11 @@ class GQAPagedFwdOp(Op):
         """Run read-only paged GQA over packed Q and rank-4 KV pages.
 
         Args:
-            q: Packed queries [total_q, heads, dim].
+            q: Packed queries [total_q, heads, dim]. The Hopper warp-specialized prefill
+                reads them in place when each token's heads are packed and the tokens lie a
+                whole number of 16-byte vectors apart, at least a row, as the columns of a
+                fused projection do. Its RoPE preparation, flat rows over one KV head, FP8
+                caches and the split-scan and decode kernels read a packed copy.
             k_cache: Key pages [num_pages, page_size, heads_kv, dim].
             v_cache: Value pages [num_pages, page_size, heads_kv, dim].
             block_table: Physical page of each request's logical page [batch, pages].
@@ -226,8 +230,8 @@ class GQAPagedFwdOp(Op):
         """
         # The kernels read the pool as ``[num_pages * page_size, heads_kv, dim]``, a view of
         # the pages.
-        q, k_cache, v_cache, block_table, cache_seqlens, cu_seqlens_q = (
-            t.contiguous() for t in (q, k_cache, v_cache, block_table, cache_seqlens, cu_seqlens_q)
+        k_cache, v_cache, block_table, cache_seqlens, cu_seqlens_q = (
+            t.contiguous() for t in (k_cache, v_cache, block_table, cache_seqlens, cu_seqlens_q)
         )
         inputs = (
             q,

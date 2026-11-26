@@ -252,6 +252,7 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         sinks: torch.Tensor | None = None,
     ):
         """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
+        Q = Q.contiguous()
         capacity = self.max_pages_per_req * self.page_size
         if capacity < self._MIN_CTX:
             q = Q.view(self.batch, 1, self.heads, self.dim)
