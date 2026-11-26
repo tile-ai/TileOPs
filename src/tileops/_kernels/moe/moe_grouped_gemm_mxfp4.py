@@ -37,7 +37,13 @@ from tileops._kernels.moe.call_spec import (
     MGroupedGEMMMXFP4Call,
     MGroupedGEMMMXFP4FwdInterface,
 )
-from tileops._kernels.moe.grouped_tasks import CURSOR, GroupedGEMMConfigMixin, task_walk
+from tileops._kernels.moe.grouped_tasks import (
+    CURSOR,
+    GroupedGEMMConfigMixin,
+    table_task_walk,
+    walk_refusal,
+    walk_smem_bytes,
+)
 from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = ["MoEGroupedGEMMMXFP4Kernel", "MoEGroupedGEMMMXFP4SharedDecodeKernel"]
@@ -233,7 +239,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
         )
         if reason is not None:
             raise ValueError(f"cannot build the MXFP4 grouped GEMM for {config}: {reason}")
-        tasks = task_walk(
+        tasks = table_task_walk(
             num_groups=num_groups,
             block_m=block_m,
             block_n=block_n,
@@ -244,10 +250,9 @@ def _moe_grouped_gemm_mxfp4_kernel(
             metadata_kind=metadata_kind,
             alignment=alignment,
         )
-        m, rows_shape, max_waves = tasks.m, tasks.rows_shape, tasks.max_waves
-        ragged_slab = tasks.ragged_slab
+        m, rows_shape, ragged_slab = tasks.m, tasks.rows_shape, tasks.ragged_slab
         row_tiles_descriptor = tasks.row_tiles_descriptor
-        walk, tile_of, recover = tasks.walk, tasks.tile_of, tasks.recover
+        walk, tile_of = tasks.walk, tasks.tile_of
         # One math warp-group per 64 weight rows, each over every row (token) of the tile.
         math_threads = block_n // WGMMA_ROWS * WARPGROUP_THREADS
         math_warps = _math_warps(block_n)
@@ -719,10 +724,8 @@ def _moe_grouped_gemm_mxfp4_kernel(
                     cursor[i] = 0
                     ahead[i] = 0
                 tx = T.get_thread_binding()
-                if recover:
-                    ends = T.alloc_shared((num_groups,), "int32", scope="shared")
-                    tasks.recover_ends(layout, ends, tx, math_threads + WARPGROUP_THREADS)
-                T.sync_threads()
+                source = tasks.prepare(layout, tx, math_threads + WARPGROUP_THREADS)
+                waves = tasks.waves(source, pid, num_sms)
                 # [m, N] or [E, max_m, N], so the store of a run's or slab's last rows is
                 # clipped at its end.
                 output_desc = row_tiles_descriptor(
@@ -781,7 +784,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                             table_desc if table_box else None,
                             token_desc if table_box else None,
                             token_codes,
-                            ends if recover else layout,
+                            source,
                             B_scale,
                             ahead,
                             ahead_tile,
@@ -791,10 +794,10 @@ def _moe_grouped_gemm_mxfp4_kernel(
                             check_empty,
                             0,
                         )
-                    for wave in T.serial(max_waves):
+                    for wave in T.serial(waves):
                         task_id = num_sms * wave + pid
                         # Skipped tasks must advance neither role's barriers.
-                        walk(ends if recover else layout, task_id, cursor)
+                        walk(source, task_id, cursor)
                         # Bound to a variable, as in copy_check.
                         running = T.bind(T.And(cursor[cur_g] < num_groups, producer_warp == 0))
                         if running:
@@ -808,7 +811,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                     table_desc if table_box else None,
                                     token_desc if table_box else None,
                                     token_codes,
-                                    ends if recover else layout,
+                                    source,
                                     B_scale,
                                     ahead,
                                     ahead_tile,
@@ -891,9 +894,9 @@ def _moe_grouped_gemm_mxfp4_kernel(
                         "uint32", "tileops::moe_fp8_wgmma_desc_lo", T.address_of(a_shared[0, 0, 0])
                     )
 
-                    for wave in T.serial(max_waves):
+                    for wave in T.serial(waves):
                         task_id = num_sms * wave + pid
-                        walk(ends if recover else layout, task_id, cursor)
+                        walk(source, task_id, cursor)
                         # Bound to a variable, as in copy_check.
                         running = T.bind(cursor[cur_g] < num_groups)
                         if running:
@@ -1141,7 +1144,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
         # The decode warps fill decoded stages as far ahead as the token rows are loaded, so
         # step kk's decoded stage and token slot share an index and a phase.
         decoded_stages = num_stages
-        tasks = task_walk(
+        tasks = table_task_walk(
             num_groups=num_groups,
             block_m=block_m,
             block_n=block_n,
@@ -1152,7 +1155,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             metadata_kind=metadata_kind,
             alignment=alignment,
         )
-        m, max_waves = tasks.m, tasks.max_waves
+        m = tasks.m
         row_tiles_descriptor = tasks.row_tiles_descriptor
         walk, tile_of = tasks.walk, tasks.tile_of
         copy_code_tables = _code_tables_copy(
@@ -1203,7 +1206,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
         def copy_tables(
             table_desc,
             token_desc,
-            layout,
+            source,
             ahead,
             ahead_tile,
             task_id,
@@ -1216,7 +1219,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             """Copy the weight and token codes of the first task from ``task_id`` on, a wave
             apart, that runs (``ahead`` walked on to it) into tables ``index % 2`` once both
             consuming roles have released them."""
-            tasks.walk_to_running(layout, task_id, ahead, ahead_tile)
+            tasks.walk_to_running(source, task_id, ahead, ahead_tile)
             if ahead[cur_g] < num_groups:
                 copy_code_tables(
                     table_desc,
@@ -1381,7 +1384,8 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                     cursor[i] = 0
                     ahead[i] = 0
                 tx = T.get_thread_binding()
-                T.sync_threads()
+                source = tasks.prepare(layout, tx, math_threads + producer_threads)
+                waves = tasks.waves(source, pid, num_sms)
                 output_desc = row_tiles_descriptor(
                     TMA_DTYPE_BFLOAT16,
                     C,
@@ -1434,7 +1438,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                         copy_tables(
                             table_desc,
                             token_desc,
-                            layout,
+                            source,
                             ahead,
                             ahead_tile,
                             pid,
@@ -1444,9 +1448,9 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                             token_codes,
                             0,
                         )
-                        for wave in T.serial(max_waves):
+                        for wave in T.serial(waves):
                             task_id = num_sms * wave + pid
-                            walk(layout, task_id, cursor)
+                            walk(source, task_id, cursor)
                             if cursor[cur_g] < num_groups:
                                 tile_of(task_id, cursor, tile)
                                 g = T.meta_var(tasks.expert(cursor))
@@ -1487,7 +1491,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                         copy_tables(
                                             table_desc,
                                             token_desc,
-                                            layout,
+                                            source,
                                             ahead,
                                             ahead_tile,
                                             task_id + num_sms,
@@ -1500,9 +1504,9 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                 task_index = task_index + 1
                     else:
                         decode_tx = producer_tx - 32
-                        for wave in T.serial(max_waves):
+                        for wave in T.serial(waves):
                             task_id = num_sms * wave + pid
-                            walk(layout, task_id, cursor)
+                            walk(source, task_id, cursor)
                             if cursor[cur_g] < num_groups:
                                 tile_of(task_id, cursor, tile)
                                 n_start = T.meta_var(tasks.first_col(tile))
@@ -1596,9 +1600,9 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                     )
                     # Lanes 4i..4i+3 of warp w hold accumulator rows w*16 + i and w*16 + i + 8.
                     acc_row0 = (tx // 32) * 16 + (tx % 32) // 4
-                    for wave in T.serial(max_waves):
+                    for wave in T.serial(waves):
                         task_id = num_sms * wave + pid
-                        walk(layout, task_id, cursor)
+                        walk(source, task_id, cursor)
                         if cursor[cur_g] < num_groups:
                             tile_of(task_id, cursor, tile)
                             buf = task_index % 2
@@ -1737,7 +1741,8 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
     @classmethod
     def refusal(cls, call: MGroupedGEMMMXFP4Call) -> str | None:
-        """The layout, dtypes, extents and scale grids the kernel instantiates."""
+        """The layout, dtypes, extents and scale grids the kernel instantiates, and
+        ``walk_refusal``."""
         if call.scale_dtype not in (torch.float8_e8m0fnu, torch.float32):
             return f"reads float8_e8m0fnu or float32 scales, got {call.scale_dtype}"
         if call.k <= 0 or call.k % QUANT_SCALE_BLOCK:
@@ -1747,24 +1752,19 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
             return f"needs N a multiple of 8, got N = {call.n}"
         if call.packing == "aligned" and call.alignment % min(cls._BLOCK_M):
             return f"tiles aligned runs in {cls._BLOCK_M}-row tiles, got alignment {call.alignment}"
-        # Tight per-row ids keep every expert's row end in shared memory, beside at least the
-        # default tile of an unaligned contiguous call on the shallowest ring.
-        if call.packing == "tight" and call.metadata_kind == "per_row":
-            scale_bytes = 1 if call.scale_dtype == torch.float8_e8m0fnu else 4
-            least = _smem_bytes(
-                *cls._CONTIGUOUS_TILE,
-                min(cls._NUM_STAGES),
-                scale_bytes,
-                call.k // QUANT_SCALE_BLOCK,
-                False,
-            )
-            room = call.smem_budget - cls._SMEM_HEADROOM - least
-            if 4 * call.num_groups > room:
-                return (
-                    f"keeps each expert's row end in shared memory: {call.num_groups} experts "
-                    f"take {4 * call.num_groups} bytes, past the {room} beside the default tile"
-                )
-        return super().refusal(call)
+        return cls.walk_refusal(call) or super().refusal(call)
+
+    @classmethod
+    def walk_refusal(cls, call: MGroupedGEMMMXFP4Call) -> str | None:
+        """Experts whose task-walk state does not fit in shared memory beside the call's default
+        tile on the shallowest ring, its scales a stage at a time."""
+        scale_bytes = 1 if call.scale_dtype == torch.float8_e8m0fnu else 4
+        block_m, block_n = cls.default_tile(call)
+        least = _smem_bytes(
+            block_m, block_n, min(cls._NUM_STAGES), scale_bytes, call.k // QUANT_SCALE_BLOCK, False
+        )
+        room = call.smem_budget - cls._SMEM_HEADROOM - least
+        return walk_refusal(call.num_groups, call.packing, call.metadata_kind, room)
 
     def __init__(self, call: MGroupedGEMMMXFP4Call) -> None:
         device_index = call.device_index
@@ -1773,10 +1773,11 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         self.scale_bytes = 1 if call.scale_dtype == torch.float8_e8m0fnu else 4
         self.scale_k = call.k // QUANT_SCALE_BLOCK
         self.sm_count = self.build_target.sm_count
-        self.smem_limit = self.build_target.smem_budget - self._SMEM_HEADROOM
-        # Tight per-row metadata keeps every expert's recovered end in shared memory.
-        if call.packing == "tight" and call.metadata_kind == "per_row":
-            self.smem_limit -= 4 * call.num_groups
+        self.smem_limit = (
+            self.build_target.smem_budget
+            - self._SMEM_HEADROOM
+            - walk_smem_bytes(call.num_groups, call.packing, call.metadata_kind)
+        )
         self.alignment = call.alignment if call.packing == "aligned" else 0
         self.kernel = _moe_grouped_gemm_mxfp4_kernel(
             call.num_groups,
@@ -1814,27 +1815,8 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
     @property
     def default_config(self) -> dict:
-        # Every row tile converts its weights once, so aligned runs take the tallest tile
-        # their alignment allows. A masked slab's tile is the narrowest holding twice an
-        # expert's mean rows; float32 scales' sub-block path spills in four warp-groups.
         # Four warp-groups take a 4-deep ring.
-        call = self.call
-        if call.kind == "contiguous":
-            unaligned_m, block_n = self._CONTIGUOUS_TILE
-            block_m = (
-                max(m for m in self._BLOCK_M if self.alignment % m == 0)
-                if self.alignment
-                else unaligned_m
-            )
-        else:
-            rows = 2 * call.max_m / call.num_groups
-            block_m = next((m for m in self._BLOCK_M if m >= rows), max(self._BLOCK_M))
-            groups, sms = call.num_groups, self.sm_count
-            occupied = groups * (1 - (1 - 1 / groups) ** call.max_m)
-            widths = (192, 256) if self.scale_bytes == 1 else (192,)
-            block_n = min(
-                widths, key=lambda w: math.ceil(occupied * -(-call.n // w) / sms - 1e-9) * w
-            )
+        block_m, block_n = self.default_tile(self.call)
         stages = self._stages_for(block_m, block_n)
         shallow = [s for s in stages if s <= 4]
         return {
@@ -1843,6 +1825,27 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
             "num_stages": max(shallow) if block_n == 256 and shallow else max(stages),
             "num_sms": self._balanced_sms(block_m, block_n),
         }
+
+    @classmethod
+    def default_tile(cls, call: MGroupedGEMMMXFP4Call) -> tuple[int, int]:
+        """The default config's ``(block_m, block_n)``. Every row tile converts its weights once,
+        so aligned runs take the tallest tile their alignment allows. A masked slab's tile is
+        the narrowest holding twice an expert's mean rows; float32 scales' sub-block path spills
+        in four warp-groups."""
+        if call.kind == "contiguous":
+            unaligned_m, block_n = cls._CONTIGUOUS_TILE
+            alignment = call.alignment if call.packing == "aligned" else 0
+            block_m = (
+                max(m for m in cls._BLOCK_M if alignment % m == 0) if alignment else unaligned_m
+            )
+            return block_m, block_n
+        rows = 2 * call.max_m / call.num_groups
+        block_m = next((m for m in cls._BLOCK_M if m >= rows), max(cls._BLOCK_M))
+        groups, sms = call.num_groups, call.sm_count
+        occupied = groups * (1 - (1 - 1 / groups) ** call.max_m)
+        widths = (192, 256) if call.scale_dtype == torch.float8_e8m0fnu else (192,)
+        block_n = min(widths, key=lambda w: math.ceil(occupied * -(-call.n // w) / sms - 1e-9) * w)
+        return block_m, block_n
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -2003,12 +2006,25 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
             return f"takes {least} bytes of shared memory on the shallowest ring, past {room}"
         return super().refusal(call)
 
+    @classmethod
+    def walk_refusal(cls, call: MGroupedGEMMMXFP4Call) -> str | None:
+        """Experts whose task-walk state does not fit in shared memory beside the decode tile on
+        the shallowest ring."""
+        scale_k = call.k // QUANT_SCALE_BLOCK
+        least = _shared_decode_smem_bytes(cls._TILE_COLUMNS, min(cls._NUM_STAGES), scale_k)
+        room = call.smem_budget - cls._SMEM_HEADROOM - least
+        return walk_refusal(call.num_groups, call.packing, call.metadata_kind, room)
+
     def __init__(self, call: MGroupedGEMMMXFP4Call) -> None:
         Kernel.__init__(self, device_index=call.device_index)
         self.call = call
         self.scale_k = call.k // QUANT_SCALE_BLOCK
         self.sm_count = self.build_target.sm_count
-        self.smem_limit = self.build_target.smem_budget - self._SMEM_HEADROOM
+        self.smem_limit = (
+            self.build_target.smem_budget
+            - self._SMEM_HEADROOM
+            - walk_smem_bytes(call.num_groups, call.packing, call.metadata_kind)
+        )
         self.alignment = call.alignment
         self.kernel = _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             call.num_groups,
