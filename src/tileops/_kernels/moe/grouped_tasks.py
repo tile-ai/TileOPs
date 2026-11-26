@@ -426,9 +426,11 @@ def table_task_walk(
     def tile_prefix(rows, tile_ends, tx, threads):
         """``tile_ends[g]``, the row tiles of experts ``0 .. g``: each warp scans runs of a warp's
         width of experts by shuffles, then each expert adds the totals of the runs before its
-        own. Past a warp's width of runs, one warp first scans the runs' totals the same way, a
-        warp's width of runs a step, so each run's last expert holds its sum, and every other
-        expert adds the sum of the last expert of the run before its own."""
+        own. With no more experts than threads, each thread loads those totals for its expert;
+        with more, one warp first scans the runs' totals the same way, a warp's width of runs a
+        step, so each run's last expert holds its sum, and every other expert adds the sum of
+        the last expert of the run before its own. The loads cost less than the scan's dependent
+        shuffles on most calls while a thread holds one expert, and more once it holds two."""
         warps = threads // 32
         lane = tx % 32
         tiles = T.alloc_var("int32")
@@ -443,7 +445,7 @@ def table_task_walk(
                     tiles = tiles + shifted
             if group < num_groups:
                 tile_ends[group] = tiles
-        if runs > 32:
+        if num_groups > threads:
             carry = T.alloc_var("int32", init=0)
             T.sync_threads()
             if tx < 32:
@@ -464,20 +466,15 @@ def table_task_walk(
                 if T.And(T.And(group >= 32, lane != 31), group < num_groups - 1):
                     tile_ends[group] = tile_ends[group] + tile_ends[group // 32 * 32 - 1]
         elif runs > 1:
-            per_thread = -(-num_groups // threads)
-            held = T.alloc_local((per_thread,), "int32")
+            held = T.alloc_local((1,), "int32")
             T.sync_threads()
-            for step in T.unroll(per_thread):
-                group = step * threads + tx
-                held[step] = tile_ends[T.min(group, num_groups - 1)]
-                for run in T.unroll(runs - 1):
-                    if run < group // 32:
-                        held[step] = held[step] + tile_ends[run * 32 + 31]
+            held[0] = tile_ends[T.min(tx, num_groups - 1)]
+            for run in T.unroll(runs - 1):
+                if run < tx // 32:
+                    held[0] = held[0] + tile_ends[run * 32 + 31]
             T.sync_threads()
-            for step in T.unroll(per_thread):
-                group = step * threads + tx
-                if group < num_groups:
-                    tile_ends[group] = held[step]
+            if tx < num_groups:
+                tile_ends[tx] = held[0]
 
     def prepare(layout, tx, threads):
         """Fill the shared memory the walk reads and sync the block's ``threads``, every one of
