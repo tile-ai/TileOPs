@@ -101,7 +101,10 @@ class RoPETable:
 
     ``yarn`` applies DeepSeek's YaRN frequency interpolation, whose ramp over a zero-width
     range of dimensions spans 0.001, as the official ``linear_ramp_factor``'s does;
-    ``neg_sin`` rotates back.
+    ``neg_sin`` rotates back. ``entries[ratio]``, for each of ``ratios``, holds the cosines
+    and sines of positions ``0, ratio, 2 * ratio, ...``: row ``i`` rotates entry ``i`` of a
+    compressor of that ratio, the entry of positions ``i * ratio`` to ``(i + 1) * ratio - 1``,
+    which an overlapping compressor pools together with the ``ratio`` positions before them.
     """
 
     def __init__(
@@ -111,6 +114,7 @@ class RoPETable:
         yarn: bool,
         max_seq_len: int,
         device: torch.device,
+        ratios: tuple[int, ...] = (),
     ) -> None:
         dim = cfg.rope_head_dim
         freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
@@ -130,3 +134,4 @@ class RoPETable:
         self.cos = torch.cos(angles).to(device)
         self.sin = torch.sin(angles).to(device)
         self.neg_sin = -self.sin
+        self.entries = {r: (self.cos[::r].contiguous(), self.sin[::r].contiguous()) for r in ratios}

@@ -193,7 +193,7 @@ class Compressor:
                 return None
             closed = entries.view(1, step.seqlen, -1)[:, ratio - 1 : n * ratio : ratio]
             first = 0
-            cos, sin = rope.cos[: n * ratio : ratio], rope.sin[: n * ratio : ratio]
+            cos, sin = rope.entries[ratio]
         else:
             if not step.closes(ratio):
                 return None
