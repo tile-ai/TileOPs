@@ -172,7 +172,8 @@ class _StridedRowsTest(GatedPoolCompressFwdTest):
     ``padded``, the leading columns of two tensors whose rows are two elements wider, off a
     lane's vector; ``broadcast``, one row each repeated over the tokens by a zero stride;
     ``broadcast-kv``, ``kv`` so repeated and ``score`` the second column half of a
-    ``[T_q, 2 * C * D]`` projection, rows of two strides."""
+    ``[T_q, 2 * C * D]`` projection, rows of two strides; ``transposed``, the transposes of
+    ``[C * D, T_q]`` tensors, whose channels lie ``T_q`` elements apart."""
 
     def __init__(self, call, layout: str) -> None:
         super().__init__(call)
@@ -193,6 +194,8 @@ class _StridedRowsTest(GatedPoolCompressFwdTest):
             return *rows, *rest
         if self.layout == "broadcast":
             return kv[:1].expand_as(kv), score[:1].expand_as(score), *rest
+        if self.layout == "transposed":
+            return kv.t().contiguous().t(), score.t().contiguous().t(), *rest
         both = torch.cat([kv, score], dim=1)
         return kv[:1].expand_as(kv), both[:, width:], *rest
 
@@ -277,6 +280,17 @@ class _StridedRowsTest(GatedPoolCompressFwdTest):
             marks=pytest.mark.full,
             id="two-row-strides",
         ),
+        pytest.param(
+            torch.float32,
+            128,
+            4,
+            True,
+            [21],
+            [0],
+            "transposed",
+            marks=pytest.mark.full,
+            id="transposed-channels",
+        ),
     ],
 )
 def test_gated_pool_compress_reads_strided_rows(
@@ -289,7 +303,8 @@ def test_gated_pool_compress_reads_strided_rows(
     layout: str,
 ) -> None:
     """``kv`` and ``score`` whose rows lie apart from their channels' width, read where they
-    lie: wider apart, off a lane's vector, or all at one address."""
+    lie: wider apart, off a lane's vector, or all at one address; and whose channels lie apart,
+    read through a contiguous copy."""
     call = _test(
         dtype, dim=dim, ratio=ratio, overlap=overlap, seq_lens=seq_lens, positions=positions
     ).call
