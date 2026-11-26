@@ -29,6 +29,7 @@ import torch
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
 from tileops._ops.moe import MoEGroupedGEMMFP8FwdOp, MoEGroupedGEMMMXFP4FwdOp
+from workloads.moe import valid_rows
 
 
 @functools.cache
@@ -43,6 +44,19 @@ def _dequant_rows():
 def _bf16_rows(a: torch.Tensor, a_scale: torch.Tensor) -> torch.Tensor:
     """``a * a_scale`` in bf16, one compiled kernel."""
     return _dequant_rows()(a, a_scale)
+
+
+def _row_experts(case, metadata: torch.Tensor, rows: int, num_experts: int) -> torch.Tensor:
+    """Each contiguous row's expert, ``num_experts`` where no expert owns the row."""
+    layout = case.arguments["layout"]
+    if layout.metadata_kind.value == "per_row":
+        owners = metadata
+    else:
+        # physical_psum metadata holds each expert's end row.
+        row = torch.arange(rows, device=metadata.device, dtype=metadata.dtype)
+        owners = torch.searchsorted(metadata.contiguous(), row, right=True)
+    owned = valid_rows(layout, metadata, rows, num_experts)
+    return torch.where(owned, owners, num_experts).to(torch.int32)
 
 
 def _marlin(case) -> bench.Implementation:
@@ -78,7 +92,7 @@ def _marlin(case) -> bench.Implementation:
         experts = torch.arange(num_experts, device=a.device)[:, None]
         ids = torch.where(owned, experts, num_experts).flatten().to(torch.int32)
     else:
-        ids = torch.where(metadata < num_experts, metadata, num_experts).to(torch.int32)
+        ids = _row_experts(case, metadata, a.shape[0], num_experts)
     rows = ids.numel()
     valid = int((ids < num_experts).sum())
     for block_size_m in (8, 16, 32, 48, 64):
@@ -146,7 +160,7 @@ def _matmul_ogs(case) -> bench.Implementation:
         )
     runs = [0] * num_experts
     owner = 0
-    for g in metadata.tolist():
+    for g in _row_experts(case, metadata, a.shape[0], num_experts).tolist():
         owner = g if g < num_experts else owner
         runs[owner] += 1
     counts = torch.tensor(runs, dtype=torch.int32, device=a.device)
