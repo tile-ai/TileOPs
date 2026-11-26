@@ -739,6 +739,15 @@ class BMMWorkload(WorkloadBase):
         return torch.bmm(a, b)
 
 
+class BMMBatchStridedWorkload(BMMWorkload):
+    """``BMMWorkload`` with ``a`` the batch-major view of an ``[M, B, K]`` tensor, so its
+    batches lie ``K`` elements apart and its rows ``B * K``."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a, b = super().gen_inputs()
+        return a.transpose(0, 1).contiguous().transpose(0, 1), b
+
+
 class BMMFP8Workload(WorkloadBase):
     """Workload for batched FP8 GEMM.
 

@@ -8,7 +8,7 @@ from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm import BMMCall
 from tileops.gemm import BMMFP8FwdOp, BMMFwdOp
 from workloads.device import run_device
-from workloads.gemm import BMMFP8Workload, BMMWorkload
+from workloads.gemm import BMMBatchStridedWorkload, BMMFP8Workload, BMMWorkload
 from workloads.numerics import compare_outputs
 
 # Covering the [B,K,N] path is the point of these tests, so the perf hint
@@ -21,6 +21,10 @@ class BMMTest(BMMWorkload, TestBase):
 
 
 class BMMFP8Test(BMMFP8Workload, TestBase):
+    pass
+
+
+class BMMBatchStridedTest(BMMBatchStridedWorkload, TestBase):
     pass
 
 
@@ -262,15 +266,6 @@ def test_bmm_pingpong_matches_the_reference(
     test.check(op, *test.gen_inputs())
 
 
-class _BatchStridedBMMTest(BMMTest):
-    """``a`` is the batch-major view of an ``[M, B, K]`` tensor, so its batches lie ``K``
-    elements apart and its rows ``B * K``."""
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a, b = super().gen_inputs()
-        return a.transpose(0, 1).contiguous().transpose(0, 1), b
-
-
 @pytest.mark.parametrize(
     "batch, m, n, k, key",
     [
@@ -296,7 +291,7 @@ def test_bmm_reads_and_writes_batch_strided_views(
     if key != "bmm" and (call.calibration != "h200" or call.sm_count != 132):
         pytest.skip("the persistent and ping-pong paths are calibrated on a 132-SM H200")
     assert op.key_for("bmm", call) == key
-    test = _BatchStridedBMMTest(batch, m, n, k, torch.bfloat16)
+    test = BMMBatchStridedTest(batch, m, n, k, torch.bfloat16)
     test.check(op, *test.gen_inputs())
     a, b = test.gen_inputs()
     rows = torch.full((m, batch, n), float("nan"), dtype=a.dtype, device=a.device)
@@ -350,7 +345,7 @@ def test_bmm_under_tuning(tune: bool) -> None:
     assert op.key_for("bmm", call) == "bmm"
     if tune:
         op.request_tune()
-    for test in (BMMTest, _BatchStridedBMMTest):
+    for test in (BMMTest, BMMBatchStridedTest):
         workload = test(batch, m, n, k, torch.bfloat16)
         workload.check(op, *workload.gen_inputs())
 
@@ -399,7 +394,7 @@ def test_bmm_graph_replay_into_batch_strided_views(batch: int, m: int, n: int, k
     """A replay reading ``a`` and writing ``out`` as batch-strided views, as DeepSeek-V4-Flash's
     decode step calls its grouped output projection: ``a`` the group-major view of the
     attention output, ``out`` that of the token-major buffer ``wo_b`` reads."""
-    test = _BatchStridedBMMTest(batch, m, n, k, torch.bfloat16)
+    test = BMMBatchStridedTest(batch, m, n, k, torch.bfloat16)
     op = BMMFwdOp()
     a, b = test.gen_inputs()
     out = torch.empty(m, batch, n, dtype=a.dtype, device=a.device).transpose(0, 1)
