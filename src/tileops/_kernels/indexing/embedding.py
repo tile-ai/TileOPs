@@ -12,7 +12,7 @@ from tvm import DataType
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
-from tileops._kernels.constants import VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import SM_RESIDENT_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 from tileops._utils import WARP_LANES
 
@@ -55,7 +55,7 @@ def _embedding_kernel(dim, dtype, index_dtype):
         compile_flags=csrc_include("gather_copy.h"),
         pass_configs={tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True},
     )
-    def _func(block_rows, block_vectors, vec, threads):
+    def _func(block_rows, block_vectors, vec, threads, min_blocks):
         total = T.dynamic("total", "int64")
         # Row offsets reach past 2**31 elements in a large table.
         rows = T.dynamic("rows", "int64")
@@ -93,6 +93,8 @@ def _embedding_kernel(dim, dtype, index_dtype):
         ):
             with T.Kernel(grid_x, T.ceildiv(tiles, grid_x), threads=threads) as (bx, by):
                 tx = T.get_thread_binding()
+                if min_blocks:
+                    T.annotate_min_blocks_per_sm(min_blocks)
                 stage = T.alloc_shared((passes * threads, vec), dtype)
                 tile = T.cast(by, "int64") * grid_x + bx
                 first_row = tile // col_tiles * block_rows
@@ -191,34 +193,80 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         spread_threads = threads
         if block_rows == 1 and whole_warps:
             spread_threads = min(whole_warps)
+        # An SM holds the most CTAs, its CTA limit, when a CTA has threads_per_sm over that
+        # limit threads. At that size, wave_threads, fewer threads than the spread program
+        # take more passes each, and the device holds a call's CTAs in fewer waves. ``forward``
+        # asks the compiler for the CTA limit, which leaves a thread regs_per_sm /
+        # threads_per_sm registers, allocated in units of eight. Six registers a pass, for
+        # three values of at most 64 bits (output row, column and table row), is a
+        # conservative estimate of what a pass keeps live, and bounds the passes. An
+        # architecture whose CTA limit SM_RESIDENT_BLOCKS does not state has no such program.
+        target = self.build_target
+        wave_threads = threads
+        if block_rows == 1 and target.arch in SM_RESIDENT_BLOCKS:
+            resident_threads = target.threads_per_sm // SM_RESIDENT_BLOCKS[target.arch]
+            register_unit = 8
+            budget = target.regs_per_sm // target.threads_per_sm // register_unit * register_unit
+            pinned_passes = budget // 6
+            if (
+                resident_threads < spread_threads
+                and slots % resident_threads == 0
+                and slots <= pinned_passes * resident_threads
+            ):
+                wave_threads = resident_threads
         return {
             "block_rows": block_rows,
             "block_vectors": block_vectors,
             "vec": vec,
             "threads": threads,
             "spread_threads": spread_threads,
+            "wave_threads": wave_threads,
         }
 
     def forward(self, input, weight):
         ids = input.view(-1)
-        spread = ids.numel() > self._spread_above(self.config)
-        program = self.program(self._compile, spread)
+        cfg, tiles = self.config, ids.numel()
+        # ``threads`` within one wave of its CTAs; past it, ``spread_threads``, or
+        # ``wave_threads`` where those fit the call in one wave and the spread program's waves
+        # outnumber the passes a wave_threads thread takes for each of a spread thread's. This
+        # takes a CTA's life as proportional to its passes, a conservative model: a thread
+        # issues all its copies before its one wait, so its life grows more slowly than its
+        # passes, and the criterion launches wave_threads later than the point where they
+        # start to pay off. Only a tile of one whole row has thread counts to choose from, and
+        # it is one CTA an id.
+        slots = cfg["block_rows"] * cfg["block_vectors"]
+        spread, wave = cfg["spread_threads"], cfg["wave_threads"]
+        threads, min_blocks = spread, 0
+        if tiles <= self._resident(cfg, cfg["threads"]):
+            threads = cfg["threads"]
+        elif tiles <= (held := self._resident(cfg, wave)):
+            spread_passes, wave_passes = -(-slots // spread), -(-slots // wave)
+            if tiles * spread_passes > self._resident(cfg, spread) * wave_passes:
+                threads, min_blocks = wave, held // self.build_target.sm_count
+        # Keyed by the thread count, so configs whose counts coincide share one program.
+        program = self.program(self._compile, threads, min_blocks)
         return program(ids, weight).view(*input.shape, self.dim)
 
-    def _spread_above(self, cfg: dict) -> float:
-        """The id count above which ``forward`` launches the ``spread_threads`` program,
-        infinity where *cfg* does not spread."""
-        if cfg["spread_threads"] == cfg["threads"]:
-            return math.inf
-        # A config that spreads has one-row tiles of the whole row, one CTA an id, so a call
-        # runs in waves above the CTAs of the ``threads`` program the device holds at once,
-        # which the SM's thread limit bounds; an SM holds a CTA in whole warps.
+    def _resident(self, cfg: dict, threads: int) -> int:
+        """CTAs of *cfg*'s tile on *threads* threads the device holds at once: an SM holds a CTA
+        in whole warps, and where SM_RESIDENT_BLOCKS states its CTA limit, up to that limit
+        and as many as its shared memory holds of the CTA's stage and reserved bytes."""
         target = self.build_target
-        warps = -(-cfg["threads"] // WARP_LANES)
-        return target.sm_count * (target.threads_per_sm // WARP_LANES // warps)
+        warps = -(-threads // WARP_LANES)
+        per_sm = target.threads_per_sm // WARP_LANES // warps
+        if target.arch in SM_RESIDENT_BLOCKS:
+            slots = cfg["block_rows"] * cfg["block_vectors"]
+            stage = -(-slots // threads) * threads * cfg["vec"] * self.dtype.itemsize
+            # The SM keeps the difference from the per-block opt-in limit for each resident CTA.
+            reserved = target.smem_per_sm - target.smem_budget
+            per_sm = min(
+                per_sm,
+                SM_RESIDENT_BLOCKS[target.arch],
+                target.smem_per_sm // (stage + reserved),
+            )
+        return target.sm_count * per_sm
 
-    def _compile(self, cfg: dict, spread: bool):
-        """The program ``forward`` launches, compiled from *cfg*, with ``spread_threads`` for
-        ``threads`` when *spread* holds."""
-        threads = cfg["spread_threads"] if spread else cfg["threads"]
-        return self.kernel(cfg["block_rows"], cfg["block_vectors"], cfg["vec"], threads)
+    def _compile(self, cfg: dict, threads: int, min_blocks: int):
+        """The program ``forward`` launches, compiled from *cfg* on *threads* threads, asking
+        the compiler for *min_blocks* CTAs an SM when nonzero."""
+        return self.kernel(cfg["block_rows"], cfg["block_vectors"], cfg["vec"], threads, min_blocks)
