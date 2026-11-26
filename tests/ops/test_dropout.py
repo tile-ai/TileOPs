@@ -172,6 +172,7 @@ def test_dropout_count_off_a_thread_run(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_dropout_scales_past_the_float16_range() -> None:
     """A scale ``1 / (1 - p)`` above float16's largest value still lands a kept element whose
     scaled value fits: ``2**-10 * 2**17 = 128``, never infinity."""
@@ -189,6 +190,7 @@ def test_dropout_scales_past_the_float16_range() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_dropout_advances_the_generator_past_a_short_call() -> None:
     """A call on fewer elements than one thread holds moves torch's generator past every draw
     a thread can use, so the next call's mask does not reuse them."""
