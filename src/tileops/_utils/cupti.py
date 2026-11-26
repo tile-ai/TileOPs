@@ -63,6 +63,8 @@ _cuda_runtime = None
 _L2_FLUSH_BUFFERS: dict[torch.device, torch.Tensor] = {}
 # The L2 assumed for a device whose torch module reports none.
 _FALLBACK_L2_BYTES = int(256e6)
+# The flush buffer covers this many times L2; the sweep demotes only its last L2's worth.
+_L2_FLUSH_FACTOR = 2
 
 
 class AttributionError(Exception):
@@ -516,7 +518,8 @@ def reset_persisting_l2_cache() -> None:
 
 
 def l2_flush_buffer(device: torch.device) -> torch.Tensor:
-    """A private int32 buffer on *device* covering twice its L2 capacity, drawn once.
+    """A private int32 buffer on *device* covering ``_L2_FLUSH_FACTOR`` times its L2, drawn
+    once.
 
     Private CPU-generated random values preserve the caller's RNG state and resist memory
     compression. Missing capacity reports use ``_FALLBACK_L2_BYTES``.
@@ -532,7 +535,7 @@ def l2_flush_buffer(device: torch.device) -> torch.Tensor:
         values = torch.randint(
             -(2**31),
             2**31 - 1,
-            (-(-2 * l2_bytes // 4),),
+            (-(-_L2_FLUSH_FACTOR * l2_bytes // 4),),
             dtype=torch.int32,
             device="cpu",
             generator=torch.Generator().manual_seed(0),

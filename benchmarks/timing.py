@@ -10,8 +10,10 @@ only the call is read. Three prepared calls calibrate the warm-up and repeat cou
 A CUDA device is timed with the pieces of NVIDIA nvbench's cold measurement
 (``nvbench/detail/measure_cold.cuh``): every sample flushes L2 before the call, runs behind
 nvbench's blocking kernel, and records SM 0's clock around the call; persisting L2 priority
-is reset before each block of samples. nvbench holds each sample alone and drains the
-device after it; here one blocking kernel holds a block of samples queued with no host
+is reset before each block of samples. The flush itself evicts the lines an earlier call
+read with L2 evict-last priority (``tileops._utils._l2_sweep``), so no sample starts with
+lines the one before it left. nvbench holds each sample alone and drains the device after
+it; here one blocking kernel holds a block of samples queued with no host
 synchronization between them, so host launch cost never becomes device idle time. Warm-up
 loads the blocking kernel, then runs each call unheld and drained, as nvbench's does. No
 sample is discarded for its clock (nvbench's ``--throttle-threshold 0``): a compute-bound
@@ -80,8 +82,8 @@ _bench_meta = threading.local()
 # different preparations apart. On CUDA a sample is either queued behind the blocking
 # kernel or, where none can be held, drained before and after its call; elsewhere samples
 # are queued with no drain between them.
-_L2_FLUSH_CUDA = "triton-read-2x-l2-held"
-_L2_FLUSH_CUDA_DRAINED = "triton-read-2x-l2-drained"
+_L2_FLUSH_CUDA = "triton-read-evict-last-2x-l2-held"
+_L2_FLUSH_CUDA_DRAINED = "triton-read-evict-last-2x-l2-drained"
 _L2_FLUSH_OTHER = "torch-max-2x-l2-undrained"
 
 
@@ -329,6 +331,7 @@ def _bench_kernel(
             # Before the blocker, not per sample: the reset takes effect when the host calls
             # it, so queued samples share one either way, and under CUPTI a reset issued
             # while the stream is held stalls a later launch until the blocker times out.
+            # Between queued samples the flush evicts evict-last lines on the device.
             reset_persisting_l2_cache()
             if blocking:
                 blocker.block()

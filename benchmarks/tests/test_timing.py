@@ -348,6 +348,30 @@ def test_the_cuda_sweep_reads_every_element_and_writes_none_of_them():
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_the_cuda_sweep_reads_evict_last_then_demotes_its_lines_to_normal():
+    """A plain read leaves a previous kernel's evict-last lines in L2; an evict-last read
+    replaces them, and its own lines must not stay evict-last for the timed call."""
+    from tileops._utils._l2_sweep import _L2_LINE_BYTES, _fold_max
+
+    buffer = torch.zeros(4096 * 2, dtype=torch.int32, device="cuda")
+    sink = torch.zeros(1, dtype=torch.int32, device="cuda")
+    ptx = _fold_max[(2,)](
+        buffer,
+        sink,
+        buffer.numel(),
+        buffer.numel() // 2,
+        BLOCK=4096,
+        LINE=_L2_LINE_BYTES // buffer.element_size(),
+    ).asm["ptx"]
+
+    loads = [line for line in ptx.splitlines() if "ld.global" in line]
+    assert loads and all("L2::cache_hint" in line for line in loads)
+    assert "createpolicy.fractional.L2::evict_last" in ptx
+    assert "applypriority.global.L2::evict_normal" in ptx
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_args_on_another_device_than_the_timed_one_are_refused():
     """Every implementation in a row is timed on one device, so a stray tensor is an error."""
     x = torch.empty(16, device="cuda")
