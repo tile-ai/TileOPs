@@ -175,17 +175,6 @@ def test_gated_pool_compress_matches_reference(
     "dtype, dim, ratio, overlap, seq_lens, positions, layout",
     [
         pytest.param(
-            torch.float32,
-            512,
-            4,
-            True,
-            [67],
-            [0],
-            "halves",
-            marks=pytest.mark.smoke,
-            id="deepseek-ratio-4",
-        ),
-        pytest.param(
             torch.bfloat16,
             128,
             4,
@@ -195,6 +184,17 @@ def test_gated_pool_compress_matches_reference(
             "halves",
             marks=pytest.mark.smoke,
             id="bf16-ragged-resume",
+        ),
+        pytest.param(
+            torch.float32,
+            512,
+            4,
+            True,
+            [67],
+            [0],
+            "broadcast-kv",
+            marks=pytest.mark.smoke,
+            id="two-row-strides",
         ),
         pytest.param(
             torch.float32,
@@ -239,17 +239,6 @@ def test_gated_pool_compress_matches_reference(
             "broadcast",
             marks=pytest.mark.full,
             id="broadcast-rows",
-        ),
-        pytest.param(
-            torch.float32,
-            128,
-            4,
-            True,
-            [67],
-            [0],
-            "broadcast-kv",
-            marks=pytest.mark.full,
-            id="two-row-strides",
         ),
         pytest.param(
             torch.float32,
