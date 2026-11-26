@@ -193,14 +193,9 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         spread_threads = threads
         if block_rows == 1 and whole_warps:
             spread_threads = min(whole_warps)
-        # An SM holds the most CTAs, its CTA limit, when a CTA has threads_per_sm over that
-        # limit threads. At that size, wave_threads, fewer threads than the spread program
-        # take more passes each, and the device holds a call's CTAs in fewer waves. ``forward``
-        # asks the compiler for the CTA limit, which leaves a thread regs_per_sm /
-        # threads_per_sm registers, allocated in units of eight. Six registers a pass, for
-        # three values of at most 64 bits (output row, column and table row), is a
-        # conservative estimate of what a pass keeps live, and bounds the passes. An
-        # architecture whose CTA limit SM_RESIDENT_BLOCKS does not state has no such program.
+        # wave_threads: the CTA size at which an SM reaches its CTA limit, so a call's CTAs
+        # fit in fewer waves. The register budget at that limit bounds the passes; six
+        # registers a pass (output row, column, table row) is a conservative estimate.
         target = self.build_target
         wave_threads = threads
         if block_rows == 1 and target.arch in SM_RESIDENT_BLOCKS:
@@ -226,14 +221,9 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
     def forward(self, input, weight):
         ids = input.view(-1)
         cfg, tiles = self.config, ids.numel()
-        # ``threads`` within one wave of its CTAs; past it, ``spread_threads``, or
-        # ``wave_threads`` where those fit the call in one wave and the spread program's waves
-        # outnumber the passes a wave_threads thread takes for each of a spread thread's. This
-        # takes a CTA's life as proportional to its passes, a conservative model: a thread
-        # issues all its copies before its one wait, so its life grows more slowly than its
-        # passes, and the criterion launches wave_threads later than the point where they
-        # start to pay off. Only a tile of one whole row has thread counts to choose from, and
-        # it is one CTA an id.
+        # wave_threads wins when the call fits in one wave of them and the spread program's
+        # waves outnumber their pass ratio. Taking a CTA's life as proportional to its passes
+        # is conservative: a thread waits once for all its copies.
         slots = cfg["block_rows"] * cfg["block_vectors"]
         spread, wave = cfg["spread_threads"], cfg["wave_threads"]
         threads, min_blocks = spread, 0
@@ -243,21 +233,18 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
             spread_passes, wave_passes = -(-slots // spread), -(-slots // wave)
             if tiles * spread_passes > self._resident(cfg, spread) * wave_passes:
                 threads, min_blocks = wave, held // self.build_target.sm_count
-        # Keyed by the thread count, so configs whose counts coincide share one program.
         program = self.program(self._compile, threads, min_blocks)
         return program(ids, weight).view(*input.shape, self.dim)
 
     def _resident(self, cfg: dict, threads: int) -> int:
-        """CTAs of *cfg*'s tile on *threads* threads the device holds at once: an SM holds a CTA
-        in whole warps, and where SM_RESIDENT_BLOCKS states its CTA limit, up to that limit
-        and as many as its shared memory holds of the CTA's stage and reserved bytes."""
+        """CTAs of *cfg*'s tile on *threads* threads the device holds at once."""
         target = self.build_target
         warps = -(-threads // WARP_LANES)
         per_sm = target.threads_per_sm // WARP_LANES // warps
         if target.arch in SM_RESIDENT_BLOCKS:
             slots = cfg["block_rows"] * cfg["block_vectors"]
             stage = -(-slots // threads) * threads * cfg["vec"] * self.dtype.itemsize
-            # The SM keeps the difference from the per-block opt-in limit for each resident CTA.
+            # Each resident CTA also reserves the gap to the per-block opt-in limit.
             reserved = target.smem_per_sm - target.smem_budget
             per_sm = min(
                 per_sm,
@@ -267,6 +254,5 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         return target.sm_count * per_sm
 
     def _compile(self, cfg: dict, threads: int, min_blocks: int):
-        """The program ``forward`` launches, compiled from *cfg* on *threads* threads, asking
-        the compiler for *min_blocks* CTAs an SM when nonzero."""
+        """*cfg*'s program on *threads* threads, asking for *min_blocks* CTAs an SM if nonzero."""
         return self.kernel(cfg["block_rows"], cfg["block_vectors"], cfg["vec"], threads, min_blocks)
