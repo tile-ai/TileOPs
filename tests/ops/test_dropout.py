@@ -189,6 +189,7 @@ def test_dropout_scales_past_the_float16_range() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.cuda_only("cuda-generator")
 def test_dropout_advances_the_generator_past_a_short_call() -> None:
     """A call on fewer elements than one thread holds moves torch's generator past every draw
     a thread can use, so the next call's mask does not reuse them."""

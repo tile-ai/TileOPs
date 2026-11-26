@@ -67,7 +67,7 @@ CI runs on SM90, so it skips every test marked `sm80`, `sm86` or `sm89`: those g
 python -m pytest -q tests -m sm89
 ```
 
-A test that needs CUDA carries `cuda_only("cuda-graph")`, `cuda_only("cuda-kernel")` or `cuda_only("cuda-reference")`, according to what requires CUDA. Run the portable infrastructure tests and CUDA exclusion checks without a GPU using the PrivateUse1 backend (requires a host C++ compiler):
+A test that needs CUDA carries `cuda_only("cuda-generator")`, `cuda_only("cuda-graph")`, `cuda_only("cuda-kernel")` or `cuda_only("cuda-reference")`, according to what requires CUDA. Run the portable infrastructure tests and CUDA exclusion checks without a GPU using the PrivateUse1 backend (requires a host C++ compiler):
 
 ```bash
 python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops

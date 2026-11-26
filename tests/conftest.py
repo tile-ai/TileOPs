@@ -202,6 +202,7 @@ def _serves(marker: str, capability: tuple[int, int] | None) -> bool:
 
 
 CUDA_ONLY_REASONS = (
+    "cuda-generator",
     "cuda-graph",
     "cuda-kernel",
     "cuda-reference",
@@ -238,6 +239,9 @@ def _cuda_failure(exc: BaseException, reason: str) -> bool:
         return reason == "cuda-kernel" and (
             "in-tree kernels do not run on" in str(exc) or "runs on ['cuda']" in str(exc)
         )
+    if isinstance(exc, IndexError):
+        # torch.cuda.default_generators is empty without a CUDA device.
+        return reason == "cuda-generator" and str(exc) == "tuple index out of range"
     no_target = "No registered target detector found an available target."
     if isinstance(exc, ValueError):
         return reason == "cuda-kernel" and str(exc) == no_target

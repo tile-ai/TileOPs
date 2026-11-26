@@ -167,6 +167,8 @@ def test_the_dropped_report_counts_each_file_s_collected_and_dropped_tests(tmp_p
             False,
         ),
         (AssertionError("CUDA result differs"), "cuda-kernel", False),
+        (IndexError("tuple index out of range"), "cuda-generator", True),
+        (IndexError("tuple index out of range"), "cuda-kernel", False),
         (OpNotAvailableError("Op's in-tree kernels do not run on test:0"), "cuda-kernel", True),
         (OpNotAvailableError("Op's in-tree kernels do not run on test:0"), "cuda-reference", False),
         (
