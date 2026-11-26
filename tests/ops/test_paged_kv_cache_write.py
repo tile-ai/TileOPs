@@ -194,16 +194,16 @@ def _laid_out(t: torch.Tensor, layout: tuple) -> tuple[torch.Tensor, torch.Tenso
     "tokens, heads_kv, dim, cache_dtype, k_layout, v_layout",
     [
         pytest.param(
-            300, 4, 256, torch.bfloat16, ("columns", 8192, 6144), ("columns", 8192, 7168),
-            marks=pytest.mark.smoke, id="qwen3.8-27b-projection",
+            5, 2, 64, torch.bfloat16, ("columns", 136, 0), ("columns", 1032, 512),
+            marks=pytest.mark.smoke, id="k-v-strides-differ",
         ),
         pytest.param(
             37, 2, 64, torch.float8_e4m3fn, ("columns", 260, 0), ("columns", 260, 128),
             marks=pytest.mark.full, id="fp8-vec-4-stride",
         ),
         pytest.param(
-            37, 2, 64, torch.bfloat16, ("columns", 136, 0), ("columns", 1032, 512),
-            marks=pytest.mark.full, id="k-v-strides-differ",
+            37, 2, 64, torch.bfloat16, ("columns", 136, 4), ("columns", 136, 0),
+            marks=pytest.mark.full, id="k-column-4",
         ),
         pytest.param(
             37, 2, 64, torch.bfloat16, ("every-other", 256), ("columns", 136, 0),
@@ -225,13 +225,13 @@ def test_paged_kv_cache_write_reads_strided_rows(
     """k and v whose token rows are contiguous are read where they lie, and in any other
     layout from a packed copy: the named cache rows hold them, and neither storage changes.
 
-    The cells: Qwen3.8-27B's prefill, whose k and v are columns 6144 and 7168 of the fused
-    8192-wide q/k/v projection; rows 260 elements apart, read in four-element vectors, the
-    widest dividing the stride, into an FP8 cache through four-byte stores; k and v rows 136
-    and 1032 elements apart, a stride each; every other column of 256-wide rows, whose token
-    rows lie a row apart but are not contiguous; a head-major k, whose token rows no one view
-    merges; and an expanded v, whose token rows lie zero elements apart and are read in
-    place.
+    The cells: k and v rows 136 and 1032 elements apart, a stride each; rows 260 elements
+    apart, read in four-element vectors, the widest dividing the stride, into an FP8 cache
+    through four-byte stores; a k starting at column 4, 8 bytes off a 16-byte boundary, which
+    the op copies to one before any kernel reads it; every other column of 256-wide rows,
+    whose token rows lie a row apart but are not contiguous; a head-major k, whose token rows
+    no one view merges; and an expanded v, whose token rows lie zero elements apart and are
+    read in place.
     """
     workload = PagedKVCacheWriteTest(tokens, heads_kv, dim, 64, 8, torch.bfloat16, cache_dtype)
     k, v, *rest = workload.gen_inputs()
