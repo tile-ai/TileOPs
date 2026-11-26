@@ -419,7 +419,9 @@ def _rope_positions_kernel(
             # The block's token and its part of the token, from its grid indices.
             token = bx if split else bx // parts
             part = by if split else bx % parts
-            row = T.alloc_local([1], "int64" if offset_dtype else position_dtype)
+            # A staged block's table loads clamp the position in their index, so it holds no row.
+            row_dtype = "int64" if offset_dtype else position_dtype
+            row = None if staged else T.alloc_local([1], row_dtype)
             tensors = (query, key, cos_table, sin_table, query_out, key_out, token, part)
             if staged:
                 buf = T.alloc_shared([max(query_heads, key_heads) * head_size], dtype)
