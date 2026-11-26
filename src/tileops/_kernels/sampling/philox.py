@@ -7,7 +7,7 @@ fact, draws the same uniform however the launch splits the row, and so reproduce
 
 import tilelang.language as T
 
-__all__ = ["draw", "uniform_of"]
+__all__ = ["draw", "mix", "uniform_of"]
 
 _EVEN_MUL, _ODD_MUL = 0xD2511F53, 0xCD9E8D57
 _EVEN_WEYL, _ODD_WEYL = 0x9E3779B9, 0xBB67AE85
@@ -16,7 +16,8 @@ _ROUNDS = 10
 
 @T.macro
 def mix(counter, key, bump):
-    """Run the ten rounds in place over *counter*, leaving the uniform's word in ``counter[0]``.
+    """Run the ten rounds in place over *counter*, leaving the four output words in it; the
+    uniform's word is ``counter[0]``.
 
     *counter* and *key* are the caller's, already set; *bump* is two words of scratch.
     """

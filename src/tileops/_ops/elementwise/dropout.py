@@ -39,9 +39,9 @@ class DropoutFwdOp(Op):
     With ``seed``, every call uses Philox stream ``seed`` at offset 0 and draws the same
     mask for the same input shape, without touching torch's generator.
 
-    Uses T.rng_init / T.rng_rand_float (backed by cuRAND Philox4_32_10 by default) for
-    per-thread random number generation. The mask is TileOPs' own: it does not reproduce
-    torch's for the same generator state.
+    Each element is dropped by a Philox4x32-10 draw of its own, independently of every other
+    element, with probability ``p`` rounded up to a multiple of ``2**-32``. The mask is
+    TileOPs' own: it does not reproduce torch's for the same generator state.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"dropout": DropoutKernel}
@@ -104,8 +104,9 @@ class DropoutFwdOp(Op):
             return self.seed, 0
         generator = torch.cuda.default_generators[flat.device.index]
         offset = generator.get_offset()
-        # The kernel uses at most `count` draws a stream; torch keeps offsets a multiple of 4.
-        generator.set_offset(offset + (flat.numel() + 3) // 4 * 4)
+        # torch keeps offsets a multiple of 4.
+        draws = max(flat.numel(), DropoutFwdInterface.MAX_DRAWS_PER_STREAM)
+        generator.set_offset(offset + (draws + 3) // 4 * 4)
         # The seed is a 64-bit pattern; the kernel takes it as a signed 64-bit integer.
         seed = generator.initial_seed()
         return seed - (1 << 64) if seed >= 1 << 63 else seed, offset
