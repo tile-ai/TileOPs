@@ -82,19 +82,20 @@ class RMSNormGatedFwdOp(Op):
         """Normalize, scale, shift and gate each row of ``x``.
 
         Args:
-            x: ``(*B, N)``, float16, bfloat16 or float32.
+            x: ``(*B, N)``, float16, bfloat16 or float32. Read where it lies when each row is
+                contiguous and the rows are evenly spaced, as the columns of a wider
+                projection are; copied otherwise.
             weight: ``(N,)`` scale, float16, bfloat16 or float32.
             bias: ``(N,)`` shift, float16, bfloat16 or float32, or ``None``.
-            z: The gate, shaped like ``x``, float16, bfloat16 or float32, or ``None``.
+            z: The gate, shaped like ``x``, float16, bfloat16 or float32, or ``None``; read
+                as ``x`` is.
 
         Returns:
             A new tensor shaped like ``x``, in its dtype.
         """
         n = x.shape[-1]
-        x = x.contiguous()
         weight = weight.contiguous()
         bias = None if bias is None else bias.contiguous()
-        z = None if z is None else z.contiguous()
         return self.kernel_for(
             "rms_norm_gated",
             lambda: RMSNormGatedCall(

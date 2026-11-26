@@ -65,7 +65,7 @@ def _rms_norm_gated_kernel(
     g_dtype = z_dtype if gated else dtype
 
     @tilelang.jit(out_idx=[-1], compile_flags=csrc_include("approx_math.h"))
-    def _func(threads: int, regs_per_sm: int):
+    def _func(threads: int, regs_per_sm: int, x_stride: int, z_stride: int):
         # int64: a signature-valid call may hold 2^31 rows or more.
         rows = T.dynamic("rows", "int64")
         # A CTA holds whole groups: the threads round up to a multiple of the group's lanes.
@@ -82,10 +82,12 @@ def _rms_norm_gated_kernel(
 
         @T.prim_func
         def main(
-            x: T.Tensor((rows, n), dtype),
+            x: T.StridedTensor((rows, n), (x_stride, 1), dtype),
             weight: T.Tensor((n,), weight_dtype),
             bias: T.Tensor((n if has_bias else 1,), b_dtype),
-            z: T.Tensor((rows, n) if gated else (1,), g_dtype),
+            z: T.StridedTensor(
+                (rows, n) if gated else (1,), (z_stride, 1) if gated else (1,), g_dtype
+            ),
             y: T.Tensor((rows, n), dtype),
         ):
             # A CTA normalizes `per_cta` consecutive groups, `lanes` threads a group.
@@ -190,6 +192,9 @@ class RMSNormGatedKernel(Kernel, RMSNormGatedFwdInterface):
     shuffles; a wider one spans warps, which add their sums through shared memory. The row
     count is a runtime value, so one build serves every batch.
     ``config["threads"]`` is the fewest threads a CTA takes; a CTA always holds whole groups.
+    The rows of x and z are read where they lie when each row is contiguous and the rows are
+    evenly spaced, so the columns of a wider projection need no copy; a program serves one
+    pair of row strides.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -266,16 +271,31 @@ class RMSNormGatedKernel(Kernel, RMSNormGatedFwdInterface):
         z: torch.Tensor | None,
     ) -> torch.Tensor:
         self._require_devices(x=x, weight=weight, bias=bias, z=z)
-        rows = x.reshape(-1, self.n)
+        rows, x_stride = _rows(x, self.n)
+        gates, z_stride = (None, self.n) if z is None else _rows(z, self.n)
         placeholder = rows.new_empty(1)
-        y = self.program(self._compile, self.build_target.regs_per_sm)(
+        y = self.program(self._compile, self.build_target.regs_per_sm, x_stride, z_stride)(
             rows,
             weight,
             placeholder if bias is None else bias,
-            placeholder if z is None else z.reshape(-1, self.n),
+            placeholder if gates is None else gates,
         )
         return y.reshape(x.shape)
 
-    def _compile(self, cfg: dict, regs_per_sm: int):
-        """The program, launched with *cfg*'s threads on an SM of *regs_per_sm* registers."""
-        return self.kernel(threads=cfg["threads"], regs_per_sm=regs_per_sm)
+    def _compile(self, cfg: dict, regs_per_sm: int, x_stride: int, z_stride: int):
+        """The program, launched with *cfg*'s threads on an SM of *regs_per_sm* registers, over
+        rows of x and of z *x_stride* and *z_stride* elements apart."""
+        return self.kernel(
+            threads=cfg["threads"], regs_per_sm=regs_per_sm, x_stride=x_stride, z_stride=z_stride
+        )
+
+
+def _rows(t: torch.Tensor, n: int) -> tuple[torch.Tensor, int]:
+    """*t*, ``[*B, n]``, as ``[R, n]``, and the elements between two of its rows: a view
+    where each row is contiguous and the rows are evenly spaced, as the columns of a wider
+    projection are, else a contiguous copy. A single row's stride is no layout, and it reads
+    as packed."""
+    rows = t.reshape(-1, n)
+    if n > 1 and rows.stride(1) != 1:
+        return rows.contiguous(), n
+    return rows, rows.stride(0) if rows.shape[0] > 1 else n
