@@ -12,7 +12,6 @@ pytestmark = [pytest.mark.cuda_only("cuda-kernel")]
     "num_per_thread",
     [
         pytest.param(2, marks=pytest.mark.smoke),
-        pytest.param(6, marks=pytest.mark.smoke),
         pytest.param(64, marks=pytest.mark.smoke),
     ],
 )

@@ -166,9 +166,9 @@ def test_dropout_count_off_a_thread_run(dtype: torch.dtype) -> None:
     longer call, which takes the vector path."""
     from tileops._ops.elementwise.dropout import DropoutFwdOp
 
-    x = torch.randn(1_000_008, dtype=dtype, device=run_device())
+    x = torch.randn(1_000_000, dtype=dtype, device=run_device())
     op = DropoutFwdOp(p=0.5, seed=11)
-    assert torch.equal(op(x[:1_000_003]), op(x)[:1_000_003])
+    assert torch.equal(op(x[:999_995]), op(x)[:999_995])
 
 
 @pytest.mark.smoke
