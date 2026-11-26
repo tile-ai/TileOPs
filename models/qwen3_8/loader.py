@@ -54,7 +54,7 @@ def load_layer(layer: DecoderLayer, t: dict[str, torch.Tensor]) -> None:
         mixer.conv_weight = t.pop("linear_attn.conv1d.weight").squeeze(1)
         mixer.A_log = t.pop("linear_attn.A_log").float()
         mixer.dt_bias = t.pop("linear_attn.dt_bias").float()
-        mixer.norm = t.pop("linear_attn.norm.weight")
+        mixer.norm = t.pop("linear_attn.norm.weight").repeat(mixer.value_heads)
         mixer.out_proj = t.pop("linear_attn.out_proj.weight")
     else:
         # Each head's q_proj rows are its query, then its output gate.

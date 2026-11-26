@@ -415,8 +415,8 @@ class RMSNormGatedFwdInterface(KernelInterface):
     ) -> torch.Tensor:
         """Normalize, scale, shift and gate each row; nothing is written in place.
 
-        Every tensor is contiguous on ``call.device``. A tensor is passed exactly where
-        ``call`` names its dtype.
+        Every tensor is on ``call.device``, and *weight* and *bias* are contiguous. A tensor
+        is passed exactly where ``call`` names its dtype.
 
         Args:
             x: ``(*leading, call.n)`` in ``call.dtype``.
