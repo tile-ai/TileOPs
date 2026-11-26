@@ -1020,10 +1020,6 @@ def _laid_out_queries(q: torch.Tensor, layout: tuple) -> tuple[torch.Tensor, tor
             "gqa_decode_paged_bs1_kernel", marks=pytest.mark.smoke, id="batch-1-decode",
         ),
         pytest.param(
-            24, 4, 256, torch.bfloat16, [600, 2], [700, 4096], {}, ("columns", 8192),
-            "gqa_paged_ws_kernel", marks=pytest.mark.full, id="short-after-long",
-        ),
-        pytest.param(
             24, 4, 256, torch.bfloat16, [600, 5], [700, 40], {}, ("columns", 6148),
             "gqa_paged_ws_kernel", marks=pytest.mark.full, id="unaligned-tokens",
         ),
@@ -1069,9 +1065,9 @@ def test_gqa_paged_reads_projection_columns(
     and q's storage stays as it was.
 
     The cells: four ragged requests whose q is the first 6144 columns of Qwen3.8-27B's fused
-    8192-wide q/k/v projection; a request of two queries over a long cache after a long
-    request, whose key tiles split between the warpgroups, which load its queries directly
-    rather than by TMA; tokens 6148 elements apart, off 16-byte alignment; heads 264
+    8192-wide q/k/v projection, among them short requests over long caches, whose key tiles
+    split between the warpgroups, which load their queries directly rather than by TMA;
+    tokens 6148 elements apart, off 16-byte alignment; heads 264
     elements apart, so a token's heads are not packed; an expanded q, its tokens zero
     elements apart; RoPE preparation, which rotates a packed copy; flat rows over one KV
     head; decode tokens of many requests, through the split scan; one request's decode
