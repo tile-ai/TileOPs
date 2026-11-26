@@ -930,6 +930,14 @@ _ROLLBACK = {"B": 3, "S": 3, "P": 12, "L": 4, "some": ("num_accepted_tokens",)}
             id="decode-value-major",
         ),
         pytest.param(
+            torch.bfloat16,
+            {**_VALUE_MAJOR, "use_qk_l2norm_in_kernel": True},
+            {"B": 5, "S": 1, "P": 16},
+            [1, 3],
+            marks=pytest.mark.full,
+            id="decode-value-major-l2norm",
+        ),
+        pytest.param(
             torch.float16,
             {},
             _ROLLBACK,

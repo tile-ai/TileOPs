@@ -161,6 +161,10 @@ def delta_decode_tl(
     resident_blocks = 65536 // (threads * 64) if k_chunk <= 16 else 1
     # Token elements a thread stages as one 16-byte vector of a query or key row.
     token_vector = math.gcd(dim, 8)
+    # A value-major decode step on a state pool that folds the L2 norms reads its tile, four
+    # 16-byte vectors a lane, before it stages the query and key rows, so the loads are in
+    # flight across the staging, the fold and their barriers.
+    early_tile = pooled and l2norm and state_v_first
 
     # A pooled build writes the advanced state into the pool, so only the output is returned.
     @tilelang.jit(
@@ -209,6 +213,24 @@ def delta_decode_tl(
             return beta_value, T.exp2(log_decay * LOG2E)
 
         @T.macro
+        def load_tile(state, start, head_idx, value_idx, k_rank, k_begin, state_local):
+            # Read the lane's part of the tile from row start of state: runs of key_run
+            # positions, each one vector, of a value-major row, or the k_chunk keys of a
+            # key-major column.
+            if state_v_first:
+                for run in T.serial(k_chunk // key_run):
+                    for e in T.vectorized(key_run):
+                        state_local[run * key_run + e] = state[
+                            start,
+                            head_idx,
+                            value_idx,
+                            run_start(k_rank, run, lane_group, key_run) + e,
+                        ]
+            else:
+                for ii in T.serial(k_chunk):
+                    state_local[ii] = state[start, head_idx, k_begin + ii, value_idx]
+
+        @T.macro
         def advance(
             q, k, v, g, beta, A_log, dt_bias, state, final_state, o, slots, batch_idx, t, tt,
             row, col, qk_head_idx, head_idx, value_idx, value_lane, k_rank, k_begin, tx,
@@ -222,6 +244,11 @@ def delta_decode_tl(
             # formed at its use site, so a build without a pool binds no new local.
             old_partial = T.alloc_var("float32", init=0.0)
             out_partial = T.alloc_var("float32", init=0.0)
+            early = not rollback and early_tile
+            # A step that reads its tile early reads its slot once, for both the tile's loads
+            # and its stores: indexed by two reads of the slot, the stores' registers no longer
+            # form aligned 16-byte vectors and ptxas splits one of them.
+            tile_row = state_row(slots, batch_idx) if early else None
             if rollback:
                 old_partial = 0.0
                 out_partial = 0.0
@@ -229,6 +256,8 @@ def delta_decode_tl(
                 beta_value = steps_staged[tt]
                 decay = decays[tt]
             else:
+                if early:
+                    load_tile(state, tile_row, head_idx, value_idx, k_rank, k_begin, state_local)
                 q_square = T.alloc_var("float32", init=0.0)
                 k_square = T.alloc_var("float32", init=0.0)
                 for i in T.serial(T.ceildiv(dim, threads)):
@@ -263,7 +292,9 @@ def delta_decode_tl(
                 beta_value, decay = gate(g, beta, A_log, dt_bias, row, col, head_idx)
 
             if has_initial_state and state_v_first:
-                if not rollback:
+                if not rollback and not early:
+                    # Written out rather than through load_tile, whose parameter would bind a new
+                    # local: a step that reads its tile late keeps its generated program.
                     for run in T.serial(k_chunk // key_run):
                         for e in T.vectorized(key_run):
                             state_local[run * key_run + e] = state[
@@ -315,7 +346,7 @@ def delta_decode_tl(
                 for run in T.serial(k_chunk // key_run):
                     for e in T.vectorized(key_run):
                         final_state[
-                            token_row(slots, batch_idx, t),
+                            token_row(slots, batch_idx, t) if tile_row is None else tile_row,
                             head_idx,
                             value_idx,
                             run_start(k_rank, run, lane_group, key_run) + e,
@@ -443,18 +474,7 @@ def delta_decode_tl(
                     # The tile starts from the slot of the sequence's last accepted token and
                     # stays in registers across its tokens, each written to the token's slot.
                     start = T.cast(slots[batch_idx, accepted[batch_idx] - 1], "int64")
-                    if state_v_first:
-                        for run in T.serial(k_chunk // key_run):
-                            for e in T.vectorized(key_run):
-                                state_local[run * key_run + e] = state[
-                                    start,
-                                    head_idx,
-                                    value_idx,
-                                    run_start(k_rank, run, lane_group, key_run) + e,
-                                ]
-                    else:
-                        for ii in T.serial(k_chunk):
-                            state_local[ii] = state[start, head_idx, k_begin + ii, value_idx]
+                    load_tile(state, start, head_idx, value_idx, k_rank, k_begin, state_local)
                     first = T.cast(offsets[batch_idx], "int32") if varlen else 0
                     length = T.cast(offsets[batch_idx + 1], "int32") - first if varlen else tokens
                     for c in T.serial(T.ceildiv(drafts, chunk)):
