@@ -1012,8 +1012,8 @@ def _laid_out_queries(q: torch.Tensor, layout: tuple) -> tuple[torch.Tensor, tor
     ("heads", "heads_kv", "dim", "dtype", "q_lens", "cache_lens", "semantics", "layout", "key"),
     [
         pytest.param(
-            24, 4, 256, torch.bfloat16, [1000], [1000], {}, ("columns", 8192),
-            "gqa_paged_ws_kernel", marks=pytest.mark.smoke, id="qwen3.8-27b",
+            24, 4, 256, torch.bfloat16, [300, 3, 0, 130], [900, 1500, 64, 131], {},
+            ("columns", 8192), "gqa_paged_ws_kernel", marks=pytest.mark.smoke, id="qwen3.8-27b",
         ),
         pytest.param(
             32, 4, 128, torch.float16, [1], [4096], {}, ("padded-heads", 8),
@@ -1068,7 +1068,7 @@ def test_gqa_paged_reads_projection_columns(
     flat rows and the other kernels read a packed copy: the output matches the reference,
     and q's storage stays as it was.
 
-    The cells: Qwen3.8-27B's prefill, whose q is the first 6144 columns of the fused
+    The cells: four ragged requests whose q is the first 6144 columns of Qwen3.8-27B's fused
     8192-wide q/k/v projection; a request of two queries over a long cache after a long
     request, whose key tiles split between the warpgroups, which load its queries directly
     rather than by TMA; tokens 6148 elements apart, off 16-byte alignment; heads 264
