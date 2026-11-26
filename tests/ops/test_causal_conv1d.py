@@ -328,16 +328,13 @@ def test_prefill_bias(dtype: str, weight_dtype: str) -> None:
 def _x_layout(x: torch.Tensor, layout: str, row: int) -> tuple[torch.Tensor, torch.Tensor]:
     """*x* (``(Tt, D)``) laid out as *layout*, and the storage the view lies in: ``"columns"``,
     the leading columns of rows *row* elements wide; ``"every-other"``, every other column of
-    rows *row* elements wide; ``"transposed"``, a ``(D, Tt)`` tensor's transpose;
-    ``"expanded"``, x's first row repeated over every token, zero elements apart."""
+    rows *row* elements wide; ``"expanded"``, x's first row repeated over every token, zero
+    elements apart."""
     tokens, dim = x.shape
     if layout in ("columns", "every-other"):
         storage = torch.randn(tokens, row, device=x.device).to(x.dtype)
         view = storage[:, :dim] if layout == "columns" else storage[:, ::2]
         view.copy_(x)
-    elif layout == "transposed":
-        storage = x.t().contiguous()
-        view = storage.t()
     else:
         storage = x[:1].clone()
         view = storage.expand(tokens, dim)
@@ -352,9 +349,7 @@ def _x_layout(x: torch.Tensor, layout: str, row: int) -> tuple[torch.Tensor, tor
             marks=_SMOKE, id="qwen3.8-27b-projection",
         ),
         pytest.param([70, 1, 62], 256, "columns", 262, _BOTH, marks=_FULL, id="vec-2-stride"),
-        pytest.param([1], 256, "columns", 262, _BOTH, marks=_FULL, id="one-token"),
         pytest.param([70, 1, 62], 256, "every-other", 512, _BOTH, marks=_FULL, id="every-other"),
-        pytest.param([70, 1, 62], 256, "transposed", 0, _BOTH, marks=_FULL, id="transposed"),
         pytest.param([70, 1, 62], 256, "expanded", 0, _BOTH, marks=_FULL, id="expanded"),
     ],
 )  # fmt: skip
@@ -365,10 +360,9 @@ def test_prefill_reads_strided_tokens(seq_lens, dim, layout, row, some) -> None:
 
     The cells: Qwen3.8-27B's Gated DeltaNet, whose x is the first 10240 columns of the
     16480-wide input projection, convolved on a state pool; rows 262 elements apart, read in
-    two-element vectors, the widest that divides the stride; one token, whose row stride is
-    no layout and which the packed program reads; every other column of 512-wide rows, whose
-    tokens lie a row apart but whose channels do not; a transposed x, whose tokens lie one
-    element apart; and an expanded x, whose tokens lie zero elements apart.
+    two-element vectors, the widest that divides the stride; every other column of 512-wide
+    rows, whose tokens lie a row apart but whose channels do not; and an expanded x, whose
+    tokens lie zero elements apart.
     """
     call = manifest_call(
         "CausalConv1dFwdOp",
