@@ -21,7 +21,7 @@ class ModelOps:
     """One instance of every op the model calls; ops take their shapes from each call.
 
     Every RMSNorm of the decoder, the q/k norms included, scales by ``1 + w``; the Gated
-    DeltaNet output norm scales by ``w``.
+    DeltaNet output norm scales by ``w``, over each value head of a token's row.
     """
 
     def __init__(self, cfg: Qwen3_8Config) -> None:
@@ -38,7 +38,9 @@ class ModelOps:
             use_beta_sigmoid_in_kernel=True,
             use_gate_in_kernel=True,
         )
-        self.gated_norm = RMSNormGatedFwdOp(eps, norm_before_gate=True, activation="silu")
+        self.gated_norm = RMSNormGatedFwdOp(
+            eps, cfg.linear_value_head_dim, norm_before_gate=True, activation="silu"
+        )
         self.qk_norm_rope = FusedQKNormRoPEFwdOp(
             cfg.num_attention_heads,
             cfg.num_key_value_heads,

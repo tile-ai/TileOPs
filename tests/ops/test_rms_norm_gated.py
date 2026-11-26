@@ -242,6 +242,9 @@ def test_rms_norm_gated_keeps_a_tiny_gate(activation) -> None:
 @pytest.mark.cuda_graph(op="RMSNormGatedFwdOp")
 @pytest.mark.smoke
 def test_rms_norm_gated_graph_replay() -> None:
-    """Qwen3.8-27B's decode call, the Gated DeltaNet output norm gated by silu after the norm."""
-    call = manifest_call("RMSNormGatedFwdOp", _BF16, B=[48], N=128, some=["z"], bias=None)
+    """Qwen3.8-27B's decode call, the Gated DeltaNet output norm of each of a token's 48 value
+    heads gated by silu after the norm."""
+    call = manifest_call(
+        "RMSNormGatedFwdOp", _BF16, B=[1], N=6144, some=["z"], bias=None, group_size=128
+    )
     check_replay(RMSNormGatedTest(call), RMSNormGatedFwdOp(**call.arguments()))

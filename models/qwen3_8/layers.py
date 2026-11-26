@@ -59,7 +59,9 @@ class GatedDeltaNet:
     advanced in place.
 
     ``in_proj`` stacks the rows of HF's ``in_proj_qkv``, ``in_proj_z``, ``in_proj_b`` and
-    ``in_proj_a``. ``A_log`` and ``dt_bias`` are float32.
+    ``in_proj_a``. ``A_log`` and ``dt_bias`` are float32. ``norm`` is HF's per-head output
+    norm weight repeated over the value heads: the norm runs head by head over a token's
+    whole row, reading the gate ``z`` where it lies in the projection.
     """
 
     def __init__(self, cfg: Qwen3_8Config, device: torch.device) -> None:
@@ -112,8 +114,8 @@ class GatedDeltaNet:
             dt_bias=self.dt_bias,
             state_indices=self.slot,
         )
-        o = ops.gated_norm(o.view(-1, dim), self.norm, None, z.reshape(-1, dim))
-        return ops.gemm(o.view(tokens, self.value_dim), self.out_proj)
+        o = ops.gated_norm(o.view(tokens, self.value_dim), self.norm, None, z)
+        return ops.gemm(o, self.out_proj)
 
 
 class GatedAttention:
