@@ -316,7 +316,6 @@ class Attention:
     def __call__(self, ops: ModelOps, rope: RoPETable, x: torch.Tensor, step: Step) -> torch.Tensor:
         """Attend ``x`` (``[S, dim]`` bfloat16) and return ``[S, dim]``."""
         seqlen, start_pos = step.seqlen, step.start_pos
-        device = x.device
         win, rd = self.window, self.rope_dim
         qr = ops.norm(self.wq_a(ops, x), self.q_norm)
         q = self.wq_b(ops, qr).view(1, seqlen, self.n_heads, self.head_dim)
@@ -343,8 +342,11 @@ class Attention:
 
         entries = self.compressor(ops, rope, x, step) if self.compressor is not None else None
         if start_pos == 0:
-            kept = torch.arange(max(0, seqlen - win), seqlen, device=device)
-            self.kv_cache[:, kept % win] = kv[:, kept]
+            first = max(0, seqlen - win)
+            slot = first % win
+            head = min(win - slot, seqlen - first)
+            self.kv_cache[:, slot : slot + head] = kv[:, first : first + head]
+            self.kv_cache[:, : seqlen - first - head] = kv[:, first + head :]
             keys = kv
             if entries is not None:
                 self.kv_cache[:, win : win + entries.shape[1]] = entries
