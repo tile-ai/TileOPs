@@ -52,7 +52,8 @@ class GatedPoolCompressFwdInterface(KernelInterface):
         writes the rows of the request's last ``c * ratio`` positions.
 
         Args:
-            kv: ``(T_q, c * call.dim)`` in ``call.dtype``, contiguous.
+            kv: ``(T_q, c * call.dim)`` in ``call.dtype``, its channels contiguous and its
+                rows any stride apart.
             score: As ``kv``.
             ape: ``(call.ratio, c * call.dim)`` in ``call.dtype``, contiguous.
             kv_state: ``(NS, c * call.ratio, c * call.dim)`` float32, contiguous; written.
@@ -68,7 +69,11 @@ class GatedPoolCompressFwdInterface(KernelInterface):
 
 
 @target_cache(maxsize=32)
-def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_warps):
+def _gated_pool_compress_kernel(
+    ratio, overlap, dim, in_dtype, one_token, long_warps, kv_stride, score_stride
+):
+    """The pooling program; ``kv`` and ``score`` rows lie ``kv_stride`` and ``score_stride``
+    elements apart, ``None`` for contiguous rows."""
     K = GatedPoolCompressKernel
     SM_WARPS, BATCH = K.SM_WARPS, K.BATCH
     C = 2 if overlap else 1
@@ -639,10 +644,17 @@ def _gated_pool_compress_kernel(ratio, overlap, dim, in_dtype, one_token, long_w
                 for e in T.vectorized(vec):
                     score_state[slot, q % SPAN, h * dim + col + e] = l_wsc[h * vec + e]
 
+        kv_param, score_param = (
+            T.Tensor[(t_q, WIDTH), in_dtype]
+            if stride is None
+            else T.StridedTensor[(t_q, WIDTH), (stride, 1), in_dtype]
+            for stride in (kv_stride, score_stride)
+        )
+
         @T.prim_func
         def gated_pool_compress_main(
-            kv: T.Tensor[(t_q, WIDTH), in_dtype],
-            score: T.Tensor[(t_q, WIDTH), in_dtype],
+            kv: kv_param,
+            score: score_param,
             ape: T.Tensor[(ratio, WIDTH), in_dtype],
             kv_state: T.Tensor[(n_slots, SPAN, WIDTH), T.float32],
             score_state: T.Tensor[(n_slots, SPAN, WIDTH), T.float32],
@@ -1119,7 +1131,7 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
         self.dim = dim
         self.dtype = dtype
         self.kernel = _gated_pool_compress_kernel(
-            ratio, overlap, dim, self.dtype_str, False, self.LONG_WARPS
+            ratio, overlap, dim, self.dtype_str, False, self.LONG_WARPS, None, None
         )
         self.init_config()
 
@@ -1140,9 +1152,16 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
                 torch.empty((0, self.dim), dtype=torch.bfloat16, device=kv.device),
                 torch.empty((0,), dtype=torch.bool, device=kv.device),
             )
-        return self.program(self._compile, *self._program_facts(kv.shape[0], start_pos.shape[0]))(
+        facts = self._program_facts(kv.shape[0], start_pos.shape[0])
+        strides = (self._row_stride(kv), self._row_stride(score))
+        return self.program(self._compile, *facts, *strides)(
             kv, score, ape, kv_state, score_state, cu_seqlens, start_pos, state_slots
         )
+
+    @staticmethod
+    def _row_stride(t: torch.Tensor) -> "int | None":
+        """The row stride the program declares for *t*, ``None`` for contiguous rows."""
+        return None if t.is_contiguous() else t.stride(0)
 
     def _program_facts(self, t_q: int, n: int) -> "tuple[bool, int]":
         """Whether the program pools a request's only token apart, and a long window's warps.
@@ -1164,8 +1183,23 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
         eight = long and one_token and -(-span // self.BATCH) == self.LONG_WARPS and one_split_wave
         return one_token, self.SPLIT_WARPS if eight else self.LONG_WARPS
 
-    def _compile(self, cfg: dict, one_token: bool, long_warps: int):
-        """The program for ``_program_facts``; the kernel takes no configuration."""
+    def _compile(
+        self,
+        cfg: dict,
+        one_token: bool,
+        long_warps: int,
+        kv_stride: "int | None",
+        score_stride: "int | None",
+    ):
+        """The program for ``_program_facts`` over ``kv`` and ``score`` rows of the strides
+        ``_row_stride`` declares; the kernel takes no configuration."""
         return _gated_pool_compress_kernel(
-            self.ratio, self.overlap, self.dim, self.dtype_str, one_token, long_warps
+            self.ratio,
+            self.overlap,
+            self.dim,
+            self.dtype_str,
+            one_token,
+            long_warps,
+            kv_stride,
+            score_stride,
         )()

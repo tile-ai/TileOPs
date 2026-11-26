@@ -166,6 +166,147 @@ def test_gated_pool_compress_matches_reference(
     )
 
 
+class _StridedRowsTest(GatedPoolCompressFwdTest):
+    """``kv`` and ``score`` laid out by ``layout``: ``halves``, the column halves of one
+    ``[T_q, 2 * C * D]`` projection, as DeepSeek-V4-Flash's compressor passes them;
+    ``padded``, the leading columns of two tensors whose rows are two elements wider, off a
+    lane's vector; ``broadcast``, one row each repeated over the tokens by a zero stride;
+    ``broadcast-kv``, ``kv`` so repeated and ``score`` the second column half of a
+    ``[T_q, 2 * C * D]`` projection, rows of two strides."""
+
+    def __init__(self, call, layout: str) -> None:
+        super().__init__(call)
+        self.layout = layout
+
+    def gen_inputs(self) -> tuple:
+        kv, score, *rest = super().gen_inputs()
+        width = kv.shape[1]
+        if self.layout == "halves":
+            both = torch.cat([kv, score], dim=1)
+            return both[:, :width], both[:, width:], *rest
+        if self.layout == "padded":
+            rows = []
+            for t in (kv, score):
+                wide = torch.zeros(t.shape[0], width + 2, dtype=t.dtype, device=t.device)
+                wide[:, :width] = t
+                rows.append(wide[:, :width])
+            return *rows, *rest
+        if self.layout == "broadcast":
+            return kv[:1].expand_as(kv), score[:1].expand_as(score), *rest
+        both = torch.cat([kv, score], dim=1)
+        return kv[:1].expand_as(kv), both[:, width:], *rest
+
+
+@pytest.mark.parametrize(
+    "dtype, dim, ratio, overlap, seq_lens, positions, layout",
+    [
+        pytest.param(
+            torch.float32,
+            512,
+            4,
+            True,
+            [67],
+            [0],
+            "halves",
+            marks=pytest.mark.smoke,
+            id="deepseek-ratio-4",
+        ),
+        pytest.param(
+            torch.bfloat16,
+            128,
+            4,
+            False,
+            [9, 0, 21, 3],
+            [6, 40, 101, 2],
+            "halves",
+            marks=pytest.mark.smoke,
+            id="bf16-ragged-resume",
+        ),
+        pytest.param(
+            torch.float32,
+            512,
+            128,
+            False,
+            [300],
+            [0],
+            "halves",
+            marks=pytest.mark.full,
+            id="deepseek-ratio-128",
+        ),
+        pytest.param(
+            torch.float32,
+            128,
+            4,
+            True,
+            [1, 1, 1, 1],
+            [7, 11, 31, 3],
+            "halves",
+            marks=pytest.mark.full,
+            id="decode",
+        ),
+        pytest.param(
+            torch.float32,
+            128,
+            4,
+            True,
+            [21],
+            [0],
+            "padded",
+            marks=pytest.mark.full,
+            id="rows-off-the-vector",
+        ),
+        pytest.param(
+            torch.float32,
+            128,
+            4,
+            True,
+            [67],
+            [0],
+            "broadcast",
+            marks=pytest.mark.full,
+            id="broadcast-rows",
+        ),
+        pytest.param(
+            torch.float32,
+            128,
+            4,
+            True,
+            [67],
+            [0],
+            "broadcast-kv",
+            marks=pytest.mark.full,
+            id="two-row-strides",
+        ),
+    ],
+)
+def test_gated_pool_compress_reads_strided_rows(
+    dtype: torch.dtype,
+    dim: int,
+    ratio: int,
+    overlap: bool,
+    seq_lens: list,
+    positions: list,
+    layout: str,
+) -> None:
+    """``kv`` and ``score`` whose rows lie apart from their channels' width, read where they
+    lie: wider apart, off a lane's vector, or all at one address."""
+    call = _test(
+        dtype, dim=dim, ratio=ratio, overlap=overlap, seq_lens=seq_lens, positions=positions
+    ).call
+    _check(_StridedRowsTest(call, layout))
+
+
+@pytest.mark.smoke
+def test_gated_pool_compress_builds_a_program_for_each_row_stride() -> None:
+    """One op called on contiguous rows, then on the column halves of one projection, then on
+    contiguous rows again: each call runs the program of its own row strides."""
+    call = _test(torch.float32, dim=512, ratio=4, overlap=True, seq_lens=[67], positions=[0]).call
+    contiguous = GatedPoolCompressFwdTest(call)
+    op = GatedPoolCompressFwdOp(**contiguous.arguments())
+    for test in (contiguous, _StridedRowsTest(call, "halves"), contiguous):
+        test.check(op, *test.gen_inputs(), runs=lambda *args: gated_pool_compress_result(op, *args))
+
+
 @pytest.mark.parametrize(
     "ratio, overlap",
     [
