@@ -22,10 +22,11 @@ class TopPMaskFwdOp(Op):
     become ``-inf``; the rest pass through bit for bit. ``0 <= top_p <= 1`` is the caller's
     obligation. The output has the shape and dtype of ``logits``.
 
-    ``top_p = 0`` masks the row whole. ``top_p = 1`` keeps every token whose probability survives
-    the row's float32 sum, and masks the ones the sum rounds away with the zero-probability
-    ones. A row whose maximum is not finite, a NaN or an infinity among its logits, has an
-    all-NaN softmax, so nothing in it is masked and it passes through whole.
+    ``top_p = 0`` masks the row whole. ``top_p = 1`` keeps every token of positive probability,
+    which is every token whose logit is not ``-inf``, so the row passes through whole, including
+    the tokens whose probability the row's float32 sum rounds away. A row whose maximum is not
+    finite, a NaN or an infinity among its logits, has an all-NaN softmax, so nothing in it is
+    masked and it passes through whole.
 
     A row the kernel splits across thread blocks, as a small batch's rows are, sums its
     probability weights exactly in fixed point before rounding the totals to float32 when its

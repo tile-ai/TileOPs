@@ -212,22 +212,26 @@ def test_top_p_mask(dtype):
     ],
 )
 def test_top_p_mask_rows_at_the_contract_endpoints(vocab: int):
-    """``p = 0`` masks a row whole, ``p = 1`` keeps every token the softmax gives mass to,
-    and a row with no finite maximum passes through, at each shape the kernel plans for.
+    """``p = 0`` masks a row whole, ``p = 1`` passes a row through whole, and a row with no
+    finite maximum passes through, at each shape the kernel plans for.
 
     ``V`` picks the plan: a row split across blocks, which reduces across a grid barrier; a
-    row one block holds, which takes no barrier; and a row whose bytes are not a whole number
-    of 16-byte vectors, which is read and written element by element. The endpoints are held
-    to the contract rather than to the reference, which rounds its own cumulative sum past 1
-    at ``p = 1``; the rows with no finite maximum are held to the reference, which leaves
-    them whole because a NaN never reaches ``p``.
+    row one block holds, which takes no barrier; and a row whose bytes are not a whole
+    number of 16-byte vectors, which is read and written element by element. The ``p = 1``
+    row holds a token 20 below its maximum, whose probability the float32 sum rounds away,
+    and one 200 below, whose float32 softmax is 0; both have positive probability and are
+    kept. The endpoints are held to the contract rather than to the reference, which rounds
+    its own cumulative sum past 1 at ``p = 1``; the rows with no finite maximum are held to
+    the reference, which leaves them whole because a NaN never reaches ``p``.
     """
     device = run_device()
     p = torch.tensor([0.0, 1.0, 0.5], device=device)
     logits = torch.randn(3, vocab, device=device)
+    logits[1, 1] = logits[1].max() - 20
+    logits[1, 2] = logits[1].max() - 200
     out = _run(TopPMaskFwdOp(), logits, p)
     assert (out[0] == -_INF).all()
-    assert torch.equal(out[1] != -_INF, logits.float().softmax(-1)[1] > 0)
+    assert torch.equal(out[1], logits[1])
     logits[0, vocab // 2] = float("nan")
     logits[1, 0] = _INF
     logits[2] = -_INF
@@ -236,49 +240,18 @@ def test_top_p_mask_rows_at_the_contract_endpoints(vocab: int):
     compare_outputs(out, ref, top_p_mask_verification(logits, p))
 
 
-@pytest.mark.parametrize(
-    ("vocab", "tail", "kept"),
-    [
-        pytest.param(32000, -20.0, False, marks=pytest.mark.smoke),
-        pytest.param(32000, -16.0, True, marks=pytest.mark.full),
-        pytest.param(512, -20.0, False, marks=pytest.mark.full),
-        pytest.param(512, -16.0, True, marks=pytest.mark.full),
-    ],
-)
-def test_top_p_mask_at_one_keeps_what_the_sum_keeps(vocab: int, tail: float, kept: bool):
-    """``p = 1`` masks a token whose probability the row's float32 sum rounds away, and keeps
-    one the sum keeps.
-
-    The row holds a logit of 0 and one of ``tail``, the rest ``-inf``. ``1 + exp(-20)`` rounds
-    to 1 in float32, so the weight strictly above the -20 already reaches ``p`` times the
-    total; ``1 + exp(-16)`` rounds above 1, so the weight above the -16 falls short of it.
-    ``V`` picks a row split across blocks, which meets them per pass across a grid barrier,
-    and a row one block holds.
-    """
-    device = run_device()
-    logits = torch.full((1, vocab), -_INF, device=device)
-    logits[0, 0] = 0.0
-    logits[0, vocab // 2] = tail
-    p = torch.ones(1, device=device)
-    ref = top_p_mask(logits, p)
-    assert ref[0, 0] == 0.0
-    assert (ref[0, vocab // 2] == tail) == kept
-    out = _run(TopPMaskFwdOp(), logits, p)
-    assert torch.equal(out, ref)
-
-
 @pytest.mark.smoke
-def test_top_p_mask_at_one_keeps_a_tail_of_tiny_weights():
-    """``p = 1`` keeps a tail whose tokens each weigh too little to count alone.
+def test_top_p_mask_below_one_keeps_a_tail_of_tiny_weights():
+    """``p`` just below 1 keeps a tail whose tokens each weigh too little to count alone.
 
     One logit of 0 and 31999 of -19 in a row split across blocks: each tail token weighs
     ``exp(-19)``, about 5.6e-9, and together they hold about 1.8e-4 of the total, so the
-    weight above them falls short of it and the tail is kept.
+    weight above them falls short of ``p`` times it and the tail is kept.
     """
     device = run_device()
     logits = torch.full((1, 32000), -19.0, device=device)
     logits[0, 0] = 0.0
-    p = torch.ones(1, device=device)
+    p = torch.full((1,), 1 - 2**-24, device=device)
     ref = top_p_mask(logits, p)
     assert (ref != -_INF).all()
     out = _run(TopPMaskFwdOp(), logits, p)
@@ -312,13 +285,13 @@ def test_top_p_mask_split_row_repeats_its_mask():
     """A row split across blocks gets the same mask on every call.
 
     The blocks add their bins in whatever order they reach the atomics; a long tail of logits
-    uniform in [-30, 0] at ``p = 1`` puts the cut where a different rounding of the bins'
-    totals would move it.
+    uniform in [-30, 0] at ``p`` just below 1 puts the cut where a different rounding of the
+    bins' totals would move it.
     """
     device = run_device()
     generator = torch.Generator(device=device).manual_seed(0)
     logits = -30 * torch.rand(1, 128256, device=device, generator=generator)
-    p = torch.ones(1, device=device)
+    p = torch.full((1,), 1 - 2**-24, device=device)
     op = TopPMaskFwdOp()
     first = _run(op, logits, p)
     compare_outputs(first, top_p_mask(logits, p), top_p_mask_verification(logits, p))
