@@ -178,10 +178,11 @@ def test_dropout_scales_past_the_float16_range() -> None:
     from tileops._ops.elementwise.dropout import DropoutFwdOp
 
     p = 1 - 2**-17
-    n = 1 << 24
+    n = 4_000_000
     x = torch.full((n,), 2**-10, dtype=torch.float16, device=run_device())
     y = DropoutFwdOp(p=p, seed=42)(x)
     kept = y != 0
+    assert kept.any(), "no element was kept"
     assert torch.all(y[kept] == 128), "a kept element was not scaled to 128"
     expected = n * (1 - p)
     assert abs(kept.sum().item() - expected) <= 6 * math.sqrt(expected * p)
