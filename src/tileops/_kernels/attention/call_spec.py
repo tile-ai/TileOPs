@@ -445,7 +445,8 @@ class GQAPagedFwdInterface(KernelInterface):
     ) -> torch.Tensor:
         """Attend each request's queries, aligned to the end of its cache.
 
-        Every tensor is contiguous on ``call.device``, and nothing is written in place.
+        Every tensor is on ``call.device`` and contiguous but *q*, which comes in the
+        caller's layout; nothing is written in place.
 
         Args:
             q: ``(total_q, heads, dim)`` in ``call.query_dtype``, requests back to back.

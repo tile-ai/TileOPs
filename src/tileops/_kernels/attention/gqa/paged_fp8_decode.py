@@ -915,6 +915,7 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         rope_sin: torch.Tensor | None = None,
         sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        q = q.contiguous()
         group = self.heads // self.heads_kv
         # Row tiles this packing can need, at most one partial tile per request; read from
         # the shapes, because summing the offsets would synchronize with the device.

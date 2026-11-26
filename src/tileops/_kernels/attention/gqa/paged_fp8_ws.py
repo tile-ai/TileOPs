@@ -1233,7 +1233,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         return self.launch(
             self.program(self._compile),
             self._counters,
-            q,
+            q.contiguous(),
             k_pool,
             v_pool,
             cache_seqlens,
