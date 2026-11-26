@@ -325,6 +325,77 @@ def test_prefill_bias(dtype: str, weight_dtype: str) -> None:
     test.check(op, *inputs, runs=run)
 
 
+def _x_layout(x: torch.Tensor, layout: str, row: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """*x* (``(Tt, D)``) laid out as *layout*, and the storage the view lies in: ``"columns"``,
+    the leading columns of rows *row* elements wide; ``"every-other"``, every other column of
+    rows *row* elements wide; ``"transposed"``, a ``(D, Tt)`` tensor's transpose;
+    ``"expanded"``, x's first row repeated over every token, zero elements apart."""
+    tokens, dim = x.shape
+    if layout in ("columns", "every-other"):
+        storage = torch.randn(tokens, row, device=x.device).to(x.dtype)
+        view = storage[:, :dim] if layout == "columns" else storage[:, ::2]
+        view.copy_(x)
+    elif layout == "transposed":
+        storage = x.t().contiguous()
+        view = storage.t()
+    else:
+        storage = x[:1].clone()
+        view = storage.expand(tokens, dim)
+    return view, storage
+
+
+@pytest.mark.parametrize(
+    "seq_lens, dim, layout, row, some",
+    [
+        pytest.param(
+            [1000, 3, 30], 10240, "columns", 16480, ["has_initial_state", "cache_indices"],
+            marks=_SMOKE, id="qwen3.8-27b-projection",
+        ),
+        pytest.param([70, 1, 62], 256, "columns", 262, _BOTH, marks=_FULL, id="vec-2-stride"),
+        pytest.param([1], 256, "columns", 262, _BOTH, marks=_FULL, id="one-token"),
+        pytest.param([70, 1, 62], 256, "every-other", 512, _BOTH, marks=_FULL, id="every-other"),
+        pytest.param([70, 1, 62], 256, "transposed", 0, _BOTH, marks=_FULL, id="transposed"),
+        pytest.param([70, 1, 62], 256, "expanded", 0, _BOTH, marks=_FULL, id="expanded"),
+    ],
+)  # fmt: skip
+def test_prefill_reads_strided_tokens(seq_lens, dim, layout, row, some) -> None:
+    """x as the leading columns of wider rows is read where it lies, and in any other layout
+    from a packed copy: outputs and final states match the reference, and the storage x lies
+    in stays as it was.
+
+    The cells: Qwen3.8-27B's Gated DeltaNet, whose x is the first 10240 columns of the
+    16480-wide input projection, convolved on a state pool; rows 262 elements apart, read in
+    two-element vectors, the widest that divides the stride; one token, whose row stride is
+    no layout and which the packed program reads; every other column of 512-wide rows, whose
+    tokens lie a row apart but whose channels do not; a transposed x, whose tokens lie one
+    element apart; and an expanded x, whose tokens lie zero elements apart.
+    """
+    call = manifest_call(
+        "CausalConv1dFwdOp",
+        {"T": "bfloat16", "Tw": "bfloat16"},
+        D=dim,
+        W=4,
+        L=3,
+        Tt=sum(seq_lens),
+        seq_lens=seq_lens,
+        some=some,
+        **({"P": 8} if "cache_indices" in some else {}),
+        **({} if "bias" in some else {"bias": None}),
+    )
+    test = CausalConv1dFwdTest(call)
+    inputs = list(test.gen_inputs())
+    inputs[0], storage = _x_layout(inputs[0], layout, row)
+    original = storage.clone()
+    op = CausalConv1dFwdOp(**call.arguments())
+
+    def run(*args, **keywords):
+        result = conv_state_result(op, *args, **keywords)
+        torch.testing.assert_close(storage, original, rtol=0, atol=0)
+        return result
+
+    test.check(op, *inputs, runs=run)
+
+
 _POOLED_PREFILL = (
     pytest.param(
         [1, 2, 0, 3, 5, 17, 0, 64, 33, 1, 0],
@@ -568,10 +639,25 @@ def test_causal_conv1d_prefill_refuses_a_ring_past_shared_memory() -> None:
     (in_tree,) = Kernel.devices
     call = CausalConv1dCall(
         arch=89, sm_count=142, smem_budget=101376, dim=256, width=4, dtype=torch.bfloat16,
-        weight_dtype=torch.bfloat16, state_len=210, dilation=70, device=torch.device(in_tree),
+        weight_dtype=torch.bfloat16, state_len=210, dilation=70, x_stride=256,
+        device=torch.device(in_tree),
     )  # fmt: skip
     with pytest.raises(OpNotAvailableError, match="bytes of tokens, past the 101376"):
         CausalConv1dFwdOp(dilation=70).key_for("causal_conv1d", call)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_causal_conv1d_prefill_refuses_tokens_closer_than_a_row() -> None:
+    """A call spec whose x rows lie closer than its channels, the op's own calls never
+    among them, is refused before a build: the program would read overlapping rows."""
+    (in_tree,) = Kernel.devices
+    call = CausalConv1dCall(
+        dim=256, width=4, dtype=torch.bfloat16, weight_dtype=torch.bfloat16, state_len=3,
+        x_stride=0, device=torch.device(in_tree),
+    )  # fmt: skip
+    with pytest.raises(OpNotAvailableError, match="0 elements apart, closer than its 256"):
+        CausalConv1dFwdOp().key_for("causal_conv1d", call)
 
 
 # Float16 builds: a dilated build's 832 blocks of one warp, which hold more than 128 registers'

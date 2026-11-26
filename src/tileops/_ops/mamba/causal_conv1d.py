@@ -91,7 +91,9 @@ class CausalConv1dFwdOp(Op):
         """Convolve every packed sequence and leave its last tokens in its state.
 
         Args:
-            x: ``(Tt, D)`` float16 or bfloat16, the sequences packed token-major.
+            x: ``(Tt, D)`` float16 or bfloat16, the sequences packed token-major. Read in
+                place when its channels are contiguous and its tokens at least ``D``
+                elements apart, as the columns of a wider projection are; copied otherwise.
             weight: ``(D, W)``, one filter a channel, in ``x``'s dtype or float32.
             conv_state: ``(B, D, L)``, or ``(P, D, L)`` with ``cache_indices``, contiguous,
                 ``L >= (W - 1) * dilation``; read where ``has_initial_state`` is set and
@@ -107,6 +109,9 @@ class CausalConv1dFwdOp(Op):
         Returns:
             A new ``(Tt, D)`` tensor in ``x``'s dtype.
         """
+        x_stride = x.stride(0) if x.shape[0] > 1 else x.shape[1]
+        if x_stride < x.shape[1] or (x.shape[1] > 1 and x.stride(1) != 1):
+            x, x_stride = x.contiguous(), x.shape[1]
         kernel = self.kernel_for(
             "causal_conv1d",
             lambda: CausalConv1dCall(
@@ -120,11 +125,12 @@ class CausalConv1dFwdOp(Op):
                 state_len=conv_state.shape[2],
                 dilation=self.dilation,
                 pooled=cache_indices is not None,
+                x_stride=x_stride,
                 device=x.device,
             ),
         )
         return kernel(
-            x.contiguous(),
+            x,
             weight.contiguous(),
             conv_state,
             cu_seqlens.contiguous(),
