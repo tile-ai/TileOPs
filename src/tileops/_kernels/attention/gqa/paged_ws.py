@@ -1,11 +1,13 @@
 """SM90 warp-specialized GQA over a read-only paged KV cache.
 
 A persistent CTA has one TMA producer warp and two consumer warpgroups. Work
-is one KV head and 128 query rows; wide query groups use a flat Q layout, whose
-rows run on three consumer warpgroups, 192 rows an item, at dimension 64. The
-producer zeroes stale V rows in the final partial cache page before consumers
-read them.
+is 128 query rows of one head group, query heads that share a KV head; wide query
+groups over one KV head use a flat Q layout, whose rows run on three consumer
+warpgroups, 192 rows an item, at dimension 64. The producer zeroes stale V rows
+in the final partial cache page before consumers read them.
 """
+
+import math
 
 import tilelang
 import tilelang.language as T
@@ -22,7 +24,7 @@ from tileops._kernels.attention.gqa.paged_rope_prepare import _gqa_paged_rope_pr
 from tileops._kernels.attention.online_softmax import make_apply_softcap, make_sink_scale
 from tileops._kernels.attention.stream_counter import stream_counter
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
-from tileops._kernels.constants import LOG2E
+from tileops._kernels.constants import LOG2E, WGMMA_ROWS
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 
@@ -55,20 +57,28 @@ def claim_work(Sched, lane, work):
 def _gqa_paged_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
     dtype, block_n, stages, num_ctas, window_left, window_right, has_sinks, split_small,
-    split_min_tiles, rope_cols=0, rope_rows=0,
+    split_min_tiles, rope_cols=0, rope_rows=0, *, flat, tile_heads,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, consumer warpgroups run it.
+
+    A work item is a tile of one head group's query rows: *tile_heads* query heads of one KV
+    head (``GQAPagedFwdWSKernel._tile_heads``), each owning ``span`` rows. A KV head's query
+    group holds ``slices`` head groups, and row r of a tile is query q0 + r % span of head
+    ``group_id * tile_heads + r // span``. *flat* rows (``GQAPagedFwdWSKernel._flat``) cover
+    every query head of the one KV head: row q0 + r is query (q0 + r) // tile_heads of head
+    (q0 + r) % tile_heads.
 
     With *rope_cols*, a key's first rope_cols channels come from KR (rope_rows rows a request)."""
     has_window = window_left >= 0 or window_right >= 0
     meta_count = 8 if has_window else 7
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else sm_scale * LOG2E
-    group = heads // heads_kv
+    head_groups = heads // tile_heads
+    slices = head_groups // heads_kv
     accum = "float"
-    half = 64  # rows per consumer warpgroup: one m64 WGMMA
+    half = WGMMA_ROWS  # rows per consumer warpgroup: one m64 WGMMA
     # Flat rows at dimension 64 (their items never split) take three consumer warpgroups.
-    wgs = 3 if group > 16 and dim <= 64 else 2
+    wgs = 3 if flat and dim <= 64 else 2
     block_m = wgs * half
     consumers = wgs * 128  # threads of the consumer warpgroups
     # Threads of a pingpong barrier: the two warpgroups passing the turn.
@@ -77,15 +87,12 @@ def _gqa_paged_ws_kernel(
     total_q = T.dynamic("total_q")
     pool_rows = T.dynamic("pool_rows")
     rotated_rows = T.dynamic("rotated_rows")
-    # Row r of a tile is query r % span of head kv_head * group + r // span. A group wider
-    # than 16 heads leaves fewer than the 8 rows of a swizzle atom per head; its rows are
-    # flat instead: with one KV head the queries are rows of one (total_q * heads, dim)
-    # matrix, and row q0 + r is query (q0 + r) // group of head (q0 + r) % group.
-    flat = group > 16
-    span = block_m // group
+    span = block_m // tile_heads
     sink_scale = make_sink_scale(scale, accum, half, rows_per_head=span)
     tiling = (
-        GroupTiling(batch, block_m, rows_per_offset=group) if flat else GroupTiling(batch, span)
+        GroupTiling(batch, block_m, rows_per_offset=tile_heads)
+        if flat
+        else GroupTiling(batch, span)
     )
 
     # Where requests may split, a CTA ranks up to 128 of them by cache length and claims the
@@ -97,11 +104,11 @@ def _gqa_paged_ws_kernel(
 
     def position(q0, r):
         """The query position, within its request, of row r of the tile at q0."""
-        return (q0 + r) // group if flat else q0 + r % span
+        return (q0 + r) // tile_heads if flat else q0 + r % span
 
     def q_first(meta):
         """The first row of Q the item's tile reads: a flat row, or a query position."""
-        return meta[2] * group + meta[5] if flat else meta[2] + meta[5]
+        return meta[2] * tile_heads + meta[5] if flat else meta[2] + meta[5]
 
     # A key tile is part of one page or a run of whole pages: one TMA copy per page.
     box = min(block_n, page_size)
@@ -215,7 +222,7 @@ def _gqa_paged_ws_kernel(
             r = i * 384 + tx
             if r < batch:
                 request = tile_cum[order0 + r]
-                rows = (CuQ[request + 1] - CuQ[request]) * (group if flat else 1)
+                rows = (CuQ[request + 1] - CuQ[request]) * (tile_heads if flat else 1)
                 tile_cum[lens0 + r] = T.ceildiv(rows, rows_per_tile)
         T.sync_threads()
         if tx == 0:
@@ -226,24 +233,26 @@ def _gqa_paged_ws_kernel(
 
     @T.macro
     def locate(work, CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta):
-        """Fill meta (kv head, request, q_start, q_len, kv_len, q0, tiles) for *work*.
+        """Fill meta (head group, request, q_start, q_len, kv_len, q0, tiles) for *work*.
 
         Items run from the last query tile back, so a causal request's longest tiles start
         first. Ranked requests run longest first; past 128, where requests may split, they run
         in order, so the split one-tile requests at the packing's end fill the closing wave.
         """
         if lpt:
-            tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
+            tiling.decode(work // head_groups, tile_cum, lo, hi, request, q_row)
             q_row[0] = (
                 tile_cum[request[0] + 1] - tile_cum[request[0]] - 1
             ) * rows_per_tile - q_row[0]
             request[0] = tile_cum[order0 + request[0]]
         elif split_small:
-            tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
+            tiling.decode(work // head_groups, tile_cum, lo, hi, request, q_row)
             q_row[0] = (tile_cum[request[0] + 1] - tile_cum[request[0]] - 1) * span - q_row[0]
         else:
-            tiling.decode(tile_cum[batch] - 1 - work // heads_kv, tile_cum, lo, hi, request, q_row)
-        meta[0] = work % heads_kv
+            tiling.decode(
+                tile_cum[batch] - 1 - work // head_groups, tile_cum, lo, hi, request, q_row
+            )
+        meta[0] = work % head_groups
         meta[1] = request[0]
         meta[2] = CuQ[request[0]]
         meta[3] = CuQ[request[0] + 1] - meta[2]
@@ -305,7 +314,7 @@ def _gqa_paged_ws_kernel(
                 )
 
     @T.macro
-    def load_q(Q, Qs, slot, q_bar, q_start, cv):
+    def load_q(Q, Qs, slot, q_bar, q_start, group_id):
         """TMA each head's run of the tile's queries into the warpgroup that owns its rows; a
         head spans both warpgroups when the tile holds more queries than one has rows. Flat
         rows are 64 consecutive rows of Q a warpgroup, from flat row *q_start*."""
@@ -321,7 +330,7 @@ def _gqa_paged_ws_kernel(
             rows = min(half, span)
             for wg in T.unroll(wgs):
                 for h in T.unroll(max(1, half // span)):
-                    head = cv * group + (wg * half) // span + h
+                    head = group_id * tile_heads + (wg * half) // span + h
                     first = q_start + (wg * half) % span
                     for c in T.unroll(dim // 64):
                         T.tma_copy(
@@ -345,7 +354,7 @@ def _gqa_paged_ws_kernel(
         claim_work(Sched, lane, work)
         while work[0] < total:
             locate(work[0], CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta)
-            cv = meta[0]
+            cv = meta[0] // slices
             req = meta[1]
             kv_len = meta[4]
             slot = loaded % q_slots
@@ -357,10 +366,10 @@ def _gqa_paged_ws_kernel(
             if split_small:
                 # A split item's consumers gather its query rows themselves.
                 # Small requests split alternate key tiles across the two warpgroups.
-                if (meta[3] * group > half) | (meta[6] < split_min_tiles):
-                    load_q(Q, Qs, slot, q_bar, q_first(meta), cv)
+                if (meta[3] * tile_heads > half) | (meta[6] < split_min_tiles):
+                    load_q(Q, Qs, slot, q_bar, q_first(meta), meta[0])
             else:
-                load_q(Q, Qs, slot, q_bar, q_first(meta), cv)
+                load_q(Q, Qs, slot, q_bar, q_first(meta), meta[0])
             T.mbarrier_arrive(q_bar[slot])
             for k in T.serial(meta[6]):
                 n = issued + k
@@ -408,22 +417,23 @@ def _gqa_paged_ws_kernel(
     @T.macro
     def split_item(
         wg: int, Q, Qs, Ks, Vs, O, qfree, kready, kfree, vready, vfree, mrg, acc_s, pcast,
-        acc_o, sm, smp, alpha, ss, red, logsum, slot, kv_head, q_start, q_len, kv_len, eff, done,
+        acc_o, sm, smp, alpha, ss, red, logsum, slot, group_id, q_start, q_len, kv_len, eff, done,
     ):  # fmt: skip
         """Both warpgroups attend one request's rows, at most 64: warpgroup *wg* scans key
         tiles wg, wg + 2, ... and arrives on the others' barriers so that their phases stay
         shared; warpgroup 1 hands its normalized half to warpgroup 0, which merges.
 
-        Rows are position-major here, row r query r // group of head r % group, so they sit
-        in one warpgroup's half of the tile.
+        Rows are position-major here, row r query r // tile_heads of head r % tile_heads, so they
+        sit in one warpgroup's half of the tile.
         """
-        rows = q_len * group
+        rows = q_len * tile_heads
         align = kv_len - q_len
         if wg == 0:
             for i, d in T.Parallel(half, dim):
                 r = T.min(i, rows - 1)
                 Qs[slot, 0, i, d] = T.if_then_else(
-                    i < rows, Q[q_start + r // group, kv_head * group + r % group, d],
+                    i < rows,
+                    Q[q_start + r // tile_heads, group_id * tile_heads + r % tile_heads, d],
                     T.cast(0, dtype),
                 )  # fmt: skip
             # The key products read the rows through the async proxy.
@@ -445,7 +455,7 @@ def _gqa_paged_ws_kernel(
                     for i, j in T.Parallel(half, block_n):
                         hidden = key0 + j >= kv_len
                         if is_causal:
-                            hidden = hidden | (key0 + j > i // group + align)
+                            hidden = hidden | (key0 + j > i // tile_heads + align)
                         acc_s[i, j] = T.if_then_else(hidden, -T.infinity(accum), acc_s[i, j])
                 softmax_step(acc_s, sm, smp, alpha, ss, red)
                 for i in T.Parallel(half):
@@ -480,8 +490,10 @@ def _gqa_paged_ws_kernel(
                 ss[i] = T.if_then_else(total > 0, other / total, 0)
             for i, d in T.Parallel(half, dim):
                 if i < rows:
-                    O[q_start + i // group, kv_head * group + i % group, d] = T.cast(
-                        acc_o[i, d] * alpha[i] + T.cast(Qs[slot, 1, i, d], accum) * ss[i], dtype
+                    O[q_start + i // tile_heads, group_id * tile_heads + i % tile_heads, d] = (
+                        T.cast(
+                            acc_o[i, d] * alpha[i] + T.cast(Qs[slot, 1, i, d], accum) * ss[i], dtype
+                        )
                     )
         # Warpgroup 0 has read the handed-over half; the slot may be reloaded by TMA.
         T.sync_threads(3, consumers)
@@ -519,7 +531,7 @@ def _gqa_paged_ws_kernel(
         while work >= 0:
             for i in T.unroll(meta_count):
                 meta[i] = item_slot[served % q_slots, i]
-            kv_head = meta[0]
+            group_id = meta[0]
             q_start = meta[2]
             q_len = meta[3]
             kv_len = meta[4]
@@ -538,12 +550,12 @@ def _gqa_paged_ws_kernel(
             split = T.alloc_var("int32", init=0) if split_small else 0
             # Nested: `and` between a Python bool and a TIR comparison is not TIR.
             if split_small:  # noqa: SIM102
-                if (q_len * group <= half) & (eff >= split_min_tiles):
+                if (q_len * tile_heads <= half) & (eff >= split_min_tiles):
                     split = 1
             if split == 1:
                 split_item(
                     wg, Q, Qs, Ks, Vs, O, qfree, kready, kfree, vready, vfree, mrg, acc_s,
-                    pcast, acc_o, sm, smp, alpha, ss, red, logsum, served % q_slots, kv_head,
+                    pcast, acc_o, sm, smp, alpha, ss, red, logsum, served % q_slots, group_id,
                     q_start, q_len, kv_len, eff, done,
                 )  # fmt: skip
             else:
@@ -628,7 +640,7 @@ def _gqa_paged_ws_kernel(
                 T.mbarrier_arrive(vfree[svp])
 
                 if has_sinks:
-                    sink_scale(sm, logsum, Sinks, kv_head * group + wg * half // span, alpha)
+                    sink_scale(sm, logsum, Sinks, group_id * tile_heads + wg * half // span, alpha)
                 else:
                     # Windowed padding rows can have no visible key.
                     for i in T.Parallel(half):
@@ -639,10 +651,12 @@ def _gqa_paged_ws_kernel(
                 for i, d in T.Parallel(half, dim):
                     r = wg * half + i
                     if flat:
-                        if q0 + r < q_len * group:
-                            O[q_start * group + q0 + r, d] = T.cast(acc_o[i, d] * alpha[i], dtype)
+                        if q0 + r < q_len * tile_heads:
+                            O[q_start * tile_heads + q0 + r, d] = T.cast(
+                                acc_o[i, d] * alpha[i], dtype
+                            )
                     elif q0 + r % span < q_len:
-                        O[q_start + q0 + r % span, kv_head * group + r // span, d] = T.cast(
+                        O[q_start + q0 + r % span, group_id * tile_heads + r // span, d] = T.cast(
                             acc_o[i, d] * alpha[i], dtype
                         )
             done += eff
@@ -699,7 +713,7 @@ def _gqa_paged_ws_kernel(
         if tx >= consumers and tx < consumers + 32:
             producer(
                 Q, K, V, KR, CuQ, cache_seqlens, page_table, Sched, Qs, Ks, Vs, item_slot, q_bar,
-                qfree, kready, kfree, vready, vfree, vcut, tile_cum[batch] * heads_kv,
+                qfree, kready, kfree, vready, vfree, vcut, tile_cum[batch] * head_groups,
                 tile_cum, lo, hi, request, q_row, meta, tx - consumers,
             )  # fmt: skip
         args = (
@@ -773,13 +787,22 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     16 rows, causal or bidirectional, with a positive scale and an optional softcap, when the
     packed query rows average at least one 128-row tile a request. It does not split a
     request's keys across CTAs, so a decode packing, whose tiles fall short of the
-    multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. Windows bound the scan and
-    sinks add denominator-only mass; without RoPE it serves no window.
+    multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. A query group split into head
+    groups is served at dimension 128 or 256 only where its packing is dense enough
+    (``_split_group_refusal``): ``_LEAST_TILE_FILL`` bounds the empty rows of its head-group
+    tiles; the wave fills bound the multiprocessors a partial last wave leaves idle, lowest
+    with RoPE, whose fused rotation slows the split scan more than this kernel's RoPE
+    preparation costs, and lower at dimension 256, where the split scan is slowest;
+    ``_LEAST_TILE_FILL_OVER_WAVES`` keeps thin tiles at dimension 128 off several waves,
+    whose per-item costs match the split scan's over short caches. At dimension 64 the split
+    scan keeps every such group.
+    Windows bound the scan and sinks add denominator-only mass; without RoPE it serves no
+    window.
     RoPE preprocesses private request pages without mutating the cache: over a 16-bit cache
     they hold the rotated leading key channels, the rest of each key and the values coming from
     the cache; an FP8 query or cache is served only with RoPE, whose preparation dequantizes
-    all of K and V into those 16-bit pages. A group wider than 16 heads is served over one KV
-    head, without windows, sinks or RoPE.
+    all of K and V into those 16-bit pages. It serves any query group; over one KV head, more
+    query heads than a tile holds 8-row swizzle atoms are served without windows, sinks or RoPE.
     """
 
     # Host eligibility and the device split schedule must use the same threshold.
@@ -788,12 +811,14 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_paged_varlen_kernel"})
     _DIMS: tuple[int, ...] = (64, 128, 256)
-    # A tile's 128 rows are whole heads' query runs, each at least the 8 rows of a swizzle
-    # atom so that its TMA box starts on one.
-    _GROUPS: tuple[int, ...] = (1, 2, 4, 8, 16)
     _STAGES: int = 2
     # Rows of one work item: two consumer warpgroups of one m64 WGMMA each.
-    _TILE_ROWS: int = 128
+    _TILE_ROWS: int = 2 * WGMMA_ROWS
+    _LEAST_TILE_FILL: float = 1 / 3
+    _LEAST_TILE_FILL_OVER_WAVES: float = 2 / 3
+    _LEAST_WAVE_FILL: float = 0.8
+    _LEAST_WAVE_FILL_DIM_256: float = 0.7
+    _LEAST_WAVE_FILL_ROPE: float = 0.5
     # The per-request tile prefix shares shared memory with the Q, K and V buffers, which take
     # 192 of the 227 KB at dimension 128; 4096 requests take 16 KB of the rest.
     _MAX_BATCH: int = 4096
@@ -819,12 +844,6 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         return None
 
     @staticmethod
-    def _flat(heads: int, heads_kv: int) -> bool:
-        """Whether a tile's rows are flat rows of Q: a group wider than 16 heads, over one KV
-        head, whose queries are then one (total_q * heads, dim) matrix."""
-        return heads_kv == 1 and heads > 16
-
-    @staticmethod
     def rope_pages_for(width: int, page_size: int, positions: int) -> int:
         """The rotary table bounds live cache lengths without reading device metadata."""
         return min(width, tilelang.cdiv(positions, page_size))
@@ -834,6 +853,53 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         """Rotated key channels RoPE preparation writes over a 16-bit cache, in 64-channel
         columns; zero over an FP8 cache, whose preparation writes all of K and V."""
         return 0 if cache_fp8 else min(dim, tilelang.cdiv(rotary_dim, 64) * 64)
+
+    @classmethod
+    def _flat(cls, heads: int, heads_kv: int) -> bool:
+        """Whether a tile's rows are flat rows of Q: over one KV head, more query heads than a
+        tile holds 8-row swizzle atoms, whose queries are then one (total_q * heads, dim)
+        matrix."""
+        return heads_kv == 1 and heads > cls._TILE_ROWS // 8
+
+    @classmethod
+    def _tile_heads(cls, heads: int, heads_kv: int) -> int:
+        """Query heads one work item's rows cover: every head when the rows are flat, else a head
+        group, the largest power of two that divides the query group and gives each head whole
+        8-row swizzle atoms of a tile."""
+        if cls._flat(heads, heads_kv):
+            return heads
+        return math.gcd(heads // heads_kv, cls._TILE_ROWS // 8)
+
+    @classmethod
+    def _split_group_refusal(cls, call: AttentionCall) -> str | None:
+        """Why the head groups of *call* would run slower here than on the split scan, or
+        ``None`` when its query group does not split or its packing is dense enough. Tiles
+        and work items are counted as if every request held the average query length; an
+        empty packing has nothing to count."""
+        tile_heads = cls._tile_heads(call.heads, call.heads_kv)
+        if tile_heads == call.heads // call.heads_kv or call.batch == 0:
+            return None
+        if call.dim == 64:
+            return "serves a split query group at dimension 128 or 256"
+        rows = call.max_seqlen_q * tile_heads / call.batch
+        tiles = math.ceil(rows / cls._TILE_ROWS)
+        fill = rows / (tiles * cls._TILE_ROWS)
+        if fill < cls._LEAST_TILE_FILL:
+            return "requires a split query group's head-group tiles fuller"
+        items = call.batch * tiles * (call.heads // tile_heads)
+        waves = -(-items // call.sm_count)
+        busy = items / (waves * call.sm_count)
+        if call.fuse_rope:
+            least = cls._LEAST_WAVE_FILL_ROPE
+        elif call.dim == 256:
+            least = cls._LEAST_WAVE_FILL_DIM_256
+        else:
+            least = cls._LEAST_WAVE_FILL
+            if waves > 1 and fill < cls._LEAST_TILE_FILL_OVER_WAVES:
+                return "requires a split query group's tiles over several waves fuller"
+        if busy < least:
+            return "requires a split query group's work items to fill their waves of SMs"
+        return None
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> str | None:
@@ -851,13 +917,10 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             return f"requires head dimension in {cls._DIMS}"
         if call.heads_kv <= 0 or call.heads % call.heads_kv != 0:
             return "requires heads a multiple of heads_kv"
-        group = call.heads // call.heads_kv
-        if group not in cls._GROUPS and not cls._flat(call.heads, call.heads_kv):
-            return f"requires a query group of {cls._GROUPS} heads, or a wider one over one KV head"
         if cls._flat(call.heads, call.heads_kv) and (
             call.fuse_rope or call.uses_sliding_window or call.has_sinks
         ):
-            return "serves a group wider than 16 heads without RoPE, windows or sinks"
+            return "serves flat query rows over one KV head without RoPE, windows or sinks"
         if call.sm_scale is not None and call.sm_scale <= 0.0:
             return "requires a positive scale"
         if call.page_size <= 0 or cls.block_n_for(call.page_size, call.dim) is None:
@@ -866,6 +929,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             return "serves windows only with RoPE"
         if call.max_seqlen_q * (call.heads // call.heads_kv) < cls._TILE_ROWS * call.batch:
             return "requires packed query rows averaging one 128-row tile a request"
+        split = cls._split_group_refusal(call)
+        if split is not None:
+            return split
         if call.fuse_rope:
             cols = cls.rope_cols_for(
                 call.dim, call.rotary_dim or call.dim, call.cache_dtype == torch.float8_e4m3fn
@@ -1039,6 +1105,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             cls._SPLIT_MIN_TILES,
             rope_cols,
             rope_rows,
+            flat=cls._flat(heads, heads_kv),
+            tile_heads=cls._tile_heads(heads, heads_kv),
         )
 
     @classmethod
