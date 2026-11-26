@@ -8,6 +8,7 @@ import torch
 
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.norm import (
+    RMSNormGroupedKernel,
     RMSNormKernel,
     RMSNormOnChipKernel,
     RMSNormPairedKernel,
@@ -37,9 +38,7 @@ class RMSNormFwdOp(Op):
     ``group_size`` splits the flattened trailing axes into runs of that many elements, each
     divided by its own root mean square, the weight still spanning all of them.
     ``zero_centered`` scales by ``1 + weight``, as vLLM's ``GemmaRMSNorm`` does: the
-    arithmetic is float32 and the result rounds once to the input dtype. The in-tree kernels
-    do not serve runs shorter than the normalized row; such a call raises
-    ``OpNotAvailableError`` when a kernel is selected.
+    arithmetic is float32 and the result rounds once to the input dtype.
 
     Example:
         ```python linenums="1"
@@ -51,6 +50,7 @@ class RMSNormFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "rms_norm_grouped": RMSNormGroupedKernel,
         "rms_norm": RMSNormKernel,
         "rms_norm_streaming": RMSNormStreamingKernel,
         "rms_norm_on_chip": RMSNormOnChipKernel,

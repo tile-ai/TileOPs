@@ -629,6 +629,33 @@ class NormCall(CallWorkload):
         )
 
 
+class RMSNormGroupedCall(NormCall):
+    """Groups with different magnitudes expose a reduction across group boundaries."""
+
+    def gen_inputs(self) -> tuple:
+        x, weight = super().gen_inputs()
+        group = self.call.params["group_size"]
+        width = math.prod(self.call.params["normalized_shape"])
+        values = x.reshape(-1, width // group, group)
+        magnitude = 2.0 ** (torch.arange(width // group, device=x.device) % 4)
+        x = (values.float() * magnitude[None, :, None]).to(x.dtype).reshape(x.shape)
+        return x, weight
+
+
+class RMSNormGroupedOffsetCall(NormCall):
+    """Each group's RMS is two; the offset must survive until the final multiply."""
+
+    def gen_inputs(self) -> tuple:
+        x, weight = super().gen_inputs()
+        group = self.call.params["group_size"]
+        row, _ = _offset_row(group, x.device)
+        x = row.expand(x.numel() // group, group).reshape(x.shape).to(x.dtype)
+        return x, torch.full_like(weight, _OFFSET_WEIGHT)
+
+    def verification(self, *inputs):
+        return _offset_verification((1,))
+
+
 class RunningStatsCall(NormCall):
     """A variance is positive: a passed ``running_var`` holds values in [0.5, 1.5)."""
 
