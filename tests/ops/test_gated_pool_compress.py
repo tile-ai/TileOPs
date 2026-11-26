@@ -4,6 +4,7 @@
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import TestBase
 from tileops.attention import GatedPoolCompressFwdOp
 from workloads.attention.gated_pool_compress import (
@@ -385,3 +386,26 @@ def test_gated_pool_compress_rollback_equals_one_token_decode() -> None:
     kept = [row for row in range(2 * ratio) if row != length % (2 * ratio)]
     assert torch.equal(two_kv[1][kept], one_kv[1][kept])
     assert torch.equal(two_score[1][kept], one_score[1][kept])
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GatedPoolCompressFwdOp")
+@pytest.mark.parametrize(
+    "dim, ratio, overlap",
+    [
+        pytest.param(512, 4, True, marks=pytest.mark.smoke, id="deepseek-v4-flash-ratio-4"),
+        pytest.param(128, 4, True, marks=pytest.mark.full, id="deepseek-v4-flash-indexer-ratio-4"),
+        pytest.param(512, 128, False, marks=pytest.mark.full, id="deepseek-v4-flash-ratio-128"),
+    ],
+)
+def test_gated_pool_compress_graph_replay(dim: int, ratio: int, overlap: bool) -> None:
+    """DeepSeek-V4-Flash's decode pooling of a token's float32 kv and score into its ring, at a
+    position that closes a window. The replay holds the packing and the ring slot, which a
+    request of one token cannot change."""
+    test = _test(
+        torch.float32, dim=dim, ratio=ratio, overlap=overlap, seq_lens=[1], positions=[1], slots=1
+    )
+    inputs = test.gen_inputs()
+    inputs[6].fill_(4096 - 1)
+    op = GatedPoolCompressFwdOp(**test.arguments())
+    check_replay(test, op, inputs, held=(5, 7), result=gated_pool_compress_result)

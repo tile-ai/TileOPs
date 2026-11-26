@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.cuda_graph_contract import check_replay
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.kernel_base import Kernel
@@ -27,12 +28,14 @@ from workloads.device import run_device
 from workloads.norm import (
     FusedAddRMSNormWorkload,
     FusedAddRMSNormZeroCenteredOffsetWorkload,
+    NormCall,
     RMSNormWorkload,
     RMSNormZeroCenteredOffsetWorkload,
     norm_verification,
     normalization_verification,
 )
 from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 register_compile_contract(RMSNormFwdOp)
 
@@ -150,25 +153,30 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
 
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="RMSNormFwdOp")
-@pytest.mark.smoke
-def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
+@pytest.mark.parametrize(
+    "T, B, n, row",
+    [
+        pytest.param("float16", 1024, 4096, {}, marks=pytest.mark.smoke, id="fp16"),
+        *(
+            pytest.param("bfloat16", *case, marks=pytest.mark.full, id=f"deepseek-v4-flash-{name}")
+            for name, *case in (
+                ("hidden", 1, 4096, {}),
+                ("query-lora", 1, 1024, {}),
+                ("kv", 1, 512, {}),
+                ("indexer-entry", 1, 128, {}),
+                ("query-heads", 64, 512, {"some": []}),
+            )
+        ),
+        pytest.param(
+            "bfloat16", 1, 5120, {"zero_centered": True}, marks=pytest.mark.full, id="qwen3.8-27b"
+        ),
+    ],
+)
+def test_rms_norm_graph_replay(T, B, n, row) -> None:
     """Replay consumes changed input and weight contents at their captured addresses."""
-    test = RMSNormTest(1024, 4096, torch.float16)
-    op = RMSNormFwdOp(normalized_shape=(4096,))
-    inputs = test.gen_inputs()
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(*inputs)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        output = op(*inputs)
-    inputs[0].add_(0.5)
-    inputs[1].mul_(0.5)
-    output.fill_(float("nan"))
-    graph.replay()
-    test.check(op, *inputs, runs=lambda *args: output)
+    row = {"eps": 1e-6, "some": ["weight"], **row}
+    call = manifest_call("RMSNormFwdOp", {"T": T}, B=[B], normalized_shape=[n], **row)
+    check_replay(NormCall(call), RMSNormFwdOp(**call.arguments()))
 
 
 @pytest.mark.smoke
@@ -588,6 +596,15 @@ def test_fused_add_rms_norm_zero_centered() -> None:
 def test_fused_add_rms_norm_zero_centered_float16() -> None:
     test = FusedAddRMSNormTest(1024, 4096, torch.float16, zero_centered=True)
     test.check(FusedAddRMSNormFwdOp(zero_centered=True), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="FusedAddRMSNormFwdOp")
+@pytest.mark.smoke
+def test_fused_add_rms_norm_graph_replay() -> None:
+    """Qwen3.8-27B's decode call, one zero-centered bfloat16 row."""
+    test = FusedAddRMSNormTest(1, 5120, torch.bfloat16, zero_centered=True)
+    check_replay(test, FusedAddRMSNormFwdOp(zero_centered=True))
 
 
 class FusedAddRMSNormNonContigFixture(FixtureBase):

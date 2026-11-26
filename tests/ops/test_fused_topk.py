@@ -6,6 +6,7 @@ import re
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops.moe import FusedTopKFwdOp
 from tileops.backend import OpNotAvailableError
@@ -556,6 +557,40 @@ def test_given_experts_ignore_the_selection_inputs() -> None:
         some=["expert_ids", "correction_bias"],
     )
     _check(FusedTopKWorkload(call))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="FusedTopKFwdOp")
+@pytest.mark.smoke
+def test_fused_topk_graph_replay() -> None:
+    """DeepSeek-V4-Flash's two decode routings, a biased selection and a hash layer's given
+    experts, captured on the one op the model routes both through. The replay renews the logits
+    and bias and moves each given expert to the next: a selection admissible for the new scores,
+    and the new experts with their renormalized, scaled scores."""
+    selected, given = (
+        FusedTopKWorkload(
+            manifest_call(
+                "FusedTopKFwdOp",
+                {"G": "float32"},
+                T=1,
+                E=256,
+                top_k=6,
+                scoring_func="sqrtsoftplus",
+                renormalize=True,
+                routed_scaling_factor=1.5,
+                some=[optional],
+            )
+        )
+        for optional in ("correction_bias", "expert_ids")
+    )
+    op = FusedTopKFwdOp(**selected.call.arguments())
+    biased, hashed = selected.gen_inputs(), given.gen_inputs()
+    graph = CapturedGraph((op, biased), (op, hashed))
+    graph.renew(selected.gen_inputs(), given.gen_inputs())
+    hashed[2].add_(1).remainder_(hashed[0].shape[-1])
+    graph.replay()
+    TestBase.check(selected, op, *biased, runs=lambda *args, **kwargs: graph.outputs[0])
+    TestBase.check(given, op, *hashed, runs=lambda *args, **kwargs: graph.outputs[1])
 
 
 @pytest.mark.smoke

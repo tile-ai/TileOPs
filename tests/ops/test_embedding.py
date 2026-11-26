@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import TestBase
 from tileops._kernels.indexing import EmbeddingCall
 from tileops.backend import OpNotAvailableError
@@ -97,6 +98,24 @@ def test_embedding(S, V, D, index_dtype, dtype, params, request) -> None:
         cfg = op.kernel_for("embedding", lambda: call).config
         assert on_path(cfg, S, D), cfg
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="EmbeddingFwdOp")
+@pytest.mark.parametrize(
+    "S, V, D, T",
+    [
+        pytest.param([1], 129280, 6, "int32", marks=_SMOKE, id="deepseek-v4-flash-hash-routing"),
+        pytest.param([1, 1], 129280, 4096, "bfloat16", marks=_FULL, id="deepseek-v4-flash"),
+        pytest.param([1], 248320, 5120, "bfloat16", marks=_FULL, id="qwen3.8-27b"),
+    ],
+)
+def test_embedding_graph_replay(S, V, D, T) -> None:
+    """One decode token's int64 id looked up in a table. Every draw names the table's last row,
+    so the replay reads the row before it."""
+    test = _test(S, V, D, "int64", T)
+    ids, table = test.gen_inputs()
+    check_replay(test, EmbeddingFwdOp(**test.arguments()), (ids - 1, table))
 
 
 @pytest.mark.smoke

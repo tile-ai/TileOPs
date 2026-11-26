@@ -86,7 +86,10 @@ The `packaging` marker is separate from the tiers: its cases run against an inst
 
 [`tests/cuda_graph_contract.py`](../tests/cuda_graph_contract.py) lists the ops with qualified
 calls. Each `cuda_graph(op=...)` test defines its supported shapes, dtypes and options; the
-qualification does not extend to untested specializations or other ops. Run them on H200:
+qualification does not extend to untested specializations or other ops. A test captures
+through the file's `CapturedGraph`, which warms each call up on copies of its inputs and
+refuses to replay until the test has changed every input it does not hold; `check_replay`
+captures, renews, replays and checks one call. Run them on H200:
 
 ```bash
 python -m pytest -q tests/ops -m cuda_graph

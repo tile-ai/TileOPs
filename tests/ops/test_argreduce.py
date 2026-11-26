@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import FixtureBase, TestBase
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
@@ -274,6 +275,16 @@ def test_argmax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert y.dtype == torch.int64
     compare_outputs(y, ref, reduction_verification((ref).dtype))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="ArgmaxFwdOp")
+@pytest.mark.smoke
+def test_argmax_graph_replay() -> None:
+    """DeepSeek-V4-Flash's greedy pick over one token's float32 logits."""
+    from tileops._ops.reduction.argreduce import ArgmaxFwdOp
+
+    check_replay(ArgreduceTest(1, 129280, torch.float32, "argmax"), ArgmaxFwdOp(dim=-1))
 
 
 @ArgreduceBasicFixture

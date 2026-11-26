@@ -7,10 +7,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from tests.cuda_graph_contract import check_replay
 from tests.launch_bounds import elementwise_launch_bounds, full_occupancy_bounds
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.elementwise import UnaryKernel
-from tileops._ops.elementwise import ReLUFwdOp
+from tileops._ops.elementwise import ReLUFwdOp, SigmoidFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
     ElementwiseWorkload,
@@ -344,6 +345,36 @@ def test_sigmoid_tuned() -> None:
     op = SigmoidFwdOp()
     op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "op_type, n_total",
+    [
+        pytest.param(
+            ReLUFwdOp,
+            64 * (4096 // 4),
+            marks=[pytest.mark.smoke, pytest.mark.cuda_graph(op="ReLUFwdOp")],
+            id="deepseek-v4-flash-indexer-scores",
+        ),
+        pytest.param(
+            ReLUFwdOp,
+            64 * (4128 // 4),
+            marks=[pytest.mark.full, pytest.mark.cuda_graph(op="ReLUFwdOp")],
+            id="deepseek-v4-flash-indexer-scores-4128",
+        ),
+        pytest.param(
+            SigmoidFwdOp,
+            24 * 256,
+            marks=[pytest.mark.full, pytest.mark.cuda_graph(op="SigmoidFwdOp")],
+            id="qwen3.8-27b-attention-gate",
+        ),
+    ],
+)
+def test_activation_graph_replay(op_type, n_total: int) -> None:
+    """A bfloat16 activation of one decode token: DeepSeek-V4-Flash's indexer scores rectified,
+    Qwen3.8-27B's attention gate."""
+    check_replay(UnaryActivationTest(n_total, torch.bfloat16, op_type.__name__), op_type())
 
 
 @ActivationEdgeFixture

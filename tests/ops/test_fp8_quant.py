@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import FixtureBase, TestBase, check_strided_in_place
 from tileops.quantization import FP8QuantPerTokenGroupFwdOp
 from workloads.device import run_device
@@ -176,6 +177,59 @@ def test_fp8_quant_fake_quantizes_a_strided_view_in_place(wide_shape, index) -> 
     x_shape = torch.empty(wide_shape, device="meta")[index].shape
     test = FP8QuantViewTest(wide_shape, index, x_shape, 64, torch.bfloat16, inplace=True, **_UE8M0)
     check_strided_in_place(test, FP8QuantPerTokenGroupFwdOp(64, inplace=True, **_UE8M0))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="FP8QuantPerTokenGroupFwdOp")
+@pytest.mark.parametrize(
+    "shape, scale_dtype",
+    [
+        pytest.param(
+            (1, 4096), torch.float32, marks=pytest.mark.smoke,
+            id="deepseek-v4-flash-wq-a-wkv-shared-w13",
+        ),
+        pytest.param(
+            (1, 1024), torch.float32, marks=pytest.mark.full,
+            id="deepseek-v4-flash-wq-b-indexer-wq-b",
+        ),
+        pytest.param(
+            (1, 8 * 1024), torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-wo-b"
+        ),
+        pytest.param(
+            (1, 2048), torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w2"
+        ),
+        pytest.param(
+            (6, 4096), torch.float8_e8m0fnu, marks=pytest.mark.full,
+            id="deepseek-v4-flash-routed-w13",
+        ),
+        pytest.param(
+            (6, 2048), torch.float8_e8m0fnu, marks=pytest.mark.full,
+            id="deepseek-v4-flash-routed-w2",
+        ),
+    ],
+)  # fmt: skip
+def test_fp8_quant_graph_replay(shape, scale_dtype) -> None:
+    """DeepSeek-V4-Flash's decode-step quantization of an FP8 GEMM input."""
+    test = FP8QuantTest(shape, 128, torch.bfloat16, scale_dtype=scale_dtype, **_UE8M0)
+    check_replay(test, FP8QuantPerTokenGroupFwdOp(128, scale_dtype=scale_dtype, **_UE8M0))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="FP8QuantPerTokenGroupFwdOp")
+@pytest.mark.parametrize(
+    "wide_shape",
+    [
+        pytest.param((1, 512), marks=pytest.mark.smoke, id="deepseek-v4-flash-kv"),
+        pytest.param((1, 1, 512), marks=pytest.mark.full, id="deepseek-v4-flash-compressed-kv"),
+    ],
+)
+def test_fp8_quant_in_place_graph_replay(wide_shape) -> None:
+    """DeepSeek-V4-Flash's decode-step fake quantization in place of a KV row's columns before
+    its RoPE dimensions."""
+    index = (..., slice(None, -64))
+    x_shape = torch.empty(wide_shape, device="meta")[index].shape
+    test = FP8QuantViewTest(wide_shape, index, x_shape, 64, torch.bfloat16, inplace=True, **_UE8M0)
+    check_replay(test, FP8QuantPerTokenGroupFwdOp(64, inplace=True, **_UE8M0))
 
 
 @pytest.mark.smoke

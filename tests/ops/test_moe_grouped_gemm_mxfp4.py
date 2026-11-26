@@ -5,6 +5,7 @@ import re
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.ops.moe_grouped_gemm_helpers import (
     SENTINEL,
     SIZES,
@@ -372,6 +373,53 @@ def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
     )
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
     run_into_guarded_out(op, workload, *workload.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op=_OP)
+@pytest.mark.smoke
+def test_moe_grouped_gemm_mxfp4_graph_replay() -> None:
+    """DeepSeek-V4-Flash's decode up and down projections of one token's routes, on one op over
+    shared expert ends, replay with the routes regrouped, several to one expert: each row takes
+    its own expert's product, checked over the experts holding rows. The operands are rewritten
+    in place: a new draw would hold the experts' weights a third time, beside the captured ones
+    and the graph's copy."""
+    captured, replayed = (
+        torch.tensor(ids).bincount(minlength=256)
+        for ids in ([3, 40, 97, 128, 200, 255], [17, 17, 17, 128, 128, 254])
+    )
+    up, down = (
+        MoEGroupedGEMMMXFP4Workload(
+            manifest_call(
+                _OP,
+                _E8M0,
+                layout=contiguous_layout("tight", "physical_psum"),
+                E=len(captured),
+                sizes=captured.tolist(),
+                P=int(captured.sum()),
+                N=4096,
+                K=k,
+            )
+        )
+        for k in (4096, 2048)
+    )
+    op = MoEGroupedGEMMMXFP4FwdOp(**up.call.arguments())
+    *up_operands, ends = up.gen_inputs()
+    *down_operands, _ = down.gen_inputs()
+    graph = CapturedGraph((op, (*up_operands, ends)), (op, (*down_operands, ends)))
+    for a, a_scale, b, b_scale in (up_operands, down_operands):
+        a.copy_((-a.float()).to(a.dtype))
+        a_scale.view(torch.uint8).add_(1)
+        b.bitwise_not_()
+        b_scale.view(torch.uint8).sub_(1)
+    ends.copy_(replayed.cumsum(0))
+    graph.replay()
+    owners = replayed.nonzero().flatten()
+    for workload, (a, a_scale, b, b_scale), out in zip(
+        (up, down), (up_operands, down_operands), graph.outputs, strict=True
+    ):
+        operands = (a, a_scale, b[owners], b_scale[owners], ends[owners])
+        compare_outputs(out, workload.ref_program(*operands), workload.verification(*operands))
 
 
 def _aligned_workload(

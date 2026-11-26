@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.attention import DSADecodeBasicKernel, DSADecodeKernel, DSADecodeWSKernel
 from tileops._utils import get_sm_version
@@ -328,6 +329,43 @@ def test_dsa_decode_index_only(batch, seq_len, seq_len_kv, topk, with_sink) -> N
         sink[0], sink[1] = float("inf"), float("-inf")
         inputs.append(sink.to(q.device))
     test.check(DSADenseFwdOp(0, 1, 0, is_causal=False), *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="DSADenseFwdOp")
+@pytest.mark.parametrize(
+    ("seq_len_kv", "topk"),
+    [
+        pytest.param(
+            128 + 4096 // 4, 128 + 512, marks=pytest.mark.smoke, id="deepseek-v4-flash-ratio-4"
+        ),
+        pytest.param(128, 128, marks=pytest.mark.full, id="deepseek-v4-flash-window"),
+        pytest.param(
+            128 + 4096 // 128, 128 + 4096 // 128, marks=pytest.mark.full,
+            id="deepseek-v4-flash-ratio-128",
+        ),
+        pytest.param(
+            128 + 4128 // 4, 128 + 512, marks=pytest.mark.full, id="deepseek-v4-flash-ratio-4-4128"
+        ),
+    ],
+)  # fmt: skip
+def test_dsa_decode_graph_replay(seq_len_kv, topk) -> None:
+    """DeepSeek-V4-Flash's decode attention of a token over a layer's window and compressed
+    keys, index-only with a sink, at max_seq_len 4096 and 4128. The sink is no input of the
+    workload, so the test captures through CapturedGraph; the replayed sinks sit near
+    log(topk), as heavy as the keys, so a sink read stale changes the output."""
+    test = DSADecodeTest(
+        1, 64, 1, seq_len_kv, 512, 0, topk, 1, 1, 0, is_causal=False, dtype=torch.bfloat16
+    )
+    op = DSADenseFwdOp(0, 1, 0, is_causal=False)
+    graph = CapturedGraph((op, (*test.gen_inputs(), torch.randn(test.heads, device=run_device()))))
+    q, kv, _ = test.gen_inputs()
+    indices = _padded_topk_indices(1, 1, 1, topk, seq_len_kv, -1, torch.Generator().manual_seed(0))
+    sinks = torch.randn(test.heads, device=run_device()) + torch.tensor(topk).log()
+    inputs = (q, kv, indices, sinks)
+    graph.renew(inputs)
+    graph.replay()
+    test.check(op, *inputs, runs=lambda *args, **kwargs: graph.outputs[0])
 
 
 @pytest.mark.sm90

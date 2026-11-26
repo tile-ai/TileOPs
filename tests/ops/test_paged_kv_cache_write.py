@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import TestBase
 from tileops.attention import PagedKVCacheWriteFwdOp
 from workloads.attention.paged_cache_write import (
@@ -163,6 +164,27 @@ def test_paged_kv_cache_write_scatters_the_named_rows(
     if tune:
         op.request_tune()
     TestBase.check(workload, op, *inputs, runs=lambda *args: paged_cache_write_result(op, *args))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="PagedKVCacheWriteFwdOp")
+@pytest.mark.parametrize(
+    "num_pages",
+    [
+        pytest.param(64, marks=pytest.mark.smoke, id="qwen3.8-27b"),
+        pytest.param(65, marks=pytest.mark.full, id="qwen3.8-27b-4128"),
+    ],
+)
+def test_paged_kv_cache_write_graph_replay(num_pages: int) -> None:
+    """Qwen3.8-27B's decode call, one bfloat16 token into the pages of max_seq_len 4096 or 4128.
+    Every draw repeats its rows, caches and slot, so the replay negates the values and writes
+    the next row, the first of the last page."""
+    workload = PagedKVCacheWriteTest(
+        1, 4, 256, 64, num_pages, torch.bfloat16, slots=[(num_pages - 1) * 64 - 1]
+    )
+    key, value, k_cache, v_cache, slots, *rest = workload.gen_inputs()
+    inputs = (-key, -value, -k_cache, -v_cache, slots + 1, *rest)
+    check_replay(workload, PagedKVCacheWriteFwdOp(), inputs, result=paged_cache_write_result)
 
 
 @pytest.mark.smoke

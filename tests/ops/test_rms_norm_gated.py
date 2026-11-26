@@ -2,6 +2,7 @@
 
 import pytest
 
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import TestBase, smoke_first
 from tileops.norm import RMSNormGatedFwdOp
 from workloads.norm import RMSNormGatedCall, RMSNormGatedTinyGateCall
@@ -145,3 +146,12 @@ def test_rms_norm_gated_keeps_a_tiny_gate(activation) -> None:
     )
     test = RMSNormGatedTinyGateTest(call)
     test.check(RMSNormGatedFwdOp(**call.arguments()), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="RMSNormGatedFwdOp")
+@pytest.mark.smoke
+def test_rms_norm_gated_graph_replay() -> None:
+    """Qwen3.8-27B's decode call, the Gated DeltaNet output norm gated by silu after the norm."""
+    call = manifest_call("RMSNormGatedFwdOp", _BF16, B=[48], N=128, some=["z"], bias=None)
+    check_replay(RMSNormGatedTest(call), RMSNormGatedFwdOp(**call.arguments()))

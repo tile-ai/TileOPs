@@ -1,12 +1,14 @@
 """Public semantics of the manifold hyper-connection ops. Pre: each token count's path,
 leading shapes, a broadcast residual, one kernel serving every token count, capture and
 replay, and the calls no kernel serves. Post: each launch program, ragged columns, vector
-widths, stream counts and the mix dtypes. Head: each program, reached from the device's SM
-count, ragged columns, vector widths and stream counts."""
+widths, stream counts, the mix dtypes, and capture and replay. Head: each program, reached
+from the device's SM count, ragged columns, vector widths, stream counts, and capture and
+replay."""
 
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph, check_replay
 from tests.workload_test_base import TestBase, smoke_first
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sequence_modeling import HyperConnectionPreCall as PreCallSpec
@@ -119,32 +121,19 @@ def test_hyper_connection_pre_serves_new_token_counts_from_one_kernel(
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="HyperConnectionPreFwdOp")
 @pytest.mark.smoke
-def test_hyper_connection_pre_can_be_captured_and_replayed() -> None:
+def test_hyper_connection_pre_graph_replay() -> None:
     """Two decode calls captured back to back consume changed inputs at their captured
     addresses: each mix launch, which may start while its projection drains, reads that
     replay's splits, and the second projection does not overwrite the first's early."""
     call = _call([1], _DSV4)
     test = HyperConnectionPreTest(call)
     op = HyperConnectionPreFwdOp(**call.arguments())
-    first = test.gen_inputs()
-    second = tuple(t.clone() for t in first)
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(*first)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        outputs = op(*first), op(*second)
-    first[0].add_(0.5)
-    second[1].mul_(0.5)
-    second[3].add_(0.25)
-    for output in outputs:
-        for tensor in output:
-            tensor.fill_(float("nan"))
+    first, second = test.gen_inputs(), test.gen_inputs()
+    graph = CapturedGraph((op, first), (op, second))
+    graph.renew(test.gen_inputs(), test.gen_inputs())
     graph.replay()
-    test.check(op, *first, runs=lambda *args: outputs[0])
-    test.check(op, *second, runs=lambda *args: outputs[1])
+    test.check(op, *first, runs=lambda *args: graph.outputs[0])
+    test.check(op, *second, runs=lambda *args: graph.outputs[1])
 
 
 @pytest.mark.smoke
@@ -267,6 +256,14 @@ def test_hyper_connection_post_serves_new_token_counts_from_one_kernel() -> None
     assert len(list(op.iter_kernels())) == 1
 
 
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="HyperConnectionPostFwdOp")
+@pytest.mark.smoke
+def test_hyper_connection_post_graph_replay() -> None:
+    """DeepSeek-V4-Flash's decode call."""
+    check_replay(HyperConnectionPostTest((1, 1), 4, 4096), HyperConnectionPostFwdOp())
+
+
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_hyper_connection_post_refuses_streams_past_the_register_budget() -> None:
@@ -373,6 +370,14 @@ def test_hyper_connection_head_serves_new_token_counts_from_one_kernel() -> None
         test = HyperConnectionHeadTest((tokens,), 4, 1024)
         test.check(op, *test.gen_inputs())
     assert len(list(op.iter_kernels())) == 1
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="HyperConnectionHeadFwdOp")
+@pytest.mark.smoke
+def test_hyper_connection_head_graph_replay() -> None:
+    """DeepSeek-V4-Flash's decode call."""
+    check_replay(HyperConnectionHeadTest((1,), 4, 4096), HyperConnectionHeadFwdOp(1e-6, 1e-6))
 
 
 @pytest.mark.smoke

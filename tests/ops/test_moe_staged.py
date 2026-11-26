@@ -5,6 +5,7 @@ import dataclasses
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe import (
     MGroupedGEMMCall,
@@ -32,6 +33,7 @@ from workloads.moe import (
     MoEExpertMLPWorkload,
     MoEGroupedGEMMWorkload,
     MoEPostPermuteWorkload,
+    MoEPrePermuteWorkload,
     post_permute_verification,
 )
 from workloads.numerics import assert_normalized_error, compare_outputs
@@ -271,6 +273,28 @@ def test_staged_tight_optimized_shapes_round_trip(
     output = MoEPostPermuteFwdOp(layout)(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
     compare_outputs(output.float(), expected, post_permute_verification())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="MoEPrePermuteFwdOp")
+@pytest.mark.smoke
+def test_moe_pre_permute_graph_replay() -> None:
+    """DeepSeek-V4-Flash's decode call, replayed on a token whose routes regroup, several to one
+    expert."""
+    regrouped = [[200, 7, 200, 31, 7, 200]]
+    call = manifest_call(
+        "MoEPrePermuteFwdOp",
+        {"D": "bfloat16"},
+        T=len(regrouped),
+        H=4096,
+        K=len(regrouped[0]),
+        num_local_experts=256,
+        layout=_TIGHT_MOE_GROUPED_GEMM,
+    )
+    workload = MoEPrePermuteWorkload(call)
+    inputs = workload.gen_inputs()
+    inputs[1].copy_(torch.tensor(regrouped))
+    check_replay(workload, MoEPrePermuteFwdOp(**call.arguments()), inputs)
 
 
 @pytest.mark.smoke
@@ -1017,6 +1041,29 @@ def test_post_permute_adds_the_residual_before_the_cast(dtype: torch.dtype) -> N
     residual = torch.full((tokens, hidden), -1.0, dtype=dtype, device=run_device())
     out = MoEPostPermuteFwdOp(_TIGHT)(expert_output, weights, inverse, residual=residual)
     assert torch.equal(out, torch.full_like(out, half_eps))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="MoEPostPermuteFwdOp")
+@pytest.mark.smoke
+def test_moe_post_permute_graph_replay() -> None:
+    """DeepSeek-V4-Flash's decode call, adding the shared expert's output, replayed with every
+    route moved to another row."""
+    top_k = 6
+    call = manifest_call(
+        "MoEPostPermuteFwdOp",
+        {"D": "bfloat16"},
+        T=1,
+        K=top_k,
+        P=top_k,
+        H=4096,
+        some=["residual"],
+        layout=_TIGHT_MOE_GROUPED_GEMM,
+    )
+    workload = MoEPostPermuteWorkload(call)
+    inputs = workload.gen_inputs()
+    inputs[2].copy_(inputs[2].roll(1))
+    check_replay(workload, MoEPostPermuteFwdOp(**call.arguments()), inputs)
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@ import math
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.state_pool_guard import check_padded_slots_skipped
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
@@ -479,30 +480,11 @@ def test_kda_raw_gate_matches_reference(
     ],
 )
 def test_kda_raw_gate_graph_replay(seqlen, lower_bound):
-    """Replay reads changed gates and initial state and overwrites both returned tensors."""
+    """Replay reads changed gates, dt_bias and initial state and overwrites both returned
+    tensors. In the unbounded 65-token call two draws of dt_bias agree within the tolerance, so
+    the replay lowers it by 1."""
     test, op = _raw_gate_test(1, seqlen, 64, lower_bound, ["initial_state", "dt_bias"])
-    inputs = test.gen_inputs()
-    # The keyword-only state slot inputs are absent; the rest go by position.
-    positional = inputs[:-2]
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        op(*positional)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        output, state = op(*positional)
-    for _ in range(2):
-        inputs[0].neg_()
-        inputs[2].mul_(0.75)
-        inputs[3].add_(0.25)
-        inputs[5].mul_(0.5)
-        inputs[8].add_(0.125)
-        inputs[9].sub_(0.125)
-        output.fill_(float("nan"))
-        state.fill_(float("nan"))
-        graph.replay()
-        test.check(op, *inputs, runs=lambda *args, **keywords: (output, state))
+    check_replay(test, op, [x - 1 if i == 9 else x for i, x in enumerate(test.gen_inputs())])
 
 
 @pytest.mark.smoke

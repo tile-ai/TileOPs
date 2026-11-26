@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 from workloads.convolution import (
@@ -1445,15 +1446,5 @@ def test_conv1d_graph_reads_updated_inference_weights() -> None:
     workload = Conv1dTest(2, 64, 512, 128, 3, 1, 1, 1, 1, torch.float16)
     op = Conv1dFwdOp(padding=1)
     with torch.inference_mode():
-        inputs = workload.gen_inputs()
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            op(*inputs)
-        torch.cuda.current_stream().wait_stream(stream)
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            output = op(*inputs)
-        inputs[1].mul_(0.5)
-        graph.replay()
-        workload.check(op, *inputs, runs=lambda *args: output)
+        x, weight, bias = workload.gen_inputs()
+        check_replay(workload, op, (x, weight, torch.randn_like(bias)))

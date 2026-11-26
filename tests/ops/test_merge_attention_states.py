@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import TestBase
 from tileops.attention import MergeAttentionStatesFwdOp
 from workloads.attention.merge_states import MergeAttentionStatesWorkload
@@ -67,15 +68,8 @@ def test_merge_attention_states_finite_underflow_keeps_nan():
 def test_merge_attention_states_graph_replay():
     """Graph replay reads changed LSE inputs."""
     w = MergeAttentionStatesWorkload(17, 3, 128, torch.bfloat16)
-    inputs = w.gen_inputs()
-    op = MergeAttentionStatesFwdOp()
-    TestBase.check(w, op, *inputs)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        output = op(*inputs)
-    inputs[1].add_(0.5)
-    graph.replay()
-    TestBase.check(w, op, *inputs, runs=lambda *args: output)
+    v_a, s_a, v_b, s_b = w.gen_inputs()
+    check_replay(w, MergeAttentionStatesFwdOp(), (-v_a, s_a + 0.5, v_b * 0.5, s_b - 0.5))
 
 
 @pytest.mark.smoke

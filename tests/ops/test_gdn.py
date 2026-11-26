@@ -3,6 +3,7 @@ import math
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.state_pool_guard import check_padded_slots_skipped
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
@@ -788,6 +789,28 @@ def test_gdn_decode_updates_a_strided_pool_in_place() -> None:
         return o, final_state
 
     test.check(op, q, k, v, g, beta, strided, *rest, runs=run)
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GDNFwdOp")
+@pytest.mark.smoke
+def test_gdn_graph_replay() -> None:
+    """Qwen3.8-27B's decode call, one token on a one-slot pool with the gate, step size and Q/K
+    norm formed in kernel. Each of two replays advances the state the replay before it left in
+    the pool, so the test checks each against the state before it; both hold the one slot
+    index."""
+    test = _pooled(
+        torch.bfloat16, some=("A_log", "dt_bias"), B=1, S=1, H=16, HV=48, K=128, V=128, P=1,
+        use_qk_l2norm_in_kernel=True, use_beta_sigmoid_in_kernel=True, use_gate_in_kernel=True,
+    )  # fmt: skip
+    op = GDNFwdOp(**test.call.arguments())
+    inputs = test.gen_inputs()
+    graph = CapturedGraph((op, inputs))
+    graph.renew(test.gen_inputs())
+    for _ in range(2):
+        before = [*inputs[:5], inputs[5].clone(), *inputs[6:]]
+        graph.replay(held=[inputs[10]])
+        test.check(op, *before, runs=lambda *args, **kwargs: graph.outputs[0])
 
 
 @pytest.mark.smoke

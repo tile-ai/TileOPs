@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import TestBase, check_strided_in_place
 from tileops.quantization import FP4QuantPerGroupFwdOp
 from workloads.device import run_device
@@ -89,6 +90,22 @@ def test_fp4_quant_fake_quantizes_a_strided_view_in_place(wide_shape, index) -> 
     x_shape = torch.empty(wide_shape, device="meta")[index].shape
     test = FP4QuantViewTest(wide_shape, index, x_shape, 32, True)
     check_strided_in_place(test, FP4QuantPerGroupFwdOp(32, inplace=True))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="FP4QuantPerGroupFwdOp")
+@pytest.mark.parametrize(
+    "shape",
+    [
+        pytest.param(
+            (1, 1, 64, 128), marks=pytest.mark.smoke, id="deepseek-v4-flash-indexer-query"
+        ),
+        pytest.param((1, 1, 128), marks=pytest.mark.full, id="deepseek-v4-flash-indexer-entry"),
+    ],
+)
+def test_fp4_quant_graph_replay(shape) -> None:
+    """DeepSeek-V4-Flash's decode-step fake quantization in place of an indexer row."""
+    check_replay(FP4QuantTest(shape, inplace=True), FP4QuantPerGroupFwdOp(inplace=True))
 
 
 @pytest.mark.smoke

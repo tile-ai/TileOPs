@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.transform import HadamardTransformCall
 from tileops.transform import HadamardTransformFwdOp
@@ -77,6 +78,20 @@ def test_hadamard_transform_unaligned_storage(n: int, base_order: int) -> None:
 
     workload = HadamardTransformWorkload((rows,), n, x.dtype, base_order)
     compare_outputs(got, workload.ref_program(x), workload.verification(x))
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="HadamardTransformFwdOp")
+@pytest.mark.parametrize(
+    "batch_shape",
+    [
+        pytest.param((1, 1, 64), marks=pytest.mark.smoke, id="deepseek-v4-flash-indexer-query"),
+        pytest.param((1, 1), marks=pytest.mark.full, id="deepseek-v4-flash-indexer-entry"),
+    ],
+)
+def test_hadamard_transform_graph_replay(batch_shape) -> None:
+    """DeepSeek-V4-Flash's decode-step transforms of its indexer query and compressed key."""
+    check_replay(HadamardTransformTest(batch_shape, 128, torch.bfloat16), HadamardTransformFwdOp())
 
 
 @pytest.mark.in_tree_kernels

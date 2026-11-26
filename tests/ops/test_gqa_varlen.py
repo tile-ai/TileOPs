@@ -5,6 +5,7 @@ import re
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._perf.formulas import visible_scores
 from tileops.attention import GQAVarlenFwdOp
@@ -1297,7 +1298,8 @@ def test_varlen_split_keys_merge_across_calls_streams_and_graphs(
     q_lens: list[int], kv_lens: list[int]
 ) -> None:
     """The last part of a split item leaves its merge counter at zero: a later call, a
-    concurrent call on another stream and a replayed graph each merge their parts afresh."""
+    concurrent call on another stream and a replayed graph each merge their parts afresh. The
+    replays hold the offsets, which set the case's split."""
     test = GQAVarlenFwdTest(len(q_lens), q_lens, kv_lens, 32, 8, 128, True, -1, -1, torch.bfloat16)
     op = GQAVarlenFwdOp(is_causal=True)
     inputs = test.gen_inputs()
@@ -1315,11 +1317,9 @@ def test_varlen_split_keys_merge_across_calls_streams_and_graphs(
         return second
 
     test.check(op, *inputs, runs=two_streams)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        output = op(*inputs)
-    inputs[0].mul_(0.5)
+    captured = test.gen_inputs()
+    graph = CapturedGraph((op, captured))
     for _ in range(2):
-        output.fill_(float("nan"))
-        graph.replay()
-        test.check(op, *inputs, runs=lambda *args: output)
+        graph.renew(test.gen_inputs())
+        graph.replay(held=captured[3:5])
+        test.check(op, *captured, runs=lambda *args: graph.outputs[0])

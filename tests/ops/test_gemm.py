@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from tests.cuda_graph_contract import CapturedGraph, check_replay
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
@@ -1691,6 +1692,25 @@ def test_gemm_fp8_short_call_streams_b_in_64_row_blocks(
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GEMMFP8FwdOp")
+@pytest.mark.parametrize(
+    "n, k",
+    [
+        pytest.param(1024, 4096, marks=pytest.mark.smoke, id="deepseek-v4-flash-wq-a"),
+        pytest.param(64 * 512, 1024, marks=pytest.mark.full, id="deepseek-v4-flash-wq-b"),
+        pytest.param(512, 4096, marks=pytest.mark.full, id="deepseek-v4-flash-wkv"),
+        pytest.param(4096, 8 * 1024, marks=pytest.mark.full, id="deepseek-v4-flash-wo-b"),
+        pytest.param(64 * 128, 1024, marks=pytest.mark.full, id="deepseek-v4-flash-indexer-wq-b"),
+        pytest.param(2 * 2048, 4096, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w13"),
+        pytest.param(4096, 2048, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w2"),
+    ],
+)
+def test_gemm_fp8_graph_replay(n: int, k: int) -> None:
+    """DeepSeek-V4-Flash's block-scaled FP8 linears of one decode token."""
+    check_replay(GEMMFP8Test(1, n, k, torch.float8_e4m3fn, "block128x128"), GEMMFP8FwdOp())
+
+
 @pytest.mark.parametrize(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
@@ -2370,6 +2390,50 @@ def test_gemm_float32_output_on_pilot_model_rows(m: int, n: int) -> None:
     test = GEMMTest(m, n, 4096, torch.bfloat16, False, True, out_dtype=torch.float32)
     op = GEMMFwdOp(out_dtype=torch.float32, target=BUILTIN)
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GEMMFwdOp")
+@pytest.mark.parametrize(
+    ("n", "k", "out_dtype"),
+    [
+        pytest.param(64, 4096, None, marks=pytest.mark.smoke, id="deepseek-v4-flash-indexer"),
+        pytest.param(
+            256, 4096, torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-router"
+        ),
+        pytest.param(
+            2 * 2 * 512, 4096, torch.float32, marks=pytest.mark.full,
+            id="deepseek-v4-flash-ratio-4-compressor",
+        ),
+        pytest.param(
+            2 * 2 * 128, 4096, torch.float32, marks=pytest.mark.full,
+            id="deepseek-v4-flash-indexer-compressor",
+        ),
+        pytest.param(
+            2 * 512, 4096, torch.float32, marks=pytest.mark.full,
+            id="deepseek-v4-flash-ratio-128-compressor",
+        ),
+        pytest.param(
+            129280, 4096, torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-lm-head"
+        ),
+        pytest.param(
+            2 * 16 * 128 + 2 * 48 * 128 + 2 * 48, 5120, None, marks=pytest.mark.full,
+            id="qwen3.8-27b-deltanet-in",
+        ),
+        pytest.param(
+            (24 + 2 * 4) * 256, 5120, None, marks=pytest.mark.full, id="qwen3.8-27b-attention-qkv"
+        ),
+        pytest.param(24 * 256, 5120, None, marks=pytest.mark.full, id="qwen3.8-27b-attention-gate"),
+        pytest.param(5120, 24 * 256, None, marks=pytest.mark.full, id="qwen3.8-27b-mixer-out"),
+        pytest.param(2 * 17408, 5120, None, marks=pytest.mark.full, id="qwen3.8-27b-mlp-gate-up"),
+        pytest.param(5120, 17408, None, marks=pytest.mark.full, id="qwen3.8-27b-mlp-down"),
+        pytest.param(248320, 5120, torch.float32, marks=pytest.mark.full, id="qwen3.8-27b-lm-head"),
+    ],
+)  # fmt: skip
+def test_gemm_graph_replay(n: int, k: int, out_dtype: torch.dtype | None) -> None:
+    """A one-token bfloat16 NT projection of a decode step."""
+    test = GEMMTest(1, n, k, torch.bfloat16, trans_b=True, out_dtype=out_dtype)
+    check_replay(test, GEMMFwdOp(out_dtype=out_dtype))
 
 
 @pytest.mark.in_tree_kernels
@@ -3545,7 +3609,9 @@ def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
     k: int,
     run_mode: str,
 ) -> None:
-    """Changed inputs survive entry reuse, persistent waves and poisoned graph replays."""
+    """Changed inputs survive entry reuse, persistent waves and poisoned graph replays. A replay
+    holds the packed weight and scales, which every call shares, and every other replay the
+    activation, which alternates back to its captured values."""
     op = GEMMW4A8FwdOp(target=BUILTIN)
     if n is None:
         group_size = op.group_size
@@ -3564,17 +3630,13 @@ def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
         compare_outputs(op(*inputs), references[0], evidence[0])
         torch.cuda.synchronize()
         if run_mode == "graph":
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
-                captured = op(*inputs)
+            graph = CapturedGraph((op, inputs))
         for iteration in range(repeats):
             index = (iteration + 1) % 2
             activation.copy_(logical_inputs[index][0])
             if run_mode == "graph":
-                # A skipped store must not pass because an old result remained.
-                captured.fill_(float("nan"))
-                graph.replay()
-                actual = captured
+                graph.replay(held=inputs[1:] if index else inputs)
+                actual = graph.outputs[0]
             else:
                 actual = op(*inputs)
             torch.cuda.synchronize()
