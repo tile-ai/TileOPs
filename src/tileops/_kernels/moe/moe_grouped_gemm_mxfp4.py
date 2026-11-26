@@ -2033,7 +2033,8 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
     A config is ``{block_m, block_n, num_stages, num_sms}`` with ``block_m`` 128 or 256 and
     ``block_n`` 128; ``num_stages`` is the depth of the ring of ``a``'s rows and of the decoded
     fp8 stages. ``block_m`` and ``num_stages`` default to ``None``, which each launch resolves
-    (``_compile``); a stated value holds on every launch.
+    (``_resolved``); a stated ``block_m`` holds on every launch, and under an unset one a stated
+    ``num_stages`` is the 128-row tile's ring.
     """
 
     preferred_over: ClassVar[frozenset[str]] = frozenset({"grouped_gemm_mxfp4"})
@@ -2186,8 +2187,13 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
     @property
     def _tune_target(self) -> tuple:
         # Tuning times the 128-row ring depths against the program a launch that pairs no units
-        # runs untuned; it publishes the depth it picks as a stated config.
+        # runs untuned.
         return self.kernel, self._deepest(self._TILE_ROWS)
+
+    def _tuned_config(self, tuned: dict) -> dict:
+        # The tuned depth is the 128-row tile's ring; the tile stays the launch's choice, so a
+        # launch that pairs units keeps paired_config, whose ring tuning did not time.
+        return {**tuned, "block_m": None}
 
     def _launch_facts(self, a: torch.Tensor) -> tuple[bool]:
         # A 256-row tile decodes each weight stage once for two units of rows. A run of an odd
@@ -2201,12 +2207,13 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
         )
 
     def _resolved(self, cfg: Mapping[str, object], pairs: bool) -> dict:
-        """*cfg* with its unset fields chosen for a launch: a launch that pairs units under a
-        config stating neither ``block_m`` nor ``num_stages`` takes ``paired_config``'s tile and
-        ring; otherwise the stated tile, or 128 rows, takes the stated ring, or the deepest that
-        fits. The stated ``block_n`` and ``num_sms`` hold."""
-        if pairs and cfg["block_m"] is None and cfg["num_stages"] is None:
-            cfg = {**cfg, "block_m": self.paired_config["block_m"]}
+        """*cfg* with its unset fields chosen for a launch. An unset ``block_m`` is 256 rows on a
+        launch that pairs units, which takes ``paired_config``'s ring, and 128 rows on another;
+        a 128-row tile, and a stated tile, take the stated ring or the deepest that fits. Under
+        an unset ``block_m`` a stated ``num_stages`` is the 128-row tile's ring. The stated
+        ``block_n`` and ``num_sms`` hold."""
+        if pairs and cfg["block_m"] is None:
+            return {**cfg, **{k: self.paired_config[k] for k in ("block_m", "num_stages")}}
         block_m = cfg["block_m"] or self._TILE_ROWS
         if cfg["num_stages"] is None:
             deepest = self._deepest(block_m)

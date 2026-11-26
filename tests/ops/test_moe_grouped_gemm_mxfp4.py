@@ -1022,42 +1022,69 @@ def test_mxfp4_grouped_gemm_shared_decode_pairs_units_where_runs_average_a_pair(
     assert _aligned_kernel(4096)._launch_facts(torch.empty(2048, 0)) == (False,)
 
 
+def _built_config(monkeypatch: pytest.MonkeyPatch, kernel, rows: int) -> dict:
+    """The config *kernel* builds for a launch of *rows* rows (four experts, K = 2048), its
+    builder stubbed to return its arguments."""
+    facts = kernel._launch_facts(torch.empty(rows, 0))
+    monkeypatch.setattr(kernel, "kernel", lambda **config: config)
+    return kernel._compile(kernel.config, *facts)
+
+
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("stated", "built"),
+    ("stated", "rows", "built"),
     [
-        # Nothing stated: the pairing launch takes the 256-row tile on its 2-deep ring.
-        pytest.param({}, {"block_m": 256, "num_stages": 2}, id="unset"),
+        # Nothing stated: a launch averaging four units takes the 256-row tile on its 2-deep ring.
+        pytest.param({}, 2048, {"block_m": 256, "num_stages": 2}, id="unset"),
         # A stated grid holds on the 256-row tile.
-        pytest.param({"num_sms": 66}, {"block_m": 256, "num_stages": 2, "num_sms": 66}, id="grid"),
-        # A stated 128-row tile and ring hold on the pairing launch.
+        pytest.param(
+            {"num_sms": 66}, 2048, {"block_m": 256, "num_stages": 2, "num_sms": 66}, id="grid"
+        ),
+        # A stated 128-row tile and ring hold on a launch that pairs units.
         pytest.param(
             {"block_m": 128, "num_stages": 4, "num_sms": 66},
+            2048,
             {"block_m": 128, "num_stages": 4, "num_sms": 66},
             id="tile",
         ),
-        # A stated ring alone keeps the 128-row tile, whose ring it is.
-        pytest.param({"num_stages": 2}, {"block_m": 128, "num_stages": 2}, id="ring"),
         # A stated tile alone takes its deepest ring that fits.
-        pytest.param({"block_m": 128}, {"block_m": 128, "num_stages": 4}, id="tile-deepest-ring"),
+        pytest.param(
+            {"block_m": 128}, 2048, {"block_m": 128, "num_stages": 4}, id="tile-deepest-ring"
+        ),
+        # A stated ring under an unset tile is the 128-row tile's: a launch that pairs units
+        # keeps the 256-row tile and its ring, one that does not takes the stated ring.
+        pytest.param({"num_stages": 4}, 2048, {"block_m": 256, "num_stages": 2}, id="ring-paired"),
+        pytest.param({"num_stages": 2}, 1536, {"block_m": 128, "num_stages": 2}, id="ring"),
     ],
 )
 def test_mxfp4_grouped_gemm_shared_decode_launch_keeps_a_stated_config(
-    monkeypatch: pytest.MonkeyPatch, stated: dict, built: dict
+    monkeypatch: pytest.MonkeyPatch, stated: dict, rows: int, built: dict
 ) -> None:
-    """A launch that pairs units (2048 rows of four experts at K = 2048) builds the 256-row tile
-    only where the config leaves ``block_m`` and ``num_stages`` unset; each stated value is
-    built as stated, and an unset grid takes every SM."""
+    """A launch builds each stated value as stated and chooses the unset ones: the 256-row tile
+    where its rows average four 128-row units an expert and ``block_m`` is unset, and every SM
+    where ``num_sms`` is."""
     kernel = _aligned_kernel(2048)
     kernel.init_config(stated)
-    # The builder's arguments, the config the launch compiles.
-    monkeypatch.setattr(kernel, "kernel", lambda **config: config)
-    facts = kernel._launch_facts(torch.empty(2048, 0))
-    assert facts == (True,)
     expected = {"block_n": 128, "num_sms": kernel.sm_count, **built}
-    assert kernel._compile(kernel.config, *facts) == expected
+    assert _built_config(monkeypatch, kernel, rows) == expected
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_shared_decode_tuned_ring_keeps_the_paired_tile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tuning times the 128-row rings and publishes its pick for the 128-row tile only: after it,
+    a launch that pairs units still takes the 256-row tile, and one that does not takes the
+    tuned ring."""
+    for rows, built in ((2048, {"block_m": 256, "num_stages": 2}), (1536, {"block_m": 128})):
+        kernel = _aligned_kernel(2048)
+        tuned = {"block_m": 128, "block_n": 128, "num_stages": 2, "num_sms": kernel.sm_count}
+        kernel._publish_tuned(kernel._tuned_config(tuned))
+        assert _built_config(monkeypatch, kernel, rows) == {**tuned, **built}
 
 
 @pytest.mark.smoke
