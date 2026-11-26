@@ -68,10 +68,14 @@ def _vector(dim: int, dtype: torch.dtype) -> int:
     return next(v for v in (widest, 4, 2, 1) if v <= widest and dim % v == 0)
 
 
-def _prefill_config(dim: int, width: int, dtype: torch.dtype, dilation: int) -> dict:
-    """Default launch geometry, shared by dispatch's memory check and the kernel build."""
+def _prefill_config(dim: int, width: int, dtype: torch.dtype, dilation: int, x_stride: int) -> dict:
+    """Default launch geometry, shared by dispatch's memory check and the kernel build.
+
+    A vector also divides *x_stride*, the elements between two tokens of ``x``, so each
+    row's vectors stay aligned to their width.
+    """
     sums = (width - 1) * dilation + 1
-    vec, warps = _vector(dim, dtype), 4
+    vec, warps = _vector(math.gcd(dim, x_stride), dtype), 4
     if dilation > 1:
         # A thread holds vec * (2 * sums - 1) running sums and tokens, so a dilated filter
         # keeps at most four channels a thread; its longer chunk leaves fewer chunks, so one
@@ -97,6 +101,7 @@ def _causal_conv1d_kernel(
     has_init: bool,
     silu: bool,
     pooled: bool,
+    x_stride: int,
 ):
     span = (width - 1) * dilation
     # One running sum per output a token can still feed: outputs n .. n + span.
@@ -364,7 +369,7 @@ def _causal_conv1d_kernel(
 
         @T.prim_func
         def main(
-            x: T.Tensor((total, dim), dtype),
+            x: T.StridedTensor((total, dim), (x_stride, 1), dtype),
             weight: T.Tensor((dim * width,), weight_dtype),
             bias: T.Tensor((dim,), weight_dtype),
             conv_state: T.Tensor((pool if pooled else batch, dim, state_len), dtype),
@@ -395,6 +400,8 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     A warp walks ``seg * steps`` packed tokens of ``32 * vec`` channels through a
     ``stages``-slot cp.async ring in shared memory. The sequence count and lengths are runtime
     values: one build serves every batch whose grid asks ptxas for the same blocks an SM.
+    ``x`` is read where it lies, its tokens ``x_stride`` elements apart, so the columns of a
+    wider projection need no copy.
 
     Args:
         dim: Channels, ``D``.
@@ -408,6 +415,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         dilation: Tokens between adjacent filter taps.
         state_len: Token columns of a state, at least ``(W - 1) * dilation``.
         weight_dtype: Dtype of the weight and the bias; float32 over 16-bit activations.
+        x_stride: Elements between two tokens of ``x``, at least ``dim``.
         config: Optional ``{"vec", "warps", "seg", "steps", "stages"}`` override.
         device_index: The device the kernel runs on.
     """
@@ -419,7 +427,12 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         reason = _state_refusal(call) or super().refusal(call)
         if reason is not None:
             return reason
-        cfg = _prefill_config(call.dim, call.width, call.dtype, call.dilation)
+        if call.x_stride < call.dim:
+            return (
+                f"x's tokens are {call.x_stride} elements apart, closer than its {call.dim} "
+                "channels"
+            )
+        cfg = _prefill_config(call.dim, call.width, call.dtype, call.dilation, call.x_stride)
         need = _ring_bytes(cfg, call.dtype.itemsize)
         if need > call.smem_budget:
             return f"a block stages {need} bytes of tokens, past the {call.smem_budget} a block has"
@@ -434,6 +447,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
             "dilation": call.dilation,
             "state_len": call.state_len,
             "weight_dtype": call.weight_dtype,
+            "x_stride": call.x_stride,
         }
         return (*args, *extra.values(), index), lambda: cls(*args, device_index=index, **extra)
 
@@ -452,19 +466,20 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         dilation: int,
         state_len: int,
         weight_dtype: torch.dtype,
+        x_stride: int,
     ) -> None:
         super().__init__(device_index=device_index)
         self.dim, self.width, self.dtype = dim, width, dtype
-        self.pooled, self.dilation = pooled, dilation
+        self.pooled, self.dilation, self.x_stride = pooled, dilation, x_stride
         self.kernel = _causal_conv1d_kernel(
             dim, width, self.dtype_str, self.dtype_to_str(weight_dtype), dilation, state_len,
-            has_bias, has_init, silu, pooled,
+            has_bias, has_init, silu, pooled, x_stride,
         )  # fmt: skip
         self.init_config(config)
 
     @property
     def default_config(self) -> dict:
-        return _prefill_config(self.dim, self.width, self.dtype, self.dilation)
+        return _prefill_config(self.dim, self.width, self.dtype, self.dilation, self.x_stride)
 
     def _compile(self, cfg: dict, resident: int):
         """The program ``forward`` launches, compiled from *cfg* for *resident* blocks an SM."""
@@ -480,7 +495,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         has_initial_state: torch.Tensor | None = None,
         cache_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        y = torch.empty_like(x)
+        y = x.new_empty(x.shape)
         batch = cu_seqlens.shape[0] - 1
         # An absent bias, has_initial_state or cache_indices is never read; a view of its
         # shape and dtype fills the slot.

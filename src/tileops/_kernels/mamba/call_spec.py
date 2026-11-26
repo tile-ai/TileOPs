@@ -36,8 +36,9 @@ class CausalConv1dCall(CallSpec):
     """One prefill convolution over packed sequences; their count and lengths are runtime data.
 
     ``weight_dtype`` is that of the weight and bias, ``state_len`` the token columns of a
-    state, ``dilation`` the token spacing of the filter taps, and ``pooled`` whether
-    ``cache_indices`` maps each sequence to its state.
+    state, ``dilation`` the token spacing of the filter taps, ``pooled`` whether
+    ``cache_indices`` maps each sequence to its state, and ``x_stride`` the elements between
+    two tokens of ``x``.
     """
 
     dim: int = 0
@@ -50,6 +51,7 @@ class CausalConv1dCall(CallSpec):
     state_len: int = 0
     dilation: int = 1
     pooled: bool = False
+    x_stride: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -194,11 +196,12 @@ class CausalConv1dFwdInterface(KernelInterface):
         ``s = (call.width - 1) * call.dilation`` is the history span. A sequence's first
         outputs read preceding tokens from its first ``s`` state columns where
         ``has_initial_state`` is set, and zeros otherwise; filter taps are spaced by
-        ``call.dilation`` tokens. Every tensor is on ``call.device`` and contiguous;
-        *conv_state* is written in place, no other input is.
+        ``call.dilation`` tokens. Every tensor is on ``call.device`` and contiguous but
+        *x*; *conv_state* is written in place, no other input is.
 
         Args:
-            x: ``(total, call.dim)`` in ``call.dtype``, the sequences packed token-major.
+            x: ``(total, call.dim)`` in ``call.dtype``, the sequences packed token-major, its
+                channels contiguous and its tokens ``call.x_stride`` elements apart.
             weight: ``(call.dim, call.width)`` in ``call.weight_dtype``.
             conv_state: ``(batch, call.dim, call.state_len)`` in ``call.dtype``, or
                 ``(pool, call.dim, call.state_len)`` under ``call.pooled``, with
