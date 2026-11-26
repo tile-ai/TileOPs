@@ -970,7 +970,7 @@ def test_mxfp4_grouped_gemm_shared_decode_smem_model_matches_the_build(
     shared memory the built program takes, plus 1024 bytes of code-table alignment."""
     kernel = _aligned_kernel(k)
     assert isinstance(kernel, MoEGroupedGEMMMXFP4SharedDecodeKernel)
-    config = kernel.paired_config if paired else kernel.default_config
+    config = kernel.paired_config if paired else kernel._deepest(128)
     call = kernel.call
     ends = kernel.ends_bytes(
         call.num_groups, call.metadata_kind, kernel.alignment, config["block_m"]
@@ -1020,6 +1020,44 @@ def test_mxfp4_grouped_gemm_shared_decode_pairs_units_where_runs_average_a_pair(
     assert kernel._launch_facts(torch.empty(2048, 0)) == (True,)
     assert kernel._launch_facts(torch.empty(1536, 0)) == (False,)
     assert _aligned_kernel(4096)._launch_facts(torch.empty(2048, 0)) == (False,)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("stated", "built"),
+    [
+        # Nothing stated: the pairing launch takes the 256-row tile on its 2-deep ring.
+        pytest.param({}, {"block_m": 256, "num_stages": 2}, id="unset"),
+        # A stated grid holds on the 256-row tile.
+        pytest.param({"num_sms": 66}, {"block_m": 256, "num_stages": 2, "num_sms": 66}, id="grid"),
+        # A stated 128-row tile and ring hold on the pairing launch.
+        pytest.param(
+            {"block_m": 128, "num_stages": 4, "num_sms": 66},
+            {"block_m": 128, "num_stages": 4, "num_sms": 66},
+            id="tile",
+        ),
+        # A stated ring alone keeps the 128-row tile, whose ring it is.
+        pytest.param({"num_stages": 2}, {"block_m": 128, "num_stages": 2}, id="ring"),
+        # A stated tile alone takes its deepest ring that fits.
+        pytest.param({"block_m": 128}, {"block_m": 128, "num_stages": 4}, id="tile-deepest-ring"),
+    ],
+)
+def test_mxfp4_grouped_gemm_shared_decode_launch_keeps_a_stated_config(
+    monkeypatch: pytest.MonkeyPatch, stated: dict, built: dict
+) -> None:
+    """A launch that pairs units (2048 rows of four experts at K = 2048) builds the 256-row tile
+    only where the config leaves ``block_m`` and ``num_stages`` unset; each stated value is
+    built as stated, and an unset grid takes every SM."""
+    kernel = _aligned_kernel(2048)
+    kernel.init_config(stated)
+    # The builder's arguments, the config the launch compiles.
+    monkeypatch.setattr(kernel, "kernel", lambda **config: config)
+    facts = kernel._launch_facts(torch.empty(2048, 0))
+    assert facts == (True,)
+    expected = {"block_n": 128, "num_sms": kernel.sm_count, **built}
+    assert kernel._compile(kernel.config, *facts) == expected
 
 
 @pytest.mark.smoke

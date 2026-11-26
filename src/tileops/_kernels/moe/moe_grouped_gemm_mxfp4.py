@@ -2032,7 +2032,8 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
 
     A config is ``{block_m, block_n, num_stages, num_sms}`` with ``block_m`` 128 or 256 and
     ``block_n`` 128; ``num_stages`` is the depth of the ring of ``a``'s rows and of the decoded
-    fp8 stages.
+    fp8 stages. ``block_m`` and ``num_stages`` default to ``None``, which each launch resolves
+    (``_compile``); a stated value holds on every launch.
     """
 
     preferred_over: ClassVar[frozenset[str]] = frozenset({"grouped_gemm_mxfp4"})
@@ -2132,12 +2133,7 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
             call.alignment,
         )
         self.init_config()
-        # The deepest 256-row ring that fits, or None.
-        self.paired_config = max(
-            self._configs(2 * self._TILE_ROWS),
-            key=lambda config: config["num_stages"],
-            default=None,
-        )
+        self.paired_config = self._deepest(2 * self._TILE_ROWS)
 
     def _refusal_inputs(self) -> dict:
         return {
@@ -2172,10 +2168,26 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
             if self.config_refusal(config, **self._refusal_inputs()) is None
         ]
 
+    def _deepest(self, block_m: int) -> dict | None:
+        """The ``block_m``-row config of the deepest ring that fits, or ``None``: the depth sets
+        how far the loads of a's rows run ahead."""
+        return max(self._configs(block_m), key=lambda config: config["num_stages"], default=None)
+
     @property
     def default_config(self) -> dict:
-        # The deepest ring that fits: it sets how far the loads of a's rows run ahead.
-        return max(self.autotune_configs, key=lambda config: config["num_stages"])
+        # Each launch chooses the tile and its ring (``_compile``); a stated value overrides it.
+        return {
+            "block_m": None,
+            "block_n": self._TILE_COLUMNS,
+            "num_stages": None,
+            "num_sms": self.sm_count,
+        }
+
+    @property
+    def _tune_target(self) -> tuple:
+        # Tuning times the 128-row ring depths against the program a launch that pairs no units
+        # runs untuned; it publishes the depth it picks as a stated config.
+        return self.kernel, self._deepest(self._TILE_ROWS)
 
     def _launch_facts(self, a: torch.Tensor) -> tuple[bool]:
         # A 256-row tile decodes each weight stage once for two units of rows. A run of an odd
@@ -2188,6 +2200,27 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
             self.paired_config is not None and rows >= 4 * self._TILE_ROWS * self.call.num_groups,
         )
 
-    def _compile(self, cfg: dict, pairs: bool = False):
-        """The program of config *cfg*, or of ``paired_config`` on a launch that pairs units."""
-        return self.kernel(**(self.paired_config if pairs else cfg))
+    def _resolved(self, cfg: Mapping[str, object], pairs: bool) -> dict:
+        """*cfg* with its unset fields chosen for a launch: a launch that pairs units under a
+        config stating neither ``block_m`` nor ``num_stages`` takes ``paired_config``'s tile and
+        ring; otherwise the stated tile, or 128 rows, takes the stated ring, or the deepest that
+        fits. The stated ``block_n`` and ``num_sms`` hold."""
+        if pairs and cfg["block_m"] is None and cfg["num_stages"] is None:
+            cfg = {**cfg, "block_m": self.paired_config["block_m"]}
+        block_m = cfg["block_m"] or self._TILE_ROWS
+        if cfg["num_stages"] is None:
+            deepest = self._deepest(block_m)
+            # A tile no ring fits keeps the shallowest, which the refusal names.
+            stages = deepest["num_stages"] if deepest else min(self._NUM_STAGES)
+        else:
+            stages = cfg["num_stages"]
+        return {**cfg, "block_m": block_m, "num_stages": stages}
+
+    def _check_config(self, config: Mapping[str, object]) -> None:
+        # Unset fields are checked as a launch that pairs no units resolves them; a pairing
+        # launch takes paired_config, which fits by construction.
+        super()._check_config(self._resolved(config, False))
+
+    def _compile(self, cfg: dict, pairs: bool):
+        """The program of config *cfg*, its unset fields chosen for the launch (``_resolved``)."""
+        return self.kernel(**self._resolved(cfg, pairs))
