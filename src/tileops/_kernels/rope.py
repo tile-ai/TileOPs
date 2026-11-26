@@ -186,11 +186,11 @@ def _rope_positions_kernel(
     before its table loads, so a position outside the table reads the nearest row. The
     arithmetic is f32 and rounds once.
 
-    The staged program instead gives a block one token's query row or key row, the two
-    alternating: its threads load the row into shared memory in ``row_vec``-column vectors,
-    rotate its rotating units there, and a block copy writes the row back (one bulk store on
-    sm90 where the row is whole 16-byte vectors), so no copied column's load waits on the
-    position or the table.
+    The staged program instead gives a block one token's query row or key row, on a
+    ``(tokens, sides)`` grid: its threads load the row into shared memory in
+    ``row_vec``-column vectors, rotate its rotating units there, and a block copy writes the
+    row back (one bulk store on sm90 where the row is whole 16-byte vectors), so no copied
+    column's load waits on the position or the table.
     """
     half = rotary_dim // 2
     width, rot_units, tail_units = _head_units(neox, head_size, rotary_dim, rot_vec, tail_vec)
@@ -211,8 +211,12 @@ def _rope_positions_kernel(
         table_shape = (max_position, half)
         parts = sides if staged else -(-token_units // (threads * units))
         block_heads = threads // head_units
-        # A wide program's token takes its parts a grid row apart, so they run on SMs apart.
-        grid = (num_tokens, parts) if wide else (num_tokens * parts, 1)
+        # A wide program's token takes its parts a grid row apart, so they run on SMs apart. A
+        # staged block's token is its block index: TileLang writes the row back with one bulk
+        # store only where it proves the row in bounds, which it does not for a quotient of
+        # the block index.
+        split = wide or staged
+        grid = (num_tokens, parts) if split else (num_tokens * parts, 1)
         block = (head_units, block_heads) if wide else threads
 
         @T.macro
@@ -339,16 +343,26 @@ def _rope_positions_kernel(
                         *shared,
                     )
 
+        def token_position(positions, offsets, token):
+            # The token's position, plus its offset where the call has offsets.
+            if offset_dtype:
+                return T.Cast("int64", positions[token]) + T.Cast("int64", offsets[token])
+            return positions[token]
+
+        def clamped(position):
+            # The table row a position reads: the nearest row where it is outside the table.
+            return T.max(0, T.min(position, max_position - 1))
+
         @T.macro
         def table_row(positions, offsets, token, row):
             if offset_dtype:
-                seen = T.Cast("int64", positions[token]) + T.Cast("int64", offsets[token])
-                row[0] = T.max(0, T.min(seen, max_position - 1))
+                seen = token_position(positions, offsets, token)
+                row[0] = clamped(seen)
             else:
-                row[0] = T.max(0, T.min(positions[token], max_position - 1))
+                row[0] = clamped(positions[token])
 
         @T.macro
-        def stage_row(x, y, heads, positions, offsets, token, row, cos_table, sin_table, buf):
+        def stage_row(x, y, heads, positions, offsets, token, cos_table, sin_table, buf):
             # Row token of x, heads heads, into buf; its rotating units rotate there and the row
             # goes to y. Thread t takes vectors and units t, t + threads, ...
             tid = T.get_thread_binding()
@@ -365,12 +379,14 @@ def _rope_positions_kernel(
                         buf[(i * threads + tid) * row_vec + j] = x[
                             token, (i * threads + tid) * row_vec + j
                         ]
-            table_row(positions, offsets, token, row)
+            # Each table load clamps the bound position itself: TileLang proves a load in bounds
+            # from a clamp in its index, not from one stored to a buffer, and guards it otherwise.
+            seen = token_position(positions, offsets, token)
             for k in T.unroll(units):
                 if k * threads + tid < rotating:
                     slot = (k * threads + tid) % rot_units
                     first = slot * width if neox else slot * width // 2
-                    table_slots(cos_table, sin_table, row[0], first, cs, sn, k * table_width)
+                    table_slots(cos_table, sin_table, clamped(seen), first, cs, sn, k * table_width)
             T.sync_threads()
             # Every unit is read before any is written back: TileLang places the barrier a
             # loop of both needs inside the per-unit branch, which not every thread enters.
@@ -401,13 +417,15 @@ def _rope_positions_kernel(
             positions, offsets, query, key, cos_table, sin_table, query_out, key_out, bx, by
         ):
             # The block's token and its part of the token, from its grid indices.
-            token = bx if wide else bx // parts
-            part = by if wide else bx % parts
-            row = T.alloc_local([1], "int64" if offset_dtype else position_dtype)
+            token = bx if split else bx // parts
+            part = by if split else bx % parts
+            # A staged block's table loads clamp the position in their index, so it holds no row.
+            row_dtype = "int64" if offset_dtype else position_dtype
+            row = None if staged else T.alloc_local([1], row_dtype)
             tensors = (query, key, cos_table, sin_table, query_out, key_out, token, part)
             if staged:
                 buf = T.alloc_shared([max(query_heads, key_heads) * head_size], dtype)
-                rows = (positions, offsets, token, row, cos_table, sin_table, buf)
+                rows = (positions, offsets, token, cos_table, sin_table, buf)
                 if part == 0:
                     stage_row(query, query_out, query_heads, *rows)
                 else:
