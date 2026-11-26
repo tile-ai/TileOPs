@@ -101,26 +101,25 @@ def decode_program(
             T.sync_threads()
 
         @T.macro
+        def row_gain(row_s, tx):
+            """The inverse norm of a staged row. Every warp folds the whole row, so the norm
+            lands in every thread with no second pass over shared memory."""
+            square = T.alloc_var(accum, init=0.0)
+            lane = tx % WARP_LANES
+            for i in T.serial(T.ceildiv(K, WARP_LANES)):
+                j = lane + i * WARP_LANES
+                if j < K:
+                    square += row_s[j] * row_s[j]
+            for stage in T.unroll(WARP_SHUFFLE_STAGES):
+                square += T.shfl_xor(square, 1 << stage, width=WARP_LANES)
+            return T.rsqrt(square + L2NORM_EPS)
+
+        @T.macro
         def row_gains(q_s, k_s, tx):
             """The query and key gains: the scale, and under l2norm the inverse row norms."""
-            q_gain, k_gain = scale, 1.0
             if l2norm:
-                q_square = T.alloc_var(accum, init=0.0)
-                k_square = T.alloc_var(accum, init=0.0)
-                # Every warp folds the whole row, so both norms land in every thread with no
-                # second pass over shared memory.
-                lane = tx % WARP_LANES
-                for i in T.serial(T.ceildiv(K, WARP_LANES)):
-                    j = lane + i * WARP_LANES
-                    if j < K:
-                        q_square += q_s[j] * q_s[j]
-                        k_square += k_s[j] * k_s[j]
-                for stage in T.unroll(WARP_SHUFFLE_STAGES):
-                    q_square += T.shfl_xor(q_square, 1 << stage, width=WARP_LANES)
-                    k_square += T.shfl_xor(k_square, 1 << stage, width=WARP_LANES)
-                q_gain = T.rsqrt(q_square + L2NORM_EPS) * scale
-                k_gain = T.rsqrt(k_square + L2NORM_EPS)
-            return q_gain, k_gain
+                return row_gain(q_s, tx) * scale, row_gain(k_s, tx)
+            return scale, 1.0
 
         @T.macro
         def compute_value_major(q, k, v, g, beta, h0, o, ht, a_log, dt_bias, slots):
@@ -147,15 +146,28 @@ def decode_program(
                             key_of(rank, run * key_run + e, lane_group, key_run),
                         ]
                 stage_rows(q, k, g, a_log, dt_bias, iseq, ih, ihv, tx, q_s, k_s, d_s)
-                q_gain, k_gain = row_gains(q_s, k_s, tx)
+                k_gain = row_gain(k_s, tx) if l2norm else 1.0
 
                 for i in T.serial(key_chunk):
                     state[i] = state[i] * d_s[key_of(rank, i, lane_group, key_run)]
                     old += state[i] * k_s[key_of(rank, i, lane_group, key_run)]
                 for stage in T.unroll(lane_group.bit_length() - 1):
                     old += T.shfl_xor(old, 1 << stage, width=lane_group)
+                # The sums run over the raw rows and take the gains after, which keeps one
+                # rounding in the delta below. Under l2norm, a sum whose gained value passes the
+                # FP32 limit is taken again over the normalized row, as the reference sums it;
+                # the warp votes, so its lanes shuffle together.
+                old_gain = T.alloc_var(accum, init=k_gain)
+                if l2norm:  # noqa: SIM102
+                    if T.all_sync(T.isfinite(old * k_gain)) == 0:
+                        old = 0.0
+                        for i in T.serial(key_chunk):
+                            old += state[i] * (k_s[key_of(rank, i, lane_group, key_run)] * k_gain)
+                        for stage in T.unroll(lane_group.bit_length() - 1):
+                            old += T.shfl_xor(old, 1 << stage, width=lane_group)
+                        old_gain = 1.0
                 written = T.cast(beta[0, iseq, ihv], accum) * (
-                    T.cast(v[0, iseq, ihv, row], accum) - old * k_gain
+                    T.cast(v[0, iseq, ihv, row], accum) - old * old_gain
                 )
                 for i in T.serial(key_chunk):
                     state[i] = (
@@ -172,8 +184,17 @@ def decode_program(
                         ] = state[run * key_run + e]
                 for stage in T.unroll(lane_group.bit_length() - 1):
                     out += T.shfl_xor(out, 1 << stage, width=lane_group)
+                # The query norm folds after the state stores, off their path.
+                q_gain = row_gain(q_s, tx) * scale if l2norm else scale
+                out *= q_gain
+                if T.all_sync(T.isfinite(out)) == 0:
+                    out = 0.0
+                    for i in T.serial(key_chunk):
+                        out += state[i] * (q_s[key_of(rank, i, lane_group, key_run)] * q_gain)
+                    for stage in T.unroll(lane_group.bit_length() - 1):
+                        out += T.shfl_xor(out, 1 << stage, width=lane_group)
                 if rank == 0:
-                    o[0, iseq, ihv, row] = T.cast(out * q_gain, dtype)
+                    o[0, iseq, ihv, row] = T.cast(out, dtype)
 
         # Over a key-major state, a lane owns a run of value columns that moves as one 16-byte
         # vector of FP32; the lanes that share a column run split its key rows.
