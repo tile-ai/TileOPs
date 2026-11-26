@@ -17,6 +17,7 @@ from tileops._kernels.linear_attention.gdn.prefill_common import (
     block_inverse_macro,
     softplus,
     step_size,
+    token_tensor,
 )
 from tileops._kernels.state_pool import state_row
 
@@ -30,6 +31,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
     dtype: str,
     offsets_dtype: str,
     gate_in_kernel: bool = False,
+    g_stride: int | None = None,
 ):
     """Accumulate each chunk's log-gates in FP32, restarting at every sequence start.
 
@@ -40,7 +42,8 @@ def prefill_chunk_local_cumsum_bthd_tl(
     covers the most chunks the offsets can describe; a block past their count retires at once.
 
     With *gate_in_kernel*, ``g`` carries the raw gate and the log-space decay
-    ``-exp(A_log) * softplus(g + dt_bias)`` is formed here.
+    ``-exp(A_log) * softplus(g + dt_bias)`` is formed here. *g_stride* is the elements
+    between two tokens of ``g``, ``None`` where it is packed.
     """
     tiling = GroupTiling(num_sequences, chunk_size)
     num_chunks = tiling.tile_upper_bound(total_tokens)
@@ -124,7 +127,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
 
             @T.prim_func
             def chunk_cumsum_bthd_kernel(
-                g: T.Tensor([1, total_tokens, head], dtype),
+                g: token_tensor((1, total_tokens, head), g_stride, dtype),
                 cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
                 a_log: T.Tensor([head], "float32"),
                 dt_bias: T.Tensor([head], "float32"),
@@ -137,7 +140,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
 
             @T.prim_func
             def chunk_cumsum_bthd_kernel(
-                g: T.Tensor([1, total_tokens, head], dtype),
+                g: token_tensor((1, total_tokens, head), g_stride, dtype),
                 cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
                 out: T.Tensor([1, total_tokens, head], "float32"),
             ):
@@ -164,6 +167,8 @@ def prefill_blocksolve_A_bthd_tl(
     beta_sigmoid: bool = False,
     allow_neg_eigval: bool = False,
     uniform_seq_len: int = 0,
+    k_stride: int | None = None,
+    beta_stride: int | None = None,
 ):
     """The per-chunk triangular inverse program for one packed shape.
 
@@ -182,6 +187,8 @@ def prefill_blocksolve_A_bthd_tl(
         allow_neg_eigval: Double the step size the sigmoid produces.
         uniform_seq_len: Row length where every row has one, which puts a chunk's
             bounds within reach of arithmetic; 0 reads them from the offsets.
+        k_stride: Elements between two tokens of the key, ``None`` where it is packed.
+        beta_stride: Elements between two tokens of beta, ``None`` where it is packed.
     """
     if chunk_size != 64 or dim_k not in (64, 128):
         raise ValueError("TileLang blocksolve-A currently expects chunk64 and K in {64, 128}")
@@ -225,9 +232,9 @@ def prefill_blocksolve_A_bthd_tl(
     def _func(threads=32):
         @T.prim_func
         def prefill_blocksolve_A_bthd_tl(
-            k: T.Tensor([1, total_tokens, key_head, dim_k], dtype),
+            k: token_tensor((1, total_tokens, key_head, dim_k), k_stride, dtype),
             g: T.Tensor([1, total_tokens, head], "float32"),
-            beta: T.Tensor([1, total_tokens, head], dtype),
+            beta: token_tensor((1, total_tokens, head), beta_stride, dtype),
             cu_seqlens: T.Tensor([num_sequences + 1], offsets_dtype),
             A: T.Tensor([1, total_tokens, head, chunk_size], dtype),
             k_rnorm: T.Tensor([1, rnorm_tokens, key_head], accum_dtype),
@@ -624,6 +631,8 @@ def prefill_solve_warpgroup_tl(
     beta_sigmoid: bool,
     allow_neg_eigval: bool,
     seq_len: int,
+    k_stride: int | None,
+    beta_stride: int | None,
 ):
     """The block solve on one warp group a (chunk, head), for SM90, over rows of one length.
 
@@ -631,7 +640,8 @@ def prefill_solve_warpgroup_tl(
     strictly lower part scaled by beta, and the inverse in 16 x 16 blocks, each block
     rounded and each partial sum added in that solve's order. The Gram matrix is one
     product over the whole key rather than ten block products. The four warps share the
-    work, so a chunk waits on fewer serial steps.
+    work, so a chunk waits on fewer serial steps. *k_stride* and *beta_stride* are the
+    elements between two tokens of the key and of beta, each ``None`` where it is packed.
     """
     chunk_size = 64
     blk = INVERSE_BLOCK
@@ -650,8 +660,8 @@ def prefill_solve_warpgroup_tl(
     def _func():
         @T.prim_func
         def prefill_solve_warpgroup_tl(
-            k: T.Tensor([1, total_tokens, key_head, dim_k], dtype),
-            beta: T.Tensor([1, total_tokens, head], dtype),
+            k: token_tensor((1, total_tokens, key_head, dim_k), k_stride, dtype),
+            beta: token_tensor((1, total_tokens, head), beta_stride, dtype),
             A: T.Tensor([1, total_tokens, head, chunk_size], dtype),
         ):
             # The heads of one chunk launch next to each other, so the value heads of a key
@@ -753,7 +763,8 @@ def prefill_blocksolve_A_bthd(
 
     Args:
         program: What :func:`prefill_blocksolve_A_bthd_tl` built for these tensors.
-        k: ``(1, total_tokens, key_head, dim_k)`` packed keys.
+        k: ``(1, total_tokens, key_head, dim_k)`` keys, their tokens as far apart as
+            *program* was built for.
         g: ``(1, total_tokens, head)`` gate, accumulated within each chunk.
         beta: ``(1, total_tokens, head)`` step sizes.
         cu_seqlens: ``(num_sequences + 1,)`` packed row offsets.
@@ -783,7 +794,8 @@ def prefill_solve_warpgroup(program, k: torch.Tensor, beta: torch.Tensor) -> tor
 
     Args:
         program: What :func:`prefill_solve_warpgroup_tl` built for these tensors.
-        k: ``(1, total_tokens, key_head, dim_k)`` packed keys.
+        k: ``(1, total_tokens, key_head, dim_k)`` keys, their tokens as far apart as
+            *program* was built for.
         beta: ``(1, total_tokens, head)`` step sizes.
 
     Returns:
@@ -1200,6 +1212,9 @@ def _build_prepare_h_kernel(
     beta_sigmoid=False,
     allow_neg_eigval=False,
     num_stages=2,
+    k_stride=None,
+    v_stride=None,
+    b_stride=None,
 ):
     batch_size = T.dynamic("batch_size")
     num_tokens = T.dynamic("num_tokens")
@@ -1228,11 +1243,11 @@ def _build_prepare_h_kernel(
 
     @T.prim_func
     def prepare_h_kernel(
-        k: T.Tensor(k_shape, dtype=qkva_dtype),
-        v: T.Tensor(v_shape, dtype=qkva_dtype),
+        k: token_tensor(k_shape, k_stride, qkva_dtype),
+        v: token_tensor(v_shape, v_stride, qkva_dtype),
         a: T.Tensor(a_shape, dtype=qkva_dtype),
         g: T.Tensor(g_shape, dtype=g_dtype),
-        b: T.Tensor(b_shape, dtype=b_dtype),
+        b: token_tensor(b_shape, b_stride, b_dtype),
         k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
         h0: T.Tensor(h0_shape, dtype=h0_dtype),
         cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
@@ -1603,11 +1618,16 @@ def fused_gdr_h_program(
     l2norm=False,
     beta_sigmoid=False,
     allow_neg_eigval=False,
+    k_stride=None,
+    v_stride=None,
+    b_stride=None,
 ):
     """The program :func:`fused_gdr_h` launches, over 64-token chunks.
 
     *h0_dtype* is the initial state's dtype, ``None`` without one; *seqlen_dtype* is the
-    offsets' dtype, int32 for an equal-length call that passes none.
+    offsets' dtype, int32 for an equal-length call that passes none. *k_stride*, *v_stride*
+    and *b_stride* are the elements between two tokens of ``k``, ``v`` and ``b``, each
+    ``None`` where that tensor is packed.
     """
     assert dim in (64, 128)
     return _build_prepare_h_kernel(
@@ -1630,6 +1650,9 @@ def fused_gdr_h_program(
         l2norm=l2norm,
         beta_sigmoid=beta_sigmoid,
         allow_neg_eigval=allow_neg_eigval,
+        k_stride=k_stride,
+        v_stride=v_stride,
+        b_stride=b_stride,
     )
 
 

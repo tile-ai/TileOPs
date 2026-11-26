@@ -1,5 +1,7 @@
 """Gated DeltaNet (GDN) private helpers shared by the prefill stages."""
 
+import math
+
 import tilelang.language as T
 
 # What the comparator's L2 normalization adds under the square root before taking the
@@ -10,6 +12,16 @@ L2NORM_EPS: float = 1e-6
 # The edge of the blocks the chunk inverse works in; the solve that stages them and the
 # macro that inverts them must agree on it.
 INVERSE_BLOCK: int = 16
+
+
+def token_tensor(shape: tuple, token_stride: "int | None", dtype):
+    """A program parameter of *shape* ``(batch, tokens, *row)`` in *dtype*: packed when
+    *token_stride* is ``None``, else each token's row packed and its tokens *token_stride*
+    elements apart, as the columns of a wider projection lie."""
+    if token_stride is None:
+        return T.Tensor(shape, dtype)
+    row = tuple(math.prod(shape[i + 1 :]) for i in range(2, len(shape)))
+    return T.StridedTensor(shape, (shape[1] * token_stride, token_stride, *row), dtype)
 
 
 def step_size(raw, beta_sigmoid: bool, allow_neg_eigval: bool):

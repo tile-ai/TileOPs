@@ -791,6 +791,146 @@ def test_gdn_decode_updates_a_strided_pool_in_place() -> None:
     test.check(op, q, k, v, g, beta, strided, *rest, runs=run)
 
 
+def _columns(tensors: list[torch.Tensor], pad: int) -> list[torch.Tensor]:
+    """*tensors*, each ``(B, S, *row)``, copied into the columns of one ``(B * S, width)``
+    tensor, as a fused projection lays them out: each starts on a 16-byte boundary, and the
+    rows hold *pad* columns past the last. Returns views of those columns."""
+    first = tensors[0]
+    widths = [math.prod(t.shape[2:]) for t in tensors]
+    starts = [sum(-(-w // 8) * 8 for w in widths[:i]) for i in range(len(widths))]
+    wide = torch.randn(
+        first.shape[0] * first.shape[1], starts[-1] + widths[-1] + pad, device=first.device
+    ).to(first.dtype)
+    views = [
+        wide[:, a : a + w].view(t.shape) for t, a, w in zip(tensors, starts, widths, strict=True)
+    ]
+    for view, t in zip(views, tensors, strict=True):
+        view.copy_(t)
+    return views
+
+
+_QWEN_FLAGS = {
+    "use_qk_l2norm_in_kernel": True,
+    "use_beta_sigmoid_in_kernel": True,
+    "use_gate_in_kernel": True,
+}
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("row", "flags", "pads"),
+    [
+        pytest.param(
+            {"S": 1000, "H": 16, "HV": 48, "P": 2}, _QWEN_FLAGS, (0, 16384),
+            marks=pytest.mark.smoke, id="qwen3.8-27b",
+        ),
+        pytest.param(
+            {"S": 8192, "H": 16, "HV": 48, "P": 1}, _QWEN_FLAGS, (8, 16),
+            marks=pytest.mark.full, id="partitioned",
+        ),
+        pytest.param(
+            {"S": 4096, "H": 16, "HV": 48, "P": 1}, {"use_gate_in_kernel": True}, (8, 16),
+            marks=pytest.mark.full, id="warp-group-solve",
+        ),
+        pytest.param(
+            {"S": 4096, "H": 16, "HV": 128, "P": 1}, {}, (8, 16), marks=pytest.mark.full,
+            id="one-kernel-prefill",
+        ),
+    ],
+)  # fmt: skip
+def test_gdn_prefill_reads_projection_columns_in_place(row: dict, flags: dict, pads) -> None:
+    """q, k and v as columns of one wide tensor, g and beta of another, are read where they
+    lie, or by the one-kernel prefill from packed copies: outputs and states match the
+    reference, and neither wide tensor changes.
+
+    The cells: Qwen3.8-27B's prefill, through the block solve and the whole walk, with q, k
+    and v the 10240 columns of the convolution's output and beta and g columns 0 and 48 of
+    rows 16480 wide, the input projection's row; 128 chunks of 48 heads, whose walk splits so
+    that the warmup and state passes read k, v and beta in place too; rows of one length
+    without the key norm, through the warp-group solve; and whole sequences keeping most SMs
+    busy without the key norm, through the one-kernel prefill, which reads packed copies.
+    """
+    torch.manual_seed(42)
+    some = ("A_log", "dt_bias") if flags.get("use_gate_in_kernel") else ()
+    test = _pooled(torch.bfloat16, some=some, B=1, K=128, V=128, **row, **flags)
+    q, k, v, g, beta, *rest = test.gen_inputs()
+    q, k, v = _columns([q, k, v], pads[0])
+    beta, g = _columns([beta, g], pads[1])
+    wide = (q._base, beta._base)
+    before = tuple(t.clone() for t in wide)
+    op = GDNFwdOp(**test.call.arguments())
+
+    def run(*args, **keywords):
+        out = op(*args, **keywords)
+        assert all(torch.equal(t, b) for t, b in zip(wide, before, strict=True))
+        return out
+
+    test.check(op, q, k, v, g, beta, *rest, runs=run)
+
+
+_COLUMN_FLAGS = {"use_qk_l2norm_in_kernel": True, "use_beta_sigmoid_in_kernel": True}
+
+
+@pytest.mark.parametrize(
+    ("row", "flags", "layout"),
+    [
+        pytest.param(
+            {"B": 1, "S": 200, "P": 4}, _QWEN_FLAGS, "unaligned",
+            marks=(pytest.mark.smoke, pytest.mark.sm90), id="prefill",
+        ),
+        pytest.param(
+            {"B": 1, "S": 200, "P": 4}, _QWEN_FLAGS, "padded-heads",
+            marks=(pytest.mark.full, pytest.mark.sm90), id="padded-heads",
+        ),
+        pytest.param(
+            {"B": 1, "S": 200, "P": 4}, _QWEN_FLAGS, "expanded",
+            marks=(pytest.mark.full, pytest.mark.sm90), id="expanded",
+        ),
+        pytest.param(
+            {"B": 3, "S": 1, "P": 4}, _QWEN_FLAGS, "unaligned", marks=pytest.mark.full,
+            id="decode",
+        ),
+        pytest.param(
+            {"B": 2, "S": 1, "HV": 16}, _COLUMN_FLAGS, "unaligned",
+            marks=(pytest.mark.full, pytest.mark.sm90), id="column-decode",
+        ),
+    ],
+)  # fmt: skip
+def test_gdn_copies_projection_columns_it_cannot_read_in_place(
+    row: dict, flags: dict, layout: str
+) -> None:
+    """Inputs a kernel does not read in place are copied first: outputs and states match the
+    reference all the same.
+
+    The cells: a pooled SM90 prefill whose tokens lie 10244 elements apart, off 16-byte
+    alignment; the same prefill with q's heads 136 elements apart, so a token's heads are
+    not packed; and with an expanded v, its tokens zero elements apart; a decode step of
+    three pooled sequences, which the dense decode reads packed; and a decode step of two
+    sequences in batch order, which the column decode reads packed.
+    """
+    torch.manual_seed(42)
+    row = {"H": 16, "HV": 48, "K": 128, "V": 128, **row}
+    some = ("A_log", "dt_bias") if flags.get("use_gate_in_kernel") else ()
+    if "P" in row:
+        test = _pooled(torch.bfloat16, some=some, **row, **flags)
+    else:
+        call = manifest_call(
+            "GDNFwdOp", {"T": "bfloat16"}, some=["initial_state", *some], **row, **flags
+        )
+        test = GDNFwdCallTest(call)
+    q, k, v, g, beta, *rest = test.gen_inputs()
+    if layout == "unaligned":
+        q, k, v = _columns([q, k, v], 4)
+        beta, g = _columns([beta, g], 3)
+    elif layout == "padded-heads":
+        wide = torch.randn(*q.shape[:-1], q.shape[-1] + 8, device=q.device).to(q.dtype)
+        q = wide[..., : q.shape[-1]].copy_(q)
+    else:
+        v = v[:, :1].clone().expand(v.shape)
+    test.check(GDNFwdOp(**test.call.arguments()), q, k, v, g, beta, *rest)
+
+
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="GDNFwdOp")
 @pytest.mark.smoke

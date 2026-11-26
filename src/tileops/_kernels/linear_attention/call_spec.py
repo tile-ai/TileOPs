@@ -475,10 +475,11 @@ class GDNFwdInterface(KernelInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the recurrence from *initial_state* over the call's sequence.
 
-        Every tensor is contiguous on ``call.device`` but ``cu_seqlens_cpu``. Nothing is
-        written in place but a state pool. Unless ``call.gate_in_kernel``, *g* already
-        carries the log-space decay; unless ``call.beta_sigmoid``, *beta* already carries the
-        update strength.
+        Every tensor is on ``call.device`` but ``cu_seqlens_cpu``, and contiguous but *q*,
+        *k*, *v*, *g* and *beta*, which come in the caller's layout. Nothing is written in
+        place but a state pool. Unless ``call.gate_in_kernel``, *g* already carries the
+        log-space decay; unless ``call.beta_sigmoid``, *beta* already carries the update
+        strength.
 
         Args:
             q: ``(batch, seq_len, heads, dim_k)`` in ``call.dtype``.

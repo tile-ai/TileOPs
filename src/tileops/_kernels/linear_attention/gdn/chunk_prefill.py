@@ -7,7 +7,8 @@ from tileops._kernels.linear_attention.gdn.prefill import GDNDensePrefillFwdKern
 
 
 class GDNChunkPrefillFwdKernel(Kernel, GDNFwdInterface):
-    """Solve each chunk's inverse, prepare its products, then scan the chunks."""
+    """Solve each chunk's inverse, prepare its products, then scan the chunks, reading
+    ``q``, ``k``, ``v``, ``g`` and ``beta`` packed."""
 
     supported_archs = [89]
     split_output = False
@@ -47,6 +48,7 @@ class GDNChunkPrefillFwdKernel(Kernel, GDNFwdInterface):
     ):
         del state_indices, num_accepted_tokens
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
+        q, k, v, g, beta = (tensor.contiguous() for tensor in (q, k, v, g, beta))
         inputs = (q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias)
         return run_chunk_prefill(
             self, self.call, inputs, gate_mode="head", split_output=self.split_output
