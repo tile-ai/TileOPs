@@ -41,7 +41,7 @@ LOOKUP_SIZES = {
     "empty-first-middle-last": [0, 0, 5, 0, 0, 130, 0],
     "decode-e256": [int(e in (0, 51, 102, 153, 204, 255)) for e in range(256)],
     "two-runs": [3 * (g % 4 == 1) for g in range(32)] + [64],
-    "e1000": [2 * (g % 97 == 3) for g in range(999)] + [70],
+    "e1100": [2 * (g % 29 == 3) for g in range(1099)] + [70],
     "prefill-e256": [g * 37 % 41 * 3 for g in range(256)],
 }
 
@@ -408,7 +408,7 @@ def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
             for name in (
                 "decode-e256",
                 "two-runs",
-                "e1000",
+                "e1100",
                 "prefill-e256",
             )
         ),
@@ -420,9 +420,9 @@ def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
         ),
         pytest.param(
             contiguous_layout("aligned", "physical_psum", 128),
-            "e1000",
+            "e1100",
             marks=pytest.mark.full,
-            id="aligned-psum-e1000",
+            id="aligned-psum-e1100",
         ),
         pytest.param(
             {"masked": {}},
@@ -430,14 +430,14 @@ def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
             marks=pytest.mark.full,
             id="masked-empty-first-middle-last",
         ),
-        pytest.param({"masked": {}}, "e1000", marks=pytest.mark.full, id="masked-e1000"),
+        pytest.param({"masked": {}}, "e1100", marks=pytest.mark.full, id="masked-e1100"),
     ],
 )
 def test_mxfp4_grouped_gemm_finds_each_tasks_expert(layout: dict, sizes: str) -> None:
     """Each task finds its expert and row tile among: empty experts first, in the middle and
     last; DeepSeek-V4-Flash's decode, one row in each of a few experts spread over all of them;
-    more experts than one warp sums and than a block has threads; and many experts' rows over
-    several waves."""
+    more experts than one warp sums and than a block has threads, in more runs of a warp's width
+    than one warp scans a step; and many experts' rows over several waves."""
     sizes = LOOKUP_SIZES[sizes]
     if "masked" in layout:
         workload = _workload(max(sizes), E=len(sizes), N=256, K=512)
@@ -543,9 +543,9 @@ def _shared_decode_op(workload: MoEGroupedGEMMMXFP4Workload, inputs: tuple):
             "physical_psum",
             256,
             2048,
-            LOOKUP_SIZES["e1000"],
+            LOOKUP_SIZES["e1100"],
             marks=pytest.mark.full,
-            id="psum-e1000-k2048",
+            id="psum-e1100-k2048",
         ),
         # Code tables that leave room for three token and decoded stages (48 steps).
         pytest.param("per_row", 256, 6144, SIZES, marks=pytest.mark.full, id="per-row-k6144"),
@@ -810,27 +810,34 @@ def test_mxfp4_grouped_gemm_refuses_an_empty_contraction() -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "metadata_kind",
-    [pytest.param("per_row", id="per-row"), pytest.param("physical_psum", id="psum")],
+    [
+        pytest.param("per_row", id="per-row"),
+        pytest.param("physical_psum", id="psum"),
+        pytest.param(None, id="masked"),
+    ],
 )
 def test_mxfp4_grouped_gemm_refuses_experts_whose_walk_state_overflows_shared_memory(
-    metadata_kind: str,
+    metadata_kind: str | None,
 ) -> None:
     """The task walk keeps each expert's tile end in shared memory, and under tight per-row ids
-    each expert's row end too: 65536 experts leave no room beside the default tile, and the
-    call is refused before anything is built."""
+    each expert's row end too: 65536 experts, over tight runs or 64-row slabs, leave no room
+    beside the default tile, and the call is refused before anything is built."""
     experts = 65536
-    workload = MoEGroupedGEMMMXFP4Workload(
-        manifest_call(
-            _OP,
-            _E8M0,
-            layout=contiguous_layout("tight", metadata_kind),
-            E=experts,
-            sizes=[0] * (experts - 1) + [16],
-            N=8,
-            K=128,
-            **({"P": 16} if metadata_kind == "physical_psum" else {}),
+    if metadata_kind is None:
+        workload = _workload(64, E=experts, N=8, K=128)
+    else:
+        workload = MoEGroupedGEMMMXFP4Workload(
+            manifest_call(
+                _OP,
+                _E8M0,
+                layout=contiguous_layout("tight", metadata_kind),
+                E=experts,
+                sizes=[0] * (experts - 1) + [16],
+                N=8,
+                K=128,
+                **({"P": 16} if metadata_kind == "physical_psum" else {}),
+            )
         )
-    )
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
     with pytest.raises(ValueError, match="task-walk state in shared memory.*beside the default"):
         op(*workload.gen_inputs())

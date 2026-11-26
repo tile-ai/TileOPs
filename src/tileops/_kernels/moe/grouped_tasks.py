@@ -374,9 +374,9 @@ def table_task_walk(
     A CTA first sums the experts' row tiles into shared memory, unless aligned per-row ids name
     each row tile's expert; a walk then passes up to a warp's width of experts a step, and over
     contiguous rows the CTA runs as many waves as its tasks, so neither grows with experts that
-    hold no rows. The FP8 kernel keeps ``task_walk``: the table's prologue runs between the layout load and
-    its first TMA load, where ``task_walk`` compares one expert's tiles, and costs its decode
-    rows more than the walk saves.
+    hold no rows. The FP8 kernel keeps ``task_walk``: the table's prologue runs between the
+    layout load and its first TMA load, where ``task_walk`` compares one expert's tiles, and
+    costs its decode rows more than the walk saves.
 
     Takes ``task_walk``'s arguments.
 
@@ -426,7 +426,9 @@ def table_task_walk(
     def tile_prefix(rows, tile_ends, tx, threads):
         """``tile_ends[g]``, the row tiles of experts ``0 .. g``: each warp scans runs of a warp's
         width of experts by shuffles, then each expert adds the totals of the runs before its
-        own."""
+        own. Past a warp's width of runs, one warp first scans the runs' totals the same way, a
+        warp's width of runs a step, so each run's last expert holds its sum, and every other
+        expert adds the sum of the last expert of the run before its own."""
         warps = threads // 32
         lane = tx % 32
         tiles = T.alloc_var("int32")
@@ -441,7 +443,27 @@ def table_task_walk(
                     tiles = tiles + shifted
             if group < num_groups:
                 tile_ends[group] = tiles
-        if runs > 1:
+        if runs > 32:
+            carry = T.alloc_var("int32", init=0)
+            T.sync_threads()
+            if tx < 32:
+                for step in T.unroll(-(-runs // 32)):
+                    run = step * 32 + lane
+                    last = T.min(run * 32 + 31, num_groups - 1)
+                    tiles = tile_ends[last]
+                    for offset in (1, 2, 4, 8, 16):
+                        shifted = T.shfl_up(tiles, offset)
+                        if lane >= offset:
+                            tiles = tiles + shifted
+                    if run < runs:
+                        tile_ends[last] = carry + tiles
+                    carry = carry + T.shfl_sync(tiles, 31)
+            T.sync_threads()
+            for step in T.unroll(-(-num_groups // threads)):
+                group = step * threads + tx
+                if T.And(T.And(group >= 32, lane != 31), group < num_groups - 1):
+                    tile_ends[group] = tile_ends[group] + tile_ends[group // 32 * 32 - 1]
+        elif runs > 1:
             per_thread = -(-num_groups // threads)
             held = T.alloc_local((per_thread,), "int32")
             T.sync_threads()
