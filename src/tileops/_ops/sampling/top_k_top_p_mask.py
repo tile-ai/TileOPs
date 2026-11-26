@@ -18,9 +18,11 @@ class TopKTopPMaskFwdOp(Op):
 
     The top-k filter of ``TopKMaskFwdOp`` runs first; top-p's probabilities are then the
     softmax over the tokens it kept, with ties at either boundary kept together.
-    ``0 < top_p < 1`` is the caller's obligation. The output has the shape and dtype of
-    ``logits``, and each kept logit is passed through bit for bit, except a NaN, which comes
-    back as a quiet NaN rather than its own payload.
+    ``0 < top_p < 1`` is the caller's obligation. ``top_p = 1`` lies outside it: this op has
+    its own kernel, which does not pass a row through at 1 as ``TopPMaskFwdOp`` does, and
+    may mask a kept token whose probability the row's float32 sum rounds away. The output
+    has the shape and dtype of ``logits``, and each kept logit is passed through bit for
+    bit, except a NaN, which comes back as a quiet NaN rather than its own payload.
 
     NaN ranks above every number, as ``torch.sort`` places it, so it is masked wherever
     ``top_k`` filters the row; a row with ``top_k[b] >= V`` keeps its NaNs, and a row whose largest

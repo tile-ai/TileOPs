@@ -65,7 +65,7 @@ TopPMaskFwdOp:
   # kept or masked together and the kept set can be larger than the smallest set reaching
   # top_p[b] (workloads/sampling.py::top_p_mask, FlashInfer top_p_renorm_probs).
   # 0 <= top_p <= 1 is the caller's obligation: top_p = 0 masks the row whole, and
-  # top_p = 1 keeps every token whose probability survives the row's float32 sum.
+  # top_p = 1 keeps every token of positive probability, so the row passes through whole.
   family: sampling
   status: implemented
   ref_api: vllm.v1.sample.ops.topk_topp_sampler.apply_top_k_top_p
@@ -93,8 +93,8 @@ TopPMaskFwdOp:
 
 TopKTopPMaskFwdOp:
   # TopPMaskFwdOp(TopKMaskFwdOp(logits, top_k), top_p): top-p's probabilities are
-  # renormalized over the tokens top-k keeps. 0 <= top_p <= 1 is the caller's obligation,
-  # as for TopPMaskFwdOp.
+  # renormalized over the tokens top-k keeps. 0 < top_p < 1 is the caller's obligation;
+  # top_p = 1 lies outside it.
   family: sampling
   status: implemented
   ref_api: vllm.v1.sample.ops.topk_topp_sampler.apply_top_k_top_p

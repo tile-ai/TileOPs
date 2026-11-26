@@ -188,10 +188,12 @@ class MinPMaskWorkload(CallWorkload):
 class TopPMaskWorkload(CallWorkload):
     """Logits of one ``TopPMaskFwdOp`` call, with ``top_p`` uniform in ``[0.5, 0.95)``.
 
-    The first row takes 1 instead, the contract's upper endpoint, which keeps every token
-    the float32 softmax gives a probability to. The lower endpoint 0 masks a row whole, a
-    row no comparator agrees on, so ``tests/ops/test_sampling.py`` covers it rather than a
-    workload every benchmark reads.
+    The first row takes 1 instead, the contract's upper endpoint, which keeps every token of
+    positive probability, so the row passes through whole. ``top_p_mask`` still masks a token
+    its float32 sum rounds away there; the verification accepts either, since such a token
+    sits within its margin of ``top_p``. The lower endpoint 0 masks a row whole, a row no
+    comparator agrees on, so ``tests/ops/test_sampling.py`` covers it rather than a workload
+    every benchmark reads.
     """
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
