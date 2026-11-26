@@ -20,8 +20,9 @@ __all__ = ["MLP", "DecoderLayer", "GatedAttention", "GatedDeltaNet", "Step"]
 class Step:
     """The index metadata of one forward call on one device, shared by its layers.
 
-    ``positions`` is ``[3, T]`` int64, each token's position repeated over the temporal,
-    height and width axes, as text tokens take it; ``cu_seqlens`` is int32 ``[0, T]``;
+    ``positions`` is ``[3, T]`` int64, contiguous as the q/k norm and RoPE reads it, each
+    token's position repeated over the temporal, height and width axes, as text tokens take
+    it; ``cu_seqlens`` is int32 ``[0, T]``;
     ``cache_seqlens`` is int32 ``[start_pos + T]``; ``cos_sin`` is the device's RoPE table.
     A layer's one host-side branch on ``start_pos``, whether a call is a decode step, goes the
     same way for every decode step, and the layers read the position from these tensors, so a
@@ -40,16 +41,15 @@ class Step:
         pos = torch.arange(start_pos, start_pos + tokens, dtype=torch.int64, device=device)
         return cls(
             start_pos=start_pos,
-            positions=pos.expand(3, tokens),
+            positions=pos.repeat(3, 1),
             cu_seqlens=torch.tensor([0, tokens], dtype=torch.int32, device=device),
             cache_seqlens=torch.tensor([start_pos + tokens], dtype=torch.int32, device=device),
             cos_sin=cos_sin,
         )
 
     def moved_to(self, start_pos: int) -> Step:
-        """This one-token step at ``start_pos``: its tensors rewritten in place. Filling
-        ``positions[0]`` moves all three rows, which are one row expanded with stride 0."""
-        self.positions[0].fill_(start_pos)
+        """This one-token step at ``start_pos``: its tensors rewritten in place."""
+        self.positions.fill_(start_pos)
         self.cache_seqlens.fill_(start_pos + 1)
         return dataclasses.replace(self, start_pos=start_pos)
 
