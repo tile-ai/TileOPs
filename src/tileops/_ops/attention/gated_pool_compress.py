@@ -91,7 +91,8 @@ class GatedPoolCompressFwdOp(Op):
 
         Args:
             kv: Values ``[T_q, C * D]``, ``float32`` or ``bfloat16``; ``C`` is 2 with
-                ``overlap``, else 1.
+                ``overlap``, else 1. Any strides: the column halves of one
+                ``[T_q, 2 * C * D]`` projection are read where they lie.
             score: Gate logits, as ``kv``.
             ape: Per-slot gate bias ``[ratio, C * D]``, ``kv``'s dtype.
             kv_state: Ring of ``kv`` rows ``[NS, C * ratio, C * D]``, ``float32``; written.
@@ -116,8 +117,8 @@ class GatedPoolCompressFwdOp(Op):
             ),
         )
         return kernel(
-            kv.contiguous(),
-            score.contiguous(),
+            kv if kv.stride(-1) == 1 else kv.contiguous(),
+            score if score.stride(-1) == 1 else score.contiguous(),
             ape.contiguous(),
             kv_state,
             score_state,
