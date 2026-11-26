@@ -234,11 +234,10 @@ class GatedPoolCompressStridedCall(GatedPoolCompressFwdCall):
     """A manifest call of GatedPoolCompressFwdOp with ``kv`` and ``score`` laid out by
     ``layout``: ``halves``, the column halves of one ``[T_q, 2 * C * D]`` projection, as
     DeepSeek-V4-Flash's compressor passes them; ``padded``, the leading columns of two
-    tensors whose rows are two elements wider, off a lane's vector; ``broadcast``, one row each
-    repeated over the tokens by a zero stride; ``broadcast-kv``, ``kv`` so repeated and
-    ``score`` the second column half of a ``[T_q, 2 * C * D]`` projection, rows of two
-    strides; ``transposed``, the transposes of ``[C * D, T_q]`` tensors, whose channels lie
-    ``T_q`` elements apart."""
+    tensors whose rows are two elements wider, off a lane's vector; ``broadcast-kv``, ``kv``
+    one row repeated over the tokens by a zero stride and ``score`` the second column half of
+    a ``[T_q, 2 * C * D]`` projection, rows of two strides; ``transposed``, the transposes of
+    ``[C * D, T_q]`` tensors, whose channels lie ``T_q`` elements apart."""
 
     def __init__(self, call, layout: str) -> None:
         super().__init__(call)
@@ -257,8 +256,6 @@ class GatedPoolCompressStridedCall(GatedPoolCompressFwdCall):
                 wide[:, :width] = t
                 rows.append(wide[:, :width])
             return *rows, *rest
-        if self.layout == "broadcast":
-            return kv[:1].expand_as(kv), score[:1].expand_as(score), *rest
         if self.layout == "transposed":
             return kv.t().contiguous().t(), score.t().contiguous().t(), *rest
         both = torch.cat([kv, score], dim=1)
