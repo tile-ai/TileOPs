@@ -1054,7 +1054,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
     return _moe_grouped_gemm_mxfp4_func
 
 
-def _shared_decode_smem_bytes(block_m: int, block_n: int, num_stages: int, scale_k: int) -> int:
+def _shared_decode_smem_bytes(block_n: int, num_stages: int, scale_k: int, *, block_m: int) -> int:
     """Bytes of a shared-decode config: the ring of fp8 token rows, the packed-weight and
     decoded fp8 stages, two tasks' weight-code and token-code tables (1024 bytes of alignment),
     two tasks' row references, column scales and flags, the bfloat16 output tile and the
@@ -1576,6 +1576,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                         T.address_of(refs[buf, 0]),
                                         T.address_of(column_scales[buf, 0]),
                                         n - 1 - n_start,
+                                        decode_tx,
                                         # The tile's units of its run, padding rows included:
                                         # a tile of one scans its unit alone.
                                         T.min(
@@ -1587,7 +1588,6 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                         )
                                         if tasks.paired
                                         else block_m,
-                                        decode_tx,
                                     ),
                                     vote_barrier,
                                     decode_threads,
@@ -2086,7 +2086,7 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
         if scale_k % unroll:
             return f"unrolls the K steps by {unroll}, which does not divide {scale_k}"
         smem = _shared_decode_smem_bytes(
-            config["block_m"], config["block_n"], config["num_stages"], scale_k
+            config["block_n"], config["num_stages"], scale_k, block_m=config["block_m"]
         ) + cls.ends_bytes(num_groups, metadata_kind, alignment, config["block_m"])
         if smem > smem_limit:
             return f"takes {smem} bytes of shared memory, past the {smem_limit} a block may"
@@ -2110,7 +2110,7 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
         if call.k % QUANT_SCALE_BLOCK or not _table_box(scale_k):
             return f"loads code tables by TMA, which needs K a multiple of 2048, got K = {call.k}"
         least = _shared_decode_smem_bytes(
-            cls._TILE_ROWS, cls._TILE_COLUMNS, min(cls._NUM_STAGES), scale_k
+            cls._TILE_COLUMNS, min(cls._NUM_STAGES), scale_k, block_m=cls._TILE_ROWS
         )
         room = call.smem_budget - cls._SMEM_HEADROOM
         if least > room:

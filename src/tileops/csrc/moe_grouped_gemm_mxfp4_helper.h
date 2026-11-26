@@ -511,8 +511,8 @@ template <int Steps, int BoxBytes, int BlockN, int BlockM, int Threads>
 __device__ __forceinline__ bool mxfp4_scan_task(void const* table,
                                                 uint8_t const* tokens,
                                                 int* refs, float* column_scales,
-                                                int last, int rows,
-                                                int thread) {
+                                                int last, int thread,
+                                                int rows) {
   static_assert(BoxBytes > 0, "the code table comes by TMA in boxes");
   bool fast = true;
 #pragma unroll

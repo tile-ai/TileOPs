@@ -976,7 +976,7 @@ def test_mxfp4_grouped_gemm_shared_decode_smem_model_matches_the_build(
         call.num_groups, call.metadata_kind, kernel.alignment, config["block_m"]
     )
     modelled = _shared_decode_smem_bytes(
-        config["block_m"], config["block_n"], config["num_stages"], kernel.scale_k
+        config["block_n"], config["num_stages"], kernel.scale_k, block_m=config["block_m"]
     )
     assert modelled + ends - _compiled_smem(kernel.kernel(**config)) == 1024
 
@@ -990,12 +990,12 @@ def test_mxfp4_grouped_gemm_shared_decode_takes_the_modelled_shared_memory() -> 
     units, and taken at it; a call whose shallowest ring does not fit (K = 16384, whose code
     tables alone pass 160 KiB) keeps the register-fragment kernel."""
     scale_k = 4096 // 128
-    need = _shared_decode_smem_bytes(128, 128, 4, scale_k)
+    need = _shared_decode_smem_bytes(128, 4, scale_k, block_m=128)
     assert "shared memory" in _shared_decode_refusal(4, scale_k, need - 1)
     assert _shared_decode_refusal(4, scale_k, need) is None
     # A 256-row tile pairing units of 128-aligned runs takes 32 experts' recovered ends beside
     # its stages; under a 256-row alignment it pairs nothing and takes none.
-    need = _shared_decode_smem_bytes(256, 128, 2, 2048 // 128)
+    need = _shared_decode_smem_bytes(128, 2, 2048 // 128, block_m=256)
     assert "shared memory" in _shared_decode_refusal(2, 16, need + 127, 256, num_groups=32)
     assert _shared_decode_refusal(2, 16, need + 128, 256, num_groups=32) is None
     assert _shared_decode_refusal(2, 16, need, 256, alignment=256, num_groups=32) is None
@@ -1057,6 +1057,8 @@ def _built_config(monkeypatch: pytest.MonkeyPatch, kernel, rows: int) -> dict:
         # keeps the 256-row tile and its ring, one that does not takes the stated ring.
         pytest.param({"num_stages": 4}, 2048, {"block_m": 256, "num_stages": 2}, id="ring-paired"),
         pytest.param({"num_stages": 2}, 1536, {"block_m": 128, "num_stages": 2}, id="ring"),
+        # A stated 256-row tile takes its own deepest ring on a launch that pairs no units.
+        pytest.param({"block_m": 256}, 1536, {"block_m": 256, "num_stages": 2}, id="paired-tile"),
     ],
 )
 def test_mxfp4_grouped_gemm_shared_decode_launch_keeps_a_stated_config(
