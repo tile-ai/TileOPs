@@ -3,6 +3,7 @@ import torch
 
 from tests.cuda_graph_contract import check_replay
 from tests.workload_test_base import TestBase
+from tileops._kernels.constants import SM_RESIDENT_BLOCKS
 from tileops._kernels.indexing import EmbeddingCall
 from tileops.backend import OpNotAvailableError
 from tileops.indexing import EmbeddingFwdOp
@@ -129,25 +130,86 @@ def test_embedding_wave_limit_counts_whole_warps() -> None:
     kernel = EmbeddingFwdOp().kernel_for("embedding", lambda: call)
     cfg = kernel.config
     assert cfg["threads"] == 144, cfg
-    assert kernel._spread_above(cfg) == call.sm_count * (call.threads_per_sm // 32 // 5)
+    assert kernel._resident(cfg, cfg["threads"]) == call.sm_count * (call.threads_per_sm // 32 // 5)
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-def test_embedding_spreads_past_one_wave(monkeypatch) -> None:
-    """A one-row tile of one vector a thread takes the fewest whole warps, four vectors a
-    thread on a 256-vector row, only for a call of more CTAs than the device holds at once."""
+@pytest.mark.parametrize(
+    "D",
+    [
+        # 256 vectors: the spread program takes two warps; no one-wave program.
+        pytest.param(2048, marks=_SMOKE, id="spread-row"),
+        # 320 vectors: a one-wave program of two warps, five passes a thread against the
+        # spread program's two.
+        pytest.param(2560, marks=_FULL, id="five-pass-row"),
+    ],
+)
+def test_embedding_launches_by_id_count(D, monkeypatch) -> None:
+    """A one-row tile's call launches the default program within one wave of its CTAs and the
+    spread program past it; where the row has a one-wave program, the call launches that,
+    asking for the CTAs an SM holds of it, while those fit the call in one wave and the spread
+    program's waves outnumber the ratio of passes a thread (five for two)."""
     call = EmbeddingCall(
-        dim=2048, dtype=torch.bfloat16, index_dtype=torch.int64, device=torch.device(run_device())
+        dim=D, dtype=torch.bfloat16, index_dtype=torch.int64, device=torch.device(run_device())
     )
     op = EmbeddingFwdOp()
     kernel = op.kernel_for("embedding", lambda: call)
     cfg = kernel.config
-    assert cfg["block_rows"] == 1 and cfg["block_vectors"] == cfg["threads"], cfg
-    assert cfg["block_vectors"] == 4 * cfg["spread_threads"], cfg
-    wave = kernel._spread_above(cfg)
-    blocks, rest = divmod(wave, call.sm_count)
-    assert rest == 0 and 1 <= blocks <= call.threads_per_sm // cfg["threads"], wave
+    threads, spread, wave = cfg["threads"], cfg["spread_threads"], cfg["wave_threads"]
+    one_wave = kernel._resident(cfg, threads)
+    launches = [(one_wave, (threads, 0)), (one_wave + 1, (spread, 0))]
+    if wave != threads:
+        assert (cfg["block_rows"], spread, wave) == (1, 160, 64), cfg
+        passes_over = kernel._resident(cfg, spread) * 5 // 2
+        two_warp_wave = kernel._resident(cfg, wave)
+        held = two_warp_wave // call.sm_count
+        if passes_over < two_warp_wave:
+            launches += [
+                (passes_over, (spread, 0)),
+                (passes_over + 1, (wave, held)),
+                (two_warp_wave, (wave, held)),
+                (two_warp_wave + 1, (spread, 0)),
+            ]
+        else:
+            launches.append((passes_over + 1, (spread, 0)))
+    launched = _record_launches(kernel, monkeypatch)
+    for tokens, facts in launches:
+        launched.clear()
+        test = _test([tokens], 50, D, "int64", "bfloat16")
+        test.check(op, *test.gen_inputs())
+        assert launched[-1] == facts, (tokens, launched)
+    for launch_threads, min_blocks in {facts for _, facts in launches if facts[1]}:
+        source = kernel.program(kernel._compile, launch_threads, min_blocks).get_kernel_source()
+        assert f"__launch_bounds__({launch_threads}, {min_blocks})" in source, source[:2000]
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_embedding_one_wave_program_counts_shared_memory() -> None:
+    """Where an SM holds its CTA limit at two-warp CTAs, a 320-vector row has a two-warp
+    one-wave program, of which an SM holds as many CTAs as its CTA limit and its shared
+    memory, the 5 KiB stage and the per-block reservation each, allow."""
+    call = EmbeddingCall(
+        dim=2560, dtype=torch.bfloat16, index_dtype=torch.int64, device=torch.device(run_device())
+    )
+    if not _two_warps_reach_cta_limit(call):
+        pytest.skip("an SM of this device does not hold its CTA limit at two-warp CTAs")
+    kernel = EmbeddingFwdOp().kernel_for("embedding", lambda: call)
+    cfg = kernel.config
+    assert (cfg["block_rows"], cfg["threads"], cfg["spread_threads"], cfg["wave_threads"]) == (
+        1,
+        160,
+        160,
+        64,
+    ), cfg
+    stage = 320 * 16
+    by_smem = call.smem_per_sm // (stage + call.smem_per_sm - call.smem_budget)
+    held = min(SM_RESIDENT_BLOCKS[call.arch], by_smem)
+    assert kernel._resident(cfg, 64) == call.sm_count * held
+
+
+def _record_launches(kernel, monkeypatch) -> list:
+    """The facts of every program *kernel* launches from now on, newest last."""
     launched = []
     program = kernel.program
 
@@ -156,11 +218,37 @@ def test_embedding_spreads_past_one_wave(monkeypatch) -> None:
         return program(build, *facts)
 
     monkeypatch.setattr(kernel, "program", recording)
-    for tokens, spread in ((wave, False), (wave + 1, True)):
-        launched.clear()
-        test = _test([tokens], 50, 2048, "int64", "bfloat16")
-        test.check(op, *test.gen_inputs())
-        assert launched[-1] == (spread,), (tokens, launched)
+    return launched
+
+
+def _two_warps_reach_cta_limit(call: EmbeddingCall) -> bool:
+    """Whether an SM of *call*'s device holds its CTA limit at two-warp CTAs."""
+    limit = SM_RESIDENT_BLOCKS.get(call.arch)
+    return limit is not None and call.threads_per_sm // limit == 2 * 32
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "D",
+    [
+        # 512 vectors: eight a thread on two warps, more than a thread's registers hold at the
+        # CTA limit.
+        pytest.param(4096, id="past-register-bound"),
+        # 288 vectors: two warps do not divide them.
+        pytest.param(2304, id="undivided-row"),
+    ],
+)
+def test_embedding_has_no_one_wave_program(D) -> None:
+    """Where an SM holds its CTA limit at two-warp CTAs, a row that two warps cannot hold
+    within a thread's registers at that limit, or do not divide, has no one-wave program."""
+    call = EmbeddingCall(
+        dim=D, dtype=torch.bfloat16, index_dtype=torch.int64, device=torch.device(run_device())
+    )
+    if not _two_warps_reach_cta_limit(call):
+        pytest.skip("an SM of this device does not hold its CTA limit at two-warp CTAs")
+    cfg = EmbeddingFwdOp().kernel_for("embedding", lambda: call).config
+    assert cfg["block_rows"] == 1 and cfg["wave_threads"] == cfg["threads"], cfg
 
 
 @pytest.mark.smoke
