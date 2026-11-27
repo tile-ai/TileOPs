@@ -27,6 +27,7 @@ from tileops._kernels.linear_attention.call_spec import (
 )
 from tileops._kernels.linear_attention.deltanet.recurrent import (
     k_tile_refusal,
+    load_state_without_tma,
     stream_state_configs,
     tune_decode,
 )
@@ -139,11 +140,11 @@ def _decode_inputs(kernel: Kernel, dtype: torch.dtype) -> tuple[torch.Tensor, ..
     """Random ``(q, k, v, gk, state)`` of *kernel*'s shape to time its candidates on."""
     B, H, DK, DV = kernel.batch, kernel.head, kernel.dim_k, kernel.dim_v
     return (
-        torch.randn(B, H, DK, device="cuda", dtype=dtype),
-        torch.randn(B, H, DK, device="cuda", dtype=dtype),
-        torch.randn(B, H, DV, device="cuda", dtype=dtype),
-        -torch.rand(B, H, DK, device="cuda", dtype=dtype),
-        torch.randn(B, H, DK, DV, device="cuda", dtype=dtype),
+        torch.randn(B, H, DK, device=kernel._build_device, dtype=dtype),
+        torch.randn(B, H, DK, device=kernel._build_device, dtype=dtype),
+        torch.randn(B, H, DV, device=kernel._build_device, dtype=dtype),
+        -torch.rand(B, H, DK, device=kernel._build_device, dtype=dtype),
+        torch.randn(B, H, DK, DV, device=kernel._build_device, dtype=dtype),
     )
 
 
@@ -270,15 +271,7 @@ def _gla_decode_fp32_tl(
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
-    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
-    #
-    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
-    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
-    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
-    #      warp specialization, so the first launch hangs.
-    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
-    #          tile-ai/tilelang#2737.
-    load_state_without_tma = k_tile == dim_k
+    without_tma = load_state_without_tma(dim_k, k_tile)
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -335,11 +328,9 @@ def _gla_decode_fp32_tl(
                     o[bid, hid, j] = scale * sq_frag[j] + scale * qk_dot[0] * v_shared[j]
 
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
-                # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
+                # No intermediate variables inside T.Parallel: TileLang fails to bind them.
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(
-                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
-                    )
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=without_tma)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = (
                             T.exp2(gk_shared[kt * k_tile + kk] * LOG2E) * h_tile[kk, j]

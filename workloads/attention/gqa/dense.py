@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 
 from workloads.attention.gqa.call_metadata import _dtype
@@ -19,6 +21,21 @@ __all__ = [
     "packed_gqa_ref",
     "rotation_tables",
 ]
+
+
+def _visible(q_len, kv_len, is_causal, window_size_left, window_size_right, device):
+    """``[q_len, kv_len]``: whether query row ``i``, at key position ``i + kv_len - q_len``,
+    sees each key under the causal flag and the window bounds."""
+    q_pos = torch.arange(q_len, device=device)[:, None] + kv_len - q_len
+    k_pos = torch.arange(kv_len, device=device)[None, :]
+    visible = torch.ones((q_len, kv_len), dtype=torch.bool, device=device)
+    if is_causal:
+        visible &= k_pos <= q_pos
+    if window_size_left >= 0:
+        visible &= k_pos >= q_pos - window_size_left
+    if window_size_right >= 0:
+        visible &= k_pos <= q_pos + window_size_right
+    return visible
 
 
 def dense_gqa_logits(
@@ -46,18 +63,11 @@ def dense_gqa_logits(
     scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * scale
     if softcap is not None and softcap > 0:
         scores = softcap * torch.tanh(scores / softcap)
-    offset = seq_len_kv - seq_len_q
-    q_pos = torch.arange(seq_len_q, device=q.device)[:, None] + offset
-    k_pos = torch.arange(seq_len_kv, device=q.device)[None, :]
-    mask = torch.ones((seq_len_q, seq_len_kv), device=q.device, dtype=torch.bool)
-    if is_causal:
-        mask &= k_pos <= q_pos
-    if window_size_left >= 0:
-        mask &= k_pos >= q_pos - window_size_left
-    if window_size_right >= 0:
-        mask &= k_pos <= q_pos + window_size_right
     if is_causal or window_size_left >= 0 or window_size_right >= 0:
-        scores = scores.masked_fill(~mask.view(1, 1, seq_len_q, seq_len_kv), float("-inf"))
+        visible = _visible(
+            seq_len_q, seq_len_kv, is_causal, window_size_left, window_size_right, q.device
+        )
+        scores = scores.masked_fill(~visible, float("-inf"))
     return scores
 
 
@@ -132,15 +142,7 @@ def packed_gqa_ref(
     scores = torch.matmul(q_i, k_i.transpose(-2, -1)) * scale
     if softcap is not None and softcap > 0:
         scores = softcap * torch.tanh(scores / softcap)
-    q_pos = torch.arange(q_len, device=q.device)[:, None] + kv_len - q_len
-    k_pos = torch.arange(kv_len, device=q.device)[None, :]
-    visible = torch.ones((q_len, kv_len), dtype=torch.bool, device=q.device)
-    if is_causal:
-        visible &= k_pos <= q_pos
-    if window_size_left >= 0:
-        visible &= k_pos >= q_pos - window_size_left
-    if window_size_right >= 0:
-        visible &= k_pos <= q_pos + window_size_right
+    visible = _visible(q_len, kv_len, is_causal, window_size_left, window_size_right, q.device)
     scores = scores.masked_fill(~visible, float("-inf"))
     if sinks is not None:
         scores = torch.cat((scores, sinks[:, None, None].expand(-1, q_len, 1)), dim=-1)
@@ -163,12 +165,9 @@ def fp8_qkv(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...]]:
     """FP8 ``q``, ``k`` and ``v`` of *shapes*, and their ``[batch, heads_kv]`` float32 scales.
 
-    The score spread in standard deviations is the draw's variance: the head dimension
-    cancels against the default sm_scale. At 0.2 the spread is 0.04, the softmax is uniform
-    to within 4%, and a kernel that never reads its query still agrees with the reference.
-    At 2.0 the spread is 4, which separates a query-blind kernel by 38x to 58x. A wider draw
-    separates them less: a sharper softmax amplifies the e4m3 score error faster than it
-    sharpens the weights. The scales are not one, so a kernel that never reads one disagrees.
+    ``q`` and ``k`` at std 2.0 spread the scores enough that a kernel ignoring its query
+    disagrees with the reference; a wider draw amplifies the e4m3 score error instead. The
+    scales are not one, so a kernel that never reads one disagrees.
     """
     q, k = ((torch.randn(s, device=run_device()) * 2.0).to(torch.float8_e4m3fn) for s in shapes[:2])
     v = (torch.randn(shapes[2], device=run_device()) * 0.2).to(torch.float8_e4m3fn)
@@ -185,28 +184,22 @@ def rotation_tables(rows: int, rotary_dim: int, dtype: torch.dtype) -> tuple[tor
     return angles.cos().to(dtype), angles.sin().to(dtype)
 
 
+@dataclass(eq=False)
 class GQADenseDecodeWorkload(WorkloadBase):
     """Single-token decode over a contiguous BSHD KV cache."""
 
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seq_len_kv: int,
-        dim: int,
-        dtype: torch.dtype,
-        sm_scale: float | None = None,
-        softcap: float | None = None,
-    ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len_kv = seq_len_kv
-        self.dim = dim
-        self.dtype = dtype
-        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = 0.0 if softcap is None else softcap
+    batch: int
+    heads: int
+    heads_kv: int
+    seq_len_kv: int
+    dim: int
+    dtype: torch.dtype
+    sm_scale: float | None = None
+    softcap: float | None = None
+
+    def __post_init__(self) -> None:
+        self.sm_scale = self.dim**-0.5 if self.sm_scale is None else self.sm_scale
+        self.softcap = 0.0 if self.softcap is None else self.softcap
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(self.batch, 1, self.heads, self.dim, device=run_device(), dtype=self.dtype)
@@ -237,6 +230,7 @@ class GQADenseDecodeWorkload(WorkloadBase):
         return dense_gqa_verification(inputs[0].dtype)
 
 
+@dataclass(eq=False)
 class GQADensePrefillWorkload(WorkloadBase):
     """Dense prefill over contiguous BSHD tensors, with the op's optional inputs.
 
@@ -246,41 +240,27 @@ class GQADensePrefillWorkload(WorkloadBase):
     where the call omits one.
     """
 
-    def __init__(
-        self,
-        batch: int,
-        seq_len_q: int,
-        seq_len_kv: int,
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        dtype: torch.dtype,
-        out_dtype: torch.dtype | None = None,
-        is_causal: bool = True,
-        sm_scale: float | None = None,
-        softcap: float | None = None,
-        rotary_dim: int | None = None,
-        rope_layout: str = "neox",
-        window_size_left: int = -1,
-        window_size_right: int = -1,
-        has_sinks: bool = False,
-    ) -> None:
-        self.batch = batch
-        self.seq_len_q = seq_len_q
-        self.seq_len_kv = seq_len_kv
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
-        self.dtype = dtype
-        self.out_dtype = dtype if out_dtype is None else out_dtype
-        self.is_causal = is_causal
-        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
-        self.softcap = 0.0 if softcap is None else softcap
-        self.rotary_dim = rotary_dim
-        self.rope_layout = rope_layout
-        self.window_size_left = window_size_left
-        self.window_size_right = window_size_right
-        self.has_sinks = has_sinks
+    batch: int
+    seq_len_q: int
+    seq_len_kv: int
+    heads: int
+    heads_kv: int
+    dim: int
+    dtype: torch.dtype
+    out_dtype: torch.dtype | None = None
+    is_causal: bool = True
+    sm_scale: float | None = None
+    softcap: float | None = None
+    rotary_dim: int | None = None
+    rope_layout: str = "neox"
+    window_size_left: int = -1
+    window_size_right: int = -1
+    has_sinks: bool = False
+
+    def __post_init__(self) -> None:
+        self.out_dtype = self.dtype if self.out_dtype is None else self.out_dtype
+        self.sm_scale = self.dim**-0.5 if self.sm_scale is None else self.sm_scale
+        self.softcap = 0.0 if self.softcap is None else self.softcap
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
         shapes = (

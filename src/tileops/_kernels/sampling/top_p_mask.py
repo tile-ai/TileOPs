@@ -220,9 +220,7 @@ def _top_p_mask_kernel(
                                 0, "uint64" if fixed else "float32"
                             )
                 if parts > 1:
-                    # Read before the row so the walk of the first pass does not wait on it, and
-                    # clear the bins before the row rather than after the maximum's grid barrier:
-                    # the barriers of the maximum order the clear before the first add.
+                    # Before the row: the maximum's grid barriers order the clear before any add.
                     row_p[0] = p[line]
                     clear_bins(bins, quad)
                 tiles.row_extremes(
@@ -298,11 +296,8 @@ def _top_p_mask_kernel(
                     T.sync_threads()
                     if parts > 1:
                         if fixed:
-                            # A bin's ``fold_lanes`` adjacent lanes fold its lane copies a group
-                            # at a time, from a start that differs per bin and per lane, so the 8
-                            # threads of a 16-byte access phase read 8 groups of banks. Fixed-point
-                            # totals are exact in any order; the lanes' sums meet in shuffles so a
-                            # bin takes one global add.
+                            # ``fold_lanes`` lanes fold a bin's copies from staggered starts
+                            # (no bank conflict), then meet in shuffles for one global add.
                             fold_fixed[0] = T.uint64(0)
                             for w in T.unroll(fold_quads):
                                 for k in T.unroll(pieces):
@@ -337,9 +332,7 @@ def _top_p_mask_kernel(
                                     fold_fixed[0],
                                 )
                         else:
-                            # One thread a bin adds its float32 copies in one fixed order,
-                            # starting at its own bank: float adds do not associate, so another
-                            # order would change the totals.
+                            # One thread a bin, in one fixed order: float adds do not associate.
                             if tx < search_bins:
                                 fold_bins[0] = T.float32(0)
                                 for w in T.unroll(WARP_LANES):
@@ -453,11 +446,8 @@ def _top_p_mask_kernel(
                                 T.infinity("float32"),
                             )
                         T.sync_threads()
-                        # The highest bin the weight still reaches over: the top bin when every
-                        # bin does, which is what p = 0 asks for, and bin 0 when none does, which a
-                        # later pass's re-tally can round below the first pass's total. The scan
-                        # sums overlapping ranges under different association trees, so two bins
-                        # can qualify by a rounding and the highest wins rather than the race.
+                        # The highest bin the weight still reaches over (the top bin at p = 0,
+                        # bin 0 when a re-tally rounds below the target); the highest wins.
                         if tx < search_bins and carried[0] + suffix[tx] >= target[0]:
                             T.atomic_max(picked[0], tx)
                         T.sync_threads()
@@ -466,10 +456,8 @@ def _top_p_mask_kernel(
                             carried[0] = carried[0] + suffix[picked[0] + 1]
                         T.sync_threads()
 
-                # A cut above every finite key decodes to a NaN, so p = 0 takes the infinity
-                # that masks the row whole instead. A row whose float32 softmax is all NaN, and
-                # a row at p = 1, whose bracket is key 0, are masked nowhere: a NaN cut leaves
-                # every comparison against it false.
+                # p = 0 (a cut above every finite key) masks the row whole with +inf; a NaN cut
+                # (NaN softmax, or p = 1) masks nothing.
                 cut[0] = T.if_then_else(
                     seen[0] > T.uint32(INF_BITS) or T.abs(row_max[0]) >= T.infinity("float32"),
                     T.reinterpret(T.uint32(QUIET_NAN), "float32"),
@@ -521,11 +509,8 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
     # Bits a dtype's float32 key varies in. Widening bfloat16 to float32 leaves 16 zero low
     # bits and float16 leaves 13, so a search over those dtypes ends in fewer passes.
     _KEY_BITS: ClassVar[dict] = {torch.bfloat16: 16, torch.float16: 19, torch.float32: 32}
-    # Bins one search pass splits its bracket of keys into. A pass costs one shared-memory add
-    # an element whatever this is, so the figure to keep down is the passes, and 256 bins spend
-    # a bfloat16 key in two of them. It is also the widest split whose per-lane float32 bins
-    # fit the shared budget, at 256 * 32 * 4 = 32 KB; a split row's fixed-point pieces take that
-    # once each.
+    # Bins a search pass splits its bracket into: two passes for a bfloat16 key, and the widest
+    # whose per-lane float32 bins (256 * 32 * 4 = 32 KB) fit the shared budget.
     _SEARCH_BINS: ClassVar[int] = 256
 
     @classmethod
@@ -547,13 +532,9 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
         )
 
         self._passes = -(-self._KEY_BITS[call.dtype] // (self._SEARCH_BINS - 1).bit_length())
-        # A split row adds each weight, at most 1, as ``floor(weight * 2^fraction_bits)``, so
-        # its truncations total below ``vocab * 2^-fraction_bits``, under the float32 rounding
-        # (2^-24 of the significand) of a total of at least 1, and its exact total, below
-        # ``vocab * 2^fraction_bits``, fits 64 bits. The weight goes into 32-bit pieces of the
-        # bins, highest bits first. A lane's copy of a piece takes one weight a tile from each
-        # warp, ``lane_adds`` a pass: the first piece, at most ``2^widths[0]`` a weight, and
-        # each later one, below ``2^width``, keep its total in 32 bits.
+        # A split row adds each weight as ``floor(weight * 2^fraction_bits)``: the truncations
+        # stay under float32 rounding of the total, and the total fits 64 bits. The weight is cut
+        # into 32-bit pieces whose ``lane_adds`` adds a pass each stay within 32 bits.
         fraction_bits = call.vocab.bit_length() + 24
         lane_adds = threads // WARP_LANES * chunk * vec
         widths = [min(((2**32 - 1) // lane_adds).bit_length() - 1, fraction_bits)]
@@ -561,10 +542,8 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
             later = ((2**32 - 1) // lane_adds + 1).bit_length() - 1
             widths.append(min(later, fraction_bits - sum(widths)))
 
-        # The per-lane bins, one 4-byte copy a piece, and their scan, plus at most one alignment
-        # each for the ten buffers the search and the reductions take beside the row. A row one
-        # block holds, or a split row whose total or bins do not fit, adds float32 weights in
-        # one copy.
+        # Per-lane bins (one copy a piece), their scan, and one alignment for each of the ten
+        # other buffers. A row one block holds, or one whose fixed bins do not fit, adds float32.
         def reserve(copies: int) -> int:
             return (
                 (WARP_LANES * copies + 1) * self._SEARCH_BINS * 4

@@ -19,16 +19,8 @@ def select(cond, x, y):
 
 @target_cache(maxsize=32)
 def _make_where_kernel(N, dtype):
-    """Build where kernel: out = cond ? x : y.
-
-    ``WhereFwdKernel.forward`` packs the bool condition as uint8 so that T.copy
-    can perform vectorized loads (TileLang does not vectorize bool tensors).
-    Each uint8 element is 0 or 1; the kernel loads it into a register fragment
-    and unpacks per-element with a != 0 comparison.
-
-    The result is written back into ``x``'s register fragment rather than a
-    fourth data-typed one.
-    """
+    """Build where kernel: out = cond ? x : y, the bool condition passed as uint8 (TileLang
+    does not vectorize bool tensors); the result is written back into ``x``'s fragment."""
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
@@ -63,9 +55,7 @@ class WhereFwdKernel(MultiInputElementwiseKernel, WhereFwdInterface):
 
     INPUTS = (("cond", "mask"), ("x", "tile"), ("y", "tile"))
 
-    @staticmethod
-    def _builder_fn():
-        return _make_where_kernel
+    _builder = staticmethod(_make_where_kernel)
 
     def _element(self, cond, x, y):
         return select(cond, x, y)

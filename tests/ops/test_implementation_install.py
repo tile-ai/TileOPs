@@ -1,14 +1,11 @@
-"""Tests for installing an op's implementations at construction.
-
-Installing them resolves classes only. It does not probe the device, so an op
-constructs wherever it is imported and a target that cannot run it is refused
-when a kernel is first selected — not at construction, where most ops do not
-yet know which device they will run on.
+"""Installing an op's implementations at construction resolves classes only and probes no
+device; an implementation that cannot run is refused when a kernel is first selected.
 """
 
 import pytest
 import torch
 
+from tileops._ops.elementwise import AlibiFwdOp, SinusoidalFwdOp
 from tileops._ops.elementwise._base import ELEMENTWISE
 from tileops._utils import forget_device_properties, get_sm_version
 from tileops.backend import BUILTIN, OpNotAvailableError
@@ -35,31 +32,9 @@ def isolated_registry():
     registry.restore(state)
 
 
-def _make_incompatible_arch_list() -> list[int]:
-    """Return a ``supported_archs`` list that excludes the current device."""
-    current = get_sm_version()
-    candidates = [70, 75, 80, 86, 89, 90, 100]
-    incompatible = [a for a in candidates if a != current]
-    assert incompatible, "no incompatible arch candidate available"
-    return incompatible
-
-
-def _gemm_call():
-    """A dense GEMM call every in-tree implementation would otherwise serve."""
-    from tileops._kernels.gemm import GEMMCall
-
-    return GEMMCall(m=128, n=128, k=128, dtype=torch.float16, trans_b=True)
-
-
 @pytest.mark.smoke
 def test_construction_succeeds_where_the_device_cannot_be_queried() -> None:
-    """An op constructs on a machine that cannot answer what the device is.
-
-    Most ops do not yet know where they will run, and on hardware other than the
-    one being asked about the query is not merely wrong but unavailable. Driven
-    by making the probe raise rather than by naming who may call it, so importing
-    it under another name or probing from elsewhere fails this too.
-    """
+    """An op constructs where every device query raises."""
     import tileops._ops.elementwise as mod
     from tileops.gemm import GEMMFwdOp
 
@@ -83,15 +58,12 @@ def test_construction_succeeds_where_the_device_cannot_be_queried() -> None:
 
 @pytest.mark.smoke
 def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
-    """The auto-discovery path is refused at the same point, the same way.
-
-    Every implementation of the interface is made incompatible: one that is still
-    available serves the call, which is what makes the interface's general
-    implementation a fallback rather than a sibling of the one that went away.
-    """
+    """An op whose every implementation excludes the device constructs, and its first kernel
+    selection is refused."""
+    from tileops._kernels.gemm import GEMMCall
     from tileops.gemm import GEMMFwdOp
 
-    incompatible_archs = _make_incompatible_arch_list()
+    incompatible_archs = [a for a in (70, 75, 80, 86, 89, 90, 100) if a != get_sm_version()]
 
     class AutoDiscoveredIncompatibleOp(GEMMFwdOp):
         # Inside tileops: a class defined elsewhere cannot subclass an op of tileops.
@@ -106,20 +78,14 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     op = AutoDiscoveredIncompatibleOp()
 
     with pytest.raises(OpNotAvailableError, match="no implementation serves this call"):
-        op.kernel_for("gemm", _gemm_call)
+        op.kernel_for(
+            "gemm", lambda: GEMMCall(m=128, n=128, k=128, dtype=torch.float16, trans_b=True)
+        )
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.smoke
 def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
-    """``supported_archs=None`` means no restriction, and the op runs.
-
-    The base ``Kernel`` declares it ``list[int] | None`` defaulting to
-    ``None``. Anything testing membership against it would raise ``TypeError``
-    instead of admitting the call, so this drives a forward through such a
-    kernel rather than inspecting where it was installed.
-    """
+    """``supported_archs=None`` means no restriction: a forward runs through such a kernel."""
     import tileops._ops.elementwise as mod
 
     cls = mod.ReLUFwdOp
@@ -139,16 +105,10 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     compare_outputs(y, torch.relu(x), ElementwiseWorkload(type(op).__name__, ()).verification())
 
 
-# A slot holds one entry per specialization; an enumeration that misses one
-# silently tunes nothing.
-
-
 # Which implementation serves an element type is the key's own applicability, and the
-# storage it computes in is its own ``entry_for``. The op passes the semantic dtype and
-# names neither.
+# storage it computes in is its own ``entry_for``; the op passes the semantic dtype.
 
 
-@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
     """The bool sibling wins the bool call and builds in the storage it names."""
@@ -179,7 +139,6 @@ def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
     assert built.ctor_dtype == torch.bool, "the op imposed a storage dtype"
 
 
-@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_an_integral_call_takes_the_key_that_states_it_serves_integers():
     """The float program and the integral answer are two keys with disjoint regions."""
@@ -197,15 +156,13 @@ def test_an_integral_call_takes_the_key_that_states_it_serves_integers():
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_name,kwargs",
+    "op_cls,kwargs",
     [
-        ("AlibiFwdOp", {"seq_len": 8, "num_heads": 4}),
-        ("SinusoidalFwdOp", {"seq_len": 8, "d_model": 8}),
+        (AlibiFwdOp, {"seq_len": 8, "num_heads": 4}),
+        (SinusoidalFwdOp, {"seq_len": 8, "d_model": 8}),
     ],
+    ids=["AlibiFwdOp", "SinusoidalFwdOp"],
 )
-def test_a_generative_op_delivers_the_dtype_it_declared(op_name, kwargs):
+def test_a_generative_op_delivers_the_dtype_it_declared(op_cls, kwargs):
     """Whatever storage the implementation computes in, the op returns ``out_dtype``."""
-    import tileops._ops.elementwise as ew
-
-    op = getattr(ew, op_name)(out_dtype=torch.float16, **kwargs)
-    assert op().dtype == torch.float16
+    assert op_cls(out_dtype=torch.float16, **kwargs)().dtype == torch.float16

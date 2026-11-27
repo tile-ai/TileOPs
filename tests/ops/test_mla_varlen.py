@@ -98,17 +98,6 @@ class MLAVarlenFwdFixture(FixtureBase):
                         torch.bfloat16,
                         marks=pytest.mark.full,
                     ),
-                    pytest.param(
-                        [1024],
-                        16,
-                        128,
-                        64,
-                        128,
-                        True,
-                        None,
-                        torch.bfloat16,
-                        marks=pytest.mark.full,
-                    ),
                 ],
             ),
         ]

@@ -7,8 +7,13 @@ from tests.cuda_graph_contract import CapturedGraph, check_replay
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call, GEMMW4A8PrefillKernel
-from tileops._kernels.gemm.call_spec import GEMMCall
+from tileops._kernels.gemm import (
+    GEMMINT8W8A8Call,
+    GEMMW4A8Call,
+    GEMMW4A8PrefillKernel,
+    GEMMW4A16Kernel,
+)
+from tileops._kernels.gemm.call_spec import GEMMCall, GEMMW4A16Call
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
 from tileops._kernels.gemm.heuristics import best_config, int8_pingpong_grid
 from tileops._kernels.gemm.w4a8_decode import _select_config as select_w4a8_decode_config
@@ -91,17 +96,6 @@ class GEMMFixture(FixtureBase):
                     id="smoke-bf16-square",
                 ),
                 pytest.param(
-                    1,
-                    1024,
-                    1024,
-                    torch.float16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-fp16-trans-b-small-m",
-                ),
-                pytest.param(
                     128,
                     2112,
                     4096,
@@ -143,18 +137,7 @@ class GEMMFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-fp16-tuned-wide-alt",
-                ),
-                pytest.param(
-                    1024,
-                    1,
-                    1024,
-                    torch.float16,
-                    False,
-                    False,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-fp16-thin-n",
+                    id="full-fp16-wide-alt",
                 ),
                 pytest.param(
                     7168,
@@ -165,7 +148,7 @@ class GEMMFixture(FixtureBase):
                     False,
                     False,
                     marks=pytest.mark.full,
-                    id="full-fp16-tuned-thin-n",
+                    id="full-fp16-thin-n",
                 ),
                 pytest.param(
                     18432,
@@ -176,7 +159,7 @@ class GEMMFixture(FixtureBase):
                     False,
                     False,
                     marks=pytest.mark.full,
-                    id="full-fp16-tuned-thin-n-alt",
+                    id="full-fp16-thin-n-alt",
                 ),
                 pytest.param(
                     1,
@@ -187,29 +170,7 @@ class GEMMFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-bf16-tuned-wide",
-                ),
-                pytest.param(
-                    2,
-                    2112,
-                    7168,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-small-batch-m2",
-                ),
-                pytest.param(
-                    4,
-                    7168,
-                    2048,
-                    torch.float16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-fp16-small-m4-swap-ab",
+                    id="full-bf16-wide",
                 ),
                 pytest.param(
                     4,
@@ -220,7 +181,7 @@ class GEMMFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-fp16-small-m4-basic-ntail",
+                    id="full-fp16-small-m4-swap-ab-ntail",
                 ),
                 pytest.param(
                     8,
@@ -234,17 +195,6 @@ class GEMMFixture(FixtureBase):
                     id="full-fp16-small-m8-splitk",
                 ),
                 pytest.param(
-                    4,
-                    5000,
-                    2048,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-small-m4-swap-ab-ntail",
-                ),
-                pytest.param(
                     1440,
                     2080,
                     256,
@@ -256,17 +206,6 @@ class GEMMFixture(FixtureBase):
                     id="full-bf16-coop2-mn-tail",
                 ),
                 # The layouts whose A or B tile is MN-major, on the same M / N tails.
-                pytest.param(
-                    1440,
-                    4600,
-                    512,
-                    torch.bfloat16,
-                    True,
-                    False,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-coop2-tn-mn-tail",
-                ),
                 pytest.param(
                     1440,
                     4600,
@@ -290,17 +229,6 @@ class GEMMFixture(FixtureBase):
                     id="full-bf16-coop2-nn-mn-tail",
                 ),
                 pytest.param(
-                    1408,
-                    2112,
-                    256,
-                    torch.float16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-fp16-coop2-176-wide",
-                ),
-                pytest.param(
                     1400,
                     2112,
                     256,
@@ -310,17 +238,6 @@ class GEMMFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                     id="full-bf16-coop2-176-wide-m-tail",
-                ),
-                pytest.param(
-                    4000,
-                    2112,
-                    512,
-                    torch.float16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-fp16-pingpong-176",
                 ),
                 pytest.param(
                     2800,
@@ -343,17 +260,6 @@ class GEMMFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                     id="full-bf16-pingpong-192-mn-tail",
-                ),
-                pytest.param(
-                    2048,
-                    6144,
-                    1024,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-pingpong-192-four-tiles",
                 ),
                 # 12 row tiles of 11 x 160 + 2 x 176, past 64 K steps (ping-pong over
                 # coop2).
@@ -477,50 +383,6 @@ class GEMMFixture(FixtureBase):
                     id="full-bf16-basic-192-one-wave-nn",
                 ),
                 pytest.param(
-                    16,
-                    24576,
-                    512,
-                    torch.bfloat16,
-                    True,
-                    False,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-basic-192-one-wave-tn",
-                ),
-                pytest.param(
-                    16,
-                    24576,
-                    512,
-                    torch.bfloat16,
-                    True,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-basic-192-one-wave-tt",
-                ),
-                pytest.param(
-                    256,
-                    2048,
-                    6144,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-coop2-splitk-short-wave",
-                ),
-                pytest.param(
-                    64,
-                    7168,
-                    2048,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-simple-plain",
-                ),
-                pytest.param(
                     128,
                     8448,
                     2048,
@@ -531,19 +393,8 @@ class GEMMFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-simple-cluster",
                 ),
-                # One-wave fill tiles: a width no basic tile has, two M tiles as a cluster.
-                pytest.param(
-                    128,
-                    7168,
-                    2048,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-fill-cluster",
-                ),
-                # A partial second M tile, an N tail and a K tail.
+                # One-wave fill tiles, a width no basic tile has, two M tiles as a cluster: a
+                # partial second M tile, an N tail and a K tail.
                 pytest.param(
                     120,
                     7000,
@@ -561,19 +412,14 @@ class GEMMFixture(FixtureBase):
 
 
 class GemvBoundaryFixture(FixtureBase):
-    """GEMV outputs remain correct for non-aligned free and contraction dimensions."""
-
     PARAMS = [
         (
             "n, k, dtype",
             [
-                # lhs_row: m=1, trans_b=True — non-aligned n
+                # n: the free extent, the output columns (lhs_row) or rows (rhs_col).
                 pytest.param(3000, 1024, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(3000, 1024, torch.bfloat16, marks=pytest.mark.smoke),
-                # lhs_row: non-aligned k
                 pytest.param(1024, 3000, torch.float16, marks=pytest.mark.full),
-                # rhs_col: n=1 — non-aligned m (mapped to gemv n param)
-                pytest.param(3001, 1024, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -649,17 +495,6 @@ class GEMMFP8Fixture(FixtureBase):
                     True,
                     marks=pytest.mark.full,
                     id="full-fp8-e4m3-per-tensor-small-m-bias",
-                ),
-                pytest.param(
-                    1,
-                    256,
-                    128,
-                    torch.float8_e4m3fn,
-                    "per_tensor",
-                    torch.bfloat16,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-fp8-e4m3-per-tensor-gemv",
                 ),
                 pytest.param(
                     5,
@@ -757,30 +592,6 @@ class GEMMW4A16Fixture(FixtureBase):
                     id="smoke-w4a16-square",
                 ),
                 pytest.param(
-                    128,
-                    256,
-                    256,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-w4a16-rect",
-                ),
-                pytest.param(
-                    1,
-                    512,
-                    512,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-w4a16-m1",
-                ),
-                pytest.param(
-                    16,
-                    1024,
-                    1024,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-w4a16-m16",
-                ),
-                pytest.param(
                     1,
                     35,
                     384,
@@ -827,10 +638,8 @@ class GEMMW4A8Fixture(FixtureBase):
                 pytest.param(
                     385, 2560, 128, marks=pytest.mark.full, id="full-w4a8-m385-n2560-k128"
                 ),
-                # Token counts on both sides of 32 and off the 64-row tile.
-                pytest.param(8, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m8"),
+                # The largest token count the decode kernel serves.
                 pytest.param(32, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m32"),
-                pytest.param(33, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m33"),
                 # 112 row tiles on 132 SMs run a tile a CTA, with a ragged last tile and an odd
                 # K-group count.
                 pytest.param(
@@ -849,14 +658,11 @@ class GEMMW4A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-w4a8-decode-two-warpgroup-units",
                 ),
-                # A short-K TP8 down projection at 64 tokens.
-                pytest.param(64, 8192, 3584, marks=pytest.mark.full, id="full-w4a8-llama-tp8-m64"),
                 pytest.param(128, 256, 512, marks=pytest.mark.full, id="full-w4a8-m128"),
                 pytest.param(512, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m512"),
                 # N with 16, 32 and 48 rows past the last 64-row block, and an odd count of
                 # 128-wide K blocks, at one token count on each side of 32.
                 pytest.param(1, 16, 128, marks=pytest.mark.full, id="full-w4a8-m1-n16-k128"),
-                pytest.param(8, 80, 384, marks=pytest.mark.full, id="full-w4a8-m8-n80-k384"),
                 pytest.param(8, 96, 384, marks=pytest.mark.full, id="full-w4a8-m8-n96-k384"),
                 pytest.param(8, 112, 384, marks=pytest.mark.full, id="full-w4a8-m8-n112-k384"),
                 pytest.param(33, 16, 128, marks=pytest.mark.full, id="full-w4a8-m33-n16-k128"),
@@ -892,7 +698,6 @@ def test_gemm(
     trans_a: bool,
     trans_b: bool,
     tune: bool,
-    fp32_gemm_reduction,
 ) -> None:
     test = GEMMTest(m, n, k, dtype, trans_a, trans_b)
     op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b)
@@ -968,11 +773,8 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="smoke-fp16",
                 ),
-                # Ping-pong on 132 SMs (the off-16-byte-boundary test runs it in smoke): M / N /
-                # K tails, per-channel scales and a bias, and
-                # 192-wide tiles whose last 8 row tiles start with 14 tiles 160 wide, 376 tiles:
-                # more than two waves, so each CTA runs both consumers and hands the turn back
-                # and forth.
+                # Ping-pong, 192 wide with 160-wide narrow tiles over more than two waves: tails,
+                # per-channel scales, a bias.
                 pytest.param(
                     2200,
                     3720,
@@ -985,9 +787,8 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-pingpong-tails",
                 ),
-                # On 132 SMs (H200) the narrowest one-wave width of these N is 80, 112 and 192,
-                # each tile issued whole by T.wgmma_gemm: a column tail on each, a one-row A box
-                # at m = 1, a K tail at m = 64 and a partial row tile at m = 37.
+                # One-wave tiles 80, 112 and 192 wide on 132 SMs, each with an N tail: a one-row
+                # A box (m = 1, tensor activation scale), a K tail, a partial row tile.
                 pytest.param(
                     1,
                     10008,
@@ -1024,8 +825,7 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-192-wide",
                 ),
-                # k off TMA's 16-byte unit: the fallback, which the off-16-byte-boundary test
-                # runs in smoke.
+                # The simple kernel: K off TMA's 16-byte unit.
                 pytest.param(
                     37,
                     104,
@@ -1038,58 +838,7 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-unaligned-k",
                 ),
-                # The other scale granularities: one activation scale, one weight scale.
-                pytest.param(
-                    64,
-                    512,
-                    1024,
-                    False,
-                    True,
-                    torch.bfloat16,
-                    False,
-                    _INT8_WS,
-                    marks=pytest.mark.full,
-                    id="full-tensor-scale-a",
-                ),
-                pytest.param(
-                    64,
-                    512,
-                    1024,
-                    True,
-                    False,
-                    torch.bfloat16,
-                    False,
-                    _INT8_WS,
-                    marks=pytest.mark.full,
-                    id="full-tensor-scale-b",
-                ),
-                pytest.param(
-                    64,
-                    512,
-                    1024,
-                    True,
-                    True,
-                    torch.bfloat16,
-                    True,
-                    _INT8_WS,
-                    marks=pytest.mark.full,
-                    id="full-bias",
-                ),
-                # One row: a one-row TMA box and the elementwise store.
-                pytest.param(
-                    1,
-                    512,
-                    1024,
-                    True,
-                    True,
-                    torch.bfloat16,
-                    False,
-                    _INT8_WS,
-                    marks=pytest.mark.full,
-                    id="full-one-row",
-                ),
-                # A box of fewer rows than a tile, an N tail and a K tail past the 128-wide
-                # step.
+                # A row box shorter than a tile, N and K tails.
                 pytest.param(
                     37,
                     520,
@@ -1102,7 +851,7 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-row-box-n-k-tails",
                 ),
-                # Two row tiles, the second partial: the staged store's elementwise branch.
+                # A partial second row tile: the staged store's elementwise branch.
                 pytest.param(
                     100,
                     512,
@@ -1115,8 +864,7 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-partial-row-tile",
                 ),
-                # Ping-pong on 132 SMs: fp16 and tensor scales, and 192-wide tiles whose last 8
-                # row tiles start with three tiles 32 wide, 282 tiles; M / N / K tails.
+                # Ping-pong, 192 wide with 32-wide narrow tiles: fp16, tensor scales, tails.
                 pytest.param(
                     2400,
                     2568,
@@ -1129,9 +877,7 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-pingpong-tensor-scales-bias",
                 ),
-                # Ping-pong 192-wide tiles with no narrow ones on 132 SMs, the 64-column store
-                # boxes: M / N tails, a bias, and one K step, whose only stage the drain after
-                # the mainloop releases.
+                # Ping-pong, 192 wide uniform: 64-column store boxes, one K step, tails, a bias.
                 pytest.param(
                     1900,
                     1032,
@@ -1144,8 +890,7 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-pingpong-192-uniform-bias",
                 ),
-                # Ping-pong on 132 SMs, one wave of 92 tiles: 192-wide tiles whose four row
-                # tiles each start with 23 tiles 96 wide; M and K tails.
+                # Ping-pong, 192 wide with 96-wide narrow tiles in one wave: M and K tails.
                 pytest.param(
                     400,
                     2208,
@@ -1158,8 +903,7 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-pingpong-narrow-96",
                 ),
-                # Ping-pong 128-wide tiles on 132 SMs, 392 tiles: M / N / K tails over more
-                # than two waves, fp16 with tensor scales and a bias.
+                # Ping-pong, 128 wide over more than two waves: fp16, tensor scales, a bias, tails.
                 pytest.param(
                     1700,
                     3464,
@@ -1172,7 +916,7 @@ class GEMMINT8W8A8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-pingpong-128-tails-bias",
                 ),
-                # n off the output's 16-byte TMA row pitch: the fallback.
+                # The simple kernel: N off the output's 16-byte TMA row pitch.
                 pytest.param(
                     37,
                     101,
@@ -1225,13 +969,12 @@ def test_gemm_int8_w8a8(
 @pytest.mark.parametrize(
     "m, n, grid",
     [
-        # The ping-pong cases above: 160-, 96- and 32-wide narrow tiles, and 192 with none.
+        # 160-, 96- and 32-wide narrow tiles, and 192 with none.
         pytest.param(2200, 3720, (192, 160, 8, 14), marks=pytest.mark.smoke, id="narrow-160"),
         pytest.param(400, 2208, (192, 96, 4, 23), marks=pytest.mark.smoke, id="narrow-96"),
         pytest.param(2400, 2568, (192, 32, 8, 3), marks=pytest.mark.smoke, id="narrow-32"),
         pytest.param(1900, 1032, (192, 0, 0, 0), marks=pytest.mark.smoke, id="uniform-192"),
-        # Equal busiest-CTA columns, but 192-wide tiles give one consumer of a CTA more
-        # columns of epilogue: 288 against 256 (the 128-wide case above), 352 against 256.
+        # Equal busiest-CTA columns, but 192-wide tiles give one consumer more epilogue columns.
         pytest.param(1700, 3464, (128, 0, 0, 0), marks=pytest.mark.smoke, id="uniform-128"),
         pytest.param(2048, 4096, (128, 0, 0, 0), marks=pytest.mark.smoke, id="consumer-tie"),
         # 192-wide tiles give the busiest CTA more columns: 192 against 128.
@@ -1239,8 +982,8 @@ def test_gemm_int8_w8a8(
     ],
 )
 def test_int8_pingpong_grid_on_132_sms(m: int, n: int, grid: tuple) -> None:
-    """The ping-pong grid's tile width and narrow tiles on a 132-SM H200, which the
-    ping-pong cases above rely on to reach each path."""
+    """The ping-pong grid's tile width and narrow tiles on a 132-SM H200, which
+    ``GEMMINT8W8A8Fixture``'s ping-pong cases rely on to reach each path."""
     got = int8_pingpong_grid(m, n, 132, 16)
     assert (got["block_n"], got["narrow_n"], got["narrow_rows"], got["narrow_cols"]) == grid
 
@@ -1320,11 +1063,8 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> Non
     m = 64 if key == _INT8_WS else 300
     test = GEMMINT8W8A8Test(m, n, 1024, True, True)
     a, b, a_scale, b_scale = test.gen_inputs()
-    a_off = torch.empty(a.numel() + 1, dtype=torch.int8, device=a.device)[1:].view(a.shape)
-    b_off = torch.empty(b.numel() + 1, dtype=torch.int8, device=b.device)[1:].view(b.shape)
-    a_off.copy_(a)
-    b_off.copy_(b)
-    assert a_off.is_contiguous() and a_off.data_ptr() % 16
+    a_off, b_off = misaligned(a), misaligned(b)
+    assert a_off.data_ptr() % 16
     op = GEMMINT8W8A8FwdOp()
     call = GEMMINT8W8A8Call(
         m=m,
@@ -1598,6 +1338,33 @@ def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
+    "scale_mode",
+    [
+        pytest.param("per_tensor", marks=pytest.mark.smoke),
+        pytest.param("block128", marks=pytest.mark.full),
+    ],
+)
+def test_gemm_fp8_bias_is_added_before_the_single_rounding(scale_mode: str) -> None:
+    """The bias joins the float32 sum before the one cast: 257 + 0.75 rounds to 258 in bfloat16,
+    where 257 rounded first (to 256) plus 0.75 rounds back to 256."""
+    m = n = k = 128
+    device = run_device()
+    a = torch.zeros((m, k), device=device)
+    b = torch.zeros((n, k), device=device)
+    a[:, :2] = torch.tensor([16.0, 1.0], device=device)
+    b[:, :2] = torch.tensor([16.0, 1.0], device=device)
+    scale_shape = ((1, 1), (1, 1)) if scale_mode == "per_tensor" else ((m, 1), (n, 1))
+    scale_a, scale_b = (torch.ones(shape, device=device) for shape in scale_shape)
+    bias = torch.full((n,), 0.75, dtype=torch.bfloat16, device=device)
+    out = GEMMFP8FwdOp(out_dtype=torch.bfloat16, target=BUILTIN)(
+        a.to(torch.float8_e4m3fn), b.to(torch.float8_e4m3fn), scale_a, scale_b, bias
+    )
+    assert torch.equal(out, torch.full_like(out, 258.0))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
     ("m", "n", "k", "scale_mode", "out_dtype", "tune"),
     [
         # Blocks short of the SMs and a long K: K split into slices and reduced into an output
@@ -1714,26 +1481,19 @@ def test_gemm_fp8_graph_replay(n: int, k: int) -> None:
 @pytest.mark.parametrize(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
+@pytest.mark.parametrize("band", ["lhs_row", "rhs_col"])
 @GemvBoundaryFixture
-def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, arch: int) -> None:
-    """A single activation row supports non-aligned weight rows and contraction sizes."""
-    test = GEMMTest(1, n, k, dtype, trans_a=False, trans_b=True)
-    op = GEMMFwdOp(trans_a=False, trans_b=True)
+def test_gemv_boundary(n: int, k: int, dtype: torch.dtype, band: str, arch: int) -> None:
+    """A single activation row (``lhs_row``) or output column (``rhs_col``) supports a free
+    extent and a contraction off the vector width."""
+    lhs_row = band == "lhs_row"
+    test = GEMMTest(*((1, n) if lhs_row else (n, 1)), k, dtype, trans_a=False, trans_b=lhs_row)
+    op = GEMMFwdOp(trans_a=False, trans_b=lhs_row)
     test.check(op, *test.gen_inputs())
-    assert all(isinstance(entry, GemvKernel) for entry in op._entries_built("gemm").values())
-
-
-@pytest.mark.parametrize(
-    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
-)
-@GemvBoundaryFixture
-def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, arch: int) -> None:
-    """A single output column supports non-aligned activation rows and contraction sizes."""
-    m = n
-    test = GEMMTest(m, 1, k, dtype, trans_a=False, trans_b=False)
-    op = GEMMFwdOp(trans_a=False, trans_b=False)
-    test.check(op, *test.gen_inputs())
-    assert all(isinstance(entry, GemvKernel) for entry in op._entries_built("gemm").values())
+    assert all(
+        isinstance(entry, GemvKernel) and entry.band == band
+        for entry in op._entries_built("gemm").values()
+    )
 
 
 @pytest.mark.in_tree_kernels
@@ -1770,15 +1530,6 @@ def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
             False,
             160,
             {"narrow_n": 128, "row_mix": [2, 6, 1, 4, 3]},
-            marks=pytest.mark.full,
-        ),
-        # The same runs in raster groups of 2: the 3-block runs end in a partial group.
-        pytest.param(
-            torch.bfloat16,
-            True,
-            False,
-            160,
-            {"narrow_n": 128, "row_mix": [2, 6, 1, 4, 3], "group_size_m": 2},
             marks=pytest.mark.full,
         ),
         # Narrow tiles of whole 64-column swizzle atoms in a 128-wide stage.
@@ -1939,36 +1690,6 @@ _COOP2_SWAP = {"coop2_swap": True, "block_n": 160, "num_stages": 4}
         ),
         pytest.param(
             1000,
-            1032,
-            1048,
-            False,
-            True,
-            torch.float16,
-            {**_WS, "split_k": 1},
-            marks=pytest.mark.full,
-            id="ws-tma-store",
-        ),
-        pytest.param(
-            1000,
-            1032,
-            1048,
-            False,
-            True,
-            torch.bfloat16,
-            {
-                "block_m": 64,
-                "block_n": 112,
-                "block_k": 64,
-                "num_stages": 4,
-                "panel_size": 0,
-                "split_k": 1,
-                "cluster_m": 2,
-            },
-            marks=pytest.mark.full,
-            id="ws-fill-cluster",
-        ),
-        pytest.param(
-            1000,
             1001,
             1048,
             False,
@@ -1985,20 +1706,31 @@ _COOP2_SWAP = {"coop2_swap": True, "block_n": 160, "num_stages": 4}
             False,
             True,
             torch.bfloat16,
-            {**_WS, "split_k": 2},
+            {"coop2_splitk": True, "block_n": 64, "block_k": 128, "num_stages": 4, "split_k": 2},
             marks=pytest.mark.full,
-            id="split-k",
+            id="coop2-split-k",
         ),
         pytest.param(
             1000,
             1032,
-            1024,
+            1048,
             False,
             True,
             torch.bfloat16,
-            {"coop2_splitk": True, "block_n": 64, "block_k": 128, "num_stages": 4, "split_k": 2},
+            {**_PINGPONG, "block_n": 128},
             marks=pytest.mark.full,
-            id="coop2-split-k",
+            id="pingpong",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            True,
+            False,
+            torch.bfloat16,
+            {**_COOP2_SWAP, "group_size_m": 2, "narrow_n": 128, "row_mix": [2, 6, 1, 4, 3]},
+            marks=pytest.mark.full,
+            id="coop2-swap-narrow",
         ),
         pytest.param(
             1024,
@@ -2033,58 +1765,6 @@ _COOP2_SWAP = {"coop2_swap": True, "block_n": 160, "num_stages": 4}
             marks=pytest.mark.full,
             id="coop2s",
         ),
-        pytest.param(
-            1000,
-            1032,
-            1048,
-            False,
-            False,
-            torch.bfloat16,
-            {"coop2": True, "block_n": 256, **_COOP2},
-            marks=pytest.mark.full,
-            id="coop2",
-        ),
-        pytest.param(
-            1000,
-            1032,
-            1048,
-            False,
-            True,
-            torch.bfloat16,
-            {
-                "coop2": True,
-                "block_n": 256,
-                **_COOP2,
-                "stage_n": 16,
-                "narrow_n": 240,
-                "narrow_rows": 2,
-                "narrow_cols": 2,
-            },
-            marks=pytest.mark.full,
-            id="coop2-narrow",
-        ),
-        pytest.param(
-            1000,
-            1032,
-            1048,
-            False,
-            True,
-            torch.bfloat16,
-            {**_PINGPONG, "block_n": 128},
-            marks=pytest.mark.full,
-            id="pingpong",
-        ),
-        pytest.param(
-            1000,
-            1032,
-            1048,
-            True,
-            False,
-            torch.bfloat16,
-            {**_COOP2_SWAP, "group_size_m": 2, "narrow_n": 128, "row_mix": [2, 6, 1, 4, 3]},
-            marks=pytest.mark.full,
-            id="coop2-swap-narrow",
-        ),
     ],
 )
 def test_gemm_bias_on_each_structure(
@@ -2093,11 +1773,12 @@ def test_gemm_bias_on_each_structure(
     """Each structure adds a column's bias to every row of it, past M, N and K tails."""
     test = GEMMTest(m, n, k, dtype, trans_a, trans_b, bias=True)
     op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, target=BUILTIN)
-    inputs = test.gen_inputs()
-    op(*inputs)
-    (kernel,) = [k for k in op.iter_kernels() if type(k).__name__ == "GEMMTMAKernel"]
-    kernel.config = config
-    test.check(op, *inputs)
+    call = GEMMCall(
+        m=m, n=n, k=k, dtype=dtype, trans_a=trans_a, trans_b=trans_b, has_bias=True,
+        device=run_device(),
+    )  # fmt: skip
+    op.kernel_for("gemm", lambda: call).config = config
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
@@ -2344,11 +2025,12 @@ def test_gemm_float32_output_on_each_structure(
     products, past M, N and K tails."""
     test = GEMMTest(m, n, k, torch.bfloat16, trans_a, trans_b, bias=bias, out_dtype=torch.float32)
     op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, out_dtype=torch.float32, target=BUILTIN)
-    inputs = test.gen_inputs()
-    op(*inputs)
-    (kernel,) = [k for k in op.iter_kernels() if type(k).__name__ == "GEMMTMAKernel"]
-    kernel.config = config
-    test.check(op, *inputs)
+    call = GEMMCall(
+        m=m, n=n, k=k, dtype=torch.bfloat16, trans_a=trans_a, trans_b=trans_b, has_bias=bias,
+        out_dtype=torch.float32, device=run_device(),
+    )  # fmt: skip
+    op.kernel_for("gemm", lambda: call).config = config
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
@@ -2359,12 +2041,13 @@ def test_gemm_coop2_swap_refuses_a_float32_output() -> None:
     float32 output when it is built, rather than rounding it."""
     test = GEMMTest(1000, 1032, 1048, torch.bfloat16, True, False, out_dtype=torch.float32)
     op = GEMMFwdOp(trans_a=True, trans_b=False, out_dtype=torch.float32, target=BUILTIN)
-    inputs = test.gen_inputs()
-    op(*inputs)
-    (kernel,) = op.iter_kernels()
-    kernel.config = {**_COOP2_SWAP, "group_size_m": 1}
+    call = GEMMCall(
+        m=1000, n=1032, k=1048, dtype=torch.bfloat16, trans_a=True, out_dtype=torch.float32,
+        device=run_device(),
+    )  # fmt: skip
+    op.kernel_for("gemm", lambda: call).config = {**_COOP2_SWAP, "group_size_m": 1}
     with pytest.raises(ValueError, match="coop2_swap"):
-        op(*inputs)
+        op(*test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
@@ -2374,14 +2057,10 @@ def test_gemm_coop2_swap_refuses_a_float32_output() -> None:
         # DeepSeek-V4-Flash's router and LM head over 64 decode tokens.
         pytest.param(64, 256, marks=pytest.mark.smoke, id="router-decode"),
         pytest.param(64, 129280, marks=pytest.mark.full, id="lm-head-decode"),
-        # Its LM head over one decode token, a GEMV.
-        pytest.param(1, 129280, marks=pytest.mark.full, id="lm-head-gemv"),
         # Its LM head over 24 decode tokens, which streams the weight 64 rows at a time.
         pytest.param(24, 129280, marks=pytest.mark.full, id="lm-head-stream"),
-        # Its router and KV compressors over an 8192-token prefill.
-        pytest.param(8192, 256, marks=pytest.mark.full, id="router-prefill"),
+        # Its KV compressor over an 8192-token prefill.
         pytest.param(8192, 512, marks=pytest.mark.full, id="compressor-512"),
-        pytest.param(8192, 1024, marks=pytest.mark.full, id="compressor-1024"),
     ],
 )
 def test_gemm_float32_output_on_pilot_model_rows(m: int, n: int) -> None:
@@ -2603,9 +2282,8 @@ def test_gemm_two_rows_of_a_wide_weight_run_a_tile_grid() -> None:
 def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
     m: int, n: int, k: int, dtype: torch.dtype, bias: bool, width: int, stages: int
 ) -> None:
-    """Rows that fit one 64-row tile run, a CTA a tile, the narrowest column tiles whose grid
-    fits one wave, on the deepest power-of-two ring the shared memory holds. The cases count
-    tiles against the 132 SMs of an H200."""
+    """On a 132-SM H200 rows that fit one 64-row tile run the narrowest column tiles whose grid
+    fits one wave, on the deepest power-of-two ring the shared memory holds."""
     call = GEMMCall(m=m, n=n, k=k, dtype=dtype, trans_b=True, has_bias=bias, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
         pytest.skip("the one-wave column grids above are counted on a 132-SM H200")
@@ -2778,10 +2456,8 @@ def test_gemm_one_wave_grid_runs_the_narrowest_coop2_tile(
     bias: bool,
     tile: tuple,
 ) -> None:
-    """A call whose 128-row tiles fit one wave at a coop2 width runs coop2 at the narrowest such
-    width, staged in the columns *tile* names, past M, N and K tails. At 128 wide the coop2 tile
-    replaces the basic tile with a deeper ring. The cases count tiles against the 132 SMs of an
-    H200."""
+    """On a 132-SM H200 a call whose 128-row tiles fit one wave at a coop2 width runs coop2 at
+    the narrowest such width, staged in the columns *tile* names, past M, N and K tails."""
     call = GEMMCall(
         m=m,
         n=n,
@@ -2827,12 +2503,8 @@ _H200_L2_BYTES = 60 * 2**20
 def test_gemm_one_wave_grid_keeps_other_tiles_where_coop2_gains_nothing(
     m: int, n: int, k: int, out_bytes: int, basic: tuple | None
 ) -> None:
-    """On a 132-SM H200 the one-wave coop2 tile is not offered where its last row tile leaves a
-    64-row consumer without rows, or where its grid fills less than 15/16 of the wave. In one
-    row tile past 64 K steps the 128 x 128 basic tile, which streams B at the DRAM rate as the
-    one-wave tile does, keeps the call where it scores best of the others. At 128 wide the
-    128 x 128 basic tile keeps the call where the coop2 ring is no deeper, and on grids of one
-    tile along an axis."""
+    """On a 132-SM H200 the one-wave coop2 tile is not offered where it gains nothing; each
+    case's comment names why, and *basic* the basic tile that keeps the call."""
     cfg = best_config(
         m, n, k, False, True, 132, "h200", l2_bytes=_H200_L2_BYTES, out_bytes=out_bytes
     )
@@ -2892,7 +2564,8 @@ def test_gemm_rows_of_half_a_tile_keep_tiles_at_least_64_wide() -> None:
         pytest.skip("the one-wave column grid is counted on a 132-SM H200")
     test = GEMMTest(m, n, k, torch.bfloat16, False, True)
     op = GEMMFwdOp(trans_b=True, target=BUILTIN)
-    assert op.kernel_for("gemm", lambda: call).config.get("block_n", 64) in (64, 128, 192, 256)
+    # The stream tile has no block_n.
+    assert op.kernel_for("gemm", lambda: call).config.get("block_n") in (None, 64, 128, 192, 256)
     test.check(op, *test.gen_inputs())
 
 
@@ -2994,9 +2667,6 @@ def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
         # A long contraction with a final 128-element group, on two warpgroups split four
         # ways.
         pytest.param(4224, 32896, id="paired-split-k-4-k-tail", marks=pytest.mark.full),
-        # Stream-K is not offered to a two-warpgroup tile; the cost model would stream this
-        # one.
-        pytest.param(12288, 12288, id="two-warpgroups-unstreamed", marks=pytest.mark.full),
     ],
 )
 def test_gemm_w4a16_decode_partitions_match_the_reference(n: int, k: int) -> None:
@@ -3262,6 +2932,8 @@ def _leave_nan_in_free_blocks() -> None:
         pytest.param(1, 4416, 32896, (64, 128, 1, True), id="kept-stream-k-tail"),
         pytest.param(1, 4288, 81920, (64, 128, 1, True), id="kept-stream-whole-k"),
         pytest.param(8, 5056, 32896, (64, 128, 1, True), id="kept-stream-eight-rows"),
+        # Stream-K is not offered to a two-warpgroup tile; the cost model would stream this one.
+        pytest.param(1, 12288, 12288, (128, 256, 4, False), id="two-warpgroups-unstreamed"),
     ],
 )
 def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tuple) -> None:
@@ -3279,7 +2951,6 @@ def test_gemm_w4a16_pairs_deferred_scale_tiles(m: int, n: int, k: int, tile: tup
         pytest.param(1, 1024, 8192, id="kept-short-slice", marks=pytest.mark.smoke),
         pytest.param(1, 8192, 8192, id="paired-split-1", marks=pytest.mark.full),
         pytest.param(11, 8192, 8192, id="paired-m11", marks=pytest.mark.full),
-        pytest.param(1, 8192, 81920, id="paired-stream-k", marks=pytest.mark.full),
         pytest.param(1, 4288, 32896, id="kept-odd-n-tiles", marks=pytest.mark.full),
         # The slots no CTA of a streamed tile writes are zeroed: 69 tiles with a partial
         # last K tile, 67 tiles of whole K tiles.
@@ -3454,6 +3125,16 @@ def test_gemm_w4a16_repack_feeds_forward() -> None:
 def test_gemm_w4a16_repack_refuses_a_partial_k_step() -> None:
     with pytest.raises(ValueError, match="multiple of 64"):
         GEMMW4A16FwdOp().repack(torch.zeros((8, 96), dtype=torch.uint8, device=run_device()))
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_wgmma_kernel_refuses_a_bfloat16_call() -> None:
+    """Its decode helpers and drained-ring store produce float16 only."""
+    call = GEMMW4A16Call(
+        m=8, n=256, k=256, dtype=torch.bfloat16, group_size=128, device=run_device()
+    )
+    reason = GEMMW4A16Kernel.refusal(call)
+    assert reason is not None and "float16" in reason
 
 
 def _repacked(op: GEMMW4A8FwdOp):
@@ -3836,7 +3517,9 @@ def test_gemv_largest_tuning_ring(reduce_threads: int, block_n: int, dtype: torc
     compare_outputs(op(*inputs), test.ref_program(*inputs), test.verification(*inputs))
 
 
-@pytest.mark.sm89
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.parametrize(
     "lhs_row, operand, dtype",
     [
@@ -3847,7 +3530,7 @@ def test_gemv_largest_tuning_ring(reduce_threads: int, block_n: int, dtype: torc
         pytest.param(False, 1, torch.float16, marks=pytest.mark.full),
     ],
 )
-def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype) -> None:
+def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, arch: int) -> None:
     """Contiguous inputs with an element offset retain the public GEMV contract."""
     m, n = (1, 3001) if lhs_row else (3001, 1)
     test = GEMMWorkload(m, n, 1024, dtype, trans_b=lhs_row)

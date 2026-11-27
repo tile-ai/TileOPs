@@ -68,10 +68,8 @@ def _embedding_kernel(dim, dtype, index_dtype):
         slots = block_rows * block_vectors
         passes = T.ceildiv(slots, threads)
         width = vec * DataType(dtype).bits // 8
-        # A thread lands its vectors in its registers and stores them from there, with no
-        # shared-memory round trip between a vector's load and its store. A program that asks
-        # for its CTA limit spends the register budget of that limit on the index state of its
-        # passes (``default_config``'s ``wave_threads``), so it lands them in shared memory.
+        # A program that asks for its CTA limit spends that limit's register budget on index
+        # state, so it lands vectors in shared memory; every other lands them in registers.
         staged = min_blocks > 0
         # Table rows land evict-last in L2 and the output streams past it: a table that fits
         # in L2 is read from DRAM once however many lookups name its rows.
@@ -122,11 +120,8 @@ def _embedding_kernel(dim, dtype, index_dtype):
                 tile = T.cast(by, "int64") * x_tiles + bx
                 first_row = tile // col_tiles * block_rows
                 first_col = tile % col_tiles * block_vectors
-                # Each vector's output row and column, -1 for a slot past the tile, and its
-                # table row; the in-tile split is 32-bit, which the 64-bit tile arithmetic
-                # would widen. The table row stays in the id dtype until the address is
-                # formed: a widening beside its load makes the thread wait for that id
-                # before it issues the next.
+                # Each vector's output row and column (-1 past the tile) and its table row, kept
+                # in the id dtype: a widening beside its load stalls the thread on that id.
                 row_of = T.alloc_local((passes,), "int64")
                 col_of = T.alloc_local((passes,), "int64")
                 src_of = T.alloc_local((passes,), index_dtype)
@@ -203,9 +198,8 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         block_rows = 1
         while 2 * block_rows * block_vectors <= max_threads:
             block_rows *= 2
-        # Threads divide the tile's vectors when a count of at least a warp does within the
-        # pass bound, so no thread idles in the last pass; otherwise whole warps cover the tile
-        # and the last pass is guarded.
+        # A thread count dividing the tile's vectors leaves no thread idle in the last pass;
+        # without one, whole warps cover the tile and the last pass is guarded.
         slots = block_rows * block_vectors
         divisors = [
             t
@@ -214,18 +208,15 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
         ]
         warps = -(-slots // (max_passes * WARP_LANES))
         threads = max(divisors) if divisors else min(WARP_LANES * warps, max_threads)
-        # Every thread of a one-row tile waits on the tile's one id before its row loads.
-        # spread_threads, the fewest whole warps that divide the row, put up to max_passes
-        # loads a thread behind that id. Past one wave of CTAs an SM holds more of these
-        # smaller CTAs; within one wave the extra loads lengthen the call's single round
-        # trip, so ``forward`` launches spread_threads only past one wave.
+        # spread_threads: the fewest whole warps dividing a one-row tile, launched only past
+        # one wave of CTAs, where an SM holds more of the smaller CTAs.
         whole_warps = [t for t in divisors if t % WARP_LANES == 0]
         spread_threads = threads
         if block_rows == 1 and whole_warps:
             spread_threads = min(whole_warps)
-        # wave_threads: the CTA size at which an SM reaches its CTA limit, so a call's CTAs
-        # fit in fewer waves. The register budget at that limit bounds the passes; six
-        # registers a pass (output row, column, table row) is a conservative estimate.
+        # wave_threads: threads_per_sm / (the SM's CTA limit), so an SM holds the most CTAs.
+        # At that limit a thread has regs_per_sm / threads_per_sm registers (allocated by 8);
+        # a pass keeps about 6 live (row, column, table row), which bounds the passes.
         target = self.build_target
         wave_threads = threads
         if block_rows == 1 and target.arch in SM_RESIDENT_BLOCKS:
@@ -251,9 +242,9 @@ class EmbeddingKernel(Kernel, EmbeddingFwdInterface):
     def forward(self, input, weight):
         ids = input.view(-1)
         cfg, tiles = self.config, ids.numel()
-        # wave_threads wins when the call fits in one wave of them and the spread program's
-        # waves outnumber their pass ratio. Taking a CTA's life as proportional to its passes
-        # is conservative: a thread waits once for all its copies.
+        # ``threads`` within one wave of CTAs; past it ``spread_threads``, or ``wave_threads``
+        # where they fit the call in one wave and spread's waves cost more than wave's extra
+        # passes (a CTA's life taken as proportional to its passes).
         slots = cfg["block_rows"] * cfg["block_vectors"]
         spread, wave = cfg["spread_threads"], cfg["wave_threads"]
         threads, min_blocks = spread, 0

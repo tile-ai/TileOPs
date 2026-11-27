@@ -76,8 +76,6 @@ QWEN3_8_27B_CONFIG = {
 }
 
 _PREFIX = "model.language_model."
-# The vision tower and the MTP layer, which the text model does not read.
-_SKIPPED = ("model.visual.", "mtp.")
 
 
 def random_checkpoint(config: dict, seed: int) -> dict[str, torch.Tensor]:
@@ -195,7 +193,8 @@ def reference_model(path: str | Path, dtype: torch.dtype, device: torch.device |
     for shard in sorted(set(weight_map.values())):
         with safe_open(str(path / shard), framework="pt", device=str(device)) as f:
             for name in f.keys():
-                if not name.startswith(_SKIPPED):
+                # The vision tower and the MTP layer, which the text model does not read.
+                if not name.startswith(("model.visual.", "mtp.")):
                     state[name.replace(_PREFIX, "model.")] = f.get_tensor(name).to(dtype)
     model.load_state_dict(state, strict=True, assign=True)
     # The rotary frequencies are a buffer no checkpoint holds; build them on the device.

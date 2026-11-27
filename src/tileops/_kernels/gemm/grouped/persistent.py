@@ -17,18 +17,11 @@ __all__ = ["GroupedGEMMPersistentKernel"]
 class GroupedGEMMPersistentKernel(Kernel, GroupedGEMMFwdInterface):
     """``GroupedGEMMFwdOp``'s NT / NN / TN / TT on the SM90 GEMM template.
 
-    An adapter: the op builds a kernel as ``cls(batch_sum, batch_count, n, k, ...)``
-    and calls it with the tight group tables, while the template speaks GEMM
-    types and psum metadata. The two M-grouped layouts (NT, NN) run
-    ``M_GROUPED_TIGHT_PSUM`` on ``batch_offsets`` as group starts; an NN ``b`` is
-    the transposed view of its ``[E, K, N]`` storage. The two K-grouped layouts
-    (TN, TT) run ``K_GROUPED_CONTIGUOUS`` on ``batch_sizes`` over the transposed
-    views of ``a`` and ``b``, so a TT ``b`` keeps its ``[K, batch_sum]`` storage
-    K-major.
+    NT / NN run ``M_GROUPED_TIGHT_PSUM`` with ``batch_offsets`` as group starts; TN / TT
+    run ``K_GROUPED_CONTIGUOUS`` with ``batch_sizes``.
 
-    Claims bf16 or fp16 operands whose TMA-addressed extents are multiples of 8:
-    every contiguous operand extent and the output row pitch. ``GroupedGEMMKernel``
-    stays the general candidate for the rest.
+    Claims bf16 or fp16 operands whose TMA-addressed extents are multiples of 8;
+    ``GroupedGEMMKernel`` covers the rest.
     """
 
     supported_archs: list[int] = [90]
@@ -61,13 +54,9 @@ class GroupedGEMMPersistentKernel(Kernel, GroupedGEMMFwdInterface):
         *,
         device_index: int | None = None,
     ) -> None:
-        """Bind the layout; shapes and the tile come from each call."""
+        """Bind the layout; shapes and the tile come from each call, so only *batch_count*
+        and the flags are read."""
         super().__init__(device_index=device_index)
-        self.batch_sum = batch_sum
-        self.batch_count = batch_count
-        self.n = n
-        self.k = k
-        self.dtype = dtype
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
         gemm_type = GEMMType.K_GROUPED_CONTIGUOUS if transpose_a else GEMMType.M_GROUPED_TIGHT_PSUM

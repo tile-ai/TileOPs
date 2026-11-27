@@ -1,15 +1,9 @@
-"""Shared reduction primitives for reduction kernels.
+"""Shared reduction primitives: launch planning, shared-memory arithmetic, the row layout the
+reduction kernels build on, and the engine reducing an ``(A, B)`` buffer down its rows.
 
-Launch planning, shared-memory arithmetic and the row layout the reduction
-kernels build on, plus the engine that reduces an ``(A, B)`` buffer down its
-rows.
-
-A reduction kernel reduces the trailing axis of a 2-D ``(M, N)`` buffer, while an op
-declares an arbitrary-rank tensor and the axes to reduce; the permute and flatten between
-the two is a kernel's business, so both sides of the op/backend boundary speak the shapes
-the manifest declares. ``axes`` below is the sorted tuple of non-negative axis indices the
-reduction runs over — which forms an empty ``dim`` takes, and which ranks it may name, are
-the op's contract rather than a kernel's.
+A reduction kernel reduces the trailing axis of an ``(M, N)`` buffer; permuting and
+flattening the op's tensor to it is the kernel's business. ``axes`` is the sorted tuple of
+non-negative axes the reduction runs over.
 """
 
 import functools
@@ -43,7 +37,6 @@ __all__ = [
     "DEFAULT_THREADS",
     "FP32_EXACT_INT_LIMIT",
     "FRAGMENT_ELEMS_PER_THREAD",
-    "MAX_SINGLE_TILE_COLS",
     "BlockConfigPlanner",
     "RowTiledAutotuneMixin",
     "block_fold",
@@ -79,11 +72,6 @@ def keeps_input_rows(call) -> bool:
     return call.m * call.n * call.dtype.itemsize > call.l2_bytes
 
 
-# Widest single fragment/shared-memory tile the reduction kernels plan; shared memory
-# and the register file are checked separately.
-MAX_SINGLE_TILE_COLS: int = 32768
-
-
 # Thread counts offered by the reduction autotune candidate lists.
 AUTOTUNE_THREADS: tuple[int, ...] = (128, 256, 512)
 
@@ -95,21 +83,11 @@ FRAGMENT_ELEMS_PER_THREAD: int = 64
 
 
 def exp_shifted(value, shift):
-    """``exp(value - shift)``, as one subtract, one multiply and one ``exp2``.
+    """``exp(value - shift)`` as one subtract, one multiply and one ``exp2``.
 
-    The difference is taken before the scaling, not after. Scaling each operand
-    by ``LOG2E`` first and subtracting inside the product lets nvcc contract the
-    pair into a single ``FFMA``, which evaluates ``value * LOG2E`` exactly against
-    an already-rounded ``shift * LOG2E``: the two no longer cancel, and the
-    maximum element of a row stops exponentiating to 1. The residual grows with
-    the magnitude of the row, reaching ``exp2(-1.84)`` instead of ``1.0`` at
-    ``value = shift = 1e8``.
-
-    ``exp2`` is one instruction where ``exp`` is a call sequence, and over a full
-    row that call is the largest arithmetic cost a streaming softmax pays.
-
-    A shift of ``-inf`` still yields ``NaN`` for a ``-inf`` value, as ``exp`` does:
-    both sides of the subtraction are ``-inf``.
+    The subtract comes before the ``LOG2E`` scaling: scaling first lets nvcc fuse an FFMA that
+    no longer cancels, so a row's maximum stops exponentiating to 1. A ``-inf`` value and shift
+    give ``NaN``, as ``exp`` does.
     """
     return T.exp2((value - shift) * LOG2E)
 
@@ -169,12 +147,10 @@ def block_fold(
 ):
     """A macro folding ``total[0]`` across each group of *lanes* threads, then storing it.
 
-    *lanes* is a multiple of the warp width that divides *threads*; 0 means the whole
-    block. Each warp folds by shuffles; a group of several warps then has its first warp
-    fold the group's warp partials from ``warp_total``, shared, one slot per warp of the
-    block. The group's first thread writes ``finish(total[0])`` to ``out[index]``,
-    skipped where *rows* is nonzero and ``index`` is not below it. A caller that folds
-    again reuses ``warp_total`` only after a barrier.
+    *lanes* is a multiple of the warp width dividing *threads*; 0 means the whole block. A
+    multi-warp group folds its warps' partials through ``warp_total`` (shared, one slot a warp).
+    The group's first thread writes ``finish(total[0])`` to ``out[index]``, skipped where *rows*
+    is nonzero and ``index >= rows``. Reusing ``warp_total`` needs a barrier first.
     """
     lanes = lanes or threads
     group_warps = lanes // WARP_LANES
@@ -218,26 +194,16 @@ def block_fold(
 
 
 class BlockConfigPlanner:
-    """Derives ``block_m`` / ``threads`` / ``tile_n`` for a row-wise reduction.
-
-    Answers three questions for a kernel that maps one row per ``block_m`` slot:
-    whether a row fits in shared memory, which config to run untuned, and which
-    candidates to offer the autotuner.
-
-    ``autotune_configs`` here serves the ``tune_by_forward`` sweeps. A kernel
-    baking ``tile_n`` into the PrimFunc sweeps `RowTiledAutotuneMixin`'s list
-    instead, which differs at every width.
+    """Derives ``block_m`` / ``threads`` / ``tile_n`` for a kernel mapping one row per ``block_m``
+    slot: whether a row fits shared memory, the untuned config, and the tuning candidates of the
+    ``tune_by_forward`` sweeps.
 
     Args:
         num_buffers: ``(block_m, tile_n)`` shared buffers alive at once.
-            Welford's two-pass kernels allocate 2.
-        frag_slots: ``(block_m, tile_n)`` fragments the kernel keeps alive at once.
-            Registers, not shared memory: a tile that fits in shared memory can still
-            spill.
-        workspace_bytes: Shared memory the tiled kernel allocates besides its tiles,
-            such as the scratch of a reduction across threads.
-        split_workspace: Whether ``workspace_bytes`` applies only to a row split over more
-            than one tile; a tile that holds the whole row keeps the full budget.
+        frag_slots: ``(block_m, tile_n)`` register fragments alive at once.
+        workspace_bytes: Shared memory the tiled kernel allocates besides its tiles.
+        split_workspace: Whether ``workspace_bytes`` applies only to a row split over several
+            tiles.
     """
 
     @staticmethod
@@ -251,6 +217,9 @@ class BlockConfigPlanner:
         return threads * VECTOR_ACCESS_BYTES // elem_bytes
 
     _BLOCK_MS = (1, 2, 4, 8)
+    # Widest single fragment/shared-memory tile planned; shared memory and the register file
+    # are checked separately.
+    _MAX_TILE_COLS = 32768
     # Extra tile widths offered to the autotuner beyond the default pick.
     _EXTRA_TILE_N = 2
 
@@ -299,7 +268,7 @@ class BlockConfigPlanner:
         ``DEFAULT_THREADS`` threads, since a larger ``block_m`` only adds to it.
         """
         return (
-            self.N_padded > MAX_SINGLE_TILE_COLS
+            self.N_padded > self._MAX_TILE_COLS
             or self._row_bytes > self.smem_budget
             or not self.frag_fits(1, self.N_padded, DEFAULT_THREADS)
         )
@@ -324,9 +293,7 @@ class BlockConfigPlanner:
         """
         # Single-tile probe: one buffer, because the single-tile kernels hold
         # the row in fragments and allocate no second shared copy.
-        if self.N_padded <= MAX_SINGLE_TILE_COLS and self.frag_fits(
-            block_m, self.N_padded, threads
-        ):
+        if self.N_padded <= self._MAX_TILE_COLS and self.frag_fits(block_m, self.N_padded, threads):
             single = compute_tile_n(
                 block_m,
                 self.elem_bytes,
@@ -345,7 +312,7 @@ class BlockConfigPlanner:
                 shared memory for this pair.
         """
         # The register budget bounds the untiled probe above, not the tile width.
-        col_budget = MAX_SINGLE_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
+        col_budget = self._MAX_TILE_COLS * self.num_buffers * block_m * self.elem_bytes
         alignment = self._column_alignment(block_m, threads)
 
         def widest(budget: int) -> int:
@@ -379,7 +346,7 @@ class BlockConfigPlanner:
 
         align = self._column_alignment(block_m, threads)
         out = [default]
-        fewest = self._num_tiles(default)
+        fewest = -(-self.N_padded // default)
         for n_tiles in range(fewest, fewest + self._EXTRA_TILE_N + 1):
             if len(out) > self._EXTRA_TILE_N:
                 break
@@ -389,20 +356,12 @@ class BlockConfigPlanner:
         return [t for t in out if not self.reject_tile_n(block_m, t, threads)]
 
     def layout_ok(self, block_m: int, cols: int, threads: int) -> bool:
-        """Whether a ``(block_m, cols)`` fragment is known to be reducible.
+        """Whether a ``(block_m, cols)`` fragment is known to be reducible: ``threads`` divides
+        ``cols`` for one row; several rows need ``cols`` a whole number of passes or a divisor of
+        one, so the thread-to-column map repeats from row to row.
 
-        A conservative envelope, not the exact rule.  It is exact for a fragment
-        written from a two-dimensional ``T.Parallel(block_m, cols)``: TileLang
-        flattens that loop, the thread owning column *j* of row *i* is
-        ``(i * cols + j) / vec % threads``, and the map repeats from row to row
-        only when ``cols`` is a whole number of passes or divides one evenly.
-
-        The kernels serialise the row loop, so most widths it rejects build too; it
-        stays as the guard because softmax, log_softmax and logsumexp fail layout
-        inference at ``block_m=4, cols=768``, which it excludes.
-
-        ``block_m == 1`` has no row-to-row shift, but a ``(1, cols)`` fragment builds
-        if and only if ``threads`` divides ``cols``.
+        A conservative envelope: it excludes ``block_m=4, cols=768``, where softmax, log_softmax
+        and logsumexp fail layout inference.
         """
         if block_m == 1:
             return cols % threads == 0
@@ -416,8 +375,8 @@ class BlockConfigPlanner:
                 f"tile_n={tile_n} must be positive and a multiple of "
                 f"{ALIGNMENT} (the T.copy shared-memory alignment)"
             )
-        if tile_n > MAX_SINGLE_TILE_COLS:
-            return f"tile_n={tile_n} exceeds the {MAX_SINGLE_TILE_COLS} column cap"
+        if tile_n > self._MAX_TILE_COLS:
+            return f"tile_n={tile_n} exceeds the {self._MAX_TILE_COLS} column cap"
         whole_row = self.split_workspace and tile_n >= self.N_padded
         workspace = 0 if whole_row else self.workspace_bytes
         held = self.num_buffers * block_m * tile_n * self.elem_bytes + workspace
@@ -456,9 +415,6 @@ class BlockConfigPlanner:
             and self.layout_ok(bm, self.N_padded, threads)
             and self.frag_fits(bm, self.N_padded, threads)
         ]
-
-    def _num_tiles(self, tile_n: int) -> int:
-        return (self.N_padded + tile_n - 1) // tile_n
 
     def default_config(self) -> dict:
         """Return the config used when no candidate sweep runs."""
@@ -511,39 +467,21 @@ def compute_tile_n(
     budget: int = STATIC_SHARED_BYTES,
     num_buffers: int = 1,
 ) -> int:
-    """Compute the tile_n (column chunk) for shared memory, preferring divisibility.
-
-    The budget-derived cap (``tile_n_max``) is the largest multiple of
-    *alignment* such that
-    ``num_buffers * block_m * tile_n_max * elem_bytes <= budget``.
-    The return value may be a smaller divisor of *N_padded* when that
-    divisor does not increase the number of N-tiles, because an exact
-    division eliminates the nearly-empty remainder tile.
-
-    When every divisor requires strictly more tiles, the full
-    budget-derived cap is returned and the tiled kernel handles the
-    single remainder tile via masked loads.
-
-    If N_padded already fits (with *num_buffers* copies), returns N_padded
-    (no tiling needed).
+    """The column tile for shared memory: *N_padded* where *num_buffers* copies of the row fit,
+    else the largest multiple of *alignment* with
+    ``num_buffers * block_m * tile_n * elem_bytes <= budget``, or a smaller divisor of
+    *N_padded* that needs no more tiles.
 
     Args:
-        block_m: Number of rows per thread block.
-        elem_bytes: Bytes per element (e.g. 2 for fp16/bf16, 4 for fp32).
-        N_padded: Padded hidden dimension (already aligned to *alignment*).
-        alignment: Column alignment boundary (default ALIGNMENT).
-        budget: Shared memory budget in bytes (default 48 KiB).
-        num_buffers: Number of shared memory buffers of shape
-            ``(block_m, tile_n)`` that must fit simultaneously (default 1).
-            Softmax/log_softmax tiled kernels use 2 (one per pass) due to
-            TileLang allocator aliasing constraints.
-
-    Returns:
-        tile_n: column tile size, a multiple of *alignment*, or N_padded
-        if it fits entirely.
+        block_m: Rows per thread block.
+        elem_bytes: Bytes per element.
+        N_padded: Padded row length, a multiple of *alignment*.
+        alignment: Column alignment.
+        budget: Shared memory budget in bytes.
+        num_buffers: ``(block_m, tile_n)`` shared buffers alive at once.
 
     Raises:
-        ValueError: If even a single alignment-width slice cannot fit.
+        ValueError: If even one alignment-width slice cannot fit.
     """
     per_buffer = block_m * elem_bytes
     if num_buffers * per_buffer * N_padded <= budget:
@@ -585,23 +523,16 @@ def tune_by_forward(
     rep: int = 10,
     forward=None,
 ) -> None:
-    """Select the candidate config with the lowest :func:`candidate_busy_ms` reading.
-
-    The tiled reduction paths have no single ``self.kernel`` object for
-    TileLang's autotuner to decorate — they dispatch through wrapped helper
-    functions — so each candidate is read through calls instead.
-    Leaves ``kernel.config`` set to the winner, or to ``default_config`` when
-    the kernel declares no candidates.
+    """Set ``kernel.config`` to the candidate with the lowest :func:`candidate_busy_ms`, or to
+    ``default_config`` where the kernel declares no candidates.
 
     Args:
         kernel: The kernel whose ``config`` is being chosen.
         probe_inputs: What to call with.
         warmup: Untimed calls per candidate.
         rep: Timed calls per candidate.
-        forward: What to call. Defaults to ``kernel.forward``. A kernel that reshapes
-            its input inside ``forward`` passes the row-level entry point instead, so the
-            probe is a ``(M, N)`` buffer and the timing excludes a config-independent
-            permute.
+        forward: What to call; defaults to ``kernel.forward``. A kernel that reshapes inside
+            ``forward`` passes its row-level entry point, so the permute is not timed.
     """
     call = kernel.forward if forward is None else forward
     configs = kernel.autotune_configs
@@ -688,13 +619,9 @@ def restore_same_shape(
 class RowTiledAutotuneMixin:
     """The tile_n search shared by the kernels that bake tile_n in at build time.
 
-    A kernel holding a ``(block_m, N_padded)`` row block picks tile_n before the
-    autotuner runs, because tile_n decides the kernel's shape and so every distinct
-    value costs a recompilation.
-
-    A subclass must set, before autotuning: ``_planner`` (a
-    `BlockConfigPlanner`), ``_smem_budget``, ``N_padded``, ``_elem_bytes``,
-    ``_MAX_TILE_N_CANDIDATES`` and ``_tile_n``, and implement ``_build_row_kernel``.
+    A subclass sets ``_planner`` (a `BlockConfigPlanner`), ``_smem_budget``, ``N_padded``,
+    ``_elem_bytes``, ``_MAX_TILE_N_CANDIDATES`` and ``_tile_n`` before autotuning, and implements
+    ``_build_row_kernel``.
     """
 
     def _build_row_kernel(self, tile_n: int):
@@ -711,25 +638,12 @@ class RowTiledAutotuneMixin:
         return self._planner.tile_n_for(block_m, max(AUTOTUNE_THREADS))
 
     def _tile_n_candidates(self) -> list[int]:
-        """Return candidate tile_n values for autotune exploration.
+        """Candidate tile_n values for autotuning, descending, at most ``_MAX_TILE_N_CANDIDATES``
+        (each distinct value is a recompilation).
 
-        Includes the heuristic tile_n (from block_m=1) plus alternative
-        tile_n values derived from ``_tile_n_for_block_m(2)`` and
-        ``_tile_n_for_block_m(4)``, with a half-step fallback aligned to
-        ``ALIGNMENT`` when block_m exploration yields no
-        alternatives.  tile_n=0 means single-tile (no tiling).  All
-        candidates are de-duplicated and sorted descending for
-        deterministic ordering.
-
-        Each distinct tile_n value requires a full kernel recompilation, so the
-        candidates are capped at ``_MAX_TILE_N_CANDIDATES``.
-
-        - When the heuristic default tile_n is 0 (single-tile / small N),
-          return ``[0]`` -- the autotuner varies only block_m and threads. A
-          tiled program is another implementation, which tuning never picks.
-        - Otherwise collect distinct tile_n values from block_m=1..4 and
-          return up to ``_MAX_TILE_N_CANDIDATES`` candidates (always
-          including the heuristic default).
+        ``[0]`` where the heuristic tile_n is 0 (one tile): tuning varies block_m and threads only.
+        Otherwise the heuristic tile_n and those block_m 2 and 4 give, with a half step aligned to
+        ``ALIGNMENT`` where those add nothing.
         """
         default_tn = self._tile_n_for_block_m(1)
         if default_tn == 0:
@@ -948,31 +862,22 @@ def _down_rows_kernel(
     divisor: float,
     epilogue: str,
 ):
-    """Build a reduce down the leading axis of an ``(A, B)`` buffer.
-
-    One accumulator per output column, walked down the rows the block owns. Adjacent
-    threads take adjacent columns, so every row of the walk is one coalesced pass and
-    the buffer is read once in the layout it already has.
-
-    The grid is ``(column blocks, splits)``: a leading-axis reduction has only as many
-    output columns as the axes it keeps, and one block per column tile would leave
-    the device running a handful of them.
+    """Build a reduce down the leading axis of an ``(A, B)`` buffer, one accumulator per output
+    column, adjacent threads on adjacent columns; the grid is ``(column blocks, splits)``.
 
     Args:
         A: Elements the reduction consumes per output column.
         B: Output columns.
         op_kind: One of ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod``.
         in_dtype: TileLang dtype string of the input.
-        out_dtype: TileLang dtype string of the output. A split pass writes fp32
-            partials whatever it read; the pass that finishes writes the declared dtype.
+        out_dtype: TileLang dtype string of the output. A split pass writes fp32 partials
+            whatever it read; the pass that finishes writes the declared dtype.
         threads: Threads per block.
-        splits: Row slices, each its own block row. Above 1 the output is one row of
-            partials per slice, for a second call with ``splits=1`` to finish.
-        divisor: What the accumulator is divided by before the output cast, or 0 for
-            none. Mean's divisor is the row count of the whole reduction, which a
-            second pass over partials can no longer see.
-        epilogue: ``"sqrt"`` applies a square root before the output cast, for a
-            caller whose outer pass finishes a sum-of-squares; ``""`` for none.
+        splits: Row slices, each its own block row. Above 1 the output is one row of partials
+            per slice, for a second call with ``splits=1`` to finish.
+        divisor: What the accumulator is divided by before the output cast, or 0 for none:
+            mean's row count of the whole reduction, which a pass over partials cannot see.
+        epilogue: ``"sqrt"`` applies a square root before the output cast; ``""`` none.
     """
     block_b = threads * _LEADING_POLICY.cols_per_thread
     rows_per_split = ceil_div(A, splits)
@@ -1108,14 +1013,12 @@ def _down_rows_vector_kernel(
 
 
 def down_rows_cluster(reduced: int, kept: int, in_dtype: str, arch: int, sm_count: int) -> int:
-    """CTAs of one cluster `_down_rows_cluster_kernel` splits a ``(reduced, kept)`` buffer's
-    reduced axis into, or 0 where it does not serve the buffer.
+    """CTAs of one cluster `_down_rows_cluster_kernel` splits a ``(reduced, kept)`` buffer's reduced
+    axis into, or 0 where it does not serve the buffer.
 
-    It serves rows of whole 16-byte vectors on an architecture with thread-block clusters.
-    Each CTA owns the columns one read of each of its row groups covers; the cluster is the
-    largest power of two that keeps one CTA per SM, up to the portable cluster size. Where
-    that cap leaves half the SMs or more without a CTA, the split launches keep the device
-    busier. Two CTAs fit an SM, so every such grid is resident at once.
+    It serves rows of whole 16-byte vectors from SM90 on. The cluster is the largest power of two
+    keeping one CTA per SM, up to the portable cluster size; 0 where that cap leaves half the SMs
+    or more idle.
     """
     itemsize = getattr(torch, in_dtype).itemsize
     if arch < 90 or kept * itemsize % VECTOR_ACCESS_BYTES:
@@ -1139,16 +1042,13 @@ def _down_rows_cluster_kernel(
     epilogue: str,
     cluster: int,
 ):
-    """Build a one-launch reduce down the rows of an ``(A, B)`` buffer of whole 16-byte
-    vectors, its reduced axis split across the ``cluster`` CTAs of a thread-block cluster.
+    """Build a one-launch reduce down the rows of an ``(A, B)`` buffer of whole 16-byte vectors,
+    its reduced axis split across the ``cluster`` CTAs of a thread-block cluster.
 
-    Each CTA owns a band of columns of ``ceil(A / cluster)`` rows. Its threads form
-    `_cluster_row_groups` row groups, each as wide as the band, which walk interleaved rows
-    folding one 16-byte vector a thread per row; the groups' partials meet in shared memory. Each CTA then stores its partial of
-    every column into the shared memory of the CTA that finishes that column, and after one
-    cluster barrier each CTA folds its columns' ``cluster`` partials, in rank order, and
-    writes them. The arguments are `_down_rows_kernel`'s with one split; the input must
-    start on a 16-byte boundary.
+    Each CTA's `_cluster_row_groups` row groups fold interleaved rows of its column band, then
+    every CTA stores its partials into the shared memory of the CTA finishing each column, which
+    folds them in rank order after one cluster barrier. Arguments are `_down_rows_kernel`'s with
+    one split; the input starts on a 16-byte boundary.
     """
     itemsize = getattr(torch, in_dtype).itemsize
     vec = VECTOR_ACCESS_BYTES // itemsize
@@ -1281,15 +1181,13 @@ def down_rows_launcher(
     arch: int,
     sm_count: int,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
-    """The compiled reduction of a ``(reduced, kept)`` buffer down its rows, writing one
-    *out_dtype* row, on a device of architecture *arch* with *sm_count* SMs.
+    """The compiled reduction of a ``(reduced, kept)`` buffer down its rows into one *out_dtype*
+    row, on a device of architecture *arch* with *sm_count* SMs.
 
-    With *splits* 1 it is one launch, `_down_rows_vector_kernel` where `_vector_tiles`
-    admits the columns. Above 1 it is `_down_rows_cluster_kernel`'s one launch where
-    `down_rows_cluster` admits the buffer; otherwise each of *splits* row slices leaves an
-    fp32 partial row, and a second launch reduces those rows; only that launch applies
-    ``divisor`` and ``epilogue``. The partials are a few thousand values against the
-    millions the first launch reads.
+    *splits* 1 is one launch (`_down_rows_vector_kernel` where `_vector_tiles` admits the
+    columns). Above 1 it is `_down_rows_cluster_kernel` where `down_rows_cluster` admits the
+    buffer, else *splits* fp32 partial rows reduced by a second launch, which alone applies
+    ``divisor`` and ``epilogue``.
     """
     threads = _LEADING_POLICY.threads
     if splits == 1 and _vector_tiles(kept, in_dtype):
@@ -1345,17 +1243,15 @@ def fold_rows_kernel(
 ):
     """Build a reduce of each row of an ``(m, n)`` buffer, folded into registers as it reads.
 
-    One block per row; each thread folds one 16-byte vector per step into ``vec``
-    independent slots. Every element is read once.
-    The caller guarantees rows of whole vectors and a vector-aligned buffer start.
-    With ``lead > 1`` the buffer is ``(lead, m, n)`` and row ``r`` reduces the ``lead``
-    segments ``x[:, r, :]``, so a reduced prefix and suffix fold in one launch.
+    One block a row; each thread folds one 16-byte vector a step into ``vec`` slots. The caller
+    guarantees rows of whole vectors and a vector-aligned start. With ``lead > 1`` the buffer is
+    ``(lead, m, n)`` and row ``r`` reduces the ``lead`` segments ``x[:, r, :]``.
 
     Args:
         m: Rows.
         n: Elements each row segment holds, a multiple of one vector.
-        op_kind: ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod`` / ``l1`` / ``l2``
-            / ``inf``; ``inf`` reduces int32 bit patterns so a NaN outranks every number.
+        op_kind: ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod`` / ``l1`` / ``l2`` / ``inf``;
+            ``inf`` reduces int32 bit patterns so a NaN outranks every number.
         dtype: TileLang dtype string of the input.
         out_dtype: TileLang dtype string of the output.
         unroll: Vector loads each thread keeps in flight.

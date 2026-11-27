@@ -1,11 +1,6 @@
 """Write each token's MLA latent ``kv_c`` and rope key ``k_pe`` into the cache row its slot names.
 
-A block owns a few tokens. Its ``kv_c`` rows, and without RoPE its ``k_pe`` rows after them,
-are cut into vectors dealt to the threads in one numbering. A thread loads its vectors, then
-reads each one's slot and stores it where the slot names a row. With RoPE a group of threads
-owns the rotation: each holds a few rotation pairs of one token together with their cosines
-and sines, so no thread reads another's values and the block never synchronizes. An FP8
-cache divides by the scale and uses a saturating cast that preserves NaN.
+An FP8 cache divides by the scale and uses a saturating cast that preserves NaN.
 """
 
 import math
@@ -419,7 +414,6 @@ class MLAKVCacheWriteKernel(Kernel, MLAKVCacheWriteFwdInterface):
         positions: torch.Tensor | None = None,
         cos_sin_cache: torch.Tensor | None = None,
     ) -> None:
-        """Write the rows the slots name; see the interface for the contract."""
         # A call of no tokens writes nothing. The cache it is handed still holds elements,
         # so the generated empty-call rule does not skip the launch, and a zero-extent grid
         # is not a legal one; the launch is skipped here instead.

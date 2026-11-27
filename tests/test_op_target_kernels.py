@@ -1,9 +1,5 @@
-"""What an op passes to a target's kernels.
-
-What a third-party backend gets, observed from the op side: its builder is called with the
-manifest's inputs and params, its kernel is memoized under the input signature, and
-everything the op layer does for every target — validation, contiguity, output shape — still
-happens. Uses a fake target, so no vendor hardware is involved.
+"""What an op passes to a fake target's builder and kernels: the manifest's inputs and
+params, a kernel kept per input signature, and the checks the op layer runs for every target.
 """
 
 import contextlib
@@ -62,9 +58,11 @@ class _Recorder:
         return kernel
 
 
-def _register(recorder, target="acme", op="RMSNormFwdOp", claims=True):
-    registry.register_detector(target, lambda device: claims)
-    registry.register_kernel_builder(op, target, recorder.build_kernel)
+def _register(build, op="RMSNormFwdOp", target="acme", detector=lambda device: True):
+    """Register *build* as *target*'s kernel builder for *op*, *target* claiming the devices
+    *detector* accepts."""
+    registry.register_detector(target, detector)
+    registry.register_kernel_builder(op, target, build)
 
 
 def _stub_op(**kwargs):
@@ -94,7 +92,7 @@ def _inputs(rows=4, shape=NORMALIZED_SHAPE, dtype=DTYPE, device="cpu"):
 
 def test_a_target_takes_over_the_op_and_is_asked_with_the_manifest_signature():
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     x, weight = _inputs()
 
     out = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(x, weight)
@@ -116,7 +114,7 @@ def test_a_target_takes_over_the_op_and_is_asked_with_the_manifest_signature():
 
 def test_a_dtype_the_manifest_does_not_admit_never_reaches_the_backend():
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     with pytest.raises(ValueError, match="weight dtype differs"):
@@ -129,7 +127,7 @@ def test_a_dtype_the_manifest_does_not_admit_never_reaches_the_backend():
 
 def test_a_non_contiguous_input_reaches_the_kernel_contiguous():
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     x, weight = _inputs(rows=8)
     strided = x[::2]
     assert not strided.is_contiguous()
@@ -147,7 +145,7 @@ def test_a_non_contiguous_input_reaches_the_kernel_contiguous():
 
 def test_the_same_input_signature_is_built_once():
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
     x, weight = _inputs()
 
@@ -167,7 +165,7 @@ def test_the_same_input_signature_is_built_once():
 )
 def test_a_different_input_signature_asks_again(second, why):
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     op(*_inputs())
@@ -179,7 +177,7 @@ def test_a_different_input_signature_asks_again(second, why):
 def test_another_device_asks_again(device_beside_cpu):
     """A kernel may hold resources allocated on one device."""
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     op(*_inputs())
@@ -219,7 +217,7 @@ def _run_instance_norm(op, n=2, c=8):
 def test_a_targets_kernels_are_the_ops_entries():
     """Caching and enumeration hold for a kernel that is not a TileOPs ``Kernel``."""
     target = _InstanceNormTarget()
-    _register(target, op="InstanceNormFwdOp")
+    _register(target.build_kernel, op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
 
     for n in (2, 2, 3):
@@ -239,8 +237,7 @@ def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry():
         def __call__(self, *args):
             raise RuntimeError("device fault")
 
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: Failing(1e-5))
+    _register(lambda *i, **p: Failing(1e-5), op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
 
     with pytest.raises(RuntimeError, match="device fault"):
@@ -253,8 +250,7 @@ def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry():
 def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():
     """A target may cache on its own; the op still holds one entry per signature."""
     shared = _InstanceNormTarget.Kernel(1e-5)
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: shared)
+    _register(lambda *i, **p: shared, op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
 
     _run_instance_norm(op, n=2)
@@ -288,7 +284,7 @@ class _TunableTarget(_InstanceNormTarget):
 def test_a_tuning_request_reaches_each_kernel_a_target_built_once(ask):
     """Tuning acts on the kernel the target returned, whenever it was built."""
     target = _TunableTarget()
-    _register(target, op="InstanceNormFwdOp")
+    _register(target.build_kernel, op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
     first = ask == "request_tune_first"
     if first:
@@ -308,7 +304,7 @@ def test_a_tuning_request_reaches_each_kernel_a_target_built_once(ask):
 @pytest.mark.parametrize("ask", ["request_tune_first", "request_tune_after"])
 def test_a_tuning_request_a_target_kernel_cannot_take_warns_once(ask):
     """A kernel without ``request_tune`` makes the request warn, before or after the build."""
-    _register(_InstanceNormTarget(), op="InstanceNormFwdOp")
+    _register(_InstanceNormTarget().build_kernel, op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
     if ask == "request_tune_first":
         op.request_tune()  # nothing is built yet; the first build is where it is dropped
@@ -326,8 +322,8 @@ def test_a_tuning_request_a_target_kernel_cannot_take_warns_once(ask):
 def test_one_kernel_a_target_returns_for_cpu_and_the_run_device_is_tuned_in_each_context(
     device_beside_cpu, monkeypatch
 ):
-    """The one-accelerator form of the two-device test below: one callable built for a CPU
-    call and a run-device call is tuned once in each call device's context."""
+    """One callable built for a CPU call and a run-device call is tuned once in each call
+    device's context."""
     entered = _record_device_contexts(monkeypatch)
 
     class Kernel(_TunableTarget.Kernel):
@@ -340,8 +336,7 @@ def test_one_kernel_a_target_returns_for_cpu_and_the_run_device_is_tuned_in_each
             self.tuned_in.append(entered[-1])
 
     shared = Kernel(1e-5)
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: shared)
+    _register(lambda *i, **p: shared, op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
     devices = [torch.device("cpu"), device_beside_cpu]
     for device in devices:
@@ -368,8 +363,7 @@ def test_one_kernel_a_target_returns_for_two_devices_is_tuned_on_each(two_device
             self.tuned_on.append(torch.accelerator.current_device_index())
 
     shared = Kernel(1e-5)
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: shared)
+    _register(lambda *i, **p: shared, op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
     for device in two_devices:
         for n in (2, 3):
@@ -406,24 +400,22 @@ def test_a_target_builds_with_the_calls_device_current(monkeypatch):
         building.append([*entered])
         return _InstanceNormTarget.Kernel(params["eps"])
 
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("InstanceNormFwdOp", "acme", build_kernel)
+    _register(build_kernel, op="InstanceNormFwdOp")
     _run_instance_norm(InstanceNormFwdOp())
 
     assert building == [[torch.device("cpu")]]
 
 
 def test_a_target_builds_a_run_device_call_in_that_devices_context(device_beside_cpu, monkeypatch):
-    """The one-accelerator form of the two-device test below: a run-device call builds in
-    the call device's context, and the current device is the same after the call."""
+    """A run-device call builds in the call device's context and leaves the current device
+    as it was."""
     entered, building = _record_device_contexts(monkeypatch), []
 
     def build_kernel(*inputs, **params):
         building.append([*entered])
         return _InstanceNormTarget.Kernel(params["eps"])
 
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("InstanceNormFwdOp", "acme", build_kernel)
+    _register(build_kernel, op="InstanceNormFwdOp")
     x = torch.randn(2, 8, 4, 4, device=device_beside_cpu)
     before = torch.accelerator.current_device_index()
 
@@ -442,8 +434,7 @@ def test_a_target_builds_on_the_calls_device_and_puts_the_current_one_back(two_d
         building.append(torch.accelerator.current_device_index())
         return _InstanceNormTarget.Kernel(params["eps"])
 
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("InstanceNormFwdOp", "acme", build_kernel)
+    _register(build_kernel, op="InstanceNormFwdOp")
     x = torch.randn(2, 8, 4, 4, device=second)
 
     with torch.accelerator.device_index(first.index):
@@ -460,11 +451,9 @@ def test_a_call_with_no_tensor_keys_its_kernel_by_the_device_the_checks_chose(mo
     from tileops._ops.elementwise.sinusoidal import SinusoidalFwdOp
 
     monkeypatch.setattr(_signature_codegen, "current_device", lambda: torch.device("cpu"))
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder(
-        "SinusoidalFwdOp",
-        "acme",
+    _register(
         lambda **p: lambda: torch.zeros(p["seq_len"], p["d_model"], dtype=p["out_dtype"]),
+        op="SinusoidalFwdOp",
     )
     op = SinusoidalFwdOp(seq_len=4, d_model=8, target="acme")
 
@@ -487,10 +476,7 @@ def _register_flaky_target() -> list:
             super().request_tune()
 
     built = []
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder(
-        "InstanceNormFwdOp", "acme", lambda *i, **p: built.append(Flaky(1e-5)) or built[-1]
-    )
+    _register(lambda *i, **p: built.append(Flaky(1e-5)) or built[-1], op="InstanceNormFwdOp")
     return built
 
 
@@ -537,7 +523,7 @@ def test_an_in_tree_settling_reads_builtin_however_it_was_chosen():
 def test_the_target_is_settled_once_and_kept():
     """The kernels this instance holds belong to that target."""
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
     op(*_inputs())
 
@@ -555,7 +541,7 @@ def test_the_target_is_settled_once_and_kept():
 def test_a_target_without_this_op_raises_and_names_the_ones_that_have_it():
     """No fall back: the in-tree kernels do not run on another target's devices."""
     recorder = _Recorder()
-    _register(recorder, target="has_it")
+    _register(recorder.build_kernel, target="has_it")
     registry.register_detector("claims_device", lambda device: True)
     registry.DETECTORS.pop("has_it")  # only the op-less target claims the device
 
@@ -566,7 +552,7 @@ def test_a_target_without_this_op_raises_and_names_the_ones_that_have_it():
 
 def test_builtin_keeps_the_in_tree_kernels_even_when_a_target_claims_the_device():
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)
 
     assert op._target_builder is None or op._target_builder is not recorder.build_kernel
@@ -607,7 +593,7 @@ def test_a_call_without_tensors_is_refused_on_its_declared_device():
 def test_a_call_with_no_tensor_leaves_the_question_open():
     """Nothing was probed, so nothing is remembered: the next call decides."""
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     op._bind_target(None)
@@ -652,8 +638,7 @@ def test_a_build_that_fails_pins_nothing():
             raise raised
         return lambda x, weight: torch.full_like(x, 3)
 
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("RMSNormFwdOp", "acme", build_kernel)
+    _register(build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     with pytest.raises(TypeError) as caught:
@@ -683,8 +668,7 @@ def test_a_call_builds_with_the_target_it_selected_when_another_call_unbinds_it(
             raise BoomError
         return torch.full_like(x, 3)
 
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("RMSNormFwdOp", "acme", lambda *inputs, **params: kernel)
+    _register(lambda *inputs, **params: kernel)
     describe = TensorSpec.of
 
     def pausing(t):
@@ -725,8 +709,7 @@ def test_a_kernel_a_call_built_after_an_unbinding_serves_only_its_own_builder():
         return lambda *inputs, **params: lambda x, weight: torch.full_like(x, value)
 
     first, second = builder_of(1), builder_of(2)
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("RMSNormFwdOp", "acme", first)
+    _register(first)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
     x, weight = _inputs()
     assert torch.equal(op(x, weight), torch.full_like(x, 1))
@@ -741,7 +724,7 @@ def test_a_builder_must_return_something_callable():
     """One of the rules this boundary owes, checked where it is crossed."""
     recorder = _Recorder()
     recorder.build_kernel = lambda *inputs, **params: "not a kernel"
-    _register(recorder)
+    _register(recorder.build_kernel)
 
     with pytest.raises(OpNotAvailableError, match="not callable"):
         RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(*_inputs())
@@ -777,14 +760,11 @@ def test_params_are_this_ops_manifest_params_and_not_an_inherited_set():
 
 
 def test_a_call_that_fails_validation_pins_nothing():
-    """One invalid call must not aim the instance for good.
-
-    The first tensor's device picks the target, so a mixed-device call would otherwise send
-    every later call where that one pointed.
-    """
+    """An invalid call selects no target; the first call that passes the checks does."""
     recorder = _Recorder()
-    registry.register_detector("cpu_target", lambda device: device.type == "cpu")
-    registry.register_kernel_builder("RMSNormFwdOp", "cpu_target", recorder.build_kernel)
+    _register(
+        recorder.build_kernel, target="cpu_target", detector=lambda device: device.type == "cpu"
+    )
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     with pytest.raises(ValueError):
@@ -803,7 +783,7 @@ def test_a_call_that_fails_validation_pins_nothing():
 def test_the_first_compiled_call_obeys_the_target_it_picked():
     """Settling only in a traced ``__call__`` gives the in-tree kernel's numbers, once."""
     recorder = _Recorder()
-    _register(recorder)
+    _register(recorder.build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
     x, weight = _inputs()
 
@@ -822,8 +802,7 @@ def test_a_compiled_call_whose_build_fails_pins_nothing():
         attempts.append(1)
         return "not a kernel" if len(attempts) == 1 else (lambda x, w: torch.full_like(x, 7))
 
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("RMSNormFwdOp", "acme", build_kernel)
+    _register(build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     with pytest.raises(OpNotAvailableError, match="not callable"):
@@ -876,7 +855,7 @@ def _clamp_inputs(rows=4, cols=8, dtype=DTYPE, device="cpu"):
 def test_an_absent_optional_input_keeps_its_slot():
     """The slot says which input is missing; how many slots there are cannot."""
     recorder = _ClampRecorder()
-    _register(recorder, op="ClampFwdOp")
+    _register(recorder.build_kernel, op="ClampFwdOp")
     from tileops._ops.elementwise import ClampFwdOp
 
     input, lower, _ = _clamp_inputs()
@@ -890,7 +869,7 @@ def test_an_absent_optional_input_keeps_its_slot():
 def test_the_two_one_sided_clamps_are_two_kernels():
     """Both hand over two tensors of one shape; only the slot tells them apart."""
     recorder = _ClampRecorder()
-    _register(recorder, op="ClampFwdOp")
+    _register(recorder.build_kernel, op="ClampFwdOp")
     from tileops._ops.elementwise import ClampFwdOp
 
     op = ClampFwdOp()
@@ -908,7 +887,7 @@ def test_the_two_one_sided_clamps_are_two_kernels():
 def test_a_number_bound_reaches_the_target_kernel_built_once_for_its_type():
     """A call-time scalar is described by its type; its value is the kernel's argument."""
     recorder = _ClampRecorder()
-    _register(recorder, op="ClampFwdOp")
+    _register(recorder.build_kernel, op="ClampFwdOp")
     from tileops._ops.elementwise import ClampFwdOp
 
     op = ClampFwdOp()
@@ -944,7 +923,7 @@ class _PoolRecorder:
 def test_an_explicit_target_serves_a_pool_op_no_detector_claims_the_device():
     """``target=`` is the override, so it routes with nothing claiming the device."""
     recorder = _PoolRecorder()
-    _register(recorder, op="MaxPool2dFwdOp", claims=False)
+    _register(recorder.build_kernel, op="MaxPool2dFwdOp", detector=lambda device: False)
     x = torch.randn(1, 4, 8, 8, dtype=DTYPE)
 
     out = MaxPool2dFwdOp(kernel_size=2, target="acme")(x)
@@ -979,8 +958,7 @@ def test_a_five_input_op_hands_over_its_inputs_in_the_manifest_order():
 
         return kernel
 
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("BatchNormFwdOp", "acme", build_kernel)
+    _register(build_kernel, op="BatchNormFwdOp")
     from tileops._ops.norm.batch_norm import BatchNormFwdOp
 
     x = torch.randn(2, 4, 8, 8, dtype=DTYPE)
@@ -1027,7 +1005,7 @@ class _ReduceRecorder:
 def test_a_reduction_op_hands_over_the_declared_rank():
     """Not the ``(M, N)`` rows the in-tree kernel wants: that permute is the kernel's."""
     recorder = _ReduceRecorder((4,))
-    _register(recorder, op="SumFwdOp")
+    _register(recorder.build_kernel, op="SumFwdOp")
     from tileops._ops.reduction import SumFwdOp
 
     x = torch.randn(4, 8, 16, dtype=DTYPE)
@@ -1053,8 +1031,7 @@ def test_an_op_with_no_tensor_input_is_placed_by_its_device_param():
         calls.append(params)
         return lambda: torch.zeros(4, 8, 8)
 
-    registry.register_detector("acme", lambda device: device.type == "cpu")
-    registry.register_kernel_builder("AlibiFwdOp", "acme", build_kernel)
+    _register(build_kernel, op="AlibiFwdOp", detector=lambda device: device.type == "cpu")
 
     AlibiFwdOp(seq_len=8, num_heads=4, device="cpu")()
 
@@ -1067,9 +1044,10 @@ def test_a_device_param_without_an_index_accepts_the_output_on_the_current_devic
     """An unindexed device resolves to its current index."""
     from tileops._ops.elementwise import AlibiFwdOp
 
-    registry.register_detector("acme", lambda device: False)
-    registry.register_kernel_builder(
-        "AlibiFwdOp", "acme", lambda **params: lambda: torch.zeros(4, 8, 8, device=params["device"])
+    _register(
+        lambda **params: lambda: torch.zeros(4, 8, 8, device=params["device"]),
+        op="AlibiFwdOp",
+        detector=lambda device: False,
     )
     kind = device_beside_cpu.type
 
@@ -1092,9 +1070,10 @@ def test_a_target_that_builds_a_composite_serves_it_whole():
     op, inputs = _mamba2()
     x, b = inputs[0], inputs[3]
     served = (x.float(), torch.zeros(x.shape[0], x.shape[2], x.shape[3], b.shape[3]))
-    registry.register_detector("acme", lambda device: False)
-    registry.register_kernel_builder(
-        "Mamba2FwdOp", "acme", lambda *specs, **params: lambda *tensors: served
+    _register(
+        lambda *specs, **params: lambda *tensors: served,
+        op="Mamba2FwdOp",
+        detector=lambda device: False,
     )
 
     y, final_states = op(*inputs)
@@ -1113,11 +1092,10 @@ def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
     from tileops._ops.moe.contracts import ContiguousLayoutSpec
     from tileops._ops.moe.staged import MoEGroupedGEMMFwdOp
 
-    registry.register_detector("acme", lambda device: device.type == "cpu")
-    registry.register_kernel_builder(
-        "MoEGroupedGEMMFwdOp",
-        "acme",
+    _register(
         lambda *specs, **params: lambda a, b, meta, bias=None, out=None: out,
+        op="MoEGroupedGEMMFwdOp",
+        detector=lambda device: device.type == "cpu",
     )
     op = MoEGroupedGEMMFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     a, b = torch.randn(32, 64, dtype=DTYPE), torch.randn(4, 16, 64, dtype=DTYPE)
@@ -1135,9 +1113,10 @@ def test_an_input_this_call_does_not_write_reaches_the_kernel_contiguous():
     from tileops._ops.elementwise import ReLUFwdOp
 
     seen = []
-    registry.register_detector("acme", lambda device: device.type == "cpu")
-    registry.register_kernel_builder(
-        "ReLUFwdOp", "acme", lambda *specs, **params: lambda x: seen.append(x) or x.clone()
+    _register(
+        lambda *specs, **params: lambda x: seen.append(x) or x.clone(),
+        op="ReLUFwdOp",
+        detector=lambda device: device.type == "cpu",
     )
 
     ReLUFwdOp()(torch.randn(8, 8, dtype=DTYPE)[:, ::2])
@@ -1149,11 +1128,10 @@ def test_an_input_typed_after_an_output_follows_that_output_s_dtype():
     """``bias`` takes the output's dtype: the op states that dtype, and it binds the input."""
     from tileops._ops.gemm.gemm import GEMMFP8FwdOp
 
-    registry.register_detector("acme", lambda device: device.type == "cpu")
-    registry.register_kernel_builder(
-        "GEMMFP8FwdOp",
-        "acme",
+    _register(
         lambda *specs, **params: lambda *tensors: torch.empty(16, 16, dtype=torch.bfloat16),
+        op="GEMMFP8FwdOp",
+        detector=lambda device: device.type == "cpu",
     )
     fp8 = torch.float8_e4m3fn
     a, b = torch.empty(16, 32, dtype=fp8), torch.empty(16, 32, dtype=fp8)
@@ -1170,9 +1148,10 @@ def test_an_ops_input_value_checks_run_before_its_target():
     from tileops.pool import MeanPoolingFwdOp
 
     asked = []
-    registry.register_detector("acme", lambda device: device.type == "cpu")
-    registry.register_kernel_builder(
-        "MeanPoolingFwdOp", "acme", lambda *specs, **params: asked.append(specs)
+    _register(
+        lambda *specs, **params: asked.append(specs),
+        op="MeanPoolingFwdOp",
+        detector=lambda device: device.type == "cpu",
     )
     op = MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32, validate_inputs=True)
     x = torch.zeros(1, 64, 1, 32)

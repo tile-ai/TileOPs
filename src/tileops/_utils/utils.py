@@ -137,13 +137,8 @@ def get_shared_memory_optin(index: "int | None" = None) -> int:
 
 
 def forget_device_properties() -> None:
-    """Drop the cached accelerator type and the facts of every device.
-
-    A device's properties do not change, so the cache is normally never
-    invalidated. What does change is whether the query itself can be answered —
-    a caller that must observe a failing probe has to reach it before the first
-    successful one is remembered.
-    """
+    """Drop the cached accelerator type and the facts of every device, so the next query
+    probes the device again."""
     from tileops._utils.device import current_accelerator_type
 
     _device_facts.cache_clear()

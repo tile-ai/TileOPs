@@ -281,13 +281,10 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             dim_v=dim_v,
             chunk_size=64,
             scale=scale,
-            output_final_state=True,
             dtype=dtype,
+            device_index=device_index,
         )
-
-        self._unread_state = torch.empty(
-            1, dtype=torch.float32, device=torch.device("cuda", device_index)
-        )
+        self._unread_state = torch.empty(1, dtype=torch.float32, device=self._build_device)
 
     def _programs(self, cfg: dict) -> tuple:
         """The gate, state, attention and output launches *cfg* states."""

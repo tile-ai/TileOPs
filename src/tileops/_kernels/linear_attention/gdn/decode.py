@@ -330,10 +330,6 @@ class GDNColumnDecodeKernel(Kernel, GDNFwdInterface):
             return "requires at most 64 BF16 query/value heads across the batch with width 128"
         return head_count_refusal(call.heads) or super().refusal(call)
 
-    @classmethod
-    def entry_for(cls, call: GDNCall) -> Entry:
-        return call, lambda: cls(call)
-
     def __init__(self, call: GDNCall):
         super().__init__(device_index=call.device_index)
         self.call = call
@@ -357,5 +353,7 @@ class GDNColumnDecodeKernel(Kernel, GDNFwdInterface):
         state_indices=None,
         num_accepted_tokens=None,
     ):
+        del cu_seqlens, cu_seqlens_cpu, A_log, dt_bias, state_indices, num_accepted_tokens
+        self._require_devices(q=q, k=k, v=v, g=g, beta=beta, initial_state=initial_state)
         q, k, v, g, beta = (tensor.contiguous() for tensor in (q, k, v, g, beta))
         return self.program(self._compile)(q, k, v, g, beta, initial_state)

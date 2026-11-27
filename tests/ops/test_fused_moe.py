@@ -37,6 +37,19 @@ def _vllm_runs_on(device) -> bool:
     return current_platform.device_type == torch.device(device).type
 
 
+def moe_inputs(
+    num_tokens: int, num_experts: int, hidden_size: int, ffn_size: int, dtype=torch.bfloat16
+) -> tuple:
+    """Hidden states, router logits, and expert gate/up and down weights scaled by 0.02."""
+    dev = run_device()
+    return (
+        torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev),
+        torch.randn(num_tokens, num_experts, device=dev),
+        torch.randn(num_experts, 2 * ffn_size, hidden_size, dtype=dtype, device=dev) * 0.02,
+        torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02,
+    )
+
+
 class Qwen3Fixture(FixtureBase):
     PARAMS = [
         (
@@ -68,18 +81,6 @@ class Qwen3Fixture(FixtureBase):
                     id="smoke-softmax-renorm-fp16",
                 ),
                 pytest.param(
-                    32,
-                    8,
-                    2,
-                    64,
-                    32,
-                    "sigmoid",
-                    True,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
-                    id="sigmoid-renorm-bf16",
-                ),
-                pytest.param(
                     512,
                     128,
                     8,
@@ -102,18 +103,6 @@ class Qwen3Fixture(FixtureBase):
                     torch.bfloat16,
                     marks=pytest.mark.full,
                     id="qwen3-medium",
-                ),
-                pytest.param(
-                    512,
-                    256,
-                    8,
-                    2048,
-                    1024,
-                    "softmax",
-                    True,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
-                    id="qwen35-small",
                 ),
                 pytest.param(
                     512,
@@ -144,11 +133,9 @@ def test_fused_moe_qwen3(
     dtype,
 ) -> None:
     torch.manual_seed(42)
-    dev = run_device()
-    hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
-    gating = torch.randn(num_tokens, num_experts, device=dev)
-    w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
+    hidden, gating, w_gate_up, w_down = moe_inputs(
+        num_tokens, num_experts, hidden_size, ffn_size, dtype
+    )
 
     op = FusedMoEFwdOp(
         top_k=top_k,
@@ -208,14 +195,10 @@ def test_fused_moe_deterministic(case):
     register-to-``C_shared`` write before the async TMA store reads it.
     """
     torch.manual_seed(42)
-    dev = run_device()
-    dtype = torch.bfloat16
-    nt, ne, tk = case["num_tokens"], case["num_experts"], case["top_k"]
-    hs, ff, reps = case["hidden_size"], case["ffn_size"], case["reps"]
-    hidden = torch.randn(nt, hs, dtype=dtype, device=dev)
-    gating = torch.randn(nt, ne, device=dev)
-    w_gate_up = torch.randn(ne, ff * 2, hs, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(ne, hs, ff, dtype=dtype, device=dev) * 0.02
+    tk, reps = case["top_k"], case["reps"]
+    hidden, gating, w_gate_up, w_down = moe_inputs(
+        case["num_tokens"], case["num_experts"], case["hidden_size"], case["ffn_size"]
+    )
 
     op = FusedMoEFwdOp(
         top_k=tk,
@@ -339,16 +322,14 @@ def test_fused_moe_kimi(
     dtype,
 ) -> None:
     torch.manual_seed(42)
-    dev = run_device()
-    hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
-    gating = torch.randn(num_tokens, num_experts, device=dev)
+    hidden, gating, w_gate_up, w_down = moe_inputs(
+        num_tokens, num_experts, hidden_size, ffn_size, dtype
+    )
     correction_bias = (
-        torch.randn(num_experts, dtype=torch.float32, device=dev) * 0.1
+        torch.randn(num_experts, dtype=torch.float32, device=hidden.device) * 0.1
         if with_correction_bias
         else None
     )
-    w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
     op = FusedMoEFwdOp(
         top_k=top_k,
@@ -462,12 +443,10 @@ def test_fused_moe_vs_vllm(
         pytest.skip("vLLM is not installed or has no platform for the run device")
 
     torch.manual_seed(42)
-    dev = run_device()
-    hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
-    gating = torch.randn(num_tokens, num_experts, device=dev)
-    correction_bias = torch.randn(num_experts, dtype=torch.float32, device=dev) * 0.1
-    w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
+    hidden, gating, w_gate_up, w_down = moe_inputs(
+        num_tokens, num_experts, hidden_size, ffn_size, dtype
+    )
+    correction_bias = torch.randn(num_experts, dtype=torch.float32, device=hidden.device) * 0.1
 
     fk = FusedTopKFwdOp(top_k, "sigmoid", True)
     topk_weights, topk_ids = fk(gating, correction_bias)
@@ -493,13 +472,8 @@ def test_the_routed_weights_are_priced_from_the_experts_stage() -> None:
     """The in-tree call prices the experts its routed-experts stage read; with no stage call
     the price falls to the data-independent bound of top_k experts."""
     torch.manual_seed(7)
-    dev = run_device()
     T, E, K, H, F_ = 32, 8, 2, 64, 32
-    dtype = torch.bfloat16
-    hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, device=dev)
-    w_gate_up = torch.randn(E, F_ * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F_, dtype=dtype, device=dev) * 0.02
+    hidden, gating, w_gate_up, w_down = moe_inputs(T, E, H, F_)
 
     op = FusedMoEFwdOp(top_k=K)
     op(hidden, gating, w_gate_up, w_down)

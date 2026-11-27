@@ -32,25 +32,6 @@ from tileops._ops.norm.rms_norm import RMSNormFwdOp
 from tileops._ops.norm.rms_norm_gated import RMSNormGatedFwdOp
 
 
-def _flaggems_rms_norm(n: int, eps: float):
-    """flag_gems' aten-level ``rms_norm(x, normalized_shape, weight, eps)``."""
-    fn = flaggems_op("rms_norm")
-
-    def baseline_fn(x, weight):
-        return fn(x, [n], weight, eps)
-
-    return baseline_fn
-
-
-def _flashinfer_rms_norm(eps: float):
-    fn = flashinfer_op("rmsnorm")
-
-    def baseline_fn(x, weight):
-        return fn(x, weight, eps)
-
-    return baseline_fn
-
-
 def _vllm_rms_norm(x: torch.Tensor, eps: float):
     """Bind vLLM's RMSNorm to a reusable output buffer."""
     fn = vllm_op("rms_norm")
@@ -97,7 +78,7 @@ def _in_place_fused_add(fn, inputs: tuple, eps: float) -> bench.Implementation:
     return private_inputs(run, inputs, 0, 1)
 
 
-@pytest.mark.parametrize("case", bench.cases(RMSNormFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(RMSNormFwdOp))
 def test_rms_norm_bench(case) -> None:
     x, weight = case.inputs
     op = RMSNormFwdOp(**case.arguments)
@@ -126,9 +107,11 @@ def test_rms_norm_bench(case) -> None:
         }
     elif not case.params["zero_centered"]:
         if weight is not None and x.ndim == 2:
+            flaggems = flaggems_op("rms_norm")
+            flashinfer = flashinfer_op("rmsnorm")
             library = {
-                FLAGGEMS_TAG: _flaggems_rms_norm(shape[-1], eps),
-                FLASHINFER_TAG: _flashinfer_rms_norm(eps),
+                FLAGGEMS_TAG: lambda x, w: flaggems(x, [shape[-1]], w, eps),
+                FLASHINFER_TAG: lambda x, w: flashinfer(x, w, eps),
                 VLLM_TAG: _vllm_rms_norm(x, eps),
             }
         quack_rms = quack_op("rmsnorm")
@@ -149,7 +132,7 @@ def test_rms_norm_bench(case) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(FusedAddRMSNormFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FusedAddRMSNormFwdOp))
 def test_fused_add_rms_norm_bench(case) -> None:
     op = FusedAddRMSNormFwdOp(**case.arguments)
     op.request_tune()
@@ -185,7 +168,7 @@ def test_fused_add_rms_norm_bench(case) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(RMSNormGatedFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(RMSNormGatedFwdOp))
 def test_rms_norm_gated_bench(case) -> None:
     """vLLM's ``layernorm_guard.rmsnorm_fn`` takes every call; fla's ``rms_norm_gated`` only a
     gate after one norm over the row; Hugging Face's ``Qwen3_5RMSNormGated`` only a silu gate
@@ -283,9 +266,7 @@ def _flashinfer_static_quant(inputs: tuple, eps: float) -> bench.Implementation:
     )
 
 
-@pytest.mark.parametrize(
-    "case", bench.cases(FusedAddRMSNormPerTokenQuantFwdOp), ids=lambda case: case.id
-)
+@pytest.mark.parametrize("case", bench.cases(FusedAddRMSNormPerTokenQuantFwdOp))
 def test_fused_add_rms_norm_per_token_quant_bench(case) -> None:
     """FlashInfer quantizes only to FP8, so an INT8 case drops it.
 
@@ -303,7 +284,7 @@ def test_fused_add_rms_norm_per_token_quant_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(LayerNormFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(LayerNormFwdOp))
 def test_layer_norm_bench(case) -> None:
     x, weight, bias = case.inputs
     op = LayerNormFwdOp(**case.arguments)
@@ -348,7 +329,7 @@ def test_layer_norm_bench(case) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(FusedAddLayerNormFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FusedAddLayerNormFwdOp))
 def test_fused_add_layer_norm_bench(case) -> None:
     op = FusedAddLayerNormFwdOp(**case.arguments)
     op.request_tune()
@@ -391,11 +372,11 @@ def _bench(op_cls: type, case: bench.Case) -> None:
     bench.Runner(op, case).compare({"torch-ref": torch_fn, TORCH_COMPILE_TAG: compiled})
 
 
-@pytest.mark.parametrize("case", bench.cases(AdaLayerNormFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AdaLayerNormFwdOp))
 def test_ada_layer_norm_bench(case) -> None:
     _bench(AdaLayerNormFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(AdaLayerNormZeroFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AdaLayerNormZeroFwdOp))
 def test_ada_layer_norm_zero_bench(case) -> None:
     _bench(AdaLayerNormZeroFwdOp, case)

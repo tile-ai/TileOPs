@@ -1,16 +1,13 @@
-"""Softmax / log-softmax forward kernels using TileLang.
+"""Softmax / log-softmax forward kernels.
 
-Kernels for two operations:
   - softmax:     y[i,j] = exp(x[i,j] - max_i) / sum_i(exp(x[i,j] - max_i))
   - log_softmax: y[i,j] = x[i,j] - max_i - log(sum_i(exp(x[i,j] - max_i)))
 
-Three implementations, each stating the calls it serves over a :class:`SoftmaxCall`: a
-split across blocks for a handful of long rows, resident CTAs streaming the other rows
-no shared-memory tile holds, and the general row kernel for rows one tile holds.
-``softmax_on_chip`` adds a cluster kernel for rows of 32768 elements or more on SM90.
-
-Boundary handling for non-aligned N is performed inside the kernel via masked loads
-and -inf fills, eliminating host-side ``F.pad`` from the forward path.
+Three implementations, each stating the calls it serves over a :class:`SoftmaxCall`: a split
+across blocks for a handful of long rows, resident CTAs streaming the other rows no
+shared-memory tile holds, and the row kernel for rows one tile holds; ``softmax_on_chip``
+adds a cluster kernel for rows of 32768 elements or more on SM90. A row off the alignment
+loads ``-inf`` past its end.
 """
 
 import functools
@@ -245,22 +242,12 @@ def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int
 
 @target_cache(maxsize=64)
 def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: str, keep: bool):
-    """Build a single-tile softmax/log_softmax kernel (N fits in smem).
+    """Build a single-tile softmax/log_softmax kernel for ``(M, N)`` rows one shared tile holds.
 
-    Accepts an ``(M, N)`` input tensor. A softmax row of whole thread-wide vectors, one a
-    block, runs ``_held_row``. Otherwise, when ``N`` is not a multiple of
-    ``ALIGNMENT``, the kernel uses element-wise ``T.if_then_else``
-    loads that substitute ``-inf`` for out-of-bounds columns (kernel-side
-    boundary handling), and when ``N`` is already aligned, the fast ``T.copy``
-    path is used.
-
-    softmax never reads the row again once it has exponentiated, so it goes global to
-    fragment and back with nothing staged in between, dropping the shared round trip
-    it would otherwise pay. log_softmax needs the row a second time, for
-    ``(x - max) - log(sum)``,
-    and shared memory is the cheaper of the two places to keep it -- the alternative is
-    a second fragment of row width, which is what pushes a thread's slice into local
-    memory.
+    A softmax row of whole thread-wide vectors, one a block, runs ``_held_row``. Otherwise a row
+    off ``ALIGNMENT`` loads ``-inf`` past its end. softmax keeps the row in a register fragment
+    from load to store; log_softmax stages it in shared memory for its second read, which a
+    second row-wide fragment would push into local memory.
     """
     N_padded = align_up(N, ALIGNMENT)
     _needs_pad = N_padded != N
@@ -418,21 +405,12 @@ def _softmax_split_finalize_kernel(
 def _softmax_fused_split_kernel(
     M: int, N: int, op_kind: str, dtype: str, out_dtype: str, seg_n: int, threads: int
 ):
-    """Normalize a few long rows in one kernel, reading each row once.
+    """Normalize a few long rows in one kernel, reading each row once: a block keeps its segment in
+    registers across a grid barrier (:func:`fused_split_plan` says the grid can take one) and
+    rescales it by ``exp(seg_max - row_max)``.
 
-    The split pair reads the row twice: once for the segment statistics, once
-    to normalize. Here a block keeps its segment in registers across a grid
-    barrier and rescales it in place, so the row moves one read and one write
-    and the launch that separated the two passes goes away. A grid barrier is
-    what makes that legal, and :func:`fused_split_plan` is what says the grid
-    can take one.
-
-    The rescale is the flash-attention identity, ``exp(x - row_max) =
-    exp(x - seg_max) * exp(seg_max - row_max)``, which is why the segment's
-    exponentials survive the fold. A segment of only ``-inf`` holds zeros
-    rather than the NaN ``exp(-inf - -inf)`` would leave, so it contributes
-    nothing; an all--inf row still reads NaN for softmax and log_softmax, as
-    torch does.
+    A segment of only ``-inf`` holds zeros, so it contributes nothing; an all -inf row still
+    reads NaN, as torch's.
     """
     num_segs = ceil_div(N, seg_n)
     fold = make_block_split_fold(num_segs, threads)

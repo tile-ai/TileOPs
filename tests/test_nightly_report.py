@@ -108,19 +108,6 @@ def test_the_l2_flush_of_a_reading_reaches_the_history_entry(report, tmp_path):
     assert tileops["l2_flush"] == "read-2x-l2"
 
 
-def test_history_reading_without_counts_falls_back_to_tflops(report):
-    """A reading carrying only ``tflops`` still recovers a comparable FLOP count."""
-    runs = [_history_run(0.1, tflops=50.0)]
-    (found,) = report.detect_regressions(_bench_ops(0.4, flops=5e9), runs)
-    assert found["base_ms"] == 0.1
-
-
-def test_history_reading_without_counts_at_another_work_size_is_not_a_baseline(report):
-    """A FLOP count recovered from ``tflops`` separates workloads too."""
-    runs = [_history_run(0.1, tflops=50.0)]
-    assert report.detect_regressions(_bench_ops(0.4, flops=2e10), runs) == []
-
-
 def test_sub_floor_change_with_percentiles_is_reported(report):
     """Once a spread is recorded, the noise gate replaces the fixed floor."""
     runs = [_history_run(0.010, p10=0.0099, p90=0.0101)]
@@ -135,7 +122,7 @@ def test_change_within_noise_spread_is_not_reported(report):
 
 
 def test_row_without_percentiles_keeps_the_absolute_floor(report):
-    """Legacy rows with no spread on either side gate on the fixed floor."""
+    """Rows with no spread on either side gate on the fixed floor."""
     runs = [_history_run(0.010)]
     assert report.detect_regressions(_bench_ops(0.015), runs) == []
 
@@ -313,18 +300,15 @@ def test_history_entry_records_the_percentiles(report):
     assert tileops["device_busy_p90_ms"] == 0.0101
 
 
-@pytest.mark.parametrize(
-    "terms", ['{"active_experts": 12}', "{'active_experts': 12}"], ids=["json", "python-repr"]
-)
-def test_roofline_data_terms_reach_the_history_entry(report, tmp_path, terms):
-    """What decided a reading's bytes is kept with the reading, as a mapping, whether the
-    snapshot recorded it as JSON or as a Python repr."""
+def test_roofline_data_terms_reach_the_history_entry(report, tmp_path):
+    """What decided a reading's bytes is kept with the reading, as a mapping."""
+    terms = '{"active_experts": 12}'
     tileops = _history_reading(report, tmp_path, tileops_roofline_data_terms=terms)
     assert tileops["roofline_data_terms"] == {"active_experts": 12}
 
 
 def test_unreadable_data_terms_drop_the_terms_not_the_row(report):
-    assert report._data_terms("{'active_experts':") == {}
+    assert report._data_terms("{'active_experts': 12}") == {}
     assert report._data_terms("12") == {}
 
 
@@ -633,6 +617,13 @@ def _result(outcome, op, name="test_x", compared=True):
         "compared": compared,
         "failure_message": "boom" if outcome == "failed" else None,
     }
+
+
+def test_a_benchmark_failure_message_stays_one_table_row(report):
+    """A multi-line message with pipes would otherwise end the row and split its cells."""
+    failures = [{"name": "t[a]", "failure_message": "AssertionError: x | y\n  where z"}]
+    md = _report(report, bench_failures=failures)
+    assert "| t[a] | AssertionError: x \\| y where z |" in md
 
 
 def test_unattributed_passes_and_failures_are_counted_and_failures_named(report):

@@ -5,12 +5,14 @@ multiplier, ``x ~= q * scale``; an all-zero group gets scale 1.0; rounding is ha
 even (``torch.round``).
 """
 
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
+from workloads.numerics import Custom, zeroed_input
 from workloads.workload_base import WorkloadBase
 
 _BLOCK = 128
@@ -96,7 +98,6 @@ def bitwise_verification(reason: str, controls: tuple = ()):
     """A ``Custom`` declaration requiring each output's bits, a signed zero and a scale byte
     included, to equal the reference's, and an output the reference leaves ``None`` to be
     ``None``; *controls* are the faulty references it must reject."""
-    from workloads.numerics import Custom
 
     def validate(got, expected):
         for actual, reference in zip(got, expected, strict=True):
@@ -227,8 +228,6 @@ class _QuantizeWorkload(WorkloadBase):
         return (x,)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         def validate(got, expected):
             codes, scales = got
             ref_codes, ref_scales = expected
@@ -285,8 +284,6 @@ class INT4QuantPerGroupWorkload(_QuantizeWorkload):
         return int4_quant_per_group(w, self.group_size)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, zeroed_input
-
         def validate(got, expected):
             assert torch.equal(got[0], expected[0]), "packed INT4 codes differ"
             torch.testing.assert_close(got[1], expected[1], rtol=1e-6, atol=0)
@@ -298,13 +295,16 @@ class INT4QuantPerGroupWorkload(_QuantizeWorkload):
         )
 
 
+@dataclass(eq=False)
 class FP4QuantWorkload(WorkloadBase):
     """Block-wise e2m1 quantization of a random ``bfloat16`` tensor of ``shape``."""
 
-    def __init__(self, shape: tuple[int, ...], block_size: int = 32, inplace: bool = False):
-        self.shape = tuple(shape)
-        self.block_size = block_size
-        self.inplace = inplace
+    shape: tuple[int, ...]
+    block_size: int = 32
+    inplace: bool = False
+
+    def __post_init__(self) -> None:
+        self.shape = tuple(self.shape)
 
     @classmethod
     def from_call(cls, call: Any) -> "FP4QuantWorkload":
@@ -319,8 +319,6 @@ class FP4QuantWorkload(WorkloadBase):
         return fp4_quant_per_group(x, self.block_size, self.inplace)
 
     def verification(self, *inputs):
-        from workloads.numerics import zeroed_input
-
         return bitwise_verification(
             "bitwise e2m1 codes, e8m0 scales and fake-quantized values",
             controls=(zeroed_input(0, "x-zeroed"),),

@@ -311,17 +311,12 @@ def _tensor_contents(tensor: torch.Tensor) -> str:
 
 
 def supply_fingerprint(supply_prog: Callable | None) -> str:
-    """Fingerprint supplier code and captured state for persistent autotune results.
+    """A digest of *supply_prog*'s code and captured state, the same in every process.
 
-    First-party function bytecode, module source and referenced runtime attributes
-    participate. Containers have deterministic ordering; tensors include metadata and
-    integer or boolean contents. Floating tensor contents are excluded because tuning
-    placeholders may be uninitialized. Third-party objects participate by name.
-
-    Kernel device indices, chosen configs and tuning flags do not participate.
-    Object identities are used only for cycle detection, never as digest values.
+    First-party code enters by bytecode, module source and the attributes it reads;
+    third-party objects by name; tensors by metadata and integer or boolean contents. A
+    kernel's device index, config and tuning flags do not enter.
     """
-
     fingerprint = _Fingerprint()
     fingerprint.value(supply_prog)
     return fingerprint.hexdigest()
@@ -339,10 +334,9 @@ _READING = threading.RLock()
 
 
 def _flush_l2(buffer: torch.Tensor) -> None:
-    """Return persisting L2 lines to normal priority, then evict L2 by reading *buffer*, an
-    :func:`~tileops._utils.cupti.l2_flush_buffer` on a CUDA device, so every candidate is
-    ranked from the same cache state. A read leaves no dirty lines to write back during the
-    timed call."""
+    """Reset persisting L2 lines, then evict L2 by reading *buffer*, an
+    :func:`~tileops._utils.cupti.l2_flush_buffer`; a read leaves no dirty lines to write back
+    during the timed call."""
     # Imported on first use: Triton is needed only where a CUDA device is timed.
     from tileops._utils._l2_sweep import read_sweep
 
@@ -421,10 +415,8 @@ class _SupplyKeyedAutoTune(AutoTuneImpl):
     def _make_jit_compile_func(self, mode: str, args: tuple, kwargs: dict) -> Callable:
         """Compile candidates concurrently, each on a JIT object no other candidate writes.
 
-        TileLang 0.1.15 writes a candidate's per-config pass options onto the shared
-        ``jit_impl`` and holds one lock across every compile, so its compile pool builds one
-        candidate at a time. Here a candidate with options compiles on a copy carrying them,
-        as tile-ai/tilelang#3476 does, and no compile needs the lock.
+        TileLang writes per-config pass options onto the shared ``jit_impl`` under one lock
+        held across every compile; a candidate with options compiles on a copy instead.
         """
 
         def jit_compile(**config_arg: Any) -> Any:

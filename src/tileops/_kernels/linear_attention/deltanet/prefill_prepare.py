@@ -92,7 +92,6 @@ def _build_partition_states_kernel(
                 for i_s in T.serial(num_iters):
                     st = i_s % 2
                     ds = i_s % num_stages
-                    dp = (i_s // num_stages) % 2
                     T.barrier_wait(wu_ready[st], (i_s // 2) % 2)
                     T.copy(h_fragment, h_shared)
                     T.fence_proxy_async()
@@ -122,7 +121,6 @@ def _build_partition_states_kernel(
                 for i_s in T.serial(num_iters):
                     st = i_s % 2
                     ds = i_s % num_stages
-                    dp = (i_s // num_stages) % 2
                     T.barrier_wait(wu_ready[st], (i_s // 2) % 2)
                     T.copy(m_fragment, m_shared)
                     T.fence_proxy_async()

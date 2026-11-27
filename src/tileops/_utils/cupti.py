@@ -155,27 +155,21 @@ def _buffer_completed(records) -> None:
     # accessors misread a newer libcupti's struct and raise, including from
     # __del__ at shutdown.
     cupti = _load_cupti()
+    kernel_kind = int(cupti.ActivityKind.CONCURRENT_KERNEL)
+    copy_kind = int(cupti.ActivityKind.MEMCPY)
     for record in records:
         kind = int(record.kind)
-        if kind == int(cupti.ActivityKind.CONCURRENT_KERNEL):
-            _KERNELS.append(
-                {
-                    "name": str(record.name),
-                    "start_ns": int(record.start),
-                    "end_ns": int(record.end),
-                    "correlation_id": int(record.correlation_id),
-                }
-            )
-        elif kind == int(cupti.ActivityKind.MEMCPY):
-            _KERNELS.append(
-                {
-                    "name": "memcpy",
-                    "start_ns": int(record.start),
-                    "end_ns": int(record.end),
-                    "correlation_id": int(record.correlation_id),
-                    "is_copy": True,
-                }
-            )
+        if kind in (kernel_kind, copy_kind):
+            is_copy = kind == copy_kind
+            entry = {
+                "name": "memcpy" if is_copy else str(record.name),
+                "start_ns": int(record.start),
+                "end_ns": int(record.end),
+                "correlation_id": int(record.correlation_id),
+            }
+            if is_copy:
+                entry["is_copy"] = True
+            _KERNELS.append(entry)
         elif kind == int(cupti.ActivityKind.EXTERNAL_CORRELATION):
             _ITERATION_OF[int(record.correlation_id)] = int(record.external_id)
         # Launch-API records are collected only so CUPTI emits the correlation above.

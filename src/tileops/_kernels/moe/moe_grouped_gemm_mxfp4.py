@@ -1,9 +1,8 @@
 """MXFP4 grouped GEMM on SM90: packed e2m1 weights times FP8 rows on an fp8 WGMMA.
 
 Supports masked slabs and contiguous expert rows. A scales cover 1x128 blocks of ``a``, B
-scales 1x32 blocks of ``b``, both e8m0 or both float32. The weights are the WGMMA's M operand,
-decoded to e4m3 in registers; the rows (tokens) are its N operand, read as TMA loads them.
-Each 128-wide K step is promoted into a float32 accumulator; output is bfloat16.
+scales 1x32 blocks of ``b``, both e8m0 or both float32. Accumulation is float32; output is
+bfloat16.
 """
 
 import math
@@ -43,8 +42,8 @@ from tileops._kernels.moe.grouped_tasks import (
     table_task_walk,
     walk_refusal,
     walk_smem_bytes,
+    warp_uniform,
 )
-from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = ["MoEGroupedGEMMMXFP4Kernel", "MoEGroupedGEMMMXFP4SharedDecodeKernel"]
 
@@ -52,6 +51,8 @@ __all__ = ["MoEGroupedGEMMMXFP4Kernel", "MoEGroupedGEMMMXFP4SharedDecodeKernel"]
 _B_SCALE_BLOCK = 32
 # Sub-blocks of one 128-wide K step, each under its own ``b`` scale.
 _SUB_BLOCKS = QUANT_SCALE_BLOCK // _B_SCALE_BLOCK
+# Columns of one output staging box: 128 bytes of bfloat16, the TMA store's 128B swizzle.
+_STORE_BOX_COLS = 64
 
 
 def _math_warps(block_n: int) -> int:
@@ -88,10 +89,9 @@ def _smem_bytes(
 def _uses_tables(
     block_m: int, block_n: int, num_stages: int, scale_bytes: int, scale_k: int, smem_limit: int
 ) -> bool:
-    """Whether a config reads its e8m0 scales from per-task tables: they grow with K, so past
-    the shared memory a block may take beside the ring, the scales come a stage at a time. A
-    table that comes by one bulk copy, without token code tables, is taken under the bound of a
-    table that comes by TMA: only where the two token code tables would fit beside it too."""
+    """Whether a config reads its e8m0 scales from per-task code tables, which grow with K:
+    only where they fit beside the ring, with room kept for the two token code tables when the
+    table comes by one bulk copy. Otherwise the scales come a stage at a time."""
     bulk_room = 0 if _table_box(scale_k) else 2 * block_m * scale_k
     return (
         scale_bytes == 1
@@ -118,9 +118,7 @@ def _e8m0_value(code):
     return T.reinterpret(bits, "float32")
 
 
-def _code_tables_copy(
-    tasks, *, contiguous: bool, block_m: int, block_n: int, scale_k: int, table_box: int
-):
+def _code_tables_copy(tasks, *, block_m: int, block_n: int, scale_k: int, table_box: int):
     """The macro that copies a task's weight-code and token-code tables by TMA, for a kernel
     whose task walk is ``tasks`` over ``block_m x block_n`` tiles and ``scale_k`` K steps, each
     code-table row in boxes of ``table_box`` bytes."""
@@ -137,25 +135,14 @@ def _code_tables_copy(
         if T.shuffle_elect(32):
             # Whole boxes land, rows past N (or past the tokens) zero-filled.
             T.mbarrier_arrive_expect_tx(full[buf], block_n * table_row_bytes + block_m * scale_k)
-            if contiguous:
-                T.tma_load(
-                    token_desc,
-                    full[buf],
-                    T.address_of(token_codes[buf, 0]),
-                    0,
-                    tasks.first_row(cursor, tile),
-                    0,
-                )
-            else:
-                T.tma_load(
-                    token_desc,
-                    full[buf],
-                    T.address_of(token_codes[buf, 0]),
-                    0,
-                    tasks.first_row(cursor, tile),
-                    tasks.expert(cursor),
-                    0,
-                )
+            T.tma_load(
+                token_desc,
+                full[buf],
+                T.address_of(token_codes[buf, 0]),
+                0,
+                *tasks.row_coords(tasks.expert(cursor), tasks.first_row(cursor, tile)),
+                0,
+            )
             for box in T.unroll(table_row_bytes // table_box):
                 T.tma_load(
                     table_desc,
@@ -168,6 +155,40 @@ def _code_tables_copy(
                 )
 
     return copy_code_tables
+
+
+def _tile_descriptors(tasks, A, B, C, n: int, k: int, b_swizzle: int):
+    """TMA descriptors of the bfloat16 output tiles (``[m, N]`` or ``[E, max_m, N]``, so the
+    store of a run's or slab's last rows is clipped at its end), the fp8 row tiles and the
+    packed weight tiles, whose rows of 64 bytes take ``b_swizzle``."""
+    output_desc = tasks.row_tiles_descriptor(
+        TMA_DTYPE_BFLOAT16, C, n, n * 2, _STORE_BOX_COLS, TMA_SWIZZLE_128B, TMA_L2_PROMOTION_128B
+    )
+    a_load_desc = tasks.row_tiles_descriptor(
+        TMA_DTYPE_UINT8, A, k, k, QUANT_SCALE_BLOCK, TMA_SWIZZLE_128B, TMA_L2_PROMOTION_256B
+    )
+    b_load_desc = tasks.expert_rows_descriptor(
+        TMA_DTYPE_UINT8, B, k // 2, k // 2, QUANT_SCALE_BLOCK // 2, b_swizzle, TMA_L2_PROMOTION_256B
+    )
+    return output_desc, a_load_desc, b_load_desc
+
+
+def _code_descriptors(tasks, A_scale, B_scale, scale_k: int, table_box: int):
+    """TMA descriptors of a task's token-code rows and of its weight-code table rows in boxes
+    of ``table_box`` bytes."""
+    token_desc = tasks.row_tiles_descriptor(
+        TMA_DTYPE_UINT8, A_scale, scale_k, scale_k, scale_k, TMA_SWIZZLE_NONE, TMA_L2_PROMOTION_128B
+    )
+    table_desc = tasks.expert_rows_descriptor(
+        TMA_DTYPE_UINT8,
+        B_scale,
+        scale_k * 4,
+        scale_k * 4,
+        table_box,
+        TMA_SWIZZLE_128B if table_box == 128 else TMA_SWIZZLE_64B,
+        TMA_L2_PROMOTION_128B,
+    )
+    return token_desc, table_desc
 
 
 @target_cache(maxsize=32)
@@ -194,8 +215,6 @@ def _moe_grouped_gemm_mxfp4_kernel(
     a_dtype = "float8_e4m3fn"
     cd_dtype = "bfloat16"
     scale_dtype = "uint8" if e8m0 else "float32"
-    # Columns of one output staging box: 128 bytes of bfloat16, the TMA store's 128B swizzle.
-    store_box_cols = 64
     scale_bytes = 1 if e8m0 else 4
     block_k = QUANT_SCALE_BLOCK
     packed_k = block_k // 2
@@ -250,8 +269,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
             metadata_kind=metadata_kind,
             alignment=alignment,
         )
-        m, rows_shape, ragged_slab = tasks.m, tasks.rows_shape, tasks.ragged_slab
-        row_tiles_descriptor = tasks.row_tiles_descriptor
+        m, rows_shape = tasks.m, tasks.rows_shape
         walk, tile_of = tasks.walk, tasks.tile_of
         # One math warp-group per 64 weight rows, each over every row (token) of the tile.
         math_threads = block_n // WGMMA_ROWS * WARPGROUP_THREADS
@@ -264,8 +282,8 @@ def _moe_grouped_gemm_mxfp4_kernel(
         # fold) holds up to four sub-blocks at once in independent accumulator sets of at
         # most 64 registers in all; a folded step takes the first set alone.
         acc_sets = max(1, min(_SUB_BLOCKS, 64 // fragment_regs))
-        # Contraction passes of a step contracted sub-block by sub-block: 1, 2 or 4.
-        passes = _SUB_BLOCKS // acc_sets
+        # First sub-blocks of a split step's passes after its first, acc_sets sub-blocks each.
+        later_passes = tuple(range(acc_sets, _SUB_BLOCKS, acc_sets))
         # The producer keeps 40 registers a thread (its walk and copies fit them) and the
         # math threads share what it frees:
         # setmaxnreg.inc waits for registers another warp-group released, so the math count
@@ -291,7 +309,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
         rings_per_task = scale_k // num_stages
         # Even unrolling keeps each step's register fragment buffer a compile-time choice.
         k_unroll = math.lcm(num_stages if static_ring else 1, 2)
-        store_count = block_n // store_box_cols
+        store_count = block_n // _STORE_BOX_COLS
         # A task's e8m0 code table: rows of 4 * scale_k bytes. Rows of whole 64-byte units
         # come by one swizzled TMA in boxes of up to 128 bytes of each row; others by one
         # contiguous bulk copy, rows back to back.
@@ -300,7 +318,6 @@ def _moe_grouped_gemm_mxfp4_kernel(
         table_box = _table_box(scale_k) if tables else 0
         copy_code_tables = _code_tables_copy(
             tasks,
-            contiguous=contiguous,
             block_m=block_m,
             block_n=block_n,
             scale_k=scale_k,
@@ -324,12 +341,8 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 row = m_start + T.min(tx % 32 + 32 * j, block_m - 1)
                 if callable(A_scale):
                     value = A_scale(T.min(tx % 32 + 32 * j, block_m - 1), kk)
-                elif contiguous:
-                    value = A_scale[T.min(row, m - 1), kk]
-                elif ragged_slab:
-                    value = A_scale[g, T.min(row, max_m - 1), kk]
                 else:
-                    value = A_scale[g, row, kk]
+                    value = A_scale[*tasks.rows_index(g, tasks.clamp_row(row)), kk]
                 if e8m0:
                     token_scales[j] = _e8m0_value(T.cast(value, "uint32"))
                 else:
@@ -389,10 +402,10 @@ def _moe_grouped_gemm_mxfp4_kernel(
             B_scale,
             ahead,
             ahead_tile,
-            task_id,
             check_codes,
             check_full,
             check_empty,
+            task_id,
             check_index,
         ):
             """Copy the tile codes of the first task from ``task_id`` on, a wave apart, that
@@ -451,9 +464,8 @@ def _moe_grouped_gemm_mxfp4_kernel(
             tx,
         ):
             """K step ``kk``'s weight fragments from ring ``slot`` and scales from
-            ``scale_at(slot, kk)``, and its token
-            scales (``token_scales``, loaded a step ahead) into the warp's slice ``kk % 2``;
-            loads step ``kk + 1``'s."""
+            ``scale_at(slot, kk)``, and its token scales (``token_scales``, loaded a step ahead)
+            into the warp's slice ``kk % 2``; loads step ``kk + 1``'s."""
             # C++: the e2m1 -> e4m3 decode is byte permutes (prmt, its sign-fill mode) into the
             # WGMMA register-fragment layout, which no TileLang primitive expresses.
             # The code table's reader takes its layout and the step; a ring stage's does not.
@@ -537,29 +549,13 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 promote(step, final, scales, token_slices, kk % 2, 0, 1, True, safe, tx)
             else:
                 promote(step, final, scales, token_slices, kk % 2, 0, acc_sets, False, safe, tx)
-                # The remaining sub-blocks, acc_sets at a time (passes of a compile-time count).
-                if passes > 1:
-                    wgmma_slices(step, frags, a_desc, slot, acc_sets, acc_sets, acc_sets)
+                # A Python loop: each pass's first sub-block is a template argument.
+                for first in later_passes:
+                    wgmma_slices(step, frags, a_desc, slot, first, acc_sets, acc_sets)
                     T.wait_wgmma(0)
                     promote(
-                        step,
-                        final,
-                        scales,
-                        token_slices,
-                        kk % 2,
-                        acc_sets,
-                        acc_sets,
-                        False,
-                        safe,
-                        tx,
+                        step, final, scales, token_slices, kk % 2, first, acc_sets, False, safe, tx
                     )
-                if passes > 2:
-                    wgmma_slices(step, frags, a_desc, slot, 2, 1, 1)
-                    T.wait_wgmma(0)
-                    promote(step, final, scales, token_slices, kk % 2, 2, 1, False, safe, tx)
-                    wgmma_slices(step, frags, a_desc, slot, 3, 1, 1)
-                    T.wait_wgmma(0)
-                    promote(step, final, scales, token_slices, kk % 2, 3, 1, False, safe, tx)
             # Every math warp has read this step's tokens.
             if tx % 32 == 0:
                 T.barrier_arrive(empty[slot])
@@ -610,56 +606,14 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 tx,
             )
             for kk in T.unroll(scale_k, unroll_factor=k_unroll):
+                head = (A_scale, b_packed, scale_at, fold_steps, safe_steps, token_slices,
+                        token_scales, final, step)  # fmt: skip
+                tail = (full, empty, kk, ring_index, a_desc, wg_row0, g, m_start, tx)
+                # Even steps read frags0 and decode into frags1; odd steps the other way.
                 if kk % 2 == 0:
-                    run_step(
-                        A_scale,
-                        b_packed,
-                        scale_at,
-                        fold_steps,
-                        safe_steps,
-                        token_slices,
-                        token_scales,
-                        final,
-                        step,
-                        frags0,
-                        scales0,
-                        frags1,
-                        scales1,
-                        full,
-                        empty,
-                        kk,
-                        ring_index,
-                        a_desc,
-                        wg_row0,
-                        g,
-                        m_start,
-                        tx,
-                    )
+                    run_step(*head, frags0, scales0, frags1, scales1, *tail)
                 else:
-                    run_step(
-                        A_scale,
-                        b_packed,
-                        scale_at,
-                        fold_steps,
-                        safe_steps,
-                        token_slices,
-                        token_scales,
-                        final,
-                        step,
-                        frags1,
-                        scales1,
-                        frags0,
-                        scales0,
-                        full,
-                        empty,
-                        kk,
-                        ring_index,
-                        a_desc,
-                        wg_row0,
-                        g,
-                        m_start,
-                        tx,
-                    )
+                    run_step(*head, frags1, scales1, frags0, scales0, *tail)
 
         @T.prim_func
         def _moe_grouped_gemm_mxfp4_main(
@@ -699,11 +653,8 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 # producer lane's cp.async copies of its B scales do.
                 full = T.alloc_barrier([1 if tables else 32] * num_stages)
                 empty = T.alloc_barrier([math_warps] * num_stages)
-                # With the tables, two tables of a tile's weight-scale codes, which a task's
-                # check scans and its decode reads its steps' scales from: the producer copies
-                # a task's when it starts the one before; the math threads release a table
-                # when the task ends. Words: a byte buffer of 2 * 32768 overflows TVM's 16-bit
-                # vector lanes.
+                # With the tables, two tasks' tables of weight-scale codes. Words: a byte buffer
+                # of 2 * 32768 overflows TVM's 16-bit vector lanes.
                 check_codes = T.alloc_shared((2, (block_n if tables else 1) * scale_k), "uint32")
                 # With the code table by TMA, the tile's token codes, rows of scale_k bytes.
                 token_codes = T.alloc_shared((2, block_m * scale_k if table_box else 16), "uint8")
@@ -726,74 +677,26 @@ def _moe_grouped_gemm_mxfp4_kernel(
                 tx = T.get_thread_binding()
                 source = tasks.prepare(layout, tx, math_threads + WARPGROUP_THREADS)
                 waves = tasks.waves(source, pid, num_sms)
-                # [m, N] or [E, max_m, N], so the store of a run's or slab's last rows is
-                # clipped at its end.
-                output_desc = row_tiles_descriptor(
-                    TMA_DTYPE_BFLOAT16,
-                    C,
-                    n,
-                    n * 2,
-                    store_box_cols,
-                    TMA_SWIZZLE_128B,
-                    TMA_L2_PROMOTION_128B,
-                )
-                a_load_desc = row_tiles_descriptor(
-                    TMA_DTYPE_UINT8, A, k, k, block_k, TMA_SWIZZLE_128B, TMA_L2_PROMOTION_256B
-                )
                 # Rows of 64 packed bytes, 64B-swizzled so a warp's reads of eight rows
                 # spread over the banks.
-                b_load_desc = tasks.expert_rows_descriptor(
-                    TMA_DTYPE_UINT8,
-                    B,
-                    k // 2,
-                    k // 2,
-                    packed_k,
-                    TMA_SWIZZLE_64B,
-                    TMA_L2_PROMOTION_256B,
+                output_desc, a_load_desc, b_load_desc = _tile_descriptors(
+                    tasks, A, B, C, n, k, TMA_SWIZZLE_64B
                 )
-
                 if table_box:
-                    token_desc = row_tiles_descriptor(
-                        TMA_DTYPE_UINT8,
-                        A_scale,
-                        scale_k,
-                        scale_k,
-                        scale_k,
-                        TMA_SWIZZLE_NONE,
-                        TMA_L2_PROMOTION_128B,
-                    )
-                    table_desc = tasks.expert_rows_descriptor(
-                        TMA_DTYPE_UINT8,
-                        B_scale,
-                        table_row_bytes,
-                        table_row_bytes,
-                        table_box,
-                        TMA_SWIZZLE_128B if table_box == 128 else TMA_SWIZZLE_64B,
-                        TMA_L2_PROMOTION_128B,
+                    token_desc, table_desc = _code_descriptors(
+                        tasks, A_scale, B_scale, scale_k, table_box
                     )
 
                 if tx >= math_threads:
                     T.dec_max_nreg(producer_regs)
                     producer_tx = tx - math_threads
-                    # Shuffled so the value stays warp-uniform for NVCC's uniform datapath.
-                    producer_warp = T.tvm_warp_shuffle(
-                        T.uint32(0xFFFFFFFF), producer_tx // 32, 0, 32, 32
-                    )
+                    producer_warp = warp_uniform(producer_tx // 32)
+                    check_args = (table_desc if table_box else None,
+                                  token_desc if table_box else None, token_codes, source,
+                                  B_scale, ahead, ahead_tile, check_codes, check_full,
+                                  check_empty)  # fmt: skip
                     if T.And(tables, producer_warp == 0):
-                        copy_check(
-                            table_desc if table_box else None,
-                            token_desc if table_box else None,
-                            token_codes,
-                            source,
-                            B_scale,
-                            ahead,
-                            ahead_tile,
-                            pid,
-                            check_codes,
-                            check_full,
-                            check_empty,
-                            0,
-                        )
+                        copy_check(*check_args, pid, 0)
                     for wave in T.serial(waves):
                         task_id = num_sms * wave + pid
                         # Skipped tasks must advance neither role's barriers.
@@ -807,20 +710,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                             n_start = T.meta_var(tasks.first_col(tile))
                             if tables:
                                 # The next task's codes, a task ahead of its check.
-                                copy_check(
-                                    table_desc if table_box else None,
-                                    token_desc if table_box else None,
-                                    token_codes,
-                                    source,
-                                    B_scale,
-                                    ahead,
-                                    ahead_tile,
-                                    task_id + num_sms,
-                                    check_codes,
-                                    check_full,
-                                    check_empty,
-                                    check_index + 1,
-                                )
+                                copy_check(*check_args, task_id + num_sms, check_index + 1)
                                 check_index = check_index + 1
                             for kk in T.unroll(scale_k, unroll_factor=k_unroll):
                                 slot, phase = ring_position(kk, ring_index)
@@ -834,25 +724,14 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                         T.mbarrier_expect_tx(
                                             full[slot], block_m * block_k + block_n * packed_k
                                         )
-                                    if contiguous:
-                                        T.tma_load(
-                                            a_load_desc,
-                                            full[slot],
-                                            T.address_of(a_shared[slot, 0, 0]),
-                                            kk * block_k,
-                                            m_start,
-                                            0,
-                                        )
-                                    else:
-                                        T.tma_load(
-                                            a_load_desc,
-                                            full[slot],
-                                            T.address_of(a_shared[slot, 0, 0]),
-                                            kk * block_k,
-                                            m_start,
-                                            g,
-                                            0,
-                                        )
+                                    T.tma_load(
+                                        a_load_desc,
+                                        full[slot],
+                                        T.address_of(a_shared[slot, 0, 0]),
+                                        kk * block_k,
+                                        *tasks.row_coords(g, m_start),
+                                        0,
+                                    )
                                     T.tma_load(
                                         b_load_desc,
                                         full[slot],
@@ -882,9 +761,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                             ring_index = ring_index + (1 if static_ring else scale_k)
                 else:
                     T.inc_max_nreg(math_regs)
-                    math_wg_idx = T.tvm_warp_shuffle(
-                        T.uint32(0xFFFFFFFF), tx // WARPGROUP_THREADS, 0, 32, 32
-                    )
+                    math_wg_idx = warp_uniform(tx // WARPGROUP_THREADS)
                     # The warp-group's 64 weight rows of the tile.
                     wg_row0 = math_wg_idx * WGMMA_ROWS
                     # The rows' ring as a 128B-swizzled K-major WGMMA operand; a slot or K32
@@ -907,10 +784,8 @@ def _moe_grouped_gemm_mxfp4_kernel(
                             T.clear(final)
                             # Whether every weight scale the task reads lies in [2 ** -63,
                             # 2 ** 63] and, under e8m0 scales, every step of every weight row
-                            # folds exactly: one barrier a task makes the choice uniform. A
-                            # task that does not contracts sub-block by sub-block, exactly. A
-                            # variable: an expression would be inlined into its use, past later
-                            # writes of what it reads.
+                            # folds exactly. A variable: an expression would be inlined into its
+                            # use, past later writes of what it reads.
                             fast = T.alloc_var("int32")
                             # With the tables a step's weight scales are the task's code
                             # table's (and, with it by TMA, its token scales the token table's);
@@ -966,54 +841,14 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                     math_threads,
                                 )
                             load_token_scales(token_at, token_scales, g, m_start, 0, tx)
+                            steps_args = (token_at, b_packed, scale_at, token_slices,
+                                          token_scales, final, step, frags0, scales0, frags1,
+                                          scales1, full, empty, ring_index, a_desc, wg_row0, g,
+                                          m_start, tx)  # fmt: skip
                             if fast != 0:
-                                task_steps(
-                                    token_at,
-                                    b_packed,
-                                    scale_at,
-                                    token_slices,
-                                    token_scales,
-                                    final,
-                                    step,
-                                    frags0,
-                                    scales0,
-                                    frags1,
-                                    scales1,
-                                    full,
-                                    empty,
-                                    ring_index,
-                                    a_desc,
-                                    wg_row0,
-                                    g,
-                                    m_start,
-                                    tx,
-                                    e8m0,
-                                    False,
-                                )
+                                task_steps(*steps_args, e8m0, False)
                             else:
-                                task_steps(
-                                    token_at,
-                                    b_packed,
-                                    scale_at,
-                                    token_slices,
-                                    token_scales,
-                                    final,
-                                    step,
-                                    frags0,
-                                    scales0,
-                                    frags1,
-                                    scales1,
-                                    full,
-                                    empty,
-                                    ring_index,
-                                    a_desc,
-                                    wg_row0,
-                                    g,
-                                    m_start,
-                                    tx,
-                                    False,
-                                    True,
-                                )
+                                task_steps(*steps_args, False, True)
                             ring_index = ring_index + (1 if static_ring else scale_k)
                             # The previous task's output stores, issued by some math threads
                             # and read by all on a tight tail, must be done with shared_c
@@ -1044,7 +879,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                 C,
                                 cursor,
                                 tile,
-                                store_box_cols,
+                                _STORE_BOX_COLS,
                                 store_count,
                                 tx,
                                 math_threads,
@@ -1094,23 +929,12 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
     alignment: int,
 ) -> Callable:
     """Build a persistent MXFP4 grouped GEMM over aligned contiguous rows under e8m0 scales that
-    decodes each weight tile once into shared memory.
-
-    The tokens are the WGMMA M operand (two 64-row math warp-groups), the decoded weights its N
-    operand, both read from shared memory. The first warp of two producer warp-groups issues
-    the TMA loads; their other seven decode each step's packed weights into an fp8 stage. A
-    task whose rows fold (``mxfp4_scan_task``) contracts each step at once and promotes it under
-    its token scales alone, its columns scaled once at the end; another contracts each
-    sub-block alone and promotes it by ``mxfp4_scaled_exact``.
-    """
+    decodes each weight tile once into shared memory."""
     cur_g = CURSOR.g
     block_k = QUANT_SCALE_BLOCK
     packed_k = block_k // 2
     scale_k = k // block_k
-    table_row_bytes = scale_k * 4
     table_box = _table_box(scale_k)
-    # Columns of one output staging box: 128 bytes of bfloat16, the TMA store's 128B swizzle.
-    store_box_cols = 64
 
     @tilelang.jit(
         pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
@@ -1156,11 +980,9 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
             alignment=alignment,
         )
         m = tasks.m
-        row_tiles_descriptor = tasks.row_tiles_descriptor
         walk, tile_of = tasks.walk, tasks.tile_of
         copy_code_tables = _code_tables_copy(
             tasks,
-            contiguous=True,
             block_m=block_m,
             block_n=block_n,
             scale_k=scale_k,
@@ -1169,7 +991,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
         math_threads = block_m // WGMMA_ROWS * WARPGROUP_THREADS
         math_warps = math_threads // 32
         fragment_regs = WGMMA_ROWS * block_n // WARPGROUP_THREADS
-        store_count = block_n // store_box_cols
+        store_count = block_n // _STORE_BOX_COLS
         # Named barriers: the math threads' shared_c free to restage and shared_c staged, and
         # the decode threads' vote on a task's fold.
         reuse_barrier, staged_barrier, vote_barrier = 12, 13, 14
@@ -1386,54 +1208,18 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                 tx = T.get_thread_binding()
                 source = tasks.prepare(layout, tx, math_threads + producer_threads)
                 waves = tasks.waves(source, pid, num_sms)
-                output_desc = row_tiles_descriptor(
-                    TMA_DTYPE_BFLOAT16,
-                    C,
-                    n,
-                    n * 2,
-                    store_box_cols,
-                    TMA_SWIZZLE_128B,
-                    TMA_L2_PROMOTION_128B,
-                )
-                a_load_desc = row_tiles_descriptor(
-                    TMA_DTYPE_UINT8, A, k, k, block_k, TMA_SWIZZLE_128B, TMA_L2_PROMOTION_256B
-                )
                 # Rows of 64 packed bytes, unswizzled: a decode warp reads 512 consecutive bytes.
-                b_load_desc = tasks.expert_rows_descriptor(
-                    TMA_DTYPE_UINT8,
-                    B,
-                    k // 2,
-                    k // 2,
-                    packed_k,
-                    TMA_SWIZZLE_NONE,
-                    TMA_L2_PROMOTION_256B,
+                output_desc, a_load_desc, b_load_desc = _tile_descriptors(
+                    tasks, A, B, C, n, k, TMA_SWIZZLE_NONE
                 )
-                token_desc = row_tiles_descriptor(
-                    TMA_DTYPE_UINT8,
-                    A_scale,
-                    scale_k,
-                    scale_k,
-                    scale_k,
-                    TMA_SWIZZLE_NONE,
-                    TMA_L2_PROMOTION_128B,
-                )
-                table_desc = tasks.expert_rows_descriptor(
-                    TMA_DTYPE_UINT8,
-                    B_scale,
-                    table_row_bytes,
-                    table_row_bytes,
-                    table_box,
-                    TMA_SWIZZLE_128B if table_box == 128 else TMA_SWIZZLE_64B,
-                    TMA_L2_PROMOTION_128B,
+                token_desc, table_desc = _code_descriptors(
+                    tasks, A_scale, B_scale, scale_k, table_box
                 )
 
                 if tx >= math_threads:
                     T.dec_max_nreg(producer_regs)
                     producer_tx = tx - math_threads
-                    # Shuffled so the value stays warp-uniform for NVCC's uniform datapath.
-                    producer_warp = T.tvm_warp_shuffle(
-                        T.uint32(0xFFFFFFFF), producer_tx // 32, 0, 32, 32
-                    )
+                    producer_warp = warp_uniform(producer_tx // 32)
                     if producer_warp == 0:
                         copy_tables(
                             table_desc,
@@ -1584,9 +1370,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                 task_index = task_index + 1
                 else:
                     T.inc_max_nreg(math_regs)
-                    math_wg_idx = T.tvm_warp_shuffle(
-                        T.uint32(0xFFFFFFFF), tx // WARPGROUP_THREADS, 0, 32, 32
-                    )
+                    math_wg_idx = warp_uniform(tx // WARPGROUP_THREADS)
                     math_wg_offset = math_wg_idx * WGMMA_ROWS
                     a_desc_lo = T.call_extern(
                         "uint32",
@@ -1654,7 +1438,7 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
                                 C,
                                 cursor,
                                 tile,
-                                store_box_cols,
+                                _STORE_BOX_COLS,
                                 store_count,
                                 tx,
                                 math_threads,
@@ -1672,16 +1456,14 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
     """MXFP4 grouped GEMM over masked expert slabs or contiguous expert rows, on SM90 TMA and
     WGMMA.
 
-    Each task first checks that its weight scales lie in ``[2 ** -63, 2 ** 63]`` and, under
-    e8m0, that each step's spans at most five binades. A passing task folds each e8m0 step's
-    four sub-blocks into one contraction (float32 steps go sub-block by sub-block); a failing
-    one contracts sub-block by sub-block, its scale products split into mantissa and exponent.
-    Rows of a slab past its valid count, inside a tile that holds a valid one, are stored like
-    the others with unspecified values; rows past ``max_m`` are not written. A count is
-    clamped to ``[0, max_m]``.
-    Contiguous rows past an aligned expert's end are its padding and are stored like the
-    others; a tight expert's are the next expert's and are not stored. Under aligned packing
-    ``block_m`` divides the alignment.
+    A task whose weight scales lie in ``[2 ** -63, 2 ** 63]`` (under e8m0, each step's spanning
+    at most five binades) folds each e8m0 step into one contraction; any other task contracts
+    sub-block by sub-block with exact scale products. Rows of a slab past its valid count,
+    inside a tile that holds a valid one, are stored like the others with unspecified values;
+    rows past ``max_m`` are not written. A count is clamped to ``[0, max_m]``. Contiguous rows
+    past an aligned expert's end are its padding and are stored like the others; a tight
+    expert's are the next expert's and are not stored. Under aligned packing ``block_m`` divides
+    the alignment.
 
     A config is ``{block_m, block_n, num_stages, num_sms}``: ``block_m`` rows of ``a`` (the
     WGMMA N extent) by ``block_n`` weight rows (a math warp-group per 64). The default rule,
@@ -1865,42 +1647,23 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
             if self.config_refusal(config, **self._refusal_inputs()) is None
         ]
 
-    @property
-    def autotune_supply_prog(self) -> Callable:
-        """Supply masked full/half slabs or evenly distributed contiguous rows for tuning."""
-        from tilelang.utils.device import get_current_device
+    def _tuning_operands(self, rows: tuple, device) -> list:
+        call = self.call
 
-        call, scale_k = self.call, self.scale_k
+        def scales(*shape):
+            # The program reads e8m0 codes as bytes, as forward hands them.
+            if call.scale_dtype == torch.float8_e8m0fnu:
+                return torch.randint(123, 129, shape, dtype=torch.uint8, device=device)
+            return torch.rand(*shape, device=device) + 0.5
 
-        def supply_prog(params: list) -> list:
-            if len(params) != 6:
-                raise RuntimeError(
-                    f"autotuning {type(self).__name__} expects 6 parameters "
-                    f"(a, a_scale, b, b_scale, layout, c), got {len(params)}"
-                )
-            device = get_current_device()
-            groups = call.num_groups
-            rows = (call.m,) if call.kind == "contiguous" else (groups, call.max_m)
-            metadata = moe_layout_metadata(call, math.prod(rows), groups)
-
-            def scales(*shape):
-                # The program reads e8m0 codes as bytes, as forward hands them.
-                if call.scale_dtype == torch.float8_e8m0fnu:
-                    return torch.randint(123, 129, shape, dtype=torch.uint8, device=device)
-                return torch.rand(*shape, device=device) + 0.5
-
-            return [
-                torch.randn(*rows, call.k, device=device).to(torch.float8_e4m3fn),
-                scales(*rows, scale_k),
-                torch.randint(
-                    0, 256, (groups, call.n, call.k // 2), dtype=torch.uint8, device=device
-                ),
-                scales(groups, call.n, call.k // _B_SCALE_BLOCK),
-                torch.tensor(metadata, dtype=torch.int32, device=device),
-                torch.empty(*rows, call.n, dtype=torch.bfloat16, device=device),
-            ]
-
-        return supply_prog
+        return [
+            torch.randn(*rows, call.k, device=device).to(torch.float8_e4m3fn),
+            scales(*rows, self.scale_k),
+            torch.randint(
+                0, 256, (call.num_groups, call.n, call.k // 2), dtype=torch.uint8, device=device
+            ),
+            scales(call.num_groups, call.n, call.k // _B_SCALE_BLOCK),
+        ]
 
     def forward(
         self,
@@ -1912,33 +1675,21 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run each expert's block-scaled product over its rows, into *out* if given."""
-        if out is None:
-            out = torch.empty((*a.shape[:-1], self.call.n), dtype=torch.bfloat16, device=a.device)
-        if out.numel() == 0:
-            return out
         if a_scale.dtype == torch.float8_e8m0fnu:
             # The program reads e8m0 codes as bytes.
             a_scale, b_scale = a_scale.view(torch.uint8), b_scale.view(torch.uint8)
-        self.program(self._compile)(a, a_scale, b, b_scale, layout_metadata, out)
-        return out
-
-    def _compile(self, cfg: dict):
-        """The program of config *cfg*."""
-        return self.kernel(**cfg)
+        return super().forward(a, a_scale, b, b_scale, layout_metadata, out)
 
 
 class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
     """MXFP4 grouped GEMM over aligned contiguous rows under e8m0 scales that decodes each
     weight tile once into shared memory (``_moe_grouped_gemm_mxfp4_shared_decode_kernel``).
 
-    128 rows of ``a`` are the WGMMA M operand, 128 decoded weight rows its N operand. A task
-    folds when each of its weight rows' codes lie in [64, 190] and span at most eleven binades
-    over K, and each of its token codes, its padding rows' among them, is 0 or lies in
-    [64, 190]: its sub-blocks then carry their scales relative to their row's largest code
-    less six, each step is added under its token scales alone, and each column is scaled by
-    its row's reference after the last step.
-    Another task contracts sub-block by sub-block, its products split into mantissa and
-    exponent. Rows past an aligned expert's end are its padding and are stored like the others.
+    A task folds each step into one contraction when each of its weight rows' codes lie in
+    [64, 190] and span at most eleven binades over K, and each of its token codes, padding
+    rows' among them, is 0 or lies in [64, 190]; any other task contracts sub-block by
+    sub-block with exact scale products. Rows past an aligned expert's end are its padding and
+    are stored like the others.
 
     A config is ``{block_m, block_n, num_stages, num_sms}`` with ``block_m`` and ``block_n``
     128; ``num_stages`` is the depth of the ring of ``a``'s rows and of the decoded fp8 stages.

@@ -7,7 +7,7 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from tileops.fft import FFTC2CFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(FFTC2CFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FFTC2CFwdOp))
 def test_fft_bench(case) -> None:
     op = FFTC2CFwdOp(**case.arguments)
     op.request_tune()

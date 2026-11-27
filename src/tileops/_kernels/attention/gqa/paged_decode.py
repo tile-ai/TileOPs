@@ -263,7 +263,7 @@ def _make_tile_steps(
 
 
 @target_cache(maxsize=32)
-def gqa_decode_no_split_paged_kernel(
+def gqa_decode_paged_kernel(
     batch,
     heads,
     heads_kv,
@@ -276,98 +276,10 @@ def gqa_decode_no_split_paged_kernel(
     sm_scale,
     softcap,
     dtype,
+    split=False,
 ):
-    accum_dtype = "float"
-    group = heads // heads_kv
-    rows = seqlen_q * group
-
-    @tilelang.jit(
-        out_idx=[-1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
-        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
-    )
-    def _func(block_M, block_N, num_stages, threads):
-        shape_q = [batch, seqlen_q, heads, dim]
-        shape_kv = [seqlen_kv, heads_kv, dim]
-        tail_n = _tail_block_n(block_N)
-        alloc_weights = _weights_alloc(threads)
-        load_q, scan_keys, visible_end = _make_tile_steps(
-            block_M, block_N, num_stages, dim, dtype, page_size, group, seqlen_q, is_causal,
-            sm_scale, softcap,
-        )  # fmt: skip
-
-        @T.prim_func
-        def gqa_decode_no_split(
-            Q: T.Tensor(shape_q, dtype),
-            K: T.Tensor(shape_kv, dtype),
-            V: T.Tensor(shape_kv, dtype),
-            real_seqlen_kv: T.Tensor([batch], T.int32),
-            block_table: T.Tensor([batch, max_pages_per_req], T.int32),
-            Output: T.Tensor(shape_q, dtype),
-        ):
-            with T.Kernel(T.ceildiv(rows, block_M), heads_kv, batch, threads=threads) as (
-                bx,
-                by,
-                bz,
-            ):
-                Q_shared = T.alloc_shared([block_M, dim], dtype)
-                K_shared = T.alloc_shared([block_N, dim], dtype)
-                V_shared = T.alloc_shared([block_N, dim], dtype)
-                acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-                acc_s_cast = alloc_weights([block_M, block_N], dtype)
-                K_tail = T.alloc_shared([tail_n, dim], dtype)
-                V_tail = T.alloc_shared([tail_n, dim], dtype)
-                acc_tail = T.alloc_fragment([block_M, tail_n], accum_dtype)
-                acc_tail_cast = alloc_weights([block_M, tail_n], dtype)
-                acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
-                scores_max = T.alloc_fragment([block_M], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
-                scores_scale = T.alloc_fragment([block_M], accum_dtype)
-                scores_sum = T.alloc_fragment([block_M], accum_dtype)
-                logsum = T.alloc_fragment([block_M], accum_dtype)
-
-                row0 = bx * block_M
-                kv_len = real_seqlen_kv[bz]
-
-                load_q(Q, Q_shared, bz, by, row0)
-                T.fill(acc_o, 0)
-                T.fill(logsum, 0)
-                T.fill(scores_max, -T.infinity(accum_dtype))
-
-                loop_range = T.ceildiv(visible_end(row0, kv_len), block_N)
-                scan_keys(
-                    K, V, block_table, Q_shared, K_shared, V_shared, acc_s, acc_s_cast, K_tail,
-                    V_tail, acc_tail, acc_tail_cast, acc_o, scores_max, scores_max_prev,
-                    scores_scale, scores_sum, logsum, bz, by, row0, kv_len, 0, loop_range,
-                )  # fmt: skip
-                for i, d in T.Parallel(block_M, dim):
-                    if row0 + i < rows:
-                        Output[bz, (row0 + i) // group, by * group + (row0 + i) % group, d] = (
-                            T.if_then_else(logsum[i] == 0, 0, acc_o[i, d] / logsum[i])
-                        )
-
-        return gqa_decode_no_split
-
-    return _func
-
-
-@target_cache(maxsize=32)
-def _gqa_decode_split_paged_kernel(
-    batch,
-    heads,
-    heads_kv,
-    seqlen_q,
-    seqlen_kv,
-    dim,
-    page_size,
-    max_pages_per_req,
-    is_causal,
-    sm_scale,
-    softcap,
-    dtype,
-):
+    """The paged decode builder. With *split*, the table's key tiles are cut into
+    ``num_split`` parts, one CTA each, and a second launch combines them."""
     accum_dtype = "float"
     group = heads // heads_kv
     rows = seqlen_q * group
@@ -380,7 +292,7 @@ def _gqa_decode_split_paged_kernel(
         },
         compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
-    def _func(block_M, block_N, num_split, num_stages, threads):
+    def _func(block_M, block_N, num_stages, threads, num_split=1):
         shape_q = [batch, seqlen_q, heads, dim]
         shape_kv = [seqlen_kv, heads_kv, dim]
         shape_lse = [batch, heads_kv, num_split, rows]
@@ -397,45 +309,41 @@ def _gqa_decode_split_paged_kernel(
         split_tiles = capacity_tiles // num_split
 
         @T.macro
-        def _gqa_decode_split(
-            Q: T.Tensor(shape_q, dtype),
-            K: T.Tensor(shape_kv, dtype),
-            V: T.Tensor(shape_kv, dtype),
-            real_seqlen_kv: T.Tensor([batch], T.int32),
-            block_table: T.Tensor([batch, max_pages_per_req], T.int32),
-            glse: T.Tensor(shape_lse, accum_dtype),
-            Output_partial: T.Tensor(part_shape, dtype),
-        ):
-            with T.Kernel(
-                T.ceildiv(rows, block_M), heads_kv * batch, num_split, threads=threads
-            ) as (bx, by, bz):
-                Q_shared = T.alloc_shared([block_M, dim], dtype)
-                K_shared = T.alloc_shared([block_N, dim], dtype)
-                V_shared = T.alloc_shared([block_N, dim], dtype)
-                acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-                acc_s_cast = alloc_weights([block_M, block_N], dtype)
-                K_tail = T.alloc_shared([tail_n, dim], dtype)
-                V_tail = T.alloc_shared([tail_n, dim], dtype)
-                acc_tail = T.alloc_fragment([block_M, tail_n], accum_dtype)
-                acc_tail_cast = alloc_weights([block_M, tail_n], dtype)
-                acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
-                scores_max = T.alloc_fragment([block_M], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
-                scores_scale = T.alloc_fragment([block_M], accum_dtype)
-                scores_sum = T.alloc_fragment([block_M], accum_dtype)
-                logsum = T.alloc_fragment([block_M], accum_dtype)
+        def attend(K, V, Q, real_seqlen_kv, block_table, Output, glse, bx, by, bz):
+            """Row block *bx*: KV head *by* of request *bz* unsplit into ``Output``, else KV
+            head ``by % heads_kv`` of request ``by // heads_kv`` over split *bz* into
+            ``glse`` and the partial ``Output``."""
+            Q_shared = T.alloc_shared([block_M, dim], dtype)
+            K_shared = T.alloc_shared([block_N, dim], dtype)
+            V_shared = T.alloc_shared([block_N, dim], dtype)
+            acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
+            acc_s_cast = alloc_weights([block_M, block_N], dtype)
+            K_tail = T.alloc_shared([tail_n, dim], dtype)
+            V_tail = T.alloc_shared([tail_n, dim], dtype)
+            acc_tail = T.alloc_fragment([block_M, tail_n], accum_dtype)
+            acc_tail_cast = alloc_weights([block_M, tail_n], dtype)
+            acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
+            scores_max = T.alloc_fragment([block_M], accum_dtype)
+            scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
+            scores_scale = T.alloc_fragment([block_M], accum_dtype)
+            scores_sum = T.alloc_fragment([block_M], accum_dtype)
+            logsum = T.alloc_fragment([block_M], accum_dtype)
 
-                row0 = bx * block_M
+            row0 = bx * block_M
+            if split:
                 kv_head = by % heads_kv
                 bid = by // heads_kv
                 sid = bz
-                kv_len = real_seqlen_kv[bid]
+            else:
+                kv_head, bid = by, bz
+            kv_len = real_seqlen_kv[bid]
 
-                load_q(Q, Q_shared, bid, kv_head, row0)
-                T.fill(acc_o, 0)
-                T.fill(logsum, 0)
-                T.fill(scores_max, -T.infinity(accum_dtype))
+            load_q(Q, Q_shared, bid, kv_head, row0)
+            T.fill(acc_o, 0)
+            T.fill(logsum, 0)
+            T.fill(scores_max, -T.infinity(accum_dtype))
 
+            if split:
                 # Each split runs its tiles up to the last key a row of this block sees,
                 # so a split past a short cache runs none.
                 offset = sid * split_tiles
@@ -446,11 +354,15 @@ def _gqa_decode_split_paged_kernel(
                     0,
                     T.min(blocks_in_split, T.ceildiv(visible_end(row0, kv_len), block_N) - offset),
                 )
-                scan_keys(
-                    K, V, block_table, Q_shared, K_shared, V_shared, acc_s, acc_s_cast, K_tail,
-                    V_tail, acc_tail, acc_tail_cast, acc_o, scores_max, scores_max_prev,
-                    scores_scale, scores_sum, logsum, bid, kv_head, row0, kv_len, offset, loop_range,
-                )  # fmt: skip
+            else:
+                offset = 0
+                loop_range = T.ceildiv(visible_end(row0, kv_len), block_N)
+            scan_keys(
+                K, V, block_table, Q_shared, K_shared, V_shared, acc_s, acc_s_cast, K_tail,
+                V_tail, acc_tail, acc_tail_cast, acc_o, scores_max, scores_max_prev,
+                scores_scale, scores_sum, logsum, bid, kv_head, row0, kv_len, offset, loop_range,
+            )  # fmt: skip
+            if split:
                 for i, d in T.Parallel(block_M, dim):
                     acc_o[i, d] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, d] / logsum[i])
                 for i in T.Parallel(block_M):
@@ -462,7 +374,33 @@ def _gqa_decode_split_paged_kernel(
                         T.log2(logsum_safe) + scores_max[i] * softmax_scale,
                     )
                 T.copy(logsum, glse[bid, kv_head, sid, row0 : row0 + block_M])
-                T.copy(acc_o, Output_partial[bid, kv_head, sid, row0 : row0 + block_M, :])
+                T.copy(acc_o, Output[bid, kv_head, sid, row0 : row0 + block_M, :])
+            else:
+                for i, d in T.Parallel(block_M, dim):
+                    if row0 + i < rows:
+                        Output[bz, (row0 + i) // group, by * group + (row0 + i) % group, d] = (
+                            T.if_then_else(logsum[i] == 0, 0, acc_o[i, d] / logsum[i])
+                        )
+
+        if not split:
+
+            @T.prim_func
+            def gqa_decode_no_split(
+                Q: T.Tensor(shape_q, dtype),
+                K: T.Tensor(shape_kv, dtype),
+                V: T.Tensor(shape_kv, dtype),
+                real_seqlen_kv: T.Tensor([batch], T.int32),
+                block_table: T.Tensor([batch, max_pages_per_req], T.int32),
+                Output: T.Tensor(shape_q, dtype),
+            ):
+                with T.Kernel(T.ceildiv(rows, block_M), heads_kv, batch, threads=threads) as (
+                    bx,
+                    by,
+                    bz,
+                ):
+                    attend(K, V, Q, real_seqlen_kv, block_table, Output, None, bx, by, bz)
+
+            return gqa_decode_no_split
 
         # Below this, no split of the row saw a key. A threshold, not an equality with -inf:
         # fast math folds comparisons with infinity away.
@@ -518,7 +456,10 @@ def _gqa_decode_split_paged_kernel(
             Output_partial: T.Tensor(part_shape, dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
-            _gqa_decode_split(Q, K, V, real_seqlen_kv, block_table, glse, Output_partial)
+            with T.Kernel(
+                T.ceildiv(rows, block_M), heads_kv * batch, num_split, threads=threads
+            ) as (bx, by, bz):
+                attend(K, V, Q, real_seqlen_kv, block_table, Output_partial, glse, bx, by, bz)
             combine(glse, Output_partial, Output)
 
         return gqa_decode_split
@@ -638,7 +579,7 @@ class MHADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
             self.dtype_str,
         )
         # autotune targets the split kernel
-        self.kernel = _gqa_decode_split_paged_kernel(*self._builder_args)
+        self.kernel = gqa_decode_paged_kernel(*self._builder_args, split=True)
         self._supply_prog = self._make_supply_prog()
         self.init_config(config)
 
@@ -750,9 +691,9 @@ class MHADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
 
     def _compile(self, cfg: dict):
         if self._unsplit(cfg):
-            return gqa_decode_no_split_paged_kernel(*self._builder_args)(
+            return gqa_decode_paged_kernel(*self._builder_args)(
                 cfg["block_M"], cfg["block_N"], cfg["num_stages"], cfg["threads"]
             )
         return self.kernel(
-            cfg["block_M"], cfg["block_N"], cfg["num_split"], cfg["num_stages"], cfg["threads"]
+            cfg["block_M"], cfg["block_N"], cfg["num_stages"], cfg["threads"], cfg["num_split"]
         )

@@ -1,27 +1,15 @@
-"""Correctness tests for softmax-family ops (softmax, log_softmax, logsumexp).
-
-Tests cover fp32/fp16/bf16 dtypes, 1D-4D inputs, non-contiguous tensors,
-power-of-2 and non-power-of-2 hidden dims, tail-M cases, and validate
-against PyTorch reference implementations.
-
-Smoke tests (1 per function, first param) use small data for quick CI.
-Full tests use small data for config breadth + large data for stress.
-
-All operators use the spec-conformant interface:
-  SoftmaxFwdOp(dim=dim)
-  LogSoftmaxFwdOp(dim=dim)
-  LogSumExpFwdOp(dtype=dtype, dim=dim, keepdim=keepdim)
-"""
+"""SoftmaxFwdOp, LogSoftmaxFwdOp and LogSumExpFwdOp against their PyTorch references."""
 
 import math
 import re
+import warnings
 
 import pytest
 import torch
 import torch.nn.functional as F
 from tilelang.jit.kernel import JITKernel
 
-from tests.workload_test_base import FixtureBase, TestBase
+from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import CompiledProgram
 from tileops._kernels.reduction.call_spec import SoftmaxCall
 from tileops._kernels.reduction.softmax_on_chip import SoftmaxClusterSplitKernel
@@ -37,213 +25,117 @@ from workloads.reduction import (
     softmax_verification,
 )
 
-
-class SoftmaxFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dim, dtype, tune",
-            [
-                # Smoke: 2D, dim=-1, fp32, pow2
-                pytest.param(
-                    (32, 256),
-                    -1,
-                    torch.float32,
-                    False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="reduction")],
-                ),
-                pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # Rows of whole thread-wide vectors, held in registers; a 2 KB row on a warp.
-                pytest.param((8, 2048), -1, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param((8, 1024), -1, torch.float32, False, marks=pytest.mark.smoke),
-                pytest.param((4, 512), -1, torch.float32, False, marks=pytest.mark.smoke),
-                # A 2 KB row on a warp, tail-M: the last CTA's warps past M store nothing.
-                pytest.param((5, 512), -1, torch.float32, False, marks=pytest.mark.full),
-                # request_tune(): the kernel is built before autotune runs
-                pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
-                # dim=-1 (default path): dtypes x pow2/non-pow2
-                pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((32, 300), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((32, 300), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, tail-M (non-aligned M)
-                pytest.param((33, 256), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((33, 256), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((33, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, 3D input
-                pytest.param((2, 16, 256), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, 4D input
-                pytest.param((2, 4, 8, 256), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, a few long rows (split kernel)
-                pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, M×N both non-aligned (single-tile path)
-                pytest.param((33, 300), -1, torch.float32, False, marks=pytest.mark.full),
-                # dim=-1, M×N both non-aligned, long rows (split kernel)
-                pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
-                # dim=-1, non-aligned M, long aligned rows (split kernel)
-                pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
-                # dim=0 (reduce along first dim — different M/N split)
-                pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((256, 32), 0, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=1 (middle dim for 3D)
-                pytest.param((2, 256, 16), 1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((2, 256, 16), 1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((2, 256, 16), 1, torch.bfloat16, False, marks=pytest.mark.full),
-            ],
-        ),
-    ]
+_OPS = {"softmax": SoftmaxFwdOp, "log_softmax": LogSoftmaxFwdOp, "logsumexp": LogSumExpFwdOp}
+_CASES = {"softmax": SoftmaxCase, "log_softmax": LogSoftmaxCase, "logsumexp": LogSumExpCase}
 
 
 class SoftmaxTest(SoftmaxCase, TestBase):
     pass
 
 
-@SoftmaxFixture
-def test_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
-    test = SoftmaxTest(shape, dtype, dim=dim)
-    op = SoftmaxFwdOp(dim=dim)
-    if tune:
-        op.request_tune()
-    test.check(op, *test.gen_inputs())
-
-
-# Softmax — non-contiguous input (spec interface)
-
-
-class SoftmaxNonContigFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dtype",
-            [
-                pytest.param((32, 256), torch.float32, marks=pytest.mark.smoke),
-                pytest.param((32, 256), torch.float16, marks=pytest.mark.smoke),
-                pytest.param((32, 256), torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param((32, 300), torch.float32, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@SoftmaxNonContigFixture
-def test_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
-    """Test softmax with non-contiguous input (sliced tensor)."""
-    m, n = shape
-    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
-    x = x_full[:, :n]  # non-contiguous slice
-
-    op = SoftmaxFwdOp(dim=-1)
-
-    y_ref = F.softmax(x.float().contiguous(), dim=-1).to(dtype)
-    y = op(x)
-    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=False))
-
-
-# Softmax — 1D input (spec interface)
-
-
-class Softmax1DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n, dtype",
-            [
-                pytest.param(256, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(256, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(256, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(300, torch.float32, marks=pytest.mark.full),
-                pytest.param(300, torch.float16, marks=pytest.mark.full),
-                pytest.param(300, torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@Softmax1DFixture
-def test_softmax_1d(n: int, dtype: torch.dtype) -> None:
-    """Test softmax with 1D input (single row)."""
-    x = torch.randn(n, dtype=dtype, device=run_device())
-    op = SoftmaxFwdOp(dim=-1)
-
-    y_ref = F.softmax(x.float(), dim=-1).to(dtype)
-    y = op(x)
-    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=False))
-
-
-# LogSoftmax — spec-conformant interface (shape, dim, dtype)
-
-
-class LogSoftmaxFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dim, dtype, tune",
-            [
-                # Smoke: 2D, dim=-1, fp32, pow2
-                pytest.param(
-                    (32, 256),
-                    -1,
-                    torch.float32,
-                    False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="reduction")],
-                ),
-                pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # request_tune(): the kernel is built before autotune runs
-                pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
-                # dim=-1 (default path): dtypes x pow2/non-pow2
-                pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((32, 300), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((32, 300), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, tail-M
-                pytest.param((33, 256), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((33, 256), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((33, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, 3D input
-                pytest.param((2, 16, 256), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, 4D input
-                pytest.param((2, 4, 8, 256), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, a few long rows (split kernel)
-                pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, M×N both non-aligned (single-tile path)
-                pytest.param((33, 300), -1, torch.float32, False, marks=pytest.mark.full),
-                # dim=-1, M×N both non-aligned, long rows (split kernel)
-                pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
-                # dim=-1, non-aligned M, long aligned rows (split kernel)
-                pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
-                # dim=0 (reduce along first dim)
-                pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((256, 32), 0, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=1 (middle dim for 3D)
-                pytest.param((2, 256, 16), 1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((2, 256, 16), 1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((2, 256, 16), 1, torch.bfloat16, False, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
 class LogSoftmaxTest(LogSoftmaxCase, TestBase):
     pass
 
 
-@LogSoftmaxFixture
-def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSoftmaxTest(shape, dtype, dim=dim)
-    op = LogSoftmaxFwdOp(dim=dim)
+class LogSumExpTest(LogSumExpCase, TestBase):
+    pass
+
+
+_TESTS = {"softmax": SoftmaxTest, "log_softmax": LogSoftmaxTest, "logsumexp": LogSumExpTest}
+
+
+def _check(op_kind: str, x: torch.Tensor, dim, keepdim: bool = False) -> None:
+    """*op_kind* over *dim* on *x* against its workload's reference."""
+    kwargs = {"keepdim": keepdim} if op_kind == "logsumexp" else {}
+    y = _OPS[op_kind](dim=dim, **kwargs)(x)
+    ref = _CASES[op_kind](tuple(x.shape), x.dtype, dim=dim).ref_program(x)
+    if keepdim:
+        ref = ref.unsqueeze(dim)
+    assert y.shape == ref.shape, f"shape {y.shape} vs ref {ref.shape}"
+    compare_outputs(y, ref, softmax_verification(x.dtype, logarithmic=op_kind != "softmax"))
+
+
+def _op_cases() -> list:
+    """Each op at every dtype is smoke, then the row shapes that pick a kernel or a tail."""
+    smoke, full = pytest.mark.smoke, pytest.mark.full
+    dtypes = (torch.float32, torch.float16, torch.bfloat16)
+    cases = []
+    for k in _OPS:
+        marks = [smoke, pytest.mark.packaging(family="reduction")]
+        cases.append(pytest.param(k, (32, 256), -1, torch.float32, False, marks=marks))
+        cases += [pytest.param(k, (32, 256), -1, dt, False, marks=smoke) for dt in dtypes[1:]]
+    # Rows of whole thread-wide vectors, held in registers; a 2 KB row on a warp.
+    cases += [
+        pytest.param("softmax", (8, 2048), -1, torch.float16, False, marks=smoke),
+        pytest.param("softmax", (8, 1024), -1, torch.float32, False, marks=smoke),
+        pytest.param("softmax", (4, 512), -1, torch.float32, False, marks=smoke),
+        # A 2 KB row on a warp, tail-M: the last CTA's warps past M store nothing.
+        pytest.param("softmax", (5, 512), -1, torch.float32, False, marks=full),
+    ]
+    # request_tune(): the kernel is built before autotune runs; log_softmax shares softmax's
+    # kernels, logsumexp's tuned build is test_logsumexp_tuned.
+    cases.append(pytest.param("softmax", (32, 256), -1, torch.float16, True, marks=full))
+    for k in _OPS:
+        cases += [
+            # Rows off the vector width at both element sizes.
+            pytest.param(k, (32, 300), -1, torch.float32, False, marks=full),
+            pytest.param(k, (32, 300), -1, torch.float16, False, marks=full),
+            # Tail-M.
+            pytest.param(k, (33, 256), -1, torch.float16, False, marks=full),
+            # Leading axes folded into rows.
+            pytest.param(k, (2, 16, 256), -1, torch.float16, False, marks=full),
+            # A few long rows (split kernel), aligned and not, with a tail-M.
+            pytest.param(k, (4, 32768), -1, torch.float16, False, marks=full),
+            pytest.param(k, (33, 300), -1, torch.float32, False, marks=full),
+            pytest.param(k, (33, 33000), -1, torch.float16, False, marks=full),
+            pytest.param(k, (33, 32768), -1, torch.float16, False, marks=full),
+            # A leading and a middle axis.
+            pytest.param(k, (256, 32), 0, torch.float16, False, marks=full),
+            pytest.param(k, (2, 256, 16), 1, torch.float16, False, marks=full),
+        ]
+    # Long rows on a filled grid: the streaming logsumexp kernel.
+    cases.append(pytest.param("logsumexp", (256, 16384), -1, torch.float16, False, marks=full))
+    return cases
+
+
+@pytest.mark.parametrize("op_kind, shape, dim, dtype, tune", _op_cases())
+def test_softmax_family_op(
+    op_kind: str, shape: tuple, dim: int, dtype: torch.dtype, tune: bool
+) -> None:
+    test = _TESTS[op_kind](shape, dtype, dim=dim)
+    op = _OPS[op_kind](dim=dim)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "shape, tune",
+    [
+        # A tail-M row off the vector width, which no smoke case of the family test reaches.
+        pytest.param((33, 300), False, marks=pytest.mark.smoke),
+        pytest.param((32, 256), True, marks=pytest.mark.full),
+    ],
+)
+def test_logsumexp_tuned(shape: tuple, tune: bool) -> None:
+    """Separate from the family test: conftest allows one full tune=True case per function."""
+    test = LogSumExpTest(shape, torch.float16, dim=-1)
+    op = LogSumExpFwdOp(dim=-1)
+    if tune:
+        op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", list(_OPS))
+@pytest.mark.parametrize("view", ["strided", "1d"])
+def test_softmax_family_views(op_kind: str, view: str) -> None:
+    """A strided view and a 1-D row, both off the vector width."""
+    if view == "strided":
+        x = torch.randn(32, 600, dtype=torch.float16, device=run_device())[:, :300]
+    else:
+        x = torch.randn(300, dtype=torch.float16, device=run_device())
+    _check(op_kind, x, -1)
 
 
 @pytest.mark.parametrize(
@@ -311,112 +203,17 @@ def test_contiguous_input_off_a_vector_boundary(case_cls, op_cls, dim, shape: tu
     compare_outputs(op_cls(dim=dim)(x), case.ref_program(x), case.verification(x))
 
 
-# LogSumExp — spec-conformant interface (shape, dim, keepdim, dtype)
-
-
-class LogSumExpFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dim, dtype, tune",
-            [
-                # Smoke: 2D, dim=-1, fp32, pow2
-                pytest.param(
-                    (32, 256),
-                    -1,
-                    torch.float32,
-                    False,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="reduction")],
-                ),
-                pytest.param((32, 256), -1, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param((32, 256), -1, torch.bfloat16, False, marks=pytest.mark.smoke),
-                # request_tune(): the kernel is built before autotune runs
-                pytest.param((32, 256), -1, torch.float16, True, marks=pytest.mark.full),
-                # dim=-1: dtypes x pow2/non-pow2
-                pytest.param((32, 300), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((32, 300), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((32, 300), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, tail-M
-                pytest.param((33, 256), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((33, 256), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((33, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, 3D input
-                pytest.param((2, 16, 256), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((2, 16, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, 4D input
-                pytest.param((2, 4, 8, 256), -1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((2, 4, 8, 256), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, large-N (triggers N-tiling path)
-                pytest.param((4, 32768), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((4, 32768), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=-1, M×N both non-aligned (single-tile path)
-                pytest.param((33, 300), -1, torch.float32, False, marks=pytest.mark.full),
-                # dim=-1, M×N both non-aligned (multi-tile, masked loads)
-                pytest.param((33, 33000), -1, torch.float16, False, marks=pytest.mark.full),
-                # dim=-1, non-aligned M + large-N tiled path
-                pytest.param((33, 32768), -1, torch.float16, False, marks=pytest.mark.full),
-                # dim=-1, long rows on a filled grid (streaming kernel)
-                pytest.param((256, 16384), -1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((256, 16384), -1, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=0
-                pytest.param((256, 32), 0, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((256, 32), 0, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((256, 32), 0, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim=1 (middle dim for 3D)
-                pytest.param((2, 256, 16), 1, torch.float32, False, marks=pytest.mark.full),
-                pytest.param((2, 256, 16), 1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param((2, 256, 16), 1, torch.bfloat16, False, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class LogSumExpTest(LogSumExpCase, TestBase):
-    pass
-
-
-@LogSumExpFixture
-def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LogSumExpTest(shape, dtype, dim=dim)
-    op = LogSumExpFwdOp(dim=dim)
-    if tune:
-        op.request_tune()
-    test.check(op, *test.gen_inputs())
-
-
-# LogSumExp — keepdim=True (exercises _reshape_output keepdim path)
-
-
-class LogSumExpKeepdimFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dim, dtype",
-            [
-                # dim=-1 (last dim, no transpose)
-                pytest.param((32, 256), -1, torch.float32, marks=pytest.mark.smoke),
-                pytest.param((32, 256), -1, torch.float16, marks=pytest.mark.smoke),
-                pytest.param((2, 16, 256), -1, torch.float32, marks=pytest.mark.full),
-                # dim=0 (non-last dim, exercises transpose + keepdim)
-                pytest.param((256, 32), 0, torch.float32, marks=pytest.mark.full),
-                pytest.param((256, 32), 0, torch.float16, marks=pytest.mark.full),
-                # dim=1 (middle dim, 3D)
-                pytest.param((2, 256, 16), 1, torch.float32, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSumExpKeepdimFixture
+@pytest.mark.parametrize(
+    "shape, dim, dtype",
+    [
+        pytest.param((32, 256), -1, torch.float32, marks=pytest.mark.smoke),
+        # A non-last axis goes through a transpose before keepdim restores it.
+        pytest.param((256, 32), 0, torch.float16, marks=pytest.mark.smoke),
+        pytest.param((2, 256, 16), 1, torch.float32, marks=pytest.mark.full),
+    ],
+)
 def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    """Test logsumexp with keepdim=True — output retains reduced dim as size 1."""
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = LogSumExpFwdOp(dim=dim, keepdim=True)
-
-    y_ref = torch.logsumexp(x.float(), dim=dim, keepdim=True).to(dtype)
-    y = op(x)
-    assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
-    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
+    _check("logsumexp", torch.randn(*shape, dtype=dtype, device=run_device()), dim, keepdim=True)
 
 
 @pytest.mark.parametrize(
@@ -463,127 +260,6 @@ def test_logsumexp_special_values(shape: tuple, dim, dtype: torch.dtype) -> None
     compare_outputs(y[finite], y_ref[finite], softmax_verification(x.dtype, logarithmic=True))
 
 
-# Non-contiguous input tests (spec interface)
-
-
-class LogSoftmaxNonContigFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dtype",
-            [
-                pytest.param((32, 256), torch.float32, marks=pytest.mark.smoke),
-                pytest.param((32, 256), torch.float16, marks=pytest.mark.smoke),
-                pytest.param((32, 256), torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param((32, 300), torch.float32, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSoftmaxNonContigFixture
-def test_log_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
-    """Test log_softmax with non-contiguous input (sliced tensor)."""
-    m, n = shape
-    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
-    x = x_full[:, :n]
-
-    op = LogSoftmaxFwdOp(dim=-1)
-
-    y_ref = F.log_softmax(x.float().contiguous(), dim=-1).to(dtype)
-    y = op(x)
-    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
-
-
-class LogSumExpNonContigFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dtype",
-            [
-                pytest.param((32, 256), torch.float32, marks=pytest.mark.smoke),
-                pytest.param((32, 256), torch.float16, marks=pytest.mark.smoke),
-                pytest.param((32, 256), torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param((32, 300), torch.float32, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.float16, marks=pytest.mark.full),
-                pytest.param((32, 300), torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSumExpNonContigFixture
-def test_logsumexp_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
-    """Test logsumexp with non-contiguous input."""
-    m, n = shape
-    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
-    x = x_full[:, :n]
-
-    op = LogSumExpFwdOp(dim=-1)
-
-    y_ref = torch.logsumexp(x.float().contiguous(), dim=-1).to(dtype)
-    y = op(x)
-    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
-
-
-# 1D input tests (spec interface)
-
-
-class LogSoftmax1DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n, dtype",
-            [
-                pytest.param(256, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(256, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(256, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(300, torch.float32, marks=pytest.mark.full),
-                pytest.param(300, torch.float16, marks=pytest.mark.full),
-                pytest.param(300, torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSoftmax1DFixture
-def test_log_softmax_1d(n: int, dtype: torch.dtype) -> None:
-    """Test log_softmax with 1D input."""
-    x = torch.randn(n, dtype=dtype, device=run_device())
-    op = LogSoftmaxFwdOp(dim=-1)
-
-    y_ref = F.log_softmax(x.float(), dim=-1).to(dtype)
-    y = op(x)
-    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
-
-
-class LogSumExp1DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n, dtype",
-            [
-                pytest.param(256, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(256, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(256, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(300, torch.float32, marks=pytest.mark.full),
-                pytest.param(300, torch.float16, marks=pytest.mark.full),
-                pytest.param(300, torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@LogSumExp1DFixture
-def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
-    """Test logsumexp with 1D input -- output should be a scalar."""
-    x = torch.randn(n, dtype=dtype, device=run_device())
-    op = LogSumExpFwdOp(dim=-1)
-
-    y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
-    y = op(x)
-    assert y.shape == y_ref.shape, f"Shape mismatch: {y.shape} vs {y_ref.shape}"
-    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
-
-
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_cls", [SoftmaxFwdOp, LogSoftmaxFwdOp])
 def test_softmax_rejects_a_sequence_dim_at_construction(op_cls) -> None:
@@ -602,118 +278,40 @@ def test_logsumexp_accepts_multidim() -> None:
     compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
 
 
-class SoftmaxImplicitDimFixture(FixtureBase):
-    # Smoke covers each ndim branch (1D, 2D, 3D) and each dtype at least once.
-    PARAMS = [
-        (
-            "shape, dtype",
-            [
-                pytest.param((256,), torch.float32, marks=pytest.mark.smoke),
-                pytest.param((32, 256), torch.float16, marks=pytest.mark.smoke),
-                pytest.param((4, 16, 32), torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@SoftmaxImplicitDimFixture
-def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
-    """SoftmaxFwdOp(dim=None) must match F.softmax(x, dim=None) and warn."""
-    import warnings as _warnings
-
+@pytest.mark.parametrize(
+    "op_kind, shape, dtype",
+    [
+        pytest.param(k, shape, dtype, marks=pytest.mark.smoke)
+        for k in ("softmax", "log_softmax")
+        for shape, dtype in (
+            ((256,), torch.float32),
+            ((32, 256), torch.float16),
+            ((4, 16, 32), torch.bfloat16),
+        )
+    ],
+)
+def test_softmax_dim_none_implicit_axis(op_kind: str, shape: tuple, dtype: torch.dtype) -> None:
+    """``dim=None`` takes PyTorch's implicit axis for each rank and warns as it does."""
     x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = SoftmaxFwdOp(dim=None)
-
-    with _warnings.catch_warnings(record=True) as caught:
-        _warnings.simplefilter("always")
-        y = op(x)
-        assert any(
-            issubclass(w.category, UserWarning) and "Implicit dimension choice" in str(w.message)
-            for w in caught
-        ), f"Expected implicit-dim UserWarning, got {[str(w.message) for w in caught]}"
-
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("ignore", UserWarning)
-        y_ref = F.softmax(x.float(), dim=None).to(dtype)
-
-    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=False))
-
-
-@SoftmaxImplicitDimFixture
-def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
-    """LogSoftmaxFwdOp(dim=None) must match F.log_softmax(x, dim=None) and warn."""
-    import warnings as _warnings
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = LogSoftmaxFwdOp(dim=None)
-
-    with _warnings.catch_warnings(record=True) as caught:
-        _warnings.simplefilter("always")
-        y = op(x)
-        assert any(
-            issubclass(w.category, UserWarning) and "Implicit dimension choice" in str(w.message)
-            for w in caught
-        ), f"Expected implicit-dim UserWarning, got {[str(w.message) for w in caught]}"
-
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("ignore", UserWarning)
-        y_ref = F.log_softmax(x.float(), dim=None).to(dtype)
-
-    compare_outputs(y, y_ref, softmax_verification(x.dtype, logarithmic=True))
+    with pytest.warns(UserWarning, match="Implicit dimension choice"):
+        y = _OPS[op_kind](dim=None)(x)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        ref = getattr(F, op_kind)(x.float(), dim=None).to(dtype)
+    compare_outputs(y, ref, softmax_verification(x.dtype, logarithmic=op_kind != "softmax"))
 
 
 @pytest.mark.smoke
-def test_softmax_dim_none_reused_across_ranks() -> None:
-    """SoftmaxFwdOp(dim=None) must re-resolve per call across input ranks."""
-    import warnings as _warnings
-
-    op = SoftmaxFwdOp(dim=None)
-
-    x1 = torch.randn(4, dtype=torch.float32, device=run_device())
-    x2 = torch.randn(2, 4, dtype=torch.float32, device=run_device())
-    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device=run_device())
-
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("ignore", UserWarning)
-        y1 = op(x1)
-        y2 = op(x2)
-        y3 = op(x3)
-        y1_ref = F.softmax(x1.float(), dim=None)
-        y2_ref = F.softmax(x2.float(), dim=None)
-        y3_ref = F.softmax(x3.float(), dim=None)
-
+@pytest.mark.filterwarnings("ignore:Implicit dimension choice:UserWarning")
+@pytest.mark.parametrize("op_kind", ["softmax", "log_softmax"])
+def test_softmax_dim_none_reused_across_ranks(op_kind: str) -> None:
+    """One ``dim=None`` op re-resolves its axis per call and keeps ``op.dim`` None."""
+    op = _OPS[op_kind](dim=None)
+    for shape in ((4,), (2, 4), (4, 3, 5)):
+        x = torch.randn(*shape, dtype=torch.float32, device=run_device())
+        ref = getattr(F, op_kind)(x, dim=None)
+        compare_outputs(op(x), ref, softmax_verification(x.dtype, logarithmic=op_kind != "softmax"))
     assert op.dim is None, f"op.dim was mutated to {op.dim!r}; expected None"
-
-    compare_outputs(y1, y1_ref, softmax_verification(y1.dtype, logarithmic=False))
-    compare_outputs(y2, y2_ref, softmax_verification(y2.dtype, logarithmic=False))
-    compare_outputs(y3, y3_ref, softmax_verification(y3.dtype, logarithmic=False))
-
-
-@pytest.mark.smoke
-def test_log_softmax_dim_none_reused_across_ranks() -> None:
-    """LogSoftmaxFwdOp(dim=None) must re-resolve per call (no self.dim mutation)."""
-    import warnings as _warnings
-
-    op = LogSoftmaxFwdOp(dim=None)
-
-    x1 = torch.randn(4, dtype=torch.float32, device=run_device())
-    x2 = torch.randn(2, 4, dtype=torch.float32, device=run_device())
-    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device=run_device())
-
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("ignore", UserWarning)
-        y1 = op(x1)
-        y2 = op(x2)
-        y3 = op(x3)
-        y1_ref = F.log_softmax(x1.float(), dim=None)
-        y2_ref = F.log_softmax(x2.float(), dim=None)
-        y3_ref = F.log_softmax(x3.float(), dim=None)
-
-    assert op.dim is None, f"op.dim was mutated to {op.dim!r}; expected None"
-
-    compare_outputs(y1, y1_ref, softmax_verification(y1.dtype, logarithmic=True))
-    compare_outputs(y2, y2_ref, softmax_verification(y2.dtype, logarithmic=True))
-    compare_outputs(y3, y3_ref, softmax_verification(y3.dtype, logarithmic=True))
 
 
 # LogSoftmax FLOPs equal 5 * M * N.

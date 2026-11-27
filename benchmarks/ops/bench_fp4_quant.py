@@ -1,9 +1,8 @@
 """Benchmark for the FP4 e2m1 quantization op.
 
-Workload shapes come from the ops manifest; roofline FLOP and byte counts come from the op's
-``eval_roofline()``. The TileKernels column times ``quant.per_token_cast_and_cast_back`` in
-place and otherwise ``quant.per_token_cast``, its UE8M0 scales stored as packed bytes, both
-at TileKernels' default e2m1 amax floor, ``6 * 2 ** -126``, which is the op's.
+The TileKernels column times ``quant.per_token_cast_and_cast_back`` in place and otherwise
+``quant.per_token_cast``, its UE8M0 scales stored as packed bytes, both at TileKernels' default
+e2m1 amax floor, ``6 * 2 ** -126``, which is the op's.
 """
 
 import pytest
@@ -20,7 +19,7 @@ from benchmarks.baselines import (
 from tileops.quantization import FP4QuantPerGroupFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(FP4QuantPerGroupFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FP4QuantPerGroupFwdOp))
 def test_fp4_quant_bench(case) -> None:
     op = FP4QuantPerGroupFwdOp(**case.arguments)
     quant = baseline_module("tile_kernels.quant", TILEKERNELS_TAG)

@@ -4,165 +4,8 @@ import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
+from workloads.numerics import Custom, Exact, reference_tolerance
 from workloads.workload_base import CallWorkload, WorkloadBase
-
-
-class ReLUWorkload(WorkloadBase):
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.n_total, dtype=self.dtype, device=run_device())
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["ReLUFwdOp"]({}, x)
-
-
-class AddBroadcastWorkload(WorkloadBase):
-    def __init__(self, a_shape: tuple, b_shape: tuple, dtype: torch.dtype):
-        self.a_shape = a_shape
-        self.b_shape = b_shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.a_shape, dtype=self.dtype, device=run_device())
-        b = torch.randn(self.b_shape, dtype=self.dtype, device=run_device())
-        return a, b
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["AddFwdOp"]({}, a, b)
-
-
-class PowPositiveWorkload(WorkloadBase):
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device=run_device()) + 0.5
-        b = torch.rand(self.n_total, dtype=self.dtype, device=run_device()) * 2.0
-        return a, b
-
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["PowFwdOp"]({}, a, b)
-
-
-class BitwiseNotWorkload(WorkloadBase):
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self.dtype == torch.bool:
-            x = torch.rand(self.n_total, device=run_device()) > 0.5
-        elif self.dtype == torch.uint8:
-            x = torch.randint(0, 256, (self.n_total,), device=run_device(), dtype=self.dtype)
-        else:
-            x = torch.randint(-128, 128, (self.n_total,), device=run_device(), dtype=self.dtype)
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["BitwiseNotFwdOp"]({}, x)
-
-
-class EqCompileWorkload(WorkloadBase):
-    def __init__(self, a_shape, b_shape, dtype):
-        self.a_shape = a_shape
-        self.b_shape = b_shape
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        a = torch.randn(self.a_shape, dtype=self.dtype, device=run_device())
-        b = a.clone()
-        mask = torch.rand_like(a, dtype=torch.float32) > 0.5
-        b[mask] = torch.randn_like(b[mask])
-        return a, b
-
-    def ref_program(self, a, b):
-        return _REFERENCES["EqFwdOp"]({}, a, b)
-
-
-class LogicalNotWorkload(WorkloadBase):
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self.dtype == torch.bool:
-            x = torch.rand(self.n_total, device=run_device()) > 0.5
-            return (x,)
-
-        if self.dtype == torch.uint8:
-            x = torch.randint(0, 8, (self.n_total,), device=run_device(), dtype=self.dtype)
-        elif not (self.dtype.is_floating_point or self.dtype.is_complex) and self.dtype.is_signed:
-            x = torch.randint(-4, 4, (self.n_total,), device=run_device(), dtype=self.dtype)
-        else:
-            x = torch.randn(self.n_total, device=run_device(), dtype=self.dtype)
-
-        mask = torch.rand(self.n_total, device=run_device()) > 0.5
-        x[mask] = 0
-        return (x,)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["LogicalNotFwdOp"]({}, x)
-
-
-class RandnFlatWorkload(WorkloadBase):
-    """One ``randn`` vector of ``n_total`` elements.
-
-    ``gen_fn`` lets a caller substitute a domain-restricted draw (positive-only,
-    NaN-seeded, ...) without another class.
-    """
-
-    def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None):
-        self.n_total = n_total
-        self.dtype = dtype
-        self._gen_fn = gen_fn
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self._gen_fn is not None:
-            return (self._gen_fn(self.n_total, self.dtype),)
-        return (torch.randn(self.n_total, device=run_device(), dtype=self.dtype),)
-
-
-class RandnPairWorkload(WorkloadBase):
-    """Two same-shape ``randn`` vectors — the default binary-op input."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device=run_device())
-        b = torch.randn(self.n_total, dtype=self.dtype, device=run_device())
-        return a, b
-
-
-class PositivePairWorkload(WorkloadBase):
-    """Two same-shape vectors in ``[0.1, 1.1)`` — for ops undefined at or below 0."""
-
-    def __init__(self, n_total: int, dtype: torch.dtype):
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device=run_device()) + 0.1
-        b = torch.rand(self.n_total, dtype=self.dtype, device=run_device()) + 0.1
-        return a, b
-
-
-class GatedRandnWorkload(WorkloadBase):
-    """One ``(m, 2 * n)`` tensor — gate and value halves for a fused gated op."""
-
-    def __init__(self, m: int, n: int, dtype: torch.dtype):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.m, 2 * self.n, dtype=self.dtype, device=run_device()),)
 
 
 def _draw_normal(shape: tuple, dtype: torch.dtype, device) -> torch.Tensor:
@@ -201,26 +44,6 @@ def _draw_special(shape: tuple, dtype: torch.dtype, device) -> torch.Tensor:
     return x
 
 
-_DOMAINS = {
-    **dict.fromkeys(
-        (
-            "LogFwdOp",
-            "SqrtFwdOp",
-            "RsqrtFwdOp",
-            "Log1pFwdOp",
-            "ReciprocalFwdOp",
-            "DivFwdOp",
-            "RemainderFwdOp",
-            "PowFwdOp",
-            "FloorDivideFwdOp",
-        ),
-        _draw_positive,
-    ),
-    **dict.fromkeys(("LogicalNotFwdOp", "LogicalAndFwdOp", "LogicalOrFwdOp"), _draw_sparse),
-    **dict.fromkeys(("IsnanFwdOp", "IsinfFwdOp", "IsfiniteFwdOp"), _draw_special),
-}
-
-
 def _every_16bit(dtype: torch.dtype) -> torch.Tensor:
     """Every bit pattern of the 16-bit *dtype*, in code order from ``+0``."""
     codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
@@ -230,7 +53,6 @@ def _every_16bit(dtype: torch.dtype) -> torch.Tensor:
 def _same_bits(description: str, int_dtype: torch.dtype, nan_as_nan: bool = False):
     """A verification requiring the reference's bits, viewed as *int_dtype*; with
     *nan_as_nan*, any NaN matches any NaN."""
-    from workloads.numerics import Custom
 
     def validate(got, expected):
         if nan_as_nan:
@@ -435,8 +257,6 @@ class ElementwiseWorkload(WorkloadBase):
         return getattr(reference, "torch", reference)(self.arguments(), *inputs)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, Exact
-
         name = self.name
         if name in ("SiLUAndMulFwdOp", "GELUAndMulFwdOp"):
             return fused_gated_verification(inputs[0].dtype)
@@ -452,7 +272,8 @@ class ElementwiseWorkload(WorkloadBase):
         } or (name == "DivFwdOp" and self.arguments().get("rounding_mode") is not None):
             return Exact(atol=0, rtol=0)
         if name == "LerpFwdOp" and not isinstance(inputs[2], torch.Tensor):
-            return lerp_verification(inputs[0].dtype)
+            # A Number weight: the native-dtype multiply and add round separately.
+            return Exact(atol=5e-3, rtol=5e-3) if inputs[0].dtype == torch.float16 else Exact()
         if name != "DropoutFwdOp":
             return Exact()
         x = inputs[0]
@@ -478,20 +299,33 @@ class ElementwiseWorkload(WorkloadBase):
 
 class ElementwiseCall(CallWorkload, ElementwiseWorkload):
     """One manifest call of an elementwise op: the row's tensors, drawn from the op's value
-    domain, and the op's reference.
+    domain, and the op's reference."""
 
-    ``shape`` (the output's) and ``dtype`` (the call's element type) name the case in the
-    benchmark report.
-    """
+    _DOMAINS = {
+        **dict.fromkeys(
+            (
+                "LogFwdOp",
+                "SqrtFwdOp",
+                "RsqrtFwdOp",
+                "Log1pFwdOp",
+                "ReciprocalFwdOp",
+                "DivFwdOp",
+                "RemainderFwdOp",
+                "PowFwdOp",
+                "FloorDivideFwdOp",
+            ),
+            _draw_positive,
+        ),
+        **dict.fromkeys(("LogicalNotFwdOp", "LogicalAndFwdOp", "LogicalOrFwdOp"), _draw_sparse),
+        **dict.fromkeys(("IsnanFwdOp", "IsinfFwdOp", "IsfiniteFwdOp"), _draw_special),
+    }
 
     def __init__(self, call, device=None):
         CallWorkload.__init__(self, call, device)
         self.name = call.signature.name
-        self.shape = call.tensors["output"][0]
-        self.dtype = getattr(torch, call.indices.get("T") or call.tensors["output"][1])
 
     def gen_inputs(self) -> tuple:
-        draw = _DOMAINS.get(self.call.signature.name, _draw_normal)
+        draw = self._DOMAINS.get(self.call.signature.name, _draw_normal)
         return tuple(
             self.call.scalars.get(t)
             if s is None
@@ -508,8 +342,6 @@ class ElementwiseCall(CallWorkload, ElementwiseWorkload):
 
 
 def fused_gated_verification(dtype):
-    from workloads.numerics import Exact, reference_tolerance
-
     return (
         Exact(atol=1e-2, rtol=1e-2)
         if dtype == torch.float16
@@ -517,94 +349,190 @@ def fused_gated_verification(dtype):
     )
 
 
-class AbsCompileCase(RandnFlatWorkload):
-    def ref_program(self, x):
-        return _REFERENCES["AbsFwdOp"]({}, x)
+class UnaryActivationCase(ElementwiseWorkload):
+    """*op_name* on one ``randn`` vector of ``n_total`` elements, or on *gen_fn*'s draw."""
+
+    def __init__(self, n_total, dtype, op_name, gen_fn=None, **parameters):
+        super().__init__(op_name, (), **parameters)
+        self.n_total = n_total
+        self.dtype = dtype
+        self._gen_fn = gen_fn
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self._gen_fn is not None:
+            return (self._gen_fn(self.n_total, self.dtype),)
+        return (torch.randn(self.n_total, device=run_device(), dtype=self.dtype),)
 
 
-class SignCompileCase(RandnFlatWorkload):
-    def ref_program(self, x):
-        return _REFERENCES["SignFwdOp"]({}, x)
+class ReLUWorkload(UnaryActivationCase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        super().__init__(n_total, dtype, "ReLUFwdOp")
 
 
-class SiLUAndMulCase(GatedRandnWorkload):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["SiLUAndMulFwdOp"]({}, x)
-
-    def verification(self, *inputs):
-        return fused_gated_verification(inputs[0].dtype)
+class AbsCompileCase(UnaryActivationCase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        super().__init__(n_total, dtype, "AbsFwdOp")
 
 
-class GELUAndMulCase(GatedRandnWorkload):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, approximate: str = "none"):
-        super().__init__(m, n, dtype)
-        self.approximate = approximate
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["GELUAndMulFwdOp"]({"approximate": self.approximate}, x)
-
-    def verification(self, *inputs):
-        return fused_gated_verification(inputs[0].dtype)
+class SignCompileCase(UnaryActivationCase):
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        super().__init__(n_total, dtype, "SignFwdOp")
 
 
-class BinarySameShapeCase(RandnPairWorkload, ElementwiseWorkload):
-    """Input fixture using the shared operator reference and verification."""
+class SpecialCase(UnaryActivationCase):
+    """A quarter each of NaN, +Inf, -Inf and finite values, unless *gen_fn* draws the input."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self._gen_fn is not None:
+            return super().gen_inputs()
+        return (_draw_special((self.n_total,), self.dtype, run_device()),)
+
+
+class BitwiseNotWorkload(UnaryActivationCase):
+    """Bools as fair coins, uint8 over its range, other integers in ``[-128, 128)``."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        super().__init__(n_total, dtype, "BitwiseNotFwdOp")
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        if self.dtype == torch.bool:
+            return (torch.rand(self.n_total, device=run_device()) > 0.5,)
+        low, high = (0, 256) if self.dtype == torch.uint8 else (-128, 128)
+        return (torch.randint(low, high, (self.n_total,), device=run_device(), dtype=self.dtype),)
+
+
+class LogicalNotWorkload(UnaryActivationCase):
+    """Small values of *dtype*, half of them zero; bools as fair coins."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        super().__init__(n_total, dtype, "LogicalNotFwdOp")
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        n, device = self.n_total, run_device()
+        if self.dtype == torch.bool:
+            return (torch.rand(n, device=device) > 0.5,)
+        if self.dtype == torch.uint8:
+            x = torch.randint(0, 8, (n,), device=device, dtype=self.dtype)
+        elif not (self.dtype.is_floating_point or self.dtype.is_complex) and self.dtype.is_signed:
+            x = torch.randint(-4, 4, (n,), device=device, dtype=self.dtype)
+        else:
+            x = torch.randn(n, device=device, dtype=self.dtype)
+        x[torch.rand(n, device=device) > 0.5] = 0
+        return (x,)
+
+
+class BinarySameShapeCase(ElementwiseWorkload):
+    """*op_name* on two same-shape ``randn`` vectors."""
 
     def __init__(self, n_total, dtype, op_name, **parameters):
-        RandnPairWorkload.__init__(self, n_total, dtype)
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
+        super().__init__(op_name, (), **parameters)
+        self.n_total = n_total
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple:
+        a = torch.randn(self.n_total, dtype=self.dtype, device=run_device())
+        b = torch.randn(self.n_total, dtype=self.dtype, device=run_device())
+        return a, b
 
 
-class BinaryPositiveCase(PositivePairWorkload, ElementwiseWorkload):
-    """Input fixture using the shared operator reference and verification."""
+class BinaryPositiveCase(BinarySameShapeCase):
+    """Two same-shape vectors in ``[0.1, 1.1)``, for ops undefined at or below 0."""
 
-    def __init__(self, n_total, dtype, op_name, **parameters):
-        PositivePairWorkload.__init__(self, n_total, dtype)
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.rand(self.n_total, dtype=self.dtype, device=run_device()) + 0.1
+        b = torch.rand(self.n_total, dtype=self.dtype, device=run_device()) + 0.1
+        return a, b
 
 
-class LerpCase(RandnPairWorkload):
+class PowPositiveWorkload(BinarySameShapeCase):
+    """Bases in ``[0.5, 1.5)`` and exponents in ``[0, 2)``, which stay finite in float16."""
+
+    def __init__(self, n_total: int, dtype: torch.dtype):
+        super().__init__(n_total, dtype, "PowFwdOp")
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.rand(self.n_total, dtype=self.dtype, device=run_device()) + 0.5
+        b = torch.rand(self.n_total, dtype=self.dtype, device=run_device()) * 2.0
+        return a, b
+
+
+class LerpCase(BinarySameShapeCase):
     """Two same-shape ``randn`` vectors and a Number weight."""
 
     def __init__(self, n_total: int, dtype, weight: float = 0.5):
-        super().__init__(n_total, dtype)
+        super().__init__(n_total, dtype, "LerpFwdOp")
         self.weight = weight
 
     def gen_inputs(self) -> tuple:
         return (*super().gen_inputs(), self.weight)
 
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor, weight: float) -> torch.Tensor:
-        return _REFERENCES["LerpFwdOp"]({}, a, b, weight)
 
-    def verification(self, *inputs):
-        return lerp_verification(inputs[0].dtype)
-
-
-class SpecialCase(RandnFlatWorkload, ElementwiseWorkload):
-    """A quarter each of NaN, +Inf, -Inf and finite values, unless *gen_fn* draws the input."""
-
-    def __init__(self, n_total, dtype, op_name, gen_fn=None, **parameters):
-        RandnFlatWorkload.__init__(self, n_total, dtype, gen_fn=gen_fn)
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        if self._gen_fn is not None:
-            return (self._gen_fn(self.n_total, self.dtype),)
-        return (_draw_special((self.n_total,), self.dtype, run_device()),)
-
-
-class BitwiseCase(ElementwiseWorkload):
+class BitwiseCase(BinarySameShapeCase):
     """Two int32 vectors in ``[-1000, 1000)``."""
 
     def __init__(self, n_total, op_name, **parameters):
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
-        self.n_total = n_total
-        self.dtype = torch.int32
+        super().__init__(n_total, torch.int32, op_name, **parameters)
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=run_device())
         b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=run_device())
         return a, b
+
+
+class LogicalCase(BinarySameShapeCase):
+    """Two vectors of zeros and ones in *dtype*, each element a fair coin."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.n_total, dtype=self.dtype, device=run_device()) > 0
+        b = torch.randn(self.n_total, dtype=self.dtype, device=run_device()) > 0
+        return a.to(self.dtype), b.to(self.dtype)
+
+
+class AddBroadcastWorkload(ElementwiseWorkload):
+    """*op_name* on two ``randn`` tensors of broadcastable shapes."""
+
+    def __init__(self, a_shape: tuple, b_shape: tuple, dtype: torch.dtype, op_name="AddFwdOp"):
+        super().__init__(op_name, ())
+        self.a_shape = a_shape
+        self.b_shape = b_shape
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.a_shape, dtype=self.dtype, device=run_device())
+        b = torch.randn(self.b_shape, dtype=self.dtype, device=run_device())
+        return a, b
+
+
+class EqCompileWorkload(AddBroadcastWorkload):
+    """``EqFwdOp`` on a ``randn`` tensor and a copy that differs at about half its elements."""
+
+    def __init__(self, a_shape, b_shape, dtype):
+        super().__init__(a_shape, b_shape, dtype, "EqFwdOp")
+
+    def gen_inputs(self):
+        a = torch.randn(self.a_shape, dtype=self.dtype, device=run_device())
+        b = a.clone()
+        mask = torch.rand_like(a, dtype=torch.float32) > 0.5
+        b[mask] = torch.randn_like(b[mask])
+        return a, b
+
+
+class SiLUAndMulCase(ElementwiseWorkload):
+    """One ``(m, 2 * n)`` ``randn`` tensor: the gate and value halves of a fused gated op."""
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype, op_name="SiLUAndMulFwdOp", **parameters):
+        super().__init__(op_name, (), **parameters)
+        self.m = m
+        self.n = n
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        return (torch.randn(self.m, 2 * self.n, dtype=self.dtype, device=run_device()),)
+
+
+class GELUAndMulCase(SiLUAndMulCase):
+    def __init__(self, m: int, n: int, dtype: torch.dtype, approximate: str = "none"):
+        super().__init__(m, n, dtype, "GELUAndMulFwdOp", approximate=approximate)
 
 
 class FullRangeCase(ElementwiseWorkload):
@@ -615,7 +543,7 @@ class FullRangeCase(ElementwiseWorkload):
     """
 
     def __init__(self, operands, op_name, *arguments, **parameters):
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
+        super().__init__(op_name, (), **parameters)
         self.operands, self.trailing = tuple(operands), arguments
 
     def gen_inputs(self) -> tuple:
@@ -631,14 +559,6 @@ class FullRangeCase(ElementwiseWorkload):
         return (*inputs, *self.trailing)
 
 
-class UnaryActivationCase(RandnFlatWorkload, ElementwiseWorkload):
-    """Input fixture using the shared operator reference and verification."""
-
-    def __init__(self, n_total, dtype, op_name, gen_fn=None, **parameters):
-        RandnFlatWorkload.__init__(self, n_total, dtype, gen_fn=gen_fn)
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
-
-
 class Every16BitCase(ElementwiseWorkload):
     """Every bit pattern of a 16-bit float dtype, NaN and infinities included, as one input.
 
@@ -646,33 +566,12 @@ class Every16BitCase(ElementwiseWorkload):
     """
 
     def __init__(self, dtype, op_name, *arguments, **parameters):
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
+        super().__init__(op_name, (), **parameters)
         self.dtype, self.trailing = dtype, arguments
 
     def gen_inputs(self) -> tuple:
         bits = torch.arange(-(2**15), 2**15, device=run_device(), dtype=torch.int32)
         return (bits.to(torch.int16).view(self.dtype), *self.trailing)
-
-
-class LogicalCase(ElementwiseWorkload):
-    """Two vectors of zeros and ones in *dtype*, each element a fair coin."""
-
-    def __init__(self, n_total, dtype, op_name, **parameters):
-        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
-        self.n_total = n_total
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device=run_device()) > 0
-        b = torch.randn(self.n_total, dtype=self.dtype, device=run_device()) > 0
-        return a.to(self.dtype), b.to(self.dtype)
-
-
-def lerp_verification(dtype):
-    """Native-dtype multiply/add round separately before the final lerp result."""
-    from workloads.numerics import Exact
-
-    return Exact(atol=5e-3, rtol=5e-3) if dtype == torch.float16 else Exact()
 
 
 class GELUTailWorkload(ElementwiseWorkload):
@@ -698,8 +597,6 @@ class GELUTailWorkload(ElementwiseWorkload):
         super().__init__("GELUFwdOp", (x,))
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         return Exact(atol=0, rtol=0)
 
 
@@ -710,8 +607,6 @@ class GELUSignWorkload(ElementwiseWorkload):
         super().__init__("GELUFwdOp", (_every_16bit(dtype),))
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         x = inputs[0]
 
         def validate(got, expected):
@@ -748,8 +643,6 @@ class SigmoidEdgeWorkload(ElementwiseWorkload):
         """``exp2`` of the scaled argument leaves up to 64 ulp (``8e-6`` relative) at large
         negative x; the absolute floor sits four decades under float32's smallest normal,
         so a tail result flushed to zero fails."""
-        from workloads.numerics import Exact
-
         return Exact(rtol=1e-5, atol=1e-42)
 
 
@@ -793,8 +686,6 @@ class GELUAndMulTailWorkload(ElementwiseWorkload):
         super().__init__("GELUAndMulFwdOp", (torch.cat([gate, torch.ones_like(gate)])[None],))
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         return Exact(atol=0, rtol=0)
 
 
@@ -805,8 +696,6 @@ class ErfRoundingWorkload(ElementwiseWorkload):
         super().__init__("ErfFwdOp", (_every_16bit(dtype),))
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         x = inputs[0]
 
         def ordered(t):
@@ -919,6 +808,4 @@ class LerpCancellationWorkload(ElementwiseWorkload):
         super().__init__("LerpFwdOp", (a, b, w))
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         return Exact(atol=0, rtol=0)

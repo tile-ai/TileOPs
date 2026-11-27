@@ -622,10 +622,6 @@ def _topk_select_kernel(
     return topk_select_fwd_func
 
 
-# Keys a thread of the register kernel holds at most.
-REGS_ITEMS = 16
-
-
 @target_cache(maxsize=32)
 def _topk_select_regs_kernel(
     batch, seq_len, seq_len_kv, kv_group, topk, fill_value, in_dtype, out_dtype
@@ -947,6 +943,8 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    # Keys a thread of the register kernel holds at most.
+    _REGS_ITEMS = 16
 
     @classmethod
     def entry_for(cls, call: TopKSelectCall) -> Entry:
@@ -987,7 +985,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         # A call of too few rows to fill every SM twice takes one row's time, so a row that
         # fits a 1024-thread block's registers is selected from them after one read.
         self.few_rows = batch * seq_len * kv_group < 2 * self.build_target.sm_count
-        self.regs = self.few_rows and topk < seq_len_kv <= REGS_ITEMS * 1024
+        self.regs = self.few_rows and topk < seq_len_kv <= self._REGS_ITEMS * 1024
         if self.regs:
             self.kernel = _topk_select_regs_kernel(
                 self.batch,
@@ -1079,7 +1077,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
     def autotune_configs(self) -> list[dict]:
         blocks = (256, 512, 1024)
         if self.regs:
-            blocks = tuple(b for b in blocks if self.seq_len_kv <= REGS_ITEMS * b)
+            blocks = tuple(b for b in blocks if self.seq_len_kv <= self._REGS_ITEMS * b)
         return [{"BLOCK_SIZE": block} for block in blocks]
 
     def forward(

@@ -1818,10 +1818,8 @@ def _gqa_prefill_varlen_ws_kernel(
 class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     """SM90 warp-specialized packed prefill for heads of up to 128 channels in 8-channel steps.
 
-    A TMA row is a multiple of 16 bytes, so a 16-bit head is a multiple of 8 channels. The
-    Q, K, V and O tiles of a head take 1792 bytes a channel: 128 channels fill 224 KB of the
-    227 KB an SM90 block may use, and dimension 256 (448 KB) stays on the general kernel.
-    Three consumer warpgroups take 2176 bytes a channel and 48 KB of P: at most 80 channels.
+    The Q, K, V and O tiles of a 16-bit head take 1792 bytes a channel, so 128 channels fill
+    the shared memory of an SM90 block; three consumer warpgroups hold at most 80 channels.
     """
 
     supported_archs: list[int] = [90]

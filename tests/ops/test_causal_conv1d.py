@@ -1,3 +1,4 @@
+import functools
 import re
 
 import pytest
@@ -129,7 +130,7 @@ def test_causal_conv1d(seq_lens, dim, width, dtype, some, activation) -> None:
     )
     test = CausalConv1dFwdTest(call)
     op = CausalConv1dFwdOp(**call.arguments())
-    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+    test.check(op, *test.gen_inputs(), runs=functools.partial(conv_state_result, op))
 
 
 _DECODE = (
@@ -155,7 +156,7 @@ def test_causal_conv1d_update(batch, dim, width, dtype, some, activation) -> Non
     )
     test = CausalConv1dUpdateFwdTest(call)
     op = CausalConv1dUpdateFwdOp(**call.arguments())
-    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+    test.check(op, *test.gen_inputs(), runs=functools.partial(conv_state_result, op))
 
 
 # A dilated filter spans (W - 1) * dilation tokens; a float32 filter widens the arithmetic.
@@ -217,7 +218,7 @@ def test_causal_conv1d_dilation_and_float32_filters(
     )
     test = CausalConv1dFwdTest(call)
     op = CausalConv1dFwdOp(**call.arguments())
-    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+    test.check(op, *test.gen_inputs(), runs=functools.partial(conv_state_result, op))
 
 
 _SERVED_DECODE = (
@@ -259,7 +260,7 @@ def test_causal_conv1d_update_dilation_and_float32_filters(
     )
     test = CausalConv1dUpdateFwdTest(call)
     op = CausalConv1dUpdateFwdOp(**call.arguments())
-    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+    test.check(op, *test.gen_inputs(), runs=functools.partial(conv_state_result, op))
 
 
 @pytest.mark.smoke
@@ -419,7 +420,7 @@ def test_causal_conv1d_reads_and_writes_its_slots_of_a_state_pool(seq_lens, dim,
     )
     test = CausalConv1dFwdTest(call)
     op = CausalConv1dFwdOp(**call.arguments())
-    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+    test.check(op, *test.gen_inputs(), runs=functools.partial(conv_state_result, op))
 
 
 @pytest.mark.smoke
@@ -438,7 +439,7 @@ def test_causal_conv1d_update_advances_its_slots_of_a_state_pool() -> None:
     )
     test = CausalConv1dUpdateFwdTest(call)
     op = CausalConv1dUpdateFwdOp(**call.arguments())
-    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+    test.check(op, *test.gen_inputs(), runs=functools.partial(conv_state_result, op))
 
 
 _DILATED = {"D": 100, "W": 4, "L": 12, "P": 4, "dilation": 3, "activation": None}
@@ -541,7 +542,7 @@ def test_causal_conv1d_update_verifies_drafts_from_the_accepted_column(
     inputs[5] = torch.randint(1, max(seq_lens) + 1, inputs[5].shape, dtype=torch.int32).to(
         inputs[5].device
     )
-    test.check(op, *inputs, runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+    test.check(op, *inputs, runs=functools.partial(conv_state_result, op))
 
 
 @pytest.mark.smoke
@@ -564,7 +565,7 @@ def test_causal_conv1d_update_resumes_one_token_from_the_accepted_column() -> No
     op = CausalConv1dUpdateFwdOp(**call.arguments())
     inputs = list(test.gen_inputs())
     inputs[5] = torch.randint(1, 4, inputs[5].shape, dtype=torch.int32).to(inputs[5].device)
-    test.check(op, *inputs, runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+    test.check(op, *inputs, runs=functools.partial(conv_state_result, op))
 
 
 _PADDED_PREFILL = {"D": 264, "L": 3, "Tt": 92, "seq_lens": [1, 2, 0, 3, 5, 17, 0, 64]}
@@ -692,7 +693,7 @@ def test_causal_conv1d_prefill_holds_a_one_wave_grid_resident(dim, dilation, run
         test.check(
             op,
             *test.gen_inputs(),
-            runs=lambda *args, op=op, **kw: conv_state_result(op, *args, **kw),
+            runs=functools.partial(conv_state_result, op),
         )
         held = -(-(dim // 256 * -(-sum(seq_lens) // 256)) // sms)
         # A block's ring: 4 warps x 2 stages x 8 tokens x 256 float16 channels.
@@ -778,4 +779,4 @@ def test_causal_conv1d_update_holds_a_long_state_in_registers(
     )
     test = CausalConv1dUpdateFwdTest(call)
     op = CausalConv1dUpdateFwdOp(**call.arguments())
-    test.check(op, *test.gen_inputs(), runs=lambda *args, **kw: conv_state_result(op, *args, **kw))
+    test.check(op, *test.gen_inputs(), runs=functools.partial(conv_state_result, op))

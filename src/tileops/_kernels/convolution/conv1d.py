@@ -17,7 +17,7 @@ from tileops._kernels.convolution._common import (
     stage_output_tile,
 )
 from tileops._kernels.convolution.call_spec import Conv1dCall, Conv1dFwdInterface
-from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.kernel_base import Kernel
 
 __all__ = [
     "Conv1dDirectKernel",
@@ -120,26 +120,14 @@ def _conv1d_kernel(
 
                 T.copy(out_shared, out[bz, by * block_m, bx * block_n])
 
-        if has_bias:
-
-            @T.prim_func
-            def _conv1d_bias_main(
-                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-                weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
-                out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
-                bias: T.Tensor((c_out,), dtype),  # type: ignore
-            ):
-                _conv1d_body(x, weight_flat, out, bias)
-
-            return _conv1d_bias_main
-
         @T.prim_func
         def _conv1d_main(
             x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
             weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,  # type: ignore
         ):
-            _conv1d_body(x, weight_flat, out, None)
+            _conv1d_body(x, weight_flat, out, bias if has_bias else None)
 
         return _conv1d_main
 
@@ -284,26 +272,14 @@ def _conv1d_unit_stride_kernel(
 
                 T.copy(out_shared, out[bz, by * block_m, bx * block_n])
 
-        if has_bias:
-
-            @T.prim_func
-            def _conv1d_unit_stride_bias_main(
-                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-                weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
-                out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
-                bias: T.Tensor((c_out,), dtype),  # type: ignore
-            ):
-                _conv1d_unit_stride_body(x, weight_flat, out, bias)
-
-            return _conv1d_unit_stride_bias_main
-
         @T.prim_func
         def _conv1d_unit_stride_main(
             x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
             weight_flat: T.Tensor((c_out, k_total), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,  # type: ignore
         ):
-            _conv1d_unit_stride_body(x, weight_flat, out, None)
+            _conv1d_unit_stride_body(x, weight_flat, out, bias if has_bias else None)
 
         return _conv1d_unit_stride_main
 
@@ -371,26 +347,14 @@ def _conv1d_depthwise_kernel(
                         else:
                             out[bz, oc, ol] = T.cast(out_local[i, j], dtype)
 
-        if has_bias:
-
-            @T.prim_func
-            def _conv1d_depthwise_bias_main(
-                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-                weight: T.Tensor((c_out, 1, kernel_l), dtype),  # type: ignore
-                out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
-                bias: T.Tensor((c_out,), dtype),  # type: ignore
-            ):
-                _conv1d_depthwise_body(x, weight, out, bias)
-
-            return _conv1d_depthwise_bias_main
-
         @T.prim_func
         def _conv1d_depthwise_main(
             x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
             weight: T.Tensor((c_out, 1, kernel_l), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,  # type: ignore
         ):
-            _conv1d_depthwise_body(x, weight, out, None)
+            _conv1d_depthwise_body(x, weight, out, bias if has_bias else None)
 
         return _conv1d_depthwise_main
 
@@ -503,26 +467,14 @@ def _conv1d_group_kernel(
                         if oc_g < c_out_g and ol < out_l:
                             out[batch_id, oc, ol] = out_shared[i, j]
 
-        if has_bias:
-
-            @T.prim_func
-            def _conv1d_group_bias_main(
-                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-                weight: T.Tensor((c_out, c_in_g, kernel_l), dtype),  # type: ignore
-                out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
-                bias: T.Tensor((c_out,), dtype),  # type: ignore
-            ):
-                _conv1d_group_body(x, weight, out, bias)
-
-            return _conv1d_group_bias_main
-
         @T.prim_func
         def _conv1d_group_main(
             x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in_g, kernel_l), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,  # type: ignore
         ):
-            _conv1d_group_body(x, weight, out, None)
+            _conv1d_group_body(x, weight, out, bias if has_bias else None)
 
         return _conv1d_group_main
 
@@ -600,30 +552,33 @@ def _conv1d_pointwise_kernel(
 
                 T.copy(out_shared, out[bz, by * block_m, bx * block_n])
 
-        if has_bias:
-
-            @T.prim_func
-            def _conv1d_pointwise_bias_main(
-                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-                weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
-                out: T.Tensor((n, c_out, l_in), dtype),  # type: ignore
-                bias: T.Tensor((c_out,), dtype),  # type: ignore
-            ):
-                _conv1d_pointwise_body(x, weight, out, bias)
-
-            return _conv1d_pointwise_bias_main
-
         @T.prim_func
         def _conv1d_pointwise_main(
             x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
             out: T.Tensor((n, c_out, l_in), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,  # type: ignore
         ):
-            _conv1d_pointwise_body(x, weight, out, None)
+            _conv1d_pointwise_body(x, weight, out, bias if has_bias else None)
 
         return _conv1d_pointwise_main
 
     return _conv1d_pointwise_func
+
+
+def _geometry(call: Conv1dCall) -> tuple[int, ...]:
+    """The arguments the gathered Conv1d builders start with: the extents and the window."""
+    return (
+        call.n,
+        call.c_in,
+        call.l_in,
+        call.c_out,
+        call.kernel_l,
+        call.stride_l,
+        call.pad_left,
+        call.pad_right,
+        call.dilation_l,
+    )
 
 
 def _staged_default_config(
@@ -668,36 +623,13 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
             or grid_refusal(z=call.n)
         )
 
-    @classmethod
-    def entry_for(cls, call: Conv1dCall) -> Entry:
-        index = call.device_index
-        args = dict(n=call.n, c_in=call.c_in, l_in=call.l_in, c_out=call.c_out, dtype=call.dtype)
-        identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        c_out: int,
-        dtype: torch.dtype,
-        has_bias: bool = False,
-        config: dict | None = None,
-        *,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.c_in = c_in
-        self.l_in = l_in
-        self.dtype = dtype
+    def __init__(self, call: Conv1dCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        self.c_in = call.c_in
+        self.l_in = call.l_in
+        self.dtype = call.dtype
         self.kernel = _conv1d_pointwise_kernel(
-            n,
-            c_in,
-            l_in,
-            c_out,
-            has_bias,
-            self.dtype_str,
+            call.n, call.c_in, call.l_in, call.c_out, call.has_bias, self.dtype_str
         )
         self.init_config(config)
 
@@ -784,26 +716,14 @@ def _conv1d_short_filter_kernel(
                             if time + i < out_l:
                                 out[0, channel, time + i] = values[i]
 
-        if has_bias:
-
-            @T.prim_func
-            def main(
-                x: T.Tensor[(1, 1, l_in), dtype],
-                weight: T.Tensor[(c_out, 1, kernel_l), dtype],
-                out: T.Tensor[(1, c_out, out_l), dtype],
-                bias: T.Tensor[(c_out,), dtype],
-            ):
-                convolve(x, weight, out, bias)
-
-        else:
-
-            @T.prim_func
-            def main(
-                x: T.Tensor[(1, 1, l_in), dtype],
-                weight: T.Tensor[(c_out, 1, kernel_l), dtype],
-                out: T.Tensor[(1, c_out, out_l), dtype],
-            ):
-                convolve(x, weight, out, None)
+        @T.prim_func
+        def main(
+            x: T.Tensor[(1, 1, l_in), dtype],
+            weight: T.Tensor[(c_out, 1, kernel_l), dtype],
+            out: T.Tensor[(1, c_out, out_l), dtype],
+            bias: T.Tensor[(c_out,), dtype] if has_bias else None = None,
+        ):
+            convolve(x, weight, out, bias if has_bias else None)
 
         return main
 
@@ -829,16 +749,12 @@ class Conv1dDirectKernel(Kernel, Conv1dFwdInterface):
             return "requires fp16 or bf16"
         return super().refusal(call) or operand_refusal(call.c_out * call.out_l)
 
-    @classmethod
-    def entry_for(cls, call: Conv1dCall) -> Entry:
-        index = call.device_index
-        args = (call.l_in, call.c_out, call.kernel_l, call.dtype, call.has_bias)
-        return (*args, index), lambda: cls(*args, device_index=index)
-
-    def __init__(self, l_in, c_out, kernel_l, dtype, has_bias, *, device_index=None):
-        super().__init__(device_index=device_index)
-        self.dtype = dtype
-        self.kernel = _conv1d_short_filter_kernel(l_in, c_out, kernel_l, self.dtype_str, has_bias)
+    def __init__(self, call: Conv1dCall) -> None:
+        super().__init__(device_index=call.device_index)
+        self.dtype = call.dtype
+        self.kernel = _conv1d_short_filter_kernel(
+            call.l_in, call.c_out, call.kernel_l, self.dtype_str, call.has_bias
+        )
         self.init_config()
 
     def forward(
@@ -863,63 +779,19 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
             return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
 
-    @classmethod
-    def entry_for(cls, call: Conv1dCall) -> Entry:
-        index = call.device_index
-        args = dict(
-            n=call.n,
-            c_in=call.c_in,
-            l_in=call.l_in,
-            c_out=call.c_out,
-            dtype=call.dtype,
-            kernel_l=call.kernel_l,
-            stride_l=call.stride_l,
-            pad_l=(call.pad_left, call.pad_right),
-            dilation_l=call.dilation_l,
-        )
-        identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        c_out: int,
-        kernel_l: int,
-        stride_l: int,
-        pad_l: tuple[int, int],
-        dtype: torch.dtype,
-        dilation_l: int = 1,
-        has_bias: bool = False,
-        config: dict | None = None,
-        *,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.c_in = c_in
-        self.l_in = l_in
-        self.c_out = c_out
-        self.kernel_l = kernel_l
-        self.stride_l = stride_l
-        self.pad_left, pad_right = pad_l
-        self.dilation_l = dilation_l
-        self.dtype = dtype
-        self.out_l = (l_in + sum(pad_l) - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
-        self.k_total = c_in * kernel_l
-        self.kernel = self._builder(
-            n,
-            c_in,
-            l_in,
-            c_out,
-            kernel_l,
-            stride_l,
-            self.pad_left,
-            pad_right,
-            dilation_l,
-            has_bias,
-            self.dtype_str,
-        )
+    def __init__(self, call: Conv1dCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        self.c_in = call.c_in
+        self.l_in = call.l_in
+        self.c_out = call.c_out
+        self.kernel_l = call.kernel_l
+        self.stride_l = call.stride_l
+        self.pad_left = call.pad_left
+        self.dilation_l = call.dilation_l
+        self.dtype = call.dtype
+        self.out_l = call.out_l
+        self.k_total = call.c_in * call.kernel_l
+        self.kernel = self._builder(*_geometry(call), call.has_bias, self.dtype_str)
         self.init_config(config)
 
     @property
@@ -1060,90 +932,17 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
     def refusal(cls, call: Conv1dCall) -> str | None:
         if call.groups <= 1:
             return "serves grouped convolution"
+        if call.c_in % call.groups or call.c_out % call.groups:
+            return "requires input and output channels divisible by groups"
         return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
 
-    @classmethod
-    def entry_for(cls, call: Conv1dCall) -> Entry:
-        index = call.device_index
-        args = dict(
-            n=call.n,
-            c_in=call.c_in,
-            l_in=call.l_in,
-            c_out=call.c_out,
-            dtype=call.dtype,
-            kernel_l=call.kernel_l,
-            stride_l=call.stride_l,
-            pad_l=(call.pad_left, call.pad_right),
-            dilation_l=call.dilation_l,
-            groups=call.groups,
-            c_in_g=call.c_in_g,
-            c_out_g=call.c_out_g,
-        )
-        identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        c_out: int,
-        kernel_l: int,
-        stride_l: int,
-        pad_l: tuple[int, int],
-        dtype: torch.dtype,
-        dilation_l: int = 1,
-        has_bias: bool = False,
-        config: dict | None = None,
-        *,
-        groups: int,
-        c_in_g: int,
-        c_out_g: int,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.n = n
-        self.c_in = c_in
-        self.l_in = l_in
-        self.c_out = c_out
-        self.kernel_l = kernel_l
-        self.stride_l = stride_l
-        self.pad_left, self.pad_right = pad_l
-        self.dilation_l = dilation_l
-        self.groups = groups
-        self.c_in_g = c_in_g
-        self.c_out_g = c_out_g
-        self.dtype = dtype
-        self.has_bias = has_bias
-        if self.groups <= 1:
-            raise ValueError(f"{type(self).__name__} requires groups > 1")
-        self._build_program()
+    def __init__(self, call: Conv1dCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        self.dtype = call.dtype
+        self.c_out_g = call.c_out_g
+        self.kernel = self._build(call)
         self.init_config(config)
         self._check_config()
-
-    def _build_program(self) -> None:
-        """Compile the grouped implicit GEMM over this call's group shape."""
-        if self.c_in % self.groups or self.c_out % self.groups:
-            raise ValueError(
-                f"{type(self).__name__} requires c_in and c_out divisible by groups; "
-                f"got c_in={self.c_in}, c_out={self.c_out}, groups={self.groups}"
-            )
-        self.kernel = _conv1d_group_kernel(
-            self.n,
-            self.c_in,
-            self.l_in,
-            self.c_out,
-            self.kernel_l,
-            self.stride_l,
-            self.pad_left,
-            self.pad_right,
-            self.dilation_l,
-            self.has_bias,
-            self.dtype_str,
-            self.groups,
-            self.c_in_g,
-            self.c_out_g,
-        )
 
     def _check_config(self) -> None:
         """Reject a tile the implicit GEMM's MMA step cannot take."""
@@ -1153,6 +952,16 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
                     f"{type(self).__name__} requires {key} to be a multiple of 16; "
                     f"got {key}={self.config[key]}"
                 )
+
+    def _build(self, call: Conv1dCall):
+        return _conv1d_group_kernel(
+            *_geometry(call),
+            call.has_bias,
+            self.dtype_str,
+            call.groups,
+            call.c_in_g,
+            call.c_out_g,
+        )
 
     @property
     def default_config(self) -> dict:
@@ -1207,23 +1016,11 @@ class DepthwiseConv1dKernel(GroupConv1dKernel):
         """One block row per image, not per group."""
         return call.n
 
-    def _build_program(self) -> None:
-        self.kernel = _conv1d_depthwise_kernel(
-            self.n,
-            self.c_in,
-            self.l_in,
-            self.c_out,
-            self.kernel_l,
-            self.stride_l,
-            self.pad_left,
-            self.pad_right,
-            self.dilation_l,
-            self.has_bias,
-            self.dtype_str,
-        )
-
     def _check_config(self) -> None:
         """One output position per thread takes any tile."""
+
+    def _build(self, call: Conv1dCall):
+        return _conv1d_depthwise_kernel(*_geometry(call), call.has_bias, self.dtype_str)
 
     @property
     def default_config(self) -> dict:

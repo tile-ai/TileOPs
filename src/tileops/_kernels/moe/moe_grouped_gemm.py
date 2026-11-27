@@ -26,6 +26,11 @@ from tileops.manifest.primitives import moe_layout_metadata
 __all__ = ["MoEGroupedGEMMKernel", "MoEGroupedGEMMMMAKernel"]
 
 
+def _activation(call: MGroupedGEMMCall) -> str:
+    """The call's fused activation, ``"none"`` for a plain GEMM."""
+    return call.activation or "none"
+
+
 @target_cache(maxsize=32)
 def _moe_grouped_gemm_mma_kernel(
     gemm_type: str,
@@ -41,11 +46,8 @@ def _moe_grouped_gemm_mma_kernel(
 ) -> Callable:
     """One ``T.gemm`` tile per block over the rows of one group.
 
-    Masked and aligned per-row layouts map a block to a tile directly. The prefix-sum
-    layouts number each group's tiles after the previous groups', so a block walks the
-    group ends to find its own; the tight per-row layout walks them too, finding each end
-    by binary search over the sorted row ids. ``ceil(m / block_m)`` plus one per group
-    bounds the count, and the blocks past it do nothing.
+    The grid covers ``ceil(m / block_m)`` plus one tile per group; blocks past the call's
+    tiles do nothing.
     """
     accum_dtype = "float"
     gtype = GEMMType(gemm_type)
@@ -285,7 +287,7 @@ class MoEGroupedGEMMKernel(Kernel, MGroupedGEMMFwdInterface):
             return f"fuses only {sorted(ACTIVATIONS)}, got {call.activation}"
         if call.k % 8:
             return f"steps K by 8, got K = {call.k}"
-        n_step = 8 if call.activation in (None, "none") else 16
+        n_step = 8 if _activation(call) == "none" else 16
         if call.n % n_step:
             return f"needs N a multiple of {n_step} here, got N = {call.n}"
         return None
@@ -299,7 +301,7 @@ class MoEGroupedGEMMKernel(Kernel, MGroupedGEMMFwdInterface):
             num_groups=call.num_groups,
             m_alignment=call.alignment if call.packing == "aligned" else 128,
             cd_dtype=None if call.cd_dtype is call.ab_dtype else call.cd_dtype,
-            activation="none" if call.activation is None else call.activation,
+            activation=_activation(call),
             device_index=device_index,
         )
 
@@ -333,7 +335,7 @@ class MoEGroupedGEMMMMAKernel(MoEGroupedGEMMKernel):
             call.k,
             call.alignment,
             call.max_m or 0,
-            "none" if call.activation is None else call.activation,
+            _activation(call),
             self.dtype_to_str(call.ab_dtype),
             self.dtype_to_str(call.cd_dtype),
             call.has_bias,
@@ -355,18 +357,15 @@ class MoEGroupedGEMMMMAKernel(MoEGroupedGEMMKernel):
 
     @property
     def autotune_supply_prog(self) -> Callable:
-        return self._supply_prog_for(self.call)
-
-    @classmethod
-    def _supply_prog_for(cls, call: MGroupedGEMMCall) -> Callable:
-        """Supply autotuning the call's own rows, split over the groups as the manifest's
-        workloads split them, so each candidate walks the tiles a real call does."""
+        """Supply autotuning the call's own rows, split over the groups by
+        ``moe_layout_metadata``."""
         from tilelang.utils.device import get_current_device
 
+        call = self.call
         masked = call.kind == "masked"
         rows = call.num_groups * call.max_m if masked else call.m
         lead = (call.num_groups, call.max_m) if masked else (rows,)
-        cols = call.n // 2 if call.activation not in (None, "none") else call.n
+        cols = call.n if _activation(call) == "none" else call.n // 2
         # The kernel's own view of b and the bias: [G, n / 2, 2, ..] when interleaved.
         rows_b = (cols, 2) if call.activation in INTERLEAVED_ACTIVATIONS else (call.n,)
         names = ("a", "b", "layout", "c", "bias") if call.has_bias else ("a", "b", "layout", "c")
@@ -374,7 +373,7 @@ class MoEGroupedGEMMMMAKernel(MoEGroupedGEMMKernel):
         def supply_prog(params: list) -> list:
             if len(params) != len(names):
                 raise RuntimeError(
-                    f"autotuning {cls.__name__} expects {len(names)} parameters "
+                    f"autotuning {type(self).__name__} expects {len(names)} parameters "
                     f"({', '.join(names)}), got {len(params)}"
                 )
             device = get_current_device()
@@ -406,7 +405,7 @@ class MoEGroupedGEMMMMAKernel(MoEGroupedGEMMKernel):
         call = self.call
         if (bias is not None) != call.has_bias:
             raise ValueError(f"this kernel was built with has_bias={call.has_bias}")
-        cols = call.n // 2 if call.activation not in (None, "none") else call.n
+        cols = call.n if _activation(call) == "none" else call.n // 2
         if out is None:
             rows = (call.num_groups, call.max_m) if call.kind == "masked" else (a.shape[0],)
             out = torch.empty((*rows, cols), dtype=call.cd_dtype, device=a.device)

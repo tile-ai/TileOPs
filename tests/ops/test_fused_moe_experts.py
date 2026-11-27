@@ -1,13 +1,11 @@
-"""Tests for FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp and supporting ABCs."""
+"""Tests for FusedMoEExpertsFwdOp and IndexedExpertMLPFwdOp."""
 
 import pytest
 import torch
 
 from tests.cuda_graph_contract import CapturedGraph
-from tileops._ops.moe.abc import WeightedReduceNoOp
 from tileops._ops.moe.fused_moe import FusedMoEFwdOp
 from tileops._ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
-from tileops._ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops._ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from workloads.device import run_device
 from workloads.moe import MoEExpertsWorkload, moe_verification, ref_routed_experts
@@ -39,60 +37,6 @@ def _small_route_case(ids, dtype=torch.bfloat16):
     weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device=run_device()), -1)
     topk_ids = torch.tensor(ids, dtype=torch.int32, device=run_device())
     return FusedMoEExpertsFwdOp(), (hidden, w1, w2, weights, topk_ids)
-
-
-@pytest.mark.smoke
-def test_weighted_reduce_noop():
-    """WeightedReduceNoOp copies expert_out to output."""
-    T, H = 4, 8
-    expert_out = torch.randn(T, H)
-    output = torch.zeros(T, H)
-    reduce = WeightedReduceNoOp()
-    reduce.apply(
-        output,
-        expert_out,
-        topk_weights=torch.ones(T, 2),
-        topk_ids=torch.zeros(T, 2, dtype=torch.int32),
-    )
-    assert torch.allclose(output, expert_out)
-
-
-@pytest.mark.smoke
-def test_weighted_reduce_noop_same_tensor():
-    """WeightedReduceNoOp is a no-op when output is expert_out."""
-    T, H = 4, 8
-    t = torch.randn(T, H)
-    original = t.clone()
-    WeightedReduceNoOp().apply(
-        t, t, topk_weights=torch.ones(T, 2), topk_ids=torch.zeros(T, 2, dtype=torch.int32)
-    )
-    assert torch.allclose(t, original)
-
-
-class TestMoEPrepareAndFinalizeNoDPEP:
-    @pytest.mark.smoke
-    def test_prepare_passthrough(self):
-        T, H, K = 8, 64, 2
-        hidden = torch.randn(T, H, dtype=torch.bfloat16)
-        weights = torch.rand(T, K, dtype=torch.float32)
-        ids = torch.randint(0, 4, (T, K), dtype=torch.int32)
-        pf = MoEPrepareAndFinalizeNoDPEP()
-        r = pf.prepare(hidden, weights, ids, num_experts=4)
-        assert r.hidden_q is hidden
-        assert r.scale is None
-        assert r.topk_weights is weights
-        assert r.topk_ids is ids
-
-    @pytest.mark.smoke
-    def test_finalize_noop_reduce(self):
-        T, H, K = 8, 64, 2
-        expert_out = torch.randn(T, H, dtype=torch.bfloat16)
-        output = torch.zeros(T, H, dtype=torch.bfloat16)
-        weights = torch.rand(T, K, dtype=torch.float32)
-        ids = torch.randint(0, 4, (T, K), dtype=torch.int32)
-        pf = MoEPrepareAndFinalizeNoDPEP()
-        pf.finalize(output, expert_out, weights, ids, WeightedReduceNoOp())
-        assert torch.allclose(output, expert_out)
 
 
 class TestFusedMoEExpertsFwdOp:
@@ -264,12 +208,6 @@ class TestFusedMoEExpertsFwdOp:
         out = IndexedExpertMLPFwdOp(routed_scaling_factor=2.5)(*args)
         expected = ref_routed_experts(*args, scale=2.5)
         compare_outputs(out, expected, moe_verification(2))
-
-    @pytest.mark.smoke
-    def test_output_shape_and_weighted_reduce(self):
-        experts = FusedMoEExpertsFwdOp()
-        assert experts._output_shape(128, 256) == (128, 256)
-        assert isinstance(experts._make_weighted_reduce(), WeightedReduceNoOp)
 
 
 class TestFusedMoEActivationInjection:

@@ -132,23 +132,16 @@ def layer_by_layer(
     tokens: Sequence[torch.Tensor],
     lengths: Sequence[int],
 ) -> tuple[dict[int, float], float, list[torch.Tensor]]:
-    """Run ``model`` one layer at a time on its device, which must be current.
+    """Run ``model`` one layer at a time on its current device, dropping each layer after use.
 
     Returns the prefill seconds of the first ``n`` tokens of ``prompt`` (``[1, S]``) for each
-    ``n`` in ``lengths``, the seconds of one decode step after the whole prompt, the steps
-    taking ``tokens`` (each ``[1, 1]``) in order, and the logits of the whole prompt and of every
-    step, which equal ``model.forward``'s. The last of ``lengths`` must be ``S``: its prefill
-    leaves the state the untimed decode steps run on.
+    ``n`` in ``lengths``, the seconds of one decode step after the whole prompt, and the logits
+    of the whole prompt and of each decode step taking ``tokens`` (each ``[1, 1]``), which equal
+    ``model.forward``'s. Layer ``i`` is filled from ``weights_of(i)``. The last of ``lengths``
+    must be ``S``.
 
-    Layer ``i`` is filled from ``weights_of(i)``, runs every prefill and the decode steps on
-    what layer ``i - 1`` returned, and is dropped: ``model`` holds no layer afterwards. A
-    layer's prefill counts the time of two calls less that of one, leaving out the idle device a
-    timed call starts from, which a layer inside a whole forward never meets. The embedding,
-    ``Step.build`` and the head of a prefill are timed once per call. A layer's decode steps
-    replay one CUDA graph, and so do the embedding, the head and the argmax that feeds the next
-    step of every decode step. Each step's key indices, which a whole forward derives once per
-    call, are derived here once per step, by the untimed first call of the first layer that reads
-    them, so neither the prefill nor the decode seconds include them.
+    A layer's prefill time is that of two calls less one, which drops the idle-device start a
+    layer inside a whole forward never meets; a layer's decode steps replay one CUDA graph.
     """
     cfg, ops, device = model.config, model.ops, model.device
     total = prompt.shape[1]

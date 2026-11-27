@@ -37,12 +37,8 @@ __all__ = [
 
 @target_cache(maxsize=64)
 def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> Callable:
-    """Pipelined batched GEMM.
-
-    Launches a 3D grid ``(ceildiv(n, block_n), ceildiv(m, block_m), batch)``.
-    Each block loads its per-batch A/B tiles into SMEM through a ``T.Pipelined``
-    K-loop and issues WGMMA (MMA below SM90) into a fp32 accumulator; the epilogue guards the
-    M/N tails so ``m``/``n`` need not be multiples of the block sizes.
+    """Pipelined batched GEMM on a ``(ceildiv(n, block_n), ceildiv(m, block_m), batch)`` grid,
+    accumulating in fp32; ``m`` and ``n`` need not be multiples of the block sizes.
 
     Args:
         batch: Number of independent GEMM problems (grid.z).
@@ -202,8 +198,6 @@ def _bmm_fp8_kernel(
         num_stages: int = 3,
         threads: int = 256,
     ) -> Callable:
-        scale_a_shape = (1,)
-        scale_b_shape = (1,)
         k_exact = k % block_k == 0
         n_exact = n % block_n == 0
         m_exact = m % block_m == 0
@@ -212,8 +206,8 @@ def _bmm_fp8_kernel(
         def _bmm_fp8_main(
             a: T.Tensor((batch, m, k), dtype),  # type: ignore
             b: T.Tensor((batch, n, k), dtype),  # type: ignore  # N-major B
-            scale_a: T.Tensor(scale_a_shape, "float32"),  # type: ignore
-            scale_b: T.Tensor(scale_b_shape, "float32"),  # type: ignore
+            scale_a: T.Tensor((1,), "float32"),  # type: ignore
+            scale_b: T.Tensor((1,), "float32"),  # type: ignore
             c: T.Tensor((batch, m, n), out_dtype),  # type: ignore
         ) -> None:
             with T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), batch, threads=threads) as (
@@ -310,15 +304,12 @@ def _bmm_fp8_persistent_kernel(
         num_stages: int = 3,
         threads: int = 256,
     ) -> Callable:
-        scale_a_shape = (1,)
-        scale_b_shape = (1,)
-
         @T.prim_func
         def _bmm_fp8_persistent_main(
             a: T.Tensor((batch, m, k), dtype),  # type: ignore
             b: T.Tensor((batch, n, k), dtype),  # type: ignore  # N-major B
-            scale_a: T.Tensor(scale_a_shape, "float32"),  # type: ignore
-            scale_b: T.Tensor(scale_b_shape, "float32"),  # type: ignore
+            scale_a: T.Tensor((1,), "float32"),  # type: ignore
+            scale_b: T.Tensor((1,), "float32"),  # type: ignore
             c: T.Tensor((batch, m, n), out_dtype),  # type: ignore
         ) -> None:
             with T.Kernel(sm_count, 1, 1, threads=threads) as (bx, _by, _bz):
@@ -404,31 +395,28 @@ def _bmm_fp8_persistent_ws_kernel(
         threads: int = 384,
         group_size_m: int = 8,
     ) -> Callable:
-        assert threads == 384, (
-            f"3-WG persistent WS BMM requires threads=384 "
-            f"(1 producer + 2 consumer WGs); got threads={threads}"
-        )
-        assert block_m % 2 == 0 and block_m // 2 >= 64, (
-            f"cooperative template needs block_m>=128 and even; got {block_m}"
-        )
-        assert m % block_m == 0 and n % block_n == 0 and k % block_k == 0, (
-            f"WS variant requires aligned tile; got m={m}, n={n}, k={k}, "
-            f"block=({block_m},{block_n},{block_k})"
-        )
+        if threads != 384:
+            raise ValueError(
+                f"one producer and two consumer warpgroups need threads=384, got {threads}"
+            )
+        if block_m % 2 or block_m < 128:
+            raise ValueError(f"block_m must be even and at least 128, got {block_m}")
+        if m % block_m or n % block_n or k % block_k:
+            raise ValueError(
+                f"the tile must divide the shape: m={m}, n={n}, k={k}, "
+                f"block=({block_m}, {block_n}, {block_k})"
+            )
         half_m = block_m // 2
         num_pid_m = m // block_m
         num_pid_n = n // block_n
         k_iters = k // block_k
-        assert k_iters >= 2, (
-            f"WS variant needs k_iters>=2 for the 1-deep WGMMA pipeline; "
-            f"got k={k}, block_k={block_k}, k_iters={k_iters}"
-        )
+        if k_iters < 2:
+            raise ValueError(
+                f"the one-deep WGMMA pipeline needs two K tiles, got k={k}, block_k={block_k}"
+            )
         total_tiles = batch * num_pid_m * num_pid_n
         grid_cta = min(sm_count, total_tiles)
         max_waves = (total_tiles + grid_cta - 1) // grid_cta + 1
-
-        scale_a_shape = (1,)
-        scale_b_shape = (1,)
 
         @T.macro
         def _decode_tile(flat_id, bs, ms, ns_, swz_m, swz_n):
@@ -447,12 +435,51 @@ def _bmm_fp8_persistent_ws_kernel(
             ms[0] = swz_m[0] * T.int32(block_m)
             ns_[0] = swz_n[0] * T.int32(block_n)
 
+        @T.macro
+        def consumer(wg, a_smem, c_local, c_cast, c_shared, prev_slot, gi_cons: T.Ref, ring, io):
+            """Consumer warpgroup ``wg``: WGMMA over rows ``wg * half_m`` up of each tile, then
+            its scaled, cast store through its own staging tile and named barrier."""
+            B_smem, ab_full, ab_empty, bs, ms, ns_, swz_m, swz_n, pid = ring
+            scale_a, scale_b, c = io
+            T.inc_max_nreg(240)
+            for w in T.serial(max_waves):
+                flat_id = T.int32(grid_cta) * w + pid
+                if flat_id < T.int32(total_tiles):
+                    _decode_tile(flat_id, bs, ms, ns_, swz_m, swz_n)
+                    for kk in T.Pipelined(k_iters, num_stages=0):
+                        slot = gi_cons % num_stages
+                        T.barrier_wait(ab_full[slot], (gi_cons // num_stages) & 1)
+                        T.wgmma_gemm(
+                            a_smem[slot, :, :],
+                            B_smem[slot, :, :],
+                            c_local,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullRow,
+                            clear_accum=(kk == 0),
+                        )
+                        if kk > 0:
+                            T.wait_wgmma(1)
+                            T.barrier_arrive(ab_empty[prev_slot[0]])
+                        prev_slot[0] = slot
+                        gi_cons = gi_cons + 1
+                    T.wait_wgmma(0)
+                    T.barrier_arrive(ab_empty[prev_slot[0]])
+                    T.warpgroup_fence_operand(c_local, num_regs=64)
+                    for i, j in T.Parallel(half_m, block_n):
+                        c_local[i, j] = c_local[i, j] * scale_a[0] * scale_b[0]
+                    T.copy(c_local, c_cast)
+                    T.sync_threads(barrier_id=4 + wg, arrive_count=128)
+                    T.copy(c_cast, c_shared)
+                    T.fence_proxy_async()
+                    T.sync_threads(barrier_id=4 + wg, arrive_count=128)
+                    T.copy(c_shared, c[bs[0], ms[0] + half_m if wg else ms[0], ns_[0]])
+
         @T.prim_func
         def _bmm_fp8_persistent_ws_main(
             a: T.Tensor((batch, m, k), dtype),  # type: ignore
             b: T.Tensor((batch, n, k), dtype),  # type: ignore  # N-major B
-            scale_a: T.Tensor(scale_a_shape, "float32"),  # type: ignore
-            scale_b: T.Tensor(scale_b_shape, "float32"),  # type: ignore
+            scale_a: T.Tensor((1,), "float32"),  # type: ignore
+            scale_b: T.Tensor((1,), "float32"),  # type: ignore
             c: T.Tensor((batch, m, n), out_dtype),  # type: ignore
         ) -> None:
             with T.Kernel(grid_cta, threads=threads) as (pid,):
@@ -540,90 +567,19 @@ def _bmm_fp8_persistent_ws_kernel(
                                 T.barrier_arrive(ab_full[slot])
                                 gi_prod = gi_prod + 1
 
-                # Consumer WG0: 128 ≤ tx < 256 — top half (rows 0..half_m)
-                elif tx < 256:
-                    T.inc_max_nreg(240)
-
-                    for w in T.serial(max_waves):
-                        flat_id = T.int32(grid_cta) * w + pid
-
-                        if flat_id < T.int32(total_tiles):
-                            _decode_tile(flat_id, bs, ms, ns_, swz_m, swz_n)
-
-                            for kk in T.Pipelined(k_iters, num_stages=0):
-                                slot = gi_cons_0 % num_stages
-                                T.barrier_wait(ab_full[slot], (gi_cons_0 // num_stages) & 1)
-                                T.wgmma_gemm(
-                                    A_smem_top[slot, :, :],
-                                    B_smem[slot, :, :],
-                                    C_local_wg0,
-                                    transpose_B=True,
-                                    policy=T.GemmWarpPolicy.FullRow,
-                                    clear_accum=(kk == 0),
-                                )
-
-                                if kk > 0:
-                                    T.wait_wgmma(1)
-                                    T.barrier_arrive(ab_empty[ps0[0]])
-                                ps0[0] = slot
-                                gi_cons_0 = gi_cons_0 + 1
-
-                            T.wait_wgmma(0)
-                            T.barrier_arrive(ab_empty[ps0[0]])
-                            T.warpgroup_fence_operand(C_local_wg0, num_regs=64)
-
-                            for i, j in T.Parallel(half_m, block_n):
-                                C_local_wg0[i, j] = C_local_wg0[i, j] * scale_a[0] * scale_b[0]
-                            T.copy(C_local_wg0, C_local_cast_wg0)
-
-                            T.sync_threads(barrier_id=4, arrive_count=128)
-                            T.copy(C_local_cast_wg0, C_shared_wg0)
-
-                            T.fence_proxy_async()
-                            T.sync_threads(barrier_id=4, arrive_count=128)
-                            T.copy(C_shared_wg0, c[bs[0], ms[0], ns_[0]])
-
-                # Consumer WG1: tx ≥ 256 — bottom half (rows half_m..block_m)
                 else:
-                    T.inc_max_nreg(240)
-
-                    for w in T.serial(max_waves):
-                        flat_id = T.int32(grid_cta) * w + pid
-
-                        if flat_id < T.int32(total_tiles):
-                            _decode_tile(flat_id, bs, ms, ns_, swz_m, swz_n)
-
-                            for kk in T.Pipelined(k_iters, num_stages=0):
-                                slot = gi_cons_1 % num_stages
-                                T.barrier_wait(ab_full[slot], (gi_cons_1 // num_stages) & 1)
-                                T.wgmma_gemm(
-                                    A_smem_bot[slot, :, :],
-                                    B_smem[slot, :, :],
-                                    C_local_wg1,
-                                    transpose_B=True,
-                                    policy=T.GemmWarpPolicy.FullRow,
-                                    clear_accum=(kk == 0),
-                                )
-                                if kk > 0:
-                                    T.wait_wgmma(1)
-                                    T.barrier_arrive(ab_empty[ps1[0]])
-                                ps1[0] = slot
-                                gi_cons_1 = gi_cons_1 + 1
-
-                            T.wait_wgmma(0)
-                            T.barrier_arrive(ab_empty[ps1[0]])
-                            T.warpgroup_fence_operand(C_local_wg1, num_regs=64)
-
-                            for i, j in T.Parallel(half_m, block_n):
-                                C_local_wg1[i, j] = C_local_wg1[i, j] * scale_a[0] * scale_b[0]
-                            T.copy(C_local_wg1, C_local_cast_wg1)
-                            # WG1's own named barrier (id=5) guards
-                            # C_shared_wg1 reuse across waves.
-                            T.sync_threads(barrier_id=5, arrive_count=128)
-                            T.copy(C_local_cast_wg1, C_shared_wg1)
-                            T.fence_proxy_async()
-                            T.sync_threads(barrier_id=5, arrive_count=128)
-                            T.copy(C_shared_wg1, c[bs[0], ms[0] + half_m, ns_[0]])
+                    ring = (B_smem, ab_full, ab_empty, bs, ms, ns_, swz_m, swz_n, pid)
+                    io = (scale_a, scale_b, c)
+                    if tx < 256:
+                        consumer(
+                            0, A_smem_top, C_local_wg0, C_local_cast_wg0, C_shared_wg0, ps0,
+                            gi_cons_0, ring, io,
+                        )  # fmt: skip
+                    else:
+                        consumer(
+                            1, A_smem_bot, C_local_wg1, C_local_cast_wg1, C_shared_wg1, ps1,
+                            gi_cons_1, ring, io,
+                        )  # fmt: skip
 
         return _bmm_fp8_persistent_ws_main
 
@@ -936,12 +892,9 @@ class _PingPongBand(NamedTuple):
 class BMMPingPongKernel(BMMPersistentKernel):
     """Persistent BMM on two ping-pong math warp-groups of 128x128 tiles, on a calibrated board.
 
-    Each math warp-group runs whole tiles, the CTA's tiles taken in turn, so one group's
-    tile change and epilogue run under the other's mainloop. :class:`BMMPersistentKernel`
-    splits each 128x256 tile's rows between its groups, which drain, cast and store
-    together with the tensor pipe idle. A CTA running one or two of those tiles over a
-    short K pays that once or twice against a short mainloop; :meth:`refusal` states the
-    band where that outweighs the 128x128 tile's extra operand traffic.
+    Each math warp-group runs whole tiles in turn, so one group's epilogue runs under the
+    other's mainloop; :meth:`refusal` states the band where that outweighs the 128x128
+    tile's extra operand traffic.
     """
 
     preferred_over = frozenset({"bmm_persistent"})
@@ -1007,15 +960,17 @@ class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
     supported_archs: list[int] = [89, 90]
 
     @staticmethod
-    def _k_refusal(k: int) -> str | None:
-        """The FP8 WGMMA K-step is 32 elements wide."""
+    def _operand_refusal(k: int, dtype: torch.dtype) -> str | None:
+        """The programs read e4m3 operands in 32-wide FP8 WGMMA K steps."""
+        if dtype != torch.float8_e4m3fn:
+            return f"requires float8_e4m3fn operands, got {dtype}"
         if k % 32 == 0:
             return None
         return f"requires k a multiple of 32 (the FP8 WGMMA K step), got k={k}"
 
     @classmethod
     def refusal(cls, call: BMMFP8Call) -> str | None:
-        return cls._k_refusal(call.k)
+        return cls._operand_refusal(call.k, call.dtype)
 
     @classmethod
     def entry_for(cls, call: BMMFP8Call) -> Entry:
@@ -1037,7 +992,7 @@ class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
         device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        reason = self._k_refusal(k)
+        reason = self._operand_refusal(k, dtype)
         if reason is not None:
             raise ValueError(f"{type(self).__name__} {reason}")
         self.batch = batch
@@ -1068,7 +1023,9 @@ class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
             whole_tiles: Whether a tile must divide every extent, which the persistent
                 grid needs because its body carries no epilogue guard.
         """
-        budget = 200 * 1024
+        # 27 KiB under the opt-in limit: the estimate below counts only the operand ring
+        # and the output tile.
+        budget = BLOCK_SHARED_BYTES_OPT_IN[90] - 27 * 1024
         configs = []
         # No 256-row tile: both programs return wrong products with one (eight warps over
         # 256 rows), whole tiles or not, so tuning must not be able to pick it.
@@ -1107,10 +1064,6 @@ class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
     ) -> torch.Tensor:
-        if self.dtype != torch.float8_e4m3fn:
-            raise NotImplementedError(
-                f"{type(self).__name__} only supports torch.float8_e4m3fn, got {self.dtype}"
-            )
         return self.program(self._compile)(a, b, scale_a, scale_b)
 
     def _compile(self, cfg: dict) -> Callable:
@@ -1260,13 +1213,8 @@ class BMMFP8Kernel(_BMMFP8Kernel):
         )
 
     @property
-    def _arch(self) -> int:
-        """The architecture this instance compiled for, which sizes its shared memory."""
-        return self.build_target.arch
-
-    @property
     def default_config(self) -> dict:
-        arch = self._arch
+        arch = self.build_target.arch
         if arch != 90:
             # Smaller tiles expose more parallelism while the grid fits in one wave.
             small_grid = self.batch * tilelang.cdiv(self.m, 64) * tilelang.cdiv(self.n, 64)
@@ -1288,11 +1236,12 @@ class BMMFP8Kernel(_BMMFP8Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if self._arch == 90:
+        arch = self.build_target.arch
+        if arch == 90:
             return self._sm90_tile_grid(self.m, self.n, self.k, whole_tiles=False)
         # A narrower sweep under the pre-SM90 per-block shared-memory limit; the copy
         # path zero-pads the K tail, so no candidate is filtered on k.
-        budget = BLOCK_SHARED_BYTES_OPT_IN[self._arch]
+        budget = BLOCK_SHARED_BYTES_OPT_IN[arch]
         return [
             {
                 "block_m": block_m,

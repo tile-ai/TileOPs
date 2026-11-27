@@ -1,5 +1,6 @@
 """Torch references of the hyper-connection ops that no library reference covers."""
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -125,18 +126,19 @@ def hc_post(
     return (post_layer_mix.float() * x.float().unsqueeze(-2) + mixed).to(torch.bfloat16)
 
 
+@dataclass(eq=False)
 class HyperConnectionPostWorkload(WorkloadBase):
     """``HyperConnectionPostFwdOp`` over tokens of ``shape``: ``n`` residual streams of ``c``
     columns, the mixes in ``mix_dtype``. ``post_layer_mix`` is twice a sigmoid, as the pre
     step makes it, and each row of ``comb_res_mix`` a softmax."""
 
-    def __init__(
-        self, shape: tuple[int, ...], n: int, c: int, mix_dtype: torch.dtype = torch.float32
-    ):
-        self.shape = tuple(shape)
-        self.n = n
-        self.c = c
-        self.mix_dtype = mix_dtype
+    shape: tuple[int, ...]
+    n: int
+    c: int
+    mix_dtype: torch.dtype = torch.float32
+
+    def __post_init__(self) -> None:
+        self.shape = tuple(self.shape)
 
     @classmethod
     def from_call(cls, call: Any) -> "HyperConnectionPostWorkload":
@@ -163,24 +165,20 @@ class HyperConnectionPostWorkload(WorkloadBase):
         return hc_post(x, residual, post_layer_mix, comb_res_mix)
 
 
+@dataclass(eq=False)
 class HyperConnectionHeadWorkload(WorkloadBase):
     """``HyperConnectionHeadFwdOp`` over tokens of ``shape``: ``n`` streams of ``c`` columns.
     ``hc_fn`` is scaled so that a normalized token's projections are of order one, where the
     sigmoid is steepest."""
 
-    def __init__(
-        self,
-        shape: tuple[int, ...],
-        n: int,
-        c: int,
-        rms_norm_eps: float = 1e-6,
-        hc_eps: float = 1e-6,
-    ):
-        self.shape = tuple(shape)
-        self.n = n
-        self.c = c
-        self.rms_norm_eps = rms_norm_eps
-        self.hc_eps = hc_eps
+    shape: tuple[int, ...]
+    n: int
+    c: int
+    rms_norm_eps: float = 1e-6
+    hc_eps: float = 1e-6
+
+    def __post_init__(self) -> None:
+        self.shape = tuple(self.shape)
 
     @classmethod
     def from_call(cls, call: Any) -> "HyperConnectionHeadWorkload":

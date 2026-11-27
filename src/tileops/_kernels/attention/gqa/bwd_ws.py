@@ -665,24 +665,9 @@ def _gqa_bwd_ws_post_kernel(
 class GQABwdWSKernel(Kernel, GQABwdInterface):
     """Warp-specialized causal or full GQA/MHA backward for head dim 128 on SM90.
 
-    Persistent: one CTA per SM claims tiles in launch order, and the next tile's K and V
-    load while the current tile's dK and dV are written out. A tile is one 128-row key block
-    of one KV head and a chunk of the query heads that share it, walked head by head. One
-    producer warp streams Q, dO, LSE and delta through a two-stage TMA ring; two consumer
-    warpgroups each own 64 of the tile's key rows and keep dK and dV in registers across the
-    chunk; one more producer warp per consumer warpgroup adds that warpgroup's half of each
-    dQ tile into an f32 accumulator with a bulk reduction. The accumulator is laid out in
-    WGMMA register order, and the second launch of :meth:`forward` lands it in the layout
-    and dtype of ``q``. When a KV head's query heads span several chunks, each chunk adds
-    f32 partials of dK and dV the same way, and the last chunk to land writes them out.
-
-    The instance holds two dQ accumulators: each call adds into one while one thread per
-    CTA zeroes the other for the next call, and a device-side parity the landing launch
-    flips picks between them. The landing launch starts as a programmatic dependent once
-    no tile is left to claim and lands each head as soon as every key block has added into
-    it. The backward itself starts as a programmatic dependent of the preprocess and waits
-    for it only before its first delta load, so ``q``, ``k``, ``v``, ``do`` and ``lse``
-    must be complete before the kernel launched ahead of it starts.
+    The backward starts as a programmatic dependent of the preprocess and waits for it only
+    before its first delta load, so ``q``, ``k``, ``v``, ``do`` and ``lse`` must be complete
+    before the kernel launched ahead of it starts.
 
     The tile counter, the dK/dV accumulator and its landing counts, the dQ accumulators
     and their counts live in the instance, and every call leaves them ready for the next,

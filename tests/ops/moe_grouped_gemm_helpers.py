@@ -5,6 +5,7 @@ import math
 import torch
 
 from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 # An output value no valid row produces.
 SENTINEL = -12288.0
@@ -16,6 +17,36 @@ def contiguous_layout(packing: str, metadata_kind: str, alignment: int = 1) -> d
     return {
         "contiguous": {"packing": packing, "metadata_kind": metadata_kind, "alignment": alignment}
     }
+
+
+def masked_call(op: str, max_m: int, dtype_case: dict | None = None, **dims):
+    """*op*'s manifest call on slabs of *max_m* rows."""
+    # T only feeds the generated counts; half the slabs' capacity keeps every count in range.
+    dims.setdefault("T", dims["E"] * max_m // 2)
+    return manifest_call(op, dtype_case, layout={"masked": {"max_m": max_m}}, **dims)
+
+
+def contiguous_call(op: str, layout: dict, sizes: list, dtype_case: dict | None = None, **dims):
+    """*op*'s manifest call on *layout*'s runs of *sizes* rows, one run an expert."""
+    spec = layout["contiguous"]
+    if spec["metadata_kind"] == "physical_psum":
+        align = spec["alignment"]
+        dims["P"] = sum(-(-size // align) * align for size in sizes)
+    return manifest_call(op, dtype_case, layout=layout, E=len(sizes), sizes=sizes, **dims)
+
+
+def check_against_reference(out: torch.Tensor, workload, *inputs) -> None:
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+
+
+def check_manifest_row(op_type, workload_type, row: dict, dtype_case: dict | None = None) -> None:
+    """A manifest row, with its generated valid counts, gives the reference in bfloat16."""
+    fields = {key: value for key, value in row.items() if key not in ("label", "dtype_cases")}
+    workload = workload_type(manifest_call(op_type.__name__, dtype_case, **fields))
+    inputs = workload.gen_inputs()
+    out = op_type(**workload.call.arguments())(*inputs)
+    assert out.dtype is torch.bfloat16
+    check_against_reference(out, workload, *inputs)
 
 
 def with_counts(workload, counts: list) -> tuple:
@@ -35,7 +66,5 @@ def run_into_guarded_out(op, workload, *inputs) -> torch.Tensor:
     assert got is out
     assert bool((flat[-guard:] == SENTINEL).all()), "a store ran past the output"
     reference_inputs = (*inputs[:-1], metadata.clamp(0, a.shape[1])) if a.ndim == 3 else inputs
-    compare_outputs(
-        got, workload.ref_program(*reference_inputs), workload.verification(*reference_inputs)
-    )
+    check_against_reference(got, workload, *reference_inputs)
     return got

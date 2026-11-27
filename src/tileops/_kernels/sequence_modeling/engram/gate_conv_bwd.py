@@ -6,12 +6,6 @@ computes:
     dk, dv, dH          — gradients w.r.t. projection outputs and hidden state
     drms_w_h, drms_w_v  — gradients w.r.t. RMSNorm weights
     dconv_w             — gradient w.r.t. conv weights
-
-Staged design:
-    Pass 1:  SiLU+residual bwd -> store d_silu_out to buffer
-    Pass 1a: Reduce dconv_w from the buffered d_silu values, one run of tokens a CTA
-    Pass 1b: Conv transpose -> RMSNorm(v_hat) bwd -> d(v_hat)
-    Pass 2:  Gate bwd -> RMSNorm(H) bwd, RMSNorm(k) bwd -> dH, dk, dv
 """
 
 import tilelang
@@ -45,6 +39,20 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, dtype, run_len):
         compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _func(threads):
+        @T.macro
+        def rmsnorm_bwd(x, rrms, w, scale, grad, scratch, total, out):
+            """*out* = the gradient at RMSNorm's input *x*, given ``scale * grad`` at its output:
+            rrms * w * g - rrms^3 * x * sum(x * w * g) / d."""
+            for j in T.Parallel(d_padded):
+                term = x[j] * T.cast(w[j], accum_dtype)
+                scratch[0, j] = (term if scale is None else term * scale) * grad[j]
+            T.reduce_sum(scratch, total, dim=1)
+            for j in T.Parallel(d_padded):
+                term = rrms * T.cast(w[j], accum_dtype)
+                out[j] = (term if scale is None else term * scale) * grad[
+                    j
+                ] - rrms * rrms * rrms * x[j] * total[0] / float(d)
+
         @T.prim_func
         def main(
             dY: T.Tensor((M, seq_len, d_padded), dtype),
@@ -151,11 +159,8 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, dtype, run_len):
                     # Transpose: d_input[t] = sum_p w[p] * d_out[t+(KS-1)-p]
                     dst_t = tid + (KS - 1) - p
                     for j in T.Parallel(d_padded):
-                        d_si = T.if_then_else(
-                            (dst_t >= 0) * (dst_t < seq_len),
-                            dvhat_buf[bid, dst_t, j],
-                            0.0,
-                        )
+                        # dst_t >= tid: only the sequence's end bounds it.
+                        d_si = T.if_then_else(dst_t < seq_len, dvhat_buf[bid, dst_t, j], 0.0)
                         d_vnorm[j] += T.cast(conv_w[p, j], accum_dtype) * d_si
 
                 rrms_v_val = rrms_v[bid, tid]
@@ -170,16 +175,9 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, dtype, run_len):
                         d_vnorm[j] * vhat_local[j] * rrms_v_val,
                     )
 
-                # RMSNorm(vhat) -> d(vhat)
-                # d(vhat) = rrms * w * d_vnorm - rrms^3 * vhat * (1/d) * sum(vhat * w * d_vnorm)
-                for j in T.Parallel(d_padded):
-                    dot_2d[0, j] = vhat_local[j] * T.cast(rms_w_v[j], accum_dtype) * d_vnorm[j]
-                T.reduce_sum(dot_2d, dot_sum, dim=1)
-
-                for j in T.Parallel(d_padded):
-                    dvhat_local[j] = rrms_v_val * T.cast(rms_w_v[j], accum_dtype) * d_vnorm[
-                        j
-                    ] - rrms_v_val * rrms_v_val * rrms_v_val * vhat_local[j] * dot_sum[0] / float(d)
+                rmsnorm_bwd(
+                    vhat_local, rrms_v_val, rms_w_v, None, d_vnorm, dot_2d, dot_sum, dvhat_local
+                )
 
                 # Residual gradient from the SiLU bypass.
                 for j in T.Parallel(d_padded):
@@ -234,19 +232,17 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, dtype, run_len):
                     h_norm_local[j] = h_local[j] * rrms_h_val * T.cast(rms_w_h[j], accum_dtype)
                     k_norm_local[j] = k_local[j] * rrms_k_val * T.cast(rms_w_h[j], accum_dtype)
 
-                # RMSNorm(H) -> dH
                 # d(h_norm) = ddot * k_norm
-                for j in T.Parallel(d_padded):
-                    dot_h_2d[0, j] = (
-                        h_local[j] * T.cast(rms_w_h[j], accum_dtype) * ddot_val * k_norm_local[j]
-                    )
-                T.reduce_sum(dot_h_2d, dot_h_sum, dim=1)
-                for j in T.Parallel(d_padded):
-                    dh_local[j] = rrms_h_val * T.cast(
-                        rms_w_h[j], accum_dtype
-                    ) * ddot_val * k_norm_local[j] - rrms_h_val * rrms_h_val * rrms_h_val * h_local[
-                        j
-                    ] * dot_h_sum[0] / float(d)
+                rmsnorm_bwd(
+                    h_local,
+                    rrms_h_val,
+                    rms_w_h,
+                    ddot_val,
+                    k_norm_local,
+                    dot_h_2d,
+                    dot_h_sum,
+                    dh_local,
+                )
 
                 for j in T.Parallel(d_padded):
                     T.atomic_add(
@@ -254,18 +250,17 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, dtype, run_len):
                         ddot_val * k_norm_local[j] * h_local[j] * rrms_h_val,
                     )
 
-                # RMSNorm(k) -> dk
-                for j in T.Parallel(d_padded):
-                    dot_k_2d[0, j] = (
-                        k_local[j] * T.cast(rms_w_h[j], accum_dtype) * ddot_val * h_norm_local[j]
-                    )
-                T.reduce_sum(dot_k_2d, dot_k_sum, dim=1)
-                for j in T.Parallel(d_padded):
-                    dk_local[j] = rrms_k_val * T.cast(
-                        rms_w_h[j], accum_dtype
-                    ) * ddot_val * h_norm_local[j] - rrms_k_val * rrms_k_val * rrms_k_val * k_local[
-                        j
-                    ] * dot_k_sum[0] / float(d)
+                # d(k_norm) = ddot * h_norm
+                rmsnorm_bwd(
+                    k_local,
+                    rrms_k_val,
+                    rms_w_h,
+                    ddot_val,
+                    h_norm_local,
+                    dot_k_2d,
+                    dot_k_sum,
+                    dk_local,
+                )
 
                 for j in T.Parallel(d_padded):
                     T.atomic_add(

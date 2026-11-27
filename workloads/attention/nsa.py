@@ -94,9 +94,8 @@ class NSAFwdWorkload(WorkloadBase):
         self.head_kv = self.heads // self.groups
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        # block_counts and block_indices decide how much this call reads, so its
-        # roofline moves with them. They come from this workload's own generator,
-        # not the global stream, which a draw added anywhere upstream shifts.
+        # block_counts and block_indices decide what the call reads, so they come from the
+        # workload's own generator.
         g = self.rng(device=run_device())
         cu_seqlens = _packed_offsets(self.seq_lens, self.batch, self.c_seq_len, 16)
         if self.kv_lens is None:
@@ -133,10 +132,8 @@ class NSAFwdWorkload(WorkloadBase):
         else:
             chunks = (n_key + self.block_size - 1) // self.block_size
         n_cand = max(int(chunks.max().item()), self.selected_blocks)
-        # Each token picks selected_blocks distinct blocks out of its candidates. Sorting
-        # one random key per candidate is a batched randperm; the ineligible tail sorts
-        # last under +inf, and a pick that reaches there becomes a slot past every key,
-        # which the kernel and the reference both read as "attends to nothing".
+        # A batched randperm over each token's candidates; a pick in the ineligible tail,
+        # sorted last under +inf, becomes a slot past every key, which attends to nothing.
         keys = torch.rand(
             (self.c_seq_len, self.head_kv, n_cand), device=run_device(), generator=g
         ).masked_fill(

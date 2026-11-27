@@ -111,14 +111,8 @@ class CallSpec:
         return self.device.index if self.device is not None else None
 
     def _read_device_facts(self) -> None:
-        """Fill the device facts the caller left unstated from ``device``.
-
-        Read through ``tileops.backend._dispatch.device_facts_and_tuning``: TileOPs
-        reads CUDA's, a backend registers another device type's, and a device of a type
-        nobody registered has none. Only a CUDA device has tuning facts. A record that
-        named no device reads the current one of the process's accelerator, and has none
-        where there is no accelerator.
-        """
+        """Fill the device facts the caller left unstated from ``device``, the current one
+        when it is ``None``, through ``tileops.backend._dispatch.device_facts_and_tuning``."""
         from tileops.backend._dispatch import device_facts_and_tuning
 
         read, tuning = device_facts_and_tuning(self.device)
@@ -166,11 +160,7 @@ class CallSpec:
                 )
 
     def __str__(self) -> str:
-        """The facts of the call, without the fields nobody set.
-
-        A selection failure names the call, and a record of mostly default
-        fields buries the device facts that decided it.
-        """
+        """The device facts of the call, then the fields that differ from their defaults."""
         facts = {name: getattr(self, name) for name in _DEVICE_FACTS}
         stated = [
             f"{f.name}={getattr(self, f.name)!r}"

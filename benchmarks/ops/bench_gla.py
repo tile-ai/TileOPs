@@ -19,7 +19,7 @@ fused_recurrent_gla = optional_baseline("fla.ops.gla", "fla", "fused_recurrent_g
 
 # Chunkwise: FLA's chunk_gla is required; a torch reference is not a comparison worth recording.
 # TileOPs and FLA both use BTHD: q/k [B, T, H, K], v [B, T, H, V], g [B, T, H, K].
-@pytest.mark.parametrize("case", bench.cases(GLAChunkFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GLAChunkFwdOp))
 def test_gla_chunk_fwd_bench(case) -> None:
     chunk_gla = baseline_module("fla.ops.gla", "fla").chunk_gla
 
@@ -34,7 +34,7 @@ def test_gla_chunk_fwd_bench(case) -> None:
     bench.Runner(op, case).compare({"fla": bench.Implementation(run=fla_fwd, args=())})
 
 
-@pytest.mark.parametrize("case", bench.cases(GLAChunkBwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GLAChunkBwdOp))
 def test_gla_bwd_bench(case) -> None:
     chunk_gla = baseline_module("fla.ops.gla", "fla").chunk_gla
 
@@ -56,7 +56,7 @@ def test_gla_bwd_bench(case) -> None:
     bench.Runner(bwd_op, case).compare({"fla": bench.Implementation(run=fla_bwd, args=())})
 
 
-@pytest.mark.parametrize("case", bench.cases(GLAFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GLAFwdOp))
 def test_gla_fwd_bench(case) -> None:
     op = GLAFwdOp(**case.arguments)
     bench.Runner(op, case).compare({"fla": case.reference})
@@ -65,7 +65,7 @@ def test_gla_fwd_bench(case) -> None:
 # Decode: against FLA's fused_recurrent_gla at T=1 when it is installed, and torch.
 
 
-@pytest.mark.parametrize("case", bench.cases(GLARecurrentFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GLARecurrentFwdOp))
 def test_gla_decode_bench(case) -> None:
     op = GLARecurrentFwdOp(**case.arguments)
     implementations = {}

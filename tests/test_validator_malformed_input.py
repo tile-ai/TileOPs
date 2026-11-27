@@ -1,9 +1,7 @@
 """A malformed entry is reported, never raised on.
 
-An entry can hold anything a YAML file can hold. When a check assumes a mapping
-and gets a string, the run dies and the entry's other problems go unreported —
-which is the opposite of what a validator is for. These drive every malformed
-shape through every level.
+Every malformed entry shape runs through every level: a check that assumes a mapping and
+gets a string must not abort the run and hide the entry's other problems.
 """
 
 import importlib.util
@@ -19,9 +17,7 @@ pytestmark = pytest.mark.smoke
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR = REPO_ROOT / "scripts" / "validate_manifest.py"
 
-#: The shapes a broken entry takes. The well-formed manifest exercises none of
-#: them: the code paths reporting missing or mistyped fields only run on an
-#: entry that has them.
+# The shapes a broken entry takes; the real manifest exercises none of them.
 MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
     (
         "empty_entry",
@@ -187,10 +183,6 @@ def test_reports_rather_than_raises(validator, written, fixture_name, level):
 
 
 def test_a_broken_field_does_not_hide_the_others(validator, written):
-    """One unreadable field must not stop the rest of the entry being read.
-
-    The parser accumulates for this reason: an entry with a bad roofline and a
-    bad signature should say so about both.
-    """
+    """An entry with a bad roofline and a bad signature reports both."""
     errors, _ = validator.validate_manifest(manifest_path=written["wrong_types"])
     assert len(errors) > 1, errors

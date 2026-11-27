@@ -49,6 +49,9 @@ _CASES = (
         marks=_SMOKE,
         id="chunk-tail-run-fp32",
     ),
+    # 17 channels of two lanes: the second warp holds one live channel, and its other lanes
+    # must still reach the shuffle that sums each channel's lanes.
+    pytest.param(2, 1, 17, 16, 1, "bfloat16", _MAMBA, True, marks=_FULL, id="step-partial-warp"),
     pytest.param(
         2, 1024, 64, 16, 1, "bfloat16", _MAMBA, True, marks=_FULL, id="chunk-full-runs-bf16"
     ),
@@ -154,7 +157,7 @@ def test_selective_scan(batch, seqlen, dim, dstate, groups, dtype, some, softplu
     ],
 )
 def test_selective_scan_growing_rates(packed, carried, sign, drive, rate) -> None:
-    """Regression: where ``dt * A > 0``, a rising rate or, without the softplus, a negative
+    """Where ``dt * A > 0``, a rising rate or, without the softplus, a negative
     step under a falling rate, the decay product over a run overflows float32 before the
     state it scales does; and a restart follows a state its input overflowed. The scan must
     keep the step-by-step recurrence's values: zero for a zero state, a carried state finite

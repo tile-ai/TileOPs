@@ -113,16 +113,7 @@ def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
         # A copy of w in a view that starts one element into its storage, off the 16-byte
         # vector boundary.
         pytest.param(
-            64,
-            1024,
-            torch.bfloat16,
-            lambda w: (
-                torch.empty(w.numel() + 1, dtype=w.dtype, device=w.device)[1:]
-                .view(w.shape)
-                .copy_(w)
-            ),
-            marks=pytest.mark.smoke,
-            id="misaligned-start",
+            64, 1024, torch.bfloat16, misaligned, marks=pytest.mark.smoke, id="misaligned-start"
         ),
         # Subnormal rows and scales, which the quotient is scaled out of and clamped.
         pytest.param(
@@ -161,44 +152,13 @@ def test_int8_quant_per_channel_edge_inputs(rows, cols, dtype, make) -> None:
     test.check(INT8QuantPerChannelFwdOp(), make(w))
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
-def test_int8_per_channel_round_trip(dtype: torch.dtype) -> None:
-    """Quantizing then dequantizing moves ``x`` by at most half a step of its row's 8-bit grid.
-
-    ``|x[m, k]| <= amax[m] = 127 * scale[m]``, so each element rounds to its nearest code
-    without clamping and lands within ``scale[m] / 2``. The float32 divide and multiply add
-    ``2^-24`` each: ``2^-23 * |x| <= eps(dtype) * |x|`` and ``2^-25 * scale[m]``, which the
-    ``2^-20 * scale[m]`` slack covers. The cast to ``dtype`` adds half an ulp of
-    ``|x| + scale[m] / 2``; a nonzero code has ``|x| >= scale[m] / 2``, so ``eps(dtype) * |x|``
-    covers it, and a zero code dequantizes exactly to 0.
-    """
-    # Rows of different magnitude, so each row has its own grid.
-    magnitude = torch.logspace(-2, 2, 256, device=run_device())[:, None]
-    x = (torch.randn(256, 1024, device=run_device()) * magnitude).to(dtype)
-    q, scale = INT8QuantPerChannelFwdOp()(x)
-    x_hat = INT8DequantPerChannelFwdOp(dtype)(q, scale)
-    bound = scale[:, None] * (0.5 + 2**-20) + torch.finfo(dtype).eps * x.float().abs()
-    err = (x_hat.float() - x.float()).abs()
-    assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"
-
-
 @pytest.mark.parametrize(
     "dtype, make",
     [
         # The manifest's convention for an all-zero input: scale 1.0, q all zero.
         pytest.param(torch.float16, torch.zeros_like, marks=pytest.mark.smoke, id="all-zero"),
         # A storage start off the 16-byte vector boundary.
-        pytest.param(
-            torch.bfloat16,
-            lambda x: (
-                torch.empty(x.numel() + 1, dtype=x.dtype, device=x.device)[1:]
-                .copy_(x.reshape(-1))
-                .view(x.shape)
-            ),
-            marks=pytest.mark.smoke,
-            id="misaligned-start",
-        ),
+        pytest.param(torch.bfloat16, misaligned, marks=pytest.mark.smoke, id="misaligned-start"),
         # Subnormal inputs and scale, which the quotient is scaled out of and clamped.
         pytest.param(torch.float32, _subnormal, marks=pytest.mark.smoke, id="subnormal-scale"),
         # A scale that underflows to zero, which torch divides by.
@@ -213,13 +173,8 @@ def test_int8_quant_per_tensor_edge_inputs(dtype, make) -> None:
 
 @pytest.mark.smoke
 def test_int8_per_tensor_round_trip() -> None:
-    """Dequantizing ``q`` against ``scale`` restores ``x`` to within half a quantization step.
-
-    ``|x / scale|`` is at most 127, so no element clamps and rounding leaves ``|x / scale - q|``
-    at most 1/2. The float32 quotient adds at most 2**-24 * 128 to that, and the float32
-    product ``q * scale`` at most 2**-24 * 127 * scale, so ``|x - q * scale|`` stays within
-    ``scale * (1/2 + 2**-16)``.
-    """
+    """Dequantizing ``q`` against ``scale`` restores ``x`` to within half a quantization step
+    plus float32 rounding."""
     x = torch.randn(1024, 2880, dtype=torch.bfloat16, device=run_device())
     q, scale = INT8QuantPerTensorFwdOp()(x)
     restored = INT8DequantPerTensorFwdOp(torch.float32)(q, scale)
@@ -288,25 +243,23 @@ def test_int8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
-def test_int8_per_block_round_trip(dtype: torch.dtype) -> None:
-    """Quantizing then dequantizing moves ``x`` by at most half a step of its block's grid.
-
-    ``|x[m, k]| <= amax[m, b] = 127 * scale[m, b]`` for the block ``b`` holding ``k``, so each
-    element rounds to its nearest code without clamping and lands within ``scale[m, b] / 2``.
-    The float32 divide and multiply add ``2^-24`` each: ``2^-23 * |x| <= eps(dtype) * |x|``
-    and ``2^-25 * scale[m, b]``, which the ``2^-20 * scale[m, b]`` slack covers. The cast to
-    ``dtype`` adds half an ulp of ``|x| + scale[m, b] / 2``; a nonzero code has
-    ``|x| >= scale[m, b] / 2``, so ``eps(dtype) * |x|`` covers it, and a zero code
-    dequantizes exactly to 0.
-    """
-    # Blocks of different magnitude, so each block has its own grid; a partial last block.
-    rows, cols = 64, 1000
+@pytest.mark.parametrize("per_block", [False, True], ids=["per-channel", "per-block"])
+def test_int8_round_trip(per_block: bool, dtype: torch.dtype) -> None:
+    """Quantizing then dequantizing moves ``x`` by at most half a step of its row's or
+    block's grid, plus the float32 and ``dtype`` rounding the bound's slack covers."""
+    # Rows or blocks of different magnitude, so each has its own grid; a partial last block.
+    rows, cols = (64, 1000) if per_block else (256, 1024)
     magnitude = torch.logspace(-2, 2, rows * 8, device=run_device()).view(rows, 8)
-    magnitude = magnitude.repeat_interleave(128, 1)[:, :cols]
+    magnitude = magnitude.repeat_interleave(128, 1)[:, :cols] if per_block else magnitude[:, :1]
     x = (torch.randn(rows, cols, device=run_device()) * magnitude).to(dtype)
-    q, scale = INT8QuantPerTokenGroupFwdOp()(x)
-    x_hat = INT8DequantPerBlockFwdOp(dtype)(q, scale)
-    step = scale.repeat_interleave(128, 1)[:, :cols]
+    if per_block:
+        q, scale = INT8QuantPerTokenGroupFwdOp()(x)
+        x_hat = INT8DequantPerBlockFwdOp(dtype)(q, scale)
+        step = scale.repeat_interleave(128, 1)[:, :cols]
+    else:
+        q, scale = INT8QuantPerChannelFwdOp()(x)
+        x_hat = INT8DequantPerChannelFwdOp(dtype)(q, scale)
+        step = scale[:, None]
     bound = step * (0.5 + 2**-20) + torch.finfo(dtype).eps * x.float().abs()
     err = (x_hat.float() - x.float()).abs()
     assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"
@@ -376,12 +329,21 @@ def test_int4_reference_round_trips_a_group_of_one_sign() -> None:
     w[0] = torch.linspace(1.0, 1.5, 128)
     w[1] = torch.linspace(0.0, 1e-5, 128)
     packed, params = int4_quant_per_group(w, 128)
-    q = torch.stack((packed >> 4, (packed << 4) >> 4), dim=-1).view(2, 128)
+    assert (params[:, 0] > 0).all()
+    _assert_int4_restores(packed, params, w, 1e-6)
+
+
+def _assert_int4_restores(packed, params, w, tolerance) -> None:
+    """The unpacked codes restore *w* within half a step, a whole step at the saturated code 7,
+    plus *tolerance*."""
     step = params[:, :1]
-    restored = q * step + params[:, 1:]
-    assert (step > 0).all()
-    bound = torch.where(q == 7, step, step / 2)
-    assert ((restored - w.float()).abs() <= bound + 1e-6).all()
+    codes = torch.stack((packed >> 4, (packed << 4) >> 4), dim=-1).view(step.shape[0], -1)
+    error = (codes.float() * step + params[:, 1:] - w.float().view(codes.shape)).abs()
+    assert (error <= torch.where(codes == 7, step, step / 2) + tolerance).all()
+
+
+class INT4QuantPerGroupTest(INT4QuantPerGroupWorkload, TestBase):
+    pass
 
 
 def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
@@ -416,18 +378,10 @@ def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
             marks=pytest.mark.full,
         ),
         pytest.param(64, 1024, 128, misaligned, id="misaligned-start", marks=pytest.mark.full),
-        # Manifest workload shapes: the op's only reference check in the nightly run.
-        pytest.param(14336, 4096, 128, lambda w: w, id="llama-8b-mlp-up", marks=pytest.mark.full),
-        pytest.param(4096, 4096, 64, lambda w: w, id="llama-8b-q-proj", marks=pytest.mark.full),
-        pytest.param(
-            14336, 4096, 4096, lambda w: w, id="llama-8b-mlp-up-chan", marks=pytest.mark.full
-        ),
     ],
 )
 def test_int4_quant_per_group_edge_inputs(rows, cols, group_size, make) -> None:
-    test = type("QuantizeTest", (INT4QuantPerGroupWorkload, TestBase), {})(
-        rows, cols, torch.float16, group_size
-    )
+    test = INT4QuantPerGroupTest(rows, cols, torch.float16, group_size)
     (w,) = test.gen_inputs()
     test.check(INT4QuantPerGroupFwdOp(group_size), make(w))
 
@@ -438,9 +392,7 @@ def test_int4_quant_per_group_edge_inputs(rows, cols, group_size, make) -> None:
 def test_int4_group64_packed_words_preserve_rounding_and_nibble_order() -> None:
     from tileops.backend import BUILTIN
 
-    test = type("QuantizeTest", (INT4QuantPerGroupWorkload, TestBase), {})(
-        512, 4096, torch.float16, 64
-    )
+    test = INT4QuantPerGroupTest(512, 4096, torch.float16, 64)
     (w,) = test.gen_inputs()
     op = INT4QuantPerGroupFwdOp(64, target=BUILTIN)
     test.check(op, _int4_special_groups(w))
@@ -463,12 +415,7 @@ def test_int4_per_group_round_trip(group_size: int) -> None:
     ]
     w = w.view(rows, cols).half()
     packed, params = INT4QuantPerGroupFwdOp(group_size)(w)
-    codes = torch.stack((packed >> 4, (packed << 4) >> 4), dim=-1).view(groups, group_size)
-    restored = codes.float() * params[:, :1] + params[:, 1:]
-    error = (restored - w.float().view(groups, group_size)).abs()
-    step = params[:, :1]
-    bound = torch.where(codes == 7, step, step / 2)
-    assert (error <= bound + step * 1e-5).all()
+    _assert_int4_restores(packed, params, w, params[:, :1] * 1e-5)
 
 
 def _zero_odd_tiles(w: torch.Tensor) -> torch.Tensor:

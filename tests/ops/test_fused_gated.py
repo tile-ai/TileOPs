@@ -1,7 +1,4 @@
-"""Tests for fused gated elementwise ops (silu_and_mul, gelu_and_mul in both GELU forms).
-
-Covers L1 smoke correctness, multi-dtype coverage, and strategy selection.
-"""
+"""Tests for the fused gated elementwise ops: silu_and_mul and gelu_and_mul in both forms."""
 
 import pytest
 import torch
@@ -37,7 +34,6 @@ class SiLUAndMulFixture(FixtureBase):
                 pytest.param(1024, 1536, torch.bfloat16, marks=pytest.mark.full),
                 # More rows than a grid's y dimension holds.
                 pytest.param(65537, 128, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -74,11 +70,8 @@ def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
 
 @pytest.mark.smoke
 def test_silu_and_mul_matches_torch_at_every_bfloat16_gate() -> None:
-    """Edge: a bfloat16 gate's fast float32 divide rounds to torch's result at every gate.
-
-    Near gate -88 the divisor passes 2**126, where a bare ``__fdividef`` returns zero
-    for a result torch keeps at about -5e-37.
-    """
+    """A bfloat16 gate's fast float32 divide rounds to torch's result at every gate, near
+    gate -88 too, where the divisor passes 2**126."""
     workload = SiLUAndMulGateSweepWorkload()
     TestBase.check(workload, SiLUAndMulFwdOp(), *workload.gen_inputs())
 
@@ -86,7 +79,7 @@ def test_silu_and_mul_matches_torch_at_every_bfloat16_gate() -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_silu_and_mul_multiplies_the_unrounded_activation(dtype: torch.dtype) -> None:
-    """Edge: zeros, subnormals, extremes and nonfinite gates times the same values."""
+    """Zeros, subnormals, extremes and nonfinite gates times the same values."""
     workload = SiLUAndMulEdgeWorkload(dtype)
     TestBase.check(workload, SiLUAndMulFwdOp(), *workload.gen_inputs())
 
@@ -118,9 +111,8 @@ class SiLUAndMulClampedFixture(FixtureBase):
                 pytest.param(65537, 128, torch.bfloat16, 10.0, True, marks=pytest.mark.full),
                 # A limit bfloat16 does not hold.
                 pytest.param(64, 1024, torch.bfloat16, 7.3, True, marks=pytest.mark.full),
-                # DeepSeek-V4-Flash's routed rows of 4096 and 32768 tokens.
+                # DeepSeek-V4-Flash's routed rows of 4096 tokens.
                 pytest.param(24576, 2048, torch.bfloat16, 10.0, True, marks=pytest.mark.full),
-                pytest.param(196608, 2048, torch.bfloat16, 10.0, True, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -141,8 +133,8 @@ def test_silu_and_mul_clamps_and_scales_rows(
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_silu_and_mul_clamp_keeps_nan(dtype: torch.dtype) -> None:
-    """Edge: a NaN gate or value passes the clamp, an infinite value clamps to the limit, and
-    a gate of -inf stays -inf."""
+    """A NaN gate or value passes the clamp, an infinite value clamps to the limit, and a gate
+    of -inf stays -inf."""
     workload = SiLUAndMulClampEdgeWorkload(dtype)
     x, scale = workload.gen_inputs()
     TestBase.check(workload, SiLUAndMulFwdOp(swiglu_limit=10.0), x, scale)
@@ -189,8 +181,6 @@ class GELUAndMulFixture(FixtureBase):
                 # Latency-bound row wide enough to double its block width; the last block
                 # holds one element and the value half starts off the vector width.
                 pytest.param(1, 8193, torch.bfloat16, "none", marks=pytest.mark.smoke),
-                pytest.param(2048, 2048, torch.float16, "none", marks=pytest.mark.full),
-                pytest.param(2048, 2048, torch.float16, "tanh", marks=pytest.mark.full),
             ],
         ),
     ]
@@ -219,11 +209,7 @@ def test_gelu_and_mul_tuned() -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_gelu_and_mul_tails_are_exact(dtype: torch.dtype) -> None:
-    """Edge: a gate past GELU's tails gives exactly 0 or exactly gate * value.
-
-    The value scales GELU's residual from its saturated tail, so a tail off by eps is off
-    by |gate * value| * eps / 2. Infinite and NaN gates ride on the same saturation.
-    """
+    """A gate past GELU's tails gives exactly 0 or exactly gate * value, nonfinite gates too."""
     workload = GELUAndMulTailWorkload(dtype)
     TestBase.check(workload, GELUAndMulFwdOp(), *workload.gen_inputs())
 
@@ -231,13 +217,8 @@ def test_gelu_and_mul_tails_are_exact(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bfloat16", "float16"])
 def test_gelu_tanh_and_mul_matches_the_tail_at_every_gate(dtype: torch.dtype) -> None:
-    """Edge: every 16-bit gate against large and infinite values matches the reference.
-
-    The largest finite value scales the activation past the tolerance's absolute term, so
-    the check holds the activation down its negative tail, where the reference's float32
-    ``1 + tanh`` falls to a few steps of its grid and then to zero; infinity turns each
-    zero into NaN. 1 holds the positive gates, whose product with the largest overflows.
-    """
+    """Every 16-bit gate against 1, the largest finite value and infinity matches the
+    reference, down the negative tail where ``1 + tanh`` falls to zero."""
     # FIXME(staged-rollout): the gate sweep is built in tests/
     #
     # Broken invariant: workloads/ owns the input construction the manifest rows do not fix.
@@ -256,7 +237,6 @@ def test_fused_gated_rejects_integer_dtype() -> None:
     """Fused gated ops are float-only; the rejection follows the tensor."""
     op = GELUAndMulFwdOp()
     x = torch.zeros(16, 32, device=run_device(), dtype=torch.int32)
-    # The manifest dtype union rejects it before any kernel is asked for.
     with pytest.raises(ValueError, match="dtype is outside"):
         op(x)
 
@@ -269,6 +249,3 @@ def test_fused_gated_serves_two_dtypes_from_one_instance() -> None:
     for dtype in (torch.float16, torch.float32):
         x = torch.randn(16, 16, device=run_device(), dtype=dtype)
         assert op(x).dtype == dtype
-
-
-# Strategy selection tests

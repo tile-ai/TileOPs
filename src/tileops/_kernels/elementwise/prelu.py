@@ -16,15 +16,8 @@ __all__ = [
 
 @target_cache(maxsize=32)
 def _make_prelu_kernel(N, dtype, C, inner_size):
-    """Build PReLU kernel: y = x if x > 0 else weight[channel] * x.
-
-    Weight is per-channel. Channel index follows PyTorch convention:
-    for flat index ``idx``, channel = (idx // inner_size) % C, where
-    ``inner_size`` is the product of all dimensions after the channel dim.
-
-    Input and output move through register fragments; the weight is gathered
-    per element, since its length is C rather than N.
-    """
+    """Build PReLU kernel: y = x if x > 0 else weight[(idx // inner_size) % C] * x, where
+    ``inner_size`` is the product of the dimensions after the channel dim."""
 
     @tilelang.jit(out_idx=[2])
     def kernel(threads_arg, npt_arg):
@@ -67,18 +60,11 @@ class PReLUFwdKernel(MultiInputElementwiseKernel, PReLUFwdInterface):
         self.inner_size = inner_size
         super().__init__(N_total, dtype, config=config)
 
-    @staticmethod
-    def _builder_fn():
-        return _make_prelu_kernel
+    _builder = staticmethod(_make_prelu_kernel)
 
     def _builder_args(self):
         return (self.C, self.inner_size)
 
     def forward(self, x, weight):
-        """Run the kernel.
-
-        ``weight`` is per-channel, not per element, so it is passed flat rather
-        than broadcast against ``x``.
-        """
         self._require_devices(x=x, weight=weight)
         return self.program(self._compile)(flat(x), flat(weight)).reshape(x.shape)

@@ -53,10 +53,8 @@ def _fold_peer(value, other, combine: Callable):
 def _fold_warp_parts(values, extent, value, other, parts, tx, identity, combine: Callable):
     """Combine the *extent* elements of fragment *values* across the block, one part a warp.
 
-    Each thread combines its own elements into *value* (a one-element local), the warp
-    combines its lanes' by shuffles into *other* (a one-element local scratch), and lane 0 of
-    each warp writes the warp's part to *parts* (shared, one slot a warp). The caller syncs
-    the block before reading *parts*.
+    Lane 0 of each warp writes its warp's part to *parts* (shared, one slot a warp); *value* and
+    *other* are one-element local scratch. The caller syncs the block before reading *parts*.
     """
     value[0] = T.cast(identity, "float32")
     for k in T.Parallel(extent):
@@ -67,12 +65,8 @@ def _fold_warp_parts(values, extent, value, other, parts, tx, identity, combine:
 
 
 def _row_scan_pad(chunk: int, elem_bytes: int) -> int:
-    """Return the padding, in elements, each staged chunk gets.
-
-    Neighbouring lanes read one chunk each, so they sit ``(chunk + pad) * elem_bytes``
-    apart, and the conflict ways grow with what that stride shares with
-    ``SHARED_BANK_SPAN_BYTES``. This returns the candidate pad that shares least, which
-    depends on *chunk*: a fixed pad leaves some chunks striding the whole span.
+    """The padding, in elements, after each staged chunk: the candidate whose lane stride
+    ``(chunk + pad) * elem_bytes`` shares least with ``SHARED_BANK_SPAN_BYTES``.
     """
     # One or two vector accesses: a whole access keeps a chunk 16-byte aligned, which the
     # shared access needs to stay 128-bit.
@@ -86,11 +80,10 @@ def _row_scan_pad(chunk: int, elem_bytes: int) -> int:
 def _row_scan_chunk_ok(chunk: int, elem_bytes: int, out_bytes: int, threads: int) -> bool:
     """Whether a block of *threads* may give each thread a chunk of *chunk* elements.
 
-    Up to 64 elements and under 256 bytes of output (*out_bytes* each) always. A block
-    already 256 threads wide lengthens the chunk rather than adding warps, as far as 128
-    elements, the longest fp32 chunk the registers hold without spilling; only with a
-    chunk of whole vector accesses of the narrower dtype (*elem_bytes*), which is what
-    keeps the chunk 16-byte aligned.
+    Up to 64 elements and under 256 bytes of output (*out_bytes* each) always. A 256-thread block
+    lengthens the chunk instead of adding warps, up to 128 elements (the longest fp32 chunk held
+    without spilling), only in whole vector accesses of *elem_bytes*, which keeps it 16-byte
+    aligned.
     """
     if chunk <= 64 and chunk * out_bytes < 256:
         return True
@@ -133,34 +126,19 @@ def _row_scan_kernel(
     threads: int,
     chunk_len: int | None = None,
 ):
-    """Build an inclusive prefix scan of each row, one block a segment of it.
+    """Build an inclusive prefix scan of each row, one block a ``threads * chunk_len``-column
+    segment of it (the whole row without *chunk_len*).
 
-    A segment is ``threads * chunk_len`` columns; without *chunk_len* it is the whole row.
-    Three phases, with no serial dependency between blocks:
-
-    1. The segment is staged in shared memory at its own dtype, one padded row of the tile
-       per thread chunk, and each thread scans its chunk into registers in fp32.
-    2. The chunk totals are scanned with shuffles inside each warp, and one barrier
-       carries each warp's total to the warps above it.
-    3. Each thread adds the prefix ahead of its chunk and writes the chunk back to a
-       staging tile at the output dtype, which returns it to global memory.
-
-    A row of several segments also takes the segment totals of
-    :func:`_segment_totals_kernel` and combines those of the segments before its own into
-    every chunk. Columns past *N* of the last segment read as the identity and are not
-    written. The segments of a row lie on the grid's first dimension, as in that kernel.
-
-    Both transfers between global and the tile run over the segment in column-major thread
-    order, so consecutive threads read consecutive columns and the access coalesces; the
-    tile's padding is what keeps a thread's own chunk off one bank. Staging at the input
-    dtype halves the shared traffic against fp32, and the write-back goes through a tile
-    because a scalar global store per element does not coalesce; it reuses the input's
-    tile when the two dtypes agree.
+    A block stages its segment in shared memory at the input dtype, scans each thread's chunk in
+    fp32, scans the chunk totals across warps, and writes back through a tile at the output dtype
+    so the store coalesces. A row of several segments also adds the totals
+    :func:`_segment_totals_kernel` gave the segments before its own. Columns past *N* read as the
+    identity and are not written.
 
     Args:
         M: Rows to scan.
-        N: Length of the scanned axis. Without *chunk_len* it must equal the padded width
-            the caller allocated for, and be divisible by *threads*.
+        N: Length of the scanned axis. Without *chunk_len* it equals the padded width the caller
+            allocated for and is divisible by *threads*.
         op_kind: One of "sum", "prod".
         dtype: TileLang dtype string of the input.
         out_dtype: TileLang dtype string of the output.
@@ -303,12 +281,10 @@ def _row_scan_kernel(
 
 @target_cache(maxsize=32)
 def _segment_totals_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int, chunk_len: int):
-    """Combine each segment of ``threads * chunk_len`` columns of every row into ``totals``.
+    """Combine each ``threads * chunk_len``-column segment of every row into ``totals``.
 
-    One block a segment; columns past *N* read as the identity. Each thread combines the
-    elements of the segment its fragment holds, the lanes of a warp combine theirs with
-    shuffles, and the first thread combines the warps'. The segments of a row lie on the
-    grid's first dimension, which takes far more blocks than the 65535 of the second.
+    One block a segment; columns past *N* read as the identity. A row's segments lie on the
+    grid's first dimension, which holds far more blocks than the second's 65535.
     """
     seg_len = threads * chunk_len
     n_seg = -(-N // seg_len)
@@ -353,16 +329,15 @@ def _segment_totals_kernel(M: int, N: int, op_kind: str, dtype: str, threads: in
 def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str, out_dtype: str, smem_pad: int):
     """Build an inclusive prefix scan, ``block_m`` rows a block walked over ``block_n`` tiles.
 
-    Each tile is staged through shared memory, scanned serially with the running
-    accumulator, and written back. When ``N`` is not a multiple of ``block_n`` (which must
-    divide ``N_padded``), the last tile is read element-wise, the identity (0 for sum, 1
-    for prod) standing in for the columns past the row end.
+    Each tile is staged in shared memory and scanned serially with the running accumulator.
+    ``block_n`` divides ``N_padded``; where it does not divide ``N``, the last tile reads the
+    identity past the row end.
 
     Args:
-        M: Number of rows (product of all leading dimensions).
-        N: Hidden dimension (last dim, unpadded).
+        M: Rows.
+        N: Scanned length, unpadded.
         op_kind: One of "sum", "prod".
-        dtype: TileLang dtype string of the input (e.g. "float16", "bfloat16", "float32").
+        dtype: TileLang dtype string of the input.
         out_dtype: TileLang dtype string of the output.
         smem_pad: Columns padding each row of a shared tile.
 
@@ -440,17 +415,11 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str, out_dtype: str,
 
 
 class _CumulativeKernelBase(Kernel):
-    """Inclusive prefix scan (cumsum / cumprod) of ``call.axis``: what the three scans share.
+    """Inclusive prefix scan (cumsum / cumprod) of ``call.axis``, shared by the three scans.
 
-    ``forward`` takes the tensor the op declares and scans ``call.axis`` of it; moving that
-    axis to the end, flattening to rows and putting the result back are this kernel's
-    business, so both sides of the op/backend boundary speak the declared shape.
-    Boundary handling for a row that is not a multiple of the 256-element copy alignment
-    is a masked load filling the identity element (0 for sum, 1 for prod).
-
-    Args:
-        call: The call this implementation serves.
-        config: Optional kernel configuration dict.
+    ``forward`` takes the tensor the op declares and moves ``call.axis`` to rows and back itself.
+    A row off the 256-element copy alignment reads the identity (0 for sum, 1 for prod) past its
+    end.
     """
 
     @staticmethod
@@ -484,12 +453,9 @@ class _CumulativeKernelBase(Kernel):
 
     @classmethod
     def segments_row(cls, call: CumulativeCall) -> bool:
-        """Whether a row goes to the segmented scan though one block could stage it.
-
-        It does when the row moves at least 64 KiB in the wider of its two dtypes and there
-        are no more rows than 4 KiB parts of one row: one block a row then leaves most SMs
-        idle while each walks a long chunk, and spreading the row over segments pays for
-        the segmented scan's second launch.
+        """Whether a row one block could stage goes to the segmented scan: it moves at least 64 KiB in
+        the wider dtype and there are no more rows than 4 KiB parts of one row, so one block a row
+        would leave most SMs idle.
         """
         row_bytes = call.n * max(call.dtype.itemsize, call.out_dtype.itemsize)
         return row_bytes >= 64 * 1024 and call.m * 4096 <= row_bytes
@@ -576,14 +542,12 @@ class CumulativeRowScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cumprod
 
 
 class CumulativeParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInterface):
-    """A scan of a few long rows cut into segments, in two launches: every segment's total,
-    then every segment's scan seeded with the totals ahead of it in its row. Serves
-    ``m < 128`` rows longer than 8192 that one block cannot stage, and the few long rows
-    :meth:`segments_row` takes from the whole-row scan.
+    """A two-launch scan of a few long rows cut into segments: every segment's total, then each
+    segment's scan seeded with the totals ahead of it in its row.
 
-    A block is 128 threads; the chunk a thread scans is the longest of 16, 8 and 4 elements
-    whose segments still give every SM three blocks, and 4 when none does: a long segment
-    amortizes the block's fixed steps, a short one spreads few rows over the SMs.
+    Serves ``m < 128`` rows longer than 8192 that one block cannot stage, and the rows
+    :meth:`segments_row` moves off the whole-row scan. A block is 128 threads; a thread's chunk is
+    the longest of 16, 8 and 4 elements that still gives every SM three blocks.
     """
 
     def __init__(self, call: CumulativeCall, config: dict | None = None):

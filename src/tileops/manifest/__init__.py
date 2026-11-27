@@ -1,13 +1,9 @@
 """Programmatic access to the ops manifest.
 
-The manifest is split across one or more YAML files per op family in this
-package's ``spec/`` directory. Most families use a single file, but large
-families (e.g., ``elementwise``) are sharded across multiple files. At load
-time, all files are merged into a single ``ops`` dict. A family file is
-``spec/<family>.yaml`` or ``spec/<family>_<shard>.yaml`` and holds entries of
-that one family; ``spec/types.yaml`` holds the ADTs. A duplicate op name
-across files, a duplicate key within a mapping, or a file that breaks the
-naming rule, raises `ValueError`.
+Each op family's entries live in ``spec/<family>.yaml`` or ``spec/<family>_<shard>.yaml``,
+merged at load into one ``ops`` dict; ``spec/types.yaml`` holds the ADTs. A duplicate op name
+across files, a duplicate key within a mapping, or a file that breaks the naming rule raises
+`ValueError`.
 
 The public API is ``__all__`` and the `tileops.manifest.primitives` module;
 every other name in this package is internal. The spec format is public too
@@ -24,6 +20,7 @@ every other name in this package is internal. The spec format is public too
 from __future__ import annotations
 
 import functools
+import importlib
 from importlib import resources
 from importlib.resources.abc import Traversable
 from typing import TYPE_CHECKING, Any
@@ -164,8 +161,7 @@ def load_adts() -> dict[str, Any]:
 def _try_load_entry(op_name: str) -> dict[str, Any] | None:
     """Return the manifest entry for *op_name*, or None when the manifest has no such entry.
 
-    An unreadable or malformed manifest raises, so it never silently drops an op's
-    generated methods.
+    An unreadable or malformed manifest raises rather than drop an op's generated methods.
     """
     entry = load_manifest().get(op_name)
     if entry is not None and not isinstance(entry, dict):
@@ -174,11 +170,7 @@ def _try_load_entry(op_name: str) -> dict[str, Any] | None:
 
 
 def _manifest_key(op: str | type) -> str:
-    """Return the manifest key naming *op*, which may be an Op class or that key.
-
-    A manifest key is its op class's name, so a caller that holds the class does
-    not have to repeat the name as a string.
-    """
+    """Return the manifest key naming *op*: an Op class's name, or *op* itself."""
     return op.__name__ if isinstance(op, type) else op
 
 
@@ -198,8 +190,6 @@ def load_workloads(op: str | type) -> list[dict[str, Any]]:
 
 
 def __getattr__(name: str) -> Any:
-    import importlib
-
     module = _LAZY.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

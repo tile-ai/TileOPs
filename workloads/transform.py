@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 
 import torch
 
@@ -7,12 +8,15 @@ from workloads.device import run_device
 from workloads.workload_base import WorkloadBase
 
 
+@dataclass(eq=False)
 class HadamardTransformWorkload(WorkloadBase):
-    def __init__(self, batch_shape: tuple, n: int, dtype: torch.dtype, base_order: int = 1):
-        self.batch_shape = tuple(batch_shape)
-        self.n = n
-        self.dtype = dtype
-        self.base_order = base_order
+    batch_shape: tuple
+    n: int
+    dtype: torch.dtype
+    base_order: int = 1
+
+    def __post_init__(self) -> None:
+        self.batch_shape = tuple(self.batch_shape)
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(*self.batch_shape, self.n, device=run_device(), dtype=self.dtype)

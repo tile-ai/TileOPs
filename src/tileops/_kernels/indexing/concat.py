@@ -22,9 +22,8 @@ __all__ = ["ConcatCall", "ConcatFwdInterface", "ConcatKernel"]
 # The inputs one launch copies: `_concat_kernel` declares that many tensor slots, x0 to x3,
 # and `ConcatKernel.forward` groups the inputs by it.
 _SLOTS = 4
-# The threads of a CTA, which `_concat_kernel` launches and `ConcatKernel` counts CTAs by.
-# Small CTAs spread a decode row's few hundred vectors over the SMs, and 128 threads divide
-# every architecture's per-SM thread limit, so whole CTAs fill an SM.
+# The threads of a CTA: small CTAs spread a decode row's few hundred vectors over the SMs, and
+# 128 divides every architecture's per-SM thread limit.
 _THREADS = 128
 # The float32 elements of one 16-byte vector: an output vector of the widening program, and the
 # width of the output view `ConcatKernel.forward` passes it.
@@ -35,8 +34,7 @@ _GROUP = VECTOR_ACCESS_BYTES // 2
 # The widening program's shared stage places output vectors in pairs, one pair a group.
 assert _GROUP == 2 * _LANES
 # Groups a thread of the widening program reads, one CTA width apart, before its first
-# conversion, so the second group's row lookup and read overlap the first read;
-# `ConcatKernel.forward` bounds the program's positions by the CTA run it sets.
+# conversion, so the second group's row lookup overlaps the first read.
 _WIDEN_PER_THREAD = 2
 
 
@@ -393,9 +391,8 @@ def _concat_widen_kernel(f16):
                                 )
                             )
                         for v in T.vectorized(_LANES):
-                            # Output vector j of a 128-group block sits at slot j ^ ((j >> 3) & 1),
-                            # so the 8 lanes of a quarter warp hit 8 different 16-byte bank
-                            # groups, here and in the reads below.
+                            # Swizzled slots, so a quarter warp's 8 lanes hit 8 bank groups here
+                            # and in the reads below.
                             stage[
                                 p * _THREADS * _GROUP
                                 + T.bitwise_xor(
@@ -436,16 +433,13 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
 
     Viewed as ``[rows, total]``, the output takes input ``j`` at the columns after the
     previous inputs'. A vector is the most elements, up to 16 bytes of the widest dtype, that
-    divide every input's row width. A CTA copies one column tile of one input row. A program
-    is built per vector, input dtypes and vectors per thread, and serves every row count and
-    width. Inputs share a launch ``_SLOTS`` at a time. A launch past one resident wave that
-    copies every input, unconverted, in 16-byte vectors into output rows that end inside a line
-    takes ``_concat_flat_kernel`` instead, while its positions fit 32 bits. Such a launch of at
-    most two inputs that twice the flat program's vectors a thread bring within one wave takes
-    twice the vectors. A call of at most ``_SLOTS`` inputs past one resident wave that widens
-    16-bit inputs, whose rows hold whole 8-element groups, into a float32 output takes
-    ``_concat_widen_kernel`` when its bytes read and written exceed L2 or every input row is
-    narrower than one CTA, while its positions and every input's elements fit 32 bits.
+    divide every input's row width. Three programs, chosen in `forward`:
+
+    - `_concat_widen_kernel`: 16-bit inputs widened into float32, past one resident wave.
+    - `_concat_flat_kernel`: unconverted 16-byte vectors into rows that end inside a line,
+      past one resident wave.
+    - `_concat_kernel`: otherwise; a CTA copies one column tile of one input row, ``_SLOTS``
+      inputs a launch.
     """
 
     # Vectors a thread of the flat program copies by default, one CTA width apart, so the
@@ -512,15 +506,9 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
         # The vectors of each input that hold 16 bytes.
         most = [VECTOR_ACCESS_BYTES // (self.vec * d.itemsize) for d in self.dtypes]
         total = sum(widths)
-        # A call of 16-bit inputs into a float32 output takes the widening program when:
-        # - it is one launch, at most `_SLOTS` present inputs, the program's slots;
-        # - its per-row tiles of one vector a thread pass one resident wave: within one wave the
-        #   launch waits on CTA starts, and the program has fewer CTAs, each behind a barrier;
-        # - its bytes read and written exceed L2, so its 16-byte reads and whole-line stores
-        #   reach DRAM, or every input row is narrower than one CTA, where per-row tiles leave
-        #   most threads idle;
-        # - every input row holds whole groups, the program's unit of read;
-        # - its output vectors and every input's elements fit the program's int32 indices.
+        # The widening program: 16-bit inputs into float32 in one launch past one resident
+        # wave, whose bytes pass L2 or whose rows are all narrower than a CTA (per-row tiles
+        # would leave most threads idle), in whole groups, indexed in int32.
         elems = [widths[j] * self.vec for j in range(len(tensors))]
         groups_total = sum(elems) // _GROUP
         run = _THREADS * _WIDEN_PER_THREAD
@@ -564,11 +552,8 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
             and past_wave
         ):
             per_thread, resident = self._FLAT_PER_THREAD, None
-            # A launch past one resident wave runs its last CTAs after the first ones retire.
-            # Twice the vectors a thread bring it within one wave when the CTAs stay resident:
-            # one load a vector, from the address its column picks, held to the registers every
-            # resident CTA leaves a thread. ptxas fits that without spills for one or two
-            # inputs; with three it spills.
+            # Twice the vectors a thread where that brings the launch within one resident wave;
+            # ptxas holds that without spills for at most two inputs.
             runs = [-(-rows * total // (_THREADS * p)) for p in (per_thread, 2 * per_thread)]
             if len(present) <= 2 and runs[0] > wave >= runs[1]:
                 per_thread, resident = 2 * per_thread, self.resident_ctas
@@ -588,12 +573,9 @@ class ConcatKernel(Kernel, ConcatFwdInterface):
                         for j, p in zip(group, per, strict=True)
                     )
 
-                # Each thread takes more vectors of every input, doubling them together, while
-                # the launch has more CTAs than SMs and the doubling removes CTAs. Beyond one
-                # resident wave the launch waits on bandwidth, and an input stops at 16 bytes in
-                # flight, the widest read a thread issues. Within one wave it waits on CTA starts
-                # and one DRAM round trip, and an input stops at eight vectors (eight 16-byte
-                # vectors hold 32 registers of data).
+                # Double every input's vectors a thread while the launch has more CTAs than SMs
+                # and doubling removes CTAs: up to 16 bytes in flight past one resident wave, up
+                # to eight vectors (32 registers of data) within one.
                 per = [1] * len(group)
                 while (now := ctas(per)) > self.sm_count:
                     grown = [

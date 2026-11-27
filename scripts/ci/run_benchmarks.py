@@ -197,28 +197,16 @@ def _discover_bench_files(targets: list[str]) -> list[str]:
     return list(files)
 
 
-def _unrun_suite(rel: str) -> ET.Element:
-    """Build a one-entry junit testsuite marking a file the budget never reached."""
-    suite = ET.Element(
-        "testsuite",
-        {"name": "pytest", "tests": "1", "errors": "0", "failures": "0", "skipped": "1"},
-    )
+def _whole_file_suite(rel: str, kind: str, message: str, text: str = "") -> ET.Element:
+    """A one-entry junit testsuite standing in for file *rel*'s results: an ``error`` for a
+    dead child, ``skipped`` for a file the budget never reached."""
+    counts = {"errors": "0", "failures": "0", "skipped": "0"} | {
+        "errors" if kind == "error" else kind: "1"
+    }
+    suite = ET.Element("testsuite", {"name": "pytest", "tests": "1", **counts})
     classname = rel[: -len(".py")].replace(os.sep, ".")
     case = ET.SubElement(suite, "testcase", {"classname": classname, "name": "whole_file"})
-    ET.SubElement(case, "skipped", {"message": f"{rel}: not run, sweep budget spent"})
-    return suite
-
-
-def _synthetic_suite(bench_file: str, message: str, log_tail: str) -> ET.Element:
-    """Build a one-entry junit testsuite standing in for a dead child's results."""
-    suite = ET.Element(
-        "testsuite",
-        {"name": "pytest", "tests": "1", "errors": "1", "failures": "0", "skipped": "0"},
-    )
-    classname = os.path.relpath(bench_file)[: -len(".py")].replace(os.sep, ".")
-    case = ET.SubElement(suite, "testcase", {"classname": classname, "name": "whole_file"})
-    error = ET.SubElement(case, "error", {"message": f"{os.path.relpath(bench_file)}: {message}"})
-    error.text = log_tail
+    ET.SubElement(case, kind, {"message": f"{rel}: {message}"}).text = text or None
     return suite
 
 
@@ -317,11 +305,10 @@ def main() -> int:
         if rel not in failed:
             failed.append(rel)
 
-    def note_teardown_anomaly(bench_file: str, message: str) -> None:
-        rel_a = os.path.relpath(bench_file)
-        print(f"TEARDOWN: {rel_a}: {message}", flush=True)
-        suites.append(_synthetic_suite(bench_file, message, ""))
-        mark_failed(rel_a)
+    def fail_file(rel: str, label: str, message: str, log_tail: str = "") -> None:
+        print(f"{label}: {rel}: {message}", flush=True)
+        suites.append(_whole_file_suite(rel, "error", message, log_tail))
+        mark_failed(rel)
 
     with tempfile.TemporaryDirectory(prefix="bench_runner_") as work:
         work_dir = Path(work)
@@ -439,9 +426,7 @@ def main() -> int:
                         f"no test started for {args.stall_timeout:.0f}s at {where}; "
                         f"killed, stack dump at {dump_path}"
                     )
-                    print(f"STALLED: {rel}: {message}", flush=True)
-                    suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
-                    mark_failed(rel)
+                    fail_file(rel, "STALLED", message, _log_tail(log_path))
                 else:
                     sys.stdout.write(log_path.read_text(errors="replace"))
                     if rc >= 0:
@@ -453,13 +438,11 @@ def main() -> int:
                         teardown = _reap_teardown(child, args.teardown_timeout)
                         current = None
                         if teardown:
-                            note_teardown_anomaly(bench_file, teardown)
+                            fail_file(rel, "TEARDOWN", teardown)
                     if rc < 0:
                         sig = signal.Signals(-rc)
                         message = f"killed by signal {sig.value} ({sig.name})"
-                        print(f"CRASH: {rel}: {message}", flush=True)
-                        suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
-                        mark_failed(rel)
+                        fail_file(rel, "CRASH", message, _log_tail(log_path))
                     elif fragment.exists():
                         suites.extend(_fragment_suites(fragment))
                         # 0 = all passed, 5 = nothing collected (e.g. all skipped).
@@ -467,7 +450,7 @@ def main() -> int:
                             mark_failed(rel)
                     else:
                         message = f"pytest exited with {rc} without writing results"
-                        suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
+                        suites.append(_whole_file_suite(rel, "error", message, _log_tail(log_path)))
                         mark_failed(rel)
                 outcome = _collect_outcome(work_dir / f"{index:03d}.collect")
                 if outcome is not None:
@@ -481,7 +464,7 @@ def main() -> int:
 
     # Absent from the sweep, not passing: the report must show the gap.
     for rel in unrun:
-        suites.append(_unrun_suite(rel))
+        suites.append(_whole_file_suite(rel, "skipped", "not run, sweep budget spent"))
 
     merged = ET.Element("testsuites")
     merged.extend(suites)

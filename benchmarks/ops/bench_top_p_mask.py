@@ -1,8 +1,4 @@
-"""Benchmark for the top-p (nucleus) logit mask op.
-
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()``.
-"""
+"""Benchmark for the top-p (nucleus) logit mask op."""
 
 import pytest
 import torch
@@ -18,7 +14,7 @@ from benchmarks.baselines import (
 from tileops.sampling import TopPMaskFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(TopPMaskFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(TopPMaskFwdOp))
 def test_top_p_mask_bench(case) -> None:
     logits, p = case.inputs
     op = TopPMaskFwdOp(**case.arguments)

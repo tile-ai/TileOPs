@@ -1,4 +1,5 @@
-"""Benchmark TileOPs batched matmul and its FP8 variant, one case per manifest call, against cuBLAS, FlagGems and FlashInfer."""
+"""Benchmark TileOPs batched matmul and its FP8 variant, one case per manifest call, against
+cuBLAS, FlagGems and FlashInfer."""
 
 import pytest
 import torch
@@ -15,54 +16,16 @@ from tileops.gemm import BMMFP8FwdOp, BMMFwdOp
 from workloads.gemm import BMMFP8Workload
 
 
-def _flashinfer_bmm_fp8_per_tensor_ref(
-    workload: BMMFP8Workload,
-    a: torch.Tensor,
-    b_kmajor: torch.Tensor,
-    scale_a: torch.Tensor,
-    scale_b: torch.Tensor,
-) -> torch.Tensor:
-    flashinfer = baseline_module("flashinfer", "flashinfer")
-
-    if a.dtype != torch.float8_e4m3fn or b_kmajor.dtype != torch.float8_e4m3fn:
-        raise ValueError("FlashInfer bmm_fp8 baseline requires float8_e4m3fn.")
-    if workload.out_dtype not in (torch.bfloat16, torch.float16):
-        raise ValueError("FlashInfer bmm_fp8 baseline requires bfloat16 / float16 output.")
-    if scale_a.dim() != 0 or scale_b.dim() != 0:
-        raise ValueError(
-            "FlashInfer bmm_fp8 baseline requires 0-D per-tensor scales, "
-            f"got {tuple(scale_a.shape)} / {tuple(scale_b.shape)}"
-        )
-    return flashinfer.bmm_fp8(
-        a,
-        b_kmajor,
-        scale_a,
-        scale_b,
-        dtype=workload.out_dtype,
-        backend="cudnn",
-    )
-
-
 def _flashinfer_bmm_fp8_row(
     workload: BMMFP8Workload, *inputs: torch.Tensor
 ) -> bench.Implementation | None:
-    """The flashinfer entry for this case, or ``None`` when it cannot serve it.
-
-    Preferred, not selected: a flashinfer row that cannot run drops its tag
-    rather than failing the case. If flashinfer runs but disagrees with the
-    reference, that is a correctness signal and should fail the benchmark.
-
-    Args:
-        workload: The case's workload.
-        *inputs: ``a``, ``b`` as a ``[B, K, N]`` view, ``scale_a``, ``scale_b``, as
-            flashinfer takes them.
-
-    Returns:
-        The implementation, or ``None`` when flashinfer cannot serve the case.
+    """FlashInfer's cuDNN ``bmm_fp8`` on ``a``, ``b`` as a ``[B, K, N]`` view and the per-tensor
+    scales, or ``None`` when it cannot run, which drops its tag; a wrong result fails the case.
     """
 
     def run(a: torch.Tensor, b: torch.Tensor, sa: torch.Tensor, sb: torch.Tensor):
-        return _flashinfer_bmm_fp8_per_tensor_ref(workload, a, b, sa, sb)
+        flashinfer = baseline_module("flashinfer", "flashinfer")
+        return flashinfer.bmm_fp8(a, b, sa, sb, dtype=workload.out_dtype, backend="cudnn")
 
     try:
         run(*inputs)
@@ -72,7 +35,7 @@ def _flashinfer_bmm_fp8_row(
     return bench.Implementation(run=run, args=inputs)
 
 
-@pytest.mark.parametrize("case", bench.cases(BMMFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(BMMFwdOp))
 def test_bmm_bench(case) -> None:
     op = BMMFwdOp(**case.arguments)
     op.request_tune()
@@ -90,7 +53,7 @@ def test_bmm_bench(case) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(BMMFP8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(BMMFP8FwdOp))
 def test_bmm_fp8_bench(case) -> None:
     """Both orders of ``b``: ``[B, K, N]`` reaches the kernel through a transpose,
     ``[B, N, K]`` (``trans_b``) lies K-innermost already."""

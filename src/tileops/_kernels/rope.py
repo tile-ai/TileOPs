@@ -1,17 +1,14 @@
-"""Rotary position embedding kernels.
-
-A kernel receives cos/sin tables and rotates each token's heads at a table row:
-    y = x * cos + rotate(x) * sin
+"""Rotary position embedding kernels: ``y = x * cos + rotate(x) * sin`` at a table row.
 
 - ``RoPENeoxPositionIdsKernel``: NeoX halves, ``(x[k], x[k + rotary_dim / 2])``.
 - ``RoPENonNeoxKernel``: RoFormer (GPT-J) adjacent pairs, ``(x[2k], x[2k + 1])``.
 
-Both rotate the query and the key at the row each token's position names, in one launch,
-rotate the leading ``rotary_dim`` columns of each head and copy the rest, and take the token
-count from the call: one built kernel serves every count.
+Both rotate the query and the key in one launch at the row each token's position names,
+rotate each head's leading ``rotary_dim`` columns and copy the rest; one built kernel serves
+every token count.
 
-- ``RoPECosSinKernel``: the tables are the caller's, one row per sequence position; either
-  pairing, dense or packed tokens, at any strides, in place or not.
+- ``RoPECosSinKernel``: the caller's tables, one row a sequence position; either pairing,
+  dense or packed tokens, at any strides, in place or not.
 """
 
 import dataclasses
@@ -169,28 +166,22 @@ def _rope_positions_kernel(
 ) -> object:
     """The rotation of a query and a key of ``tokens`` rows, ``tokens`` dynamic.
 
-    A unit is part of one head: NeoX, ``rot_vec`` columns of the low half and the
-    ``rot_vec`` facing them in the high half; GPT-J, ``rot_vec`` adjacent columns, whole
-    pairs; or ``tail_vec`` columns past ``rotary_dim``, copied. A token's query units come
-    before its key units, so one launch serves both. A block holds ``threads * units`` units
-    of one token, ``units`` a thread, and reads the token's position once; consecutive
-    blocks walk a token's parts, then the next token's. The ``wide`` program instead gives a
-    block whole heads, ``threads`` a multiple of a head's units: thread ``(slot, head)`` of a
-    ``(head units, threads / head units)`` block takes that unit of that head, and the grid is
-    ``(tokens, parts)``, so consecutive blocks hold the same part of consecutive tokens. A
-    thread of one unit loads it before the token's position where heads copy columns or the
-    program is ``wide``; any other thread reads the position first, then, where heads copy
-    columns, loads all its units before it stores any, and otherwise loads and stores one
-    unit at a time. ``rot_vec`` and ``tail_vec`` divide every column offset they start at, so
-    each unit moves as vectors. Each block clamps the token's position into the table once,
-    before its table loads, so a position outside the table reads the nearest row. The
-    arithmetic is f32 and rounds once.
+    A unit is part of one head: NeoX, ``rot_vec`` columns of the low half and the ``rot_vec``
+    facing them in the high half; GPT-J, ``rot_vec`` adjacent columns; or ``tail_vec`` columns
+    past ``rotary_dim``, copied. ``rot_vec`` and ``tail_vec`` divide every column offset they
+    start at. A token's query units come before its key units, so one launch serves both.
 
-    The staged program instead gives a block one token's query row or key row, on a
-    ``(tokens, sides)`` grid: its threads load the row into shared memory in
-    ``row_vec``-column vectors, rotate its rotating units there, and a block copy writes the
-    row back (one bulk store on sm90 where the row is whole 16-byte vectors), so no copied
-    column's load waits on the position or the table.
+    Three programs:
+
+    - Default: a block holds ``threads * units`` units of one token, ``units`` a thread;
+      consecutive blocks walk a token's parts, then the next token's.
+    - ``wide``: a ``(head units, threads / head units)`` block holds whole heads on a
+      ``(tokens, parts)`` grid.
+    - Staged: a block loads one token's query or key row into shared memory, rotates it there
+      and copies it back, on a ``(tokens, sides)`` grid.
+
+    Each block clamps its token's position into the table once, so a position outside the table
+    reads the nearest row. The arithmetic is f32 and rounds once.
     """
     half = rotary_dim // 2
     width, rot_units, tail_units = _head_units(neox, head_size, rotary_dim, rot_vec, tail_vec)
@@ -413,48 +404,48 @@ def _rope_positions_kernel(
             T.copy(buf[0 : heads * head_size], y[token, 0 : heads * head_size])
 
         @T.macro
-        def rotate_token(
-            positions, offsets, query, key, cos_table, sin_table, query_out, key_out, bx, by
-        ):
-            # The block's token and its part of the token, from its grid indices.
-            token = bx if split else bx // parts
-            part = by if split else bx % parts
-            # A staged block's table loads clamp the position in their index, so it holds no row.
-            row_dtype = "int64" if offset_dtype else position_dtype
-            row = None if staged else T.alloc_local([1], row_dtype)
-            tensors = (query, key, cos_table, sin_table, query_out, key_out, token, part)
-            if staged:
-                buf = T.alloc_shared([max(query_heads, key_heads) * head_size], dtype)
-                rows = (positions, offsets, token, cos_table, sin_table, buf)
-                if part == 0:
-                    stage_row(query, query_out, query_heads, *rows)
-                else:
-                    stage_row(key, key_out, key_heads, *rows)
-            elif tail_units == 0 and not wide:
-                # Other resident blocks of a throughput-bound call hide each block's wait on the
-                # position.
-                table_row(positions, offsets, token, row)
-                each_unit(row, None, True, True, *tensors)
-            else:
-                # A copied run takes a rotating unit's low-column registers.
-                lo = T.alloc_local([units * run], dtype)
-                hi = T.alloc_local([units * width], dtype)
-                cs = T.alloc_local([units * table_width], dtype)
-                sn = T.alloc_local([units * table_width], dtype)
-                regs = (lo, hi, cs, sn, lo)
-                if units == 1:
-                    # A copying lane needs no position, and in a wide call no other block hides
-                    # the position's load, so the columns load first: ptxas waits out that load
-                    # at the clamp, ahead of any later load.
-                    each_unit(None, regs, True, False, *tensors)
+        def rotate_token(positions, offsets, query, key, cos_table, sin_table, query_out, key_out):
+            with T.Kernel(grid[0], grid[1], threads=block) as (bx, by):
+                # The block's token and its part of the token, from its grid indices.
+                token = bx if split else bx // parts
+                part = by if split else bx % parts
+                # A staged block's table loads clamp the position in their index, so it holds no
+                # row.
+                row_dtype = "int64" if offset_dtype else position_dtype
+                row = None if staged else T.alloc_local([1], row_dtype)
+                tensors = (query, key, cos_table, sin_table, query_out, key_out, token, part)
+                if staged:
+                    buf = T.alloc_shared([max(query_heads, key_heads) * head_size], dtype)
+                    rows = (positions, offsets, token, cos_table, sin_table, buf)
+                    if part == 0:
+                        stage_row(query, query_out, query_heads, *rows)
+                    else:
+                        stage_row(key, key_out, key_heads, *rows)
+                elif tail_units == 0 and not wide:
+                    # Other resident blocks of a throughput-bound call hide each block's wait on the
+                    # position.
                     table_row(positions, offsets, token, row)
-                    each_unit(row, regs, False, True, *tensors)
+                    each_unit(row, None, True, True, *tensors)
                 else:
-                    # A warp can hold rotating and copying units, each path waiting out a
-                    # load-to-store round trip a unit.
-                    table_row(positions, offsets, token, row)
-                    each_unit(row, regs, True, False, *tensors)
-                    each_unit(None, regs, False, True, *tensors)
+                    # A copied run takes a rotating unit's low-column registers.
+                    lo = T.alloc_local([units * run], dtype)
+                    hi = T.alloc_local([units * width], dtype)
+                    cs = T.alloc_local([units * table_width], dtype)
+                    sn = T.alloc_local([units * table_width], dtype)
+                    regs = (lo, hi, cs, sn, lo)
+                    if units == 1:
+                        # A copying lane needs no position, and in a wide call no other block hides
+                        # the position's load, so the columns load first: ptxas waits out that load
+                        # at the clamp, ahead of any later load.
+                        each_unit(None, regs, True, False, *tensors)
+                        table_row(positions, offsets, token, row)
+                        each_unit(row, regs, False, True, *tensors)
+                    else:
+                        # A warp can hold rotating and copying units, each path waiting out a
+                        # load-to-store round trip a unit.
+                        table_row(positions, offsets, token, row)
+                        each_unit(row, regs, True, False, *tensors)
+                        each_unit(None, regs, False, True, *tensors)
 
         if offset_dtype:
 
@@ -469,19 +460,9 @@ def _rope_positions_kernel(
                 query_out: T.Tensor(query_shape, dtype),
                 key_out: T.Tensor(key_shape, dtype),
             ):
-                with T.Kernel(grid[0], grid[1], threads=block) as (bx, by):
-                    rotate_token(
-                        positions,
-                        offsets,
-                        query,
-                        key,
-                        cos_table,
-                        sin_table,
-                        query_out,
-                        key_out,
-                        bx,
-                        by,
-                    )
+                rotate_token(
+                    positions, offsets, query, key, cos_table, sin_table, query_out, key_out
+                )
 
         elif key_heads:
 
@@ -495,19 +476,9 @@ def _rope_positions_kernel(
                 query_out: T.Tensor(query_shape, dtype),
                 key_out: T.Tensor(key_shape, dtype),
             ):
-                with T.Kernel(grid[0], grid[1], threads=block) as (bx, by):
-                    rotate_token(
-                        positions,
-                        positions,
-                        query,
-                        key,
-                        cos_table,
-                        sin_table,
-                        query_out,
-                        key_out,
-                        bx,
-                        by,
-                    )
+                rotate_token(
+                    positions, positions, query, key, cos_table, sin_table, query_out, key_out
+                )
 
         else:
 
@@ -519,19 +490,9 @@ def _rope_positions_kernel(
                 sin_table: T.Tensor(table_shape, dtype),
                 query_out: T.Tensor(query_shape, dtype),
             ):
-                with T.Kernel(grid[0], grid[1], threads=block) as (bx, by):
-                    rotate_token(
-                        positions,
-                        positions,
-                        query,
-                        query,
-                        cos_table,
-                        sin_table,
-                        query_out,
-                        query_out,
-                        bx,
-                        by,
-                    )
+                rotate_token(
+                    positions, positions, query, query, cos_table, sin_table, query_out, query_out
+                )
 
         return main
 
@@ -666,13 +627,10 @@ class _RoPEPositionsKernel(Kernel):
     def _shape(self, tokens: int) -> int:
         """The parts a call of *tokens* tokens splits each token into, 0 where it is not wide.
 
-        A call whose units fill at most half the device's resident threads is bound by the
-        latency of one unit, so each thread takes one; a larger one keeps several in flight a
-        thread. A wide call splits each token into the most parts of whole heads that leave
-        every block an SM of its own, so the token's loads and stores issue from that many
-        SMs; with no such split, into the fewest parts a block holds. A token with no split of
-        whole heads into blocks of at most ``MAX_BLOCK_THREADS`` threads and at most
-        ``MAX_GRID_YZ_BLOCKS`` parts takes the program that is not wide.
+        A wide call splits each token into the most parts of whole heads that leave every block an
+        SM of its own, else into the fewest parts a block holds. A token with no split into blocks of
+        at most ``MAX_BLOCK_THREADS`` threads and ``MAX_GRID_YZ_BLOCKS`` parts takes the program that
+        is not wide.
         """
         if not self._wide_parts or 2 * tokens * self._token_units > self._resident_threads:
             return 0
@@ -703,20 +661,14 @@ class RoPENonNeoxKernel(_RoPEPositionsKernel, RoPENonNeoxFwdInterface):
 
 
 class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
-    """The rotation where heads copy columns, each token's query row and key row staged in
-    shared memory.
+    """The rotation where heads copy columns, each token's query row and key row staged in shared
+    memory and written back once the whole row has rotated.
 
-    A block writes its row back only after the whole row has arrived and rotated, so the
-    stores of a call overlap its loads only where some blocks wait to start while others
-    store. A call takes the staged program only where its rows outnumber the staged blocks
-    the device could hold at once by shared memory and by threads, an upper bound on the
-    resident blocks (registers can hold fewer), so that blocks must wait; any other call
-    takes the positions kernel's programs.
-
-    A block takes one thread for each share of its row, the share being the SM's shared
-    memory over its resident threads rounded up to whole 16-byte vectors; the thread count
-    rounds up to whole warps, at most 1024. The staged program takes no config: the config's
-    ``threads`` and ``units`` shape only the positions kernel's programs.
+    A call takes it only where its rows outnumber the staged blocks the device holds at once
+    (an upper bound by shared memory and threads), so blocks wait and stores overlap loads. A
+    block takes one thread a share of its row, the SM's shared memory over its resident threads
+    in whole 16-byte vectors, rounded up to whole warps, at most 1024. The config's ``threads``
+    and ``units`` shape only the positions kernel's programs.
     """
 
     @staticmethod
@@ -860,21 +812,17 @@ def _rope_cos_sin_kernel(
 ) -> object:
     """The rotation of ``x`` into ``y``, both flat views addressed at runtime strides.
 
-    Element ``(b, i, h, c)`` of ``x`` sits at ``(b * qb + i * qs + h * qh) * vec + c * qc``,
-    ``i`` being ``s`` dense and the token packed, and ``y``'s likewise with ``p*``: each
-    stride but the column's is passed divided by ``vec``, so TileLang proves every unit's
-    start vector-aligned. Where ``unit_columns`` the column strides are 1; otherwise ``vec``
-    is 1 and they are runtime scalars. Where ``contiguous`` the strides follow from ``heads``,
-    ``head_dim`` and the token count instead. In place, ``y`` is ``x`` and the copied columns
-    are not touched.
+    Element ``(b, i, h, c)`` of ``x`` sits at ``(b * qb + i * qs + h * qh) * vec + c * qc``
+    (``i`` the sequence position dense, the token packed), ``y``'s likewise with ``p*``. Every
+    stride but the column's is passed divided by ``vec`` so TileLang proves each unit's start
+    vector-aligned. Where ``unit_columns`` the column strides are 1, otherwise ``vec`` is 1;
+    where ``contiguous`` the strides follow from ``heads``, ``head_dim`` and the token count. In
+    place, ``y`` is ``x`` and the copied columns are not touched.
 
-    A unit is two ``vec``-column vectors of one head: ``vec`` columns of the rotary low half
-    and the ``vec`` facing them in the high half, whose pairs are NeoX's ``(x[k], x[k + Rh])``
-    or, interleaved, the adjacent pairs inside each vector; or one ``vec``-column vector past
-    the rotary columns, copied. A thread takes one unit position of ``per_thread`` heads of
-    one token. It loads those heads' x first, then finds the token's table row (dense: grid
-    row ``by`` is the sequence; packed: a binary search over ``cu_seqlens``) and reads the
-    row's slots once for all its heads. The arithmetic is f32 and rounds once.
+    A unit is ``vec`` columns of the rotary low half and the ``vec`` facing them in the high half
+    (NeoX, or the adjacent pairs inside each vector, interleaved), or one ``vec``-column vector
+    past the rotary columns, copied. A thread takes one unit position of ``per_thread`` heads of
+    one token; packed tokens find their table row by a binary search over ``cu_seqlens``.
     """
     rotary = 2 * rotary_half
     rot_units = rotary_half // vec
@@ -897,115 +845,119 @@ def _rope_cos_sin_kernel(
         token_items = groups * head_units
 
         @T.macro
-        def rotate(
-            x, y, cos_table, sin_table, cu_seqlens, offsets, offset, tokens, extent, q, bx, by
-        ):
-            # Dense, tokens is S and extent B: grid row by is sequence b, so no thread divides
-            # by a runtime extent. Packed, tokens is Tt and extent the steps of the search for
-            # a token's sequence. cu_seqlens and offsets are read only where the call has them.
-            if contiguous:
-                head = head_dim // vec
-                q = (tokens * heads * head, heads * head, head, 1) * 2
-            qb, qs, qh, qc, pb, ps, ph, pc = q
-            if unit_columns:
-                qc = 1
-                pc = 1
-            found = T.alloc_local([2], "int64")
-            v = T.alloc_local([2 * vec * per_thread], dtype)
-            cs = T.alloc_local([vec], cos_dtype)
-            sn = T.alloc_local([vec], sin_dtype)
-            units = tokens * token_items
-            item = T.Cast("int64", bx) * threads + T.get_thread_binding()
-            token = item // token_items
-            group = T.Cast("int32", item % token_items) // head_units
-            slot = T.Cast("int32", item % token_items) % head_units
-            # Whole blocks of a token's units make the grid exact; programs of several heads a
-            # thread keep the check.
-            if (per_thread == 1 and token_items % threads == 0) or item < units:
-                # Packed x has no sequence stride, so its address needs no search.
-                if seqlens_dtype is not None:
-                    x_token = token * qs
-                    y_token = token * ps
-                else:
-                    x_token = T.Cast("int64", by) * qb + token * qs
-                    y_token = T.Cast("int64", by) * pb + token * ps
-                if slot < rot_units:
-                    low = slot * (2 if adjacent else vec)
-                    high = low + (1 if adjacent else rotary_half)
-                    # Every head's x first: its loads wait on no table row, so they are
-                    # in flight while the row is found and its slots are read.
-                    for k in T.unroll(per_thread):
-                        if k * groups + group < heads:
-                            x_at = (x_token + (k * groups + group) * qh) * vec
-                            for j in T.vectorized(vec):
-                                v[2 * k * vec + j] = x[x_at + (low + j) * qc]
-                            for j in T.vectorized(vec):
-                                v[(2 * k + 1) * vec + j] = x[x_at + (high + j) * qc]
+        def rotate(x, y, cos_table, sin_table, cu_seqlens, offsets, offset, tokens, extent, q):
+            # Packed, one grid row; dense, a grid row a sequence.
+            with T.Kernel(
+                T.Cast("int32", T.ceildiv(tokens * token_items, threads)),
+                1 if seqlens_dtype is not None else T.Cast("int32", extent),
+                threads=threads,
+            ) as (bx, by):
+                # Dense, tokens is S and extent B: grid row by is sequence b, so no thread divides
+                # by a runtime extent. Packed, tokens is Tt and extent the steps of the search for
+                # a token's sequence. cu_seqlens and offsets are read only where the call has them.
+                if contiguous:
+                    head = head_dim // vec
+                    q = (tokens * heads * head, heads * head, head, 1) * 2
+                qb, qs, qh, qc, pb, ps, ph, pc = q
+                if unit_columns:
+                    qc = 1
+                    pc = 1
+                found = T.alloc_local([2], "int64")
+                v = T.alloc_local([2 * vec * per_thread], dtype)
+                cs = T.alloc_local([vec], cos_dtype)
+                sn = T.alloc_local([vec], sin_dtype)
+                units = tokens * token_items
+                item = T.Cast("int64", bx) * threads + T.get_thread_binding()
+                token = item // token_items
+                group = T.Cast("int32", item % token_items) // head_units
+                slot = T.Cast("int32", item % token_items) % head_units
+                # Whole blocks of a token's units make the grid exact; programs of several heads a
+                # thread keep the check.
+                if (per_thread == 1 and token_items % threads == 0) or item < units:
+                    # Packed x has no sequence stride, so its address needs no search.
                     if seqlens_dtype is not None:
-                        # The last sequence starting at or before the token: an empty
-                        # sequence's start equals the next one's, which wins.
-                        found[0] = 0
-                        found[1] = cu_seqlens.shape[0] - 2
-                        for _ in T.serial(extent):
-                            if found[0] < found[1]:
-                                mid = found[0] + (found[1] - found[0] + 1) // 2
-                                if cu_seqlens[mid] <= token:
-                                    found[0] = mid
-                                else:
-                                    found[1] = mid - 1
-                        b = found[0]
-                        s = token - T.Cast("int64", cu_seqlens[b])
+                        x_token = token * qs
+                        y_token = token * ps
                     else:
-                        b = by
-                        s = token
-                    if offset_dtype == "int64":
-                        # An offset past the table first drops to its last row, so the sum
-                        # cannot wrap.
-                        seen = s + T.min(offsets[b], T.Cast("int64", rows) - 1)
-                    elif offset_dtype is not None:
-                        seen = s + T.Cast("int64", offsets[b])
-                    else:
-                        seen = s + offset
-                    row = T.max(0, T.min(seen, T.Cast("int64", rows) - 1))
-                    if interleaved and not adjacent:
-                        # Pairs slot * vec / 2 on, then rotary_half / 2 past them.
-                        for half in T.unroll(2):
-                            for j in T.vectorized(vec // 2):
-                                cs[half * (vec // 2) + j] = cos_table[
-                                    row, (half * rotary_half + slot * vec) // 2 + j
-                                ]
-                            for j in T.vectorized(vec // 2):
-                                sn[half * (vec // 2) + j] = sin_table[
-                                    row, (half * rotary_half + slot * vec) // 2 + j
-                                ]
-                    else:
-                        for j in T.vectorized(vec):
-                            cs[j] = cos_table[row, slot * vec + j]
-                        for j in T.vectorized(vec):
-                            sn[j] = sin_table[row, slot * vec + j]
-                    for k in T.unroll(per_thread):
-                        if k * groups + group < heads:
-                            y_at = (y_token + (k * groups + group) * ph) * vec
-                            for p in T.unroll(vec):
-                                a = 2 * k * vec + (2 * p if interleaved else p)
-                                e = a + (1 if interleaved else vec)
-                                c = T.Cast("float32", cs[p])
-                                sv = T.Cast("float32", sn[p])
-                                _rotate_pair(v, a, v, e, c, sv)
+                        x_token = T.Cast("int64", by) * qb + token * qs
+                        y_token = T.Cast("int64", by) * pb + token * ps
+                    if slot < rot_units:
+                        low = slot * (2 if adjacent else vec)
+                        high = low + (1 if adjacent else rotary_half)
+                        # Every head's x first: its loads wait on no table row, so they are
+                        # in flight while the row is found and its slots are read.
+                        for k in T.unroll(per_thread):
+                            if k * groups + group < heads:
+                                x_at = (x_token + (k * groups + group) * qh) * vec
+                                for j in T.vectorized(vec):
+                                    v[2 * k * vec + j] = x[x_at + (low + j) * qc]
+                                for j in T.vectorized(vec):
+                                    v[(2 * k + 1) * vec + j] = x[x_at + (high + j) * qc]
+                        if seqlens_dtype is not None:
+                            # The last sequence starting at or before the token: an empty
+                            # sequence's start equals the next one's, which wins.
+                            found[0] = 0
+                            found[1] = cu_seqlens.shape[0] - 2
+                            for _ in T.serial(extent):
+                                if found[0] < found[1]:
+                                    mid = found[0] + (found[1] - found[0] + 1) // 2
+                                    if cu_seqlens[mid] <= token:
+                                        found[0] = mid
+                                    else:
+                                        found[1] = mid - 1
+                            b = found[0]
+                            s = token - T.Cast("int64", cu_seqlens[b])
+                        else:
+                            b = by
+                            s = token
+                        if offset_dtype == "int64":
+                            # An offset past the table first drops to its last row, so the sum
+                            # cannot wrap.
+                            seen = s + T.min(offsets[b], T.Cast("int64", rows) - 1)
+                        elif offset_dtype is not None:
+                            seen = s + T.Cast("int64", offsets[b])
+                        else:
+                            seen = s + offset
+                        row = T.max(0, T.min(seen, T.Cast("int64", rows) - 1))
+                        if interleaved and not adjacent:
+                            # Pairs slot * vec / 2 on, then rotary_half / 2 past them.
+                            for half in T.unroll(2):
+                                for j in T.vectorized(vec // 2):
+                                    cs[half * (vec // 2) + j] = cos_table[
+                                        row, (half * rotary_half + slot * vec) // 2 + j
+                                    ]
+                                for j in T.vectorized(vec // 2):
+                                    sn[half * (vec // 2) + j] = sin_table[
+                                        row, (half * rotary_half + slot * vec) // 2 + j
+                                    ]
+                        else:
                             for j in T.vectorized(vec):
-                                y[y_at + (low + j) * pc] = v[2 * k * vec + j]
+                                cs[j] = cos_table[row, slot * vec + j]
                             for j in T.vectorized(vec):
-                                y[y_at + (high + j) * pc] = v[(2 * k + 1) * vec + j]
-                elif not inplace:
-                    kept = rotary + (slot - rot_units) * vec
-                    for k in T.unroll(per_thread):
-                        if k * groups + group < heads:
-                            x_at = (x_token + (k * groups + group) * qh) * vec
-                            y_at = (y_token + (k * groups + group) * ph) * vec
-                            for j in T.vectorized(vec):
-                                v[j] = x[x_at + (kept + j) * qc]
-                            for j in T.vectorized(vec):
-                                y[y_at + (kept + j) * pc] = v[j]
+                                sn[j] = sin_table[row, slot * vec + j]
+                        for k in T.unroll(per_thread):
+                            if k * groups + group < heads:
+                                y_at = (y_token + (k * groups + group) * ph) * vec
+                                for p in T.unroll(vec):
+                                    a = 2 * k * vec + (2 * p if interleaved else p)
+                                    e = a + (1 if interleaved else vec)
+                                    c = T.Cast("float32", cs[p])
+                                    sv = T.Cast("float32", sn[p])
+                                    _rotate_pair(v, a, v, e, c, sv)
+                                for j in T.vectorized(vec):
+                                    y[y_at + (low + j) * pc] = v[2 * k * vec + j]
+                                for j in T.vectorized(vec):
+                                    y[y_at + (high + j) * pc] = v[(2 * k + 1) * vec + j]
+                    elif not inplace:
+                        kept = rotary + (slot - rot_units) * vec
+                        for k in T.unroll(per_thread):
+                            if k * groups + group < heads:
+                                x_at = (x_token + (k * groups + group) * qh) * vec
+                                y_at = (y_token + (k * groups + group) * ph) * vec
+                                for j in T.vectorized(vec):
+                                    v[j] = x[x_at + (kept + j) * qc]
+                                for j in T.vectorized(vec):
+                                    y[y_at + (kept + j) * pc] = v[j]
 
         # One entry point per form of cu_seqlens and seqlen_offsets.
         if seqlens_dtype is not None and offset_dtype is not None:
@@ -1030,25 +982,7 @@ def _rope_cos_sin_kernel(
                 pc: T.int64,
             ):
                 q = (qb, qs, qh, qc, pb, ps, ph, pc)
-                with T.Kernel(
-                    T.Cast("int32", T.ceildiv(tokens * token_items, threads)),
-                    1,
-                    threads=threads,
-                ) as (bx, by):
-                    rotate(
-                        x,
-                        y,
-                        cos_table,
-                        sin_table,
-                        cu_seqlens,
-                        offsets,
-                        0,
-                        tokens,
-                        extent,
-                        q,
-                        bx,
-                        by,
-                    )
+                rotate(x, y, cos_table, sin_table, cu_seqlens, offsets, 0, tokens, extent, q)
 
         elif seqlens_dtype is not None:
 
@@ -1072,14 +1006,7 @@ def _rope_cos_sin_kernel(
                 pc: T.int64,
             ):
                 q = (qb, qs, qh, qc, pb, ps, ph, pc)
-                with T.Kernel(
-                    T.Cast("int32", T.ceildiv(tokens * token_items, threads)),
-                    1,
-                    threads=threads,
-                ) as (bx, by):
-                    rotate(
-                        x, y, cos_table, sin_table, cu_seqlens, x, offset, tokens, extent, q, bx, by
-                    )
+                rotate(x, y, cos_table, sin_table, cu_seqlens, x, offset, tokens, extent, q)
 
         elif offset_dtype is not None:
 
@@ -1102,12 +1029,7 @@ def _rope_cos_sin_kernel(
                 pc: T.int64,
             ):
                 q = (qb, qs, qh, qc, pb, ps, ph, pc)
-                with T.Kernel(
-                    T.Cast("int32", T.ceildiv(tokens * token_items, threads)),
-                    T.Cast("int32", extent),
-                    threads=threads,
-                ) as (bx, by):
-                    rotate(x, y, cos_table, sin_table, x, offsets, 0, tokens, extent, q, bx, by)
+                rotate(x, y, cos_table, sin_table, x, offsets, 0, tokens, extent, q)
 
         else:
 
@@ -1130,12 +1052,7 @@ def _rope_cos_sin_kernel(
                 pc: T.int64,
             ):
                 q = (qb, qs, qh, qc, pb, ps, ph, pc)
-                with T.Kernel(
-                    T.Cast("int32", T.ceildiv(tokens * token_items, threads)),
-                    T.Cast("int32", extent),
-                    threads=threads,
-                ) as (bx, by):
-                    rotate(x, y, cos_table, sin_table, x, x, offset, tokens, extent, q, bx, by)
+                rotate(x, y, cos_table, sin_table, x, x, offset, tokens, extent, q)
 
         return main
 

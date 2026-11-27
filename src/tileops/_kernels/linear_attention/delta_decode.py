@@ -20,7 +20,7 @@ from tileops._kernels.linear_attention.gdn.prefill_common import L2NORM_EPS, sof
 from tileops._kernels.state_pool import state_row
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
-__all__ = ["decode_launch", "delta_decode_tl", "key_of", "run_start"]
+__all__ = ["decode_launch", "delta_decode_tl", "key_of"]
 
 
 def decode_launch(
@@ -296,7 +296,7 @@ def delta_decode_tl(
 
             value_new = beta_value * (
                 (
-                    staged[0][tt, value_lane]
+                    v_rows[tt, value_lane]
                     if rollback
                     else T.cast(v[row, col, head_idx, value_idx], "float32")
                 )

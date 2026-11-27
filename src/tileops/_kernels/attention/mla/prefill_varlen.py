@@ -462,19 +462,6 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
         v: torch.Tensor,
         cu_seqlens: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Attend each query row to the keys its own request's mask admits.
-
-        Args:
-            q: ``(total_tokens, heads, dim_nope + dim_pe)``.
-            k_nope: ``(total_tokens, heads, dim_nope)``.
-            k_pe: ``(total_tokens, dim_pe)``, one row per token for every head.
-            v: ``(total_tokens, heads, dim_v)``.
-            cu_seqlens: ``(batch + 1)`` packed request offsets.
-
-        Returns:
-            The ``(total_tokens, heads, dim_v)`` output and its float32
-            ``(heads, total_tokens)`` log-sum-exp.
-        """
         self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
         return self.program(self._compile)(q, k_nope, k_pe, v, cu_seqlens)
 

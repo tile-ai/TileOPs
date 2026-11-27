@@ -48,6 +48,14 @@ from tileops.backend import Target
 __all__ = ["GEMMFP8FwdOp", "GEMMFwdOp", "GEMMINT8W8A8FwdOp", "GEMMW4A8FwdOp", "GEMMW4A16FwdOp"]
 
 
+def _check_packed(packed_weight: torch.Tensor) -> None:
+    """Refuse a packed INT4 weight that is not a rank-2 ``uint8`` tensor."""
+    if packed_weight.dtype != torch.uint8:
+        raise ValueError(f"repack expects uint8 packed_weight, got {packed_weight.dtype}")
+    if packed_weight.ndim != 2:
+        raise ValueError(f"repack expects a rank-2 weight, got {packed_weight.ndim}")
+
+
 class GEMMFwdOp(Op):
     """Dense GEMM with an optional bias. Nothing is committed at construction: ``m, n, k``
     and the dtype come from the ``forward`` inputs, so ``eval_roofline()`` is valid only
@@ -67,10 +75,9 @@ class GEMMFwdOp(Op):
     input dtype, as ``torch.nn.functional.linear`` rounds it. ``out_dtype=torch.float32``
     returns that sum unrounded, as ``F.linear(a.float(), b.float())`` computes it.
 
-    Accuracy of a float32 output: the tensor cores add each K step's products to the
-    float32 sum with truncation, as cuBLAS's 16-bit GEMM with a float32 output does, so the
-    error grows as $K^{1.5}$; over standard normal operands it stays below about 2e-3 at
-    $K = 4096$.
+    Accuracy of a float32 output: each K step's products are added to the float32 sum with
+    truncation, so the error grows as $K^{1.5}$ (below about 2e-3 at $K = 4096$ over
+    standard normal operands).
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -153,12 +160,11 @@ class GEMMFwdOp(Op):
 class GEMMFP8FwdOp(Op):
     """Dense FP8 NT GEMM, input-inferred: $d = (a \\cdot s_a) \\mathbin{@} (b \\cdot s_b)^{\\top} + \\text{bias}$.
 
-    ``a`` is $[M \\times K]$ and ``b`` is $[N \\times K]$, the operand ``torch._scaled_mm``
-    receives as ``b.T``. The layout is fixed, the default orientation of ``GEMMFwdOp``: the
-    in-tree kernels read both operands K-innermost, so the op takes no transpose flag. ``a_scale`` and ``b_scale`` are both per-tensor $[1 \\times 1]$
-    scales, or ``a_scale`` is per 1x128 block along K, $[M \\times \\lceil K/128 \\rceil]$,
-    with ``b_scale`` per 1x128 block, $[N \\times \\lceil K/128 \\rceil]$, or per 128x128
-    block, $[\\lceil N/128 \\rceil \\times \\lceil K/128 \\rceil]$.
+    ``a`` is $[M \\times K]$ and ``b`` is $[N \\times K]$ (NT only, no transpose flag).
+    ``a_scale`` and ``b_scale`` are both per-tensor $[1 \\times 1]$ scales, or ``a_scale`` is
+    per 1x128 block along K, $[M \\times \\lceil K/128 \\rceil]$, with ``b_scale`` per 1x128
+    block, $[N \\times \\lceil K/128 \\rceil]$, or per 128x128 block, $[\\lceil N/128 \\rceil
+    \\times \\lceil K/128 \\rceil]$.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -244,14 +250,12 @@ class GEMMINT8W8A8FwdOp(Op):
     $d = (a \\mathbin{@} b^{\\top}) \\cdot s_a \\cdot s_b + \\text{bias}$.
 
     ``a`` is an $[M \\times K]$ activation and ``b`` an $[N \\times K]$ weight, both
-    ``torch.int8``. The layout is fixed: the in-tree kernels read both operands K-innermost,
-    so the op takes no transpose flag. ``a_scale`` is one ``float32`` scale for ``a`` ($[1 \\times 1]$) or one
-    per token ($[M \\times 1]$); ``b_scale`` one for ``b`` ($[1 \\times 1]$) or one per
-    output channel ($[1 \\times N]$).
+    ``torch.int8`` (NT only, no transpose flag). ``a_scale`` is one ``float32`` scale for ``a``
+    ($[1 \\times 1]$) or one per token ($[M \\times 1]$); ``b_scale`` one for ``b`` ($[1 \\times
+    1]$) or one per output channel ($[1 \\times N]$).
 
-    Accuracy: the product is accumulated in int32, as ``cutlass_scaled_mm`` accumulates it,
-    and is exact while $K \\le 131071$: an int8 product is at most $2^{14}$ in magnitude, so
-    no partial sum leaves the int32 range below that; past it a sum can wrap. Each result is
+    Accuracy: the product is accumulated in int32 and is exact while $K \\le 131071$
+    ($|a_i b_i| \\le 2^{14}$); past it a sum can wrap. Each result is
     converted to float32, multiplied by its token scale and then its channel scale, the bias
     is added in float32, and the sum is rounded once to ``out_dtype``. A result can differ
     from ``vllm._custom_ops.cutlass_scaled_mm`` by one unit in the last place of
@@ -385,9 +389,6 @@ class GEMMW4A16FwdOp(Op):
     def repack(self, packed_weight: torch.Tensor) -> torch.Tensor:
         """Put a row-major packed weight into the order ``forward`` reads.
 
-        The order is a contract between this op's repack and its GEMM, so both come
-        from the same set of kernels.
-
         Args:
             packed_weight: Row-major packed weights, $[N \\times K/2]$, ``torch.uint8``:
                 two INT4 per byte, even $K$ in the low nibble.
@@ -399,10 +400,7 @@ class GEMMW4A16FwdOp(Op):
             ValueError: The input is not a rank-2 uint8 tensor whose K dimension
                 contains whole MMA steps.
         """
-        if packed_weight.dtype != torch.uint8:
-            raise ValueError(f"repack expects uint8 packed_weight, got {packed_weight.dtype}")
-        if packed_weight.ndim != 2:
-            raise ValueError(f"repack expects a rank-2 weight, got {packed_weight.ndim}")
+        _check_packed(packed_weight)
         n, packed_k = packed_weight.shape
         if packed_k % (W4A16_LAYOUT.mma_step_k // 2):
             raise ValueError(
@@ -519,9 +517,6 @@ class GEMMW4A8FwdOp(Op):
     def repack(self, packed_weight: torch.Tensor) -> torch.Tensor:
         """Put a row-major packed weight into the order ``forward`` reads.
 
-        The order is a contract between this op's repack and its GEMMs, so they come from
-        the same set of kernels.
-
         Args:
             packed_weight: Row-major packed weights, $[N \\times K/2]$, ``torch.uint8``: two
                 signed two's-complement INT4 per byte, even $K$ in the low nibble.
@@ -533,10 +528,7 @@ class GEMMW4A8FwdOp(Op):
             ValueError: The input is not a rank-2 uint8 tensor with N a positive multiple of 16 and
                 K a positive multiple of 128.
         """
-        if packed_weight.dtype != torch.uint8:
-            raise ValueError(f"repack expects uint8 packed_weight, got {packed_weight.dtype}")
-        if packed_weight.ndim != 2:
-            raise ValueError(f"repack expects a rank-2 weight, got {packed_weight.ndim}")
+        _check_packed(packed_weight)
         n, k = packed_weight.shape[0], 2 * packed_weight.shape[1]
         if n <= 0 or k <= 0:
             raise ValueError(f"repack needs positive N and K, got N={n}, K={k}")

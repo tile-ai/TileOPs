@@ -44,8 +44,8 @@ def load_layer(layer: DecoderLayer, t: dict[str, torch.Tensor]) -> None:
     """Fill one layer from its tensors, named relative to ``layers.<i>.``."""
     layer.input_norm = t.pop("input_layernorm.weight")
     layer.post_norm = t.pop("post_attention_layernorm.weight")
-    layer.mlp.gate_up_proj = torch.cat([t.pop("mlp.gate_proj.weight"), t.pop("mlp.up_proj.weight")])
-    layer.mlp.down_proj = t.pop("mlp.down_proj.weight")
+    layer.gate_up_proj = torch.cat([t.pop("mlp.gate_proj.weight"), t.pop("mlp.up_proj.weight")])
+    layer.down_proj = t.pop("mlp.down_proj.weight")
     mixer = layer.mixer
     if isinstance(mixer, GatedDeltaNet):
         mixer.in_proj = torch.cat(

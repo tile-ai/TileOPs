@@ -1,35 +1,10 @@
-"""Self-contained Plotly HTML timeline viewer for decoded trace events.
+"""Self-contained Plotly HTML timeline of decoded trace events, one tab per CTA.
 
-Turns the flat ``Slice`` / ``Instant`` list from
-``tileops.trace._decode.decode`` into a single, self-contained ``.html`` file
-that renders one horizontal-bar Gantt timeline per CTA: warm ``#f3ede1`` paper,
-monospace fonts, overlaid bars with light separator lines, a categorical lane axis,
-an x axis labelled in SM cycles, and a horizontal legend pinned at the bottom.
-
-This module is pure Python — it emits the Plotly figure dicts as embedded JSON
-plus a small JS shim and loads Plotly itself from a CDN. It imports neither torch
-nor plotly, so it stays importable in any environment.
-
-Layout per CTA (``_figure_for_cta``):
-    * **Lanes** are auto-derived from the data: the distinct ``(gid, lane)`` pairs
-      that carry events in the CTA, sorted by ``(gid, lane)``. Each lane's label is
-      ``"<group> / <lane>"``. Plotly draws a categorical ``categoryarray``
-      bottom-up, so the array is the lane labels in **reverse** sorted order — the
-      first ``(gid, lane)`` (producer / group 0, ``main`` lane) lands last in the
-      array and therefore renders at the top.
-    * **Traces** are grouped by event ``name`` across all lanes — one bar trace per
-      name, each with a stable color picked deterministically from a warm palette by
-      sorted name, so a name keeps its color across CTAs. ``Instant`` markers are
-      grouped likewise into thin (1% of span) bar traces.
-    * **Flows** (declared ``(src_name, dst_name)`` pairs resolved per CTA by
-      ``tileops.trace._decode.compute_flows``) become one ``annotations`` arrow
-      per ``FlowEdge``, from the source slice's end lane
-      to the destination slice's start lane.
-
-Interaction is horizontal-only zoom + pan: ``dragmode:"pan"`` with
-``xaxis.fixedrange:false`` and ``yaxis.fixedrange:true``, plus a Plotly config that
-keeps ``scrollZoom`` on and strips the vertical/box zoom buttons. With the y axis
-fixed, scroll-zoom only stretches x and pan only moves x.
+Each CTA's figure has one categorical lane per ``(gid, lane)`` pair that carries events,
+labelled ``"<group> / <lane>"`` with the first pair at the top; one bar trace per event
+name, colored by sorted name so a name keeps its color across CTAs; and one annotation
+arrow per ``FlowEdge``. Zoom and pan move the x axis only. The page loads Plotly from a
+CDN; this module imports neither torch nor plotly.
 """
 
 import json
@@ -58,19 +33,16 @@ _PALETTE = [
     "#5a6b8c",  # dusty blue
 ]
 
-# Annotation arrow color for dag / barrier dependency edges.
 _ARROW_COLOR = "#7d5ba6"
 
 _PAPER_BG = "#f3ede1"
 _GRID_COLOR = "#d8cfbb"
-_BAR_LINE_COLOR = "#f3ede1"
 _FONT_FAMILY = "ui-monospace, SFMono-Regular, monospace"
 _INK = "#191a16"
 
 
-# Plotly config: horizontal-only zoom + pan. With yaxis.fixedrange set, scrollZoom
-# stretches only x and pan moves only x; the vertical / box / autoscale buttons are
-# stripped so the y axis can never be rescaled.
+# With yaxis.fixedrange set, scroll-zoom and pan move only x; the buttons that could
+# rescale y are removed.
 _CONFIG = {
     "scrollZoom": True,
     "displaylogo": False,
@@ -122,31 +94,14 @@ _HTML_TEMPLATE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 
 
 def _lane_label(gid: int, lane: int, group_id_to_name: dict, lane_id_to_name: dict) -> str:
-    """Build a lane's y-axis label ``"<group> / <lane>"``.
-
-    Args:
-        gid: Logical work-group id of the lane.
-        lane: Interned render sub-lane id.
-        group_id_to_name: ``gid -> name`` map; falls back to ``g<gid>``.
-        lane_id_to_name: ``lane_id -> name`` map; falls back to the id.
-
-    Returns:
-        The lane label string.
-    """
+    """A lane's y-axis label ``"<group> / <lane>"``."""
     gname = group_id_to_name.get(gid, f"g{gid}")
     lname = lane_id_to_name.get(lane, str(lane))
     return f"{gname} / {lname}"
 
 
 def _text_color(hex_color: str) -> str:
-    """Pick black or white inside-bar text for legible contrast on ``hex_color``.
-
-    Args:
-        hex_color: A ``#rrggbb`` bar fill color.
-
-    Returns:
-        ``"#191a16"`` on light fills, ``"#ffffff"`` on dark fills.
-    """
+    """Ink on a light ``#rrggbb`` fill, white on a dark one."""
     r = int(hex_color[1:3], 16)
     g = int(hex_color[3:5], 16)
     b = int(hex_color[5:7], 16)
@@ -154,26 +109,8 @@ def _text_color(hex_color: str) -> str:
     return _INK if luminance > 0.6 else "#ffffff"
 
 
-def _bar_trace(
-    name, color, lane_labels, bases, durs, texts, payloads, sm_clock_ghz, *, width, textangle
-):
-    """Build one Plotly horizontal-bar trace for an event name.
-
-    Args:
-        name: Event name (legend entry).
-        color: Bar fill color.
-        lane_labels: y category per bar.
-        bases: ``base`` (start cycle) per bar.
-        durs: ``x`` (duration cycle) per bar.
-        texts: Inside-bar text per bar.
-        payloads: Raw payload per bar (for the hover ``customdata``).
-        sm_clock_ghz: Locked SM clock in GHz (for the ~ns hover column).
-        width: Bar thickness (Plotly y-units).
-        textangle: Inside-text rotation in degrees.
-
-    Returns:
-        A Plotly trace dict.
-    """
+def _bar_trace(name, color, lane_labels, bases, durs, texts, payloads, sm_clock_ghz, *, width):
+    """One Plotly horizontal-bar trace: one bar per event of *name*."""
     # cycles / GHz == ns at the locked SM clock.
     customdata = [
         [name, "" if p is None else p, d, round(d / sm_clock_ghz, 1)]
@@ -191,9 +128,9 @@ def _bar_trace(
         "insidetextanchor": "middle",
         "constraintext": "inside",
         "cliponaxis": False,
-        "textangle": textangle,
+        "textangle": 0,
         "textfont": {"color": _text_color(color), "size": 11, "family": _FONT_FAMILY},
-        "marker": {"color": color, "line": {"color": _BAR_LINE_COLOR, "width": 1.2}},
+        "marker": {"color": color, "line": {"color": _PAPER_BG, "width": 1.2}},
         "width": width,
         "showlegend": True,
         "customdata": customdata,
@@ -208,22 +145,7 @@ def _bar_trace(
 def _figure_for_cta(
     cta, events, group_id_to_name, lane_id_to_name, flows, color_map, title, sm_clock_ghz
 ):
-    """Build the Plotly ``{data, layout}`` figure dict for one CTA.
-
-    Args:
-        cta: The flat CTA index.
-        events: This CTA's ``Slice`` / ``Instant`` objects.
-        group_id_to_name: ``gid -> name`` map for lane labels.
-        lane_id_to_name: ``lane_id -> name`` map for lane labels.
-        flows: Declared ``(src_name, dst_name)`` pairs, resolved to per-edge arrows
-            for this CTA via ``tileops.trace._decode.compute_flows``.
-        color_map: Global ``name -> color`` assignment (stable across CTAs).
-        title: Base figure title; the CTA index is appended.
-        sm_clock_ghz: Locked SM clock in GHz.
-
-    Returns:
-        A ``{"data": [...], "layout": {...}}`` dict ready for ``Plotly.react``.
-    """
+    """The Plotly ``{data, layout}`` figure of one CTA's events."""
     slices = [e for e in events if isinstance(e, Slice)]
     instants = [e for e in events if isinstance(e, Instant)]
     # compute_flows pairs same-named slices in timestamp order; events are already
@@ -248,74 +170,46 @@ def _figure_for_cta(
     instant_w = max(1, span * 0.01)
 
     data = []
-
-    # Slice traces, grouped by name.
-    by_name: dict = {}
-    for s in slices:
-        by_name.setdefault(s.name, []).append(s)
-    for name in sorted(by_name):
-        items = by_name[name]
-        text = [(f"{s.name}<br>{s.payload}" if s.payload is not None else s.name) for s in items]
-        data.append(
-            _bar_trace(
-                name,
-                color_map[name],
-                [lane_labels[(s.track[1], s.track[2])] for s in items],
-                [s.ts_cy for s in items],
-                [s.dur_cy for s in items],
-                text,
-                [s.payload for s in items],
-                sm_clock_ghz,
-                width=0.62,
-                textangle=0,
+    # Slices by name, then instants by name as thin bars of 1% of the span.
+    for kind, width in ((Slice, 0.62), (Instant, 0.34)):
+        by_name: dict = {}
+        for e in events:
+            if isinstance(e, kind):
+                by_name.setdefault(e.name, []).append(e)
+        for name in sorted(by_name):
+            items = by_name[name]
+            if kind is Slice:
+                durs = [s.dur_cy for s in items]
+                text = [name if s.payload is None else f"{name}<br>{s.payload}" for s in items]
+            else:
+                durs = [instant_w] * len(items)
+                text = [name] * len(items)
+            data.append(
+                _bar_trace(
+                    name,
+                    color_map[name],
+                    [lane_labels[(e.track[1], e.track[2])] for e in items],
+                    [e.ts_cy for e in items],
+                    durs,
+                    text,
+                    [e.payload for e in items],
+                    sm_clock_ghz,
+                    width=width,
+                )
             )
-        )
-
-    # Instant traces (thin bars), grouped by name.
-    inst_by_name: dict = {}
-    for inst in instants:
-        inst_by_name.setdefault(inst.name, []).append(inst)
-    for name in sorted(inst_by_name):
-        items = inst_by_name[name]
-        data.append(
-            _bar_trace(
-                name,
-                color_map[name],
-                [lane_labels[(i.track[1], i.track[2])] for i in items],
-                [i.ts_cy for i in items],
-                [instant_w] * len(items),
-                [name] * len(items),
-                [i.payload for i in items],
-                sm_clock_ghz,
-                width=0.34,
-                textangle=0,
-            )
-        )
 
     # Plotly draws categoryarray bottom-up; reverse the sorted lane order so the
     # first (gid, lane) — producer / group0 main — renders at the TOP.
     category_array = [lane_labels[p] for p in reversed(lane_pairs)]
 
-    # Flow edges -> one annotation arrow each, from the source slice's end lane to
-    # the destination slice's start lane. Each FlowEdge is a distinct occurrence,
-    # so the arrows fan out instead of collapsing onto a shared endpoint.
     annotations = []
     for edge in edges:
-        src_label = _lane_label(
-            edge.src_track[1], edge.src_track[2], group_id_to_name, lane_id_to_name
-        )
-        dst_label = _lane_label(
-            edge.dst_track[1], edge.dst_track[2], group_id_to_name, lane_id_to_name
-        )
-        src_ts = edge.src_ts_cy
-        dst_ts = edge.dst_ts_cy
-        # Arrow only, no text label: the line from src to dst already says it all.
         annotations.append(
             {
-                "x": dst_ts,
-                "y": dst_label,
-                "ax": src_ts,
-                "ay": src_label,
+                "x": edge.dst_ts_cy,
+                "y": _lane_label(*edge.dst_track[1:], group_id_to_name, lane_id_to_name),
+                "ax": edge.src_ts_cy,
+                "ay": _lane_label(*edge.src_track[1:], group_id_to_name, lane_id_to_name),
                 "xref": "x",
                 "yref": "y",
                 "axref": "x",
@@ -381,27 +275,14 @@ def export_timeline_html(
 ) -> None:
     """Write decoded trace events as a self-contained Plotly HTML timeline.
 
-    Groups the events by CTA (``track[0]``), builds one horizontal-bar Gantt figure
-    per CTA, and emits a single ``.html`` file with a top tab strip switching CTAs
-    via ``Plotly.react``. Colors are assigned per event name globally (stable
-    across CTAs). The viewer loads Plotly from a CDN, so opening the file needs
-    internet access (or a locally cached Plotly).
-
     Args:
-        events: Flat list of ``Slice`` / ``Instant`` objects from
-            ``tileops.trace._decode.decode``.
+        events: ``Slice`` / ``Instant`` objects from ``decode``.
         path: Destination ``.html`` path.
-        group_id_to_name: ``gid -> name`` map (resolved from the compiled kernel),
-            used to label each lane.
-        lane_id_to_name: ``lane_id -> name`` map (resolved from the kernel), used
-            to label each lane.
-        flows: Optional declared ``(src_name, dst_name)`` pairs
-            (``host_maps["flows"]``), resolved per CTA to flow arrows.
+        group_id_to_name: ``gid -> name`` map, for lane labels.
+        lane_id_to_name: ``lane_id -> name`` map, for lane labels.
+        flows: Declared ``(src_name, dst_name)`` pairs, drawn as arrows per CTA.
         title: Base figure title; the CTA index is appended per tab.
-        sm_clock_ghz: Locked SM clock in GHz, used for the ``~ns`` hover column.
-
-    Returns:
-        None. Writes the HTML document to ``path``.
+        sm_clock_ghz: Locked SM clock in GHz, for the ``~ns`` hover column.
     """
     lane_id_to_name = lane_id_to_name or {}
 

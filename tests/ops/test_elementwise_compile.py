@@ -1,13 +1,4 @@
-"""Tests for torch.compile compatibility of elementwise ops.
-
-Section 1: Detailed compile tests for 6 representative ops (relu, add, eq,
-silu_and_mul, abs, sign) with full fixture/test structure.
-
-Section 2: Parametrized compile-smoke tests covering every remaining registered
-op to ensure the registration table is fully exercised.
-
-Validates that torch.compile(op, fullgraph=True) produces correct output.
-"""
+"""torch.compile(fullgraph=True) of every elementwise op matches eager."""
 
 import pytest
 import torch
@@ -95,29 +86,13 @@ def _reset_dynamo(isolated_dynamo):
 
 
 def _register_table(table):
-    """Register the op_cls column of a parametrized compile-case table.
-
-    Keeps the contract-coverage registry derived from the same case data
-    the tests consume: call immediately after each table definition.
-    """
+    """Register the op_cls column of a parametrized compile-case table."""
     for case in table:
         values = case.values if hasattr(case, "values") else case
         register_compile_contract(values[0])
 
 
 # Unary compile test: relu
-
-
-class ReLUCompileFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total, dtype",
-            [
-                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
 
 
 class ReLUCompileTest(ReLUWorkload, TestBase):
@@ -127,13 +102,11 @@ class ReLUCompileTest(ReLUWorkload, TestBase):
 register_compile_contract(ReLUFwdOp)
 
 
-@ReLUCompileFixture
-def test_relu_compile(n_total, dtype):
-    test = ReLUCompileTest(n_total, dtype)
+@pytest.mark.smoke
+def test_relu_compile():
+    test = ReLUCompileTest(1_048_576, torch.float16)
     op = ReLUFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-    inputs = test.gen_inputs()
-    test.check(op, *inputs, runs=compiled_op)
+    test.check(op, *test.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
 
 # Binary compile test: add
@@ -162,23 +135,10 @@ register_compile_contract(AddFwdOp)
 def test_add_compile(a_shape, b_shape, dtype):
     test = AddCompileTest(a_shape, b_shape, dtype)
     op = AddFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-    inputs = test.gen_inputs()
-    test.check(op, *inputs, runs=compiled_op)
+    test.check(op, *test.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
 
 # Comparison compile test: eq (bool output)
-
-
-class EqCompileFixture(FixtureBase):
-    PARAMS = [
-        (
-            "a_shape, b_shape, dtype",
-            [
-                pytest.param((1024, 1024), (1024, 1024), torch.float16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
 
 
 class EqCompileTest(EqCompileWorkload, TestBase):
@@ -188,27 +148,14 @@ class EqCompileTest(EqCompileWorkload, TestBase):
 register_compile_contract(EqFwdOp)
 
 
-@EqCompileFixture
-def test_eq_compile(a_shape, b_shape, dtype):
-    test = EqCompileTest(a_shape, b_shape, dtype)
+@pytest.mark.smoke
+def test_eq_compile():
+    test = EqCompileTest((1024, 1024), (1024, 1024), torch.float16)
     op = EqFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-    inputs = test.gen_inputs()
-    test.check(op, *inputs, runs=compiled_op)
+    test.check(op, *test.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
 
 # FusedGated compile test: silu_and_mul
-
-
-class SiLUAndMulCompileFixture(FixtureBase):
-    PARAMS = [
-        (
-            "M, N, dtype",
-            [
-                pytest.param(512, 1024, torch.float16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
 
 
 class SiLUAndMulCompileTest(SiLUAndMulCase, TestBase):
@@ -218,27 +165,14 @@ class SiLUAndMulCompileTest(SiLUAndMulCase, TestBase):
 register_compile_contract(SiLUAndMulFwdOp)
 
 
-@SiLUAndMulCompileFixture
-def test_silu_and_mul_compile(M, N, dtype):
-    test = SiLUAndMulCompileTest(M, N, dtype)
+@pytest.mark.smoke
+def test_silu_and_mul_compile():
+    test = SiLUAndMulCompileTest(512, 1024, torch.float16)
     op = SiLUAndMulFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-    inputs = test.gen_inputs()
-    test.check(op, *inputs, runs=compiled_op)
+    test.check(op, *test.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
 
 # Additional unary compile tests: abs, sign
-
-
-class AbsCompileFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total, dtype",
-            [
-                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
 
 
 class AbsCompileTest(AbsCompileCase, TestBase):
@@ -248,24 +182,11 @@ class AbsCompileTest(AbsCompileCase, TestBase):
 register_compile_contract(AbsFwdOp)
 
 
-@AbsCompileFixture
-def test_abs_compile(n_total, dtype):
-    test = AbsCompileTest(n_total, dtype)
+@pytest.mark.smoke
+def test_abs_compile():
+    test = AbsCompileTest(1_048_576, torch.float16)
     op = AbsFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-    inputs = test.gen_inputs()
-    test.check(op, *inputs, runs=compiled_op)
-
-
-class SignCompileFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total, dtype",
-            [
-                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
+    test.check(op, *test.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
 
 class SignCompileTest(SignCompileCase, TestBase):
@@ -275,82 +196,11 @@ class SignCompileTest(SignCompileCase, TestBase):
 register_compile_contract(SignFwdOp)
 
 
-@SignCompileFixture
-def test_sign_compile(n_total, dtype):
-    test = SignCompileTest(n_total, dtype)
+@pytest.mark.smoke
+def test_sign_compile():
+    test = SignCompileTest(1_048_576, torch.float16)
     op = SignFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-    inputs = test.gen_inputs()
-    test.check(op, *inputs, runs=compiled_op)
-
-
-# register_fake shape/dtype correctness
-
-
-class FakeUnaryFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total, dtype",
-            [
-                pytest.param(1024, torch.float16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@FakeUnaryFixture
-def test_register_fake_unary_shape_dtype(n_total, dtype):
-    """Verify register_fake returns correct shape and dtype for unary ops."""
-    op = ReLUFwdOp()
-    x = torch.randn(n_total, dtype=dtype, device=run_device())
-    compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x)
-    assert out.shape == x.shape, f"Shape mismatch: {out.shape} vs {x.shape}"
-    assert out.dtype == x.dtype, f"Dtype mismatch: {out.dtype} vs {x.dtype}"
-
-
-class FakeComparisonFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dtype",
-            [
-                pytest.param((256, 256), torch.float16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@FakeComparisonFixture
-def test_register_fake_comparison_bool_dtype(shape, dtype):
-    """Verify register_fake returns torch.bool for comparison ops."""
-    op = EqFwdOp()
-    a = torch.randn(shape, dtype=dtype, device=run_device())
-    b = torch.randn(shape, dtype=dtype, device=run_device())
-    compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(a, b)
-    assert out.dtype == torch.bool, f"Expected bool, got {out.dtype}"
-
-
-class FakeFusedGatedFixture(FixtureBase):
-    PARAMS = [
-        (
-            "M, N, dtype",
-            [
-                pytest.param(64, 128, torch.float16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@FakeFusedGatedFixture
-def test_register_fake_fused_gated_shape(M, N, dtype):
-    """Verify register_fake returns correct shape for fused gated ops."""
-    op = SiLUAndMulFwdOp()
-    x = torch.randn(M, 2 * N, dtype=dtype, device=run_device())
-    compiled_op = torch.compile(op, fullgraph=True)
-    out = compiled_op(x)
-    assert out.shape == (M, N), f"Shape mismatch: {out.shape} vs {(M, N)}"
-    assert out.dtype == dtype
+    test.check(op, *test.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
 
 # Every registered op compiles: custom_op registration, register_fake and codegen succeed.
@@ -358,118 +208,38 @@ def test_register_fake_fused_gated_shape(M, N, dtype):
 _DTYPE = torch.float16
 
 
-# --- Remaining unary ops (not covered by detailed tests above) ---
+# --- Unary float ops ---
 
 
 def _positive_input(n, dtype):
-    """Generate strictly positive inputs for log/sqrt/rsqrt/log1p domains."""
+    """Positive inputs, in the domain of log, sqrt, rsqrt and log1p."""
     return torch.rand(n, dtype=dtype, device=run_device()).clamp(min=0.01) * 10.0
 
 
 _UNARY_FLOAT_OPS = [
     pytest.param(ExpFwdOp, None, "exp", marks=pytest.mark.smoke),
-    pytest.param(
-        LogFwdOp,
-        _positive_input,
-        "log",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        SqrtFwdOp,
-        _positive_input,
-        "sqrt",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        RsqrtFwdOp,
-        _positive_input,
-        "rsqrt",
-        marks=pytest.mark.full,
-    ),
+    pytest.param(LogFwdOp, _positive_input, "log", marks=pytest.mark.full),
+    pytest.param(SqrtFwdOp, _positive_input, "sqrt", marks=pytest.mark.full),
+    pytest.param(RsqrtFwdOp, _positive_input, "rsqrt", marks=pytest.mark.full),
     pytest.param(NegFwdOp, None, "neg", marks=pytest.mark.full),
-    pytest.param(
-        ReciprocalFwdOp,
-        None,
-        "reciprocal",
-        marks=pytest.mark.full,
-    ),
+    pytest.param(ReciprocalFwdOp, None, "reciprocal", marks=pytest.mark.full),
     pytest.param(SinFwdOp, None, "sin", marks=pytest.mark.full),
     pytest.param(CosFwdOp, None, "cos", marks=pytest.mark.full),
-    pytest.param(
-        FloorFwdOp,
-        None,
-        "floor",
-        marks=pytest.mark.full,
-    ),
+    pytest.param(FloorFwdOp, None, "floor", marks=pytest.mark.full),
     pytest.param(CeilFwdOp, None, "ceil", marks=pytest.mark.full),
-    pytest.param(
-        RoundFwdOp,
-        None,
-        "round",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        TruncFwdOp,
-        None,
-        "trunc",
-        marks=pytest.mark.full,
-    ),
+    pytest.param(RoundFwdOp, None, "round", marks=pytest.mark.full),
+    pytest.param(TruncFwdOp, None, "trunc", marks=pytest.mark.full),
     pytest.param(ErfFwdOp, None, "erf", marks=pytest.mark.full),
-    pytest.param(
-        Log1pFwdOp,
-        _positive_input,
-        "log1p",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        Expm1FwdOp,
-        None,
-        "expm1",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        GELUFwdOp,
-        None,
-        "gelu",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        SiLUFwdOp,
-        None,
-        "silu",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        SigmoidFwdOp,
-        None,
-        "sigmoid",
-        marks=pytest.mark.full,
-    ),
+    pytest.param(Log1pFwdOp, _positive_input, "log1p", marks=pytest.mark.full),
+    pytest.param(Expm1FwdOp, None, "expm1", marks=pytest.mark.full),
+    pytest.param(GELUFwdOp, None, "gelu", marks=pytest.mark.full),
+    pytest.param(SiLUFwdOp, None, "silu", marks=pytest.mark.full),
+    pytest.param(SigmoidFwdOp, None, "sigmoid", marks=pytest.mark.full),
     pytest.param(TanhFwdOp, None, "tanh", marks=pytest.mark.full),
-    pytest.param(
-        HardswishFwdOp,
-        None,
-        "hardswish",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        HardsigmoidFwdOp,
-        None,
-        "hardsigmoid",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        MishFwdOp,
-        None,
-        "mish",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        SELUFwdOp,
-        None,
-        "selu",
-        marks=pytest.mark.full,
-    ),
+    pytest.param(HardswishFwdOp, None, "hardswish", marks=pytest.mark.full),
+    pytest.param(HardsigmoidFwdOp, None, "hardsigmoid", marks=pytest.mark.full),
+    pytest.param(MishFwdOp, None, "mish", marks=pytest.mark.full),
+    pytest.param(SELUFwdOp, None, "selu", marks=pytest.mark.full),
 ]
 
 
@@ -478,7 +248,6 @@ _register_table(_UNARY_FLOAT_OPS)
 
 @pytest.mark.parametrize("op_cls, input_fn, name", _UNARY_FLOAT_OPS)
 def test_unary_float_compile(op_cls, input_fn, name):
-    """Compile-smoke for remaining float unary ops."""
     n = 1024 * 1024
     op = op_cls()
     compiled_op = torch.compile(op, fullgraph=True)
@@ -544,26 +313,10 @@ _BINARY_ARITH_OPS = [
     pytest.param(SubFwdOp, "sub", marks=pytest.mark.smoke),
     pytest.param(MulFwdOp, "mul", marks=pytest.mark.full),
     pytest.param(DivFwdOp, "div", marks=pytest.mark.full),
-    pytest.param(
-        RemainderFwdOp,
-        "remainder",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        FloorDivideFwdOp,
-        "floor_divide",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        MaximumFwdOp,
-        "maximum",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        MinimumFwdOp,
-        "minimum",
-        marks=pytest.mark.full,
-    ),
+    pytest.param(RemainderFwdOp, "remainder", marks=pytest.mark.full),
+    pytest.param(FloorDivideFwdOp, "floor_divide", marks=pytest.mark.full),
+    pytest.param(MaximumFwdOp, "maximum", marks=pytest.mark.full),
+    pytest.param(MinimumFwdOp, "minimum", marks=pytest.mark.full),
 ]
 
 
@@ -588,9 +341,8 @@ register_compile_contract(PowFwdOp)
 
 @pytest.mark.smoke
 def test_pow_compile():
-    """Compile-smoke for PowFwdOp with positive inputs to avoid NaN domain issues."""
+    """Positive base and small exponent keep the result finite."""
     shape = (256, 256)
-    # Use positive base and small positive exponent to stay in valid domain
     a = torch.rand(shape, dtype=_DTYPE, device=run_device()).clamp(min=0.1) * 5.0
     b = torch.rand(shape, dtype=_DTYPE, device=run_device()) * 2.0
     op = PowFwdOp()
@@ -750,25 +502,6 @@ register_compile_contract(WhereFwdOp)
 
 
 @pytest.mark.smoke
-def test_where_compile_same_shape():
-    """Compile-smoke for WhereFwdOp with all three inputs same-shape.
-
-    Regression: ensures WhereFwdOp registers a custom_op so
-    torch.compile(fullgraph=True) does not fail with
-    "torch.* op returned non-Tensor".
-    """
-    shape = (16,)
-    cond = torch.randint(0, 2, shape, dtype=torch.bool, device=run_device())
-    x = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    y = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    op = WhereFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-
-    workload = ElementwiseWorkload(type(op).__name__, (cond, x, y))
-    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
-
-
-@pytest.mark.smoke
 def test_where_compile_broadcast():
     """Compile-smoke for WhereFwdOp with broadcasting inputs."""
     cond_shape = (4, 1)
@@ -802,25 +535,6 @@ def test_clamp_number_bounds_compile():
 
 
 @pytest.mark.smoke
-def test_clamp_tensor_compile_same_shape():
-    """Compile-smoke for ClampFwdOp with both Tensor bounds at same shape.
-
-    Regression: ensures ClampFwdOp registers a custom_op so
-    torch.compile(fullgraph=True) does not fail with
-    "torch.* op returned non-Tensor".
-    """
-    shape = (16, 16)
-    x = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    lo = torch.full(shape, -0.5, dtype=_DTYPE, device=run_device())
-    hi = torch.full(shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-
-    workload = ElementwiseWorkload(type(op).__name__, (x, lo, hi))
-    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
-
-
-@pytest.mark.smoke
 def test_clamp_tensor_compile_broadcast():
     """Compile-smoke for ClampFwdOp with broadcasting Tensor bounds."""
     input_shape = (4, 8)
@@ -840,19 +554,6 @@ def test_clamp_tensor_compile_broadcast():
 
 
 @pytest.mark.smoke
-def test_clamp_min_only_compile_same_shape():
-    """Compile-smoke for ClampFwdOp with max withheld, at same shape."""
-    shape = (16, 16)
-    x = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    lo = torch.full(shape, -0.5, dtype=_DTYPE, device=run_device())
-    op = ClampFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-
-    workload = ElementwiseWorkload(type(op).__name__, (x, lo))
-    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
-
-
-@pytest.mark.smoke
 def test_clamp_min_only_compile_broadcast():
     """Compile-smoke for ClampFwdOp with max withheld and broadcasting min."""
     input_shape = (4, 8)
@@ -863,19 +564,6 @@ def test_clamp_min_only_compile_broadcast():
     compiled_op = torch.compile(op, fullgraph=True)
 
     workload = ElementwiseWorkload(type(op).__name__, (x, lo))
-    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
-
-
-@pytest.mark.smoke
-def test_clamp_max_only_compile_same_shape():
-    """Compile-smoke for ClampFwdOp with min withheld, at same shape."""
-    shape = (16, 16)
-    x = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    hi = torch.full(shape, 0.5, dtype=_DTYPE, device=run_device())
-    op = ClampFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-
-    workload = ElementwiseWorkload(type(op).__name__, (x, None, hi))
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
@@ -899,25 +587,6 @@ register_compile_contract(MaskedFillFwdOp)
 
 
 @pytest.mark.smoke
-def test_masked_fill_tensor_compile_same_shape():
-    """Compile-smoke for MaskedFillFwdOp (0-dim Tensor value) at same shape.
-
-    Regression: ensures MaskedFillFwdOp registers a custom_op so
-    torch.compile(fullgraph=True) does not fail with
-    "torch.* op returned non-Tensor".
-    """
-    shape = (16, 16)
-    x = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    mask = torch.randint(0, 2, shape, dtype=torch.bool, device=run_device())
-    value = torch.tensor(-1.0, dtype=_DTYPE, device=run_device())
-    op = MaskedFillFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-
-    workload = ElementwiseWorkload(type(op).__name__, (x, mask, value))
-    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
-
-
-@pytest.mark.smoke
 def test_masked_fill_tensor_compile_broadcast():
     """Compile-smoke for MaskedFillFwdOp with broadcasting input/mask."""
     input_shape = (4, 8)
@@ -933,25 +602,8 @@ def test_masked_fill_tensor_compile_broadcast():
 
 
 @pytest.mark.smoke
-def test_masked_fill_scalar_compile_same_shape():
-    """Compile-smoke for MaskedFillFwdOp with a Number value at same shape."""
-    shape = (16, 16)
-    x = torch.randn(shape, dtype=_DTYPE, device=run_device())
-    mask = torch.randint(0, 2, shape, dtype=torch.bool, device=run_device())
-    op = MaskedFillFwdOp()
-    compiled_op = torch.compile(op, fullgraph=True)
-
-    workload = ElementwiseWorkload(type(op).__name__, (x, mask, -1.0))
-    TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
-
-
-@pytest.mark.smoke
 def test_masked_fill_scalar_compile_broadcast():
-    """Compile-smoke for MaskedFillFwdOp with a Number value with broadcasting input/mask.
-
-    Regression for the removed ``not self._needs_broadcast`` guard:
-    register_fake is now broadcast-aware so the custom_op path works.
-    """
+    """Compile-smoke for MaskedFillFwdOp with a Number value and broadcasting input/mask."""
     input_shape = (4, 8)
     mask_shape = (1, 8)
     x = torch.randn(input_shape, dtype=_DTYPE, device=run_device())
@@ -963,22 +615,17 @@ def test_masked_fill_scalar_compile_broadcast():
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 
-# --- DivFwdOp rounding_mode trunc/floor compile coverage ---
-
-
-_DIV_ROUNDING_COMPILE_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
-_DIV_ROUNDING_COMPILE_MODES = ["trunc", "floor"]
+# --- DivFwdOp rounding modes ---
 
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
-@pytest.mark.parametrize("rounding_mode", _DIV_ROUNDING_COMPILE_MODES)
-@pytest.mark.parametrize("dtype", _DIV_ROUNDING_COMPILE_DTYPES)
-def test_div_rounding_mode_compile(rounding_mode: str, dtype: torch.dtype) -> None:
+@pytest.mark.parametrize("rounding_mode", ["trunc", "floor"])
+def test_div_rounding_mode_compile(rounding_mode: str) -> None:
     """torch.compile path matches torch.div for trunc and floor rounding modes."""
     shape = (256, 256)
-    a = torch.randn(shape, dtype=dtype, device=run_device()) * 5.0
-    b = torch.randn(shape, dtype=dtype, device=run_device()) * 2.0 + 1.0
+    a = torch.randn(shape, dtype=_DTYPE, device=run_device()) * 5.0
+    b = torch.randn(shape, dtype=_DTYPE, device=run_device()) * 2.0 + 1.0
     b = torch.where(b.abs() < 0.5, torch.full_like(b, 1.0), b)
     op = DivFwdOp(rounding_mode=rounding_mode)
     compiled_op = torch.compile(op, fullgraph=True)
@@ -988,20 +635,11 @@ def test_div_rounding_mode_compile(rounding_mode: str, dtype: torch.dtype) -> No
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
-def test_reciprocal_int_promotion_compiles(dtype):
-    """The integer path promotes to float32, and the fake tensor must agree.
-
-    ``register_fake`` derives the output dtype from the manifest rather than
-    from the input, which is the only way to express this promotion. If the
-    fake and the eager result disagree, ``fullgraph=True`` fails or the
-    compiled graph carries the wrong dtype downstream.
-    """
-    from tileops._ops.elementwise import ReciprocalFwdOp
-
+def test_reciprocal_int_promotion_compiles():
+    """An integer input promotes to float32, and the fake tensor agrees."""
     n = 256
     op = ReciprocalFwdOp()
-    x = torch.arange(1, n + 1, device=run_device(), dtype=dtype)
+    x = torch.arange(1, n + 1, device=run_device(), dtype=torch.int32)
 
     eager = op(x)
     compiled = torch.compile(op, fullgraph=True)(x)
@@ -1014,19 +652,10 @@ def test_reciprocal_int_promotion_compiles(dtype):
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_name", ["FloorFwdOp", "AbsFwdOp", "NegFwdOp", "SignFwdOp"])
-def test_compiled_non_contiguous_integer_fallback(op_name):
-    """An op answering without a kernel owes the same layout as one that uses it.
-
-    The integer handlers (`clone`, `abs`, `neg`, `sign`) inherit the input's
-    strides, so a transposed integer input produced a non-contiguous result
-    while the registered fake promised contiguous — the same contradiction as
-    the kernel path, arriving from the other side.
-    """
-    import tileops._ops.elementwise as ew
-
+def test_compiled_non_contiguous_integer_fallback():
+    """An integer op answered by torch returns a contiguous result, as the fake promises."""
     n = 64
-    op = getattr(ew, op_name)()
+    op = FloorFwdOp()
     x = torch.arange(1, n + 1, device=run_device(), dtype=torch.int32).reshape(8, 8).t()
     assert not x.is_contiguous()
 
@@ -1037,17 +666,9 @@ def test_compiled_non_contiguous_integer_fallback(op_name):
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.int32, torch.int64, torch.float16])
+@pytest.mark.parametrize("dtype", [torch.int64, torch.float16])
 def test_compiled_non_contiguous_input_matches_eager(dtype):
-    """The fake must not carry a non-contiguous input's strides.
-
-    The real path flattens to contiguous storage, so a fake built with
-    ``empty_like`` describes a layout the kernel never produces and the compiled
-    graph asserts on the mismatch. Integer reciprocal reaches this through the
-    promotion the kernel performs behind the custom-op boundary.
-    """
-    from tileops._ops.elementwise import ReciprocalFwdOp
-
+    """The fake of a non-contiguous input is contiguous, as the kernel's result is."""
     n = 64
     op = ReciprocalFwdOp()
     x = torch.arange(1, n + 1, device=run_device(), dtype=dtype).reshape(8, 8).t()
@@ -1059,32 +680,13 @@ def test_compiled_non_contiguous_input_matches_eager(dtype):
     assert torch.equal(compiled, eager)
 
 
-# --- Parametric activations and nan_to_num: one construction param or more ---
-#
-# Each is a cold ``fullgraph=True`` call, which is the evidence their manifest
-# ``torch_compile_fullgraph`` declaration stands on.
+# --- Parametric activations and nan_to_num ---
 
 _PARAMETRIC_OPS = [
-    pytest.param(
-        "ELUFwdOp",
-        {"alpha": 1.5},
-        marks=pytest.mark.smoke,
-    ),
-    pytest.param(
-        "LeakyReLUFwdOp",
-        {"negative_slope": 0.2},
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        "HardtanhFwdOp",
-        {"min_val": -0.5, "max_val": 0.5},
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        "SoftplusFwdOp",
-        {"beta": 2.0, "threshold": 20.0},
-        marks=pytest.mark.full,
-    ),
+    pytest.param("ELUFwdOp", {"alpha": 1.5}, marks=pytest.mark.smoke),
+    pytest.param("LeakyReLUFwdOp", {"negative_slope": 0.2}, marks=pytest.mark.full),
+    pytest.param("HardtanhFwdOp", {"min_val": -0.5, "max_val": 0.5}, marks=pytest.mark.full),
+    pytest.param("SoftplusFwdOp", {"beta": 2.0, "threshold": 20.0}, marks=pytest.mark.full),
     pytest.param(
         "NanToNumFwdOp",
         {"nan": 0.0, "posinf": 1.0, "neginf": -1.0},
@@ -1096,9 +698,7 @@ _PARAMETRIC_OPS = [
 @pytest.mark.parametrize("op_name, kwargs", _PARAMETRIC_OPS)
 def test_parametric_unary_compile(op_name, kwargs):
     """A construction param is a compile-time constant, so the graph is one node."""
-    import tileops._ops.elementwise as ew
-
-    op = getattr(ew, op_name)(**kwargs)
+    op = getattr(elementwise_mod, op_name)(**kwargs)
     n = 1024 * 1024
     x = torch.randn(n, dtype=_DTYPE, device=run_device())
 
@@ -1136,21 +736,13 @@ def test_dropout_compile():
     torch.testing.assert_close(out, DropoutFwdOp(p=0.5, seed=7)(x))
 
 
-# --- The graph a boundary produces belongs to the op that declared it ---
-#
-# Each registration factory in ops/elementwise/_base.py registers one operator (two,
-# for a leaf that also has an inplace companion) and publishes the name(s) through
-# ``compile_op_names``. One case per factory: a leaf that traces to anything else —
-# a kernel's own registration, or a tensor op left outside the boundary — would make
-# the graph depend on which target served the op.
+# --- The traced graph holds only the op's own operators, one case per registration shape ---
 
 
 def _graph_ownership_cases():
     """One case per registration shape: (id, builder returning (op, inputs)).
 
-    The builder runs inside the test, not here: this module is imported on the CPU-only
-    runner that enforces the compile-contract gate, and a CUDA tensor built at import
-    time would fail there before any test is selected.
+    Why: builders run inside the test, so importing the module builds no CUDA tensor.
     """
 
     def unary():

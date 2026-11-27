@@ -1,11 +1,6 @@
 """Benchmark the block-scaled FP8 M-grouped GEMM against DeepGEMM's masked and contiguous
 kernels.
 
-DeepGEMM is the only library baseline. FlashInfer's groupwise FP8 grouped GEMM has kernels
-only for SM100 and SM12x; on SM90 it goes through cutile, which copies ``m_indptr`` to the
-host (a synchronisation inside the timed call) and has no masked layout, so H200 has no
-second baseline for these rows.
-
 Both are checked against the workload's reference on each expert's valid rows only, which is
 all the op defines; the rows past a count, and an aligned run's padding, are undefined for
 either.
@@ -64,7 +59,7 @@ def _deepgemm_contiguous(case) -> bench.Implementation:
     return bench.Implementation(run=run, args=(a, a_scale_mn_major, b, b_scale, m_indices))
 
 
-@pytest.mark.parametrize("case", bench.cases(MoEGroupedGEMMFP8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MoEGroupedGEMMFP8FwdOp))
 def test_moe_grouped_gemm_fp8_bench(case) -> None:
     op = MoEGroupedGEMMFP8FwdOp(**case.arguments)
     masked = op.layout.kind == "masked"

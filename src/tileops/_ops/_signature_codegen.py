@@ -249,13 +249,6 @@ def _check_equal(name: str, tensor, other: str, values: list) -> None:
         raise ValueError(f"{name} must equal {other}")
 
 
-def _type_label(value) -> str:
-    """*value*'s type for an error message: no tensor contents, and no device copy."""
-    if isinstance(value, (list, tuple)):
-        return f"{type(value).__name__} of {len(value)}"
-    return type(value).__name__
-
-
 def _check_range(name: str, tensor, lo: int, hi: int) -> None:
     """Check on the CPU that every element of *tensor* lies in ``[lo, hi)``.
 
@@ -794,29 +787,21 @@ class _Emitter:
 
 
 class _CallCheck:
-    """The call check at one discriminant point, as Python source.
+    """The call checks at one discriminant point, as Python source."""
 
-    With `shapes_only` it takes shape tuples and yields output shapes: no dtype or device.
-    """
+    def __init__(self, plan: EntryPlan, point: dict, key: tuple, built: _Construction, env):
+        """The checks of *plan* at *point*, keyed *key*, continuing from construction *built*.
 
-    def __init__(
-        self,
-        plan: EntryPlan,
-        point: dict,
-        key: tuple,
-        built: _Construction,
-        env,
-        shapes_only: bool,
-        branch: PlanBranch,
-        rejected: str | None,
-    ):
-        """The check of *plan* at *point*, keyed *key*, continuing from construction *built*;
-        *branch* is ``plan.branch(point)`` and *rejected* is ``rejecting_rule(sig, point)``."""
+        Raises:
+            SignatureError: *point*'s branch cannot be settled.
+        """
         self.plan, self.point, self.key, self.built, self.env = plan, point, key, built, env
-        self.shapes_only, self.branch, self.rejected = shapes_only, branch, rejected
+        self.branch, self.rejected = plan.branch(point), rejecting_rule(plan.sig, point)
 
-    def source(self) -> str:
-        plan, point, built, shapes_only = self.plan, self.point, self.built, self.shapes_only
+    def source(self, shapes_only: bool) -> str:
+        """The call check; with *shapes_only* it takes shape tuples and yields output shapes,
+        with no dtype or device."""
+        plan, point, built = self.plan, self.point, self.built
         sig = plan.sig
         e = _Emitter(sig)
         name = "shapes" if shapes_only else "check"
@@ -1331,48 +1316,41 @@ class _SignaturePlan:
     def _emit(self, built_key: tuple) -> None:
         """Emit the construction check at *built_key* and the checks of its call points, once."""
         with self._emitting:
-            if built_key in self._pending:
-                self._emit_locked(built_key)
-
-    def _emit_locked(self, built_key: tuple) -> None:
-        construction, calls = self._pending[built_key]
-        sig, plan = self.sig, self.entry
-        try:
-            self.constructions[built_key] = _compiled(
-                "construct", construction.source(sig), f"{sig.name} construction"
-            )
-        except SignatureError as exc:
-            self.constructions[built_key] = _rejecting(sig, str(exc))
-        for key, point in calls:
+            if built_key not in self._pending:
+                return
+            construction, calls = self._pending[built_key]
+            sig, plan = self.sig, self.entry
             try:
-                b, rejected = plan.branch(point), rejecting_rule(sig, point)
-                for table, shapes_only in ((self.checks, False), (self.shapes, True)):
-                    source = _CallCheck(
-                        plan, point, key, construction, self.env, shapes_only, b, rejected
-                    ).source()
-                    table[key] = _compiled(
-                        "shapes" if shapes_only else "check",
-                        source,
-                        f"{sig.name} check",
-                        {"_SignatureCall": SignatureCall},
-                    )
-                values = _CallCheck(
-                    plan, point, key, construction, self.env, False, b, rejected
-                ).values_source()
-                if values is not None:
-                    self.values[key] = _compiled("values", values, f"{sig.name} values")
-                contents = None if rejected is not None else _contents_source(sig, b, self.equal)
-                if contents is not None:
-                    self.contents[key] = _compiled("contents", contents, f"{sig.name} contents")
-                if plan.roofline is not None and "flops" in plan.roofline and rejected is None:
-                    self.roofs[key] = _compiled(
-                        "roofline",
-                        _roofline_source(sig, b),
-                        f"{sig.name} roofline",
-                    )
+                self.constructions[built_key] = _compiled(
+                    "construct", construction.source(sig), f"{sig.name} construction"
+                )
             except SignatureError as exc:
-                self.checks[key] = self.shapes[key] = _rejecting(sig, str(exc))
-        del self._pending[built_key]
+                self.constructions[built_key] = _rejecting(sig, str(exc))
+            for key, point in calls:
+                try:
+                    check = _CallCheck(plan, point, key, construction, self.env)
+                    for table, shapes_only in ((self.checks, False), (self.shapes, True)):
+                        table[key] = _compiled(
+                            "shapes" if shapes_only else "check",
+                            check.source(shapes_only),
+                            f"{sig.name} check",
+                            {"_SignatureCall": SignatureCall},
+                        )
+                    values = check.values_source()
+                    if values is not None:
+                        self.values[key] = _compiled("values", values, f"{sig.name} values")
+                    if check.rejected is not None:
+                        continue
+                    contents = _contents_source(sig, check.branch, self.equal)
+                    if contents is not None:
+                        self.contents[key] = _compiled("contents", contents, f"{sig.name} contents")
+                    if plan.roofline is not None and "flops" in plan.roofline:
+                        self.roofs[key] = _compiled(
+                            "roofline", _roofline_source(sig, check.branch), f"{sig.name} roofline"
+                        )
+                except SignatureError as exc:
+                    self.checks[key] = self.shapes[key] = _rejecting(sig, str(exc))
+            del self._pending[built_key]
 
     @staticmethod
     def _keys(axes: dict) -> list:
@@ -1400,13 +1378,20 @@ class _SignaturePlan:
         `out` whether it is passed."""
         if name == "out":
             return value is not None
-        t = self.sig.inputs[name]
-        found = member_of(value, t.members)
+        found = member_of(value, self.sig.inputs[name].members)
         if found is None:
-            raise CheckError(
-                f"{self.sig.name}: {name} = {_type_label(value)} is not a member of {t.type}"
-            )
+            raise self._not_a_member(name, value)
         return found
+
+    def _not_a_member(self, name: str, value) -> CheckError:
+        """The failure of input *name* holding *value*, named by its type alone: no tensor
+        contents and no device copy."""
+        label = type(value).__name__
+        if isinstance(value, (list, tuple)):
+            label = f"{label} of {len(value)}"
+        return CheckError(
+            f"{self.sig.name}: {name} = {label} is not a member of {self.sig.inputs[name].type}"
+        )
 
     def states(self, tensors: dict) -> tuple:
         """The coordinate of each axis in :attr:`tensor_axes` for the call *tensors*."""
@@ -1476,13 +1461,11 @@ class _SignaturePlan:
         tensor sequence a sequence of shapes."""
         if name == "out" or value is None or not isinstance(value, (list, tuple)):
             return self.state(name, value)
-        nested = any(isinstance(v, (list, tuple)) for v in value)
-        found = "list[Tensor]" if nested or self.sig.inputs[name].sequence else "Tensor"
         t = self.sig.inputs[name]
+        nested = any(isinstance(v, (list, tuple)) for v in value)
+        found = "list[Tensor]" if nested or t.sequence else "Tensor"
         if found not in t.members:
-            raise CheckError(
-                f"{self.sig.name}: {name} = {_type_label(value)} is not a member of {t.type}"
-            )
+            raise self._not_a_member(name, value)
         return found
 
     def effect_branch(self, op, present: tuple) -> tuple:
@@ -1509,8 +1492,9 @@ class _SignaturePlan:
 
     def _lookup(self, table: dict, op, tensors: dict, states: tuple | None = None):
         point = self.point(op, tensors, states=states)
-        if self.built_key(point) in self._pending:
-            self._emit(self.built_key(point))
+        built_key = self.built_key(point)
+        if built_key in self._pending:
+            self._emit(built_key)
         fn = table.get(self.key(point))
         if fn is None:
             raise CheckError(f"{self.sig.name}: discriminants {point} are outside their types")
@@ -2066,11 +2050,7 @@ def param_state(op, sig: Signature) -> tuple:
     A container, an ADT value or another object's fields are copied into tuples, so editing
     a param in place after the snapshot leaves it unequal to the param.
     """
-    state = []
-    for name in sig.params:
-        value = getattr(op, name, None)
-        state.append((type(value), value) if type(value) in _SCALARS else _snapshot(value))
-    return tuple(state)
+    return tuple(_snapshot(getattr(op, name, None)) for name in sig.params)
 
 
 # Param values a snapshot keeps as they are, beside their type.
@@ -2192,10 +2172,10 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
     The entry's `status` plays no part: what the signature generates derives from it alone.
     """
     try:
-        entry_plan_ = entry_plan(cls.__name__, entry, load_adts() if adts is None else adts)
+        planned = entry_plan(cls.__name__, entry, load_adts() if adts is None else adts)
     except SignatureError:
         return False
-    plan = _SignaturePlan(entry_plan_)
+    plan = _SignaturePlan(planned)
     sig = plan.sig
     cls._signature = plan
     cls._check_construction = _construction_check(plan)
@@ -2205,7 +2185,7 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
         lambda self, ss, ds: plan.output_shapes(self, ss, ds),
         dtypes=True,
     )
-    if entry_plan_.roofline is not None:
+    if planned.roofline is not None:
         cls.eval_roofline = lambda self: plan.eval_roofline(_completed_call(self))
     abc.update_abstractmethods(cls)
     return True

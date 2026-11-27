@@ -1,14 +1,11 @@
 """Compile-boundary contract for the ops whose operator is generated from the manifest.
 
-One case per op: a cold ``torch.compile(op, fullgraph=True)`` must match eager and the
-traced graph must hold nothing but that op's own operator. A case builds its inputs from
-the op's own workload where there is one, so the shapes are the ones the family already
-validates against rather than a second set written here.
-
-One function per family, so a family's extents and dtype stay local to its cases. The
-two tests are the contract and are written once.
+One case per op: a cold ``torch.compile(op, fullgraph=True)`` matches eager, the fake
+reports what the op returns, and the traced graph holds nothing but the op's own operator.
+A case builds its inputs from the op's own workload where there is one.
 """
 
+import functools
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -134,6 +131,10 @@ from workloads.quantization.quantize import (
     SmoothQuantWorkload,
 )
 from workloads.workload_base import manifest_call
+
+
+def _randn(*shape: int, dtype: torch.dtype) -> torch.Tensor:
+    return torch.randn(*shape, dtype=dtype, device=run_device())
 
 
 def _attention_cases():
@@ -300,8 +301,7 @@ def _gemm_cases():
     _DTYPE = torch.float16
     _M, _N, _K = 128, 256, 256
 
-    def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device=run_device())
+    _x = functools.partial(_randn, dtype=_DTYPE)
 
     def gemm():
         return GEMMFwdOp(), (_x(_M, _K), _x(_N, _K))
@@ -396,8 +396,7 @@ def _mamba_cases():
     _Q, _NC = 256, 2
     _S = _Q * _NC
 
-    def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device=run_device())
+    _x = functools.partial(_randn, dtype=_DTYPE)
 
     f32 = dict(dtype=torch.float32)
 
@@ -494,8 +493,7 @@ def _linear_attention_cases():
     _CHUNK = 64
     _SCALE = _D**-0.5
 
-    def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device=run_device())
+    _x = functools.partial(_randn, dtype=_DTYPE)
 
     chunks = _S // _CHUNK + 1
 
@@ -621,7 +619,7 @@ def _linear_attention_cases():
 
 
 def _other_cases():
-    """The FFT, Hadamard, embedding, masked scatter, quantization and mean pooling ops, with the inputs they are built for."""
+    """The FFT, Hadamard, indexing, quantization and pooling ops, each with its inputs."""
 
     def fft_c2c():
         x = torch.randn(2, 64, dtype=torch.complex64, device=run_device())
@@ -702,12 +700,6 @@ def _other_cases():
         x = torch.randn(1, 64, 2, 64, dtype=torch.float16, device=run_device())
         return MeanPoolingFwdOp(32, torch.float32), (x,)
 
-    def top_k_top_p_mask():
-        logits = torch.randn(2, 256, dtype=torch.bfloat16, device=run_device())
-        k = torch.tensor([1, 40], dtype=torch.int32, device=run_device())
-        p = torch.tensor([0.9, 0.7], dtype=torch.float32, device=run_device())
-        return TopKTopPMaskFwdOp(), (logits, k, p)
-
     return (
         ("fft-c2c", fft_c2c),
         ("hadamard-transform", hadamard_transform),
@@ -727,12 +719,11 @@ def _other_cases():
         ("int8-quant-per-tensor", int8_quant_per_tensor),
         ("mean-pooling", mean_pooling),
         ("smooth-quant", smooth_quant),
-        ("top-k-top-p-mask", top_k_top_p_mask),
     )
 
 
 def _sampling_cases():
-    """The logit filters, the token draw and the chain verification, each with the inputs it is built for."""
+    """The sampling ops, each with the inputs it is built for."""
 
     def min_p_mask():
         logits = torch.randn(4, 256, dtype=torch.bfloat16, device=run_device())
@@ -748,6 +739,12 @@ def _sampling_cases():
         logits = torch.randn(4, 256, dtype=torch.bfloat16, device=run_device())
         p = torch.full((4,), 0.9, device=run_device())
         return TopPMaskFwdOp(), (logits, p)
+
+    def top_k_top_p_mask():
+        logits = torch.randn(2, 256, dtype=torch.bfloat16, device=run_device())
+        k = torch.tensor([1, 40], dtype=torch.int32, device=run_device())
+        p = torch.tensor([0.9, 0.7], dtype=torch.float32, device=run_device())
+        return TopKTopPMaskFwdOp(), (logits, k, p)
 
     def sampling_from_probs():
         probs = torch.rand(4, 256, device=run_device()).softmax(-1)
@@ -765,6 +762,7 @@ def _sampling_cases():
         ("min-p-mask", min_p_mask),
         ("top-k-mask", top_k_mask),
         ("top-p-mask", top_p_mask),
+        ("top-k-top-p-mask", top_k_top_p_mask),
         ("sampling-from-probs", sampling_from_probs),
         ("chain-speculative-sampling", chain_speculative_sampling),
     )
@@ -778,8 +776,7 @@ def _sequence_modeling_cases():
     _D = 256
     _CONV_TAPS = 4
 
-    def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device=run_device())
+    _x = functools.partial(_randn, dtype=_DTYPE)
 
     def engram_gate_conv_fwd():
         op = EngramGateConvFwdOp()
@@ -950,18 +947,13 @@ class _Case(NamedTuple):
 
 
 def _cases():
-    """Every family's cases, as pytest params.
-
-    The builders run inside the test: this module is imported on the CPU-only runner
-    that enforces the compile-contract gate, where a CUDA tensor built at import time
-    would fail before any test is selected.
-    """
+    """Every family's cases, as pytest params. The builders run inside the test: the CPU-only
+    runner of the compile-contract gate imports this module."""
     cases = [_Case(*entry) for family in _FAMILIES for entry in family()]
     return [pytest.param(case, id=case.name, marks=case.marks) for case in cases]
 
 
-# A spec-only entry's case runs but is not registered: only an implemented entry's
-# declaration is contract evidence.
+# The op class of every case.
 for _op_cls in (
     GQADenseFwdOp,
     GQADenseWithLSEFwdOp,
@@ -1045,20 +1037,23 @@ for _op_cls in (
     register_compile_contract(_op_cls)
 
 
+def _detached(inputs: tuple, clone: bool = False) -> tuple:
+    """``inputs`` without autograd history: a backward op's operator has no autograd formula."""
+    return tuple(
+        None if t is None else (t.detach().clone() if clone else t.detach()) for t in inputs
+    )
+
+
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize("case", _cases())
 def test_a_cold_op_traces_fullgraph_and_matches_eager(case) -> None:
     """Cold is the whole contract: a warm op has nothing left for dynamo to trace into."""
     op, inputs = case.build()
-    # Its own copies per call: a paged op writes its cache pages. ``detach`` because a
-    # backward op's operator carries no autograd formula to answer a history-tracking input.
-    compiled_inputs = tuple(None if t is None else t.detach().clone() for t in inputs)
-    eager_inputs = tuple(None if t is None else t.detach().clone() for t in inputs)
+    # Its own copies per call: a paged op writes its cache pages.
+    compiled = torch.compile(op, fullgraph=True)(*_detached(inputs, clone=True))
 
-    compiled = torch.compile(op, fullgraph=True)(*compiled_inputs)
-
-    assert_same_result(compiled, op(*eager_inputs), exact=case.exact)
+    assert_same_result(compiled, op(*_detached(inputs, clone=True)), exact=case.exact)
 
 
 @pytest.mark.smoke
@@ -1067,9 +1062,7 @@ def test_a_cold_op_traces_fullgraph_and_matches_eager(case) -> None:
 def test_the_fake_reports_what_the_op_returns(case) -> None:
     """The fake is the op's whole promise to the compiler, so it must be the truth."""
     op, inputs = case.build()
-    inputs = tuple(None if t is None else t.detach() for t in inputs)
-
-    assert_fake_matches_eager(op, *inputs)
+    assert_fake_matches_eager(op, *_detached(inputs))
 
 
 @pytest.mark.smoke
@@ -1078,6 +1071,4 @@ def test_the_fake_reports_what_the_op_returns(case) -> None:
 def test_the_traced_graph_holds_only_this_ops_operator(case) -> None:
     """The node is the op's, so replacing the kernel cannot change the graph."""
     op, inputs = case.build()
-    inputs = tuple(None if t is None else t.detach() for t in inputs)
-
-    assert_op_owns_graph_nodes(op, *inputs)
+    assert_op_owns_graph_nodes(op, *_detached(inputs))

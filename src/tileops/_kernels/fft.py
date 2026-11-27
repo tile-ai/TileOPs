@@ -30,6 +30,12 @@ __all__ = [
     "FFTC2COneCTAKernel",
 ]
 
+# No out_idx on any builder: a symbolic output shape would resolve on every call.
+_JIT_OPTIONS = {
+    "pass_configs": {tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+    "compile_flags": [*CUDA_COMPILE_FLAGS],
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class FFTC2CCall(CallSpec):
@@ -46,7 +52,7 @@ class FFTC2CFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Transform each row of length ``call.n``; nothing is written in place.
+        """Transform each row of length ``call.n``.
 
         The transform is the unnormalized forward one ``torch.fft.fft`` computes: output
         element ``k`` sums ``x[j] * exp(-2j * pi * j * k / call.n)`` over ``j``. Leading
@@ -417,10 +423,7 @@ def _build_tiny(n: int, ept: int, real_dtype: str) -> Any:
     """The shuffle-only kernel for n <= 32, *ept* values per thread."""
     lanes = n // ept
 
-    @tilelang.jit(
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS],
-    )
+    @tilelang.jit(**_JIT_OPTIONS)
     def _func(row: int, grp: int):
         def _bit_reverse(position, bits: int):
             """*position* with its *bits* low bits reversed, as a straight-line expression."""
@@ -547,10 +550,7 @@ def _build_warp8(n: int, real_dtype: str) -> Any:
     # The added lane clears the transpose's bank conflict.
     stride = lanes + 1
 
-    @tilelang.jit(
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS],
-    )
+    @tilelang.jit(**_JIT_OPTIONS)
     def _func(row: int, grp: int):
         @T.macro
         def _warp8_last_128(y_pair, reg, pair, bb, k1, half, real_dtype: str, q: int):
@@ -641,10 +641,7 @@ def _build_warp8(n: int, real_dtype: str) -> Any:
 def _build_packed_256(real_dtype: str) -> Any:
     """The packed n=256 kernel: two 16x16 transforms per 32-thread CTA."""
 
-    @tilelang.jit(
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS],
-    )
+    @tilelang.jit(**_JIT_OPTIONS)
     def _func(row: int, grp: int):
         batch = T.dynamic("batch")
 
@@ -691,10 +688,7 @@ def _build_packed_512(table_limit: int, real_dtype: str) -> Any:
     """The packed n=512 kernel: three radix-8 passes; *table_limit* primitives are read directly."""
     pack = 2 if table_limit == 64 else 1
 
-    @tilelang.jit(
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS],
-    )
+    @tilelang.jit(**_JIT_OPTIONS)
     def _func(row: int, grp: int):
         batch = T.dynamic("batch")
 
@@ -780,11 +774,7 @@ def _build_three_pass(n: int, real_dtype: str) -> Any:
     """The n = 1024-4096 kernel: two radix-16 passes, then 16 // r3 radix-r3 ones."""
     r3 = n // 256
 
-    # No out_idx on any builder: a symbolic output shape would resolve on every call.
-    @tilelang.jit(
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS],
-    )
+    @tilelang.jit(**_JIT_OPTIONS)
     def _func(row: int, grp: int):
         """Build for S1 row stride *row* and S2 group stride *grp*, in reals."""
         smem_floats = max(16 * row, 16 * 16 * grp)
@@ -853,10 +843,7 @@ def _build_four_pass(n: int, real_dtype: str) -> Any:
     a3 = n // 4096
     row1, row2 = _four_pass_rows(n)
 
-    @tilelang.jit(
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS],
-    )
+    @tilelang.jit(**_JIT_OPTIONS)
     def _func(row: int, grp: int):
         @T.macro
         def _pass4_gathers(vals, reg, tx, m3, r: int, k: int, j: int):
@@ -971,6 +958,19 @@ def _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw: int, row: int, g
     T.sync_threads()
 
 
+@T.macro
+def _four_step_last(s_re, s_im, reg, lane, col, tw: int, row: int, grp: int, nf: int):
+    """The last pass's 16 // r radix-r transforms of a factor, read from S1, or S2 at three passes."""
+    if _factor_passes(nf) == 2:
+        base = lane * row * tw + col
+        gstep = (nf // 16) * row * tw
+    else:
+        base = ((lane // 16) * (16 * grp) + (lane % 16) * grp) * tw + col
+        gstep = _factor_radix(nf) * 16 * grp * tw
+    _gather16(s_re, s_im, reg, base, gstep, tw, _factor_radix(nf))
+    _dft_group(reg, _factor_radix(nf), 0)
+
+
 def _split_block(bi, nx: int, ny: int) -> tuple:
     """grid.y and grid.z stop at 65535 blocks, so the batch shares grid.x with the tiles."""
     return bi % nx, bi // nx % ny, bi // (nx * ny)
@@ -993,10 +993,7 @@ def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
             f"over {lanes} lanes; the staging in _four_step_a_body writes out two"
         )
 
-    @tilelang.jit(
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS],
-    )
+    @tilelang.jit(**_JIT_OPTIONS)
     def _func(tw: int, row: int, grp: int = 0):
         """Build for *tw* columns per CTA and strides *row*, *grp*; two passes ignore grp."""
 
@@ -1119,15 +1116,8 @@ def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
             twb[0] = pq[0] * st[0] - pq[1] * st[1]
             twb[1] = pq[0] * st[1] + pq[1] * st[0]
 
-            # Last pass, twiddle, and the store to T[k_b][j_a]; a three-pass factor reads S2.
-            if _factor_passes(n1) == 2:
-                base = lane * row * tw + col
-                gstep = (n1 // 16) * row * tw
-            else:
-                base = ((lane // 16) * (16 * grp) + (lane % 16) * grp) * tw + col
-                gstep = _factor_radix(n1) * 16 * grp * tw
-            _gather16(s_re, s_im, reg, base, gstep, tw, _factor_radix(n1))
-            _dft_group(reg, _factor_radix(n1), 0)
+            # Last pass, twiddle, and the store to T[k_b][j_a].
+            _four_step_last(s_re, s_im, reg, lane, col, tw, row, grp, n1)
             _each(
                 _four_step_a_out,
                 (
@@ -1199,10 +1189,7 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
     lanes = nf // 16
     passes = _factor_passes(nf)
 
-    @tilelang.jit(
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS],
-    )
+    @tilelang.jit(**_JIT_OPTIONS)
     def _func(tw: int, row: int, grp: int = 0):
         """Build for *tw* transforms per CTA and strides *row*, *grp*; two passes ignore grp."""
 
@@ -1266,14 +1253,7 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
                 _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw, row, grp, nf)
 
             # Last pass and the store to X[k_a*out_stride + k_b].
-            if _factor_passes(nf) == 2:
-                base = lane * row * tw + col
-                gstep = (nf // 16) * row * tw
-            else:
-                base = ((lane // 16) * (16 * grp) + (lane % 16) * grp) * tw + col
-                gstep = _factor_radix(nf) * 16 * grp * tw
-            _gather16(s_re, s_im, reg, base, gstep, tw, _factor_radix(nf))
-            _dft_group(reg, _factor_radix(nf), 0)
+            _four_step_last(s_re, s_im, reg, lane, col, tw, row, grp, nf)
             _each(
                 _four_step_b_out,
                 (
@@ -1366,67 +1346,37 @@ def _plan_table() -> dict[tuple, _FFTPlan]:
         8192: (16, 16, 16, 2),
         16384: (16, 16, 16, 4),
     }
+    # (factors, tile) of each decomposed plan.
     four_step_plan = {
-        (1 << 14, "complex128"): (256, 64),
-        (1 << 15, "complex64"): (256, 128),
-        (1 << 15, "complex128"): (256, 128),
-        (1 << 16, "complex64"): (256, 256),
-        (1 << 16, "complex128"): (256, 256),
-        (1 << 17, "complex64"): (128, 1024),
-        (1 << 17, "complex128"): (128, 1024),
-        (1 << 18, "complex64"): (256, 1024),
-        (1 << 18, "complex128"): (256, 1024),
-        (1 << 19, "complex64"): (256, 2048),
-        (1 << 19, "complex128"): (256, 2048),
-        (1 << 20, "complex64"): (1024, 1024),
-        (1 << 20, "complex128"): (1024, 1024),
-        (1 << 21, "complex64"): (1024, 2048),
-        (1 << 21, "complex128"): (1024, 2048),
-        (1 << 22, "complex64"): (2048, 2048),
-        (1 << 22, "complex128"): (2048, 2048),
-        (1 << 23, "complex64"): (2048, 4096),
-        (1 << 23, "complex128"): (2048, 4096),
-        (1 << 24, "complex64"): (4096, 4096),
-        (1 << 24, "complex128"): (4096, 4096),
-        (1 << 25, "complex64"): (256, 512, 256),
-        (1 << 25, "complex128"): (256, 512, 256),
-        (1 << 26, "complex64"): (512, 512, 256),
-        (1 << 26, "complex128"): (512, 512, 256),
-        (1 << 27, "complex64"): (256, 512, 1024),
-        (1 << 27, "complex128"): (256, 512, 1024),
-        (1 << 28, "complex64"): (512, 512, 1024),
-        (1 << 28, "complex128"): (512, 512, 1024),
-    }
-    four_step_tile = {
-        (1 << 14, "complex128"): (4, 4),
-        (1 << 15, "complex64"): (16, 4),
-        (1 << 15, "complex128"): (8, 4),
-        (1 << 16, "complex64"): (16, 8),
-        (1 << 16, "complex128"): (8, 4),
-        (1 << 17, "complex64"): (16, 4),
-        (1 << 17, "complex128"): (16, 4),
-        (1 << 18, "complex64"): (16, 4),
-        (1 << 18, "complex128"): (8, 4),
-        (1 << 19, "complex64"): (32, 4),
-        (1 << 19, "complex128"): (8, 2),
-        (1 << 20, "complex64"): (8, 4),
-        (1 << 20, "complex128"): (4, 4),
-        (1 << 21, "complex64"): (8, 4),
-        (1 << 21, "complex128"): (4, 2),
-        (1 << 22, "complex64"): (8, 4),
-        (1 << 22, "complex128"): (4, 4),
-        (1 << 23, "complex64"): (8, 4),
-        (1 << 23, "complex128"): (4, 2),
-        (1 << 24, "complex64"): (4, 4),
-        (1 << 24, "complex128"): (2, 2),
-        (1 << 25, "complex64"): (32, 16, 8),
-        (1 << 25, "complex128"): (8, 4, 8),
-        (1 << 26, "complex64"): (16, 16, 8),
-        (1 << 26, "complex128"): (4, 4, 8),
-        (1 << 27, "complex64"): (32, 16, 8),
-        (1 << 27, "complex128"): (32, 4, 4),
-        (1 << 28, "complex64"): (16, 16, 8),
-        (1 << 28, "complex128"): (4, 4, 4),
+        (1 << 14, "complex128"): ((256, 64), (4, 4)),
+        (1 << 15, "complex64"): ((256, 128), (16, 4)),
+        (1 << 15, "complex128"): ((256, 128), (8, 4)),
+        (1 << 16, "complex64"): ((256, 256), (16, 8)),
+        (1 << 16, "complex128"): ((256, 256), (8, 4)),
+        (1 << 17, "complex64"): ((128, 1024), (16, 4)),
+        (1 << 17, "complex128"): ((128, 1024), (16, 4)),
+        (1 << 18, "complex64"): ((256, 1024), (16, 4)),
+        (1 << 18, "complex128"): ((256, 1024), (8, 4)),
+        (1 << 19, "complex64"): ((256, 2048), (32, 4)),
+        (1 << 19, "complex128"): ((256, 2048), (8, 2)),
+        (1 << 20, "complex64"): ((1024, 1024), (8, 4)),
+        (1 << 20, "complex128"): ((1024, 1024), (4, 4)),
+        (1 << 21, "complex64"): ((1024, 2048), (8, 4)),
+        (1 << 21, "complex128"): ((1024, 2048), (4, 2)),
+        (1 << 22, "complex64"): ((2048, 2048), (8, 4)),
+        (1 << 22, "complex128"): ((2048, 2048), (4, 4)),
+        (1 << 23, "complex64"): ((2048, 4096), (8, 4)),
+        (1 << 23, "complex128"): ((2048, 4096), (4, 2)),
+        (1 << 24, "complex64"): ((4096, 4096), (4, 4)),
+        (1 << 24, "complex128"): ((4096, 4096), (2, 2)),
+        (1 << 25, "complex64"): ((256, 512, 256), (32, 16, 8)),
+        (1 << 25, "complex128"): ((256, 512, 256), (8, 4, 8)),
+        (1 << 26, "complex64"): ((512, 512, 256), (16, 16, 8)),
+        (1 << 26, "complex128"): ((512, 512, 256), (4, 4, 8)),
+        (1 << 27, "complex64"): ((256, 512, 1024), (32, 16, 8)),
+        (1 << 27, "complex128"): ((256, 512, 1024), (32, 4, 4)),
+        (1 << 28, "complex64"): ((512, 512, 1024), (16, 16, 8)),
+        (1 << 28, "complex128"): ((512, 512, 1024), (4, 4, 4)),
     }
 
     def _smem_pad(n: int, radix: tuple) -> tuple:
@@ -1466,8 +1416,8 @@ def _plan_table() -> dict[tuple, _FFTPlan]:
                 builders=(builder,),
                 itemsize=4 if dtype == "complex64" else 8,
             )
-    for (n, dtype), factors in four_step_plan.items():
-        records[n, dtype] = _four_step_record(factors, four_step_tile[n, dtype], dtype)
+    for (n, dtype), (factors, tile) in four_step_plan.items():
+        records[n, dtype] = _four_step_record(factors, tile, dtype)
     records = {
         key: dataclasses.replace(
             plan,
@@ -1523,20 +1473,6 @@ def _plan_for(n: int, dtype: str, arch: int, decomposed: bool) -> _FFTPlan | Non
     return plan
 
 
-def _plan_on_device(n: int, dtype: str, arch: int, decomposed: bool) -> _FFTPlan:
-    """The record a kernel built for architecture *arch* runs, by :func:`_plan_for`'s rules.
-
-    Raises:
-        ValueError: No such record, so construction refuses rather than building a kernel the
-            device cannot launch.
-    """
-    plan = _plan_for(n, dtype, arch, decomposed)
-    if plan is None:
-        kind = "decomposed" if decomposed else "one-CTA"
-        raise ValueError(f"no {kind} FFT plan serves n = {n} in {dtype} on sm_{arch}")
-    return plan
-
-
 @target_cache(maxsize=len(FFT_PLANS) + len(FFT_NARROW_PLANS))
 def _fft_builders(plan: _FFTPlan) -> tuple:
     """One JIT builder per kernel of *plan*, in launch order."""
@@ -1588,7 +1524,11 @@ class _FFTC2CKernel(Kernel, FFTC2CFwdInterface):
         super().__init__(device_index=device_index)
         self.n = n
         self.dtype = dtype
-        self.plan = _plan_on_device(n, self.dtype_str, self.build_target.arch, self.decomposed)
+        arch = self.build_target.arch
+        self.plan = _plan_for(n, self.dtype_str, arch, self.decomposed)
+        if self.plan is None:
+            kind = "decomposed" if self.decomposed else "one-CTA"
+            raise ValueError(f"no {kind} FFT plan serves n = {n} in {self.dtype_str} on sm_{arch}")
         if config is not None:
             self._check_config(config)
         builders = _fft_builders(self.plan)
@@ -1619,11 +1559,7 @@ class _FFTC2CKernel(Kernel, FFTC2CFwdInterface):
         return self._tables[device.index]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Transform the last axis of complex ``x``, $[\\ldots \\times n]$; same shape out.
-
-        The kernels read interleaved (real, imaginary) pairs, so the batch axes flatten into
-        one row axis.
-        """
+        """Transform the last axis of complex ``x``, $[\\ldots \\times n]$; same shape out."""
         rows = x.numel() // self.n
         x_pair = torch.view_as_real(x.resolve_conj().contiguous()).reshape(rows, self.n, 2)
         return torch.view_as_complex(self._transform(x_pair).reshape(*x.shape, 2))

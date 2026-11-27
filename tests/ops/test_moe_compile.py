@@ -1,20 +1,5 @@
-"""Compile-boundary tests for the MoE ops that register one.
-
-Two assertions per op, both from a cold instance:
-
-1. Every ``call_function`` node in the traced graph is an operator the op
-   declares in ``compile_op_names``. A kernel's own registration, or a tensor op
-   left outside the boundary, fails here — either means another target could
-   change the graph.
-2. ``torch.compile(op, fullgraph=True)`` returns the shapes and dtypes the fake
-   promised, and the same values eager returns wherever the kernel is
-   reproducible. This is the evidence behind each class's compile-boundary
-   declaration.
-
-A composite registers no operator of its own, so the last test asserts the other
-half: the graph of ``FusedMoEExpertsFwdOp`` holds its leaves'
-operators and nothing else.
-"""
+"""From a cold instance, each MoE op's traced graph holds only its ``compile_op_names``, and
+``torch.compile(op, fullgraph=True)`` gives eager's layouts and, where reproducible, values."""
 
 import pytest
 import torch
@@ -160,8 +145,24 @@ def _grouped_gemm_fp8_masked_case():
     b = (torch.randn(num_experts, n, k, device=run_device()) * 0.25).to(fp8)
     b_scale = torch.rand(num_experts, n // 128, k // 128, device=run_device()) + 0.5
     masked_m = torch.tensor([64, 17], dtype=torch.int32, device=run_device())
-    # Rows past an expert's valid count hold unspecified values.
-    return make, (a, a_scale, b, b_scale, masked_m), ()
+    return make, (a, a_scale, b, b_scale, masked_m)
+
+
+def _grouped_gemm_mxfp4_masked_case():
+    num_experts = 2
+    max_m, n, k = 32, 128, 128
+
+    def make():
+        return MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=max_m))
+
+    def e8m0(*shape):
+        codes = torch.randint(123, 129, shape, dtype=torch.uint8, device=run_device())
+        return codes.view(torch.float8_e8m0fnu)
+
+    a = torch.randn(num_experts, max_m, k, device=run_device()).to(torch.float8_e4m3fn)
+    b = torch.randint(0, 256, (num_experts, n, k // 2), dtype=torch.uint8, device=run_device())
+    masked_m = torch.tensor([32, 5], dtype=torch.int32, device=run_device())
+    return make, (a, e8m0(num_experts, max_m, k // 128), b, e8m0(num_experts, n, k // 32), masked_m)
 
 
 def _fused_topk_case(with_bias: bool = False):
@@ -221,33 +222,13 @@ def test_leaf_op_owns_its_graph_nodes(case) -> None:
 @pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
-def test_fp8_grouped_gemm_owns_its_graph_nodes() -> None:
-    """The FP8 masked GEMM, whose only kernel is SM90's, traces cold to its own operator."""
-    make, inputs, _ = _grouped_gemm_fp8_masked_case()
-    assert_op_owns_graph_nodes(make(), *inputs)
-    _assert_same_layout(_compile_cold(make(), *inputs), (make()(*inputs),))
-
-
-@pytest.mark.sm90
-@pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_dynamo")
-def test_mxfp4_grouped_gemm_owns_its_graph_nodes() -> None:
-    """The MXFP4 masked GEMM, whose only kernel is SM90's, traces cold to its own operator."""
-    num_experts = 2
-    max_m, n, k = 32, 128, 128
-
-    def make():
-        return MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=max_m))
-
-    def e8m0(*shape):
-        codes = torch.randint(123, 129, shape, dtype=torch.uint8, device=run_device())
-        return codes.view(torch.float8_e8m0fnu)
-
-    a = torch.randn(num_experts, max_m, k, device=run_device()).to(torch.float8_e4m3fn)
-    b = torch.randint(0, 256, (num_experts, n, k // 2), dtype=torch.uint8, device=run_device())
-    masked_m = torch.tensor([32, 5], dtype=torch.int32, device=run_device())
-    # Rows past an expert's valid count hold unspecified values.
-    inputs = (a, e8m0(num_experts, max_m, k // 128), b, e8m0(num_experts, n, k // 32), masked_m)
+@pytest.mark.parametrize(
+    "case", [_grouped_gemm_fp8_masked_case, _grouped_gemm_mxfp4_masked_case], ids=["fp8", "mxfp4"]
+)
+def test_quantized_grouped_gemm_owns_its_graph_nodes(case) -> None:
+    """A quantized masked GEMM traces cold to its own operator; rows past an expert's valid
+    count hold unspecified values, so only the layouts are compared."""
+    make, inputs = case()
     assert_op_owns_graph_nodes(make(), *inputs)
     _assert_same_layout(_compile_cold(make(), *inputs), (make()(*inputs),))
 

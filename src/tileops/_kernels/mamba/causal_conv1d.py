@@ -954,7 +954,7 @@ class CausalConv1dUpdateRegisterKernel(Kernel, CausalConv1dUpdateFwdInterface):
         weight_dtype: torch.dtype,
     ) -> None:
         super().__init__(device_index=device_index)
-        self.dim, self.width, self.dtype = dim, width, dtype
+        self.dtype = dtype
         self.pooled = pooled
         self.kernel = _causal_conv1d_update_register_kernel(
             dim, width, self.dtype_str, self.dtype_to_str(weight_dtype), dilation, state_len,

@@ -13,25 +13,22 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
+from tileops._kernels.linear_attention.chunk_plan import packed_offsets
 from tileops._kernels.linear_attention.gla.call_spec import (
+    PASS_CONFIGS,
     GLACall,
     GLAFwdInterface,
     build_entry,
     extents_refusal,
 )
 from tileops._kernels.linear_attention.v_tile import GEMM_MIN_N
+from tileops._kernels.tiling import align_up
 
 __all__ = ["GLAVarlenPrefillFwdKernel"]
 
 # The tokens one chunk of the recurrence contracts over. Every pass is laid out on it, and
 # it is the width the state GEMM tiles.
 CHUNK_TOKENS = 64
-
-_PASS_CONFIGS = {
-    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-    tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-    tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-}
 
 
 @target_cache(maxsize=32)
@@ -44,7 +41,7 @@ def gla_varlen_cumsum_kernel(total_tokens: int, num_seqs: int, heads: int, dim_k
     tiling = GroupTiling(num_seqs, CHUNK_TOKENS)
     num_chunks = tiling.tile_upper_bound(total_tokens)
 
-    @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[-1], pass_configs=PASS_CONFIGS)
     def _fn(threads: int = 128):
         @T.prim_func
         def _main(
@@ -120,7 +117,7 @@ def gla_varlen_state_kernel(
             f"{dim_v_part}-column T.gemm B operand, below the minimum N extent ({GEMM_MIN_N})"
         )
 
-    @tilelang.jit(out_idx=[-2, -1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[-2, -1], pass_configs=PASS_CONFIGS)
     def _fn(threads: int = 128):
         initial_shape = [num_seqs, heads, dim_k, dim_v] if has_initial_state else [1]
         annotations = {"pragma_unroll_explicit": True}
@@ -287,7 +284,7 @@ def gla_varlen_causal_kernel(
     # which is where the product it reads is zero anyway.
     num_pairs = num_subchunks * (num_subchunks + 1) // 2
 
-    @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[-1], pass_configs=PASS_CONFIGS)
     def _fn(threads: int = 128):
         @T.prim_func
         def _main(
@@ -450,7 +447,7 @@ def gla_varlen_output_kernel(
     tiling = GroupTiling(num_seqs, CHUNK_TOKENS)
     num_chunks = tiling.tile_upper_bound(total_tokens)
 
-    @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[-1], pass_configs=PASS_CONFIGS)
     def _fn(threads: int = 128):
         @T.prim_func
         def _main(
@@ -556,7 +553,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
         k, v = dim_k // k_partitions, dim_v // v_partitions
         stage = CHUNK_TOKENS * ((k + v) * elem + k * 4)
         output = (CHUNK_TOKENS * (dim_v + CHUNK_TOKENS + dim_k) + dim_k * dim_v) * elem
-        return max(cls._state_stages * stage, output) + -(-4 * (num_sequences + 1) // 16) * 16
+        return max(cls._state_stages * stage, output) + align_up(4 * (num_sequences + 1), 16)
 
     @classmethod
     def entry_for(cls, call: GLACall) -> Entry:
@@ -603,9 +600,7 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
         self.k_partitions = k_partitions
         self.v_partitions = v_partitions
         self.program(self._programs)
-        self._unread_state = torch.empty(
-            1, dtype=torch.float32, device=torch.device("cuda", device_index)
-        )
+        self._unread_state = torch.empty(1, dtype=torch.float32, device=self._build_device)
 
     def _programs(self, cfg: dict) -> tuple:
         """The gate accumulation, state walk, causal product and output launches."""
@@ -646,17 +641,10 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # The offsets are read on the device, so the host copy is never needed.
         del cu_seqlens_cpu
-        if cu_seqlens is None:
-            # Built per call rather than held: a tensor allocated on one stream and reused
-            # on another is read before its own write unless the second stream is made to
-            # wait, and an equal-length call's offsets cost one launch of ``batch + 1``.
-            cu_seqlens = torch.arange(
-                0,
-                (self.batch + 1) * self.seq_len,
-                self.seq_len,
-                dtype=torch.int64,
-                device=q.device,
-            )
+        # Built per call rather than held: a tensor allocated on one stream and reused
+        # on another is read before its own write unless the second stream is made to
+        # wait, and an equal-length call's offsets cost one launch of ``batch + 1``.
+        cu_seqlens = packed_offsets(self.batch, self.seq_len, cu_seqlens, q.device)
         packed = (1, self.batch * self.seq_len, self.heads, -1)
         state = initial_state if self.has_initial_state else self._unread_state
         cumsum_fn, state_fn, causal_fn, output_fn = self.program(self._programs)

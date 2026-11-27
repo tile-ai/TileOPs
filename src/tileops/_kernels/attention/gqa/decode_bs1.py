@@ -1,12 +1,8 @@
 """Warp-specialized batch=1 GQA decode kernel (SM90), context-split.
 
-``GQADecodeBs1Kernel`` dispatches on the runtime K/V sequence extent.  RoPE calls always
-use the context-only warp-specialized split; plain calls retain the generic single-kernel
-path below a fixed cache length.
-The split path has a TMA producer feeding a four-warp WGMMA consumer, exp2-domain online
-softmax, and FP32 partial reduction through a combine kernel.  RoPE
-expands the producer into a warpgroup so lookup-table loads and K rotation overlap the
-consumer.  SM90-only, low-level ``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
+``GQADecodeBs1Kernel`` dispatches on the runtime K/V sequence extent: RoPE calls always
+use the context split; plain calls keep the generic single-kernel path below a fixed cache
+length.
 """
 
 import tilelang
@@ -16,7 +12,7 @@ import torch
 from tileops._kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops._kernels.attention.gqa.decode import (
     GQADecodeKernel,
-    gqa_decode_no_split_kernel,
+    gqa_decode_kernel,
 )
 from tileops._kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
@@ -287,7 +283,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
     def _compile_short(self, cfg: dict, with_sinks: bool):
         """The generic single-kernel program for a plain call below ``_PLAIN_CTX_MIN`` keys;
         *with_sinks* says whether the call passes sinks."""
-        return gqa_decode_no_split_kernel(
+        return gqa_decode_kernel(
             self.batch,
             self.heads,
             self.groups,

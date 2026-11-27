@@ -95,17 +95,10 @@ def test_repack_w4a8_weight_places_each_nibble() -> None:
     assert torch.equal(nibble, code)
 
 
-def _inputs(seed: int = 0) -> tuple[torch.Tensor, ...]:
-    generator = torch.Generator().manual_seed(seed)
-    activation = (torch.randn(M, K, generator=generator) * 0.25).to(torch.float8_e4m3fn)
-    q = torch.randint(-8, 8, (N, K), generator=generator, dtype=torch.int16)
-    packed = ((q[:, 0::2] & 0xF) | ((q[:, 1::2] & 0xF) << 4)).to(torch.uint8)
-    group_scale = (0.03 + 0.05 * torch.rand(N, K // GROUP, generator=generator)).to(
-        torch.float8_e4m3fn
-    )
-    channel_scale = 0.5 + torch.rand(N, generator=generator)
-    token_scale = 0.5 + torch.rand(M, generator=generator)
-    return activation, packed, group_scale, channel_scale, token_scale
+def _inputs() -> tuple[torch.Tensor, ...]:
+    """The workload's inputs, drawn from seed 0, on the host."""
+    torch.manual_seed(0)
+    return tuple(t.cpu() for t in GEMMW4A8Workload(M, N, K, GROUP).gen_inputs())
 
 
 def _products(inputs, *, round_weight=True, signed=True, group_shift=0) -> torch.Tensor:
@@ -210,16 +203,22 @@ def test_verifier_rejects_a_nonzero_output_in_a_zero_channel() -> None:
         compare_outputs(got, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
+def _with_scales(value: float) -> tuple:
+    """Inputs whose channel and token scales are all *value*, the workload, its reference, the
+    exact contraction and each element's accumulator bound."""
+    inputs = list(_inputs())
+    inputs[3].fill_(value)
+    inputs[4].fill_(value)
+    workload = GEMMW4A8Workload(M, N, K, GROUP)
+    contraction = _products(inputs).double().sum(-1)
+    radius = 5e-5 * K + 2e-2 * contraction.abs()
+    return inputs, workload, workload.ref_program(*inputs), contraction, radius
+
+
 @pytest.mark.smoke
 def test_verifier_retains_the_complete_output_energy_bound() -> None:
     """Coherent contamination inside each element's bound still violates global quality."""
-    inputs = list(_inputs())
-    inputs[3].fill_(1)
-    inputs[4].fill_(1)
-    workload = GEMMW4A8Workload(M, N, K, GROUP)
-    reference = workload.ref_program(*inputs)
-    contraction = _products(inputs).double().sum(-1)
-    radius = 5e-5 * K + 2e-2 * contraction.abs()
+    inputs, workload, reference, contraction, radius = _with_scales(1)
     accumulator = (contraction + 0.5 * radius).float()
     assert ((accumulator.double() - contraction).abs() <= radius).all()
     got = ((accumulator * inputs[3][None, :]) * inputs[4][:, None]).to(torch.bfloat16)
@@ -240,13 +239,7 @@ def test_verifier_requires_finite_numeric_inputs(index: int) -> None:
 
 @pytest.mark.smoke
 def test_verifier_retains_the_per_element_output_bound() -> None:
-    inputs = list(_inputs())
-    inputs[3].fill_(1.5)
-    inputs[4].fill_(1.5)
-    workload = GEMMW4A8Workload(M, N, K, GROUP)
-    reference = workload.ref_program(*inputs)
-    contraction = _products(inputs).double().sum(-1)
-    radius = 5e-5 * K + 2e-2 * contraction.abs()
+    inputs, workload, reference, contraction, radius = _with_scales(1.5)
     accumulator = contraction.float()
     accumulator[0, 0] = contraction[0, 0] + 0.9 * radius[0, 0]
     assert ((accumulator.double() - contraction).abs() <= radius).all()

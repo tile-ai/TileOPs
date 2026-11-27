@@ -1,24 +1,12 @@
-"""RMSNorm kernel using TileLang.
-
-y = x * rsqrt(mean(x^2) + eps) * weight
-
-A zero-centered call scales by ``1 + weight`` instead, formed in f32; ``RMSNormKernel`` and
-``RMSNormPairedKernel`` serve it.
+"""RMSNorm kernels: ``y = x * rsqrt(mean(x^2) + eps) * weight``, or ``* (1 + weight)`` formed in
+f32 where zero-centered (served by ``RMSNormKernel`` and ``RMSNormPairedKernel``).
 
 ``RMSNormKernel`` runs one of three bodies, chosen by ``_row_body`` from the row's width and
-dtype alone: a group of a warp's lanes a row for rows of 256 to 2048 elements, a row held in
-a block's registers past 4096, and otherwise the fragment body. Tuning sizes the chosen body
-and never switches bodies. ``RMSNormTwoPassKernel`` reads a row of two or more whole thread
-chunks twice; it leaves to the held body a launch of rows of two vectors a thread shorter
-than its ``_MIN_WAVES`` waves, and a launch of at most four rows an SM of rows up to 16384.
-``RMSNormPairedKernel`` holds a row at two 16-byte vectors a thread for launches of many
-waves, and for launches of at most one row an SM of rows wider than a warp row holds.
-
-In the fragment body the normalized row goes from the register fragment straight to
-global memory. Only the partial reduction reads shared memory, because a thread walking a
-strided run of the row can reach it there and cannot reach another thread's registers.
-The fragment may be wider than the row: columns past the row load zero and are never
-stored, and the mean divides by N.
+dtype: warp-lane groups for rows of 256 to 2048 elements, a row held in a block's registers
+past 4096, and otherwise a register fragment whose padding columns load zero and are never
+stored. Tuning sizes the chosen body and never switches bodies. ``RMSNormTwoPassKernel``
+reads rows of two or more whole thread chunks twice; ``RMSNormPairedKernel`` holds a row at
+two 16-byte vectors a thread.
 """
 
 import operator
@@ -215,21 +203,14 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec, blocks=1, *, zero_cent
 
 
 def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tree, weight_first):
-    """One row a block, read twice: evict-last to sum its squares, then evict-first to scale it.
+    """One row a block, read twice: evict-last to sum its squares, then evict-first to scale it,
+    the second read finding the row in L2. ``blocks`` is the blocks an SM the launch bound asks
+    the compiler to fit.
 
-    A thread walks its vectors ``chunk`` at a time and holds those, not the row: the second
-    read finds the row in L2, where the first pass's policy kept it, and lowers each line's
-    priority as it goes, so the rows still to be read a second time stay resident. ``blocks`` is the
-    blocks an SM the launch bound asks the compiler to fit.
-
-    Where ``tree``, each warp folds the warp sums itself by shuffles rather than walking them
-    in turn. The shuffles take fewer registers than the walk; the caller asks for them only
-    where ``blocks`` already fill the SM's threads, since elsewhere those registers admit
-    another block, whose row evicts the others' from L1 before their second read.
-
-    Where ``weight_first``, a thread loads its weight vectors beside its first read and holds
-    them through the barrier, so the second pass waits on no weight load; the caller asks for
-    it where those vectors fit the registers ``blocks`` leave a thread.
+    Where ``tree``, each warp folds the warp sums by shuffles, which take fewer registers than
+    the walk; callers ask for it only where ``blocks`` already fill the SM's threads. Where
+    ``weight_first``, a thread loads its weight vectors beside its first read and holds them
+    through the barrier.
     """
     steps = N // (threads * vec)
     num_warps = threads // WARP_LANES
@@ -746,19 +727,12 @@ def _rms_norm_paired_kernel(
 
 
 class RMSNormPairedKernel(_RMSNormRowsKernel):
-    """RMS normalization holding a row in registers at two 16-byte vectors a thread, scaling
-    by the weight or, where zero-centered, by one plus it.
+    """RMS normalization holding a row in registers at two 16-byte vectors a thread, scaling by
+    the weight or, zero-centered, by one plus it, in a block of 64, 128 or 256 threads.
 
-    Serves rows a 64-, 128- or 256-thread block holds that way, in two kinds of launch.
-
-    - A launch of at most one row an SM, of rows wider than a warp holds at
-      ``_WARP_ROW_VECTORS`` vectors a lane, zero-centered or not. Each SM runs its row once,
-      so the time is one row's path from load to store. A block a row cuts that path to two
-      vectors a thread at the cost of a barrier; a row a warp holds within those vectors pays
-      no barrier.
-    - A sustained launch of at least ``_MIN_WAVES`` waves of those blocks, as many as the
-      SM's threads and resident-block cap hold, of a call that is not zero-centered: a
-      conservative performance cutoff, measured on calls that scale by the weight itself.
+    It serves two launches: at most one row an SM of rows wider than a warp holds at
+    ``_WARP_ROW_VECTORS`` vectors a lane, zero-centered or not; and at least ``_MIN_WAVES``
+    resident waves of a call that is not zero-centered.
     """
 
     _builder = staticmethod(_rms_norm_paired_kernel)

@@ -11,7 +11,6 @@ from tileops._kernels.mamba import (
 )
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
-from tileops.backend import Target
 
 __all__ = ["SSDChunkStateFwdOp"]
 
@@ -37,19 +36,6 @@ class SSDChunkStateFwdOp(Op):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "ssd_chunk_state_fwd": SSDChunkStateFwdInterface
     }
-
-    def __init__(
-        self,
-        *,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtype are taken from each call.
-
-        Args:
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-        """
-        super().__init__(target=target)
 
     def forward(
         self,

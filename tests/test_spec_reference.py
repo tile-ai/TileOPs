@@ -2,11 +2,9 @@
 
 Each entry's reference is the torch expression its issue names, or the library reference
 where one exists; an entry whose workload module holds its reference calls that one.
-Every workload row is instantiated; data tensors live on ``meta`` and metadata tensors on
-the CPU with the row's generated values, so the reference runs as written at the row's
-full size. What is checked depends on the row only through its discriminant point, its dtypes
-and its parameters, so each point, dtype case and set of parameter values runs its row with
-the fewest input elements: a recurrent reference steps once per token even on ``meta``. Checked against the signature: the
+Data tensors live on ``meta`` and metadata tensors on the CPU with the row's generated values.
+Each discriminant point, dtype case and set of parameter values runs its row with the fewest
+input elements, since a recurrent reference steps once per token even on ``meta``. The
 reference's outputs have the inferred names, shapes and dtypes, and it writes exactly the
 inputs the call's effects mark written. One call the signature rejects is rejected by the
 reference too.
@@ -43,21 +41,19 @@ _INF = float("inf")
 # ---------------------------------------------------------------- quantization
 
 
-def _dequant(reference):
-    def run(p, t):
-        return {"x": reference(t["q"], t["scale"], p["out_dtype"])}
-
-    return run
-
-
 def _outputs(names, reference, *inputs, **params):
-    """A spec reference that runs a workload reference and names its outputs."""
+    """A spec reference that runs a workload reference on tensors *inputs* and parameters
+    *params* (keyword -> parameter) and names its outputs; a str *names* its one output."""
 
     def run(p, t):
         values = reference(*(t[n] for n in inputs), **{k: p[v] for k, v in params.items()})
-        return dict(zip(names, values, strict=True))
+        return {names: values} if isinstance(names, str) else dict(zip(names, values, strict=True))
 
     return run
+
+
+def _dequant(reference):
+    return _outputs("x", reference, "q", "scale", out_dtype="out_dtype")
 
 
 _int8_per_tensor = _outputs(("q", "scale"), quantization.int8_quant_per_tensor, "x")
@@ -85,31 +81,20 @@ def _fp4_per_group(p, t):
 # ---------------------------------------------------------------- sampling
 
 
-def _top_k_mask(p, t):
-    return {"masked_logits": sampling.top_k_mask(t["logits"], t["top_k"])}
-
-
-def _min_p_mask(p, t):
-    return {"masked_logits": sampling.min_p_mask(t["logits"], t["min_p"])}
-
-
-def _top_p_mask(p, t):
-    return {"masked_logits": sampling.top_p_mask(t["logits"], t["top_p"])}
+_top_k_mask = _outputs("masked_logits", sampling.top_k_mask, "logits", "top_k")
+_min_p_mask = _outputs("masked_logits", sampling.min_p_mask, "logits", "min_p")
+_top_p_mask = _outputs("masked_logits", sampling.top_p_mask, "logits", "top_p")
+_sampling_from_probs = _outputs("samples", sampling.sampling_from_probs, "probs", "seed", "offset")
+_chain_speculative_sampling = _outputs(
+    ("output_token_ids", "num_accepted"),
+    sampling.chain_speculative_sampling,
+    *("draft_probs", "draft_token_ids", "target_probs", "seed", "offset"),
+)
 
 
 def _top_k_top_p_mask(p, t):
     masked = sampling.top_p_mask(sampling.top_k_mask(t["logits"], t["top_k"]), t["top_p"])
     return {"masked_logits": masked}
-
-
-def _sampling_from_probs(p, t):
-    return {"samples": sampling.sampling_from_probs(t["probs"], t["seed"], t["offset"])}
-
-
-def _chain_speculative_sampling(p, t):
-    names = ("draft_probs", "draft_token_ids", "target_probs", "seed", "offset")
-    tokens, num = sampling.chain_speculative_sampling(*(t[n] for n in names))
-    return {"output_token_ids": tokens, "num_accepted": num}
 
 
 # ---------------------------------------------------------------- attention and caches
@@ -334,9 +319,12 @@ def _gated_pool_compress(p, t):
 # ---------------------------------------------------------------- moe
 
 
-def _moe_grouped_gemm_mxfp4(p, t):
-    names = ("a", "a_scale", "b", "b_scale", "layout_metadata")
-    return {"output": moe.ref_moe_grouped_gemm_mxfp4(*(t[n] for n in names), p["layout"])}
+_moe_grouped_gemm_mxfp4 = _outputs(
+    "output",
+    moe.ref_moe_grouped_gemm_mxfp4,
+    *("a", "a_scale", "b", "b_scale", "layout_metadata"),
+    layout="layout",
+)
 
 
 # ---------------------------------------------------------------- sequence modeling
@@ -348,14 +336,16 @@ def _hyper_connection_pre(p, t):
     return {"post_mix": post_mix, "comb_mix": comb_mix, "layer_input": layer_input}
 
 
-def _hyper_connection_post(p, t):
-    names = ("x", "residual", "post_layer_mix", "comb_res_mix")
-    return {"output": hc_post(*(t[n] for n in names))}
-
-
-def _hyper_connection_head(p, t):
-    names = ("hidden_states", "hc_fn", "hc_scale", "hc_base")
-    return {"output": hc_head(*(t[n] for n in names), p["rms_norm_eps"], p["hc_eps"])}
+_hyper_connection_post = _outputs(
+    "output", hc_post, "x", "residual", "post_layer_mix", "comb_res_mix"
+)
+_hyper_connection_head = _outputs(
+    "output",
+    hc_head,
+    *("hidden_states", "hc_fn", "hc_scale", "hc_base"),
+    rms_norm_eps="rms_norm_eps",
+    hc_eps="hc_eps",
+)
 
 
 def _ngram_hash(p, t):
@@ -373,8 +363,11 @@ def _embedding(p, t):
     return {"output": F.embedding(t["input"], t["weight"], **{k: p[k] for k in params})}
 
 
-def _masked_scatter(p, t):
-    return {"output": torch.masked_scatter(t["input"], t["mask"], t["source"])}
+_masked_scatter = _outputs("output", torch.masked_scatter, "input", "mask", "source")
+
+
+def _concat(p, t):
+    return {"output": torch.cat(t["tensors"], p["dim"])}
 
 
 # ---------------------------------------------------------------- norm
@@ -462,58 +455,36 @@ def _rope_cos_sin(p, t):
 # ---------------------------------------------------------------- entries
 
 
+def _edited(name, change):
+    """A rejected call: tensor *name* replaced by ``change(tensor)``."""
+
+    def edit(tensors):
+        tensors[name] = change(tensors[name])
+
+    return edit
+
+
+def _shorter(x, axis):
+    return x.narrow(axis, 0, x.shape[axis] - 1)
+
+
 def _narrow(name, axis=-1):
     """A rejected call: tensor *name* one element shorter along *axis*."""
-
-    def edit(tensors):
-        x = tensors[name]
-        tensors[name] = x.narrow(axis, 0, x.shape[axis] - 1)
-
-    return edit
-
-
-def _unsqueeze(name):
-    def edit(tensors):
-        tensors[name] = tensors[name][None]
-
-    return edit
-
-
-def _as_float(name):
-    def edit(tensors):
-        tensors[name] = tensors[name].float()
-
-    return edit
-
-
-def _empty_rows(name):
-    def edit(tensors):
-        tensors[name] = tensors[name][:0]
-
-    return edit
-
-
-# ---------------------------------------------------------------- indexing
-
-
-def _concat(p, t):
-    return {"output": torch.cat(t["tensors"], p["dim"])}
+    return _edited(name, lambda x: _shorter(x, axis))
 
 
 def _narrow_element(name, k, axis):
     """A rejected call: element *k* of tensor sequence *name* one element shorter along *axis*."""
+    return _edited(name, lambda xs: [_shorter(x, axis) if i == k else x for i, x in enumerate(xs)])
 
-    def edit(tensors):
-        items = list(tensors[name])
-        items[k] = items[k].narrow(axis, 0, items[k].shape[axis] - 1)
-        tensors[name] = items
 
-    return edit
+def _unsqueeze(name):
+    return _edited(name, lambda x: x[None])
 
 
 REFERENCES = {
     # op: (reference, the edit of the first row's tensors that the signature rejects)
-    "INT8QuantPerTensorFwdOp": (_int8_per_tensor, _empty_rows("x")),
+    "INT8QuantPerTensorFwdOp": (_int8_per_tensor, _edited("x", lambda x: x[:0])),
     "INT8QuantPerChannelFwdOp": (_int8_per_channel, _unsqueeze("w")),
     "INT8QuantPerTokenGroupFwdOp": (_int8_per_block, _unsqueeze("x")),
     "INT4QuantPerGroupFwdOp": (_int4_per_group, _narrow("w")),
@@ -542,7 +513,7 @@ REFERENCES = {
     "MergeAttentionStatesFwdOp": (_merge_attention_states, _narrow("v_b")),
     "DSAPagedFwdOp": (_dsa_paged, _narrow("kv_cache")),
     "PagedKVCacheGatherFwdOp": (_paged_kv_cache_gather, _narrow("out")),
-    "EmbeddingFwdOp": (_embedding, _as_float("input")),
+    "EmbeddingFwdOp": (_embedding, _edited("input", torch.Tensor.float)),
     "MaskedScatterFwdOp": (_masked_scatter, _narrow("mask", 0)),
     "RMSNormGatedFwdOp": (_rms_norm_gated, _narrow("weight")),
     "RoPECosSinFwdOp": (_rope_cos_sin, _narrow("sin")),

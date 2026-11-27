@@ -1,12 +1,4 @@
-"""SM90 warp-specialized GQA over a read-only paged FP8 cache.
-
-A persistent CTA uses a producer warpgroup and two consumer warpgroups. The
-producer copies and converts FP8 K/V tiles, zeroing stale V rows before they
-are consumed. Per-item scales are folded into the score and output rescale;
-long small-row requests may split across consumer warpgroups and FP8 runs.
-With an FP8 query, 128-key tiles take row sums from a product with ones beside
-the value product; narrower tiles keep per-thread partial sums.
-"""
+"""SM90 warp-specialized GQA over a read-only paged FP8 cache."""
 
 import tilelang
 import tilelang.language as T

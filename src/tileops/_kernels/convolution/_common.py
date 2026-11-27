@@ -1,5 +1,4 @@
-"""What the 1d, 2d and 3d kernels share: the swizzle panel, the output tile's epilogue, the
-autotune search space, the grid limit and the launch path."""
+"""What the 1d, 2d and 3d convolution kernels share."""
 
 import itertools
 
@@ -22,6 +21,8 @@ def stage_output_tile(
 
     Row ``i`` of the tile is output channel ``channel0 + row0 + i`` and column ``j`` is
     output position ``col0 + j``. An element past ``rows`` or ``cols`` is stored as zero.
+    ``bias`` is ``None`` for a program without one. A prim_func bias parameter left out by
+    ``has_bias`` is not ``None`` in the body, so a builder passes ``bias if has_bias else None``.
     """
     for i, j in T.Parallel(block_m, block_n):
         row = row0 + i
@@ -77,8 +78,6 @@ def conv_autotune_configs(
 ) -> list[dict]:
     """Search space filtered to combinations that fit in *smem_budget* bytes of shared memory.
 
-    ``enable_rasterization`` turns on a swizzle that orders blocks for L2 locality. It is
-    searched rather than fixed because which way wins follows the grid a shape produces.
     ``out_pad_cols`` is the number of columns a kernel pads its shared output tile with.
     """
     configs = []
@@ -107,19 +106,9 @@ def launch(
     *tensors: torch.Tensor,
     bias: torch.Tensor | None,
 ) -> torch.Tensor:
-    """Run *kernel*'s compiled program, passing *bias* only when the call carries one.
+    """Run *kernel*'s program on *tensors* (prim_func order) and *bias*, returning its output.
 
-    The program was traced for one side of ``has_bias``: the no-bias variant has no bias
-    parameter at all, so what the call carries has to agree with what was built.
-
-    Args:
-        kernel: The kernel whose published program runs; it is compiled from the
-            ``self.kernel`` builder and the generation's config on its first launch.
-        *tensors: The program's inputs in prim_func order, bias excluded.
-        bias: The bias this call carries, or ``None``.
-
-    Returns:
-        The output tensor the program allocated.
+    A program built without bias has no bias parameter, so *bias* is passed only when set.
     """
     # A config's keys are the builder's parameter names, as autotune binds them.
     program = kernel.program(lambda config: kernel.kernel(**config))

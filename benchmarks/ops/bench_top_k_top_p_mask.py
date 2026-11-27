@@ -1,8 +1,4 @@
-"""Benchmark for the per-row top-k then top-p logit mask op.
-
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()``.
-"""
+"""Benchmark for the per-row top-k then top-p logit mask op."""
 
 import pytest
 import torch
@@ -18,7 +14,7 @@ from benchmarks.baselines import (
 from tileops.sampling import TopKTopPMaskFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(TopKTopPMaskFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(TopKTopPMaskFwdOp))
 def test_top_k_top_p_mask_bench(case) -> None:
     logits, k, p = case.inputs
     op = TopKTopPMaskFwdOp(**case.arguments)

@@ -3,6 +3,7 @@
 import pytest
 import torch
 
+from tests.ops.test_fused_moe import moe_inputs
 from tests.workload_test_base import TestBase
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMTMAKernel
@@ -123,6 +124,7 @@ def test_a_published_tile_runs_as_the_basic_gemm_it_states(tokens, hidden, ffn):
         assert {key: gemm.config[key] for key in tile} == tile
 
 
+@pytest.mark.sm90
 @pytest.mark.parametrize(
     "hidden, ffn",
     [
@@ -151,10 +153,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
     dtype = torch.bfloat16
     dev = run_device()
 
-    hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, device=dev)
-    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
+    hidden, gating, w_gate_up, w_down = moe_inputs(T, E, H, F)
     shared_w_gate_up = torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02
     shared_w_down = torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02
 
@@ -196,19 +195,7 @@ def test_fused_moe_shared_expert_none():
     """Without the shared weights, shared_out is None."""
     torch.manual_seed(42)
     T, E, K, H, F = 16, 4, 2, 32, 16
-    dtype = torch.bfloat16
-    dev = run_device()
-
-    hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, device=dev)
-    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
-
-    op = FusedMoESharedExpertFwdOp(
-        top_k=K,
-    )
-
-    shared_out, routed_out = op(hidden, gating, w_gate_up, w_down)
+    shared_out, routed_out = FusedMoESharedExpertFwdOp(top_k=K)(*moe_inputs(T, E, H, F))
 
     assert shared_out is None
     assert routed_out.shape == (T, H)
@@ -229,10 +216,7 @@ def test_the_shared_expert_refuses_a_non_silu_activation():
     T, E, H, F, S = 4, 4, 128, 128, 128
     op = FusedMoESharedExpertFwdOp(2, activation="gelu_and_mul")
     args = (
-        torch.randn(T, H, dtype=torch.bfloat16, device=run_device()),
-        torch.randn(T, E, device=run_device()),
-        torch.randn(E, 2 * F, H, dtype=torch.bfloat16, device=run_device()),
-        torch.randn(E, H, F, dtype=torch.bfloat16, device=run_device()),
+        *moe_inputs(T, E, H, F),
         None,
         torch.randn(2 * S, H, dtype=torch.bfloat16, device=run_device()),
         torch.randn(H, S, dtype=torch.bfloat16, device=run_device()),
@@ -251,10 +235,7 @@ def test_fused_moe_shared_expert_tp():
     dtype = torch.bfloat16
     dev = run_device()
 
-    hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, device=dev)
-    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
+    hidden, gating, w_gate_up, w_down = moe_inputs(T, E, H, F)
     shared_w_gate_up = torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02
     shared_w_down = torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02
 
@@ -328,10 +309,7 @@ def test_fused_moe_shared_expert_tp_rejects_local_shards():
         tp_rank=0,
     )
 
-    hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, device=dev)
-    w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
+    hidden, gating, w_gate_up, w_down = moe_inputs(T, E, H, F)
 
     shard_size = F_s // tp_size
 
@@ -386,10 +364,7 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
     dtype, dev = torch.bfloat16, run_device()
     torch.manual_seed(7)
     op(
-        torch.randn(T, H, dtype=dtype, device=dev),
-        torch.randn(T, E, device=dev),
-        torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02,
-        torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02,
+        *moe_inputs(T, E, H, F),
         shared_w_gate_up=torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02,
         shared_w_down=torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02,
     )

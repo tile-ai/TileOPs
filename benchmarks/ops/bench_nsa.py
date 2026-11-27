@@ -141,14 +141,14 @@ def _fla_nsa_topk(workload: NSATopKCall):
     return fn
 
 
-@pytest.mark.parametrize("case", bench.cases(NSACompressedVarlenFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(NSACompressedVarlenFwdOp))
 def test_nsa_compressed_fwd_varlen_bench(case) -> None:
     op = NSACompressedVarlenFwdOp(**case.arguments)
     fla_fn = _fla_nsa_compressed_fwd(case.workload)
     bench.Runner(op, case).compare({FLA_TAG: fla_fn})
 
 
-@pytest.mark.parametrize("case", bench.cases(NSATopKVarlenFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(NSATopKVarlenFwdOp))
 def test_nsa_topk_varlen_bench(case) -> None:
     op = NSATopKVarlenFwdOp(**case.arguments)
     fla_fn = _fla_nsa_topk(case.workload)
@@ -156,7 +156,7 @@ def test_nsa_topk_varlen_bench(case) -> None:
     bench.Runner(op, case).compare({FLA_TAG: fla_fn})
 
 
-@pytest.mark.parametrize("case", bench.cases(NSAVarlenFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(NSAVarlenFwdOp))
 def test_nsa_fwd_varlen_bench(case) -> None:
     op = NSAVarlenFwdOp(**case.arguments)
     fla_fn = _fla_nsa_fwd(case.workload)

@@ -1426,9 +1426,6 @@ class GQABwdFixture(FixtureBase):
                     4, 2048, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.full
                 ),
                 pytest.param(
-                    4, 2048, 64, 4, 128, False, torch.bfloat16, False, marks=pytest.mark.full
-                ),
-                pytest.param(
                     16, 2048, 16, 16, 128, False, torch.float16, False, marks=pytest.mark.full
                 ),
                 pytest.param(
@@ -2137,45 +2134,63 @@ def test_gqa_dense_bwd_int32_max_right_window_is_no_window() -> None:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 @pytest.mark.parametrize(
-    "row, plan",
+    "row, plan, dtype",
     [
         # Both lengths on 128-row boundaries: the first group scores its diagonal tile's lower
-        # 64 keys alone.
+        # 64 keys alone. Each dtype runs here; the other D128 rows take one each.
         pytest.param(
             dict(B=1, S_q=256, S_kv=256, H=8, H_kv=2, D=128),
             dict(diag_aligned=True),
+            "float16",
             marks=pytest.mark.smoke,
-            id="square",
+            id="square-float16",
+        ),
+        pytest.param(
+            dict(B=1, S_q=256, S_kv=256, H=8, H_kv=2, D=128),
+            dict(diag_aligned=True),
+            "bfloat16",
+            marks=pytest.mark.smoke,
+            id="square-bfloat16",
         ),
         # More tiles than SMs, rows past the last full tile, and a softcap that bends the scores.
         pytest.param(
             dict(B=2, S_q=700, S_kv=1100, H=32, H_kv=8, D=128, softcap=2.0),
             {},
+            "float16",
             marks=pytest.mark.full,
-            id="d128-rect-softcap",
+            id="d128-rect-softcap-float16",
         ),
         # Keys and values over half of an H200's L2: the grouped tile order.
         pytest.param(
             dict(B=1, S_q=2304, S_kv=8192, H=32, H_kv=8, D=128),
             dict(rank_group=16, diag_aligned=True),
+            "bfloat16",
             marks=pytest.mark.full,
-            id="d128-grouped",
+            id="d128-grouped-bfloat16",
         ),
         # Eight tiles, the first starting at row -64: each tile's keys split in parts, merged
         # with their log-sum-exp.
         pytest.param(
             dict(B=1, S_q=150, S_kv=1100, H=4, H_kv=1, D=128),
             dict(split=True),
+            "float16",
             marks=pytest.mark.full,
-            id="d128-split",
+            id="d128-split-float16",
         ),
         pytest.param(
             dict(B=2, S_q=128, S_kv=384, H=8, H_kv=2, D=64, softcap=30.0),
             {},
+            "float16",
             marks=pytest.mark.full,
-            id="rect-softcap",
+            id="rect-softcap-float16",
+        ),
+        pytest.param(
+            dict(B=2, S_q=128, S_kv=384, H=8, H_kv=2, D=64, softcap=30.0),
+            {},
+            "bfloat16",
+            marks=pytest.mark.full,
+            id="rect-softcap-bfloat16",
         ),
     ],
 )

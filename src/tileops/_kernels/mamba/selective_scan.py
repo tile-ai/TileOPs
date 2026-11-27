@@ -557,10 +557,7 @@ class SelectiveScanChunkKernel(_SelectiveScanKernel):
     """The time axis split over a warp's lanes, the lanes' segments joined by a warp scan.
 
     A warp is one channel and walks the sequence in runs of ``32 * items`` steps, lane ``l``
-    holding steps ``[l * items, (l + 1) * items)`` of each. For each state, every lane scans
-    its segment from zero, a five-step shuffle scan combines the segments' (decay, state)
-    pairs, and every lane rescans its segment from the state its left neighbour ends on. The
-    CTA's ``warps`` channels share B and C, staged once a run in shared memory.
+    holding steps ``[l * items, (l + 1) * items)`` of each.
 
     Args:
         dim: Channels, ``D``.

@@ -48,6 +48,7 @@ __all__ = [
     "bind",
     "call_errors",
     "callee",
+    "discriminant_names",
     "evaluate",
     "fold",
     "infer_kinds",
@@ -56,12 +57,12 @@ __all__ = [
     "names",
     "parse",
     "value_at",
+    "value_names",
 ]
 
 
 # The value of an expression that reads more than a point fixes.
 OPEN = object()
-_COMPREHENSION_CALLEES = frozenset({"all", "sum", "max", "min"})
 _NODES = (
     ast.BoolOp,
     ast.And,
@@ -98,7 +99,6 @@ _NODES = (
     ast.comprehension,
     ast.keyword,
 )
-_UNFOLDED = (ast.Constant, ast.Name, ast.List, ast.Starred, ast.Slice, ast.GeneratorExp)
 
 
 class SignatureError(ValueError):
@@ -198,7 +198,7 @@ def language_errors(node: ast.expr, shape: bool) -> list[str]:
     comprehension_args = {
         id(c.args[0])
         for c in ast.walk(node)
-        if isinstance(c, ast.Call) and callee(c.func) in _COMPREHENSION_CALLEES and c.args
+        if isinstance(c, ast.Call) and callee(c.func) in ("all", "sum", "max", "min") and c.args
     }
     for sub in ast.walk(node):
         if shape and sub is root and isinstance(sub, (ast.List, ast.Subscript)):
@@ -269,8 +269,15 @@ class KindEnv:
 
 
 # The kind each argument member holds, as a value.
-_MEMBER_KINDS = {"Tensor": TENSOR, "list[Tensor]": TENSOR, "int": INT, "float": VALUE}
-_MEMBER_KINDS |= {"Number": VALUE, "bool": BOOL, "None": NONE}
+_MEMBER_KINDS = {
+    "Tensor": TENSOR,
+    "list[Tensor]": TENSOR,
+    "int": INT,
+    "float": VALUE,
+    "Number": VALUE,
+    "bool": BOOL,
+    "None": NONE,
+}
 
 
 def member_kind(tags) -> Kind:
@@ -686,6 +693,9 @@ def bind(node: ast.expr, point: dict) -> ast.expr:
 class _Fold(ast.NodeTransformer):
     """Evaluate closed subexpressions; drop the constant operands of `and`, `or` and conditionals."""
 
+    # Nodes left as they are, closed or not.
+    _UNFOLDED = (ast.Constant, ast.Name, ast.List, ast.Starred, ast.Slice, ast.GeneratorExp)
+
     def __init__(self, where: str):
         self.where = where
 
@@ -713,7 +723,7 @@ class _Fold(ast.NodeTransformer):
             node.test, node.body, node.orelse = test, self.visit(node.body), self.visit(node.orelse)
             return node
         node = self.generic_visit(node)
-        if isinstance(node, ast.expr) and not isinstance(node, _UNFOLDED) and not names(node):
+        if isinstance(node, ast.expr) and not isinstance(node, self._UNFOLDED) and not names(node):
             return ast.Constant(evaluate(node, {}, self.where))
         return node
 

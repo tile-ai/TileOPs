@@ -4,13 +4,12 @@ from tileops._kernels.gemm.persistent.heuristics import (
     GroupedGEMMSpec,
     Major,
 )
-from tileops._kernels.gemm.persistent.template import GEMMTemplate, GroupedGEMMTemplate
+from tileops._kernels.gemm.persistent.template import GEMMTemplate
 
 __all__ = [
     "GEMMDesc",
     "GEMMTemplate",
     "GEMMType",
     "GroupedGEMMSpec",
-    "GroupedGEMMTemplate",
     "Major",
 ]

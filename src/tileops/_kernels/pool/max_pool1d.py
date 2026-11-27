@@ -1,5 +1,5 @@
-from collections.abc import Callable
-from typing import Any, ClassVar, NamedTuple
+import functools
+from typing import ClassVar, NamedTuple
 
 import tilelang
 import tilelang.language as T
@@ -8,7 +8,6 @@ import torch
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
     MaxPool1dFwdInterface,
     MaxPool1dIndicesFwdInterface,
@@ -17,6 +16,7 @@ from tileops._kernels.pool.call_spec import (
 from tileops._kernels.pool.common import (
     ACCUM_DTYPE,
     EVICT_HINT_MAX_BYTES,
+    MaxPoolKernelBase,
     pool_output_dim,
     window_span,
 )
@@ -43,6 +43,19 @@ class _Shape(NamedTuple):
     pad_w: int
     dilation_w: int
     dtype: str
+
+    @classmethod
+    def of(cls, call: MaxPoolCall, dtype: str) -> "_Shape":
+        """The shape of *call*, whose dtype has the TileLang name *dtype*."""
+        return cls(
+            call.n * call.c_in,
+            *call.size,
+            *call.window,
+            *call.stride,
+            *call.pad,
+            *call.dilation,
+            dtype,
+        )
 
     @property
     def itemsize(self) -> int:
@@ -481,74 +494,20 @@ _BUILDERS = {
 }
 
 
-def _build_kernel(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_w: int,
-    stride_w: int,
-    pad_w: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-    with_indices: bool,
-):
-    """The jit builder for the body this shape's plan selects."""
-    shape = _Shape(n * c_in, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype)
-    plan = _plan(shape, ceil_mode, with_indices)
+@target_cache(maxsize=32)
+def _max_pool1d_kernel(call: MaxPoolCall, dtype: str, with_indices: bool):
+    """The jit builder for the body this call's plan selects."""
+    shape = _Shape.of(call, dtype)
+    plan = _plan(shape, call.ceil_mode, with_indices)
     return _BUILDERS[plan.body, with_indices](shape, plan)
 
 
-@target_cache(maxsize=32)
-def _max_pool1d_kernel(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_w: int,
-    stride_w: int,
-    pad_w: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-):
-    return _build_kernel(
-        n, c_in, l_in, kernel_w, stride_w, pad_w, dilation_w, ceil_mode, dtype, False
-    )
+class _MaxPool1dKernelBase(MaxPoolKernelBase):
+    """Launch planning shared by the two 1d max-pool kernels; a subclass sets
+    ``_with_indices``."""
 
-
-@target_cache(maxsize=32)
-def _max_pool1d_with_indices_kernel(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_w: int,
-    stride_w: int,
-    pad_w: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-):
-    return _build_kernel(
-        n, c_in, l_in, kernel_w, stride_w, pad_w, dilation_w, ceil_mode, dtype, True
-    )
-
-
-class _MaxPool1dKernelBase(Kernel):
-    """Shape, launch planning and dispatch shared by the two 1d max-pool kernels.
-
-    Concrete kernels supply ``_build``, ``_shaped`` and ``_with_indices``; everything
-    else -- parameter capture, output extents, config and launch -- is identical between
-    the value-only and with-indices variants.
-    """
-
-    _build: ClassVar[Callable[..., Any]]
-    _shaped: ClassVar[Callable[..., Any]]
     _with_indices: ClassVar[bool]
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
-
-    _BLOCK_OUTPUTS: ClassVar[int] = 256
-    _FALLBACK_THREADS: ClassVar[int] = 128
     # ``(block_ol, threads)`` candidates per body.
     _CANDIDATES: ClassVar[dict] = {
         "windowed": ((256, 128), (512, 256), (1024, 256)),
@@ -559,76 +518,16 @@ class _MaxPool1dKernelBase(Kernel):
     # SM on a device of a few hundred SMs, a wider block is the better trade.
     _MIN_LAUNCH_THREADS: ClassVar[int] = 1 << 16
 
-    @classmethod
-    def entry_for(cls, call: MaxPoolCall) -> Entry:
-        return call, lambda: cls(
-            call.n,
-            call.c_in,
-            *call.size,
-            *call.window,
-            *call.stride,
-            *call.pad,
-            *call.dilation,
-            call.ceil_mode,
-            call.dtype,
-        )
+    def _build(self, call: MaxPoolCall, dtype: str):
+        return _max_pool1d_kernel(call, dtype, self._with_indices)
 
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        kernel_w: int,
-        stride_w: int,
-        pad_w: int,
-        dilation_w: int,
-        ceil_mode: bool,
-        dtype: torch.dtype,
-        config: dict | None = None,
-    ) -> None:
-        super().__init__()
-        if dtype not in {torch.float16, torch.bfloat16, torch.float32}:
-            raise ValueError(
-                f"{type(self).__name__} supports float16, bfloat16, and float32, got {dtype}"
-            )
-        self.n = n
-        self.c_in = c_in
-        self.l_in = l_in
-        self.kernel_w = kernel_w
-        self.stride_w = stride_w
-        self.pad_w = pad_w
-        self.dilation_w = dilation_w
-        self.ceil_mode = ceil_mode
-        self.dtype = dtype
-        self.out_l = pool_output_dim(l_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-        self.kernel = type(self)._build(
-            n,
-            c_in,
-            l_in,
-            kernel_w,
-            stride_w,
-            pad_w,
-            dilation_w,
-            ceil_mode,
-            self.dtype_str,
-        )
-        self.init_config(config)
-
-    @property
+    @functools.cached_property
     def _shape(self) -> _Shape:
-        return _Shape(
-            self.n * self.c_in,
-            self.l_in,
-            self.kernel_w,
-            self.stride_w,
-            self.pad_w,
-            self.dilation_w,
-            self.dtype_str,
-        )
+        return _Shape.of(self.call, self.dtype_str)
 
-    @property
+    @functools.cached_property
     def _plan(self) -> _SignaturePlan:
-        return _plan(self._shape, self.ceil_mode, type(self)._with_indices)
+        return _plan(self._shape, self.call.ceil_mode, self._with_indices)
 
     def _blocks(self, candidate: dict) -> int:
         """Blocks the launch takes at *candidate*, which decides whether to offer it."""
@@ -647,7 +546,7 @@ class _MaxPool1dKernelBase(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"block_ol": self._BLOCK_OUTPUTS, "threads": self._FALLBACK_THREADS}
+        return {"block_ol": 256, "threads": 128}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -661,36 +560,14 @@ class _MaxPool1dKernelBase(Kernel):
             if self._blocks(candidate) * candidate["threads"] >= self._MIN_LAUNCH_THREADS
         ] or [self.default_config]
 
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(cfg["block_ol"], cfg["threads"])
-
-    def forward(self, x: torch.Tensor) -> Any:
-        self._require_devices(x=x)
-        rows = self.program(self._compile)(x.contiguous().view(self.n * self.c_in, self.l_in))
-        return type(self)._shaped(rows, (self.n, self.c_in, self.out_l))
-
 
 class MaxPool1dKernel(_MaxPool1dKernelBase, MaxPool1dFwdInterface):
     """Max pooling forward kernel (return_indices=False)."""
 
-    _build = staticmethod(_max_pool1d_kernel)
     _with_indices = False
-
-    @staticmethod
-    def _shaped(result: torch.Tensor, shape: tuple[int, int, int]) -> torch.Tensor:
-        return result.view(shape)
 
 
 class MaxPool1dWithIndicesKernel(_MaxPool1dKernelBase, MaxPool1dIndicesFwdInterface):
     """Max pooling forward-with-indices kernel."""
 
-    _build = staticmethod(_max_pool1d_with_indices_kernel)
     _with_indices = True
-
-    @staticmethod
-    def _shaped(
-        result: tuple[torch.Tensor, torch.Tensor], shape: tuple[int, int, int]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        values, indices = result
-        return values.view(shape), indices.view(shape)

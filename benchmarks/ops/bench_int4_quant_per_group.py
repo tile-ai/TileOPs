@@ -7,7 +7,7 @@ from benchmarks.baselines import DEEPSPEED_TAG, deepspeed_op
 from tileops.quantization import INT4QuantPerGroupFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(INT4QuantPerGroupFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(INT4QuantPerGroupFwdOp))
 def test_int4_quant_per_group_bench(case) -> None:
     workload = case.workload
     op = INT4QuantPerGroupFwdOp(**case.arguments)

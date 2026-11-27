@@ -1,4 +1,5 @@
-"""Benchmark TileOPs GEMM, FP8 GEMM, INT8 W8A8 GEMM, W4A8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
+"""Benchmark the TileOPs GEMM ops, one case per manifest call, against cuBLAS and the library
+kernels available for each."""
 
 import contextlib
 from collections.abc import Callable
@@ -35,12 +36,7 @@ CUBLASLT_TAG = "cublaslt-best"
 
 
 class _CublasLtBestGEMM:
-    """Callable bound to the fastest cuBLAS algorithm found for one shape.
-
-    Construction ranks cuBLASLt's candidate algorithms and a PyTorch fallback using
-    the benchmark timer. Calls reuse the selected algorithm with the caller's operands.
-    cuBLASLt adds a bias along the rows of a column-major result only, so a biased call
-    runs the transposed product, whose column-major result is the row-major output.
+    """Callable bound to the fastest of cuBLASLt's algorithms and ``torch`` for one shape.
 
     Args:
         a: Left operand, ``[m, k]``.
@@ -88,6 +84,8 @@ class _CublasLtBestGEMM:
             self._mm = advanced.Matmul(a, rhs, options=options)
             epilog = {}
         else:
+            # cuBLASLt adds a bias along the rows of a column-major result only: the
+            # transposed product's column-major result is the row-major output.
             self._mm = advanced.Matmul(rhs.t(), a.t(), options=options)
             epilog = {"epilog": advanced.MatmulEpilog.BIAS, "epilog_inputs": {"bias": bias}}
         # GEMMFwdOp and the workload's reference accumulate in fp32, so a split-K algorithm
@@ -103,7 +101,6 @@ class _CublasLtBestGEMM:
         if not algorithms:
             self._mm.free()
             raise RuntimeError("cuBLASLt returned no runnable algorithm")
-        self.n_searched = len(algorithms)
 
         self._algorithm = min(
             algorithms,
@@ -177,9 +174,7 @@ def cublaslt_best(
         return None
 
 
-def _flashinfer_fp8_blockscale_1d2d(
-    workload: GEMMFP8Workload, *inputs: torch.Tensor
-) -> Callable[..., torch.Tensor]:
+def _flashinfer_fp8_blockscale_1d2d(workload: GEMMFP8Workload) -> Callable[..., torch.Tensor]:
     """FlashInfer's FP8 block-scale GEMM over 1D2D scales.
 
     It reads ``scale_a`` as M-contiguous rows padded to a multiple of 4, whatever the
@@ -263,9 +258,7 @@ def _deepgemm_fp8(workload: GEMMFP8Workload) -> Callable[..., torch.Tensor]:
     return run
 
 
-def _deepgemm_bf16_nt(
-    workload: GEMMWorkload, a: torch.Tensor, b: torch.Tensor
-) -> Callable[..., torch.Tensor] | None:
+def _deepgemm_bf16_nt(workload: GEMMWorkload) -> Callable[..., torch.Tensor] | None:
     """DeepGEMM's dense bf16 GEMM, or None for a row its kernel cannot take.
 
     It reads both operands K-major and bf16 only, which is the N-T layout here, and
@@ -275,7 +268,7 @@ def _deepgemm_bf16_nt(
     if (
         workload.trans_a
         or not workload.trans_b
-        or a.dtype != torch.bfloat16
+        or workload.dtype != torch.bfloat16
         or workload.n <= 0
         or workload.k <= 0
         or workload.n % 8
@@ -358,13 +351,6 @@ def _prepare_marlin_w4a16_baseline(
     reason = _marlin_w4a16_unsupported_reason(n, k, group_size)
     if reason is not None:
         raise ValueError(reason)
-
-    if tuple(activation.shape) != (m, k):
-        raise ValueError(f"activation must have shape {(m, k)}, got {tuple(activation.shape)}")
-    if tuple(packed_weight.shape) != (n, k // 2):
-        raise ValueError(
-            f"packed_weight must have shape {(n, k // 2)}, got {tuple(packed_weight.shape)}"
-        )
 
     # TileOPs packs the two adjacent K values into each byte. Reconstruct the
     # exact logical q[N,K], transpose to Marlin's K-major convention, then use
@@ -451,7 +437,7 @@ def _prepare_vllm_w4a8_baseline(
 ) -> tuple[Callable[..., torch.Tensor], tuple[Any, ...]]:
     """vLLM's ``cutlass_w4a8_mm`` on operands laid out as vLLM lays them out at load time.
 
-    ``CutlassW4A8LinearKernel.process_weights_after_loading`` (vllm 0.27.1) reorders the
+    ``CutlassW4A8LinearKernel.process_weights_after_loading`` reorders the
     column-major ``[K/8, N]`` int32 packing through ``cutlass_encode_and_reorder_int4b`` and
     the ``[K/group, N]`` fp8 group scales through ``cutlass_pack_scale_fp8``; its
     ``apply_weights`` passes channel scales ``[1, N]`` and token scales ``[M, 1]``. Both
@@ -488,7 +474,7 @@ def _prepare_vllm_w4a8_baseline(
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(GEMMFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMFwdOp))
 def test_gemm_bench(case) -> None:
     workload = case.workload
     a, b, *bias = case.inputs
@@ -506,7 +492,7 @@ def test_gemm_bench(case) -> None:
     if bias:
         print(f"  [skip] {DEEPGEMM_TAG}: its dense BF16 GEMM adds no bias")
     else:
-        deepgemm_fn = _deepgemm_bf16_nt(workload, a, b)
+        deepgemm_fn = _deepgemm_bf16_nt(workload)
         if deepgemm_fn is not None:
             implementations[DEEPGEMM_TAG] = deepgemm_fn
 
@@ -533,7 +519,7 @@ def test_gemm_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(GEMMFP8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMFP8FwdOp))
 def test_gemm_fp8_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs
@@ -574,18 +560,17 @@ def test_gemm_fp8_bench(case) -> None:
 
             implementations["flashinfer-mm-fp8"] = flashinfer_fn
     elif scale_mode == "block128x128":
-        baselines = {"flashinfer-fp8-blockscale-sm90": _flashinfer_fp8_blockscale_1d2d}
-        for tag, adapter in baselines.items():
-            try:
-                fn = adapter(workload, *inputs)
-            except ValueError as exc:
-                print(f"  [skip] {tag}: {str(exc).splitlines()[0]}")
-            else:
-                implementations[tag] = bench.Implementation(run=fn, args=inputs)
+        tag = "flashinfer-fp8-blockscale-sm90"
+        try:
+            fn = _flashinfer_fp8_blockscale_1d2d(workload)
+        except ValueError as exc:
+            print(f"  [skip] {tag}: {str(exc).splitlines()[0]}")
+        else:
+            implementations[tag] = bench.Implementation(run=fn, args=inputs)
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(GEMMINT8W8A8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMINT8W8A8FwdOp))
 def test_gemm_int8_w8a8_bench(case) -> None:
     """Compare INT8 activations times INT8 weights, dequantized per token and per channel."""
     workload = case.workload
@@ -610,7 +595,7 @@ def test_gemm_int8_w8a8_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(GEMMW4A16FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMW4A16FwdOp))
 def test_gemm_w4a16_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs
@@ -641,7 +626,7 @@ def test_gemm_w4a16_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(GEMMW4A8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMW4A8FwdOp))
 def test_gemm_w4a8_bench(case) -> None:
     """Compare FP8 e4m3 activations times signed INT4 weights, producing BF16 output.
 

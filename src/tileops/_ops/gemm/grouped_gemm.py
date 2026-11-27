@@ -19,11 +19,8 @@ __all__ = ["GroupedGEMMFwdOp"]
 
 class GroupedGEMMFwdOp(Op):
     """Grouped GEMM with configurable transpose modes. Nothing is committed at construction:
-    the extents and the dtype come from the ``forward`` inputs.
-
-    It groups rows by ``batch_sizes`` in four transpose layouts with no epilogue, where
-    ``MoEGroupedGEMMFwdOp`` groups rows by an MoE expert layout and can fuse a gated
-    activation and a bias.
+    the extents and the dtype come from the ``forward`` inputs. Rows are grouped by
+    ``batch_sizes``; there is no epilogue.
 
     The ``(trans_a, trans_b)`` pair selects one of four layouts:
 

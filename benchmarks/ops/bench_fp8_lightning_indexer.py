@@ -8,7 +8,7 @@ from benchmarks.baselines import DEEPGEMM_TAG, deepgemm_op
 from tileops.attention import FP8LightningIndexerFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(FP8LightningIndexerFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FP8LightningIndexerFwdOp))
 def test_fp8_lightning_indexer_bench(case) -> None:
     op = FP8LightningIndexerFwdOp(**case.arguments)
     logits = deepgemm_op("fp8_fp4_mqa_logits")

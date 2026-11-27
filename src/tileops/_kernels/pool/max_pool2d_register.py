@@ -7,6 +7,7 @@ the windows reach past it on either side; no block stages the plane in shared me
 maxima and their positions.
 """
 
+import math
 from typing import ClassVar
 
 import tilelang
@@ -16,7 +17,6 @@ import torch
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
     MaxPool2dFwdInterface,
     MaxPool2dIndicesFwdInterface,
@@ -25,6 +25,8 @@ from tileops._kernels.pool.call_spec import (
 from tileops._kernels.pool.common import (
     ACCUM_DTYPE,
     EVICT_HINT_MAX_BYTES,
+    MaxPoolKernelBase,
+    max_pool_out,
     register_plane_refusal,
 )
 
@@ -33,20 +35,9 @@ __all__ = ["MaxPool2dIndicesRegisterKernel", "MaxPool2dRegisterKernel"]
 
 @target_cache(maxsize=32)
 def _max_pool2d_register_kernel(
-    planes,
-    h_in,
-    w_in,
-    kernel_h,
-    kernel_w,
-    stride_h,
-    stride_w,
-    pad_h,
-    pad_w,
-    dtype,
-    with_indices,
-    load_policy,
+    call: MaxPoolCall, dtype: str, with_indices: bool, load_policy: str
 ):
-    """Build the program for ``planes`` planes of ``h_in`` x ``w_in`` elements.
+    """Build the program for ``call``'s planes.
 
     A thread owns ``outputs`` outputs of one output row: a ``run`` of each input row
     its windows span, ``pad_w`` elements before it and ``after`` past it, held in
@@ -56,11 +47,13 @@ def _max_pool2d_register_kernel(
     program also returns the positions when ``with_indices``. ``load_policy`` names the
     L2 policy of the 16-byte row loads: ``evict_first``, ``evict_last`` or ``default``.
     """
+    planes = call.n * call.c_in
+    (h_in, w_in), (kernel_h, kernel_w) = call.size, call.window
+    (stride_h, stride_w), (pad_h, pad_w) = call.stride, call.pad
+    out_h, out_w = max_pool_out(call)
     run = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     index_dtype = "int64"
     outputs = run // stride_w
-    out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
-    out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
     after = max(kernel_w - stride_w - pad_w, 0)
     groups = out_w // outputs
     total = planes * out_h * groups
@@ -204,32 +197,16 @@ def _max_pool2d_register_kernel(
     return build
 
 
-class _MaxPool2dRegisterKernelBase(Kernel):
+class _MaxPool2dRegisterKernelBase(MaxPoolKernelBase):
     """Max pooling over planes, a thread's windows read into registers.
 
     Serves windows without dilation or ``ceil_mode``. Along the width, the stride must
     divide the elements of a 16-byte load, so that one covers whole outputs; the outputs
     must divide into those loads, stay within the padded row, and reach at most
-    one element past a load on either side. Concrete kernels set ``_with_indices`` and
-    shape what ``_launch`` returns.
+    one element past a load on either side.
     """
 
     _with_indices: ClassVar[bool]
-
-    @classmethod
-    def _load_policy(cls, input_bytes: int) -> str:
-        """The L2 policy of the row loads for an input of ``input_bytes``.
-
-        With positions, rows are read evict-last at every size. The maxima alone read
-        inputs up to ``EVICT_HINT_MAX_BYTES`` evict-first, so a read line is replaced before
-        a dirty one and fewer lines are written back during the kernel; larger inputs use
-        the default.
-        """
-        if cls._with_indices:
-            return "evict_last"
-        return "evict_first" if input_bytes <= EVICT_HINT_MAX_BYTES else "default"
-
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
     @classmethod
     def refusal(cls, call: MaxPoolCall) -> str | None:
@@ -237,58 +214,29 @@ class _MaxPool2dRegisterKernelBase(Kernel):
             return "does not serve ceil_mode or dilation"
         return register_plane_refusal(call) or super().refusal(call)
 
-    @classmethod
-    def entry_for(cls, call: MaxPoolCall) -> Entry:
-        identity = (
-            call.n * call.c_in,
-            *call.size,
-            *call.window,
-            *call.stride,
-            *call.pad,
-            call.dtype,
-        )
-        return identity, lambda: cls(*identity)
+    def _load_policy(self, call: MaxPoolCall) -> str:
+        """The L2 policy of the row loads.
 
-    def __init__(
-        self,
-        planes: int,
-        h_in: int,
-        w_in: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dtype: torch.dtype,
-    ) -> None:
-        super().__init__()
-        self.planes, self.h_in, self.w_in, self.dtype = planes, h_in, w_in, dtype
-        input_bytes = planes * h_in * w_in * dtype.itemsize
-        load_policy = type(self)._load_policy(input_bytes)
-        if (
+        With positions, rows are read evict-last at every size. The maxima alone read
+        inputs up to ``EVICT_HINT_MAX_BYTES`` evict-first, so a read line is replaced before
+        a dirty one and fewer lines are written back during the kernel; larger inputs use
+        the default.
+        """
+        input_bytes = call.n * call.c_in * math.prod(call.size) * call.dtype.itemsize
+        if self._with_indices or (
             self.build_target.arch == 90
-            and dtype == torch.bfloat16
-            and kernel_h == kernel_w == stride_h == stride_w == 2
-            and pad_h == pad_w == 0
+            and call.dtype == torch.bfloat16
+            and call.window == call.stride == (2, 2)
+            and call.pad == (0, 0)
             and 8 << 20 <= input_bytes <= 16 << 20
         ):
-            load_policy = "evict_last"
-        self.kernel = _max_pool2d_register_kernel(
-            planes,
-            h_in,
-            w_in,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            self.dtype_str,
-            type(self)._with_indices,
-            load_policy=load_policy,
+            return "evict_last"
+        return "evict_first" if input_bytes <= EVICT_HINT_MAX_BYTES else "default"
+
+    def _build(self, call: MaxPoolCall, dtype: str):
+        return _max_pool2d_register_kernel(
+            call, dtype, self._with_indices, load_policy=self._load_policy(call)
         )
-        self.init_config()
 
     @property
     def default_config(self) -> dict:
@@ -298,26 +246,12 @@ class _MaxPool2dRegisterKernelBase(Kernel):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    def _compile(self, cfg: dict):
-        """The program ``_launch`` runs; its builder takes no configuration."""
-        return self.kernel()
-
-    def _launch(self, x: torch.Tensor):
-        """Run the program on ``x``; return its leading dims and the program's outputs."""
-        self._require_devices(x=x)
-        x = x.contiguous()
-        return x.shape[:-2], self.program(self._compile)(x.view(self.planes, self.h_in, self.w_in))
-
 
 class MaxPool2dRegisterKernel(_MaxPool2dRegisterKernelBase, MaxPool2dFwdInterface):
     """Max pooling over planes, a thread's windows read into registers."""
 
     _with_indices = False
     preferred_over = frozenset({"max_pool2d_kernel"})
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch, y = self._launch(x)
-        return y.view(*batch, *y.shape[-2:])
 
 
 class MaxPool2dIndicesRegisterKernel(_MaxPool2dRegisterKernelBase, MaxPool2dIndicesFwdInterface):
@@ -333,8 +267,3 @@ class MaxPool2dIndicesRegisterKernel(_MaxPool2dRegisterKernelBase, MaxPool2dIndi
         if reason is None and call.size[0] * call.size[1] > 1 << 31:
             return f"holds a position in int32, and the plane has {call.size[0] * call.size[1]}"
         return reason
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        batch, (y, indices) = self._launch(x)
-        shape = (*batch, *y.shape[-2:])
-        return y.view(shape), indices.view(shape)

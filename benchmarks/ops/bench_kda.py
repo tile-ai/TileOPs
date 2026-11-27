@@ -16,7 +16,7 @@ from benchmarks.baselines import (
 from tileops.linear_attention import KDAFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(KDAFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(KDAFwdOp))
 def test_kda_fwd_bench(case) -> None:
     params = case.params
     inputs = case.inputs

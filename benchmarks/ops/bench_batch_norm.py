@@ -68,7 +68,7 @@ def _aten_bn_bwd(grad_out, x, mean, rstd, weight=None):
     return dx.to(x.dtype), dw, db
 
 
-@pytest.mark.parametrize("case", bench.cases(BatchNormFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(BatchNormFwdOp))
 def test_batch_norm_fwd_bench(case):
     inputs = case.inputs
     op = BatchNormFwdOp(**case.arguments)
@@ -83,7 +83,7 @@ def test_batch_norm_fwd_bench(case):
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(BatchNormBwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(BatchNormBwdOp))
 def test_batch_norm_bwd_bench(case):
     op = BatchNormBwdOp(**case.arguments)
     bench.Runner(op, case).compare(

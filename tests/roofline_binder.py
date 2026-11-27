@@ -1,17 +1,12 @@
 """Build a bytes-oracle case for each workload row of an op from its manifest entry alone.
 
-Each row is instantiated, the op constructed from it and its call checked on meta tensors.
-An implemented entry's op is its class; a spec-only entry's is a class carrying only what its
-signature generates, since the recount needs no implementation.
-In parallel the oracle counts the traffic the checked call implies -- one read per input it
-binds except one that a determining predicate fixes from the others (listed here, not taken
-from the signature), a tensor sequence's read counted over its materialized elements, one
-write per output, both for a written input -- and the caller requires the two to be equal.
-Empty experts and groups read no weights, a masked slab moves only its valid rows, and
-attention moves only the rows some score needs. The `roofline` block is never read.
-
-Shared with the formula, and nothing beyond it: the minimum-traffic definition and the
-signature the call is checked against.
+Each row's op is constructed (a spec-only entry's from a class carrying only its generated
+signature) and its call checked on meta tensors. The oracle counts the minimum traffic that
+call implies independently of the ``roofline`` block, which it never reads; the caller
+requires the formula to equal it. The count reads each bound input once (a sequence over
+its elements, an input a determining predicate fixes not at all) and writes each output once;
+an empty expert or group reads no weights, a masked slab moves only its valid rows, and
+attention moves only the rows some score needs.
 """
 
 from __future__ import annotations

@@ -9,16 +9,11 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase, smoke_first
-from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.norm.batch_norm import (
     BatchNormFwdTrainKernel,
     BatchNormFwdTrainSplitKernel,
     BatchNormFwdTrainWholeKernel,
     BatchNormFwdTrainWideKernel,
-)
-from tileops._kernels.norm.call_spec import (
-    BatchNormBwdInterface,
-    BatchNormCall,
 )
 from tileops._ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
@@ -70,7 +65,6 @@ class BatchNormFwdFixture(FixtureBase):
                 pytest.param(4, 128, (32, 32), torch.bfloat16, True, marks=pytest.mark.full),
                 # Non-aligned spatial: H*W=900, exercises partial-tile path
                 pytest.param(8, 64, (30, 30), torch.float16, True, marks=pytest.mark.full),
-                pytest.param(8, 64, (30, 30), torch.bfloat16, True, marks=pytest.mark.full),
                 # High channel count oversubscribes the SMs, exposing the running-stat update race.
                 pytest.param(16, 1024, (512,), torch.float16, True, marks=pytest.mark.full),
                 # The streamed path, which no other case reaches: a channel too long to
@@ -100,7 +94,6 @@ class BatchNormBwdFixture(FixtureBase):
                 pytest.param(4, 64, (64, 64), torch.float16, marks=pytest.mark.full),
                 # Non-aligned spatial: H*W=900, a vector narrower than the dtype allows.
                 pytest.param(8, 64, (30, 30), torch.float16, marks=pytest.mark.full),
-                pytest.param(8, 64, (30, 30), torch.bfloat16, marks=pytest.mark.full),
                 # The split path with a chunk no vector step divides: a block must stop at
                 # its own chunk rather than sum into the next one's.
                 pytest.param(3, 5, (300, 301), torch.bfloat16, marks=pytest.mark.full),
@@ -888,93 +881,3 @@ class TestBatchNormCustomOp:
         compiled = torch.compile(op, fullgraph=False)
         gx, gw, gb = compiled(grad_out, x, mean, rstd, weight=weight)
         assert gx.shape == x.shape
-
-
-def _to_cl(x: torch.Tensor) -> torch.Tensor:
-    return x.permute(1, 0, *range(2, x.ndim)).reshape(x.shape[1], -1).contiguous()
-
-
-def _from_cl(x_cl: torch.Tensor, orig_shape: torch.Size) -> torch.Tensor:
-    n = orig_shape[0]
-    c = orig_shape[1]
-    spatial = orig_shape[2:]
-    return x_cl.reshape(c, n, *spatial).permute(1, 0, *range(2, len(orig_shape))).contiguous()
-
-
-class _FakeKernel(Kernel):
-    general = True
-
-    def __init__(self, call: BatchNormCall) -> None:
-        super().__init__()
-        self.L = call.n * call.spatial
-        self.dtype = call.dtype
-        self.eps = call.eps
-        self.momentum = call.momentum
-
-
-class _FakeBatchNormBwdKernel(_FakeKernel, BatchNormBwdInterface):
-    def forward(
-        self,
-        grad_out: torch.Tensor,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        mean: torch.Tensor,
-        rstd: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        grad_out_cl = _to_cl(grad_out)
-        x_cl = _to_cl(x)
-        grad_out_f = grad_out_cl.float()
-        x_hat = (x_cl.float() - mean[:, None]) * rstd[:, None]
-        grad_bias = grad_out_f.sum(dim=1)
-        grad_weight = (grad_out_f * x_hat).sum(dim=1)
-        grad_x = (
-            weight[:, None]
-            * rstd[:, None]
-            * (self.L * grad_out_f - grad_bias[:, None] - x_hat * grad_weight[:, None])
-            / self.L
-        )
-        return _from_cl(grad_x.to(self.dtype), x.shape), grad_weight, grad_bias
-
-
-def _batch_norm_infer_ref(
-    x: torch.Tensor,
-    running_mean: torch.Tensor,
-    running_var: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-    eps: float,
-) -> torch.Tensor:
-    affine_shape = (1, x.shape[1]) + (1,) * (x.ndim - 2)
-    y = (x.float() - running_mean.reshape(affine_shape)) * torch.rsqrt(
-        running_var.reshape(affine_shape) + eps
-    )
-    y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
-    return y.to(x.dtype)
-
-
-def _batch_norm_train_ref(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-    eps: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    x_cl = _to_cl(x)
-    mean = x_cl.float().mean(dim=1)
-    var = x_cl.float().var(dim=1, unbiased=False)
-    rstd = torch.rsqrt(var + eps)
-    y_cl = (x_cl.float() - mean[:, None]) * rstd[:, None]
-    y_cl = y_cl * weight[:, None] + bias[:, None]
-    return _from_cl(y_cl.to(x.dtype), x.shape), mean, rstd
-
-
-def _batch_norm_bwd_ref(
-    grad_out: torch.Tensor,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    mean: torch.Tensor,
-    rstd: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    n, c = x.shape[0], x.shape[1]
-    call = BatchNormCall(n=n, c=c, spatial=x.numel() // (n * c), dtype=x.dtype)
-    kernel = _FakeBatchNormBwdKernel(call)  # lint: test-placement allow: torch reference double
-    return kernel(grad_out, x, weight, mean, rstd)

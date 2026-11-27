@@ -99,7 +99,7 @@ def _flashmla_sparse(workload: DSADecodeCall, inputs: tuple) -> bench.Implementa
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(DSADenseFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(DSADenseFwdOp))
 def test_dsa_decode_bench(case) -> None:
     workload = case.workload
     op = DSADenseFwdOp(**case.arguments)

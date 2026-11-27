@@ -4,7 +4,6 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.elementwise._base import ScalarParamUnaryKernel
-from tileops._kernels.elementwise._dtype import clamp_to_dtype_range
 from tileops._kernels.elementwise.call_spec import NanToNumCall, NanToNumFwdInterface
 from tileops._kernels.kernel_base import Entry
 
@@ -34,37 +33,30 @@ class NanToNumFwdKernel(ScalarParamUnaryKernel, NanToNumFwdInterface):
         posinf = torch.finfo(dtype).max if call.posinf is None else _cast(call.posinf, dtype)
         neginf = torch.finfo(dtype).min if call.neginf is None else _cast(call.neginf, dtype)
         nan = _cast(call.nan, dtype)
-        return call, lambda: cls(call.n_total, dtype, nan, posinf, neginf)
+        return call, lambda: cls(call.n_total, dtype, nan=nan, posinf=posinf, neginf=neginf)
 
-    def __init__(self, N_total, dtype, nan_val=0.0, posinf_val=1e4, neginf_val=-1e4, config=None):
-        self.nan_val = clamp_to_dtype_range(nan_val, dtype)
-        self.posinf_val = clamp_to_dtype_range(posinf_val, dtype)
-        self.neginf_val = clamp_to_dtype_range(neginf_val, dtype)
-        # Two 16-byte vectors a thread of a 16-bit element, one of a 32-bit one.
-        self.BYTES_PER_THREAD = 32 if dtype.itemsize == 2 else 16
-        super().__init__(N_total, dtype, config=config)
+    @property
+    def BYTES_PER_THREAD(self) -> int:
+        """Two 16-byte vectors a thread of a 16-bit element, one of a 32-bit one."""
+        return 32 if self.dtype.itemsize == 2 else 16
 
-    def _param_key(self):
-        return f"nan={self.nan_val!r}|posinf={self.posinf_val!r}|neginf={self.neginf_val!r}"
-
-    def _make_op_func(self):
-        nan_val, posinf_val, neginf_val = self.nan_val, self.posinf_val, self.neginf_val
+    def _make_op_func(self, nan, posinf, neginf):
         # A clamp replaces the infinity tests only when the replacements are the
         # dtype's own ends; otherwise it would move finite values too.
         info = torch.finfo(self.dtype)
-        clamps = posinf_val == info.max and neginf_val == info.min
+        clamps = posinf == info.max and neginf == info.min
 
         def op_func(x):
             wide = T.cast(x, "float32")
-            nan_r = T.cast(nan_val, x.dtype)
+            nan_r = T.cast(nan, x.dtype)
             if clamps:
                 bounded = T.min(
-                    T.max(wide, T.cast(neginf_val, "float32")),
-                    T.cast(posinf_val, "float32"),
+                    T.max(wide, T.cast(neginf, "float32")),
+                    T.cast(posinf, "float32"),
                 )
                 return T.if_then_else(T.isnan(wide), nan_r, T.cast(bounded, x.dtype))
-            pos_r = T.cast(posinf_val, x.dtype)
-            neg_r = T.cast(neginf_val, x.dtype)
+            pos_r = T.cast(posinf, x.dtype)
+            neg_r = T.cast(neginf, x.dtype)
             # ``T.isinf`` lowers to this comparison plus a NaN test, which the
             # branch above has already taken.
             infinite = T.abs(wide) == T.cast(float("inf"), "float32")

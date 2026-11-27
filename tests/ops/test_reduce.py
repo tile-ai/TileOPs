@@ -1,14 +1,11 @@
-"""Correctness tests for the 8 basic reduce ops.
-
-Covers: SumFwdOp, MeanFwdOp, AminFwdOp, AmaxFwdOp, ProdFwdOp, StdFwdOp, VarFwdOp, VarMeanFwdOp.
-Each op reduces along one dim of a 1D-4D input; the variance ops also over a tuple of dims
-and ``dim=None``. Other ``dim`` forms are in ``test_reduction_dims.py``.
-"""
+"""SumFwdOp, MeanFwdOp, AminFwdOp, AmaxFwdOp, ProdFwdOp, StdFwdOp, VarFwdOp and VarMeanFwdOp
+over one int dim; the variance ops also over a tuple and ``None``. Other ``dim`` forms are in
+``test_reduction_dims.py``."""
 
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase
+from tests.workload_test_base import TestBase
 from tileops._ops.reduction import (
     AmaxFwdOp,
     AminFwdOp,
@@ -28,81 +25,9 @@ from workloads.reduction import (
     ReduceCase,
     VarianceConstantCase,
     WelfordCase,
+    _reduction_reference,
     reduction_verification,
 )
-
-
-class ReduceBasicFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(
-                    128,
-                    512,
-                    torch.float16,
-                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="reduction")],
-                ),
-                pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
-                # Non-aligned N
-                pytest.param(128, 300, torch.float16, marks=pytest.mark.full),
-                # Tail-M: M not divisible by block_m
-                pytest.param(129, 512, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class ReduceTiledFixture(FixtureBase):
-    """Large-N cases that exercise the tiled reduce path (N > MAX_SINGLE_TILE_COLS).
-
-    One representative op per kernel family: sum (simple), prod, var (welford).
-    """
-
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(64, 32768, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(64, 32769, torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class ReduceNonContigFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-class Reduce1DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n, dtype",
-            [
-                pytest.param(512, torch.float16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-class BesselFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype, correction",
-            [
-                pytest.param(128, 512, torch.float16, 0, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
 
 
 class ReduceTest(ReduceCase, TestBase):
@@ -186,17 +111,9 @@ def test_extrema_preserves_nan(shape, axes, dtype, kind) -> None:
     ],
 )
 def test_extrema_leading_preserves_nan(shape, dtype, kind) -> None:
-    """NaNs survive leading-axis reductions split across row slices, the vector walk and
-    the cluster's one launch.
-
-    The row slices split a column tail, divide the rows, or leave the last slice short;
-    2 KB rows of fp32 take a thread-block cluster on SM90, up to 8 CTAs on 132 SMs, and
-    the row slices before SM90;
-    columns of whole 16-byte-vector tiles take the one-launch vector walk. A 2-byte and a
-    4-byte element are walked to different depths. Rows of whole vectors wide enough to
-    fill the device fold in one launch across a thread-block cluster, which merges NaNs
-    held by different CTAs.
-    """
+    """NaNs survive leading-axis reductions split across row slices (a column tail, even and
+    short last slices), the one-launch vector walk over whole 16-byte tiles at two element
+    widths, and the thread-block cluster that merges NaNs held by different CTAs (SM90)."""
 
     test = ExtremaNanTest(shape, dtype, (0,), kind)
     op = AmaxFwdOp(dim=0) if kind == "amax" else AminFwdOp(dim=0)
@@ -217,32 +134,62 @@ def test_extrema_tuned_preserves_nan() -> None:
     test.check(op, *test.gen_inputs())
 
 
-@ReduceBasicFixture
-def test_sum_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = ReduceTest(m, n, dtype, "sum")
-    op = SumFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
+_OPS = {
+    "sum": SumFwdOp,
+    "mean": MeanFwdOp,
+    "amin": AminFwdOp,
+    "amax": AmaxFwdOp,
+    "prod": ProdFwdOp,
+    "std": StdFwdOp,
+    "var": VarFwdOp,
+    "var_mean": VarMeanFwdOp,
+}
+#: One op per kernel family (simple, product, Welford) carries the shape boundaries.
+_FAMILIES = ("sum", "prod", "var")
 
 
-@ReduceTiledFixture
-def test_sum_tiled(m: int, n: int, dtype: torch.dtype) -> None:
-    test = ReduceTest(m, n, dtype, "sum")
-    op = SumFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
+def _row_workload(op_kind: str, m: int, n: int, dtype: torch.dtype) -> TestBase:
+    if op_kind == "prod":
+        return ProdTest(m, n, dtype)
+    if op_kind in ("std", "var", "var_mean"):
+        return WelfordTest(m, n, dtype, op_kind, correction=1)
+    return ReduceTest(m, n, dtype, op_kind)
 
 
-@ReduceTiledFixture
-def test_prod_tiled(m: int, n: int, dtype: torch.dtype) -> None:
-    test = ProdTest(m, n, dtype)
-    op = ProdFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
+def _row_cases() -> list:
+    """Every op at every dtype is smoke; the families' row-shape boundaries follow."""
+    smoke, full = pytest.mark.smoke, pytest.mark.full
+    cases = [
+        pytest.param(
+            k,
+            128,
+            512,
+            dtype,
+            marks=[smoke, pytest.mark.packaging(family="reduction")]
+            if (k, dtype) == ("sum", torch.float16)
+            else smoke,
+        )
+        for k in _OPS
+        for dtype in (torch.float16, torch.float32, torch.bfloat16)
+    ]
+    # N past one tile: the tiled path.
+    cases += [pytest.param(k, 64, 32768, torch.bfloat16, marks=smoke) for k in _FAMILIES]
+    for k in _FAMILIES:
+        cases += [
+            pytest.param(k, 256, 4096, torch.bfloat16, marks=full),
+            pytest.param(k, 128, 300, torch.float16, marks=full, id=f"{k}-unaligned-n"),
+            pytest.param(k, 129, 512, torch.float16, marks=full, id=f"{k}-tail-m"),
+            pytest.param(k, 64, 32769, torch.bfloat16, marks=full, id=f"{k}-tiled-tail"),
+        ]
+    # Mean divides a padded row by its unpadded N.
+    cases.append(pytest.param("mean", 128, 300, torch.float16, marks=full, id="mean-unaligned-n"))
+    return cases
 
 
-@ReduceTiledFixture
-def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
-    test = WelfordTest(m, n, dtype, "var", correction=1)
-    op = VarFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
+@pytest.mark.parametrize("op_kind, m, n, dtype", _row_cases())
+def test_reduce_rows(op_kind: str, m: int, n: int, dtype: torch.dtype) -> None:
+    test = _row_workload(op_kind, m, n, dtype)
+    test.check(_OPS[op_kind](dim=-1), *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -267,14 +214,11 @@ def test_sum_wide_fold_tail(m: int, n: int, threads: int) -> None:
 
 @pytest.mark.smoke
 def test_reduce_untiled_autotune_unaligned_n() -> None:
-    """Every untiled candidate must build at an N_padded off the pass width.
+    """Every untiled candidate builds at an N_padded off the pass width.
 
-    N_padded=7936 neither divides nor is a multiple of
-    threads * 128-bit / elem_bytes, so ``layout_ok`` excludes every block_m
-    above 1 and the candidate list must not offer them.  With the serial row
-    loop such a fragment would in fact build; the envelope stays because it
-    also covers the residue that does not.  The width also has to stay inside the
-    register budget, or the row is tiled and there is no untiled candidate list.
+    N_padded=7936 neither divides nor is a multiple of threads * 16 bytes / elem_bytes, so
+    ``layout_ok`` must leave only block_m 1; the row still fits the register budget, so it
+    is not tiled.
     """
 
     m, n, dtype = 8, 7935, torch.float16
@@ -311,108 +255,66 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
     test.check(op, *test.gen_inputs())
 
 
-@ReduceNonContigFixture
-def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
-    x = x_full[:, :n]
-    op = SumFwdOp(dim=-1)
-    ref = x.contiguous().float().sum(dim=-1).to(dtype)
-    y = op(x)
-
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@ReduceBasicFixture
-def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = ReduceTest(m, n, dtype, "mean")
-    op = MeanFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
+def _check(op, x: torch.Tensor, **params) -> None:
+    """Compare every output of *op* on *x* with the reduction oracle at *params*."""
+    out = op(x)
+    ref = _reduction_reference(type(op).__name__, x, params)
+    pairs = zip(out, ref, strict=True) if isinstance(ref, tuple) else [(out, ref)]
+    for got, want in pairs:
+        assert got.shape == want.shape, f"shape {got.shape} vs ref {want.shape}"
+        assert got.dtype == want.dtype, f"dtype {got.dtype} vs ref {want.dtype}"
+        compare_outputs(got, want, reduction_verification(want.dtype))
 
 
-@ReduceBasicFixture
-def test_amin_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = ReduceTest(m, n, dtype, "amin")
-    op = AminFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
+def _input(op_kind: str, shape: tuple, dtype: torch.dtype) -> torch.Tensor:
+    """Gaussian values; near one for a product, so it stays finite."""
+    if op_kind == "prod":
+        return torch.rand(*shape, dtype=dtype, device=run_device()) * 0.01 + 0.99
+    return torch.randn(*shape, dtype=dtype, device=run_device())
 
 
-@ReduceBasicFixture
-def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = ReduceTest(m, n, dtype, "amax")
-    op = AmaxFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
+def _dim_cases() -> list:
+    """Every op at both dtypes on a row is smoke; leading, middle and keepdim per family."""
+    cases = [
+        pytest.param(k, shape, -1, False, dtype, marks=pytest.mark.smoke)
+        for k in _OPS
+        for shape, dtype in (((128, 512), torch.float16), ((4, 32, 512), torch.bfloat16))
+    ]
+    for k in _FAMILIES:
+        cases += [
+            pytest.param(k, (4, 32, 512), 0, False, torch.float16, marks=pytest.mark.full),
+            pytest.param(k, (4, 32, 512), 1, False, torch.float16, marks=pytest.mark.full),
+            pytest.param(k, (4, 32, 512), -1, True, torch.bfloat16, marks=pytest.mark.full),
+        ]
+    return cases
 
 
-@ReduceBasicFixture
-def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = ProdTest(m, n, dtype)
-    op = ProdFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
+@pytest.mark.parametrize("op_kind, shape, dim, keepdim, dtype", _dim_cases())
+def test_reduce_dim_and_keepdim(
+    op_kind: str, shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
+) -> None:
+    _check(
+        _OPS[op_kind](dim=dim, keepdim=keepdim),
+        _input(op_kind, shape, dtype),
+        dim=dim,
+        keepdim=keepdim,
+        correction=None,
+    )
 
 
-@ReduceBasicFixture
-def test_std_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = WelfordTest(m, n, dtype, "std", correction=1)
-    op = StdFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
-
-
-@BesselFixture
-def test_std_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None:
-    test = WelfordTest(m, n, dtype, "std", correction=correction)
-    op = StdFwdOp(correction=correction, dim=-1)
-    test.check(op, *test.gen_inputs())
-
-
-@ReduceBasicFixture
-def test_var_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = WelfordTest(m, n, dtype, "var", correction=1)
-    op = VarFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
-
-
-@BesselFixture
-def test_var_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None:
-    test = WelfordTest(m, n, dtype, "var", correction=correction)
-    op = VarFwdOp(correction=correction, dim=-1)
-    test.check(op, *test.gen_inputs())
-
-
-@ReduceBasicFixture
-def test_var_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = WelfordTest(m, n, dtype, "var_mean", correction=1)
-    op = VarMeanFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
-
-
-@BesselFixture
-def test_var_mean_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None:
-    test = WelfordTest(m, n, dtype, "var_mean", correction=correction)
-    op = VarMeanFwdOp(correction=correction, dim=-1)
-    test.check(op, *test.gen_inputs())
-
-
-# 1D input
-
-
-@Reduce1DFixture
-def test_sum_1d(n: int, dtype: torch.dtype) -> None:
-    x = torch.randn(n, dtype=dtype, device=run_device())
-    op = SumFwdOp(dim=-1)
-    ref = x.float().sum(dim=-1).to(dtype)
-    y = op(x)
-
-    compare_outputs(y.view_as(ref), ref, reduction_verification(ref.dtype))
-
-
-@Reduce1DFixture
-def test_var_1d(n: int, dtype: torch.dtype) -> None:
-    x = torch.randn(n, dtype=dtype, device=run_device())
-    op = VarFwdOp(dim=-1)
-    ref = x.float().var(dim=-1, correction=1).to(dtype)
-    y = op(x)
-
-    compare_outputs(y.view_as(ref), ref, reduction_verification(ref.dtype))
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_kind, view",
+    [("sum", "strided"), ("sum", "1d"), ("var", "1d")],
+    ids=["sum-strided", "sum-1d", "var-1d"],
+)
+def test_reduce_views(op_kind: str, view: str) -> None:
+    """A strided view and a 1-D input reduce along their last axis."""
+    if view == "strided":
+        x = _input(op_kind, (128, 1024), torch.float16)[:, :512]
+    else:
+        x = _input(op_kind, (512,), torch.float16)
+    _check(_OPS[op_kind](dim=-1), x, dim=-1, correction=None)
 
 
 @pytest.mark.smoke
@@ -430,133 +332,6 @@ def test_reduce_view_off_vector_boundary() -> None:
             ref(x.float(), dim=-1).half(),
             reduction_verification(torch.float16),
         )
-
-
-# Spec-conformant tests (dim + keepdim interface)
-
-
-class SpecReduceFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dim, keepdim, dtype",
-            [
-                # Each spec test also has fp16 full cases; keep one fp16 smoke case so the
-                # collection contract covers every dtype at the smoke tier.
-                pytest.param((128, 512), -1, False, torch.float16, marks=pytest.mark.smoke),
-                pytest.param((4, 32, 512), -1, False, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param((4, 32, 512), 0, False, torch.float16, marks=pytest.mark.full),
-                pytest.param((4, 32, 512), 1, False, torch.float16, marks=pytest.mark.full),
-                pytest.param((4, 32, 512), -1, True, torch.bfloat16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@SpecReduceFixture
-def test_sum_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: reduction along arbitrary dim (0, 1, -1) for 2D/3D tensors."""
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = SumFwdOp(dim=dim, keepdim=keepdim)
-    ref = torch.sum(x.float(), dim=dim, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@SpecReduceFixture
-def test_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: MeanFwdOp with dim + keepdim."""
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = MeanFwdOp(dim=dim, keepdim=keepdim)
-    ref = torch.mean(x.float(), dim=dim, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@SpecReduceFixture
-def test_amax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: AmaxFwdOp with dim + keepdim."""
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = AmaxFwdOp(dim=dim, keepdim=keepdim)
-    ref = torch.amax(x.float(), dim=dim, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@SpecReduceFixture
-def test_amin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: AminFwdOp with dim + keepdim."""
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = AminFwdOp(dim=dim, keepdim=keepdim)
-    ref = torch.amin(x.float(), dim=dim, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@SpecReduceFixture
-def test_prod_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: ProdFwdOp with dim + keepdim."""
-
-    x = torch.rand(*shape, dtype=dtype, device=run_device()) * 0.01 + 0.99
-    op = ProdFwdOp(dim=dim, keepdim=keepdim)
-    ref = torch.prod(x.float(), dim=dim, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@SpecReduceFixture
-def test_var_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: VarFwdOp with dim + keepdim + correction."""
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VarFwdOp(dim=dim, keepdim=keepdim)
-    ref = torch.var(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@SpecReduceFixture
-def test_std_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: StdFwdOp with dim + keepdim + correction."""
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = StdFwdOp(dim=dim, keepdim=keepdim)
-    ref = torch.std(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@SpecReduceFixture
-def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
-    """Spec interface: VarMeanFwdOp with dim + keepdim."""
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VarMeanFwdOp(dim=dim, keepdim=keepdim)
-    ref_var = torch.var(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
-    ref_mean = torch.mean(x.float(), dim=dim, keepdim=keepdim).to(dtype)
-    var_out, mean_out = op(x)
-
-    assert var_out.shape == ref_var.shape, f"var shape mismatch: {var_out.shape} vs {ref_var.shape}"
-    assert mean_out.shape == ref_mean.shape, "mean shape mismatch"
-    compare_outputs(var_out, ref_var, reduction_verification(ref_var.dtype))
-    compare_outputs(mean_out, ref_mean, reduction_verification(ref_mean.dtype))
 
 
 @pytest.mark.smoke
@@ -587,52 +362,20 @@ def test_dtype_casts_the_input_before_reducing(name, in_dtype, out_dtype) -> Non
     compare_outputs(got, ref_fn(x), reduction_verification(out_dtype))
 
 
-# Variance reductions against torch.var / torch.std / torch.var_mean. The three share a
-# forward, so they share a case table. The dim shape and keepdim each pick a branch, so they
-# are crossed; correction is a constant the kernel bakes in, where only zero and nonzero differ.
-
-
 _VARIANCE_DIMS = [
     pytest.param(-1, id="dim=int"),
     pytest.param((0, 2), id="dim=tuple"),
     pytest.param(None, id="dim=None"),
 ]
+_VARIANCE_OPS = ["var", "std", "var_mean"]
 
 
-def _ref_var(x, dim, keepdim, correction):
-    return (torch.var(x.float(), dim=dim, keepdim=keepdim, correction=correction).to(x.dtype),)
+def _check_variance(op_kind: str, x: torch.Tensor, dim, keepdim: bool, correction) -> None:
+    op = _OPS[op_kind](dim=dim, correction=correction, keepdim=keepdim)
+    _check(op, x, dim=dim, keepdim=keepdim, correction=correction)
 
 
-def _ref_std(x, dim, keepdim, correction):
-    return (torch.std(x.float(), dim=dim, keepdim=keepdim, correction=correction).to(x.dtype),)
-
-
-def _ref_var_mean(x, dim, keepdim, correction):
-    var, mean = torch.var_mean(x.float(), dim=dim, keepdim=keepdim, correction=correction)
-    return var.to(x.dtype), mean.to(x.dtype)
-
-
-#: Each op with the reference it must match. Every reference returns a tuple, so one
-#: comparison serves the two single-output ops and the one that returns a pair.
-_VARIANCE_OPS = [
-    pytest.param(VarFwdOp, _ref_var, id="var"),
-    pytest.param(StdFwdOp, _ref_std, id="std"),
-    pytest.param(VarMeanFwdOp, _ref_var_mean, id="var-mean"),
-]
-
-
-def _check_variance(op_cls, ref_fn, x, dim, keepdim, correction) -> None:
-    """Run *op_cls* against its reference and compare every output it returns."""
-    out = op_cls(dim=dim, correction=correction, keepdim=keepdim)(x)
-    got = out if isinstance(out, tuple) else (out,)
-    want = ref_fn(x, dim, keepdim, correction)
-    for g, w in zip(got, want, strict=True):
-        assert g.shape == w.shape, f"shape {g.shape} vs ref {w.shape}"
-        assert g.dtype == w.dtype, f"dtype {g.dtype} vs ref {w.dtype}"
-        compare_outputs(g, w, reduction_verification(w.dtype))
-
-
-@pytest.mark.parametrize("op_cls, ref_fn", _VARIANCE_OPS)
+@pytest.mark.parametrize("op_kind", _VARIANCE_OPS)
 @pytest.mark.parametrize("dim", _VARIANCE_DIMS)
 @pytest.mark.parametrize(
     "keepdim",
@@ -641,70 +384,51 @@ def _check_variance(op_cls, ref_fn, x, dim, keepdim, correction) -> None:
         pytest.param(True, id="keepdim=True", marks=pytest.mark.full),
     ],
 )
-def test_the_variance_output_shape_matches_torch(op_cls, ref_fn, dim, keepdim) -> None:
+def test_the_variance_output_shape_matches_torch(op_kind, dim, keepdim) -> None:
     """The two axes that pick branches, crossed: ``dim=None, keepdim=False`` is 0-D."""
-    shape = (4, 8, 256)
     torch.manual_seed(0)
-    x = torch.randn(*shape, dtype=torch.float16, device=run_device())
-
-    _check_variance(op_cls, ref_fn, x, dim, keepdim, correction=1)
+    x = torch.randn(4, 8, 256, dtype=torch.float16, device=run_device())
+    _check_variance(op_kind, x, dim, keepdim, correction=1)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls, ref_fn", _VARIANCE_OPS)
-def test_a_zero_correction_on_edge_axes_matches_torch(op_cls, ref_fn) -> None:
-    """The one ``correction`` that differs in kind: the denominator is ``N``, not ``N - c``.
-
-    ``dim=(0, 2)`` bakes the correction into the edge-axis merge; the rows kernel's
-    denominator is test_*_bessel's.
-    """
-    dim = (0, 2)
-    shape = (4, 8, 256)
+@pytest.mark.parametrize("op_kind", _VARIANCE_OPS)
+@pytest.mark.parametrize("dim", [-1, (0, 2)], ids=["rows", "edge"])
+def test_a_zero_correction_matches_torch(op_kind, dim) -> None:
+    """The one ``correction`` that differs in kind: the denominator is ``N``, not ``N - c``;
+    the rows kernel and the edge-axis merge each bake it in."""
     torch.manual_seed(0)
-    x = torch.randn(*shape, dtype=torch.float16, device=run_device())
-
-    _check_variance(op_cls, ref_fn, x, dim=dim, keepdim=False, correction=0)
+    x = torch.randn(4, 8, 256, dtype=torch.float16, device=run_device())
+    _check_variance(op_kind, x, dim, keepdim=False, correction=0)
 
 
 @pytest.mark.parametrize(
-    "op_cls, ref_fn, shape, dim",
+    "op_kind, shape, dim",
     [
         # The edge-axis path merges Welford partials.
-        pytest.param(VarFwdOp, _ref_var, (4, 8, 256), (0, 2), marks=pytest.mark.smoke, id="edge"),
+        pytest.param("var", (4, 8, 256), (0, 2), marks=pytest.mark.smoke, id="edge"),
         # Padded rows, one tile and several: the pad is masked out of the centered sum.
-        pytest.param(VarFwdOp, _ref_var, (4, 8, 255), -1, marks=pytest.mark.full, id="row"),
-        pytest.param(
-            VarMeanFwdOp, _ref_var_mean, (4, 8, 255), -1, marks=pytest.mark.full, id="row-pair"
-        ),
-        pytest.param(StdFwdOp, _ref_std, (4, 33000), -1, marks=pytest.mark.full, id="tiled-row"),
-        pytest.param(
-            VarMeanFwdOp,
-            _ref_var_mean,
-            (4, 33000),
-            -1,
-            marks=pytest.mark.full,
-            id="tiled-row-pair",
-        ),
+        pytest.param("var", (4, 8, 255), -1, marks=pytest.mark.full, id="row"),
+        pytest.param("var_mean", (4, 8, 255), -1, marks=pytest.mark.full, id="row-pair"),
+        pytest.param("std", (4, 33000), -1, marks=pytest.mark.full, id="tiled-row"),
+        pytest.param("var_mean", (4, 33000), -1, marks=pytest.mark.full, id="tiled-row-pair"),
     ],
 )
-def test_variance_keeps_a_large_mean_fp16(op_cls, ref_fn, shape, dim) -> None:
+def test_variance_keeps_a_large_mean_fp16(op_kind, shape, dim) -> None:
     """A mean far from zero, where a naive sum of squares would cancel."""
     torch.manual_seed(0)
     x = (torch.randn(*shape, dtype=torch.float16, device=run_device()) + 60.0).half()
-
-    _check_variance(op_cls, ref_fn, x, dim=dim, keepdim=False, correction=1)
+    _check_variance(op_kind, x, dim, keepdim=False, correction=1)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls, ref_fn", _VARIANCE_OPS)
+@pytest.mark.parametrize("op_kind", _VARIANCE_OPS)
 @pytest.mark.parametrize("dim", _VARIANCE_DIMS)
-def test_variance_over_an_unaligned_innermost_dim_matches_torch(op_cls, ref_fn, dim) -> None:
+def test_variance_over_an_unaligned_innermost_dim_matches_torch(op_kind, dim) -> None:
     """255 flushes the masked-load boundary that a tile-multiple extent skips."""
-    unaligned_shape = (4, 8, 255)
     torch.manual_seed(0)
-    x = torch.randn(*unaligned_shape, dtype=torch.float16, device=run_device())
-
-    _check_variance(op_cls, ref_fn, x, dim, keepdim=False, correction=1)
+    x = torch.randn(4, 8, 255, dtype=torch.float16, device=run_device())
+    _check_variance(op_kind, x, dim, keepdim=False, correction=1)
 
 
 @pytest.mark.smoke

@@ -63,10 +63,8 @@ class MaskedScatterFwdInterface(KernelInterface):
 
 @target_cache(maxsize=32)
 def _masked_scatter_kernel(run_len, dtype):
-    # Bounds are checked only where written here: a mask byte before the block lies below
-    # `start`, the block's own runs and columns are tested, and a true run's source row exists
-    # by the op's contract. TileLang's own check on the mask chunk, whose bound it cannot
-    # derive from `bx`, splits each 16-byte load into 16 guarded byte loads.
+    # Every access is bounded by the guards written here (and the source rows by the op's
+    # contract); TileLang's own check would split each 16-byte mask load into byte loads.
     @tilelang.jit(
         out_idx=[4],
         pass_configs={tilelang.PassConfigKey.TL_DISABLE_SAFE_MEMORY_ACCESS: True},
@@ -247,15 +245,12 @@ class MaskedScatterKernel(Kernel, MaskedScatterFwdInterface):
 
     @property
     def default_config(self):
-        # 256 threads divide every architecture's per-SM thread limit, so whole CTAs fill an
-        # SM; 8 vectors of 16 bytes a thread keep 32 KB of loads in flight a CTA before its
-        # stores.
+        # 256 threads divide every architecture's per-SM thread limit; 8 16-byte vectors a
+        # thread keep 32 KB of loads in flight a CTA.
         threads, unroll = 256, 8
         block_bytes = threads * unroll * VECTOR_ACCESS_BYTES
         vec = math.gcd(self.run_len, VECTOR_ACCESS_BYTES // self.dtype.itemsize)
-        # Whole runs while they fit a block, as many as a power of two allows, and no more
-        # than a thread scans in one round of `unroll`; a wider run is split into column
-        # tiles of one block.
+        # A power of two of whole runs that fit a block; a wider run splits into column tiles.
         fit = min(block_bytes // (self.run_len * self.dtype.itemsize), threads * unroll)
         block_runs = 1 << max(0, fit.bit_length() - 1)
         block_elems = block_bytes // self.dtype.itemsize
@@ -278,10 +273,8 @@ class MaskedScatterKernel(Kernel, MaskedScatterFwdInterface):
         rows = input.expand(shape).reshape(runs, run_len).contiguous()
         src = source.reshape(-1)
         src = src[: src.numel() // run_len * run_len].view(-1, run_len)
-        # Each block reads the mask before it, about runs**2 / (2 * block_runs) bytes in all,
-        # against 2 * runs * run_len * itemsize bytes the copy moves. Past four times a
-        # block's bytes in runs, the mask reads outweigh the copy, so a count pass first sums
-        # each block and the scatter reads those sums instead.
+        # Each block reads the whole mask before it (~runs^2 / (2 * block_runs) bytes); where
+        # that outweighs the copy, a count pass sums each block's mask first.
         cfg = self.config
         counted = runs > 4 * cfg["block_runs"] * run_len * input.element_size()
         count, scatter = self.program(self._compile, counted)

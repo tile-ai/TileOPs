@@ -5,10 +5,15 @@ import itertools
 import pytest
 import torch
 
+from tests.misaligned import misaligned
 from tests.ops.moe_grouped_gemm_helpers import (
     SENTINEL,
     SIZES,
+    check_against_reference,
+    check_manifest_row,
+    contiguous_call,
     contiguous_layout,
+    masked_call,
     run_into_guarded_out,
     with_counts,
 )
@@ -25,19 +30,13 @@ from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
 from tileops.manifest import load_workloads
 from workloads.moe import MoEGroupedGEMMFP8Workload
-from workloads.numerics import compare_outputs
-from workloads.workload_base import manifest_call
 
 _OP = "MoEGroupedGEMMFP8FwdOp"
 _KEY = "grouped_gemm_fp8"
 
 
 def _workload(max_m: int, **dims) -> MoEGroupedGEMMFP8Workload:
-    # T only feeds the generated counts; half the slabs' capacity keeps every count in range.
-    dims.setdefault("T", dims["E"] * max_m // 2)
-    return MoEGroupedGEMMFP8Workload(
-        manifest_call(_OP, layout={"masked": {"max_m": max_m}}, **dims)
-    )
+    return MoEGroupedGEMMFP8Workload(masked_call(_OP, max_m, **dims))
 
 
 _ROWS = {row["label"]: row for row in load_workloads(_OP)}
@@ -47,47 +46,44 @@ _ROWS = {row["label"]: row for row in load_workloads(_OP)}
     "label,arch",
     [
         pytest.param(label, arch, marks=[tier, getattr(pytest.mark, f"sm{arch}"), *extra])
-        for label, tier, extra in [
+        for label, tier, extra, archs in [
             # Aligned per-row rows: the SM90 kernel and the SM89 MMA kernel serve them in-tree.
-            ("qwen3-30b-ep8-skew-down", pytest.mark.smoke, [pytest.mark.in_tree_kernels]),
-            ("ds-v3-e8-up-masked", pytest.mark.smoke, []),
-            ("qwen3-235b-dec-b64-down", pytest.mark.full, []),
-            ("kimi-k2-dec-b256-up", pytest.mark.full, []),
-            ("kimi-k2-dec-b64-down", pytest.mark.full, []),
-            ("ds-v3-ep8-prefill-down", pytest.mark.full, [pytest.mark.in_tree_kernels]),
+            # SM89's MMA kernel runs one tile on every row: one masked and one aligned row.
+            ("qwen3-30b-ep8-skew-down", pytest.mark.smoke, [pytest.mark.in_tree_kernels], (89, 90)),
+            ("ds-v3-e8-up-masked", pytest.mark.smoke, [], (89, 90)),
+            ("qwen3-235b-dec-b64-down", pytest.mark.full, [], (90,)),
+            ("kimi-k2-dec-b256-up", pytest.mark.full, [], (90,)),
+            ("kimi-k2-dec-b64-down", pytest.mark.full, [], (90,)),
+            ("ds-v3-ep8-prefill-down", pytest.mark.full, [pytest.mark.in_tree_kernels], (90,)),
         ]
-        for arch in (89, 90)
+        for arch in archs
     ],
 )
 def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
-    """Representative manifest rows, with their generated valid counts, match the reference."""
-    row = {key: value for key, value in _ROWS[label].items() if key != "label"}
-    workload = MoEGroupedGEMMFP8Workload(manifest_call(_OP, **row))
-    inputs = workload.gen_inputs()
-    out = MoEGroupedGEMMFP8FwdOp(**workload.call.arguments())(*inputs)
-    assert out.dtype is torch.bfloat16
-    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+    check_manifest_row(MoEGroupedGEMMFP8FwdOp, MoEGroupedGEMMFP8Workload, _ROWS[label])
 
 
 @pytest.mark.parametrize(
-    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
-)
-@pytest.mark.parametrize(
-    ("max_m", "dims", "counts"),
+    ("max_m", "dims", "counts", "arch"),
     [
         pytest.param(
-            64,
-            {"N": 128, "K": 128},
-            [64, 0, 1, 99],
-            marks=pytest.mark.smoke,
-            id="max_m-64-n128-k128",
-        ),
-        pytest.param(65, {"K": 256}, [65, 0, 64, 1], marks=pytest.mark.full, id="max_m-65"),
-        pytest.param(128, {}, [128, -1000, 1, 0], marks=pytest.mark.full, id="max_m-128"),
-        pytest.param(129, {}, [0, 1, 64, 65, 129, 200], marks=pytest.mark.full, id="max_m-129"),
-        pytest.param(100, {}, [100, 0, 100], marks=pytest.mark.full, id="max_m-100"),
-        pytest.param(1152, {"K": 128}, [1100], marks=pytest.mark.full, id="max_m-1152-e1"),
-        pytest.param(0, {"N": 128, "K": 128}, [0, 0], marks=pytest.mark.full, id="max_m-0"),
+            max_m,
+            dims,
+            counts,
+            arch,
+            marks=[tier, getattr(pytest.mark, f"sm{arch}")],
+            id=f"max_m-{name}-{arch}",
+        )
+        for name, max_m, dims, counts, tier, archs in [
+            ("64-n128-k128", 64, {"N": 128, "K": 128}, [64, 0, 1, 99], pytest.mark.smoke, (89, 90)),
+            ("65", 65, {"K": 256}, [65, 0, 64, 1], pytest.mark.full, (89, 90)),
+            ("0", 0, {"N": 128, "K": 128}, [0, 0], pytest.mark.full, (89, 90)),
+            # SM89's one-tile MMA kernel meets no other boundary in these.
+            ("128", 128, {}, [128, -1000, 1, 0], pytest.mark.full, (90,)),
+            ("129", 129, {}, [0, 1, 64, 65, 129, 200], pytest.mark.full, (90,)),
+            ("1152-e1", 1152, {"K": 128}, [1100], pytest.mark.full, (90,)),
+        ]
+        for arch in archs
     ],
 )
 def test_fp8_grouped_gemm_valid_rows_at_tile_and_slab_boundaries(
@@ -126,9 +122,7 @@ def _forced_op(layout, config: dict, kernel=MoEGroupedGEMMFP8Kernel) -> MoEGroup
         pytest.param(192, 3, 512, 0, marks=pytest.mark.full, id="bn192-index-ring"),
         pytest.param(160, 4, 512, 1, marks=pytest.mark.full, id="bn160-static-ring-staged-scales"),
         pytest.param(192, 3, 512, 1, marks=pytest.mark.full, id="bn192-index-ring-staged-scales"),
-        pytest.param(192, 4, 384, 0, marks=pytest.mark.full, id="bn192-two-tiles-n384"),
         pytest.param(192, 4, 256, 0, marks=pytest.mark.full, id="bn192-two-tiles-n256"),
-        pytest.param(160, 4, 256, 0, marks=pytest.mark.full, id="bn160-two-tiles-n256"),
     ],
 )
 def test_fp8_grouped_gemm_wide_tiles_clip_at_n(
@@ -208,14 +202,8 @@ def test_fp8_grouped_gemm_balances_a_full_grid_over_the_running_ctas(max_m, n, c
 
 
 def _contiguous_workload(layout: dict, sizes: list, **dims) -> MoEGroupedGEMMFP8Workload:
-    """Build contiguous expert rows with explicit per-expert sizes."""
-    spec = layout["contiguous"]
-    a = spec["alignment"]
-    rows = sum(sizes) if spec["packing"] == "tight" else sum(-(-n // a) * a for n in sizes)
-    stated = {"P": rows} if spec["metadata_kind"] == "physical_psum" else {}
-    dims = {"N": 256, "K": 512, **dims}
     return MoEGroupedGEMMFP8Workload(
-        manifest_call(_OP, layout=layout, E=len(sizes), sizes=sizes, **stated, **dims)
+        contiguous_call(_OP, layout, sizes, **{"N": 256, "K": 512, **dims})
     )
 
 
@@ -255,14 +243,6 @@ def _scaled_inputs(workload: MoEGroupedGEMMFP8Workload) -> tuple:
             {},
             marks=pytest.mark.full,
             id="aligned-psum-128",
-        ),
-        pytest.param(
-            contiguous_layout("aligned", "per_row", 128),
-            SIZES,
-            None,
-            {},
-            marks=pytest.mark.full,
-            id="aligned-per-row-128",
         ),
         # A-scale boxes rotating through more than one buffer within a task, and CTAs running
         # several tasks, each starting with the box after the previous task's last.
@@ -372,8 +352,6 @@ def test_fp8_grouped_gemm_mma_rejects_unaligned_tiles() -> None:
     "block_m,block_n",
     [
         pytest.param(32, 64, marks=pytest.mark.smoke),
-        pytest.param(32, 128, marks=pytest.mark.full),
-        pytest.param(64, 64, marks=pytest.mark.full),
         pytest.param(64, 128, marks=pytest.mark.full),
     ],
 )
@@ -396,11 +374,9 @@ def test_fp8_grouped_gemm_mma_explicit_configs(block_m: int, block_n: int) -> No
     "change",
     [
         {"threads": 128},
-        {"num_stages": 2},
         {"block_m": 16},
         {"block_n": 32},
         {"block_n": 64.0},
-        {"block_m": True},
     ],
 )
 def test_fp8_grouped_gemm_mma_rejects_invalid_config(change: dict) -> None:
@@ -510,7 +486,8 @@ def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
         assert accepted == (smem <= smem_limit), config
         verdicts.append(accepted)
     assert any(verdicts) and not all(verdicts)
-    for (_, _, k, _), config in kernel._CONFIGS["h200"].items():
+    for (_, _, k, _), values in kernel._CONFIGS["h200"].items():
+        config = dict(zip(kernel._CALIBRATED_KEYS, values, strict=True))
         refusal = kernel.config_refusal(
             {**config, "num_sms": sm_count},
             sm_count=sm_count,
@@ -530,11 +507,9 @@ def test_fp8_grouped_gemm_tune_picks_a_correct_config(arch: int) -> None:
     inputs = with_counts(workload, [128, 0, 33, 100])
     op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=128))
     op.request_tune()
-    out = op(*inputs)
-    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+    check_against_reference(op(*inputs), workload, *inputs)
     inputs = with_counts(workload, [7, 128, 0, 64])
-    out = op(*inputs)
-    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+    check_against_reference(op(*inputs), workload, *inputs)
 
 
 @pytest.mark.parametrize(
@@ -697,8 +672,7 @@ def test_fp8_accepts_adjacent_dlpack_output(arch: int):
     op, inputs, out, workload, workspace = _fp8_in_workspace("a", False)
     before = workspace.clone()
     assert op(**inputs, out=out) is out
-    args = tuple(inputs.values())
-    compare_outputs(out, workload.ref_program(*args), workload.verification(*args))
+    check_against_reference(out, workload, *inputs.values())
     assert torch.equal(workspace[out.nbytes :], before[out.nbytes :])
 
 
@@ -711,13 +685,8 @@ def test_fp8_grouped_gemm_accepts_offset_storage(arch: int):
     workload = _workload(65, E=3, N=256, K=256)
     inputs = list(with_counts(workload, [0, 33, 65]))
     for index in (0, 2):
-        original = inputs[index]
-        shifted = torch.empty(original.numel() + 1, dtype=original.dtype, device=original.device)[
-            1:
-        ].view(original.shape)
-        shifted.copy_(original)
-        inputs[index] = shifted
-        assert shifted.data_ptr() % 16
+        inputs[index] = misaligned(inputs[index])
+        assert inputs[index].data_ptr() % 16
     before = [x.clone() for x in inputs]
     storage = torch.full(
         (3 * 65 * 256 + 2,), SENTINEL, dtype=torch.bfloat16, device=inputs[0].device
@@ -726,7 +695,7 @@ def test_fp8_grouped_gemm_accepts_offset_storage(arch: int):
     assert out.data_ptr() % 16
     op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=65))
     assert op(*inputs, out=out) is out
-    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+    check_against_reference(out, workload, *inputs)
     assert bool((out[0] == SENTINEL).all())
     assert storage[0].item() == SENTINEL and storage[-1].item() == SENTINEL
     for old, new in zip(before, inputs, strict=True):

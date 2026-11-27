@@ -1,4 +1,4 @@
-# Rotary Position Embedding (RoPE) operators, exported by the `rope` module.
+# Rotary Position Embedding (RoPE) operators.
 
 RoPEFwdOp:
   # positions names each token's cos/sin cache row; query and key hold each token's heads

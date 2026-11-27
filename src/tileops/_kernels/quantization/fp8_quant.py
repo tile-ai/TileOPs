@@ -34,7 +34,7 @@ class FP8QuantCall(CallSpec):
     k: int = 0
     group_size: int = 0
     eps: float = 1e-10
-    dtype: torch.dtype | None = None
+    dtype: torch.dtype = torch.bfloat16
     column_major_scales: bool = False
     tma_aligned_scales: bool = False
     use_ue8m0: bool | None = None
@@ -279,13 +279,8 @@ def _fp8_fake_quant_kernel(
 
 class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
     """Per-group fp8 quantization; one program per regime serves any number of groups.
-
-    A block owns whole groups and reduces each of them across the threads holding it, or
-    inside one thread where the group width leaves the reduction no power-of-two group of
-    threads. Any positive ``block_m`` serves any group count. Fake quantization in place
-    reads and writes the groups where they lie, rows ``row_stride`` elements apart, so a
-    column slice of a wider row is served without a copy; a layout whose rows are not
-    evenly spaced goes through a contiguous copy.
+    Fake quantization in place writes evenly spaced rows where they lie and any other layout
+    through a contiguous copy.
 
     Args:
         k: Columns of the last axis.
@@ -301,18 +296,13 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
 
     supported_archs: list[int] = [89, 90]
 
-    # The launch picks its program from the input size, so tuning has no candidate to time.
-    autotune_configs = None
-
     @classmethod
     def refusal(cls, call: FP8QuantCall) -> str | None:
-        # vLLM reads ``tma_aligned_scales`` only for column-major scales.
         if call.column_major_scales:
             return "does not serve column-major scales"
-        if call.dtype is not None:
-            reason = register_refusal("group_size", call.group_size, call.dtype.itemsize)
-            if reason is not None:
-                return reason
+        reason = register_refusal("group_size", call.group_size, call.dtype.itemsize)
+        if reason is not None:
+            return reason
         return super().refusal(call)
 
     @classmethod

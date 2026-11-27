@@ -16,12 +16,7 @@ __all__ = [
 
 @target_cache(maxsize=32)
 def _make_alibi_kernel(seq_len, num_heads, dtype):
-    """Build ALiBi kernel: bias[h, i, j] = -slope_h * |i - j|.
-
-    Slopes: slope_h = 2^(-8*(h+1)/H) for head h in [0, H).
-    Output shape: (num_heads, seq_len, seq_len).
-    Total elements: num_heads * seq_len * seq_len.
-    """
+    """Build ALiBi kernel: flat ``(num_heads, seq_len, seq_len)`` bias."""
     N_total = num_heads * seq_len * seq_len
     S2 = seq_len * seq_len
 
@@ -55,10 +50,7 @@ def _make_alibi_kernel(seq_len, num_heads, dtype):
 
 
 class AlibiFwdKernel(GeneratorKernel, AlibiFwdInterface):
-    """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|.
-
-    Generates the full (num_heads, seq_len, seq_len) bias tensor.
-    Slopes follow the ALiBi paper: slope_h = 2^(-8*(h+1)/H).
+    """ALiBi position encoding: bias[h, i, j] = -slope_h * |i - j|, slope_h = 2^(-8*(h+1)/H).
 
     Args:
         seq_len: Sequence length.

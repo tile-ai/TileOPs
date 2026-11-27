@@ -24,6 +24,7 @@ from tileops._kernels.constants import (
 from tileops._kernels.gemm.call_spec import GEMMW4A8Call, GEMMW4A8FwdInterface
 from tileops._kernels.gemm.w4a8_repack import GROUP_SIZE, W4A8_LAYOUT
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
+from tileops._kernels.tiling import align_up
 from tileops._utils import WARP_LANES
 
 __all__ = ["GEMMW4A8DecodeKernel"]
@@ -47,7 +48,7 @@ def _shared_bytes(m_tile: int, nw: int, uw: int, block_k: int, stages: int) -> t
     groups = block_k // GROUP_SIZE
 
     def footprint(nbytes: int) -> int:
-        return -(-nbytes // SHARED_BUFFER_ALIGN_BYTES) * SHARED_BUFFER_ALIGN_BYTES
+        return align_up(nbytes, SHARED_BUFFER_ALIGN_BYTES)
 
     ring = (
         footprint(nu * stages * groups * m_tile * GROUP_SIZE)
@@ -348,40 +349,27 @@ def _gemm_w4a8_decode_kernel(
                                 )
                                 // desc_unit
                             )
-                            T.ptx_wgmma_rs(
-                                "float32",
-                                f"m{WGMMA_ROWS}n{nt}k{mma_k}",
-                                True,
-                                "e4m3",
-                                "e4m3",
-                                "fp32",
-                                frag.data,
-                                (s % ring) * frag_regs,
-                                desc.data,
-                                boff,
-                                acc.data,
-                                0,
-                                T.if_then_else(fresh != 0 and s == 0, 0, 1),
-                                True,
-                                True,
-                            )
-                            T.ptx_wgmma_rs(
-                                "float32",
-                                f"m{WGMMA_ROWS}n{nt}k{mma_k}",
-                                True,
-                                "e4m3",
-                                "e4m3",
-                                "fp32",
-                                frag.data,
-                                (s % ring) * frag_regs + frag_regs // 2,
-                                desc.data,
-                                boff,
-                                acc.data,
-                                0,
-                                1,
-                                False,
-                                True,
-                            )
+                            # The plus fragment, then the minus one with A negated.
+                            for minus in (False, True):
+                                T.ptx_wgmma_rs(
+                                    "float32",
+                                    f"m{WGMMA_ROWS}n{nt}k{mma_k}",
+                                    True,
+                                    "e4m3",
+                                    "e4m3",
+                                    "fp32",
+                                    frag.data,
+                                    (s % ring) * frag_regs + frag_regs // 2
+                                    if minus
+                                    else (s % ring) * frag_regs,
+                                    desc.data,
+                                    boff,
+                                    acc.data,
+                                    0,
+                                    1 if minus else T.if_then_else(fresh != 0 and s == 0, 0, 1),
+                                    not minus,
+                                    True,
+                                )
                         T.warpgroup_commit_batch()
                         T.warpgroup_fence_operand(acc, num_regs=acc_regs)
                         T.warpgroup_wait(ring_slices - 1)
@@ -410,6 +398,49 @@ def _gemm_w4a8_decode_kernel(
                 item_body(False, *body)
             else:
                 item_body(True, *body)
+
+        @T.macro
+        def publish(xs, xf, owner, partial, wg):
+            """Hand ``partial`` to the CTA that owns its tile, in slot ``owner``."""
+            T.call_extern(
+                "handle",
+                f"tileops::w4a8::publish<{nt}>",
+                T.address_of(xs[owner * slot]),
+                T.address_of(xf[owner]),
+                partial.data,
+                bar_base + wg,
+            )
+
+        @T.macro
+        def receive_all(xs, xf, partial, first_item, cid, sub, wg):
+            """Add every earlier CTA's published part of the tile at ``first_item``."""
+            T.call_extern(
+                "handle",
+                f"tileops::w4a8::receive_all<{nt}>",
+                partial.data,
+                T.address_of(xs[0]),
+                T.address_of(xf[0]),
+                first_item,
+                items,
+                num_ctas,
+                cid,
+                uw,
+                sub,
+                bar_base + wg,
+            )
+
+        @T.macro
+        def load_item_scales(scales, gs, item):
+            T.call_extern(
+                "handle",
+                f"tileops::w4a8::load_item_scales<{unit_scale_rows}, {groups_per_chunk}>",
+                scales.data,
+                T.address_of(gs[0, 0]),
+                k_groups,
+                item,
+                nchunk,
+                n,
+            )
 
         @T.macro
         def drain(acc):
@@ -552,16 +583,7 @@ def _gemm_w4a8_decode_kernel(
                             "uint32", "tileops::w4a8::shared_address", wring.access_ptr("r")
                         )
                     if ib < ie:
-                        T.call_extern(
-                            "handle",
-                            f"tileops::w4a8::load_item_scales<{unit_scale_rows}, {groups_per_chunk}>",
-                            nx.data,
-                            T.address_of(gs[0, 0]),
-                            k_groups,
-                            item_of(0, gb, ge, he, ts) if rotated else ib,
-                            nchunk,
-                            n,
-                        )
+                        load_item_scales(nx, gs, item_of(0, gb, ge, he, ts) if rotated else ib)
                     T.sync_threads()
                     for kk in T.serial(count // nu + 1):
                         i = item_of(kk, gb, ge, he, ts) if rotated else ib + kk
@@ -605,15 +627,8 @@ def _gemm_w4a8_decode_kernel(
                             for h in T.unroll(scale_words):
                                 cur[h] = nx[h]
                             if (kk + 1 < count) if rotated else (i + 1 < ie):
-                                T.call_extern(
-                                    "handle",
-                                    f"tileops::w4a8::load_item_scales<{unit_scale_rows}, {groups_per_chunk}>",
-                                    nx.data,
-                                    T.address_of(gs[0, 0]),
-                                    k_groups,
-                                    item_of(kk + 1, gb, ge, he, ts) if rotated else i + 1,
-                                    nchunk,
-                                    n,
+                                load_item_scales(
+                                    nx, gs, item_of(kk + 1, gb, ge, he, ts) if rotated else i + 1
                                 )
                             T.call_extern(
                                 "handle",
@@ -695,30 +710,10 @@ def _gemm_w4a8_decode_kernel(
                                     drain(acc)
                                     if seg_end < (ct_cur + 1) * nchunk:
                                         # A part of a tile another CTA owns: handed on at once.
-                                        T.call_extern(
-                                            "handle",
-                                            f"tileops::w4a8::publish<{nt}>",
-                                            T.address_of(xs[(cid * uw + sub) * slot]),
-                                            T.address_of(xf[cid * uw + sub]),
-                                            acc.data,
-                                            bar_base + wg,
-                                        )
+                                        publish(xs, xf, cid * uw + sub, acc, wg)
                                     else:
                                         if seg_begin > ct_cur * nchunk:
-                                            T.call_extern(
-                                                "handle",
-                                                f"tileops::w4a8::receive_all<{nt}>",
-                                                acc.data,
-                                                T.address_of(xs[0]),
-                                                T.address_of(xf[0]),
-                                                ct_cur * nchunk,
-                                                items,
-                                                num_ctas,
-                                                cid,
-                                                uw,
-                                                sub,
-                                                bar_base + wg,
-                                            )
+                                            receive_all(xs, xf, acc, ct_cur * nchunk, cid, sub, wg)
                                         store_tile(acc, ct_cur, pch0, pch1, stores)
                                 if kk < count:
                                     ct_cur = ct
@@ -825,14 +820,7 @@ def _gemm_w4a8_decode_kernel(
                             tl_last = (ge - 1) // nchunk
                             # This CTA's part of its last tile goes out first; publishing never waits.
                             if ie == ge and tl_last != cto and (tl_last + 1) * nchunk > ge:
-                                T.call_extern(
-                                    "handle",
-                                    f"tileops::w4a8::publish<{nt}>",
-                                    T.address_of(xs[(cid * uw + sub) * slot]),
-                                    T.address_of(xf[cid * uw + sub]),
-                                    park1.data,
-                                    bar_base + wg,
-                                )
+                                publish(xs, xf, cid * uw + sub, park1, wg)
                             if llast < ie and (ib > cto * nchunk or (cto + 1) * nchunk > ge):
                                 # This unit holds tile cto's last in-CTA item: add the earlier units'.
                                 for v in T.serial(nu):
@@ -859,29 +847,9 @@ def _gemm_w4a8_decode_kernel(
                                             )
                                 # Tile cto starts in an earlier CTA: add every earlier CTA's part.
                                 if (cto + 1) * nchunk <= ge and cto * nchunk < gb:
-                                    T.call_extern(
-                                        "handle",
-                                        f"tileops::w4a8::receive_all<{nt}>",
-                                        park0.data,
-                                        T.address_of(xs[0]),
-                                        T.address_of(xf[0]),
-                                        cto * nchunk,
-                                        items,
-                                        num_ctas,
-                                        cid,
-                                        uw,
-                                        sub,
-                                        bar_base + wg,
-                                    )
+                                    receive_all(xs, xf, park0, cto * nchunk, cid, sub, wg)
                                 if (cto + 1) * nchunk > ge:
-                                    T.call_extern(
-                                        "handle",
-                                        f"tileops::w4a8::publish<{nt}>",
-                                        T.address_of(xs[(cid * uw + sub) * slot]),
-                                        T.address_of(xf[cid * uw + sub]),
-                                        park0.data,
-                                        bar_base + wg,
-                                    )
+                                    publish(xs, xf, cid * uw + sub, park0, wg)
                                 else:
                                     c0 = channel_scale(ch, cto, srow0)
                                     c1 = channel_scale(ch, cto, srow0 + row_pair)
@@ -998,11 +966,10 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     ) -> None:
         super().__init__(device_index=device_index)
         self.m, self.n, self.k = m, n, k
-        self.config = {}
         self.init_config(config)
         self._smem = self.build_target.smem_budget
         self.program(self._compile)
-        device = self._device()
+        device = self._build_device
         layout = W4A8_LAYOUT
         full, compact = n // layout.tile_rows, (n % layout.tile_rows) // layout.unit_rows
         slice_words = layout.k_half_bytes // torch.uint64.itemsize
@@ -1020,9 +987,6 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
             else torch.zeros(unit_words * k_slices, dtype=torch.uint64, device=device)
         )
 
-    def _device(self) -> torch.device:
-        return torch.device("cuda", self.device_index) if self.device_index is not None else "cuda"
-
     def _compile(self, cfg: dict) -> tuple:
         """The decode program compiled from *cfg*, and the workspace *cfg* sizes for it:
         partial sums, their ready flags and the in-CTA partial slots, which the kernel holds."""
@@ -1037,7 +1001,7 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
         )
         # Whether the in-CTA partial sums fit in shared memory beside the ring.
         shared_slots = _shared_bytes(nt, nw, uw, cfg["block_k"], cfg["num_stages"])[1] <= self._smem
-        device = self._device()
+        device = self._build_device
         # FP32 partial sums of one warpgroup's m64 x nt accumulator.
         slot = WGMMA_ROWS * nt
         size = ctas * uw * slot

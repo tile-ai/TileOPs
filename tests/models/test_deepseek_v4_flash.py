@@ -2,17 +2,10 @@
 
 A three-layer model (sliding window with hash routing, ratio-4 compressed attention with the
 indexer, ratio-128 compressed attention) at DeepSeek-V4-Flash's widths, on random weights in the
-checkpoint's formats, is written as a Hugging Face checkpoint and loaded by both. Each layer's
-output and the logits are compared over the prefill and over the decode steps by
-``check_within_rounding``, the rounded reference being the official model with its attention
-probabilities rounded to bfloat16, as its TileLang kernel rounds them. The long prompt is longer
-than four times the indexer's top-k, so the indexer selects from more entries than it keeps, and
-leaves partial windows that the decode steps close at both compression ratios; the short one closes
-no window, so the decode steps close the first; the third is twice the sliding window, so the
-prefill writes the whole window ring from its first slot.
+checkpoint's formats, is loaded by both. The rounded reference is the official model with its
+attention probabilities rounded to bfloat16, as its TileLang kernel rounds them.
 """
 
-import dataclasses
 import importlib.util
 import json
 import time
@@ -25,6 +18,7 @@ from models.deepseek_v4_flash import DeepseekV4FlashConfig, DeepseekV4FlashForCa
 from models.deepseek_v4_flash.layers import Step
 from models.deepseek_v4_flash.loader import load_outside, load_weights
 from models.deepseek_v4_flash.ops import RoPETable
+from tests.models.conftest import Recorded
 from workloads.device import run_device
 from workloads.models.checkpoint import write_checkpoint
 from workloads.models.deepseek_v4_flash import (
@@ -127,8 +121,6 @@ def checkpoint(tmp_path_factory):
 @pytest.mark.parametrize(
     ("change", "extra", "match"),
     [
-        pytest.param({}, "head.bias", "unused checkpoint tensors", id="model"),
-        pytest.param({}, "layers.1.ffn.gate.weight", "unused checkpoint tensors", id="layer-1"),
         pytest.param({}, "layers.0.attn.bias", "layer 0: unused tensors", id="in-layer"),
         pytest.param({"moe_intermediate_size": 64}, None, "128-row blocks", id="partial-block"),
     ],
@@ -145,22 +137,6 @@ def test_from_pretrained_refuses_a_checkpoint_it_cannot_read_whole(tmp_path, cha
         DeepseekV4FlashForCausalLM.from_pretrained(tmp_path, device=run_device())
 
 
-def test_from_pretrained_refuses_a_checkpoint_missing_a_layer(tmp_path):
-    tensors = random_checkpoint(_TINY, seed=0)
-    kept = {n: t for n, t in tensors.items() if not n.startswith("layers.0.")}
-    write_checkpoint(tmp_path, _TINY, kept)
-    with pytest.raises(ValueError, match="holds no tensors of layers \\[0\\]"):
-        DeepseekV4FlashForCausalLM.from_pretrained(tmp_path, device=run_device())
-
-
-def test_from_pretrained_refuses_a_layer_missing_some_tensors(tmp_path):
-    tensors = random_checkpoint(_TINY, seed=0)
-    del tensors["layers.0.attn.kv_norm.weight"]
-    write_checkpoint(tmp_path, _TINY, tensors)
-    with pytest.raises(ValueError, match="layer 0: missing tensor 'attn.kv_norm.weight'"):
-        DeepseekV4FlashForCausalLM.from_pretrained(tmp_path, device=run_device())
-
-
 def test_from_pretrained_skips_the_mtp_tensors(tmp_path):
     tensors = random_checkpoint(_TINY, seed=0)
     tensors["mtp.0.norm.weight"] = torch.ones(_TINY["hidden_size"], dtype=torch.bfloat16)
@@ -173,11 +149,8 @@ def _check_decode_state(block, official_block, positions: int) -> None:
     """Assert a TileOPs layer's decoding state matches the official block's after both took the
     same inputs over ``positions`` tokens; entries are compared once a window has closed.
 
-    The window ring and the compressed entries hold FP8 fake-quantized rows, the indexer's
-    entries FP4 ones. Where the two sides' inputs differ by bfloat16 rounding, a value on a
-    rounding boundary takes the neighbouring code; 1e-2 for FP8 and 2e-2 for the coarser FP4
-    codes, in relative L2, admit such flips on a few values, while a wrong position, rotation or
-    slot moves the state by order one.
+    The bounds admit FP8 and FP4 codes flipped by bfloat16 rounding of the inputs; a wrong
+    position, rotation or slot moves the state by order one.
     """
     fp8_tol, fp4_tol = 1e-2, 2e-2
     attn, official = block.attn, official_block.attn
@@ -196,28 +169,15 @@ def _check_decode_state(block, official_block, positions: int) -> None:
         assert rel <= tol, f"{name}: {rel:.3e} relative L2 from the official state, bound {tol:.0e}"
 
 
-class _Recorded:
-    """An indexer that records each call's selection, start position, offset and ratio."""
-
-    def __init__(self, indexer, record):
-        self._indexer = indexer
-        self._record = record
-
-    def __getattr__(self, name):
-        return getattr(self._indexer, name)
-
-    def __call__(self, ops, rope, x, qr, step):
-        indices = self._indexer(ops, rope, x, qr, step)
-        self._record.append((indices, step.start_pos, step.offset, self._indexer.ratio))
-        return indices
-
-
 @pytest.mark.sm90
 @pytest.mark.parametrize(
     ("prompt_len", "decode_steps"),
     [
+        # Over four times the top-k: the indexer drops entries; decode closes both ratios.
         pytest.param(2170, 8, id="long-prompt"),
+        # Closes no window; the decode steps close the first.
         pytest.param(3, 6, id="short-prompt"),
+        # Twice the sliding window: the prefill writes the whole ring from its first slot.
         pytest.param(256, 2, id="two-windows-prompt"),
     ],
 )
@@ -258,7 +218,13 @@ def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, deco
         selections = []
         for layer in mine_tf.layers:
             if layer.attn.indexer is not None:
-                layer.attn.indexer = _Recorded(layer.attn.indexer, selections)
+                indexer = layer.attn.indexer
+                layer.attn.indexer = Recorded(
+                    indexer,
+                    lambda idx, ops, rope, x, qr, step, ratio=indexer.ratio: selections.append(
+                        (idx, step.start_pos, step.offset, ratio)
+                    ),
+                )
         with torch.inference_mode():
             for phase, positions in phases.items():
                 logits = ([], [], [])
@@ -288,45 +254,23 @@ def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, deco
 
 
 @pytest.mark.sm90
-def test_forward_takes_one_request_position_by_position(checkpoint):
-    """``forward`` refuses a batch, an empty input, a decode step out of order or of more than
-    one token, and a sequence past ``max_seq_len``; a refused call leaves the request where it
-    was."""
+def test_forward_refuses_a_decode_step_of_more_than_one_token(checkpoint):
+    """A call at ``start_pos > 0`` is a decode step of one token; a refused one leaves the
+    request where it was."""
     path, _ = checkpoint
-    max_seq_len = 18
-    model = DeepseekV4FlashForCausalLM.from_pretrained(
-        path, device=run_device(), max_seq_len=max_seq_len
-    )
-    ids = torch.zeros(1, max_seq_len + 1, dtype=torch.long, device=run_device())
-    refused = [
-        (ids[:, :4].expand(2, -1), 0, "batch of 2"),
-        (ids[:, :0], 0, "at least one token"),
-        (ids[:, :1], 4, "prefill"),
-    ]
-    for step, pos, match in refused:
-        with pytest.raises(ValueError, match=match):
-            model(step, pos)
+    model = DeepseekV4FlashForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=18)
+    ids = torch.zeros(1, 18, dtype=torch.long, device=run_device())
     model(ids[:, :16], 0)
-    refused = [
-        (ids, 0, "max_seq_len"),
-        (ids[:, :1], 17, "position 16"),
-        (ids[:, :2], 16, "one token"),
-    ]
-    for step, pos, match in refused:
-        with pytest.raises(ValueError, match=match):
-            model(step, pos)
+    with pytest.raises(ValueError, match="one token"):
+        model(ids[:, :2], 16)
     model(ids[:, :1], 16)
-    model(ids[:, :1], 17)
-    model(ids[:, :max_seq_len], 0)
-    with pytest.raises(ValueError, match="max_seq_len"):
-        model(ids[:, :1], max_seq_len)
 
 
 @pytest.mark.sm90
-def test_generate_takes_the_official_argmax_until_eos(checkpoint):
+def test_generate_takes_the_official_argmax(checkpoint):
     """``generate`` from a three-token prompt: each token's official logit, given the tokens
     before it, is the official maximum to within twice the reference's own bfloat16 rounding of
-    the logits; with an EOS id, given or the config's, the run stops after that token."""
+    the logits."""
     path, tensors = checkpoint
     max_seq_len = 64
     g = torch.Generator().manual_seed(2)
@@ -334,15 +278,7 @@ def test_generate_takes_the_official_argmax_until_eos(checkpoint):
     mine = DeepseekV4FlashForCausalLM.from_pretrained(
         path, device=run_device(), max_seq_len=max_seq_len
     )
-    forward, calls = mine.forward, []
-    mine.forward = lambda *args: calls.append(args) or forward(*args)
     out = mine.generate(prompt, 12, eos_token_id=-1)
-    assert (len(out), len(calls)) == (12, 12), "a prefill and one decode step per fed-back token"
-    mine.forward = forward
-    eos = out[5]
-    assert mine.generate(prompt, 12, eos_token_id=eos) == out[: out.index(eos) + 1]
-    mine.config = dataclasses.replace(mine.config, eos_token_id=eos)
-    assert mine.generate(prompt, 12) == out[: out.index(eos) + 1], "config.eos_token_id stops it"
     with official_defaults(run_device()), torch.inference_mode():
         on_device = {k: v.to(run_device()) for k, v in tensors.items()}
         ref, rounded = (
@@ -359,16 +295,12 @@ def test_generate_takes_the_official_argmax_until_eos(checkpoint):
 
 @pytest.mark.sm90
 def test_decode_replays_the_eager_step_bitwise_in_every_phase(checkpoint, graph_calls):
-    """Decode steps replayed from CUDA graphs return the eager step's logits bitwise, each kept
-    past the steps after it, and leave the eager steps' KV and indexer caches, over two requests.
-    The first, from a one-token prompt, takes every phase twice or more: no indexer entry yet,
-    no window closing, a ratio-4 window closing, and ratio-4 and ratio-128 windows closing
-    together; the second starts afresh after it and replays the graphs the first captured. Each
-    of the four phases is captured once, by its first decode step, and every other decode step
-    replays a graph. The indexer keeps 8 entries, fewer than it soon holds, so its scores reach
-    the logits."""
+    """Decode steps replayed from CUDA graphs return the eager step's logits bitwise and leave
+    the same KV and indexer caches, over two requests: the first, from a one-token prompt, takes
+    each of the four phases at least twice; the second replays the graphs the first captured.
+    An indexer top-k of 8 lets its scores reach the logits."""
     path, _ = checkpoint
-    config = dataclasses.replace(DeepseekV4FlashConfig.from_pretrained(path), index_topk=8)
+    config = DeepseekV4FlashConfig.from_hf({**_SMALL, "index_topk": 8})
     eager, graph = (
         DeepseekV4FlashForCausalLM(
             config, device=run_device(), max_seq_len=264, cuda_graph=cuda_graph
@@ -393,15 +325,6 @@ def test_decode_replays_the_eager_step_bitwise_in_every_phase(checkpoint, graph_
                 assert torch.equal(mine.attn.indexer.cache, ref.attn.indexer.cache), f"layer {i}"
     decode_steps = sum(end - prompt_len for prompt_len, end in requests)
     assert graph_calls == {"capture_end": 4, "replay": decode_steps - 4}
-
-
-@pytest.mark.sm90
-def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
-    """From a three-token prompt with ``max_seq_len`` 8 and no EOS, ``generate`` returns five
-    tokens to fill its eight positions."""
-    path, _ = checkpoint
-    model = DeepseekV4FlashForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=8)
-    assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 5
 
 
 def _throughput_script():

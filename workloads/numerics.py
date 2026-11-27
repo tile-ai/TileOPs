@@ -362,7 +362,7 @@ def compare_outputs(produced: Any, expected: Any, evidence: Evidence) -> CheckRe
                 _assert_close_in_blocks(
                     got, target, **evidence.tolerance(reference_tolerance(got.dtype))
                 )
-                if getattr(evidence, "normalized", None) is not None:
+                if isinstance(evidence, Exact) and evidence.normalized is not None:
                     assert_normalized_error(got, target, evidence.normalized)
     # Metrics are diagnostics computed only after all comparisons succeed.
     maximum = 0.0

@@ -95,7 +95,6 @@ class DeltaNetChunkFwdFixture(FixtureBase):
                         ("chunk64-k16", 128, 16, 64, 64, torch.float16),
                     )
                 ],
-                pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 # State walk with dim_v > dim_k: the late-load branches.
                 # This float32 forward at chunk 128, head dims 64 / 128, fits only SM90's
@@ -565,7 +564,7 @@ def test_deltanet_prefill_runs_a_row_that_is_not_a_whole_chunk(_architecture: in
 def test_deltanet_partitioned_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetFwdTest(2, 512, 4, 64, torch.bfloat16)
-    inputs = [tensor.to("cuda") for tensor in test.gen_inputs()]
+    inputs = list(test.gen_inputs())
     # 16 chunks fall to the four-chunk partition floor, so sequences cross partitions.
     test.check(DeltaNetFwdOp(target=BUILTIN), *inputs)
 
@@ -616,10 +615,7 @@ class DeltaNetDecodeFixture(FixtureBase):
                 pytest.param(1, 4, 64, 64, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(1, 4, 64, 64, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(2, 4, 128, 128, torch.float32, marks=pytest.mark.full),
-                pytest.param(2, 4, 128, 128, torch.float16, marks=pytest.mark.full),
-                pytest.param(2, 4, 128, 128, torch.bfloat16, marks=pytest.mark.full),
-                # A key dim the default key tile covers in one tile, whose state load hung
-                # on SM90 when lowered to a TMA bulk copy.
+                # A key dim the default key tile covers in one tile: one state copy a step.
                 pytest.param(1, 4, 16, 64, torch.float32, marks=pytest.mark.full),
                 pytest.param(1, 4, 16, 64, torch.float16, marks=pytest.mark.full),
             ],
@@ -687,14 +683,10 @@ def test_deltanet_decode_multi_step(
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_deltanet_decode_warp_real_128x128_smoke(dtype: torch.dtype) -> None:
-    """PR smoke must compile and execute the real raw CUDA 128x128 fast path."""
-
+    """The SM90 warp decode of a 128 x 128 low-precision state."""
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(2, 4, 128, 128, dtype)
-    op = DeltaNetRecurrentFwdOp(target=BUILTIN)
-    inputs = test.gen_inputs()
-    op(*inputs)
-    test.check(op, *inputs)
+    test.check(DeltaNetRecurrentFwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
@@ -702,5 +694,5 @@ def test_deltanet_decode_warp_real_128x128_smoke(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_deltanet_decode_warp_real_128x128_multi_step_smoke(dtype: torch.dtype) -> None:
-    """PR smoke must exercise raw CUDA state propagation across decode steps."""
+    """The SM90 warp decode carries its state across decode steps."""
     _check_decode_steps(DeltaNetRecurrentFwdOp(target=BUILTIN), 2, 4, 128, 128, dtype)

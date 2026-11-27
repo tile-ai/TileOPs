@@ -3,8 +3,10 @@ shares."""
 
 from __future__ import annotations
 
-from collections.abc import Hashable, Sequence
-from typing import Any
+import json
+from collections.abc import Callable, Hashable, Sequence
+from pathlib import Path
+from typing import Any, ClassVar, Self
 
 import torch
 
@@ -14,22 +16,19 @@ __all__ = ["CausalLM", "indexed_device"]
 class CausalLM:
     """A decoder on one device that advances one request at a time.
 
-    A subclass sets ``config`` (with ``eos_token_id``), ``max_seq_len``, ``ops`` (with
-    ``argmax``), ``device``, ``layers`` and ``cuda_graph``, and implements
-    ``_step(start_pos, seqlen)``, the index metadata of a call, and ``_run(ids, step)``, the
-    float32 logits ``[1, vocab_size]`` of the last of ``ids`` (``[1, S]`` on ``device``).
+    A subclass sets ``config_type`` (with ``from_hf``), ``load_weights``, ``ops`` (with
+    ``argmax``) and ``layers``, and implements ``_step(start_pos, seqlen)``, the index metadata
+    of a call, and ``_run(ids, step)``, the float32 logits ``[1, vocab_size]`` of the last of
+    ``ids`` (``[1, S]`` on ``device``).
 
-    With ``cuda_graph`` on a CUDA device, decode steps, one token at ``start_pos > 0``, replay
-    CUDA graphs of ``_run`` on a token buffer and a step that the step's ``moved_to`` rewrites
-    in place for each position; the weights and the decoding state must keep the addresses the
-    graphs captured. A decode step's host-side branches, which ``_phase`` names, select one
-    graph per phase. The first decode step of a phase instead runs eagerly and then captures
-    the phase's graph, on the model's own stream; all phases share one memory pool. The ops a
-    decode step calls are qualified in ``tests/cuda_graph_contract.py`` for DeepSeek-V4-Flash's
-    and Qwen3.8-27B's decode calls at max_seq_len 4096 and 4128; at other lengths and configs,
-    replay rests on each model's tests that it equals the eager step bitwise.
+    With ``cuda_graph`` on a CUDA device, a decode step (one token at ``start_pos > 0``)
+    replays the CUDA graph of its phase (``_phase``), which the phase's first decode step
+    captures; ``moved_to`` rewrites the captured step's tensors in place for each position, so
+    the weights and the decoding state must keep the addresses the graphs captured.
     """
 
+    config_type: ClassVar[Any]
+    load_weights: ClassVar[Callable[[Any, Path], None]]
     config: Any
     max_seq_len: int
     ops: Any
@@ -42,6 +41,31 @@ class CausalLM:
     _graph_stream: torch.cuda.Stream
     _graph_ids: torch.Tensor
     _graph_step: Any
+
+    def __init__(
+        self,
+        config: Any,
+        *,
+        device: torch.device | str = "cuda",
+        max_seq_len: int = 4096,
+        cuda_graph: bool = True,
+    ) -> None:
+        """Hold ``config`` on ``device``, a device without an index meaning the current one, for
+        requests of up to ``max_seq_len`` tokens."""
+        self.config = config
+        self.max_seq_len = max_seq_len
+        self.device = indexed_device(device)
+        self.cuda_graph = cuda_graph
+
+    @classmethod
+    def from_pretrained(cls, path: str | Path, **options: Any) -> Self:
+        """Load a Hugging Face checkpoint directory: ``config.json`` and ``safetensors``
+        shards. ``options`` are the constructor's keywords."""
+        path = Path(path)
+        with open(path / "config.json") as f:
+            model = cls(cls.config_type.from_hf(json.load(f)), **options)
+        cls.load_weights(model, path)
+        return model
 
     def reset(self) -> None:
         """End the request; the next call must start at position 0."""
@@ -74,8 +98,8 @@ class CausalLM:
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
-        """Run ``input_ids`` (``[1, S]``) from ``start_pos``; return the float32 logits of its
-        last token, ``[1, vocab_size]``."""
+        """Run ``input_ids`` (``[1, S]``) from ``start_pos`` with ``device`` current; return the
+        float32 logits of its last token, ``[1, vocab_size]``."""
         seqlen = self._continue(input_ids, start_pos)
         ids = input_ids.to(self.device)
         with torch.accelerator.device_index(self.device.index):
@@ -90,9 +114,8 @@ class CausalLM:
 
     def _replay(self, ids: torch.Tensor, start_pos: int) -> torch.Tensor:
         """The logits of the decode step of ``ids`` (``[1, 1]``) at ``start_pos``, replayed from
-        the graph of its phase. The first step of a phase runs eagerly on a step of its own, so
-        that the step the graph captures derives anything it caches inside the capture, then
-        captures it."""
+        the graph of its phase. A phase's first step runs eagerly on a step of its own, so the
+        captured step derives anything it caches inside the capture."""
         if self._graphs is None:
             self._graphs = {}
             self._graph_pool = torch.cuda.graph_pool_handle()

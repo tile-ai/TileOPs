@@ -6,7 +6,6 @@ import torch
 
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry
 from tileops._kernels.pool.call_spec import AdaptiveAvgPool2dFwdInterface, AdaptivePool2dCall
 from tileops._kernels.pool.common import (
     ACCUM_DTYPE,
@@ -21,15 +20,9 @@ __all__ = ["AdaptiveAvgPool2dKernel", "AdaptiveAvgPool2dLanesKernel"]
 
 
 @target_cache(maxsize=32)
-def _adaptive_avg_pool2d_kernel(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    out_h: int,
-    out_w: int,
-    dtype: str,
-):
+def _adaptive_avg_pool2d_kernel(call: AdaptivePool2dCall, dtype: str):
+    n, c_in, h_in, w_in = call.n, call.c_in, call.h_in, call.w_in
+    out_h, out_w = call.out_h, call.out_w
     total_output = n * c_in * out_h * out_w
     max_kh = max_adaptive_bin_extent(h_in, out_h)
     max_kw = max_adaptive_bin_extent(w_in, out_w)
@@ -81,10 +74,10 @@ def _adaptive_avg_pool2d_kernel(
 class AdaptiveAvgPool2dKernel(AdaptivePool2dKernelBase, AdaptiveAvgPool2dFwdInterface):
     """Adaptive average pooling forward kernel for NCHW inputs."""
 
-    def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
-        return program(x)
-
     _build = staticmethod(_adaptive_avg_pool2d_kernel)
+
+    def _input(self, x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(self.call.n, self.call.c_in, self.call.h_in, self.call.w_in)
 
 
 def _bin_lanes(call: AdaptivePool2dCall) -> int:
@@ -113,16 +106,9 @@ def _bin_lanes(call: AdaptivePool2dCall) -> int:
 
 
 @target_cache(maxsize=32)
-def _adaptive_avg_pool2d_lanes_kernel(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    out_h: int,
-    out_w: int,
-    dtype: str,
-):
-    rows = n * c_in
+def _adaptive_avg_pool2d_lanes_kernel(call: AdaptivePool2dCall, dtype: str):
+    h_in, w_in, out_h, out_w = call.h_in, call.w_in, call.out_h, call.out_w
+    rows = call.n * call.c_in
     total_output = rows * out_h * out_w
     max_kh = max_adaptive_bin_extent(h_in, out_h)
     max_kw = max_adaptive_bin_extent(w_in, out_w)
@@ -223,22 +209,9 @@ class AdaptiveAvgPool2dLanesKernel(AdaptivePool2dKernelBase, AdaptiveAvgPool2dFw
             )
         return super().refusal(call)
 
-    @classmethod
-    def entry_for(cls, call: AdaptivePool2dCall) -> Entry:
-        return call, lambda: cls(
-            call.n,
-            call.c_in,
-            call.h_in,
-            call.w_in,
-            call.out_h,
-            call.out_w,
-            call.dtype,
-            lanes=_bin_lanes(call),
-        )
-
-    def __init__(self, *args, lanes: int, **kwargs) -> None:
-        self.lanes = lanes
-        super().__init__(*args, **kwargs)
+    def __init__(self, call: AdaptivePool2dCall, config: dict | None = None) -> None:
+        self.lanes = _bin_lanes(call)
+        super().__init__(call, config)
 
     @property
     def default_config(self) -> dict:
@@ -250,8 +223,7 @@ class AdaptiveAvgPool2dLanesKernel(AdaptivePool2dKernelBase, AdaptiveAvgPool2dFw
     def autotune_configs(self) -> None:
         return None
 
-    def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
-        out = program(x.reshape(-1))
-        return out.view(self.n, self.c_in, self.out_h, self.out_w)
-
     _build = staticmethod(_adaptive_avg_pool2d_lanes_kernel)
+
+    def _input(self, x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(-1)

@@ -1,11 +1,5 @@
-"""Base classes for workload definitions shared between tests and benchmarks.
-
-WorkloadBase defines the contract: gen_inputs() for input generation.
-A class named for one op also carries that op's ref_program.
-FixtureMeta / FixtureBase provide reusable pytest parametrize decorators.
-
-Correctness declarations live beside references. Tests and benchmarks consume the same declaration.
-"""
+"""Base classes of the workloads tests and benchmarks share, and reusable pytest
+parametrize decorators."""
 
 from __future__ import annotations
 
@@ -27,20 +21,12 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 
 class WorkloadBase(ABC):
-    """Abstract base for workload definitions (input generation + parameters).
+    """Inputs of an op call (``gen_inputs``), its reference and its numerical declaration.
 
-    Subclass must implement gen_inputs(). A subclass named for one op also
-    defines that op's ref_program; a subclass describing only an input shape
-    leaves ref_program to a concrete workload subclass.
-    Used by both tests (via TestBase) and benchmarks (via benchmarks.api.Case).
-
-    ref_program computes a float result in float32 or wider and rounds it once, at its
-    output, so it does not depend on how a device's torch rounds a 16-bit step. An
-    intermediate rounds earlier only where the op's contract stores it. An optional
-    torch_program is the op as torch runs it at the input dtype: a benchmark times it,
-    and verifies it against ref_program like any other implementation.
-
-    verification() owns numerical policy. Consumers own scheduling and reporting.
+    A subclass named for one op defines ``ref_program``: float32 or wider, rounded once at
+    its output, earlier only where the op's contract stores an intermediate. An optional
+    ``torch_program`` is the op as torch runs it at the input dtype. ``verification()`` owns
+    numerical policy; consumers own scheduling and reporting.
     """
 
     # Whether ref_program reads an op call's inputs in the form its manifest call states.
@@ -57,21 +43,10 @@ class WorkloadBase(ABC):
         return Exact()
 
     def rng(self, tag: str = "", *, device: torch.device | str = "cpu") -> torch.Generator:
-        """A generator private to this workload class and *tag*.
+        """A freshly seeded generator private to this workload class and *tag*, on *device*.
 
-        The global stream the conftests seed makes a run reproduce the run
-        before it. It does not make one tensor stable: every draw takes the
-        next values in that stream, so adding a draw anywhere earlier moves
-        every draw after it. An input that must not move that way — a page
-        layout a benchmark compares numbers on, say — comes from here instead.
-
-        The seed is derived from the class name and *tag*, so two workloads
-        never draw the same tensor by accident. Each call returns a freshly
-        seeded generator, so two calls to one ``gen_inputs`` return equal
-        inputs.
-
-        A draw on a device tensor needs that *device*: a generator only
-        feeds draws on its own device.
+        An input drawn from it does not move when a draw is added anywhere earlier in the
+        global stream; draws on a device tensor need that *device*.
         """
         seed = (WORKLOAD_SEED ^ crc32(f"{type(self).__name__}:{tag}".encode())) & 0xFFFFFFFF
         return torch.Generator(device=device).manual_seed(seed)
@@ -111,39 +86,13 @@ class CallWorkload(WorkloadBase):
         return self.call.arguments()
 
 
-class RandnWorkload(WorkloadBase):
-    """Workload base for ops whose inputs are generated via ``torch.randn``."""
-
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device=run_device())
-        return (x,)
-
-
 class FixtureMeta(type):
-    """Metaclass that makes Fixture subclasses usable as @decorators.
-
-    Usage:
-        class MyFixture(FixtureBase):
-            @classmethod
-            def get_params(cls):
-                import pytest
-                return [("a, b", [
-                    pytest.param(1, 2, marks=pytest.mark.smoke),
-                ])]
-
-        @MyFixture
-        def test_something(a, b): ...
-
-    PARAMS may also be set as a plain class variable (list) when pytest is
-    importable at module scope.
-    """
+    """Makes a fixture class a decorator applying ``pytest.mark.parametrize`` once per
+    ``(names, values)`` entry of its ``PARAMS``, or of ``get_params()`` where it defines one."""
 
     def __call__(cls, fn: _F) -> _F:
-        import pytest  # lazy import: pytest is only needed when applying parametrize decorators
+        # Imported here so that importing workloads does not need pytest.
+        import pytest
 
         params = cls.get_params() if hasattr(cls, "get_params") else cls.PARAMS
         for names, values in reversed(params):
@@ -152,13 +101,7 @@ class FixtureMeta(type):
 
 
 class FixtureBase(metaclass=FixtureMeta):
-    """Base class for reusable parametrize decorators.
-
-    Subclass and set PARAMS (plain list) or override get_params() (classmethod
-    that lazily imports pytest) to provide a list of (names_str, values_list)
-    tuples.
-    - Single entry with multiple param names -> explicit combinations
-    - Multiple entries each with one param name -> cross-product
-    """
+    """A reusable parametrize decorator: ``PARAMS`` lists ``(names, values)`` entries, and
+    entries stack as a cross product."""
 
     PARAMS = []

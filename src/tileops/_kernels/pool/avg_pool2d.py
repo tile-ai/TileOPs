@@ -1,13 +1,9 @@
-from typing import ClassVar
-
 import tilelang
 import tilelang.language as T
-import torch
 
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
-from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.pool.call_spec import AvgPool2dFwdInterface, AvgPoolCall
-from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow
+from tileops._kernels.pool.call_spec import AvgPool2dFwdInterface
+from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolKernelBase, AvgPoolWindow
 
 __all__ = ["AvgPool2dKernel"]
 
@@ -81,80 +77,16 @@ def _avg_pool2d_kernel(window: AvgPoolWindow, dtype: str):
     return _avg_pool2d_func
 
 
-class AvgPool2dKernel(Kernel, AvgPool2dFwdInterface):
+class AvgPool2dKernel(AvgPoolKernelBase, AvgPool2dFwdInterface):
     """Average pooling over an NCHW plane, with every PyTorch flag combination."""
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
-    # One output per thread, so the block size is the whole launch space: a parallel loop
-    # wider than the block serializes it, and one narrower idles lanes.
-    _THREAD_CHOICES: ClassVar[tuple[int, ...]] = (128, 256, 512)
-    _DEFAULT_THREADS: ClassVar[int] = 256
-
-    @classmethod
-    def entry_for(cls, call: AvgPoolCall) -> Entry:
-        return call, lambda: cls(
-            call.n,
-            call.c_in,
-            *call.size,
-            *call.window,
-            *call.stride,
-            *call.pad,
-            call.ceil_mode,
-            call.count_include_pad,
-            call.divisor_override,
-            call.dtype,
-        )
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        ceil_mode: bool,
-        count_include_pad: bool,
-        divisor_override: int | None,
-        dtype: torch.dtype,
-        config: dict | None = None,
-    ) -> None:
-        super().__init__()
-        self.n = n
-        self.c_in = c_in
-        self.dtype = dtype
-        self.window = AvgPoolWindow(
-            rows=n * c_in,
-            size=(h_in, w_in),
-            kernel=(kernel_h, kernel_w),
-            stride=(stride_h, stride_w),
-            pad=(pad_h, pad_w),
-            ceil_mode=ceil_mode,
-            count_include_pad=count_include_pad,
-            divisor_override=divisor_override,
-        )
-        self.kernel = _avg_pool2d_kernel(self.window, self.dtype_str)
-        self.init_config(config)
+    _build = staticmethod(_avg_pool2d_kernel)
 
     @property
     def default_config(self) -> dict:
-        return {"threads": self._DEFAULT_THREADS}
+        return {"threads": 256}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return [{"threads": threads} for threads in self._THREAD_CHOICES]
-
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(cfg["threads"])
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._require_devices(x=x)
-        planes = self.program(self._compile)(
-            x.contiguous().view(self.window.rows, *self.window.size)
-        )
-        return planes.view(self.n, self.c_in, *self.window.out)
+        # One output per thread, so the block size is the whole launch space.
+        return [{"threads": threads} for threads in (128, 256, 512)]

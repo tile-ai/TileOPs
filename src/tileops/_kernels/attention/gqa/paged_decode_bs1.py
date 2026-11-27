@@ -1,11 +1,7 @@
 """Warp-specialized batch=1 paged GQA decode kernel (SM90), context-split.
 
-``GQADecodePagedBs1Kernel`` dispatches on the static page-table capacity: capacities >= 1024
-run a context-only warp-specialized split (one TMA producer warp feeding a four-warp
-wgmma consumer warpgroup, exp2-domain online softmax, fp32 partial reduce via a combine
-kernel); shorter lengths fall back to the generic paged non-split decode kernel.
-Logical KV tiles are translated through the page table before TMA. SM90-only, low-level
-``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
+``GQADecodePagedBs1Kernel`` runs the context split for page-table capacities >= 1024 and
+the generic paged non-split decode kernel for shorter ones.
 """
 
 import tilelang
@@ -24,8 +20,8 @@ from tileops._kernels.attention.gqa.decode_bs1_common import (
     make_gqa_decode_bs1_split,
 )
 from tileops._kernels.attention.gqa.paged_decode import (
-    gqa_decode_no_split_paged_kernel,
     gqa_decode_paged_block_ns,
+    gqa_decode_paged_kernel,
 )
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
@@ -266,7 +262,7 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
 
     def _compile_short(self, cfg: dict):
         """The single-pass program for a table shorter than ``_MIN_CTX`` rows."""
-        return gqa_decode_no_split_paged_kernel(
+        return gqa_decode_paged_kernel(
             self.batch,
             self.heads,
             self.groups,

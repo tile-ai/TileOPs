@@ -1,13 +1,4 @@
-"""Dropout kernel with deterministic random mask generation.
-
-Implements inverted dropout: output = x * mask / (1 - p) where mask ~ Bernoulli(1 - p),
-drawn independently for every element from Philox4x32-10 for deterministic replay (same
-seed, offset and thread layout = same mask). The seed and offset are launch arguments, so
-one built program serves every draw.
-
-Strategy: each thread holds a contiguous run of elements, loaded and stored as vectors (16
-bytes under the default config), and draws one Philox subsequence.
-"""
+"""Inverted dropout over Philox4x32-10 draws; the seed and offset are launch arguments."""
 
 import dataclasses
 import fractions
@@ -121,14 +112,8 @@ def _make_dropout_kernel(N, dtype, p, threads, num_per_thread):
     element whose draw is below ``ceil(p * 2**32)`` is dropped and the rest are scaled by
     ``1 / (1 - p)``.
 
-    Args:
-        N: Total number of elements (flattened).
-        dtype: TileLang dtype string.
-        p: Drop probability in [0, 1].
-        threads: Threads per block.
-        num_per_thread: Elements processed per thread, a multiple of 4 and at most
-            ``DropoutFwdInterface.MAX_DRAWS_PER_STREAM``, since a thread draws one value of
-            its stream per element.
+    *num_per_thread* is a multiple of 4 and at most
+    ``DropoutFwdInterface.MAX_DRAWS_PER_STREAM``.
     """
     block_size = threads * num_per_thread
     scale = 1.0 / (1.0 - p) if p < 1.0 else 0.0
@@ -199,10 +184,7 @@ def _make_dropout_kernel(N, dtype, p, threads, num_per_thread):
 
 
 class DropoutKernel(Kernel, DropoutFwdInterface):
-    """Dropout kernel with deterministic Philox4x32-10 mask generation.
-
-    Applies inverted dropout: output = x * mask / (1 - p) where mask is
-    Bernoulli(1 - p), one independent draw per element.
+    """Inverted dropout with a Philox4x32-10 mask, one independent draw per element.
 
     Args:
         N_total: Total number of elements (flattened).
@@ -231,8 +213,6 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
         self.dtype = dtype
         self.p = p
         self.init_config(config)
-        # A thread fills its draws four at a time from Philox blocks, one draw per element, and
-        # the op advances torch's generator past MAX_DRAWS_PER_STREAM draws of each stream.
         npt = self.config["num_per_thread"]
         if npt <= 0 or npt % 4 or npt > self.MAX_DRAWS_PER_STREAM:
             raise ValueError(
@@ -242,8 +222,7 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
         self.kernel = self._build_kernel(self.config)
 
     def _build_kernel(self, cfg: dict):
-        # The builder bakes ``threads * num_per_thread`` into the grid, so it is built from
-        # the same config the program is compiled with.
+        # The grid bakes in ``threads * num_per_thread``, so it is built from the compiled config.
         return _make_dropout_kernel(
             self.N_total,
             self.dtype_str,

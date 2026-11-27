@@ -79,10 +79,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.pooled,
         )
         return identity, lambda: cls(
-            heads=call.heads,
-            value_heads=call.value_heads,
-            dim_k=call.dim_k,
-            dim_v=call.dim_v,
             scale=call.scale,
             l2norm=call.l2norm,
             dtype=call.dtype,
@@ -94,10 +90,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
 
     def __init__(
         self,
-        heads: int,
-        value_heads: int,
-        dim_k: int,
-        dim_v: int,
         scale: float,
         l2norm: bool,
         dtype: torch.dtype,
@@ -110,10 +102,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         """Hold the call facts the fused program is built from."""
         super().__init__(device_index=device_index)
         self.compact = compact
-        self.heads = heads
-        self.value_heads = value_heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
         self.scale = scale
         self.l2norm = l2norm
         self.dtype = dtype

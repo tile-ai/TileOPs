@@ -4,6 +4,7 @@ import itertools
 
 import tilelang
 import tilelang.language as T
+from tilelang.transform import PassConfigKey
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import QUANT_SCALE_BLOCK
@@ -20,7 +21,7 @@ def _moe_grouped_gemm_fp8_mma_kernel(groups: int, rows: int | None, n: int, k: i
     scale_block = QUANT_SCALE_BLOCK
     contiguous = rows is None
 
-    @tilelang.jit(pass_configs={"tl.disable_warp_specialized": True})
+    @tilelang.jit(pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True})
     def factory(block_m: int, block_n: int):
         m = T.dynamic("m") if contiguous else rows
         a_shape = (m, k) if contiguous else (groups, m, k)
@@ -145,8 +146,6 @@ class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
         ]
 
     def _check_config(self, config: dict) -> None:
-        if set(config) != {"block_m", "block_n"}:
-            raise ValueError("FP8 MMA takes only block_m and block_n")
         if not all(type(value) is int for value in config.values()):
             raise ValueError("FP8 MMA tile sizes must be integers")
         if config["block_m"] not in self._BLOCK_M or config["block_n"] not in self._BLOCK_N:

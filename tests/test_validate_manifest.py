@@ -7,6 +7,7 @@ the benchmark contract and the CLI scoping. The run over the real manifest is th
 `validate-manifest` job.
 """
 
+import importlib.util
 import sys
 import textwrap
 import types
@@ -23,9 +24,7 @@ VALIDATOR_SCRIPT = REPO_ROOT / "scripts" / "validate_manifest.py"
 
 @pytest.fixture(scope="module")
 def validator():
-    """Import validate_manifest as a module (it lives in scripts/, not a package)."""
-    import importlib.util
-
+    """scripts/validate_manifest.py, imported as a module."""
     spec = importlib.util.spec_from_file_location("validate_manifest", VALIDATOR_SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -43,6 +42,14 @@ def _entry(**extra) -> dict:
         "roofline": {"flops": "6 * M * N"},
         **extra,
     }
+
+
+def _parity(validator, monkeypatch, cls, entry) -> list[str]:
+    """The class parity errors of *entry* against *cls*, installed as ``tileops.probe``."""
+    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=cls))
+    errors, prefix = validator._parity_errors("ProbeFwdOp", entry), "[signature] ProbeFwdOp: "
+    assert all(e.startswith(prefix) for e in errors), errors
+    return [e.removeprefix(prefix) for e in errors]
 
 
 def _write_manifest(tmp_path: Path, ops: dict) -> Path:
@@ -166,7 +173,6 @@ def test_an_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch)
         def forward(self, x=123, y=None):
             pass
 
-    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
     entry = {
         "family": "probe",
         "signature": {
@@ -177,11 +183,12 @@ def test_an_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch)
             },
         },
     }
-    assert validator._parity_errors("ProbeFwdOp", entry) == [
-        "[signature] ProbeFwdOp: __init__ must end its policy parameters with *, target=None",
-        "[signature] ProbeFwdOp: __init__ parameter 'tune' is not a signature or execution-policy parameter",
-        "[signature] ProbeFwdOp: __init__ parameter 'surprise' is not a signature or execution-policy parameter",
-        "[signature] ProbeFwdOp: forward 'x' must have no default",
+    policy = "is not a signature or execution-policy parameter"
+    assert _parity(validator, monkeypatch, ProbeFwdOp, entry) == [
+        "__init__ must end its policy parameters with *, target=None",
+        f"__init__ parameter 'tune' {policy}",
+        f"__init__ parameter 'surprise' {policy}",
+        "forward 'x' must have no default",
     ]
 
 
@@ -230,7 +237,6 @@ def test_a_union_input_keeps_its_default_and_its_slot_names(
             pass
 
     ProbeFwdOp.forward = forward
-    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
     entry = {
         "family": "probe",
         "signature": {
@@ -245,9 +251,7 @@ def test_a_union_input_keeps_its_default_and_its_slot_names(
             },
         },
     }
-    assert validator._parity_errors("ProbeFwdOp", entry) == [
-        f"[signature] ProbeFwdOp: {e}" for e in expected
-    ]
+    assert _parity(validator, monkeypatch, ProbeFwdOp, entry) == expected
 
 
 def _kw_only_probe(forward):
@@ -332,10 +336,7 @@ _BOTH_MISPLACED = [
 def test_a_kw_only_input_follows_out_keyword_only(validator, monkeypatch, forward, expected):
     """`forward` takes the positional inputs, then after `*` `out`, then each `kw_only` input."""
     cls, entry = _kw_only_probe(forward)
-    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=cls))
-    assert validator._parity_errors("ProbeFwdOp", entry) == [
-        f"[signature] ProbeFwdOp: {e}" for e in expected
-    ]
+    assert _parity(validator, monkeypatch, cls, entry) == expected
 
 
 def _required_out(self, x, *, out):
@@ -363,10 +364,7 @@ def test_a_required_out_input_is_keyword_only_without_default(
         "out": {"dtype": "T", "shape": "[M]", "mutated": True, "write_only": True, "kw_only": True},
     }
     entry["signature"]["outputs"] = {"y": {"dtype": "T", "shape": "[M]", "alias": "out"}}
-    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=cls))
-    assert validator._parity_errors("ProbeFwdOp", entry) == [
-        f"[signature] ProbeFwdOp: {e}" for e in expected
-    ]
+    assert _parity(validator, monkeypatch, cls, entry) == expected
 
 
 @pytest.mark.parametrize(
@@ -423,7 +421,6 @@ def test_a_composition_is_held_to_the_class_declarations(validator, monkeypatch)
         def forward(self):
             pass
 
-    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
     entry = {"family": "probe", "signature": {}}
     stages = [
         {"name": "own", "kernel": "own"},
@@ -431,12 +428,12 @@ def test_a_composition_is_held_to_the_class_declarations(validator, monkeypatch)
         {"name": "second", "op": "BFwdOp", "optional": True},
     ]
     entry["composition"] = {"kind": "composite", "stages": stages}
-    assert validator._parity_errors("ProbeFwdOp", entry) == []
+    assert _parity(validator, monkeypatch, ProbeFwdOp, entry) == []
     entry["composition"]["stages"] = [stages[2], stages[1]]
-    assert validator._parity_errors("ProbeFwdOp", entry) == [
-        "[signature] ProbeFwdOp: composition op stages [('second', 'BFwdOp'), ('first', 'AFwdOp')] "
+    assert _parity(validator, monkeypatch, ProbeFwdOp, entry) == [
+        "composition op stages [('second', 'BFwdOp'), ('first', 'AFwdOp')] "
         "are not delegate_types [('first', 'AFwdOp'), ('second', 'BFwdOp')]",
-        "[signature] ProbeFwdOp: composition kernel stages [] are not kernel_types ['own']",
+        "composition kernel stages [] are not kernel_types ['own']",
     ]
 
 
@@ -452,18 +449,17 @@ def test_an_entry_decides_whether_its_class_names_compile_operators(validator, m
         def forward(self, x):
             pass
 
-    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
     entry = {"family": "probe", "signature": {"inputs": {"x": {"dtype": "T", "shape": "[M]"}}}}
-    assert validator._parity_errors("ProbeFwdOp", entry) == [
-        "[signature] ProbeFwdOp: compile_op_names must be non-empty: the entry has a call-time "
-        "tensor input and no composition"
+    assert _parity(validator, monkeypatch, ProbeFwdOp, entry) == [
+        "compile_op_names must be non-empty: the entry has a call-time tensor input and no "
+        "composition"
     ]
     ProbeFwdOp.compile_op_names = ("tileops::probe_fwd",)
-    assert validator._parity_errors("ProbeFwdOp", entry) == []
+    assert _parity(validator, monkeypatch, ProbeFwdOp, entry) == []
     entry["composition"] = {"kind": "composite", "stages": []}
-    assert validator._parity_errors("ProbeFwdOp", entry) == [
-        "[signature] ProbeFwdOp: compile_op_names must be empty: the entry has no call-time "
-        "tensor input or has a composition"
+    assert _parity(validator, monkeypatch, ProbeFwdOp, entry) == [
+        "compile_op_names must be empty: the entry has no call-time tensor input or has a "
+        "composition"
     ]
 
 

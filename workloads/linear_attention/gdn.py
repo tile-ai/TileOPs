@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 
 from workloads.device import run_device
@@ -32,6 +34,7 @@ def _decay_parameters(a_log: torch.Tensor, dt_bias: torch.Tensor) -> tuple[torch
     return rates.log(), steps.expm1().log()
 
 
+@dataclass(eq=False)
 class GDNFwdWorkload(WorkloadBase):
     """BTHD Gated DeltaNet (GDN) inference prefill or decode, equal-length or packed.
 
@@ -43,37 +46,23 @@ class GDNFwdWorkload(WorkloadBase):
     call.
     """
 
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim: int,
-        dtype: torch.dtype,
-        scale: float | None = None,
-        has_initial_state: bool = False,
-        value_heads: int | None = None,
-        sequence_lengths: tuple[int, ...] | None = None,
-        l2norm: bool = False,
-        raw_gate: bool = False,
-        beta_sigmoid: bool = False,
-        allow_neg_eigval: bool = False,
-        state_v_first: bool = False,
-    ) -> None:
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim = dim
-        self.dtype = dtype
-        self.scale = scale
-        self.has_initial_state = has_initial_state
-        self.value_heads = heads if value_heads is None else value_heads
-        self.sequence_lengths = sequence_lengths
-        self.l2norm = l2norm
-        self.raw_gate = raw_gate
-        self.beta_sigmoid = beta_sigmoid
-        self.allow_neg_eigval = allow_neg_eigval
-        self.state_v_first = state_v_first
+    batch: int
+    seq_len: int
+    heads: int
+    dim: int
+    dtype: torch.dtype
+    scale: float | None = None
+    has_initial_state: bool = False
+    value_heads: int | None = None
+    sequence_lengths: tuple[int, ...] | None = None
+    l2norm: bool = False
+    raw_gate: bool = False
+    beta_sigmoid: bool = False
+    allow_neg_eigval: bool = False
+    state_v_first: bool = False
+
+    def __post_init__(self) -> None:
+        self.value_heads = self.heads if self.value_heads is None else self.value_heads
 
     @property
     def _spans(self) -> tuple[tuple[int, int], ...]:
@@ -275,15 +264,8 @@ def gdn_ref(
     l2norm=False,
     state_v_first=False,
 ):
-    """The delta rule evaluated independently of the chunked kernels and of FLA.
-
-    A decode call, one token per sequence, runs the FP32 recurrence token by token. A
-    longer call evaluates the same recurrence chunk by chunk in FP64: within a chunk the
-    written values solve the unit lower-triangular system exactly, with no truncated
-    inverse, and the outputs and final state follow in closed form. The sequence
-    boundaries come from the call's offsets, never from the fixture's lengths, and every
-    sequence still running advances in the same step.
-    """
+    """``(o, final_state)`` of the gated delta rule over the sequences the call's offsets
+    bound: an FP32 step per token for a decode call, else exact FP64 chunks."""
     scale = q.shape[-1] ** -0.5 if scale is None else scale
     group = v.shape[2] // q.shape[2]
     rows, starts, lengths = sequences(q, cu_seqlens, cu_seqlens_cpu)
@@ -425,10 +407,8 @@ def gated_verification(
         compare_output(got[0], expected[0], atol=output_atol, rtol=rtol)
         assert_close(got[1], expected[1], atol=state_atol, rtol=rtol)
         if q.shape[1] != 1:
-            # Absolute bounds cover cancellation in the chunked recurrence, but can
-            # exceed small outputs. Also apply the shared normalized-error budget
-            # (1e-3 of combined energy, ~4.5% relative RMS) to each tensor. Clearing
-            # a nonzero tensor has ratio 1 and cannot pass, regardless of magnitude.
+            # The absolute bounds can exceed small outputs; the normalized-error bound
+            # rejects a cleared tensor.
             assert_normalized_error(got, expected)
 
     controls = ()

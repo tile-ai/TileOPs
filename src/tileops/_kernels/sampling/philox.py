@@ -9,10 +9,6 @@ import tilelang.language as T
 
 __all__ = ["draw", "mix", "uniform_of"]
 
-_EVEN_MUL, _ODD_MUL = 0xD2511F53, 0xCD9E8D57
-_EVEN_WEYL, _ODD_WEYL = 0x9E3779B9, 0xBB67AE85
-_ROUNDS = 10
-
 
 @T.macro
 def mix(counter, key, bump):
@@ -21,22 +17,16 @@ def mix(counter, key, bump):
 
     *counter* and *key* are the caller's, already set; *bump* is two words of scratch.
     """
-    for step in T.serial(_ROUNDS):
+    even_mul = T.uint32(0xD2511F53)
+    odd_mul = T.uint32(0xCD9E8D57)
+    for step in T.serial(10):
         if step > 0:
-            key[0] = key[0] + T.uint32(_EVEN_WEYL)
-            key[1] = key[1] + T.uint32(_ODD_WEYL)
-        bump[0] = (
-            T.call_extern("uint32", "__umulhi", counter[2], T.uint32(_ODD_MUL))
-            ^ counter[1]
-            ^ key[0]
-        )
-        bump[1] = (
-            T.call_extern("uint32", "__umulhi", counter[0], T.uint32(_EVEN_MUL))
-            ^ counter[3]
-            ^ key[1]
-        )
-        counter[1] = counter[2] * T.uint32(_ODD_MUL)
-        counter[3] = counter[0] * T.uint32(_EVEN_MUL)
+            key[0] = key[0] + T.uint32(0x9E3779B9)
+            key[1] = key[1] + T.uint32(0xBB67AE85)
+        bump[0] = T.call_extern("uint32", "__umulhi", counter[2], odd_mul) ^ counter[1] ^ key[0]
+        bump[1] = T.call_extern("uint32", "__umulhi", counter[0], even_mul) ^ counter[3] ^ key[1]
+        counter[1] = counter[2] * odd_mul
+        counter[3] = counter[0] * even_mul
         counter[0] = bump[0]
         counter[2] = bump[1]
 

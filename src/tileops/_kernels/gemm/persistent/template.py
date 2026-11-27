@@ -33,17 +33,14 @@ from tileops._kernels.gemm.persistent.heuristics import (
 from tileops._kernels.kernel_base import Kernel
 from tileops._utils import WARP_LANES
 
-__all__ = [
-    "GEMMTemplate",
-    "GroupedGEMMTemplate",
-]
+__all__ = ["GEMMTemplate"]
 
 
 def _make_prim_func(
     gemm_type: str,
     a_k_major: bool,
     b_k_major: bool,
-    ab_dtype: str,
+    dtype: str,
     cd_dtype: str,
     num_groups: int,
     shape_m: int,
@@ -70,32 +67,23 @@ def _make_prim_func(
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's fields, scalars and
     the stride tuples of a strided batched A or C."""
-
-    def _num_1d_blocks_per_group(block_m: int, block_n: int, num_sms: int) -> int:
-        """Return the number of M tiles in one L2 swizzle group."""
-        best, best_usage = 0, None
-        for candidate in (8, 16):
-            usage = candidate * block_m + -(-num_sms // candidate) * block_n
-            if best_usage is None or usage < best_usage:
-                best, best_usage = candidate, usage
-        return best
-
-    dtype = ab_dtype
-    accum_dtype = "float"
     gtype = GEMMType(gemm_type)
-    tma_threads = 128
-    math_threads = 128 * num_math_wgs
+    accum_dtype = "float"
+    tma_threads = WARPGROUP_THREADS
+    math_threads = WARPGROUP_THREADS * num_math_wgs
     threads = tma_threads + math_threads
     # Ping-pong: each math warp-group runs whole tiles of its own, the CTA's tiles taken in
     # turn, so one group's epilogue runs under the other's mainloop. Otherwise the groups
     # split one tile's rows.
     wg_rows = block_m if pingpong else block_m // num_math_wgs
     # The warps that release a ring stage: those of the one group whose tile it holds.
-    release_warps = WARPGROUP_THREADS // 32 if pingpong else math_threads // 32
+    release_warps = (WARPGROUP_THREADS if pingpong else math_threads) // WARP_LANES
+    # M tiles of one L2 swizzle group: the pinned dense count, else the group whose resident
+    # footprint along M and N is smallest.
     blocks_per_group = (
         swizzle_group_m
         if gtype is GEMMType.DENSE and swizzle_group_m
-        else _num_1d_blocks_per_group(block_m, block_n, num_sms)
+        else min((8, 16), key=lambda g: g * block_m + -(-num_sms // g) * block_n)
     )
     dense_coop2 = gtype is GEMMType.DENSE and num_math_wgs == 2
     tma_regs = 24 if dense_coop2 else 48
@@ -122,10 +110,8 @@ def _make_prim_func(
     a_has_group = masked or batched
     b_has_group = not (dense or k_grouped)
     c_has_group = a_has_group or k_grouped
-    # Whole output tiles across more than one wave: the store of a tile can then
-    # overlap the next tile's epilogue, and every tile writes a full TMA box. A
-    # partial tile or a single wave takes the synchronous copy instead. Narrower
-    # than BMMPersistentKernel.refusal, which decides only which kernel runs.
+    # Whole output tiles across more than one wave: each tile's TMA store overlaps the next
+    # tile. A partial tile or a single wave takes the synchronous copy.
     batched_async_store = (
         batched
         and shape_m > 0
@@ -143,10 +129,8 @@ def _make_prim_func(
         and shape_n > 0
         and -(-shape_m // block_m) * -(-static_cols // c_tile_n) > num_sms
     )
-    # Batched tiles over more than one wave store each finished tile, held cast in its own
-    # fragment, while the next tile's first WGMMA runs. K shorter than the ring has too few
-    # WGMMAs to cover the store, so those tiles store at once. Ping-pong stores each tile
-    # in its own epilogue, which already runs under the other group's mainloop.
+    # Batched tiles hold their cast output and store it under the next tile's first WGMMA.
+    # A K shorter than the ring cannot cover the store; ping-pong already hides it.
     deferred_store = (
         batched_async_store
         and cast_output
@@ -155,9 +139,8 @@ def _make_prim_func(
         and shape_k >= num_stages * block_k
         and not pingpong
     )
-    # A K-major operand's TMA box must start 16 bytes aligned along K, so a
-    # K-grouped GEMM with one rounds each group's start down to 8 elements and
-    # masks the head in shared memory like the tail.
+    # A K-major operand's TMA box must start 16-byte aligned along K, so a K-grouped GEMM
+    # rounds each group's start down to 8 elements and masks the head like the tail.
     k_head_align = 8 if k_grouped and (a_k_major or b_k_major) else 0
     search_steps = max(1, (num_groups - 1).bit_length())
 
@@ -303,7 +286,6 @@ def _make_prim_func(
             elif aligned_psum:
                 rows = T.max(ends[g] - align_up(prev_end), T.int32(0))
             elif group_starts:
-                # Separate so templates without group starts compile unchanged source.
                 rows = T.max(group_end(ends, g) - group_start(ends, g), T.int32(0))
             else:
                 rows = T.max(ends[g] - prev_end, T.int32(0))
@@ -417,14 +399,11 @@ def _make_prim_func(
 
     @T.macro
     def mask_k(A_s, B_s, slot, lo, hi):
-        """K-grouped: zero a stage's columns outside ``[lo, hi)`` along K.
+        """K-grouped: zero a stage's columns outside ``[lo, hi)`` along K, which TMA loaded
+        from the neighbouring groups.
 
-        TMA clips against the tensor, not the group, so a group's last K block
-        holds the next group's first rows past ``hi``, and its first block holds
-        the previous group's last rows below ``lo`` when the start was rounded
-        down for a K-major operand. Both operands are zeroed so a stray
-        non-finite value cannot survive as ``0 * inf``; the caller fences the
-        generic-proxy writes before the WGMMA reads them.
+        Both operands are zeroed so a non-finite neighbour cannot survive as ``0 * inf``;
+        the caller fences these generic-proxy writes before the WGMMA reads them.
         """
         if a_k_major:
             for i, kk in T.Parallel(wg_rows, block_k):
@@ -501,10 +480,8 @@ def _make_prim_func(
     def gate_multiply(C_l, C_up, C_s):
         """The fused epilogue: ``C_s[i, j] = act(C_l[i, j], C_l[i, j + block_n / 2])``.
 
-        Both accumulator columns of a pair live in the calling thread, so this is
-        register arithmetic followed by the same shared staging a plain tile does.
-        The up half goes through ``C_up`` because one parallel loop may read a
-        fragment under a single index pattern.
+        The up half goes through ``C_up`` because one parallel loop may read a fragment
+        under a single index pattern.
         """
         T.copy(C_l[:, half_n:block_n], C_up)
         for i, j in T.Parallel(wg_rows, half_n):
@@ -519,8 +496,7 @@ def _make_prim_func(
                 th = T.call_extern(accum_dtype, "tileops::approx_tanh", half * g)
                 C_s[i, j] = T.cast(g * (half + half * th) * u, cd_dtype)
             elif activation == "silu_and_mul":
-                # sigmoid(g) as 0.5 + 0.5 * tanh(g / 2): identical output, and
-                # SM90 retires tanhf far cheaper than T.sigmoid's expf + division.
+                # sigmoid(g) as 0.5 + 0.5 * tanh(g / 2), cheaper on SM90 than expf + division.
                 half = T.cast(0.5, accum_dtype)
                 C_s[i, j] = T.cast(g * (half + half * T.tanh(half * g)) * u, cd_dtype)
             elif activation == "swigluoai":
@@ -547,15 +523,19 @@ def _make_prim_func(
         """Stage and store one warp-group's rows of a tile."""
         for chunk in range(epilogue_chunks):
             chunk_col = chunk * staged_n
-            if (batched_async_store or dense_async_store) and T.get_thread_binding() % 128 == 0:
+            if (
+                batched_async_store or dense_async_store
+            ) and T.get_thread_binding() % WARPGROUP_THREADS == 0:
                 T.tma_store_wait(0)
-            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=WARPGROUP_THREADS)
             if fused:
                 gate_multiply(C_src, C_up, C_s)
             else:
                 T.copy(C_src[:, chunk_col : chunk_col + staged_n], C_s)
             if tight and rows < T.int32(wg_rows):
-                T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+                T.sync_threads(
+                    barrier_id=epilogue_barrier_base + wg, arrive_count=WARPGROUP_THREADS
+                )
                 if rows > 0:
                     if vector_row_store:
                         # The output row pitch is a multiple of 8 elements
@@ -573,10 +553,6 @@ def _make_prim_func(
                                             C_s[i, run * store_run + v * ROW_STORE_VECTOR]
                                         ),
                                     )
-                    elif store_run == staged_n:
-                        for i, j in T.Parallel(wg_rows, staged_n):
-                            if i < rows and col0 + chunk_col + j < c_cols:
-                                C[row0 + i, col0 + chunk_col + j] = C_s[i, j]
                     else:
                         for run in range(staged_n // store_run):
                             run_col = col0 + chunk_col + run * store_run
@@ -585,18 +561,22 @@ def _make_prim_func(
                                     C[row0 + i, run_col + j] = C_s[i, run * store_run + j]
             else:
                 T.fence_proxy_async()
-                T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+                T.sync_threads(
+                    barrier_id=epilogue_barrier_base + wg, arrive_count=WARPGROUP_THREADS
+                )
                 if c_has_group:
                     if batched_async_store:
                         T.tma_copy(
                             C_s,
                             C[group, row0, col0 + chunk_col],
-                            leader_scope_threads=128,
+                            leader_scope_threads=WARPGROUP_THREADS,
                         )
                     else:
                         T.copy(C_s, C[group, row0, col0 + chunk_col])
                 elif dense_async_store:
-                    T.tma_copy(C_s, C[row0, col0 + chunk_col], leader_scope_threads=128)
+                    T.tma_copy(
+                        C_s, C[row0, col0 + chunk_col], leader_scope_threads=WARPGROUP_THREADS
+                    )
                 else:
                     T.copy(C_s, C[row0, col0 + chunk_col])
 
@@ -604,33 +584,32 @@ def _make_prim_func(
     def store_chunk(C, C_l, buf, group, row0, col0, chunk_col, rows, wg):
         """Cast one chunk of the accumulator into ``buf`` and store it without waiting.
 
-        In a full tile the store that last read ``buf`` was issued two chunks ago, so
-        waiting for all but the newest store leaves the other buffer's store in
-        flight while this chunk stages. A ragged tile's rows go out under a row mask
-        and issue no store, so the store still reading ``buf`` may be the newest:
-        it waits for every store.
+        A full tile waits for all but the newest TMA store, the one reading the other
+        buffer. A ragged tile issues no TMA store for its chunks, so it waits for all.
         """
-        if T.get_thread_binding() % 128 == 0:
+        if T.get_thread_binding() % WARPGROUP_THREADS == 0:
             if tight and rows < T.int32(wg_rows):
                 T.tma_store_wait(0)
             else:
                 T.tma_store_wait(1)
-        T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+        T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=WARPGROUP_THREADS)
         for i, j in T.Parallel(wg_rows, staged_n):
             buf[i, j] = T.cast(C_l[i, chunk_col + j], cd_dtype)
         if tight and rows < T.int32(wg_rows):
-            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=WARPGROUP_THREADS)
             if rows > 0:
                 for i, j in T.Parallel(wg_rows, staged_n):
                     if i < rows and col0 + chunk_col + j < c_cols:
                         C[row0 + i, col0 + chunk_col + j] = buf[i, j]
         else:
             T.fence_proxy_async()
-            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=WARPGROUP_THREADS)
             if c_has_group:
-                T.tma_copy(buf, C[group, row0, col0 + chunk_col], leader_scope_threads=128)
+                T.tma_copy(
+                    buf, C[group, row0, col0 + chunk_col], leader_scope_threads=WARPGROUP_THREADS
+                )
             else:
-                T.tma_copy(buf, C[row0, col0 + chunk_col], leader_scope_threads=128)
+                T.tma_copy(buf, C[row0, col0 + chunk_col], leader_scope_threads=WARPGROUP_THREADS)
 
     def store_tile_buffered(C, C_l, bufs, group, row0, col0, rows, wg):
         """``store_tile`` over two staging buffers in turn; a plain loop, so it unrolls."""
@@ -674,11 +653,8 @@ def _make_prim_func(
 
     def tile_owned(block_idx, num_blocks, w, wg):
         """Whether math warp-group *wg* runs the CTA's tile *w*: every live tile, or under
-        ping-pong the live tiles of its parity.
-
-        A helper rather than a local: a local in the macro binds a variable in every
-        instantiation's kernel, ping-pong or not.
-        """
+        ping-pong the live tiles of its parity. A helper so non-ping-pong kernels bind no
+        extra variable."""
         live = block_idx < num_blocks
         return T.And(live, w % 2 == wg) if pingpong else live
 
@@ -747,12 +723,11 @@ def _make_prim_func(
                     stage_bias(Bias, bias_s, t_group[0], t_col0[0], tx)
                 k_iters = tile_k_iters(t_klen)
                 if pingpong:
-                    # The producer fills the ring with every tile of the CTA in turn, each
-                    # k_iters stages long, so tile w starts at stage w * k_iters.
+                    # The producer fills the ring with every tile of the CTA in turn, so tile
+                    # w starts at stage w * k_iters.
                     gi = w * k_iters
-                    # A ring stage's barrier tells two consecutive phases apart only. This
-                    # group skipped the other's tile, so it waits for that tile's mainloop
-                    # to finish waiting before it waits on any stage itself.
+                    # A stage barrier tells only two consecutive phases apart: wait for the
+                    # other group's mainloop before waiting on any stage.
                     if w > 0:
                         T.barrier_wait(turn[1 - wg], ((w - 1) // 2) & 1)
                 for ki in T.serial(k_iters):
@@ -765,7 +740,10 @@ def _make_prim_func(
                         if lo > 0 or hi < T.int32(block_k):
                             mask_k(A_s, B_s, slot, lo, hi)
                             T.fence_proxy_async()
-                            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+                            T.sync_threads(
+                                barrier_id=epilogue_barrier_base + wg,
+                                arrive_count=WARPGROUP_THREADS,
+                            )
                     mma(A_s, B_s, C_l, slot, ki)
                     if deferred_store and ki == 0 and pending == 1:
                         store_tile(
@@ -782,7 +760,7 @@ def _make_prim_func(
                     T.mbarrier_arrive(turn[wg])
                 T.wait_wgmma(0)
                 release_stage(empty, prev_slot[0], lane)
-                T.warpgroup_fence_operand(C_l, num_regs=(wg_rows * block_n) // 128)
+                T.warpgroup_fence_operand(C_l, num_regs=(wg_rows * block_n) // WARPGROUP_THREADS)
                 if has_bias:
                     add_bias(C_l, bias_s, wg)
 
@@ -808,17 +786,22 @@ def _make_prim_func(
                     T.copy(C_l, C_cast)
                     store_tile(C, C_cast, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
                 if pingpong:
-                    # Drain this group's reads and bulk stores before the other group reuses the buffers.
+                    # Drain this group's reads and bulk stores before the other group reuses
+                    # the buffers.
                     if (batched_async_store or epilogue_buffers > 1) and (
                         tx % WARPGROUP_THREADS == 0
                     ):
                         T.tma_store_wait(0)
-                    T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+                    T.sync_threads(
+                        barrier_id=epilogue_barrier_base + wg, arrive_count=WARPGROUP_THREADS
+                    )
                     if lane == 0:
                         T.mbarrier_arrive(epi[wg])
         if deferred_store and pending == 1:
             store_tile(C, C_cast, C_up, C_s, p_tile[0], p_tile[1], p_tile[2], wg_rows, wg)
-        if (batched_async_store or dense_async_store or epilogue_buffers > 1) and tx % 128 == 0:
+        if (
+            batched_async_store or dense_async_store or epilogue_buffers > 1
+        ) and tx % WARPGROUP_THREADS == 0:
             T.tma_store_wait(0)
 
     def add_swizzled(layouts, buffers):
@@ -1057,15 +1040,9 @@ def _make_prim_func(
 
 @target_cache(maxsize=None)
 def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
-    """JIT factory for one ``spec``; ``_grouped_gemm_kernel(spec)()`` compiles it.
-
-    The builder closes over the spec's fields only, scalars and the stride tuples of a
-    strided batched A or C, so TileLang's cache key is exactly the template parameter pack.
-    The cache is unbounded: an entry is one compiled kernel, so evicting it would only force
-    a recompile. Its keys are the specs the selector emits, a few hundred layouts per
-    (gemm_type, majors, dtypes, static n and k), any explicit config a caller pins, and a spec
-    for each strided layout of a batched A or C a caller passes.
-    """
+    """JIT factory for one ``spec``; ``_grouped_gemm_kernel(spec)()`` compiles it."""
+    # The builder closes over the spec's fields only, so TileLang's cache key is exactly the
+    # template parameter pack.
     gemm_type = spec.gemm_type.value
     a_k_major = spec.major_a is Major.K
     b_k_major = spec.major_b is Major.K
@@ -1089,11 +1066,11 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
     vector_row_store = spec.vector_row_store
     a_strides, c_strides = spec.a_strides, spec.c_strides
     headers = []
-    if native_wgmma:
+    if spec.native_wgmma:
         headers.append("dense_wgmma_helper.h")
-    if spec.gemm_type is GEMMType.DENSE and activation == "silu_and_mul":
+    if spec.gemm_type is GEMMType.DENSE and spec.activation == "silu_and_mul":
         headers.append("approx_math.h")
-    if vector_row_store:
+    if spec.vector_row_store:
         headers.append("streaming_load.h")  # copy16
     compile_flags = [*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"]
     if headers:
@@ -1159,7 +1136,7 @@ class GEMMTemplate(Kernel):
     | ``DENSE``                   | ``[M, K]``       | ``[N, K]``     | ``[M, N]``       | none                         |
     | ``M_GROUPED_ALIGNED_PER_ROW`` | ``[M, K]``     | ``[G, N, K]``  | ``[M, N]``       | ``[M]`` group of each row    |
     | ``M_GROUPED_ALIGNED_PSUM``  | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` psum row ends        |
-    | ``M_GROUPED_TIGHT_PSUM``    | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` psum row ends        |
+    | ``M_GROUPED_TIGHT_PSUM``    | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` row ends (or starts) |
     | ``M_GROUPED_TIGHT_PER_ROW`` | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[M]`` group of each row    |
     | ``M_GROUPED_MASKED``        | ``[G, max_m, K]``| ``[G, N, K]``  | ``[G, max_m, N]``| ``[G]`` valid rows per group |
     | ``BATCHED``                 | ``[G, M, K]``    | ``[G, N, K]``  | ``[G, M, N]``    | none                         |
@@ -1187,10 +1164,6 @@ class GEMMTemplate(Kernel):
     """
 
     supported_archs: list[int] = [90]
-
-    @staticmethod
-    def _torch_dtype_str(dtype: torch.dtype) -> str:
-        return str(dtype).split(".")[-1]
 
     @staticmethod
     def _major_of(t: torch.Tensor, k_dim: int) -> Major:
@@ -1232,8 +1205,8 @@ class GEMMTemplate(Kernel):
                 psum layouts; the slab height, or the mean over groups, when 0. A caller
                 whose routing is skewed passes the large experts' row count here.
             sm_count: Persistent grid size; the device's SM count when ``None``.
-            config: Pins ``block_m``, ``block_n`` and optionally ``num_stages`` instead of
-                running the selector.
+            config: Pins ``block_m``, ``block_n`` and optionally the other keys
+                ``spec_from_config`` takes, instead of running the selector.
             group_starts: Whether a tight psum ``grouped_layout`` holds group starts rather
                 than ends; the last group then ends at ``M``.
             device_index: Device the kernel is built for; the current one when ``None``.
@@ -1280,12 +1253,10 @@ class GEMMTemplate(Kernel):
 
     def describe(self, a: torch.Tensor, b: torch.Tensor, has_bias: bool = False) -> GEMMDesc:
         """The selector's view of a call; see the class docstring for the shapes."""
-        if self.gemm_type is GEMMType.K_GROUPED_CONTIGUOUS:
+        if self.gemm_type in (GEMMType.K_GROUPED_CONTIGUOUS, GEMMType.DENSE):
             if a.ndim != 2 or b.ndim != 2:
-                raise ValueError("k_grouped_contiguous takes A as [M, sum_k] and B as [N, sum_k]")
-        elif self.gemm_type is GEMMType.DENSE:
-            if a.ndim != 2 or b.ndim != 2:
-                raise ValueError("dense takes A as [M, K] and B as [N, K]")
+                k = "sum_k" if self.gemm_type is GEMMType.K_GROUPED_CONTIGUOUS else "K"
+                raise ValueError(f"{self.gemm_type.value} takes A as [M, {k}] and B as [N, {k}]")
         else:
             a_ndim = 3 if self._a_has_group else 2
             if a.ndim != a_ndim:
@@ -1311,8 +1282,8 @@ class GEMMTemplate(Kernel):
             num_groups=self.num_groups,
             major_a=GEMMTemplate._major_of(a, a.ndim - 1),
             major_b=GEMMTemplate._major_of(b, b.ndim - 1),
-            ab_dtype=GEMMTemplate._torch_dtype_str(a.dtype),
-            cd_dtype=GEMMTemplate._torch_dtype_str(self.output_dtype(a)),
+            ab_dtype=self.dtype_to_str(a.dtype),
+            cd_dtype=self.dtype_to_str(self.output_dtype(a)),
             num_sms=self.sm_count,
             static_dims=self.static_dims,
             m_alignment=self.m_alignment,
@@ -1340,13 +1311,14 @@ class GEMMTemplate(Kernel):
         """Why TMA cannot address these operands or the output, or ``None`` when it can.
 
         Every TMA-addressed row pitch must be a multiple of 16 bytes: the contiguous
-        extent of each operand, and ``N`` for the output row. ``K`` must be positive.
+        extent of each operand, and ``N`` for the output row. ``K`` must be positive
+        unless ``b`` is 2-D.
         """
         if a.dtype not in (torch.bfloat16, torch.float16) or b.dtype != a.dtype:
             return f"bf16 or fp16 operands of one dtype only, got {a.dtype} and {b.dtype}"
         if a.ndim < 2 or b.ndim < 2:
             return f"operands need at least two dims, got {a.ndim}-D and {b.ndim}-D"
-        if a.shape[-1] == 0 and b.ndim != 2:  # a 2-D B is K-grouped, whose sum_k may be 0
+        if a.shape[-1] == 0 and b.ndim != 2:  # a 2-D B (dense or K-grouped) may have K = 0
             return "K must be positive"
         for name, t in (("a", a), ("b", b)):
             inner = t.shape[-1] if t.stride(-1) == 1 else t.shape[-2]
@@ -1391,10 +1363,9 @@ class GEMMTemplate(Kernel):
     ) -> torch.Tensor:
         """Run dense ``C = A @ B^T`` or its grouped/batched forms.
 
-        The kernel takes each operand's physical storage, an MN-major operand's being the
-        transpose of its logical view. That storage must be contiguous, since a dynamic dim
-        hides a stride from TileLang's ABI check, except a batched A's and C's, which may be
-        strided as the class docstring states.
+        Each operand's physical storage (an MN-major operand's is the transpose of its
+        logical view) must be contiguous, except a batched A's and C's, which may be strided
+        as the class docstring states.
 
         Args:
             a: ``[M, K]``, ``[G, M, K]`` for masked/batched, or ``[M, sum_k]``
@@ -1488,6 +1459,3 @@ class GEMMTemplate(Kernel):
         if a_strides or c_strides:
             spec = dataclasses.replace(spec, a_strides=a_strides, c_strides=c_strides)
         return _grouped_gemm_kernel(spec)()
-
-
-GroupedGEMMTemplate = GEMMTemplate

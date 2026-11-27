@@ -21,6 +21,8 @@ def _check(workload, op) -> None:
 
 
 class MLADenseBwdFixture(FixtureBase):
+    # The kernel runs a fixed-length call as the packed one; the mask variants run in
+    # MLAVarlenBwdFixture, and these cases cover the fixed-length layout.
     PARAMS = [
         (
             "batch, seqlen_q, seqlen_kv, is_causal, sm_scale, dtype",
@@ -33,8 +35,7 @@ class MLADenseBwdFixture(FixtureBase):
                 pytest.param(1, 128, 320, True, None, torch.bfloat16, marks=pytest.mark.full),
                 # More queries than keys: the first rows see no key and get zero gradients.
                 pytest.param(1, 320, 128, True, None, torch.bfloat16, marks=pytest.mark.full),
-                pytest.param(1, 256, 256, False, None, torch.bfloat16, marks=pytest.mark.full),
-                # A caller's score scale in place of D_qk ** -0.5.
+                # The op forwards a caller's score scale in place of D_qk ** -0.5.
                 pytest.param(1, 256, 256, True, 0.05, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),

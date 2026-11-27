@@ -93,7 +93,7 @@ def _torch_gqa_bwd(workload, q, k, v):
     return fn
 
 
-@pytest.mark.parametrize("case", bench.cases(GQADenseBwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GQADenseBwdOp))
 def test_gqa_bwd_bench(case) -> None:
     """Backward is timed in training, so the kernels tune."""
     workload = case.workload
@@ -386,7 +386,7 @@ def _off_sm90() -> bool:
     return device.type == "cuda" and get_sm_version(device.index) != 90
 
 
-@pytest.mark.parametrize("case", bench.cases(GQADenseFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GQADenseFwdOp))
 def test_gqa_dense_fwd_bench(case) -> None:
     """Dense attention against FA3, FlashInfer's sink variant, and torch."""
     workload = case.workload
@@ -422,7 +422,7 @@ def _fa3_gqa_dense_with_lse(workload: GQADenseWithLSECall):
     return baseline_fn
 
 
-@pytest.mark.parametrize("case", bench.cases(GQADenseWithLSEFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GQADenseWithLSEFwdOp))
 def test_gqa_dense_with_lse_fwd_bench(case) -> None:
     """The training forward against FA3, which returns the same ``(o, lse)`` pair."""
     implementations = {"torch-ref": case.reference}
@@ -610,7 +610,7 @@ def _flashinfer_varlen_sinks(workload, inputs, rotate):
     return run
 
 
-@pytest.mark.parametrize("case", bench.cases(GQAVarlenFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GQAVarlenFwdOp))
 def test_gqa_varlen_fwd_bench(case) -> None:
     """Packed varlen GQA, including FP8 Q/K/V dequantized by one scale per request and KV head.
 
@@ -892,7 +892,7 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
     return run_fn
 
 
-@pytest.mark.parametrize("case", bench.cases(GQAPagedFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GQAPagedFwdOp))
 def test_gqa_paged_fwd_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs

@@ -1,7 +1,7 @@
 """Sweep behaviour of the shared delta-rule forward autotune helper, and the launch-width
 rule (``gemm_threads``) that narrows its candidates.
 
-The real sweep compiles fifteen kernels, so the selection logic is checked here
+The real sweep compiles a dozen kernels, so the selection logic is checked here
 against stub JIT builders: which candidates reach the autotuner, which sub-kernel
 winner lands in which merged key, and what happens when a sub-kernel cannot be
 tuned. ``tests/ops/test_deltanet.py`` covers the same helper on the device.
@@ -516,7 +516,7 @@ def test_default_config_width_is_one_the_kernel_builds() -> None:
 
 @pytest.mark.cuda_only("cuda-kernel")
 def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
-    """``init_config`` must not fall back for want of declared candidates."""
+    """A tune request runs the kernel's sweep over its declared candidates."""
     kernel_cls = deltanet_fwd.DeltaNetChunkFwdKernel
     calls: list[str] = []
     monkeypatch.setattr(
@@ -532,7 +532,7 @@ def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
         dim_v=64,
         dtype="bfloat16",
     )
-    kernel.autotune()
+    kernel.request_tune()
 
     assert calls == [kernel_cls.__name__]
     assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(

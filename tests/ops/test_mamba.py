@@ -30,36 +30,22 @@ from workloads.numerics import compare_outputs
 class SSDChunkCumsumFwdFixture(FixtureBase):
     PARAMS = [
         (
-            "batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune",
+            "batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype",
             [
                 # feature: no bias, no softplus (baseline path)
-                pytest.param(
-                    1, 2, 64, 4, False, False, torch.float16, False, marks=pytest.mark.smoke
-                ),
+                pytest.param(1, 2, 64, 4, False, False, torch.float16, marks=pytest.mark.smoke),
                 # feature: bias only (has_dt_bias branch, no softplus)
-                pytest.param(
-                    1, 2, 64, 4, True, False, torch.bfloat16, False, marks=pytest.mark.smoke
-                ),
+                pytest.param(1, 2, 64, 4, True, False, torch.bfloat16, marks=pytest.mark.smoke),
                 # feature: softplus only (no bias, dt_softplus branch)
-                pytest.param(
-                    1, 2, 64, 4, False, True, torch.float16, False, marks=pytest.mark.smoke
-                ),
+                pytest.param(1, 2, 64, 4, False, True, torch.float16, marks=pytest.mark.smoke),
                 # feature: bias + softplus (full pipeline)
-                pytest.param(
-                    1, 2, 64, 4, True, True, torch.bfloat16, False, marks=pytest.mark.full
-                ),
+                pytest.param(1, 2, 64, 4, True, True, torch.bfloat16, marks=pytest.mark.full),
                 # shape: larger batch and chunk count
-                pytest.param(
-                    2, 4, 64, 8, False, False, torch.float16, False, marks=pytest.mark.full
-                ),
+                pytest.param(2, 4, 64, 8, False, False, torch.float16, marks=pytest.mark.full),
                 # shape: larger chunk_len tile
-                pytest.param(
-                    1, 2, 128, 4, False, False, torch.bfloat16, False, marks=pytest.mark.full
-                ),
+                pytest.param(1, 2, 128, 4, False, False, torch.bfloat16, marks=pytest.mark.full),
                 # shape + feature: large shape with full pipeline
-                pytest.param(
-                    2, 4, 128, 16, True, True, torch.float16, False, marks=pytest.mark.full
-                ),
+                pytest.param(2, 4, 128, 16, True, True, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -68,14 +54,12 @@ class SSDChunkCumsumFwdFixture(FixtureBase):
 class SSDChunkScanFwdFixture(FixtureBase):
     PARAMS = [
         (
-            "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune",
+            "batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype",
             [
-                pytest.param(1, 2, 64, 4, 64, 32, 1, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param(
-                    1, 2, 128, 4, 128, 32, 1, torch.bfloat16, False, marks=pytest.mark.smoke
-                ),
-                pytest.param(2, 4, 64, 8, 64, 64, 2, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(2, 2, 64, 4, 64, 32, 2, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1, 2, 64, 4, 64, 32, 1, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1, 2, 128, 4, 128, 32, 1, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 64, 8, 64, 64, 2, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 2, 64, 4, 64, 32, 2, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -269,12 +253,12 @@ class SSDDecodeFixture(FixtureBase):
 class SSDStatePassingFwdFixture(FixtureBase):
     PARAMS = [
         (
-            "batch, num_chunks, n_heads, d_state, dtype, tune",
+            "batch, num_chunks, n_heads, d_state, dtype",
             [
-                pytest.param(1, 2, 4, 32, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param(1, 2, 4, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
-                pytest.param(2, 4, 8, 64, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(2, 4, 8, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1, 2, 4, 32, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1, 2, 4, 32, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(2, 4, 8, 64, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 4, 8, 64, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -344,7 +328,7 @@ class SSDChunkCumsumFwdTest(SSDChunkCumsumFwdWorkload, TestBase):
 
 @SSDChunkCumsumFwdFixture
 def test_ssd_chunk_cumsum_fwd(
-    batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype, tune
+    batch, num_chunks, chunk_len, n_heads, has_dt_bias, dt_softplus, dtype
 ):
     test = SSDChunkCumsumFwdTest(
         batch,
@@ -360,10 +344,7 @@ def test_ssd_chunk_cumsum_fwd(
         dt_softplus=dt_softplus,
         out_dtype=dtype,
     )
-    if tune:
-        op.request_tune()
-    inputs = test.gen_inputs()
-    test.check(op, *inputs)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -385,16 +366,12 @@ class SSDChunkScanFwdTest(SSDChunkScanFwdWorkload, TestBase):
 
 @SSDChunkScanFwdFixture
 def test_ssd_chunk_scan_fwd(
-    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune
+    batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype
 ):
     test = SSDChunkScanFwdTest(
         batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype
     )
-    op = SSDChunkScanFwdOp()
-    if tune:
-        op.request_tune()
-    inputs = test.gen_inputs()
-    test.check(op, *inputs)
+    test.check(SSDChunkScanFwdOp(), *test.gen_inputs())
 
 
 class SSDChunkStateFwdTest(SSDChunkStateFwdWorkload, TestBase):
@@ -477,13 +454,9 @@ class SSDStatePassingFwdTest(SSDStatePassingFwdWorkload, TestBase):
 
 
 @SSDStatePassingFwdFixture
-def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune):
+def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype):
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
-    op = SSDStatePassingFwdOp()
-    if tune:
-        op.request_tune()
-    inputs = test.gen_inputs()
-    test.check(op, *inputs)
+    test.check(SSDStatePassingFwdOp(), *test.gen_inputs())
 
 
 class SSDDecodeTest(SSDDecodeWorkload, TestBase):

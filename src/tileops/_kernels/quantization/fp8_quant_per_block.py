@@ -227,10 +227,6 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
             "evict_first": size < self._EVICT_FIRST_L2_SHARE * self.call.l2_bytes,
         }
 
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
-
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_devices(w=w)
         n, k = self.call.rows, self.call.cols
@@ -251,11 +247,8 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
 class FP8QuantPerBlockFwdKernel(_FP8QuantPerBlockFwdKernel):
     """Quantize each 128x128 tile of ``w`` against its own amax, reading ``w`` once.
 
-    Serves a K whose rows start on a 16-byte vector. A CTA owns a tile: each thread holds
-    16-byte vectors of it in registers, the CTA reduces the tile's amax by warp shuffles and
-    one exchange through shared memory, and each thread quantizes its vectors from the
-    registers. ``q`` and ``scale`` are bit-equal to the torch reference: the scale is the
-    product torch computes, and the quotient is correctly rounded.
+    Serves a K whose rows start on a 16-byte vector. ``q`` and ``scale`` are bit-equal to
+    the torch reference.
 
     Args:
         call: The call's shape, dtype and device facts.
@@ -272,11 +265,8 @@ class FP8QuantPerBlockFwdKernel(_FP8QuantPerBlockFwdKernel):
 
 
 class FP8QuantPerBlockUnalignedFwdKernel(_FP8QuantPerBlockFwdKernel):
-    """Quantize each 128x128 tile of ``w`` against its own amax, for any K.
-
-    The tile kernel with each element loaded and stored alone, adjacent lanes on adjacent
-    elements; it serves the calls whose rows do not all start on a 16-byte vector. ``q``
-    and ``scale`` are bit-equal to the torch reference.
+    """Quantize each 128x128 tile of ``w`` against its own amax, for any K, each element
+    loaded and stored alone. ``q`` and ``scale`` are bit-equal to the torch reference.
 
     Args:
         call: The call's shape, dtype and device facts.

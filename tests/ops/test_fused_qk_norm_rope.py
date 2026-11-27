@@ -51,10 +51,10 @@ def _case(positions, heads, kv_heads, dim, rot, dtype, cache, layout, mark, case
     )
 
 
+# Each qkv dtype and each cache dtype once: the two conversions are independent casts.
 _DTYPES = tuple(
     _case(_packed(5, 3), 4, 2, 128, 128, t, c, "neox", _SMOKE, f"{t}-{c}")
-    for t in ("bfloat16", "float16")
-    for c in ("bfloat16", "float16", "float32")
+    for t, c in (("bfloat16", "bfloat16"), ("float16", "float16"), ("bfloat16", "float32"))
 )
 
 # A head is D / (2 vec) lanes of two vec-wide accesses, padded to a power of two; a CTA is

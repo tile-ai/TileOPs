@@ -25,7 +25,6 @@ from tileops._kernels.moe.fused_topk import FusedTopKKernel
 from tileops._kernels.moe.indexed_expert_gemm import (
     IndexedExpertDownKernel,
     IndexedExpertGateUpKernel,
-    IndexedExpertGEMMTemplate,
     IndexedRouteStatsKernel,
     IndexedWeightedReduceKernel,
 )
@@ -48,7 +47,6 @@ __all__ = [
     "IndexedExpertCall",
     "IndexedExpertDownFwdInterface",
     "IndexedExpertDownKernel",
-    "IndexedExpertGEMMTemplate",
     "IndexedExpertGateUpFwdInterface",
     "IndexedExpertGateUpKernel",
     "IndexedRouteStatsFwdInterface",

@@ -1,9 +1,4 @@
-"""Benchmarks for the grouped GEMM op.
-
-Workload shapes, dtypes, and transpose layouts come from the ops manifest;
-per-variant roofline FLOP and byte counts come from the op's
-``eval_roofline()``.
-"""
+"""Benchmarks for the grouped GEMM op."""
 
 import pytest
 import torch
@@ -70,7 +65,7 @@ def _compiled_grouped_mm(workload: GroupedGEMMWorkload, inputs: tuple):
     return compiled_reference(fn)
 
 
-@pytest.mark.parametrize("case", bench.cases(GroupedGEMMFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GroupedGEMMFwdOp))
 def test_grouped_gemm_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs

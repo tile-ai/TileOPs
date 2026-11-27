@@ -1,19 +1,13 @@
-"""LogSumExp forward kernels using TileLang.
+"""LogSumExp forward kernels: ``y[i] = max_i + log(sum_j(exp(x[i,j] - max_i)))``.
 
-  - logsumexp: y[i] = max_i + log(sum_i(exp(x[i,j] - max_i)))
-
-Four implementations, each stating the calls it serves over a :class:`LogSumExpCall`:
-an edge-axis split read in the tensor's own layout, a streaming kernel for long
-fp16/bf16 rows on a filled grid, a split across blocks for a handful of long rows, and
-the general row kernel.
-
-A row whose length is not a multiple of the 256-element ``T.copy`` alignment is masked
-inside the kernel, its padding read as ``-inf``.
+Four implementations, each stating the calls it serves over a :class:`LogSumExpCall`: an
+edge-axis split read in the tensor's own layout, a streaming kernel for long fp16/bf16 rows
+on a filled grid, a split across blocks for a handful of long rows, and the general row
+kernel. A row off the 256-element alignment reads ``-inf`` past its end.
 """
 
 import functools
 from collections.abc import Callable
-from dataclasses import dataclass
 
 import tilelang
 import tilelang.language as T
@@ -53,38 +47,11 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class _StreamingLogSumExpPolicy:
-    """Launch shape and eligibility gate of the streaming kernel.
-
-    The launch pair is fixed rather than tuned, and ``LogSumExpStreamingKernel.refusal``
-    keeps the kernel on the shapes that pair suits.
-    """
-
-    threads: int = 128
-
-    cols_per_thread: int = 8
-
-    # Enough rows to fill the device with one block per row.
-    min_rows: int = 256
-
-    # Rows long enough that the tiled kernel's staging loses to streaming.
-    min_cols: int = 16384
-
-
-_STREAMING_LOGSUMEXP = _StreamingLogSumExpPolicy()
-
-
 @target_cache(maxsize=64)
 def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
-    """Fold per-segment ``(max, sum)`` into one logsumexp per row.
-
-    One block per row folds the row's pairs lane-parallel. The block is the
-    narrowest power of two that holds ``num_segs``, since an idle lane still
-    pays the block reduction; past a warp it stays one warp and each lane
-    folds several pairs. Unlike softmax there is no second pass over the
-    input. An all--inf row reads ``-inf + log(0)`` and a row holding +inf
-    reads ``inf + log(inf)``, which are torch's ``-inf`` and ``+inf``.
+    """Fold per-segment ``(max, sum)`` into one logsumexp per row, one block a row, lane-parallel
+    at the narrowest power of two holding ``num_segs`` (at most a warp). An all -inf row reads
+    ``-inf`` and a row holding +inf ``+inf``, as torch's.
     """
     num_segs = ceil_div(N, seg_n)
     lanes = min(WARP_LANES, 1 << (num_segs - 1).bit_length())
@@ -185,14 +152,8 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
 
 @target_cache(maxsize=64)
 def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
-    """Build a multi-tile logsumexp kernel.
-
-    Uses online softmax recurrence across N-tiles:
-      Single pass: compute running max and rescaled running sum.
-      Then: logsumexp = max + log(sum).
-
-    The input tensor has the raw shape $[M \\times N]$ (no host-side padding).
-    Boundary handling for the last tile is performed via masked loads.
+    """Build a multi-tile logsumexp kernel over raw ``(M, N)`` rows: one pass keeps a running max
+    and rescaled sum, then ``max + log(sum)``; the last tile's loads are masked.
     """
     N_padded = align_up(N, ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
@@ -297,14 +258,11 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
 
 @target_cache(maxsize=32)
 def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_per_thread: int):
-    """Build a streaming logsumexp kernel for long rows on a filled grid.
+    """Build a streaming logsumexp kernel for long rows on a filled grid, one block a row.
 
-    One block per row. Each thread vector-loads its ``cols_per_thread``
-    consecutive elements per chunk straight into registers (a reduction has
-    no reuse to stage through shared memory), keeps one running max and
-    ``cols_per_thread`` independent fp32 sum chains rescaled once per chunk
-    with the online-softmax recurrence, and merges once at the end: a warp
-    shuffle tree, then one warp folding the per-warp partials.
+    Each thread vector-loads ``cols_per_thread`` consecutive elements a chunk into registers,
+    keeping one running max and ``cols_per_thread`` fp32 sum chains rescaled once a chunk, then
+    merges across warps once.
     """
     chunk = threads * cols_per_thread
     if N % chunk:
@@ -520,21 +478,27 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
     """LogSumExp of long fp16/bf16 rows on a filled grid, one block per row.
 
     Rows stream straight to registers with the online recurrence at a fixed launch
-    shape (``_STREAMING_LOGSUMEXP``), so there is nothing to tune. Serves fp16/bf16 rows
-    long and many enough for that launch shape.
+    shape (``THREADS`` x ``COLS_PER_THREAD``), so there is nothing to tune. Serves fp16/bf16
+    rows long and many enough for that launch shape.
     """
 
     preferred_over = frozenset({"logsumexp_split"})
 
+    THREADS = 128
+    COLS_PER_THREAD = 8
+    # Enough rows to fill the device with one block per row.
+    MIN_ROWS = 256
+    # Rows long enough that the tiled kernel's staging loses to streaming.
+    MIN_COLS = 16384
+
     @classmethod
     def refusal(cls, call: LogSumExpCall) -> "str | None":
-        policy = _STREAMING_LOGSUMEXP
         if call.dtype not in (torch.float16, torch.bfloat16):
             return f"requires float16 or bfloat16, got {call.dtype}"
-        if call.m < policy.min_rows or call.n < policy.min_cols:
-            return f"streams at least {policy.min_rows} rows of {policy.min_cols}"
-        if call.n % (policy.threads * policy.cols_per_thread):
-            return f"requires rows a multiple of {policy.threads * policy.cols_per_thread}"
+        if call.m < cls.MIN_ROWS or call.n < cls.MIN_COLS:
+            return f"streams at least {cls.MIN_ROWS} rows of {cls.MIN_COLS}"
+        if call.n % (cls.THREADS * cls.COLS_PER_THREAD):
+            return f"requires rows a multiple of {cls.THREADS * cls.COLS_PER_THREAD}"
         return super().refusal(call)
 
     def __init__(self, call: LogSumExpCall):
@@ -543,8 +507,8 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
             call.m,
             call.n,
             self.dtype_str,
-            _STREAMING_LOGSUMEXP.threads,
-            _STREAMING_LOGSUMEXP.cols_per_thread,
+            self.THREADS,
+            self.COLS_PER_THREAD,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -598,17 +562,10 @@ class LogSumExpSplitKernel(_LogSumExpKernelBase):
 
 
 class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
-    """LogSumExp of rows, one block per ``block_m`` rows.
-
-    The general implementation: it serves any call, and runs where no specialised one
-    applies. A row one shared-memory tile holds is reduced in one pass; a longer row
-    tiles over N with the online softmax recurrence (running max and rescaled sum).
-    Non-aligned N is masked inside the kernel. Tunes ``tile_n``, ``block_m`` and
-    ``threads``.
-
-    ``forward`` takes the tensor the op declares and reduces ``call.axes`` of it;
-    moving those axes to the end, flattening to rows and shaping the result back are
-    this kernel's business.
+    """LogSumExp of rows, ``block_m`` rows a block: the general implementation, serving any call no
+    specialised one does. A row one shared tile holds reduces in one pass; a longer one tiles
+    with a running max and rescaled sum. Tunes ``tile_n``, ``block_m`` and ``threads``.
+    ``forward`` moves ``call.axes`` to rows and back itself.
     """
 
     general: bool = True

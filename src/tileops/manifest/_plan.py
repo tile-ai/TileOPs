@@ -79,52 +79,6 @@ __all__ = [
     "signature_schema_errors",
 ]
 
-_SIGNATURE_KEYS = frozenset(
-    {"forall", "params", "inputs", "outputs", "types", "let", "shape_rules", "dtype_combos"}
-)
-# Each tensor key: the values it takes, and what they are.
-_TENSOR_FIELDS: dict[str, tuple] = {
-    "dtype": (lambda v: isinstance(v, str), "a dtype expression"),
-    "shape": (lambda v: isinstance(v, str), "a shape"),
-    "type": (lambda v: isinstance(v, str), "an argument type"),
-    "nullable": (lambda v: isinstance(v, str), "a presence condition"),
-    "mutated": (lambda v: isinstance(v, (bool, str)), "a bool or a discriminant condition"),
-    "write_only": (lambda v: isinstance(v, bool), "a bool"),
-    "contiguous": (lambda v: isinstance(v, bool), "a bool"),
-    "kw_only": (lambda v: isinstance(v, bool), "a bool"),
-    "alias": (lambda v: isinstance(v, str), "an input name"),
-    "buffer": (lambda v: v == "out", "'out'"),
-    "overlaps": (
-        lambda v: isinstance(v, list) and all(isinstance(n, str) for n in v),
-        "a list of input names",
-    ),
-    "device": (lambda v: v == "cpu", "'cpu'"),
-    "values": (lambda v: isinstance(v, str), "a generator call"),
-    "requires": (lambda v: isinstance(v, list), "a list of predicate calls"),
-}
-_COMMON_TENSOR_KEYS = {"dtype", "shape", "contiguous"}
-# The tensor keys each role admits.
-_ROLE_KEYS = {
-    "inputs": frozenset(
-        _COMMON_TENSOR_KEYS
-        | {
-            "type",
-            "default",
-            "kw_only",
-            "mutated",
-            "write_only",
-            "overlaps",
-            "device",
-            "values",
-            "requires",
-        }
-    ),
-    "outputs": frozenset(_COMMON_TENSOR_KEYS | {"nullable", "buffer", "alias", "overlaps"}),
-}
-_ADT_CTOR_KEYS = frozenset({"fields", "invariant", "python"})
-_PARAM_KEYS = frozenset({"type", "default", "kw_only"})
-_FAMILY_KEYS = frozenset({"params", "match", "cases"})
-_ROOFLINE_KEYS = frozenset({"flops", "bytes", "func"})
 # Reserved: `forward` takes the output buffer under this name.
 _RESERVED = "out"
 
@@ -254,9 +208,10 @@ def roofline_plan(
     formula that does not exist yet. Without a readable signature (*sig* None) the names a
     formula reads cannot be judged, and only its form is checked.
     """
+    keys = {"flops", "bytes", "func"}
     if not isinstance(roofline, dict):
-        return [f"roofline must be a mapping of {sorted(_ROOFLINE_KEYS)}"], None
-    errors = [f"roofline: unknown key {k!r}" for k in sorted(set(roofline) - _ROOFLINE_KEYS)]
+        return [f"roofline must be a mapping of {sorted(keys)}"], None
+    errors = [f"roofline: unknown key {k!r}" for k in sorted(set(roofline) - keys)]
     if ("func" in roofline) == ("flops" in roofline) or (
         "func" in roofline and "bytes" in roofline
     ):
@@ -276,6 +231,14 @@ def roofline_plan(
                     errors.append(f"roofline.func {path!r} is not callable")
         return errors, (None if errors else {"func": fn})
     plan = {}
+    if sig is not None:
+        scalar_lets = call_scalar_lets(sig)
+        indices = (
+            {n for n, k in sig.forall.items() if k != "Seq[Int]"} | set(sig.params) | set(sig.let)
+        ) - scalar_lets
+        tensors = {*sig.inputs, *sig.outputs}
+        maybes = {p for p in sig.params if sig.kind(p).tag == "Maybe"}
+        buffered = {_RESERVED} if any(o.buffer for o in sig.outputs.values()) else set()
     for key in ("flops", "bytes"):
         if key not in roofline:
             continue
@@ -291,17 +254,10 @@ def roofline_plan(
         plan[key] = node
         if sig is None:
             continue
-        scalar_lets = call_scalar_lets(sig)
-        indices = (
-            {n for n, k in sig.forall.items() if k != "Seq[Int]"} | set(sig.params) | set(sig.let)
-        ) - scalar_lets
         errors += [
             f"roofline.{key}: let {n!r} reads a call-time scalar; read it only in a refinement"
             for n in sorted(_formula_reads(node) & scalar_lets)
         ]
-        tensors = {*sig.inputs, *sig.outputs}
-        maybes = {p for p in sig.params if sig.kind(p).tag == "Maybe"}
-        buffered = {_RESERVED} if any(o.buffer for o in sig.outputs.values()) else set()
         for call in (c for c in ast.walk(node) if isinstance(c, ast.Call)):
             name = callee(call.func)
             allowed = tensors | (maybes | buffered if name == "present" else set())
@@ -379,15 +335,15 @@ def _adt_errors(name: object, adt: object) -> list[str]:
         or set(adt) != {"sum"}
     ):
         return [f"adt {name!r}: needs an identifier and exactly a non-empty `sum` of constructors"]
-    errors = []
+    errors, keys = [], {"fields", "invariant", "python"}
     for ctor, spec in ctors.items():
         where = f"adt {name}.{ctor}"
         if (
             not (isinstance(ctor, str) and ctor.isidentifier())
             or not isinstance(spec, dict)
-            or set(spec) - _ADT_CTOR_KEYS
+            or set(spec) - keys
         ):
-            errors.append(f"{where}: needs an identifier and keys among {sorted(_ADT_CTOR_KEYS)}")
+            errors.append(f"{where}: needs an identifier and keys among {sorted(keys)}")
             continue
         if not _qualified(spec.get("python")):
             errors.append(f"{where}: `python` must name the constructor's class, `module.Class`")
@@ -435,21 +391,49 @@ def check_adts(adts: object) -> tuple[dict, list[str]]:
 
 def signature_schema_errors(sig: dict) -> list[str]:
     """Keys a fixed section of `signature` does not define, and tensor fields of the wrong type."""
+    # Each tensor key: the values it takes, and what they are.
+    tensor_fields = {
+        "dtype": (lambda v: isinstance(v, str), "a dtype expression"),
+        "shape": (lambda v: isinstance(v, str), "a shape"),
+        "type": (lambda v: isinstance(v, str), "an argument type"),
+        "nullable": (lambda v: isinstance(v, str), "a presence condition"),
+        "mutated": (lambda v: isinstance(v, (bool, str)), "a bool or a discriminant condition"),
+        "write_only": (lambda v: isinstance(v, bool), "a bool"),
+        "contiguous": (lambda v: isinstance(v, bool), "a bool"),
+        "kw_only": (lambda v: isinstance(v, bool), "a bool"),
+        "alias": (lambda v: isinstance(v, str), "an input name"),
+        "buffer": (lambda v: v == "out", "'out'"),
+        "overlaps": (
+            lambda v: isinstance(v, list) and all(isinstance(n, str) for n in v),
+            "a list of input names",
+        ),
+        "device": (lambda v: v == "cpu", "'cpu'"),
+        "values": (lambda v: isinstance(v, str), "a generator call"),
+        "requires": (lambda v: isinstance(v, list), "a list of predicate calls"),
+    }
+    # The tensor keys each role admits.
+    role_keys = {
+        "inputs": {"dtype", "shape", "contiguous", "type", "default", "kw_only", "mutated"}
+        | {"write_only", "overlaps", "device", "values", "requires"},
+        "outputs": {"dtype", "shape", "contiguous", "nullable", "buffer", "alias", "overlaps"},
+    }
+    mappings = ("forall", "params", "inputs", "outputs", "types", "let")
     malformed = [
         f"`{key}` must be a mapping"
-        for key in ("forall", "params", "inputs", "outputs", "types", "let")
+        for key in mappings
         if sig.get(key) is not None and not isinstance(sig[key], dict)
     ]
     sig = {k: ({} if f"`{k}` must be a mapping" in malformed else v) for k, v in sig.items()}
-    sections = [("signature", sig, _SIGNATURE_KEYS)]
+    sections = [("signature", sig, {*mappings, "shape_rules", "dtype_combos"})]
     tensors = [
         (g, f"{g}.{n}", d) for g in ("inputs", "outputs") for n, d in (sig.get(g) or {}).items()
     ]
     for n, d in (sig.get("params") or {}).items():
         if not (isinstance(d, dict) and "shape" in d):
-            sections.append((f"params.{n}", d, _PARAM_KEYS))
-    sections += [(where, d, _ROLE_KEYS[role]) for role, where, d in tensors]
-    sections += [(f"types.{n}", d, _FAMILY_KEYS) for n, d in (sig.get("types") or {}).items()]
+            sections.append((f"params.{n}", d, {"type", "default", "kw_only"}))
+    sections += [(where, d, role_keys[role]) for role, where, d in tensors]
+    families = (sig.get("types") or {}).items()
+    sections += [(f"types.{n}", d, {"params", "match", "cases"}) for n, d in families]
     errors = malformed + [
         f"{where}: unknown key {k!r}"
         for where, d, keys in sections
@@ -457,7 +441,7 @@ def signature_schema_errors(sig: dict) -> list[str]:
         for k in sorted(set(d) - keys, key=repr)
     ]
     for _, where, d in tensors:
-        for key, (ok, what) in _TENSOR_FIELDS.items():
+        for key, (ok, what) in tensor_fields.items():
             if isinstance(d, dict) and key in d and not ok(d[key]):
                 errors.append(f"{where}.{key}: {d[key]!r} is not {what}")
     errors += _input_order_errors(sig.get("inputs") or {})
@@ -465,14 +449,10 @@ def signature_schema_errors(sig: dict) -> list[str]:
 
 
 def _input_order_errors(inputs: dict) -> list[str]:
-    """Diagnostics of the input order.
+    """Diagnostics of the input order, the generated signature's parameter order.
 
     A positional input without a `default` may not follow one with a `default`, nor a
     positional input a `kw_only` one.
-
-    Input order is the generated signature's parameter order, so a positional input without a
-    default after one with a default emits `parameter without a default follows parameter with
-    a default` and the generated validator does not compile.
     """
     decls = {n: d for n, d in inputs.items() if isinstance(d, dict)}
     keyword = [n for n, d in decls.items() if d.get("kw_only") is True]
@@ -786,6 +766,7 @@ def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str
         return node
 
     tensors = {**sig.inputs, **sig.outputs}
+    each = elementwise(sig)
     lets = {n: node for n, e in sig.let.items() if (node := parse_field(f"let {n}", e)) is not None}
     rules = [
         node
@@ -806,7 +787,7 @@ def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str
         if node is not None:
             found: list[str] = []
             listed = d.type.replace(" ", "") == "list[Tensor]"
-            kind = dtype_kind(sig, node, found, elementwise(sig) if listed else frozenset())
+            kind = dtype_kind(sig, node, found, each if listed else frozenset())
             if kind is not None and kind.tag == "Maybe":
                 found.append(f"{ast.unparse(node)} may be absent; use coalesce_dtype")
             errors += [f"tensor {t!r} dtype: {e}" for e in found]
@@ -820,7 +801,6 @@ def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str
 
     env, let_errors = kind_env(sig, lets)
     errors += let_errors + _argument_errors(sig)
-    each = elementwise(sig)
     scalar_inputs = sig.scalar_inputs
     scalar_lets = call_scalar_lets(sig)
     value_lists = {n for n, k in sig.forall.items() if k == "Seq[Int]"}

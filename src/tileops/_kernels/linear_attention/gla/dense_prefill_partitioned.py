@@ -11,6 +11,7 @@ from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry
 from tileops._kernels.linear_attention.gla.call_spec import (
+    PASS_CONFIGS,
     GLACall,
     GLAFwdInterface,
     build_entry,
@@ -51,11 +52,7 @@ def _gla_fwd_h_summary_kernel(
 
     @tilelang.jit(
         out_idx=[-2, -1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        pass_configs=PASS_CONFIGS,
     )
     def _summary_func(num_stages=2, threads=128):
         k_shape = [batch, seq_len, heads, dim_k]
@@ -451,13 +448,10 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             dim_v=dim_v,
             chunk_size=64,
             scale=scale,
-            output_final_state=True,
             dtype=dtype,
+            device_index=device_index,
         )
-
-        self._unread_state = torch.empty(
-            1, dtype=torch.float32, device=torch.device("cuda", device_index)
-        )
+        self._unread_state = torch.empty(1, dtype=torch.float32, device=self._build_device)
 
     @property
     def default_config(self) -> dict:

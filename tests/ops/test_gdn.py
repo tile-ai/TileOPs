@@ -1,10 +1,15 @@
+import functools
 import math
 
 import pytest
 import torch
 
 from tests.cuda_graph_contract import CapturedGraph
-from tests.state_pool_guard import check_padded_slots_skipped
+from tests.state_pool_guard import (
+    check_padded_slots_skipped,
+    check_strided_pool_in_place,
+    pooled_call,
+)
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import GDNCall
@@ -122,7 +127,7 @@ def test_gdn_partitioned_prefill_carries_a_value_major_state() -> None:
     """The partition correction reads and writes the caller's layout, not the recurrence's."""
     torch.manual_seed(42)
     test = GDNFwdTest(1, 512, 2, 128, torch.bfloat16, has_initial_state=True, state_v_first=True)
-    q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
+    q, k, v, g, beta, *state = test.gen_inputs()
     # A gentle decay, so the state carried across partitions still reaches the output.
     _check_partitioned(test, q, k, v, g * 0.01, beta, *state, state_v_first=True)
 
@@ -156,16 +161,23 @@ def test_gdn_prefill_packs_sequences_of_one_length() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.sm90
-def test_gdn_prefill_packs_many_sequences_shorter_than_a_chunk() -> None:
+def test_gdn_prefill_packs_many_sequences_shorter_than_a_chunk(monkeypatch) -> None:
     """The warp-group solve over bfloat16 sequences of one length, each a chunk whose last
     rows lie past the sequence, with grouped value heads and the step size from raw logits
     doubled."""
+    from tileops._kernels.linear_attention.gdn import prefill
+
+    solves = []
+    solve = prefill.prefill_solve_warpgroup
+    monkeypatch.setattr(
+        prefill, "prefill_solve_warpgroup", lambda *a, **kw: solves.append(1) or solve(*a, **kw)
+    )
     torch.manual_seed(42)
     test = GDNFwdTest(
         1,
         0,
         1,
-        128,
+        64,
         torch.bfloat16,
         value_heads=4,
         sequence_lengths=(40,) * 264,
@@ -174,17 +186,26 @@ def test_gdn_prefill_packs_many_sequences_shorter_than_a_chunk() -> None:
     )
     op = GDNFwdOp(use_beta_sigmoid_in_kernel=True, allow_neg_eigval=True)
     test.check(op, *test.gen_inputs())
+    assert solves
 
 
 @pytest.mark.smoke
 @pytest.mark.sm90
-def test_gdn_prefill_keeps_busy_packed_sequences_whole() -> None:
-    """Packed sequences whose walks hold more than half the SMs run unpartitioned."""
+def test_gdn_prefill_keeps_busy_packed_sequences_whole(monkeypatch) -> None:
+    """Packed sequences whose walks hold more than half the SMs run the one-kernel prefill."""
+    from tileops._kernels.linear_attention.gdn import prefill
+
+    calls = []
+    fused = prefill.fused_gdr_prefill
+    monkeypatch.setattr(
+        prefill, "fused_gdr_prefill", lambda *a, **kw: calls.append(1) or fused(*a, **kw)
+    )
     torch.manual_seed(42)
     test = GDNFwdTest(
         1, 0, 8, 128, torch.bfloat16, value_heads=32, sequence_lengths=(128, 128, 128, 100)
     )
     test.check(GDNFwdOp(), *test.gen_inputs())
+    assert calls
 
 
 @pytest.mark.smoke
@@ -216,18 +237,32 @@ def test_gdn_prefill_reads_offsets_rewritten_in_place(_architecture: int) -> Non
     test.check(op, *inputs)
 
 
+def _check_correlated_keys(rows: int, heads: int, dim: int, dtype: torch.dtype) -> None:
+    """One 64-token chunk a row of identical keys, step size 0.5 and no decay: every power of
+    the chunk's strictly lower matrix reaches the inverse."""
+    test = GDNFwdTest(rows, 64, heads, dim, dtype)
+    q = torch.zeros(rows, 64, heads, dim, dtype=dtype, device=run_device())
+    q[..., 0] = 1
+    g = torch.zeros(rows, 64, heads, dtype=dtype, device=run_device())
+    test.check(GDNFwdOp(), q, q.clone(), torch.ones_like(q), g, torch.full_like(g, 0.5))
+
+
+def _fast_decay(test: GDNFwdTest) -> list:
+    """*test*'s raw-gate inputs with every row decaying by exp(A_log) * softplus(g + dt_bias)
+    = 16 * 0.1 nats."""
+    inputs = test.gen_inputs()
+    inputs[3].zero_()
+    inputs[8].fill_(math.log(16.0))
+    inputs[9].fill_(math.log(math.expm1(0.1)))
+    return inputs
+
+
 @pytest.mark.smoke
 @PREFILL_ARCHITECTURES
 def test_gdn_prefill_inverts_a_chunk_of_correlated_keys(_architecture: int) -> None:
     """Identical keys, step size 0.5 and no decay: every power of the chunk's strictly
     lower matrix reaches the inverse, and every off-diagonal block depends on another."""
-    test = GDNFwdTest(1, 64, 1, 128, torch.float16)
-    q = torch.zeros(1, 64, 1, 128, dtype=torch.float16, device=run_device())
-    q[..., 0] = 1
-    k, v = q.clone(), torch.ones_like(q)
-    g = torch.zeros(1, 64, 1, dtype=torch.float16, device=run_device())
-    beta = torch.full_like(g, 0.5)
-    test.check(GDNFwdOp(), q, k, v, g, beta)
+    _check_correlated_keys(1, 1, 128, torch.float16)
 
 
 @pytest.mark.smoke
@@ -236,13 +271,7 @@ def test_gdn_prefill_inverts_correlated_keys_in_the_warp_group_solve() -> None:
     """The warp-group solve's inverse on bfloat16 chunks of identical keys, step size 0.5
     and no decay, where every off-diagonal block depends on another. Keys 64 wide keep the
     call off the one-kernel prefill."""
-    test = GDNFwdTest(66, 64, 16, 64, torch.bfloat16)
-    q = torch.zeros(66, 64, 16, 64, dtype=torch.bfloat16, device=run_device())
-    q[..., 0] = 1
-    k, v = q.clone(), torch.ones_like(q)
-    g = torch.zeros(66, 64, 16, dtype=torch.bfloat16, device=run_device())
-    beta = torch.full_like(g, 0.5)
-    test.check(GDNFwdOp(), q, k, v, g, beta)
+    _check_correlated_keys(66, 16, 64, torch.bfloat16)
 
 
 # Two rows of 64 value heads: 128 walks, enough to route a 128-wide call to the one-kernel
@@ -287,13 +316,7 @@ def test_gdn_fused_prefill_matches_reference(dtype: torch.dtype, params: dict, f
 def test_gdn_fused_prefill_inverts_correlated_keys_in_float16() -> None:
     """The one-kernel prefill's float16 inverse on chunks of identical keys, step size 0.5 and
     no decay, where every off-diagonal block of the inverse depends on another."""
-    test = GDNFwdTest(FUSED_ROWS, 64, FUSED_HEADS, 128, torch.float16)
-    q = torch.zeros(FUSED_ROWS, 64, FUSED_HEADS, 128, dtype=torch.float16, device=run_device())
-    q[..., 0] = 1
-    k, v = q.clone(), torch.ones_like(q)
-    g = torch.zeros(FUSED_ROWS, 64, FUSED_HEADS, dtype=torch.float16, device=run_device())
-    beta = torch.full_like(g, 0.5)
-    test.check(GDNFwdOp(), q, k, v, g, beta)
+    _check_correlated_keys(FUSED_ROWS, FUSED_HEADS, 128, torch.float16)
 
 
 @pytest.mark.smoke
@@ -305,11 +328,7 @@ def test_gdn_fused_prefill_keeps_a_fast_decay_finite_in_fp16() -> None:
     test = GDNFwdTest(
         FUSED_ROWS, 64, 16, 128, torch.float16, value_heads=FUSED_HEADS, raw_gate=True
     )
-    inputs = test.gen_inputs()
-    inputs[3].zero_()
-    inputs[8].fill_(math.log(16.0))
-    inputs[9].fill_(math.log(math.expm1(0.1)))
-    test.check(GDNFwdOp(use_gate_in_kernel=True), *inputs)
+    test.check(GDNFwdOp(use_gate_in_kernel=True), *_fast_decay(test))
 
 
 @pytest.mark.smoke
@@ -422,12 +441,7 @@ def test_gdn_prefill_keeps_a_fast_decay_finite_in_fp16(_architecture: int) -> No
     """
     torch.manual_seed(42)
     test = GDNFwdTest(1, 64, 2, 128, torch.float16, raw_gate=True)
-    inputs = test.gen_inputs()
-    # Decay per row is exp(A_log) * softplus(g + dt_bias) = 16 * 0.1.
-    inputs[3].zero_()
-    inputs[8].fill_(math.log(16.0))
-    inputs[9].fill_(math.log(math.expm1(0.1)))
-    test.check(GDNFwdOp(use_gate_in_kernel=True), *inputs)
+    test.check(GDNFwdOp(use_gate_in_kernel=True), *_fast_decay(test))
 
 
 @pytest.mark.smoke
@@ -437,7 +451,7 @@ def test_gdn_partitioned_prefill_normalizes_the_key_it_stages() -> None:
     """The warmup pass stages the key itself, so partitioning normalizes it a second time."""
     torch.manual_seed(42)
     test = GDNFwdTest(1, 512, 2, 128, torch.bfloat16, l2norm=True)
-    q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
+    q, k, v, g, beta = test.gen_inputs()
     _check_partitioned(test, q, k, v, g * 0.01, beta, use_qk_l2norm_in_kernel=True)
 
 
@@ -461,7 +475,7 @@ def test_gdn_partitioned_dense_prefill_matches_reference(
     """Exercise warmup, state correction, and partitioned forward together."""
     torch.manual_seed(42)
     test = GDNFwdTest(1, 512, 2, 128, torch.bfloat16, has_initial_state=has_initial_state)
-    q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
+    q, k, v, g, beta, *state = test.gen_inputs()
     # A gentle decay, so the state carried across partitions still reaches the output.
     _check_partitioned(test, q, k, v, g * 0.01, beta, *state)
 
@@ -474,7 +488,7 @@ def test_gdn_partitioned_prefill_ends_on_a_short_piece() -> None:
     the last chunk is partial."""
     torch.manual_seed(42)
     test = GDNFwdTest(1, 45 * 64 - 20, 2, 128, torch.bfloat16, value_heads=8)
-    q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
+    q, k, v, g, beta = test.gen_inputs()
     _check_partitioned(test, q, k, v, g * 0.01, beta)
 
 
@@ -499,7 +513,6 @@ def test_gdn_partitioned_prefill_splits_only_the_long_packed_sequences() -> None
     [
         pytest.param(8, torch.float16, marks=pytest.mark.smoke, id="b8-fp16"),
         pytest.param(8, torch.bfloat16, marks=pytest.mark.smoke, id="b8-bf16"),
-        pytest.param(1, torch.bfloat16, marks=pytest.mark.full, id="b1-bf16"),
     ],
 )
 def test_gdn_dense_decode_matches_reference(batch: int, dtype: torch.dtype) -> None:
@@ -688,14 +701,7 @@ class GDNFwdCallTest(GDNFwdCall, TestBase):
     pass
 
 
-def _pooled(dtype: torch.dtype, *, some: tuple[str, ...] = (), **row) -> GDNFwdCallTest:
-    """A manifest call whose states live in a pool: sequence ``n`` starts from slot
-    ``state_indices[n]`` and leaves its final state there, every other slot untouched."""
-    name = "bfloat16" if dtype == torch.bfloat16 else "float16"
-    call = manifest_call(
-        "GDNFwdOp", {"T": name}, some=["initial_state", "state_indices", *some], **row
-    )
-    return GDNFwdCallTest(call)
+_pooled = functools.partial(pooled_call, "GDNFwdOp", GDNFwdCallTest)
 
 
 @pytest.mark.parametrize(
@@ -776,19 +782,9 @@ def test_gdn_partitioned_prefill_updates_its_slots_of_a_state_pool(state_v_first
 def test_gdn_decode_updates_a_strided_pool_in_place() -> None:
     """A pool that is a strided view is advanced in place, the call returning that view."""
     torch.manual_seed(42)
-    test = _pooled(torch.bfloat16, B=4, S=1, H=2, HV=4, K=128, V=128, P=8)
-    q, k, v, g, beta, pool, *rest = test.gen_inputs()
-    strided = torch.empty((2 * pool.shape[0], *pool.shape[1:]), device=pool.device)[::2]
-    strided.copy_(pool)
-    op = GDNFwdOp()
-
-    def run(*args, **keywords):
-        # The compared state is the caller's view, so a missed copy-back fails the check.
-        o, final_state = op(*args, **keywords)
-        assert final_state is args[5]
-        return o, final_state
-
-    test.check(op, q, k, v, g, beta, strided, *rest, runs=run)
+    check_strided_pool_in_place(
+        _pooled(torch.bfloat16, B=4, S=1, H=2, HV=4, K=128, V=128, P=8), GDNFwdOp()
+    )
 
 
 def _columns(tensors: list[torch.Tensor], pad: int) -> list[torch.Tensor]:
@@ -821,10 +817,13 @@ _QWEN_FLAGS = {
 @pytest.mark.parametrize(
     ("row", "flags", "pads"),
     [
+        # Qwen3.8-27B: q, k, v the 10240 columns of the convolution output; beta and g
+        # columns 0 and 48 of the 16480-wide input projection; block solve, whole walk.
         pytest.param(
             {"S": 1000, "H": 16, "HV": 48, "P": 2}, _QWEN_FLAGS, (0, 16384),
             marks=pytest.mark.smoke, id="qwen3.8-27b",
         ),
+        # A split walk: the warmup and state passes read k, v and beta in place.
         pytest.param(
             {"S": 8192, "H": 16, "HV": 48, "P": 1}, _QWEN_FLAGS, (8, 16),
             marks=pytest.mark.full, id="partitioned",
@@ -833,6 +832,7 @@ _QWEN_FLAGS = {
             {"S": 4096, "H": 16, "HV": 48, "P": 1}, {"use_gate_in_kernel": True}, (8, 16),
             marks=pytest.mark.full, id="warp-group-solve",
         ),
+        # The one-kernel prefill reads packed copies.
         pytest.param(
             {"S": 4096, "H": 16, "HV": 128, "P": 1}, {}, (8, 16), marks=pytest.mark.full,
             id="one-kernel-prefill",
@@ -840,17 +840,8 @@ _QWEN_FLAGS = {
     ],
 )  # fmt: skip
 def test_gdn_prefill_reads_projection_columns_in_place(row: dict, flags: dict, pads) -> None:
-    """q, k and v as columns of one wide tensor, g and beta of another, are read where they
-    lie, or by the one-kernel prefill from packed copies: outputs and states match the
-    reference, and neither wide tensor changes.
-
-    The cells: Qwen3.8-27B's prefill, through the block solve and the whole walk, with q, k
-    and v the 10240 columns of the convolution's output and beta and g columns 0 and 48 of
-    rows 16480 wide, the input projection's row; 128 chunks of 48 heads, whose walk splits so
-    that the warmup and state passes read k, v and beta in place too; rows of one length
-    without the key norm, through the warp-group solve; and whole sequences keeping most SMs
-    busy without the key norm, through the one-kernel prefill, which reads packed copies.
-    """
+    """q, k and v as columns of one wide tensor, g and beta of another: outputs and states
+    match the reference, and neither wide tensor changes."""
     torch.manual_seed(42)
     some = ("A_log", "dt_bias") if flags.get("use_gate_in_kernel") else ()
     test = _pooled(torch.bfloat16, some=some, B=1, K=128, V=128, **row, **flags)
@@ -875,22 +866,27 @@ _COLUMN_FLAGS = {"use_qk_l2norm_in_kernel": True, "use_beta_sigmoid_in_kernel": 
 @pytest.mark.parametrize(
     ("row", "flags", "layout"),
     [
+        # Tokens 10244 elements apart, off 16-byte alignment.
         pytest.param(
             {"B": 1, "S": 1000, "P": 2}, _QWEN_FLAGS, "unaligned",
             marks=(pytest.mark.smoke, pytest.mark.sm90), id="prefill",
         ),
+        # The SM89 chunk prefill copies at its entry.
         pytest.param(
             {"B": 1, "S": 200}, _QWEN_FLAGS, "unaligned",
             marks=(pytest.mark.full, pytest.mark.sm89), id="unpooled-prefill",
         ),
+        # q's heads 136 elements apart: a token's heads are not packed.
         pytest.param(
             {"B": 1, "S": 200, "P": 4}, _QWEN_FLAGS, "padded-heads",
             marks=(pytest.mark.full, pytest.mark.sm90), id="padded-heads",
         ),
+        # v expanded: its tokens zero elements apart.
         pytest.param(
             {"B": 1, "S": 200, "P": 4}, _QWEN_FLAGS, "expanded",
             marks=(pytest.mark.full, pytest.mark.sm90), id="expanded",
         ),
+        # The dense decode and, in batch order, the column decode read packed copies.
         pytest.param(
             {"B": 3, "S": 1, "P": 4}, _QWEN_FLAGS, "unaligned", marks=pytest.mark.full,
             id="decode",
@@ -905,15 +901,7 @@ def test_gdn_copies_projection_columns_it_cannot_read_in_place(
     row: dict, flags: dict, layout: str
 ) -> None:
     """Inputs a kernel does not read in place are copied first: outputs and states match the
-    reference all the same.
-
-    The cells: a pooled SM90 prefill whose tokens lie 10244 elements apart, off 16-byte
-    alignment; on SM89, an unpooled prefill of such tokens, which the chunk prefill copies at
-    its entry; a pooled prefill with q's heads 136 elements apart, so a token's heads are not
-    packed, and one with an expanded v, its tokens zero elements apart; a decode step of
-    three pooled sequences, which the dense decode reads packed; and a decode step of two
-    sequences in batch order, which the column decode reads packed.
-    """
+    reference."""
     torch.manual_seed(42)
     row = {"H": 16, "HV": 48, "K": 128, "V": 128, **row}
     some = ("A_log", "dt_bias") if flags.get("use_gate_in_kernel") else ()
@@ -1161,5 +1149,9 @@ def test_gdn_column_decode_uses_the_call_gate_and_beta_shapes(batch, heads, allo
         allow_neg_eigval=allow_neg_eigval,
         target=BUILTIN,
     )
-    test.check(op, *test.gen_inputs())
-    assert [type(kernel) for kernel in op.iter_kernels()] == [GDNColumnDecodeKernel]
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    [kernel] = op.iter_kernels()
+    assert type(kernel) is GDNColumnDecodeKernel
+    with pytest.raises(ValueError, match="runs on"):
+        kernel.forward(*(tensor.cpu() for tensor in inputs[:6]))

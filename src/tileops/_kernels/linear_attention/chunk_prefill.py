@@ -20,14 +20,9 @@ from tileops._kernels.linear_attention.chunk_plan import (
 def split_prepare_enabled(call):
     """Whether a channel-gate chunk call prepares its chunks with the split SM90 launches.
 
-    Raw gates take them on SM90: their FP32 per-pair entries stay finite for the strong
-    decays a raw gate forms, and their launch shapes are chosen for SM90. So do given gates in
-    a dtype without FP32's exponent range: past `centred_bounds` the joint program forms such
-    a chunk per pair on CUDA cores, which these launches outrun. Other given gates take the
-    joint chunk program, in one launch that also normalizes the rows: it forms the Gram
-    matrices on tensor cores from rows centred within `centred_bounds`, and a chunk past them
-    takes per-pair FP32 entries in its diagonal blocks and tensor-core products of rows
-    referenced to each block's first row below them.
+    Raw gates take them on SM90, whose FP32 per-pair entries stay finite for the strong decays
+    a raw gate forms. So do given gates in a dtype without FP32's exponent range, which the
+    joint program would form per pair on CUDA cores. Other given gates take the joint program.
     """
     return call.arch == 90 and (call.gate_in_kernel or not fp32_exponent_range(call.dtype))
 

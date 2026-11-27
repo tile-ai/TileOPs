@@ -33,13 +33,13 @@ def _to_fla_layout(q, k, v, beta):
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(DeltaNetFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(DeltaNetFwdOp))
 def test_deltanet_fwd_bench(case) -> None:
     op = DeltaNetFwdOp(**case.arguments)
     bench.Runner(op, case).compare({"fla": case.reference})
 
 
-@pytest.mark.parametrize("case", bench.cases(DeltaNetChunkFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(DeltaNetChunkFwdOp))
 def test_deltanet_vs_fla_fwd(case) -> None:
     chunk_delta_rule = baseline_module("fla.ops.delta_rule", "fla").chunk_delta_rule
 
@@ -53,7 +53,7 @@ def test_deltanet_vs_fla_fwd(case) -> None:
     bench.Runner(op, case).compare({"fla": bench.Implementation(run=fla_fwd, args=())})
 
 
-@pytest.mark.parametrize("case", bench.cases(DeltaNetChunkBwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(DeltaNetChunkBwdOp))
 def test_deltanet_vs_fla_bwd(case) -> None:
     chunk_delta_rule = baseline_module("fla.ops.delta_rule", "fla").chunk_delta_rule
 
@@ -73,7 +73,7 @@ def test_deltanet_vs_fla_bwd(case) -> None:
     bench.Runner(bwd_op, case).compare({"fla": bench.Implementation(run=fla_bwd, args=())})
 
 
-@pytest.mark.parametrize("case", bench.cases(DeltaNetRecurrentFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(DeltaNetRecurrentFwdOp))
 def test_deltanet_decode_bench(case) -> None:
     op = DeltaNetRecurrentFwdOp(**case.arguments)
     recurrent = fla_op("ops.delta_rule.fused_recurrent_delta_rule")

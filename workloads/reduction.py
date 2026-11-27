@@ -1,18 +1,39 @@
 """Workload definitions for the reduction op family."""
 
 import math
+from dataclasses import dataclass
 
 import torch
 
 from workloads.device import run_device
-from workloads.workload_base import CallWorkload, RandnWorkload, WorkloadBase
+from workloads.numerics import Custom, Exact, compare_outputs, reference_tolerance
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
-class _ReductionWorkload(RandnWorkload):
-    """Gaussian inputs checked against the long-reduction bound."""
+class _ReductionCase(WorkloadBase):
+    """Standard-normal ``x`` of *shape* through op *name* with the parameters *params*."""
+
+    def __init__(self, shape: tuple, dtype: torch.dtype, name: str, **params):
+        self.shape = shape
+        self.dtype = dtype
+        self._name = name
+        self._params = params
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        return (torch.randn(*self.shape, dtype=self.dtype, device=run_device()),)
+
+    def ref_program(self, x: torch.Tensor):
+        return _reduction_reference(self._name, x, self._params)
+
+
+class _ReductionWorkload(_ReductionCase):
+    """A `_ReductionCase` checked against the long-reduction bound."""
 
     def verification(self, *inputs):
         return reduction_verification(inputs[0].dtype, scalar=inputs[0].ndim == 0)
+
+
+_WELFORD = {"var": "VarFwdOp", "std": "StdFwdOp", "var_mean": "VarMeanFwdOp"}
 
 
 def _near_one(shape: tuple, dtype: torch.dtype, device) -> torch.Tensor:
@@ -20,12 +41,12 @@ def _near_one(shape: tuple, dtype: torch.dtype, device) -> torch.Tensor:
     return torch.rand(*shape, dtype=dtype, device=device) * 0.01 + 0.99
 
 
+@dataclass(eq=False)
 class ProdWorkload(WorkloadBase):
     """Workload definition for ProdFwdOp, on inputs near 1."""
 
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
+    shape: tuple
+    dtype: torch.dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         return (_near_one(self.shape, self.dtype, run_device()),)
@@ -37,12 +58,8 @@ class ProdWorkload(WorkloadBase):
         return reduction_verification(inputs[0].dtype, product=True, scalar=inputs[0].ndim == 0)
 
 
-class LogSumExpWorkload(RandnWorkload):
-    """Workload definition for LogSumExpFwdOp."""
-
-
 class ReductionCall(CallWorkload):
-    """One manifest call of a reduction op, with the input shape and dtype a report shows."""
+    """One manifest call of a reduction op, with its input's shape and dtype name."""
 
     def __init__(self, call, device: "torch.device | str | None" = None):
         super().__init__(call, device)
@@ -58,8 +75,6 @@ class ReductionCall(CallWorkload):
         )
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         name = self.call.signature.name
         if name in (
             "SumFwdOp",
@@ -101,38 +116,22 @@ class LogicalCall(ReductionCall):
 
 
 def _make_logical_input(shape: tuple, dtype: torch.dtype, device=None) -> torch.Tensor:
-    """Create a tensor with a mix of zeros and non-zeros.
-
-    When the first dimension is large enough (>4), the first row is forced
-    to all-zero (meaningful for ``any``) and the second row to all-nonzero
-    (meaningful for ``all``).
-    """
+    """Zeros and nonzeros of *dtype*; with more than four rows, the first is all zero and the
+    second all nonzero."""
     device = device or run_device()
-    m = shape[0] if len(shape) >= 1 else 1
-
     if dtype == torch.bool:
         x = torch.randint(0, 2, shape, dtype=torch.bool, device=device)
-        if m > 4:
-            x[0] = False
-            x[1] = True
     elif dtype in (torch.complex64, torch.complex128):
         real = torch.randn(*shape, dtype=torch.float32, device=device)
         imag = torch.randn(*shape, dtype=torch.float32, device=device)
         x = torch.complex(real, imag).to(dtype)
-        if m > 4:
-            x[0] = 0 + 0j
-            x[1] = 1 + 1j
     elif dtype in (torch.int32, torch.int64):
         x = torch.randint(-5, 6, shape, dtype=dtype, device=device)
-        if m > 4:
-            x[0] = 0
-            x[1] = 1
     else:
         x = torch.randn(*shape, dtype=dtype, device=device)
-        if m > 4:
-            x[0] = 0.0
-            x[1] = 1.0
-
+    if shape and shape[0] > 4:
+        x[0] = 0
+        x[1] = 1 + 1j if dtype.is_complex else 1
     return x
 
 
@@ -228,8 +227,6 @@ class CumprodExceptionalWorkload(CumulativeWorkload):
 
     def verification(self, *inputs):
         """The cumprod tolerance, and the zeros, signs and non-finite values exactly."""
-        from workloads.numerics import Custom, compare_outputs
-
         close = super().verification(*inputs)
 
         def validator(got: torch.Tensor, expected: torch.Tensor) -> None:
@@ -269,8 +266,6 @@ def reduction_verification(dtype, *, product=False, scalar=False, scale=1.0):
     tolerance is the relative one at that scale, and a normalized-error bound
     rejects an output lost to that cancellation.
     """
-    from workloads.numerics import Exact
-
     # Scalar closed forms and integer/boolean outputs have no rounding budget.
     if scalar or not (dtype.is_floating_point or dtype.is_complex):
         return Exact(atol=0, rtol=0)
@@ -284,141 +279,73 @@ def reduction_verification(dtype, *, product=False, scalar=False, scale=1.0):
     return Exact(atol=tol, rtol=tol)
 
 
-class ArgreduceCase(RandnWorkload):
-    """Parameterized test helper for argreduce ops."""
-
+class ArgreduceCase(_ReductionCase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        super().__init__((m, n), dtype)
-        self.op_kind = op_kind
-
-    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
-        return _reduction_reference(
-            {"argmax": "ArgmaxFwdOp", "argmin": "ArgminFwdOp"}[self.op_kind],
-            inputs[0],
-            dict(dim=-1),
+        super().__init__(
+            (m, n), dtype, {"argmax": "ArgmaxFwdOp", "argmin": "ArgminFwdOp"}[op_kind], dim=-1
         )
 
 
-class SoftmaxCase(RandnWorkload):
+class SoftmaxCase(_ReductionCase):
     def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
-        super().__init__(shape, dtype)
-        self.dim = dim
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _reduction_reference("SoftmaxFwdOp", x, dict(dim=self.dim))
+        super().__init__(shape, dtype, "SoftmaxFwdOp", dim=dim)
 
     def verification(self, *inputs):
         return softmax_verification(inputs[0].dtype, logarithmic=False)
 
 
-class LogSoftmaxCase(RandnWorkload):
+class LogSoftmaxCase(_ReductionCase):
     def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
-        super().__init__(shape, dtype)
-        self.dim = dim
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _reduction_reference("LogSoftmaxFwdOp", x, dict(dim=self.dim))
+        super().__init__(shape, dtype, "LogSoftmaxFwdOp", dim=dim)
 
     def verification(self, *inputs):
         return softmax_verification(inputs[0].dtype, logarithmic=True)
 
 
-class LogSumExpCase(LogSumExpWorkload):
+class LogSumExpCase(_ReductionCase):
     def __init__(self, shape: tuple, dtype: torch.dtype, dim: int = -1):
-        super().__init__(shape, dtype)
-        self.dim = dim
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _reduction_reference("LogSumExpFwdOp", x, dict(dim=self.dim))
+        super().__init__(shape, dtype, "LogSumExpFwdOp", dim=dim)
 
 
-class WelfordNonAlignedCase(RandnWorkload):
-    """Test helper for Welford ops with non-aligned N values."""
-
+class WelfordNonAlignedCase(_ReductionCase):
     def __init__(self, shape: tuple, dtype, op_kind: str, correction: int = 1):
-        super().__init__(shape, dtype)
-        self.op_kind = op_kind
-        self.correction = correction
-
-    def ref_program(self, x: torch.Tensor) -> object:
-        return _reduction_reference(
-            {"var": "VarFwdOp", "std": "StdFwdOp", "var_mean": "VarMeanFwdOp"}[self.op_kind],
-            x,
-            dict(dim=-1, correction=self.correction),
-        )
+        super().__init__(shape, dtype, _WELFORD[op_kind], dim=-1, correction=correction)
 
 
 class VarianceConstantCase(_ReductionWorkload):
     """Finite constant inputs whose variance must stay zero despite a large origin."""
 
     def __init__(self, shape: tuple, axes: tuple, op_kind: str, value: float):
-        super().__init__(shape, torch.float32)
-        self.axes = axes
-        self.op_kind = op_kind
+        super().__init__(shape, torch.float32, _WELFORD[op_kind], dim=axes, correction=0)
         self.value = value
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         return (torch.full(self.shape, self.value, dtype=self.dtype, device=run_device()),)
 
-    def ref_program(self, x: torch.Tensor) -> object:
-        return _reduction_reference(
-            {"var": "VarFwdOp", "std": "StdFwdOp", "var_mean": "VarMeanFwdOp"}[self.op_kind],
-            x,
-            dict(dim=self.axes, correction=0),
-        )
 
-
-class LogicalReduceCase(WorkloadBase):
-    """Parameterized test helper for logical reduce ops."""
+class LogicalReduceCase(_ReductionCase):
+    """`_make_logical_input` rows through a logical reduction."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        self.shape = (m, n)
-        self.dtype = dtype
-        self.op_kind = op_kind
+        name = {"any": "AnyFwdOp", "all": "AllFwdOp", "count_nonzero": "CountNonzeroFwdOp"}
+        super().__init__((m, n), dtype, name[op_kind], dim=-1)
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         return (_make_logical_input(self.shape, self.dtype),)
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _reduction_reference(
-            {"any": "AnyFwdOp", "all": "AllFwdOp", "count_nonzero": "CountNonzeroFwdOp"}[
-                self.op_kind
-            ],
-            x,
-            dict(dim=-1),
-        )
-
 
 class ReduceCase(_ReductionWorkload):
-    """Parameterized test helper for simple reduce ops (sum/mean/amax/amin)."""
-
-    def __init__(
-        self,
-        m: int,
-        n: int,
-        dtype: torch.dtype,
-        op_kind: str,
-    ):
-        super().__init__((m, n), dtype)
-        self.op_kind = op_kind
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _reduction_reference(
-            {"sum": "SumFwdOp", "mean": "MeanFwdOp", "amax": "AmaxFwdOp", "amin": "AminFwdOp"}[
-                self.op_kind
-            ],
-            x,
-            dict(dim=-1),
-        )
+    def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
+        name = {"sum": "SumFwdOp", "mean": "MeanFwdOp", "amax": "AmaxFwdOp", "amin": "AminFwdOp"}
+        super().__init__((m, n), dtype, name[op_kind], dim=-1)
 
 
 class ExtremaNanCase(_ReductionWorkload):
     """Extrema inputs with both NaN signs at opposite ends of reduced dimensions."""
 
     def __init__(self, shape: tuple, dtype: torch.dtype, axes: tuple, kind: str):
-        super().__init__(shape, dtype)
+        super().__init__(shape, dtype, {"amax": "AmaxFwdOp", "amin": "AminFwdOp"}[kind], dim=axes)
         self.axes = axes
-        self.kind = kind
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         (x,) = super().gen_inputs()
@@ -430,44 +357,19 @@ class ExtremaNanCase(_ReductionWorkload):
         x[tuple(last)] = -float("nan")
         return (x,)
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _reduction_reference(
-            {"amax": "AmaxFwdOp", "amin": "AminFwdOp"}[self.kind], x, dict(dim=self.axes)
-        )
-
 
 class WelfordCase(_ReductionWorkload):
-    """Test helper for Welford-based ops (std, var, var_mean)."""
-
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str, correction: int = 1):
-        super().__init__((m, n), dtype)
-        self.op_kind = op_kind
-        self.correction = correction
-
-    def ref_program(self, x: torch.Tensor) -> object:
-        return _reduction_reference(
-            {"var": "VarFwdOp", "std": "StdFwdOp", "var_mean": "VarMeanFwdOp"}[self.op_kind],
-            x,
-            dict(dim=-1, correction=self.correction),
-        )
+        super().__init__((m, n), dtype, _WELFORD[op_kind], dim=-1, correction=correction)
 
 
-class VectorNormCase(RandnWorkload):
-    """Parameterized test helper for vector norm ops."""
-
+class VectorNormCase(_ReductionCase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, op_kind: str):
-        super().__init__((m, n), dtype)
-        self.op_kind = op_kind
+        order = {"l1": 1, "l2": 2, "inf": float("inf")}[op_kind]
+        super().__init__((m, n), dtype, "VectorNormFwdOp", dim=-1, ord=order)
 
     def verification(self, *inputs):
         return vector_norm_verification(inputs[0].dtype)
-
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _reduction_reference(
-            "VectorNormFwdOp",
-            x,
-            dict(dim=-1, ord={"l1": 1, "l2": 2, "inf": float("inf")}[self.op_kind]),
-        )
 
 
 def reduction_tolerance(dtype: torch.dtype) -> dict[str, float]:
@@ -476,8 +378,6 @@ def reduction_tolerance(dtype: torch.dtype) -> dict[str, float]:
 
 
 def vector_norm_verification(dtype):
-    from workloads.numerics import Exact
-
     tol = 1e-5 if dtype == torch.float32 else 1e-2
     return Exact(atol=tol, rtol=tol)
 
@@ -487,8 +387,6 @@ def softmax_verification(dtype, *, input_dtype=None, logarithmic=False):
 
     Widening the result must also exclude an intermediate rounding to the input dtype.
     """
-    from workloads.numerics import Exact, reference_tolerance
-
     if dtype == torch.float32 and (not logarithmic or input_dtype not in (None, dtype)):
         return Exact(atol=0, rtol=1e-4)
     return Exact(**reference_tolerance(dtype))

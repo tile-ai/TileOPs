@@ -74,7 +74,7 @@ def _torch_baselines(implementations: dict, ref_program) -> None:
     implementations[TORCH_COMPILE_TAG] = compiled_reference(ref_program)
 
 
-@pytest.mark.parametrize("case", bench.cases(SSDChunkCouplingFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SSDChunkCouplingFwdOp))
 def test_ssd_chunk_coupling_fwd_bench(case) -> None:
     """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
     chunk_len = case.params["chunk_size"]
@@ -93,7 +93,7 @@ def test_ssd_chunk_coupling_fwd_bench(case) -> None:
     bench.Runner(op, case).compare({VLLM_TAG: vllm_fn, "torch": case.reference})
 
 
-@pytest.mark.parametrize("case", bench.cases(SSDChunkCumsumFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SSDChunkCumsumFwdOp))
 def test_ssd_chunk_cumsum_fwd_bench(case) -> None:
     dt, A, dt_bias = case.inputs
     op = SSDChunkCumsumFwdOp(**case.arguments)
@@ -122,7 +122,7 @@ def test_ssd_chunk_cumsum_fwd_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(SSDChunkScanFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SSDChunkScanFwdOp))
 def test_ssd_chunk_scan_fwd_bench(case) -> None:
     x, cb, dA_cumsum, C, prev_states, dt = case.inputs
     op = SSDChunkScanFwdOp(**case.arguments)
@@ -154,7 +154,7 @@ def test_ssd_chunk_scan_fwd_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(SSDChunkStateFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SSDChunkStateFwdOp))
 def test_ssd_chunk_state_fwd_bench(case) -> None:
     x, Bmat, dt, dA_cumsum, seq_idx = case.inputs
     op = SSDChunkStateFwdOp(**case.arguments)
@@ -177,7 +177,7 @@ def test_ssd_chunk_state_fwd_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(SSDStatePassingFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SSDStatePassingFwdOp))
 def test_ssd_state_passing_fwd_bench(case) -> None:
     states, dA_chunk_cumsum, initial_states = case.inputs
     op = SSDStatePassingFwdOp(**case.arguments)
@@ -202,7 +202,7 @@ def test_ssd_state_passing_fwd_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(SSDRecurrentFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SSDRecurrentFwdOp))
 def test_ssd_decode_bench(case) -> None:
     x = case.inputs[2]
     op = SSDRecurrentFwdOp(**case.arguments)
@@ -239,7 +239,7 @@ def test_ssd_decode_bench(case) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(Mamba2FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(Mamba2FwdOp))
 def test_mamba2_fwd_bench(case):
     x, dt, A, B, C, dt_bias, initial_states = case.inputs
     op = Mamba2FwdOp(**case.arguments)
@@ -313,7 +313,7 @@ def _vllm_conv_differs(case) -> str | None:
     return None
 
 
-@pytest.mark.parametrize("case", bench.cases(CausalConv1dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(CausalConv1dFwdOp))
 def test_causal_conv1d_bench(case) -> None:
     """Prefill against vLLM, which takes the (D, Tt) transposed view of the same storage."""
     x, weight, conv_state, cu_seqlens, bias, has_initial_state, cache_indices = case.inputs
@@ -346,7 +346,7 @@ def test_causal_conv1d_bench(case) -> None:
     bench.Runner(op, case).compare({VLLM_TAG: vllm})
 
 
-@pytest.mark.parametrize("case", bench.cases(CausalConv1dUpdateFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(CausalConv1dUpdateFwdOp))
 def test_causal_conv1d_update_bench(case) -> None:
     x, weight, conv_state, bias, slots, accepted, query_start_loc = case.inputs
     op = CausalConv1dUpdateFwdOp(**case.arguments)
@@ -456,7 +456,7 @@ def _vllm_selective_scan(case) -> bench.Implementation:
     return bench.Implementation(run=run, args=(), reset=reset)
 
 
-@pytest.mark.parametrize("case", bench.cases(SelectiveScanFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SelectiveScanFwdOp))
 def test_selective_scan_bench(case) -> None:
     """The Mamba-1 scan against vLLM's CUDA scan, and for one decode step vLLM's Triton
     state update."""

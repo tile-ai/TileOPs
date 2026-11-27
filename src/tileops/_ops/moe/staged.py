@@ -59,7 +59,6 @@ class MoEPrePermuteFwdOp(Op):
     """Materialize rank-grouped activations into a local expert layout.
 
     ``local_expert_ids`` must already be in ``[0, num_local_experts)``.
-    Global placement and communication belong to EPDispatch.
 
     The order of rows within one expert is not guaranteed: it may differ between calls on
     the same input, and ``inverse_indices`` names the row each route's result sits in.
@@ -129,24 +128,18 @@ class MoEPrePermuteFwdOp(Op):
 class MoEGroupedGEMMFwdOp(MoELayoutRowsRoofline, Op):
     """M-grouped GEMM over expert-materialized rows: ``out[rows of g] = a[rows of g] @ b[g]^T``.
 
-    It groups rows by an MoE expert layout and can fuse a gated activation and a bias,
-    where ``GroupedGEMMFwdOp`` groups rows by ``batch_sizes`` in four transpose layouts
-    with no epilogue.
-
     ``layout`` fixes how the rows of ``a`` are organised by expert and what the
     ``layout_metadata`` tensor means; ``E`` is read off ``b``, ``M``/``N``/``K`` off
     the operands. Accumulation is fp32; the output is written in the operand dtype
     unless ``out_dtype`` asks for fp32.
 
-    With ``activation`` set, ``b`` holds the gate and up projections along ``N``
-    (``[E, 2 * ffn, K]``) and ``out`` has ``ffn`` columns: the gated activation is fused
-    into the GEMM's epilogue and the ``[.., 2 * ffn]`` intermediate is never written.
-    The gated activations, which every MoE op's ``activation`` names, are defined here.
-    ``silu_and_mul`` and ``gelu_and_mul`` read ``b`` stacked, the ``ffn`` gate rows then
-    the ``ffn`` up rows, and keep ``act(gate) * up``. ``swigluoai`` (gpt-oss) reads it
-    interleaved, row ``2j`` gate ``j`` and row ``2j + 1`` up ``j``, and keeps
-    ``g * sigmoid(1.702 * g) * (u + 1)`` with ``g = min(gate, 7)`` and
-    ``u = clamp(up, -7, 7)``; the constants are fixed.
+    With ``activation`` set, ``b`` holds the gate and up projections along ``N`` (``[E, 2 * ffn,
+    K]``) and ``out`` has ``ffn`` columns: the gated activation is fused into the GEMM's
+    epilogue. The gated activations every MoE op's ``activation`` names are defined here.
+    ``silu_and_mul`` and ``gelu_and_mul`` read ``b`` stacked, the ``ffn`` gate rows then the
+    ``ffn`` up rows, and keep ``act(gate) * up``. ``swigluoai`` (gpt-oss) reads it interleaved,
+    row ``2j`` gate ``j`` and row ``2j + 1`` up ``j``, and keeps ``g * sigmoid(1.702 * g) * (u +
+    1)`` with ``g = min(gate, 7)`` and ``u = clamp(up, -7, 7)``; the constants are fixed.
 
     An optional ``bias`` (``[E, N]``, or ``[E, 2 * ffn]`` in ``b``'s row order when an
     activation is fused) is added to each expert's fp32 product before the activation and
@@ -251,15 +244,10 @@ class MoEGroupedGEMMFwdOp(MoELayoutRowsRoofline, Op):
 class MoEExpertMLPFwdOp(MoELayoutRowsRoofline, Op):
     """Two grouped GEMMs on one expert layout, the gated activation fused into the first.
 
-    It takes rows already grouped by expert and returns one unweighted result row per input
-    row, where ``FusedMoEExpertsFwdOp`` and ``IndexedExpertMLPFwdOp`` take tokens with their
-    routing and return the routing-weighted sum per token.
-
+    Rows already grouped by expert in, one unweighted result row per input row out:
     ``out = act(expert_input @ w_gate_up[g]^T + b_gate_up[g]) @ w_down[g]^T + b_down[g]``
-    per expert ``g``, where ``act`` is the gated activation: ``w_gate_up`` holds the gate
-    and up projections along ``N`` and the gate_up GEMM's epilogue applies the activation
-    and halves it, so the ``[.., 2 * ffn]`` intermediate is never written. A composite: it
-    registers no operator of its own, its graph is its two leaves'.
+    per expert ``g``, where ``act`` is the gated activation and ``w_gate_up`` holds the
+    gate and up projections along ``N``.
 
     ``activation``, and the order of ``w_gate_up``'s gate and up rows it reads, are as
     ``MoEGroupedGEMMFwdOp`` defines them.
@@ -349,8 +337,8 @@ class MoEPostPermuteFwdOp(Op):
     ``inverse_indices`` or ``residual``. Overlap raises ``ValueError`` before any write;
     disjoint views of one buffer are accepted.
 
-    A ``residual``, such as DeepSeek-V4-Flash's shared-expert output, is added to the
-    scaled float32 reduction before the one cast.
+    A ``residual`` (for example a shared-expert output) is added to the scaled float32
+    reduction before the one cast.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

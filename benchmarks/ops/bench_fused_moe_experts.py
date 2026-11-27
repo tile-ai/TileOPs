@@ -4,7 +4,6 @@ import pytest
 import torch
 
 from benchmarks import api as bench
-from benchmarks.baselines import vllm_op
 from benchmarks.moe_baselines import (
     flashinfer_experts,
     flashinfer_experts_skip_reason,
@@ -33,7 +32,7 @@ def _routed(inputs: tuple, callables: dict) -> dict:
     return {name: bench.Implementation(run=fn, args=args) for name, fn in callables.items()}
 
 
-@pytest.mark.parametrize("case", bench.cases(FusedMoEExpertsFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FusedMoEExpertsFwdOp))
 def test_moe_experts_bench(case) -> None:
     hidden, w1, w2, _, topk_ids, b_gate_up, b_down = case.inputs
     experts = FusedMoEExpertsFwdOp(**case.arguments)
@@ -54,7 +53,7 @@ def test_moe_experts_bench(case) -> None:
     bench.Runner(experts, case).compare(_routed(case.inputs, implementations))
 
 
-@pytest.mark.parametrize("case", bench.cases(IndexedExpertMLPFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(IndexedExpertMLPFwdOp))
 def test_indexed_expert_mlp_bench(case) -> None:
     hidden, w1, w2, _, topk_ids = case.inputs
     indexed = IndexedExpertMLPFwdOp(**case.arguments)
@@ -74,11 +73,10 @@ def test_indexed_expert_mlp_bench(case) -> None:
         post(expert_output, topk_weights, inverse, out=staged_output)
         return staged_output
 
-    fused_experts = vllm_op("fused_experts", "model_executor.layers.fused_moe.fused_moe")
+    vllm = vllm_experts()
 
     def vllm_fn(hidden, w1, w2, topk_weights, topk_ids):
-        out = fused_experts(hidden, w1, w2, topk_weights, topk_ids)
-        return out * indexed.routed_scaling_factor
+        return vllm(hidden, w1, w2, topk_weights, topk_ids) * indexed.routed_scaling_factor
 
     implementations = {"staged": _staged_fn, "vllm-triton": vllm_fn}
     reason = flashinfer_experts_skip_reason(hidden, w2)

@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 
 from workloads.attention.gqa.call_metadata import _dtype, _segments
@@ -30,24 +32,15 @@ __all__ = [
 ]
 
 
+@dataclass(eq=False)
 class MLADecodeWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seq_len_kv: int,
-        dim: int,
-        dim_pe: int,
-        dtype: torch.dtype,
-    ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len_kv = seq_len_kv
-        self.dim = dim
-        self.dim_pe = dim_pe
-        self.dtype = dtype
+    batch: int
+    heads: int
+    heads_kv: int
+    seq_len_kv: int
+    dim: int
+    dim_pe: int
+    dtype: torch.dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(self.batch, self.heads, self.dim, device=run_device(), dtype=self.dtype)
@@ -119,6 +112,7 @@ class MLADecodeCall(CallWorkload, MLADecodeWorkload):
     gen_inputs = CallWorkload.gen_inputs
 
 
+@dataclass(eq=False)
 class MLAPagedWorkload(WorkloadBase):
     """Absorbed-form MLA decode over a paged latent cache.
 
@@ -128,29 +122,22 @@ class MLAPagedWorkload(WorkloadBase):
     fragmented choice of distinct pages.
     """
 
-    def __init__(
-        self,
-        heads: int,
-        s_q: int,
-        dim: int,
-        kv_lora_rank: int,
-        cache_lens: list[int],
-        page_size: int,
-        width: int,
-        num_pages: int,
-        dtype: torch.dtype,
-        cache_dtype: torch.dtype | None = None,
-        is_causal: bool = True,
-        sm_scale: float | None = None,
-        block_table: list[list[int]] | None = None,
-    ) -> None:
-        self.heads, self.s_q, self.dim, self.kv_lora_rank = heads, s_q, dim, kv_lora_rank
-        self.cache_lens, self.page_size = cache_lens, page_size
-        self.width, self.num_pages = width, num_pages
-        self.dtype = dtype
-        self.cache_dtype = dtype if cache_dtype is None else cache_dtype
-        self.is_causal, self.sm_scale = is_causal, sm_scale
-        self.block_table = block_table
+    heads: int
+    s_q: int
+    dim: int
+    kv_lora_rank: int
+    cache_lens: list[int]
+    page_size: int
+    width: int
+    num_pages: int
+    dtype: torch.dtype
+    cache_dtype: torch.dtype | None = None
+    is_causal: bool = True
+    sm_scale: float | None = None
+    block_table: list[list[int]] | None = None
+
+    def __post_init__(self) -> None:
+        self.cache_dtype = self.dtype if self.cache_dtype is None else self.cache_dtype
 
     @property
     def quantized(self) -> bool:
@@ -206,11 +193,9 @@ class MLAPagedWorkload(WorkloadBase):
         # relative step on outputs below 1, and the output lands once in that dtype.
         eps = torch.finfo(self.dtype).eps
 
-        # The log-sum-exp is float32 throughout: 2e-4 admits the comparators' reductions and
-        # rejects one 64-key page left out of a 32K-key request, which moves it by 2e-3.
-        # Over the whole output the roundings average, so its normalized squared error
-        # stays below eps^2 / 10, under the 1.2e-5 of that page's values left out, which
-        # no element-wise eps bound sees.
+        # 2e-4 on the float32 log-sum-exp rejects one 64-key page left out of a 32K-key
+        # request; the normalized-error bound rejects that page's values, which no
+        # element-wise bound sees.
         def validate(got, expected):
             assert_close(got[0], expected[0], atol=eps, rtol=eps)
             assert_normalized_error(got[0], expected[0], eps * eps / 10)

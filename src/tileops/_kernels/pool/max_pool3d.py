@@ -1,6 +1,3 @@
-from collections.abc import Callable
-from typing import Any, ClassVar
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -10,49 +7,28 @@ from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.pool.call_spec import (
     MaxPool3dFwdInterface,
     MaxPool3dIndicesFwdInterface,
+    MaxPoolCall,
 )
 from tileops._kernels.pool.common import (
     ACCUM_DTYPE,
     MaxPoolKernelBase,
-    axis_inside,
-    pool_output_dim,
+    axes_inside,
+    max_pool_out,
 )
 
 __all__ = ["MaxPool3dKernel", "MaxPool3dWithIndicesKernel"]
 
 
 @target_cache(maxsize=32)
-def _max_pool3d_kernel(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_d: int,
-    dilation_h: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-):
-    out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-    rows = n * c_in
+def _max_pool3d_kernel(call: MaxPoolCall, dtype: str):
+    (d_in, h_in, w_in), (kernel_d, kernel_h, kernel_w) = call.size, call.window
+    (stride_d, stride_h, stride_w), (pad_d, pad_h, pad_w) = call.stride, call.pad
+    dilation_d, dilation_h, dilation_w = call.dilation
+    out = max_pool_out(call)
+    out_d, out_h, out_w = out
+    rows = call.n * call.c_in
     total = rows * out_d * out_h * out_w
-    window_inside = (
-        axis_inside(d_in, out_d, kernel_d, stride_d, pad_d, dilation_d)
-        and axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
-        and axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
-    )
+    window_inside = all(axes_inside(call, out))
 
     @tilelang.jit(out_idx=[1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _max_pool3d_func(block_m: int, threads: int):
@@ -106,37 +82,15 @@ def _max_pool3d_kernel(
 
 
 @target_cache(maxsize=32)
-def _max_pool3d_with_indices_kernel(
-    n: int,
-    c_in: int,
-    d_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_d: int,
-    stride_h: int,
-    stride_w: int,
-    pad_d: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_d: int,
-    dilation_h: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-):
-    out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-    rows = n * c_in
+def _max_pool3d_with_indices_kernel(call: MaxPoolCall, dtype: str):
+    (d_in, h_in, w_in), (kernel_d, kernel_h, kernel_w) = call.size, call.window
+    (stride_d, stride_h, stride_w), (pad_d, pad_h, pad_w) = call.stride, call.pad
+    dilation_d, dilation_h, dilation_w = call.dilation
+    out = max_pool_out(call)
+    out_d, out_h, out_w = out
+    rows = call.n * call.c_in
     total = rows * out_d * out_h * out_w
-    window_inside = (
-        axis_inside(d_in, out_d, kernel_d, stride_d, pad_d, dilation_d)
-        and axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
-        and axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
-    )
+    window_inside = all(axes_inside(call, out))
 
     # Only the float32 vector path reads through the csrc header, so only it includes it.
     flags = [*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"]
@@ -253,98 +207,19 @@ def _max_pool3d_with_indices_kernel(
     return _max_pool3d_with_indices_func
 
 
-class _MaxPool3dKernelBase(MaxPoolKernelBase):
-    """The constructor both 3d max-pool kernels share; a subclass names its ``_build``."""
-
-    _build: ClassVar[Callable[..., Any]]
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        d_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_d: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_d: int,
-        stride_h: int,
-        stride_w: int,
-        pad_d: int,
-        pad_h: int,
-        pad_w: int,
-        dilation_d: int,
-        dilation_h: int,
-        dilation_w: int,
-        ceil_mode: bool,
-        dtype: torch.dtype,
-        config: dict | None = None,
-    ) -> None:
-        super().__init__()
-        if dtype not in {torch.float16, torch.bfloat16, torch.float32}:
-            raise ValueError(
-                f"{type(self).__name__} supports float16, bfloat16, and float32, got {dtype}"
-            )
-        self.n = n
-        self.c_in = c_in
-        self.d_in = d_in
-        self.h_in = h_in
-        self.w_in = w_in
-        self.dtype = dtype
-        self.out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
-        self.out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-        self.out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-        self.kernel = type(self)._build(
-            n,
-            c_in,
-            d_in,
-            h_in,
-            w_in,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            stride_d,
-            stride_h,
-            stride_w,
-            pad_d,
-            pad_h,
-            pad_w,
-            dilation_d,
-            dilation_h,
-            dilation_w,
-            ceil_mode,
-            self.dtype_str,
-        )
-        self.init_config(config)
-
-
-class MaxPool3dKernel(_MaxPool3dKernelBase, MaxPool3dFwdInterface):
-    """Max pooling forward kernel (return_indices=False).
-
-    One thread owns one output position and folds its window into a register, so
-    an output is written once and the window never leaves the thread.
-    """
-
-    def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
-        volumes = x.reshape(self.n * self.c_in, self.d_in, self.h_in, self.w_in)
-        return program(volumes).view(self.n, self.c_in, self.out_d, self.out_h, self.out_w)
+class MaxPool3dKernel(MaxPoolKernelBase, MaxPool3dFwdInterface):
+    """Max pooling forward kernel (return_indices=False), one output a thread."""
 
     _build = staticmethod(_max_pool3d_kernel)
 
 
-class MaxPool3dWithIndicesKernel(_MaxPool3dKernelBase, MaxPool3dIndicesFwdInterface):
+class MaxPool3dWithIndicesKernel(MaxPoolKernelBase, MaxPool3dIndicesFwdInterface):
     """Max pooling forward-with-indices kernel."""
+
+    _build = staticmethod(_max_pool3d_with_indices_kernel)
 
     @property
     def default_config(self) -> dict:
-        # A float32 block of two outputs a thread takes the vector path; other dtypes keep 512.
+        # A float32 block of two outputs a thread takes the vector path.
         block_m = 256 if self.dtype == torch.float32 else 512
         return {"block_m": block_m, "threads": 128}
-
-    def _launch(self, program, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        values, positions = program(x.reshape(self.n * self.c_in, self.d_in, self.h_in, self.w_in))
-        shape = (self.n, self.c_in, self.out_d, self.out_h, self.out_w)
-        return values.view(shape), positions.view(shape)
-
-    _build = staticmethod(_max_pool3d_with_indices_kernel)

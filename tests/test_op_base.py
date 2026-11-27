@@ -1,8 +1,5 @@
-"""Tests for tileops._ops.op_base.
-
-Covers construction, the ``kernel_for`` path, the kernel enumeration ``Op.request_tune``
-runs over, tuned mode, and sub-ops held through ``delegate_for`` and their stages.
-"""
+"""Op construction, ``kernel_for``, kernel enumeration and tuned mode, and sub-ops held
+through ``delegate_for``."""
 
 import dataclasses
 import types
@@ -93,17 +90,6 @@ def _recording_kernels(tuned: list, builds: list):
     return Fwd, Aux
 
 
-def _make_op_subclass():
-    """Build a minimal concrete Op subclass for testing."""
-    attrs = {
-        "forward": lambda self, *a, **kw: None,
-        # These doubles exercise the get-or-build plumbing, so a minimal body is the contract.
-        "_infer_output_shapes": lambda self, *shapes: {},
-        "eval_roofline": lambda self: (0, 0),
-    }
-    return type("TestOp", (Op,), attrs)
-
-
 _GATED = yaml.safe_load((Path(__file__).parent / "manifest_cases.yaml").read_text())["entries"][
     "SiLUAndMulFwdOp"
 ]["signature"]
@@ -129,7 +115,11 @@ class TestConstruction:
     """``Op.__init__`` builds the instance state every base method reads."""
 
     def test_construction_builds_the_caches_and_sub_op_tables_empty(self):
-        op = _make_op_subclass()(target="acme")
+        class KernellessOp(Op):
+            def forward(self):
+                return None
+
+        op = KernellessOp(target="acme")
         assert op.target == "acme"
         assert op._installed_kernel_types == {} and op._keys_by_interface == {}
         for field in (
@@ -166,17 +156,17 @@ class _SlottedOp(Op):
         self.kernel_types = {"fwd": fwd, "aux": aux}
         super().__init__(target=target)
 
-    def _infer_output_shapes(self, *shapes):
-        return {}
-
-    def eval_roofline(self):
-        return (0, 0)
-
     def forward(self, *a, **kw):
         return None
 
     def build(self, role: str, key, name: str):
         return self.kernel_for(role, lambda: _Call(device=_CPU, key=key, name=name))
+
+
+class _CompositeOp(_SlottedOp):
+    """A ``_SlottedOp`` that holds sub-ops under three stages."""
+
+    delegate_types = {"stage": _SlottedOp, "first": _SlottedOp, "second": _SlottedOp}
 
 
 class TestGetOrBuildKernel:
@@ -258,10 +248,7 @@ class TestIterKernels:
         delegate = _SlottedOp(tuned)
         delegate.build("fwd", torch.float16, "delegate")
 
-        class CompositeOp(_SlottedOp):
-            delegate_types = {"stage": _SlottedOp}
-
-        composite = CompositeOp(tuned)
+        composite = _CompositeOp(tuned)
         composite.delegate_for("stage", None, delegate)
         composite.build("fwd", torch.float16, "own")
         assert sorted(k.name for k in composite.iter_kernels()) == ["delegate", "own"]
@@ -272,10 +259,7 @@ class TestIterKernels:
         delegate = _SlottedOp(tuned)
         shared = delegate.build("fwd", torch.float16, "shared")
 
-        class CompositeOp(_SlottedOp):
-            delegate_types = {"stage": _SlottedOp}
-
-        composite = CompositeOp(tuned)
+        composite = _CompositeOp(tuned)
         composite._installed_kernel_types["fwd"].entry_for = classmethod(
             lambda cls, call: (call.key, lambda: shared)
         )
@@ -298,15 +282,10 @@ class TestAutotune:
         assert sorted(tuned) == ["aux", "bf16", "fp16"]
 
     def test_request_tune_reaches_a_delegates_kernels(self):
-        """A composite tunes through ``_held_delegates``, not an override."""
         tuned: list[str] = []
         delegate = _SlottedOp(tuned)
         delegate.build("fwd", torch.float16, "delegate")
-
-        class CompositeOp(_SlottedOp):
-            delegate_types = {"stage": _SlottedOp}
-
-        composite = CompositeOp(tuned)
+        composite = _CompositeOp(tuned)
         composite.delegate_for("stage", None, delegate)
         composite.request_tune()
         assert tuned == ["delegate"]
@@ -368,29 +347,19 @@ class TestTunedMode:
         assert tuned == ["program"]
 
     def test_a_delegate_built_after_request_tune_inherits_tuned_mode(self):
-        """``delegate_for`` hands the composite's flag on, so the decision carries."""
-        tuned: list[str] = []
-
-        class DelegateOp(_TunableOp):
-            def __init__(self, rec, *, target=None):
-                super().__init__(rec, target=target)
-
-        class CompositeOp(_TunableOp):
-            delegate_types = {"stage": DelegateOp}
-
-        op = CompositeOp(tuned)
-        op.request_tune()
-        op.delegate_for("stage", "shared", rec=tuned).build(torch.float16)
-        assert tuned == ["torch.float16"]
-
-    def test_a_delegate_given_after_request_tune_inherits_tuned_mode(self):
-        """A sub-op the caller injects joins tuned mode the first time it is held."""
         tuned: list[str] = []
 
         class CompositeOp(_TunableOp):
             delegate_types = {"stage": _TunableOp}
 
         op = CompositeOp(tuned)
+        op.request_tune()
+        op.delegate_for("stage", "shared", tuned=tuned).build(torch.float16)
+        assert tuned == ["torch.float16"]
+
+    def test_a_delegate_given_after_request_tune_inherits_tuned_mode(self):
+        tuned: list[str] = []
+        op = _CompositeOp(tuned)
         op.request_tune()
         op.delegate_for("stage", None, _TunableOp(tuned)).build(torch.float16)
         assert tuned == ["torch.float16"]
@@ -416,15 +385,9 @@ class TestDelegateFor:
         second = op.delegate_for("stage", 2, width=2)
         assert type(first) is DelegateOp and second is not first
         assert seen == [{"width": 1, "target": "acme"}, {"width": 2, "target": "acme"}]
-        assert not first._tune_requested
-        op.request_tune()
-        assert op.delegate_for("stage", 3, width=3)._tune_requested
 
     def test_enumerates_held_sub_ops_in_stage_order(self):
-        class CompositeOp(_SlottedOp):
-            delegate_types = {"first": _SlottedOp, "second": _SlottedOp}
-
-        op = CompositeOp([])
+        op = _CompositeOp([])
         late, early = _SlottedOp([]), _SlottedOp([])
         op.delegate_for("second", None, late)
         op.delegate_for("first", None, early)
@@ -432,10 +395,7 @@ class TestDelegateFor:
         assert list(op._walk_ops()) == [op, early, late]
 
     def test_a_call_that_fails_after_binding_resets_the_sub_ops(self):
-        class CompositeOp(_SlottedOp):
-            delegate_types = {"stage": _SlottedOp}
-
-        op = CompositeOp([])
+        op = _CompositeOp([])
         delegate = op.delegate_for("stage", None, _SlottedOp([]))
         delegate._target_builder = None
         delegate.build("fwd", torch.float16, "fp16")
@@ -443,15 +403,12 @@ class TestDelegateFor:
         assert delegate.serving_target is None and dict(delegate._entries_built("fwd")) == {}
 
     def test_a_call_that_fails_before_selecting_a_target_leaves_the_sub_ops_bound(self):
-        class CompositeOp(_SlottedOp):
-            delegate_types = {"stage": _SlottedOp}
-
-        op = CompositeOp([])
+        op = _CompositeOp([])
         delegate = op.delegate_for("stage", None, _SlottedOp([]))
         delegate._target_builder = None
         entry = delegate.build("fwd", torch.float16, "fp16")
 
-        def refuse(key, inputs, writes, execution):
+        def refuse(key, inputs, writes):
             raise ValueError("outside the signature")
 
         # The probe has no manifest signature, so its key and its check are stubbed.
@@ -485,10 +442,7 @@ class TestStages:
         assert parent.last_call is kept
 
     def test_one_sub_op_is_held_under_one_stage_and_identity(self):
-        class CompositeOp(_SlottedOp):
-            delegate_types = {"first": _SlottedOp, "second": _SlottedOp}
-
-        op = CompositeOp([])
+        op = _CompositeOp([])
         shared = _SlottedOp([])
         assert op.delegate_for("first", None, shared) is shared
         assert op.delegate_for("first", None, shared) is shared
@@ -499,18 +453,11 @@ class TestStages:
 
 
 def test_no_abstract_op_class_is_instantiated_anywhere():
-    """An abstract Op cannot be constructed, so nothing in the tree may try.
-
-    A class is abstract when it does not answer the manifest-driven contract:
-    ``_infer_output_shapes``, ``eval_roofline``. Those are
-    the family bases and the modular interfaces; a call site naming one is a call
-    site that wanted a concrete op.
-    """
+    """No line in src, tests or benchmarks calls an abstract Op class."""
     import importlib
     import inspect
     import pkgutil
     import re
-    from pathlib import Path
 
     import tileops._ops as ops_pkg
 

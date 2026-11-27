@@ -11,6 +11,7 @@ selection picks for them, against their workload references.
 import pytest
 import torch
 
+from tests.manifest_calls import implemented_ops
 from tileops._kernels.call_spec import CallSpec
 from tileops._ops.op_base import Op
 from tileops.backend import OpNotAvailableError
@@ -23,14 +24,13 @@ from workloads.device import run_device
 pytestmark = [pytest.mark.smoke, pytest.mark.in_tree_kernels, pytest.mark.sm90]
 
 _MANIFEST = load_manifest()
-_IMPLEMENTED = sorted(n for n, e in _MANIFEST.items() if e.get("status") == "implemented")
 
 
 class _SelectedError(Exception):
     """Selection named an implementation."""
 
 
-@pytest.mark.parametrize("name", _IMPLEMENTED)
+@pytest.mark.parametrize("name", implemented_ops())
 def test_every_row_selects_an_implementation_or_is_refused(name, monkeypatch):
     device = torch.device(run_device())
 

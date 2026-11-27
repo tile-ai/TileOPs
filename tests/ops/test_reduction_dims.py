@@ -8,12 +8,11 @@ test_logical_reduce.py and test_vector_norm.py.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
 
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase
 from tileops._ops.reduction import (
     AllFwdOp,
     AmaxFwdOp,
@@ -32,89 +31,127 @@ from tileops._ops.reduction import (
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import (
-    LogSumExpWorkload,
+    LogSumExpCase,
+    _reduction_reference,
     reduction_tolerance,
     reduction_verification,
     vector_norm_verification,
 )
 
-# A list or tuple of axes.
+_OPS = {
+    "sum": (SumFwdOp, {}),
+    "mean": (MeanFwdOp, {}),
+    "amax": (AmaxFwdOp, {}),
+    "amin": (AminFwdOp, {}),
+    "var": (VarFwdOp, {}),
+    "std": (StdFwdOp, {}),
+    "var_mean": (VarMeanFwdOp, {}),
+    "logsumexp": (LogSumExpFwdOp, {}),
+    "l1": (VectorNormFwdOp, {"ord": 1}),
+    "l2": (VectorNormFwdOp, {"ord": 2}),
+    "inf": (VectorNormFwdOp, {"ord": math.inf}),
+    "all": (AllFwdOp, {}),
+    "any": (AnyFwdOp, {}),
+    "count_nonzero": (CountNonzeroFwdOp, {}),
+}
+_LOGICAL = ("all", "any", "count_nonzero")
+#: One op per kernel family carries the shape and keepdim boundaries.
+_FAMILIES = ("sum", "var", "logsumexp", "l2")
 
 
-class MultiDimFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dims, keepdim, dtype",
-            [
-                # 3D: reduce two dims
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
-                    False,
-                    torch.float16,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
-                    True,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                ),
-                # 4D: reduce middle two dims
-                pytest.param(
-                    (2, 4, 8, 256),
-                    [1, 2],
-                    False,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                ),
-                # 4D: reduce first and last
-                pytest.param(
-                    (2, 4, 8, 256),
-                    [0, 3],
-                    False,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                ),
-            ],
-        ),
+def _build(name: str, **kwargs):
+    op_cls, extra = _OPS[name]
+    if name == "count_nonzero":
+        kwargs.pop("keepdim", None)
+    return op_cls(**extra, **kwargs)
+
+
+def _input(name: str, shape: tuple, dtype: torch.dtype) -> torch.Tensor:
+    """Gaussian values; ``{-1, 0, 1}`` for a logical reduction, so it sees both truths."""
+    if name in _LOGICAL:
+        return torch.randint(-1, 2, shape, device=run_device()).to(dtype)
+    return torch.randn(*shape, dtype=dtype, device=run_device())
+
+
+def _check(name: str, x: torch.Tensor, dim, keepdim: bool = False) -> None:
+    """*name* over *dim* on *x* against the reduction oracle, shape, dtype and values."""
+    op_cls, extra = _OPS[name]
+    y = _build(name, dim=dim, keepdim=keepdim)(x)
+    # torch.amax and torch.logsumexp take no dim=None.
+    axes = list(range(x.ndim)) if dim is None else dim
+    ref = _reduction_reference(
+        op_cls.__name__, x, dict(extra, dim=axes, keepdim=keepdim, correction=None)
+    )
+    if name == "logsumexp":
+        verification = LogSumExpCase(tuple(x.shape), x.dtype).verification(x)
+    elif op_cls is VectorNormFwdOp:
+        verification = vector_norm_verification(x.dtype)
+    else:
+        verification = None
+    pairs = zip(y, ref, strict=True) if isinstance(ref, tuple) else [(y, ref)]
+    for got, want in pairs:
+        assert got.shape == want.shape, f"{name}: shape {got.shape} vs ref {want.shape}"
+        assert got.dtype == want.dtype, f"{name}: dtype {got.dtype} vs ref {want.dtype}"
+        compare_outputs(got, want, verification or reduction_verification(want.dtype))
+
+
+def _multidim_cases() -> list:
+    """Every arithmetic op on two leading axes is smoke; each family also takes keepdim, two
+    middle axes and the first and last; the logical ops take their read dtypes."""
+    shape3, shape4 = (4, 32, 256), (2, 4, 8, 256)
+    smoke, full = pytest.mark.smoke, pytest.mark.full
+    cases = [
+        pytest.param(k, shape3, [0, 1], False, torch.float16, marks=smoke)
+        for k in _OPS
+        if k not in _LOGICAL
     ]
+    cases += [
+        pytest.param(k, shape3, [0, 1], False, dtype, marks=smoke)
+        for k in _LOGICAL
+        for dtype in (torch.float32, torch.bool, torch.complex64)
+    ]
+    for k in _FAMILIES:
+        cases += [
+            pytest.param(k, shape3, [0, 1], True, torch.float16, marks=full),
+            pytest.param(k, shape4, [1, 2], False, torch.float16, marks=full),
+            pytest.param(k, shape4, [0, 3], False, torch.float16, marks=full),
+        ]
+    cases += [
+        pytest.param(k, shape3, [0, 1], True, torch.float32, marks=full) for k in ("all", "any")
+    ]
+    return cases
 
 
-# Simple reduce ops: sum, mean, amax, amin
-
-
-@MultiDimFixture
-def test_sum_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
+@pytest.mark.parametrize("name, shape, dims, keepdim, dtype", _multidim_cases())
+def test_a_list_of_axes_matches_torch(
+    name: str, shape: tuple, dims: list, keepdim: bool, dtype: torch.dtype
 ) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = SumFwdOp(dim=dims, keepdim=keepdim)
-    ref = torch.sum(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
+    _check(name, _input(name, shape, dtype), dims, keepdim)
 
 
-@MultiDimFixture
-def test_mean_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
+def _dim_none_cases() -> list:
+    """Every op at fp16 is smoke (fp32 for the variance ops, bool for all and any, whose other
+    dtypes are test_reduce.py's and test_logical_reduce.py's conformance cells); fp32, whose
+    4-byte element changes the flattened row's vector width, and keepdim per family."""
+    shape = (4, 8, 256)
+    smoke, full = pytest.mark.smoke, pytest.mark.full
+    first = {"var": torch.float32, "std": torch.float32, "var_mean": torch.float32}
+    first.update(all=torch.bool, any=torch.bool)
+    cases = [
+        pytest.param(k, shape, False, first.get(k, torch.float16), marks=smoke)
+        for k in _OPS
+        if k not in ("logsumexp", "count_nonzero")
+    ]
+    cases += [pytest.param(k, shape, False, torch.float32, marks=smoke) for k in ("sum", "l2")]
+    cases += [pytest.param(k, shape, True, torch.float16, marks=full) for k in ("sum", "l2")]
+    return cases
+
+
+@pytest.mark.parametrize("name, shape, keepdim, dtype", _dim_none_cases())
+def test_dim_none_reduces_every_axis(
+    name: str, shape: tuple, keepdim: bool, dtype: torch.dtype
 ) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = MeanFwdOp(dim=dims, keepdim=keepdim)
-    ref = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
+    _check(name, _input(name, shape, dtype), None, keepdim)
 
 
 @pytest.mark.smoke
@@ -132,22 +169,6 @@ def test_mean_edge_axes_fp16_keeps_fp32_intermediates() -> None:
     compare_outputs(y, torch.full_like(y, 100.0), reduction_verification(y.dtype))
 
 
-@MultiDimFixture
-def test_amax_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = AmaxFwdOp(dim=dims, keepdim=keepdim)
-    ref = torch.amax(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
 @pytest.mark.smoke
 def test_prod_multidim_rejected() -> None:
     """ProdFwdOp narrows ``dim`` to ``int`` per its manifest signature, so
@@ -157,100 +178,6 @@ def test_prod_multidim_rejected() -> None:
     for dim in ([0, 1], (0, 1), [], None):
         with pytest.raises(ValueError, match="ProdFwdOp: dim = "):
             ProdFwdOp(dim=dim)
-
-
-@MultiDimFixture
-def test_amin_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = AminFwdOp(dim=dims, keepdim=keepdim)
-    ref = torch.amin(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-# Welford ops: var, std, var_mean
-
-
-@MultiDimFixture
-def test_var_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VarFwdOp(dim=dims, keepdim=keepdim)
-    ref = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@MultiDimFixture
-def test_std_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = StdFwdOp(dim=dims, keepdim=keepdim)
-    ref = torch.std(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@MultiDimFixture
-def test_var_mean_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VarMeanFwdOp(dim=dims, keepdim=keepdim)
-    ref_var = torch.var(
-        x.float(),
-        dim=dims,
-        keepdim=keepdim,
-        correction=1,
-    ).to(dtype)
-    ref_mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    var_out, mean_out = op(x)
-
-    assert var_out.shape == ref_var.shape, f"var shape: {var_out.shape} vs {ref_var.shape}"
-    assert mean_out.shape == ref_mean.shape, f"mean shape: {mean_out.shape} vs {ref_mean.shape}"
-    compare_outputs(var_out, ref_var, reduction_verification(ref_var.dtype))
-    compare_outputs(mean_out, ref_mean, reduction_verification(ref_mean.dtype))
-
-
-# LogSumExp
-
-
-@MultiDimFixture
-def test_logsumexp_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = LogSumExpFwdOp(dim=dims, keepdim=keepdim)
-    ref = torch.logsumexp(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, LogSumExpWorkload(tuple(x.shape), x.dtype).verification(x))
 
 
 @pytest.mark.smoke
@@ -265,202 +192,7 @@ def test_logsumexp_edge_axes_special_values() -> None:
     assert y[0].item() == float("-inf")
     assert torch.isnan(y[1])
     finite = torch.isfinite(ref)
-    compare_outputs(
-        y[finite], ref[finite], LogSumExpWorkload(tuple(x.shape), x.dtype).verification(x)
-    )
-
-
-# Logical reduce ops: all, any, count_nonzero
-
-
-class MultiDimLogicalFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dims, keepdim, dtype",
-            [
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
-                    False,
-                    torch.float32,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
-                    False,
-                    torch.bool,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
-                    False,
-                    torch.complex64,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
-                    True,
-                    torch.float32,
-                    marks=pytest.mark.full,
-                ),
-            ],
-        ),
-    ]
-
-
-def _make_logical_input(
-    shape: tuple,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    """Generate input tensor for logical reduce ops."""
-    if dtype == torch.bool:
-        return torch.randint(0, 2, shape, dtype=torch.bool, device=run_device())
-    return torch.randn(*shape, dtype=dtype, device=run_device())
-
-
-@MultiDimLogicalFixture
-def test_all_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = _make_logical_input(shape, dtype)
-    op = AllFwdOp(dim=dims, keepdim=keepdim)
-    ref = torch.all(x.bool(), dim=dims, keepdim=keepdim)
-    y = op(x)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@MultiDimLogicalFixture
-def test_any_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = _make_logical_input(shape, dtype)
-    op = AnyFwdOp(dim=dims, keepdim=keepdim)
-    ref = torch.any(x.bool(), dim=dims, keepdim=keepdim)
-    y = op(x)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-class MultiDimCountFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, dims, dtype",
-            [
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
-                    torch.float32,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
-                    torch.bool,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
-                    torch.complex64,
-                    marks=pytest.mark.smoke,
-                ),
-            ],
-        ),
-    ]
-
-
-@MultiDimCountFixture
-def test_count_nonzero_multidim(
-    shape: tuple,
-    dims: list,
-    dtype: torch.dtype,
-) -> None:
-    x = _make_logical_input(shape, dtype)
-    if dtype.is_floating_point:
-        x[x < 0] = 0.0
-    op = CountNonzeroFwdOp(dim=dims)
-    ref = torch.count_nonzero(x, dim=dims)
-    y = op(x)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-# Vector norm ops: l1, l2, inf
-
-
-@MultiDimFixture
-def test_l1_norm_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VectorNormFwdOp(1, dim=dims, keepdim=keepdim)
-    ref = torch.linalg.vector_norm(
-        x.float(),
-        ord=1,
-        dim=dims,
-        keepdim=keepdim,
-    ).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, vector_norm_verification(x.dtype))
-
-
-@MultiDimFixture
-def test_l2_norm_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VectorNormFwdOp(2, dim=dims, keepdim=keepdim)
-    ref = torch.linalg.vector_norm(
-        x.float(),
-        ord=2,
-        dim=dims,
-        keepdim=keepdim,
-    ).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, vector_norm_verification(x.dtype))
-
-
-@MultiDimFixture
-def test_inf_norm_multidim(
-    shape: tuple,
-    dims: list,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    from math import inf
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VectorNormFwdOp(inf, dim=dims, keepdim=keepdim)
-    ref = torch.linalg.vector_norm(
-        x.float(),
-        ord=float("inf"),
-        dim=dims,
-        keepdim=keepdim,
-    ).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, vector_norm_verification(x.dtype))
+    compare_outputs(y[finite], ref[finite], LogSumExpCase(tuple(x.shape), x.dtype).verification(x))
 
 
 @pytest.mark.smoke
@@ -729,374 +461,46 @@ def test_edge_axes_route_by_the_row_a_block_holds_in_flight(lead: int, folds: bo
         compare_outputs(out, ref.to(dtype), verification(dtype))
 
 
-# dim=None: every axis.
-
-
-class DimNoneFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, keepdim, dtype",
-            [
-                pytest.param((4, 8, 256), False, torch.float16, marks=pytest.mark.smoke),
-                # A 4-byte element changes the vector width of the flattened row.
-                pytest.param((4, 8, 256), False, torch.float32, marks=pytest.mark.smoke),
-                pytest.param((4, 8, 256), True, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-def _all_dims(shape: tuple) -> list[int]:
-    """Return list of all dim indices for a given shape."""
-    return list(range(len(shape)))
-
-
-# Simple reduce ops: sum, mean, amax, amin, prod
-
-
-@DimNoneFixture
-def test_sum_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = SumFwdOp(dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.sum(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@DimNoneFixture
-def test_mean_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = MeanFwdOp(dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@DimNoneFixture
-def test_amax_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = AmaxFwdOp(dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.amax(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@DimNoneFixture
-def test_amin_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = AminFwdOp(dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.amin(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-# Welford ops: var, std, var_mean. Their fp16 dim=None cases, with and without keepdim, are
-# test_reduce.py's test_the_variance_output_shape_matches_torch.
-_welford_dim_none = pytest.mark.parametrize(
-    "shape, keepdim, dtype",
-    [pytest.param((4, 8, 256), False, torch.float32, marks=pytest.mark.smoke)],
-)
-
-
-@_welford_dim_none
-def test_var_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VarFwdOp(dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@_welford_dim_none
-def test_std_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = StdFwdOp(dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.std(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@_welford_dim_none
-def test_var_mean_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VarMeanFwdOp(dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref_var = torch.var(
-        x.float(),
-        dim=dims,
-        keepdim=keepdim,
-        correction=1,
-    ).to(dtype)
-    ref_mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
-    var_out, mean_out = op(x)
-
-    assert var_out.shape == ref_var.shape, f"var shape: {var_out.shape} vs {ref_var.shape}"
-    assert mean_out.shape == ref_mean.shape, f"mean shape: {mean_out.shape} vs {ref_mean.shape}"
-    compare_outputs(var_out, ref_var, reduction_verification(ref_var.dtype))
-    compare_outputs(mean_out, ref_mean, reduction_verification(ref_mean.dtype))
-
-
 # Logical reduce ops: all, any, count_nonzero
-
-
-# The float dtypes at dim=None, with and without keepdim, are test_logical_reduce.py's
-# test_logical_reduce_conformance.
-class DimNoneLogicalFixture(FixtureBase):
-    PARAMS = [
-        (
-            "shape, keepdim, dtype",
-            [pytest.param((4, 8, 256), False, torch.bool, marks=pytest.mark.smoke)],
-        ),
-    ]
-
-
-@DimNoneLogicalFixture
-def test_all_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = _make_logical_input(shape, dtype)
-    op = AllFwdOp(dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.all(x.bool(), dim=dims, keepdim=keepdim)
-    y = op(x)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@DimNoneLogicalFixture
-def test_any_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = _make_logical_input(shape, dtype)
-    op = AnyFwdOp(dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.any(x.bool(), dim=dims, keepdim=keepdim)
-    y = op(x)
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-# CountNonzero at dim=None is test_logical_reduce.py's test_count_nonzero_conformance.
 
 
 # Vector norm ops: l1, l2, inf
 
 
-@DimNoneFixture
-def test_l1_norm_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VectorNormFwdOp(1, dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.linalg.vector_norm(
-        x.float(),
-        ord=1,
-        dim=dims,
-        keepdim=keepdim,
-    ).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, vector_norm_verification(x.dtype))
-
-
-@DimNoneFixture
-def test_l2_norm_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VectorNormFwdOp(2, dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.linalg.vector_norm(
-        x.float(),
-        ord=2,
-        dim=dims,
-        keepdim=keepdim,
-    ).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, vector_norm_verification(x.dtype))
-
-
-@DimNoneFixture
-def test_inf_norm_dim_none(
-    shape: tuple,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    from math import inf
-
-    x = torch.randn(*shape, dtype=dtype, device=run_device())
-    op = VectorNormFwdOp(inf, dim=None, keepdim=keepdim)
-    dims = _all_dims(shape)
-    ref = torch.linalg.vector_norm(
-        x.float(),
-        ord=float("inf"),
-        dim=dims,
-        keepdim=keepdim,
-    ).to(dtype)
-    y = op(x)
-
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, vector_norm_verification(x.dtype))
-
-
-# The default dim and an empty dim.
-
-
-def _make_float(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
-    return torch.randn(*shape, dtype=dtype, device=run_device())
-
-
-def _make_logical(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
-    # values in {-1, 0, 1} so .bool() has both T and F.
-    return (torch.randint(-1, 2, shape, device=run_device())).to(dtype)
-
-
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op_cls, ref",
-    [
-        pytest.param(SumFwdOp, torch.sum, id="SumFwdOp"),
-        pytest.param(MeanFwdOp, torch.mean, id="MeanFwdOp"),
-        pytest.param(AmaxFwdOp, torch.amax, id="AmaxFwdOp"),
-        pytest.param(AminFwdOp, torch.amin, id="AminFwdOp"),
-        pytest.param(VarFwdOp, torch.var, id="VarFwdOp"),
-        pytest.param(StdFwdOp, torch.std, id="StdFwdOp"),
-        pytest.param(VarMeanFwdOp, torch.var_mean, id="VarMeanFwdOp"),
-    ],
-)
-def test_the_default_dim_reduces_every_axis(op_cls: type, ref: Callable) -> None:
+@pytest.mark.parametrize("name", [k for k in _OPS if k not in ("logsumexp", "l1", "l2", "inf")])
+def test_the_default_dim_reduces_every_axis(name: str) -> None:
     """The manifest declares ``default: null`` on ``dim``: the op built without one reduces
     every axis."""
-    x = _make_float((2, 4, 8), torch.float16)
-    got = op_cls()(x)
-    want = ref(x)
+    x = _input(name, (2, 4, 8), torch.float16)
+    got = _OPS[name][0]()(x)
+    want = _build(name, dim=None)(x)
     got, want = (got, want) if isinstance(want, tuple) else ((got,), (want,))
-    assert [g.shape for g in got] == [w.shape for w in want]
+    assert [(g.shape, g.dtype) for g in got] == [(w.shape, w.dtype) for w in want]
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_cls, ref, dtype",
+    "name, empty_dim, keepdim",
     [
-        pytest.param(AllFwdOp, torch.all, torch.bool, id="AllFwdOp"),
-        pytest.param(AnyFwdOp, torch.any, torch.bool, id="AnyFwdOp"),
-        pytest.param(CountNonzeroFwdOp, torch.count_nonzero, torch.int64, id="CountNonzeroFwdOp"),
+        ("sum", [], False),
+        ("mean", (), True),
+        ("amin", [], False),
+        ("amax", [], False),
+        ("count_nonzero", [], False),
+        ("std", [], False),
+        ("var", [], False),
+        ("var_mean", [], False),
     ],
 )
-def test_the_default_dim_reduces_every_axis_of_a_logical_reduction(
-    op_cls: type, ref: Callable, dtype: torch.dtype
-) -> None:
-    x = _make_logical((2, 4, 8), torch.float16)
-    y = op_cls()(x)
-    assert y.shape == ref(x.bool()).shape
-    assert y.dtype == dtype
-
-
-@pytest.mark.smoke
-def test_sum_empty_dim_full_reduction() -> None:
+def test_an_empty_dim_reduces_every_axis(name: str, empty_dim, keepdim: bool) -> None:
     x = torch.randn(2, 3, 4, dtype=torch.float16, device=run_device())
-    op = SumFwdOp(dim=[], keepdim=False)
-    op_none = SumFwdOp(dim=None, keepdim=False)
-    assert torch.allclose(op(x), op_none(x), **reduction_tolerance(torch.float16))
-
-
-@pytest.mark.smoke
-def test_mean_empty_dim_full_reduction() -> None:
-    x = torch.randn(2, 3, 4, dtype=torch.float16, device=run_device())
-    op = MeanFwdOp(dim=(), keepdim=True)
-    op_none = MeanFwdOp(dim=None, keepdim=True)
-    assert torch.allclose(op(x), op_none(x), **reduction_tolerance(torch.float16))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("op_name", ["amin", "amax", "count_nonzero"])
-def test_simple_op_empty_dim_full_reduction(op_name: str) -> None:
-    op_cls = {"amin": AminFwdOp, "amax": AmaxFwdOp, "count_nonzero": CountNonzeroFwdOp}[op_name]
-    x = torch.randn(2, 3, 4, dtype=torch.float16, device=run_device())
-    y_empty = op_cls(dim=[])(x)
-    y_none = op_cls(dim=None)(x)
-    assert y_empty.shape == y_none.shape
-    if op_name == "count_nonzero":
-        assert (y_empty == y_none).all()
-    else:
-        assert torch.allclose(y_empty, y_none, **reduction_tolerance(torch.float16))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("op_name", ["std", "var"])
-def test_welford_op_empty_dim_full_reduction(op_name: str) -> None:
-    op_cls = {"std": StdFwdOp, "var": VarFwdOp}[op_name]
-    x = torch.randn(2, 3, 4, dtype=torch.float16, device=run_device())
-    y_empty = op_cls(dim=[], keepdim=False)(x)
-    y_none = op_cls(dim=None, keepdim=False)(x)
-    assert torch.allclose(y_empty, y_none, **reduction_tolerance(torch.float16))
-
-
-@pytest.mark.smoke
-def test_var_mean_empty_dim_full_reduction() -> None:
-    x = torch.randn(2, 3, 4, dtype=torch.float16, device=run_device())
-    var_e, mean_e = VarMeanFwdOp(dim=[], keepdim=False)(x)
-    var_n, mean_n = VarMeanFwdOp(dim=None, keepdim=False)(x)
-    assert torch.allclose(var_e, var_n, **reduction_tolerance(torch.float16))
-    assert torch.allclose(mean_e, mean_n, **reduction_tolerance(torch.float16))
+    got = _build(name, dim=empty_dim, keepdim=keepdim)(x)
+    want = _build(name, dim=None, keepdim=keepdim)(x)
+    got, want = (got, want) if isinstance(want, tuple) else ((got,), (want,))
+    for g, w in zip(got, want, strict=True):
+        assert g.shape == w.shape
+        torch.testing.assert_close(g, w, **reduction_tolerance(torch.float16))
 
 
 @pytest.mark.smoke
@@ -1112,7 +516,7 @@ def test_logsumexp_empty_dim_rejects() -> None:
 @pytest.mark.parametrize("empty_dim", [[], ()])
 def test_an_empty_dim_is_a_noop_for_all_and_any(op_cls: type, empty_dim) -> None:
     """The spec's ``dim=[]`` contract: the output is ``x.bool()`` in the input's shape."""
-    x = _make_logical((2, 4, 8), torch.float16)
+    x = _input("all", (2, 4, 8), torch.float16)
     y = op_cls(dim=empty_dim)(x)
     assert y.shape == x.shape
     assert y.dtype == torch.bool
@@ -1138,60 +542,13 @@ def test_empty_dim_noop_answers_without_a_target(op_cls: type) -> None:
     compare_outputs(out, x != 0, reduction_verification(torch.bool))
 
 
-# An unaligned innermost extent after the reduced axes move to the end.
-
-
-# (op_cls, torch_fn) pairs.
-_OP_CASES: list[tuple[type, Callable]] = [
-    (SumFwdOp, torch.sum),
-    (MeanFwdOp, torch.mean),
-    (AmaxFwdOp, torch.amax),
-    (AminFwdOp, torch.amin),
-]
-
-
-def _ref(torch_fn: Callable, x: torch.Tensor, dim, keepdim: bool) -> torch.Tensor:
-    """PyTorch ground-truth reference. Normalizes ``dim=None`` to all dims
-    so the same call shape works for sum/mean (which accept None directly)
-    and amax/amin (which require an explicit dim list)."""
-    if dim is None:
-        dims = list(range(x.ndim))
-    elif isinstance(dim, tuple):
-        dims = list(dim)
-    else:
-        dims = dim
-    return torch_fn(x.float(), dim=dims, keepdim=keepdim).to(x.dtype)
-
-
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op_cls, torch_fn",
-    _OP_CASES,
-    ids=[c[0].__name__ for c in _OP_CASES],
-)
+@pytest.mark.parametrize("name", ["sum", "mean", "amax", "amin"])
 @pytest.mark.parametrize(
     "dim", [pytest.param((0, 2), id="dim=tuple"), pytest.param(None, id="dim=None")]
 )
-def test_arithmetic_reduce_unaligned_innermost(
-    op_cls: type,
-    torch_fn: Callable,
-    dim,
-) -> None:
-    """Unaligned innermost dim must still match PyTorch.
-
-    An aligned innermost extent of 256 (a kernel-tile multiple) bypasses
-    the simple-reduce kernel's masked-load boundary path. Use 255 to flush
-    the pad branch, whose fill value is each op's identity. ``dim=-1`` at an
-    unaligned N is covered by ``test_reduce.py``'s ``(128, 300)`` cases.
-    """
+def test_arithmetic_reduce_unaligned_innermost(name: str, dim) -> None:
+    """An innermost extent of 255, off every tile multiple, takes the masked-load boundary
+    whose fill is each op's identity; ``dim=-1`` there is test_reduce.py's ``(128, 300)``."""
     torch.manual_seed(0)
-    unaligned_shape = (4, 8, 255)
-    dtype = torch.float16
-    x = torch.randn(*unaligned_shape, dtype=dtype, device=run_device())
-    op = op_cls(dim=dim, keepdim=False)
-    y = op(x)
-    ref = _ref(torch_fn, x, dim, False)
-    assert y.shape == ref.shape, (
-        f"{op_cls.__name__} dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
-    )
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
+    _check(name, torch.randn(4, 8, 255, dtype=torch.float16, device=run_device()), dim)

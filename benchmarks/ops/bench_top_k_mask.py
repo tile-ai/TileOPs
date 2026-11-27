@@ -1,8 +1,4 @@
-"""Benchmark for the per-row top-k logit mask op.
-
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()``.
-"""
+"""Benchmark for the per-row top-k logit mask op."""
 
 import pytest
 
@@ -19,7 +15,7 @@ from benchmarks.baselines import (
 from tileops.sampling import TopKMaskFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(TopKMaskFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(TopKMaskFwdOp))
 def test_top_k_mask_bench(case) -> None:
     logits, k = case.inputs
     op = TopKMaskFwdOp(**case.arguments)

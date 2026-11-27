@@ -1,15 +1,7 @@
-"""Spec-conformance tests for scalar (0-D) reduction inputs.
+"""Reductions of a 0-D input: the op answers with a closed form, as PyTorch does.
 
-A 0-D input is answered by the op itself — every family's kernel is undefined at that
-extent — so what is under test is the closed form each one returns and its agreement with
-PyTorch.
-
-The 0-D path returns before ``dim`` is read, so the value tests pass ``dim=None``; the
-roofline test constructs and runs every op under every ``dim`` form its signature admits.
-``keepdim`` and the element type reach no branch either; each is swept once.
-
-The axis ops (softmax, logsumexp, argmax, vector norm) answer a 0-D input the same way and
-are checked against PyTorch once each.
+The 0-D path returns before ``dim`` is read, so the value tests pass ``dim=None``; the roofline
+test runs every op under every ``dim`` form its signature admits.
 """
 
 from __future__ import annotations

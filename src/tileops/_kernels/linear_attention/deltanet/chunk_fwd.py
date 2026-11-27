@@ -3,19 +3,13 @@ DeltaNet forward: (q, k, v, beta) -> output o.
 
 Pipeline (3 stages):
   1. fused_prepare_compute_w_u: (k, v, beta) -> (Aw, Au, w, u)
-  2. h_recurrence:  (k, w, u, S_0) -> (S, v_new)   [sequential over chunks]
+  2. h_recurrence:  (k, w, u) -> (S, v_new)   [sequential over chunks, from a zero state]
   3. output_o:      (q, k, S, v_new) -> o            [parallel over chunks]
 
 Where dim_k is below twice the chunk length and the walk's programs fit the device's shared
 memory, stage 1 also writes -(k^T w) and k^T u, stage 2 is the state walk
 (-(k^T w), k^T u) -> S, one matmul a chunk, and stage 3 forms v_new = u - w h from
-(q, k, w, u, S).
-
-Unlike Gated DeltaNet (GDN), there is no gate parameter g:
-  - No exp(g) scaling in any stage
-  - State update: h_new = h + k^T @ v_new (no decay)
-  - v_new = u - w @ h (no exp scaling)
-  - Output: o = q @ h + causal_attn @ v_new (no Gamma weighting)
+(q, k, w, u, S). The recurrence has no gate: h_new = h + k^T @ v_new.
 """
 
 import functools
@@ -44,6 +38,7 @@ from tileops._kernels.linear_attention.deltanet.chunk_bwd import (
     extent_refusal,
     walk_block_v_options,
     walk_threads,
+    walk_tl,
 )
 from tileops._kernels.linear_attention.deltanet.fused_prepare_compute_w_u import (
     fused_prepare_compute_w_u_tl,
@@ -64,7 +59,7 @@ def _h_recurrence_tl(
     dtype: str = "float32",
     block_v: int = 0,
 ):
-    """State recurrence: (k, w, u, S_0) -> (S, v_new).
+    """State recurrence from a zero state: (k, w, u) -> (S, v_new).
 
     Grid: (num_v_tiles, batch, head) -- sequential over chunks, parallel over V tiles.
     Outputs per-chunk boundary states S and intermediate v_new for output_o.
@@ -97,7 +92,6 @@ def _h_recurrence_tl(
             k: T.Tensor([batch, head, seq_len, dim_k], dtype),
             w: T.Tensor([batch, head, seq_len, dim_k], dtype),
             u: T.Tensor([batch, head, seq_len, dim_v], dtype),
-            S_0: T.Tensor([batch, head, dim_k, dim_v], dtype),
             S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], accum_dtype),
             v_new: T.Tensor([batch, head, seq_len, dim_v], dtype),
         ):
@@ -114,9 +108,7 @@ def _h_recurrence_tl(
 
                 v_offset = vid * BV
 
-                T.copy(S_0[bid, hid, :, v_offset : v_offset + BV], h_c, disable_tma=True)
-                for i, j in T.Parallel(dim_k, BV):
-                    h_fp32[i, j] = T.cast(h_c[i, j], accum_dtype)
+                T.clear(h_fp32)
                 for i, j in T.Parallel(dim_k, BV):
                     S[bid, hid, 0, i, v_offset + j] = h_fp32[i, j]
 
@@ -131,7 +123,7 @@ def _h_recurrence_tl(
 
                     T.copy(h_fp32, h_c)
 
-                    # v_new_tile = u_tile - w @ h_tile (no exp scaling)
+                    # v_new_tile = u_tile - w @ h_tile
                     T.clear(ws_frag)
                     T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
@@ -149,77 +141,6 @@ def _h_recurrence_tl(
                         S[bid, hid, t + 1, i, v_offset + j] = h_fp32[i, j]
 
         return h_recurrence_kernel
-
-    return _func
-
-
-@target_cache(maxsize=32)
-def _state_walk_tl(
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: str = "float32",
-):
-    """Sequential walk of the state over chunks: (neg_kw, ku) -> S.
-
-    Grid: (dim_v / block_v, batch, head). Each CTA carries one ``[dim_k, block_v]`` column tile
-    of the state from the first chunk to the last. For ungated DeltaNet
-
-        h_{c+1} = h_c + K_c^T U_c - (K_c^T W_c) h_c,
-
-    because h_{c+1} = h_c + K_c^T v_new and v_new = U_c - W_c h_c. The column tiles are
-    independent, and the w/u preparation writes ``neg_kw`` = -(K_c^T W_c) and ``ku`` = K_c^T U_c,
-    so the chain is one matmul a chunk.
-
-    Output: S[c], the FP32 state chunk c starts from, and S[num_chunks], the final state.
-    """
-    accum_dtype = "float32"
-    num_chunks = seq_len // chunk_size
-
-    @tilelang.jit(
-        out_idx=[-1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
-        },
-        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
-    )
-    def _func(block_v, num_stages, threads=128):
-        if block_v < min_gemm_n(threads):
-            raise ValueError(
-                f"block_v ({block_v}) is below the minimum T.gemm N extent "
-                f"({min_gemm_n(threads)}) at {threads} threads"
-            )
-
-        @T.prim_func
-        def state_walk_kernel(
-            neg_kw: T.Tensor([batch, head, num_chunks, dim_k, dim_k], dtype),
-            ku: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
-            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], accum_dtype),
-        ):
-            with T.Kernel(dim_v // block_v, batch, head, threads=threads) as (vid, bid, hid):
-                op_s = T.alloc_shared([dim_k, dim_k], dtype)
-                local_s = T.alloc_shared([dim_k, block_v], accum_dtype)
-                # Held transposed, so the matmul reads it K-major.
-                h_s = T.alloc_shared([block_v, dim_k], dtype)
-                h_frag = T.alloc_fragment([dim_k, block_v], accum_dtype)
-                v0 = vid * block_v
-
-                T.clear(h_frag)
-                for t in T.Pipelined(num_chunks, num_stages=num_stages):
-                    T.copy(neg_kw[bid, hid, t, :, :], op_s, disable_tma=True)
-                    T.copy(ku[bid, hid, t, :, v0 : v0 + block_v], local_s, disable_tma=True)
-                    for i, j in T.Parallel(dim_k, block_v):
-                        h_s[j, i] = h_frag[i, j]
-                    T.copy(h_frag, S[bid, hid, t, :, v0 : v0 + block_v], disable_tma=True)
-                    for i, j in T.Parallel(dim_k, block_v):
-                        h_frag[i, j] = h_frag[i, j] + local_s[i, j]
-                    T.gemm(op_s, h_s, h_frag, transpose_B=True)
-                T.copy(h_frag, S[bid, hid, num_chunks, :, v0 : v0 + block_v], disable_tma=True)
-
-        return state_walk_kernel
 
     return _func
 
@@ -285,7 +206,7 @@ def _output_o_tl(
                 elif not late_loads:
                     T.copy(v_new[bid, hid, r0 : r0 + block_C, :], v_new_c, disable_tma=True)
 
-                # o = q @ h (no exp(g) scaling)
+                # o = q @ h
                 T.clear(o_frag)
                 T.gemm(q_c, h_c, o_frag)
 
@@ -299,7 +220,7 @@ def _output_o_tl(
                 if late_loads:
                     T.copy(k[bid, hid, r0 : r0 + block_C, :], k_c, disable_tma=True)
 
-                # attn = causal(q @ k^T) (no Gamma weighting)
+                # attn = causal(q @ k^T)
                 T.clear(attn_frag)
                 T.gemm(q_c, k_c, attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
@@ -454,7 +375,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             cls.dtype_to_str(call.dtype),
         )
         index = call.device_index
-        return (*arguments, index), lambda: cls(*arguments)
+        return (*arguments, index), lambda: cls(*arguments, device_index=index)
 
     def __init__(
         self,
@@ -466,8 +387,9 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         dim_v: int,
         dtype: str = "float32",
         config: dict | None = None,
+        device_index: int | None = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.head = head
         self.seq_len = seq_len
@@ -633,7 +555,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             {"threads": default["fused_threads"]},
         )
         walk = tune(
-            _state_walk_tl(*shape),
+            walk_tl(*shape, backward=False),
             self._walk_configs(),
             {
                 "block_v": default["h_block_v"],
@@ -677,7 +599,9 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         o_fn = _output_o_tl(*args, late_loads=self._o_late_loads, from_walk=walk)(cfg["o_threads"])
         h_block_v = cfg["h_block_v"]
         if walk:
-            state_fn = _state_walk_tl(*args)(h_block_v, cfg["h_num_stages"], cfg["h_threads"])
+            state_fn = walk_tl(*args, backward=False)(
+                h_block_v, cfg["h_num_stages"], cfg["h_threads"]
+            )
         else:
             state_fn = _h_recurrence_tl(*args, block_v=h_block_v)(
                 cfg["h_num_stages"], cfg["h_threads"]
@@ -698,9 +622,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             Aw, Au, w, u, neg_kw, ku = fused_fn(k, v, beta)
             S_buf = state_fn(neg_kw, ku)
             return o_fn(q, k, w, u, S_buf), S_buf, Aw, Au, w, u
-        S_0 = torch.zeros(
-            self.batch, self.head, self.dim_k, self.dim_v, dtype=q.dtype, device=q.device
-        )
         Aw, Au, w, u = fused_fn(k, v, beta)
-        S_buf, v_new = state_fn(k, w, u, S_0)
+        S_buf, v_new = state_fn(k, w, u)
         return o_fn(q, k, S_buf, v_new), S_buf, Aw, Au, w, u

@@ -436,10 +436,8 @@ def _mla_seesaw_program(
     ):
         """The producer warpgroup reads each FP8 tile and stores it in the query dtype.
 
-        E4M3 values are exact in either 16-bit dtype, so the cache scale stays out of the
-        stored tile and multiplies the scores and the output instead. Each 64 x 128 chunk
-        is read whole into registers before any of it is converted, so its loads are in
-        flight together. A value row past the request's end is then cleared.
+        E4M3 values are exact in either 16-bit dtype, so the cache scale multiplies the scores and
+        the output instead. A value row past the request's end is cleared.
         """
         chunk = T.alloc_fragment([block_n, 128], cache_dtype)
         tail = T.alloc_fragment([block_n, pe], cache_dtype)

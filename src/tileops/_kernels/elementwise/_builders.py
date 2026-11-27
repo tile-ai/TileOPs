@@ -23,11 +23,9 @@ from tileops._kernels.elementwise._op_body import (
 )
 from tileops._kernels.streaming_load import load16_evict_last
 
-# Threads a 64K-register SM holds at 32 registers each. nvcc gives a guarded body's fast
-# loop, which keeps every element of a thread in flight, and a long body whose kernel sets
-# ``FULL_OCCUPANCY`` more than 32 registers, which leaves fewer threads resident; asking for
-# blocks enough to fill this many threads holds it at 32. The row-broadcast and register-copy
-# builders both set this occupancy floor, so they must agree on it.
+# Threads a 64K-register SM holds at 32 registers each. A guarded body's fast loop and a
+# ``FULL_OCCUPANCY`` body compile past 32 registers; asking for blocks enough to fill this
+# many threads holds them at 32.
 _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
 
 
@@ -58,18 +56,15 @@ def _narrows(dtype, out_dtype):
 def _backwards(j, count):
     """Slot ``count - 1 - j`` of a thread's *count*: the order a guarded fallback reads in.
 
-    The fallback reads its operands from global memory: read from the staged
-    fragment, they stay live across the fast loop. Read forwards, the loads widen
-    into a copy of the staged one, nvcc merges the two, and the same happens.
+    Read forwards, the fallback's global loads widen into a copy of the staged one, nvcc
+    merges the two, and the staged operands stay live across the fast loop.
     """
     return count - 1 - j
 
 
 def _broadcast_index_terms(plan_name):
-    """Return ``(divisors, a_strides, b_strides)`` for one broadcast plan.
-
-    Called inside a builder, where these lists and tuples may not be closed over.
-    """
+    """Return ``(divisors, a_strides, b_strides)`` for one broadcast plan; a builder may not
+    close over these lists."""
     plan = broadcast_plan_for(plan_name)
     return row_major_strides(plan.coalesced_shape), plan.a_strides, plan.b_strides
 
@@ -98,10 +93,8 @@ def make_unary_direct(N, dtype, op_name, out_dtype):
 def make_unary_regcopy(N, dtype, op_name, out_dtype, headers, full_occupancy):
     """Fragment load, compute, fragment store.
 
-    A ``GuardedOpFunc`` body runs its fast form over a fragment-copy thread's
-    elements, and the full body only in a thread where the guard fails. The fragment
-    program holds the occupancy floor for a guarded body, and for any body whose kernel
-    sets *full_occupancy*.
+    A ``GuardedOpFunc`` body runs its fast form, and the full body only in a thread where
+    the guard fails.
     """
     vec = 16 // (DataType(dtype).bits // 8)
 
@@ -198,30 +191,21 @@ def _row_broadcast_prim(
 ):
     """PrimFunc for a broadcast whose innermost coalesced dim reads at stride 0 or 1.
 
-    One grid row per output row: the divmod chain that locates each operand
-    runs once per block, and the inner loop indexes affinely, so it vectorizes.
-    The generic path pays that chain per element and every access is a gather.
-    A ragged inner extent splits at trace time. Full blocks always run unguarded.
-    Where *num_per_thread* divides the row, the grid indexes vectors and leaves no
-    columns over. A row that is not a whole number of a thread's vectors, against an
-    operand that is the whole output, runs one flat grid of the output's vectors.
-    Otherwise the columns past the last full block go one of two ways, scalar either
-    way: packed end to end across rows into blocks of their own, or left as one
-    guarded block per row.
+    The divmod chain that locates each operand runs once per block of one row, and the
+    inner loop indexes affinely, so it vectorizes. The grid takes one of these forms,
+    first that applies: bias rows, two rounds, a ragged flat grid of vectors, a flat
+    grid of vectors, packed tail blocks, one guarded block per row.
 
-    *stage* moves the full blocks through fragments, which keeps the copies wide
-    when the body cannot vectorize. It is opt-in because a body that does
-    vectorize is slower for the round trip.
-
-    ``bias_rows`` enables bias-vector reuse across rows when the grid fits
-    ``max_resident_threads``. Register-heavy bodies must opt out: this bound only
-    accounts for the device's thread capacity. A grid of hinted blocks between half a
-    wave and one wave of ``max_resident_threads`` runs in two rounds on half the blocks.
+    *stage* moves the full blocks through fragments, which keeps the copies wide when
+    the body cannot vectorize. *bias_rows* is how many rows a thread walks against one
+    vector of a bias row, or ``None`` for a register-heavy body. *max_resident_threads*
+    is the most threads the device holds at once.
     """
     op_func = op_func_for(op_name)
     fast = _fast_of(op_func)
-    divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
     plan = broadcast_plan_for(plan_name)
+    divisors = row_major_strides(plan.coalesced_shape)
+    a_strides, b_strides = plan.a_strides, plan.b_strides
     inner = plan.coalesced_shape[-1]
     rows = N_total // inner
     a_inner = plan.a_strides[-1]
@@ -277,9 +261,8 @@ def _row_broadcast_prim(
     body_blocks = full_blocks * rows
     tail_blocks = -(-tail_slots // block_cols)
     # Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
-    # slots and spends rows * T index chains, so it pays while T / (W - T) stays under
-    # the lane slots one chain is worth. At W // 4 that ratio is one chain per three
-    # idle slots.
+    # slots and spends rows * T index chains; at T <= W // 4 that is one chain per three
+    # idle slots or better.
     tail_pack_ratio = 4
     pack_tail = not exact and full_blocks > 0 and tail_cols <= block_cols // tail_pack_ratio
     # Columns past the last full block go one element per thread. Indexing
@@ -306,11 +289,8 @@ def _row_broadcast_prim(
 
     @T.macro
     def write_run(a, b, y, a_base, b_base, by, col):
-        """The *num_per_thread* columns of row *by* from *col*, a thread's own contiguous run.
-
-        A narrower result stored from the fragment layout takes one store per
-        vector of the operand; a thread's own run stores it in one.
-        """
+        """The *num_per_thread* columns of row *by* from *col*, a thread's own contiguous run,
+        stored in one store where the fragment layout takes one a vector."""
         if a_inner:
             a_run = T.alloc_local((num_per_thread,), dtype)
             for v in T.vectorized(num_per_thread):
@@ -367,12 +347,9 @@ def _row_broadcast_prim(
     def write_block_staged(a, b, y, a_base, b_base, by, bx):
         """One full block, read and written a fragment at a time.
 
-        An operand at stride 0 is one value for the whole row, so it is read
-        into a register rather than staged across a fragment it would fill with
-        copies of itself. Reading it at the use site instead leaves the load in
-        the element loop, and with it whatever the body wraps around it -- for
-        maximum and minimum that is a NaN test, which is the row's property and
-        not the element's.
+        An operand at stride 0 is read once into a register, which keeps its load and
+        the body's per-operand work (the NaN test of maximum and minimum) out of the
+        element loop.
         """
         y_reg = T.alloc_fragment((block_cols,), out_dtype)
         col0 = bx * block_cols
@@ -434,14 +411,10 @@ def _row_broadcast_prim(
     def write_block_hinted(a, b, y, a_base, b_base, by, bx, words=False):
         """One full block, each thread holding one vector in every block-wide chunk.
 
-        The thread-to-vector map is the one the fragment copy gives, so the store
-        stays one aligned word a chunk. An operand at stride 0 is read once, as in
-        ``write_block_staged``. An operand smaller than the output is a row the next
-        rows read again, so it stays in L2 evict-last; one as large is read once.
-
+        The store stays one aligned word a chunk. An operand at stride 0 is read once; one
+        smaller than the output is read again by the next rows, so it loads evict-last.
         *words* builds each 4-byte word of the result by adding the selected byte of every
-        element. The rounds grid sets it: there the second round's loads wait on this
-        arithmetic.
+        element.
         """
         tx = T.get_thread_binding()
         col0 = bx * block_cols
@@ -490,13 +463,7 @@ def _row_broadcast_prim(
 
     @T.macro
     def write_held_block(a, b, y, a_base, b_base, by, bxc):
-        """One full block with the row's stride-0 operand read into a register.
-
-        An operand at stride 0 is one value for the whole row. Left as a
-        subscript it is read again at every element, and so is the arithmetic
-        the body wraps around it -- for maximum and minimum that is a NaN test,
-        which is the row's and not the element's.
-        """
+        """One full block with the row's stride-0 operand read once into a register."""
         held = T.alloc_local((1,), dtype)
         held[0] = a[a_base] if not a_inner else b[b_base]
         for i, j in T.Parallel(threads, num_per_thread):
@@ -748,12 +715,8 @@ def _row_broadcast_prim(
 
         @T.macro
         def write_flat_staged(a, b, y, bx):
-            """One block of vectors, read and written a fragment at a time.
-
-            The copy loops carry no body, so they keep the full width where the
-            body would have scalarised them. A block spans rows, so the operand
-            a row broadcasts is one register per thread, not one per block.
-            """
+            """One block of vectors, read and written a fragment at a time; the operand a row
+            broadcasts is one register per thread, since a block spans rows."""
             y_reg = T.alloc_fragment((block_cols,), out_dtype)
             if a_inner:
                 a_reg = T.alloc_fragment((block_cols,), dtype)
@@ -1078,12 +1041,8 @@ def make_binary_explicit(
     bias_rows,
     max_resident_threads,
 ):
-    """Several elements a thread, each operand read at its broadcast strides.
-
-    *bias_rows* is how many rows a thread walks against one vector of a bias row, and
-    *max_resident_threads* the most threads the device holds at once; see
-    ``_row_broadcast_prim``.
-    """
+    """Several elements a thread, each operand read at its broadcast strides; see
+    ``_row_broadcast_prim`` for *stage*, *bias_rows* and *max_resident_threads*."""
     plan = broadcast_plan_for(plan_name)
 
     if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
@@ -1244,8 +1203,6 @@ def make_strided_multi_input(
 
     A thread covers ``num_per_thread`` output elements as vectors of up to 16 bytes of the
     widest operand that stay inside one innermost row, so each vector pays one divmod chain.
-    Along a vector an operand moves one element a lane (stride 1) or none (stride 0): the
-    first is one vector load, the second one element every lane reads.
     """
     inner = coalesced_shape[-1]
     divisors = row_major_strides(coalesced_shape)

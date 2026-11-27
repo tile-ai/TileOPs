@@ -1,9 +1,8 @@
 """Benchmark for the FP8 quantization op.
 
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()``. The TileKernels column times
-``quant.per_token_cast_and_cast_back`` in place and otherwise ``quant.per_token_cast``, an
-e8m0 row's UE8M0 scales stored as packed bytes, both with the row's eps as the amax floor.
+The TileKernels column times ``quant.per_token_cast_and_cast_back`` in place and otherwise
+``quant.per_token_cast``, an e8m0 row's UE8M0 scales stored as packed bytes, both with the row's
+eps as the amax floor.
 """
 
 import pytest
@@ -22,7 +21,7 @@ from benchmarks.baselines import (
 from tileops.quantization import FP8QuantPerTokenGroupFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(FP8QuantPerTokenGroupFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FP8QuantPerTokenGroupFwdOp))
 def test_fp8_quant_bench(case) -> None:
     op = FP8QuantPerTokenGroupFwdOp(**case.arguments)
     op.request_tune()

@@ -346,7 +346,7 @@ def test_the_nightly_sweep_times_a_reference_ten_times_the_fastest_baseline_once
     timed, monkeypatch, reference_ms, passes
 ):
     """A baseline reads 1 ms: a 10 ms reference gets one pass, a 9 ms one two."""
-    monkeypatch.setattr(bench, "_nightly", True)
+    monkeypatch.setattr(bench, "nightly_sweep", True)
     case = _case()
     stub = bench.bench_kernel
 
@@ -422,7 +422,7 @@ def test_a_device_cupti_cannot_time_is_timed_with_events_whatever_the_fallback_s
     """The events timer is that device's instrument, not a fallback, and every row says so."""
     recorded = []
     monkeypatch.setattr(timing, "_instrument_for", lambda device: "events")
-    monkeypatch.setattr(timing, "_events_fallback_allowed", fallback)
+    monkeypatch.setattr(timing, "events_fallback_allowed", fallback)
     monkeypatch.setattr(
         BenchmarkReport, "record", lambda *a, **k: recorded.append((k["tag"], a[2]))
     )

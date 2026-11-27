@@ -13,7 +13,9 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
+from tileops._kernels.linear_attention.chunk_plan import packed_offsets
 from tileops._kernels.linear_attention.gla.call_spec import (
+    PASS_CONFIGS,
     GLACall,
     GLAFwdInterface,
     build_entry,
@@ -27,14 +29,9 @@ from tileops._kernels.linear_attention.gla.varlen_prefill import (
     stage_chunk_operands,
 )
 from tileops._kernels.linear_attention.v_tile import GEMM_MIN_N
+from tileops._kernels.tiling import align_up
 
 __all__ = ["GLAVarlenPrefillPartitionedFwdKernel"]
-
-_PASS_CONFIGS = {
-    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-    tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-    tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-}
 
 
 @target_cache(maxsize=32)
@@ -77,7 +74,7 @@ def gla_varlen_local_state_kernel(
             f"{dim_v_part}-column T.gemm B operand, below the minimum N extent ({GEMM_MIN_N})"
         )
 
-    @tilelang.jit(out_idx=[-4, -3, -2, -1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[-4, -3, -2, -1], pass_configs=PASS_CONFIGS)
     def _fn(threads: int = 128):
         annotations = {"pragma_unroll_explicit": True}
         if num_stages > 0:
@@ -289,7 +286,7 @@ def gla_varlen_scan_kernel(
     num_tiles = dim_k // block_k * (dim_v // block_v)
     num_v_tiles = dim_v // block_v
 
-    @tilelang.jit(out_idx=[-2, -1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[-2, -1], pass_configs=PASS_CONFIGS)
     def _fn(threads: int = 128):
         initial_shape = [num_seqs, heads, dim_k, dim_v] if has_initial_state else [1]
 
@@ -387,7 +384,7 @@ def gla_varlen_partitioned_output_kernel(
     num_chunks = tiling.tile_upper_bound(total_tokens)
     partition_tokens = CHUNK_TOKENS * partition_chunks
 
-    @tilelang.jit(out_idx=[-1], pass_configs=_PASS_CONFIGS)
+    @tilelang.jit(out_idx=[-1], pass_configs=PASS_CONFIGS)
     def _fn(threads: int = 128):
         @T.prim_func
         def _main(
@@ -536,7 +533,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
         k_partitions, v_partitions = cls._partitions(dim_k, dim_v)
         k, v = dim_k // k_partitions, dim_v // v_partitions
         stage = CHUNK_TOKENS * ((k + v) * elem + k * 4)
-        return (cls._state_stages + 1) * stage + -(-4 * (num_sequences + 1) // 16) * 16
+        return (cls._state_stages + 1) * stage + align_up(4 * (num_sequences + 1), 16)
 
     @classmethod
     def entry_for(cls, call: GLACall) -> Entry:
@@ -595,9 +592,7 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
         self.v_partitions = v_partitions
         self.partition_chunks = partition_chunks
         self.program(self._programs)
-        self._unread_state = torch.empty(
-            1, dtype=torch.float32, device=torch.device("cuda", device_index)
-        )
+        self._unread_state = torch.empty(1, dtype=torch.float32, device=self._build_device)
 
     def _programs(self, cfg: dict) -> tuple:
         """The gate accumulation, partition walk, scan, causal product and output launches."""
@@ -650,16 +645,9 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # The offsets are read on the device, so the host copy is never needed.
         del cu_seqlens_cpu
-        if cu_seqlens is None:
-            # Built per call rather than held: a tensor reused on another stream is read
-            # before its own write unless that stream waits.
-            cu_seqlens = torch.arange(
-                0,
-                (self.batch + 1) * self.seq_len,
-                self.seq_len,
-                dtype=torch.int64,
-                device=q.device,
-            )
+        # Built per call rather than held: a tensor reused on another stream is read
+        # before its own write unless that stream waits.
+        cu_seqlens = packed_offsets(self.batch, self.seq_len, cu_seqlens, q.device)
         packed = (1, self.batch * self.seq_len, self.heads, -1)
         state = initial_state if self.has_initial_state else self._unread_state
         cumsum_fn, local_fn, scan_fn, causal_fn, output_fn = self.program(self._programs)

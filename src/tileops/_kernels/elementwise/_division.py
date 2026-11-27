@@ -24,9 +24,9 @@ QUOTIENT_NUM_PER_THREAD = 8
 def approx_fdiv(num, den):
     """CUDA's ``__fdividef``: one ``div.approx.f32``, two ulp.
 
-    It is defined for a divisor in ``[2**-126, 2**126]``. float16 spans ``[2**-24, 2**16]`` and rounds its result to eleven bits, so
-    it meets both bounds. bfloat16 carries float32's exponent and a float32
-    result keeps all 24 bits.
+    It is defined for a divisor in ``[2**-126, 2**126]``. float16 spans ``[2**-24, 2**16]``
+    and rounds its result to eleven bits, so it meets both bounds. bfloat16 carries float32's
+    exponent and a float32 result keeps all 24 bits.
     """
     return T.call_extern("float32", "__fdividef", num, den)
 
@@ -111,7 +111,7 @@ def refined_reciprocal(den):
 
 
 def fast_quotient(dtype: str, num, den):
-    """``(value, holds)``: ``num / den`` in float32 for a bfloat16 or float32 result, without a branch.
+    """``(value, holds)``: ``num / den`` in float32 for a bfloat16 or float32 result, branch-free.
 
     Wherever ``holds``, *value* stored as *dtype* is torch's quotient, the IEEE float32
     quotient rounded once; elsewhere the caller divides exactly.

@@ -1,8 +1,5 @@
 """Benchmarks for the 8 basic reduce ops.
 
-Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines. Each case is one
-manifest call (src/tileops/manifest/); the roofline comes from ``op.eval_roofline()``.
-
 Every row is timed against torch eager, the same reference through inductor, and
 flag_gems' Triton reduction where one exists. amin has none: flag_gems 5.0.2
 exposes amax but no amin, and ``min_dim`` also produces indices. A row passing ``dtype``
@@ -15,7 +12,6 @@ and return the storage dtype — so each tag is one kernel.
 from collections.abc import Callable
 
 import pytest
-import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import (
@@ -49,10 +45,6 @@ def _bench(op_cls: type, case: bench.Case, flaggems_fn: Callable | None = None) 
     bench.Runner(op, case).compare(implementations)
 
 
-def _out_dtype(x: torch.Tensor, params: dict) -> torch.dtype:
-    return getattr(torch, params["dtype"]) if params.get("dtype") else x.dtype
-
-
 def _flaggems(name: str, params: dict, *extra, **kwargs) -> Callable | None:
     """flag_gems' reduction over the row's axes, or ``None`` for a row passing ``dtype``."""
     if params.get("dtype"):
@@ -62,33 +54,27 @@ def _flaggems(name: str, params: dict, *extra, **kwargs) -> Callable | None:
     return lambda x: fn(x, flaggems_dims(dim), *extra, keepdim=params["keepdim"], **kwargs)
 
 
-@pytest.mark.parametrize("case", bench.cases(SumFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SumFwdOp))
 def test_sum_bench(case) -> None:
-    p = case.params
-
-    _bench(SumFwdOp, case, _flaggems("sum_dim", p))
+    _bench(SumFwdOp, case, _flaggems("sum_dim", case.params))
 
 
-@pytest.mark.parametrize("case", bench.cases(MeanFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MeanFwdOp))
 def test_mean_bench(case) -> None:
-    p = case.params
-
-    _bench(MeanFwdOp, case, _flaggems("mean_dim", p))
+    _bench(MeanFwdOp, case, _flaggems("mean_dim", case.params))
 
 
-@pytest.mark.parametrize("case", bench.cases(AmaxFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AmaxFwdOp))
 def test_amax_bench(case) -> None:
-    p = case.params
-
-    _bench(AmaxFwdOp, case, _flaggems("amax", p))
+    _bench(AmaxFwdOp, case, _flaggems("amax", case.params))
 
 
-@pytest.mark.parametrize("case", bench.cases(AminFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AminFwdOp))
 def test_amin_bench(case) -> None:
     _bench(AminFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(ProdFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(ProdFwdOp))
 def test_prod_bench(case) -> None:
     p = case.params
 
@@ -106,25 +92,18 @@ def _correction(params: dict):
     return 1 if params["correction"] is None else params["correction"]
 
 
-@pytest.mark.parametrize("case", bench.cases(StdFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(StdFwdOp))
 def test_std_bench(case) -> None:
-    p = case.params
-    c = _correction(p)
-
-    _bench(StdFwdOp, case, _flaggems("std", p, correction=c))
+    _bench(StdFwdOp, case, _flaggems("std", case.params, correction=_correction(case.params)))
 
 
-@pytest.mark.parametrize("case", bench.cases(VarFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(VarFwdOp))
 def test_var_bench(case) -> None:
-    p = case.params
-    c = _correction(p)
-
-    _bench(VarFwdOp, case, _flaggems("var_dim", p, correction=c))
+    _bench(VarFwdOp, case, _flaggems("var_dim", case.params, correction=_correction(case.params)))
 
 
-@pytest.mark.parametrize("case", bench.cases(VarMeanFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(VarMeanFwdOp))
 def test_var_mean_bench(case) -> None:
-    p = case.params
-    c = _correction(p)
-
-    _bench(VarMeanFwdOp, case, _flaggems("var_mean", p, correction=c))
+    _bench(
+        VarMeanFwdOp, case, _flaggems("var_mean", case.params, correction=_correction(case.params))
+    )

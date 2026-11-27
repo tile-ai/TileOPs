@@ -38,11 +38,9 @@ def register_op_func(name: str, op_func: Callable) -> str:
 class GuardedOpFunc:
     """An op body with a cheaper form that equals it wherever a guard holds.
 
-    ``fast(a, b)`` returns ``(value, holds)``. A staged builder runs ``fast`` over a
-    thread's elements and stores them; only in a thread where ``holds`` fails for one
-    of them does it call the body and store the elements again. The first store is
-    unconditional: nvcc merges a store under the guard with the fallback's store into
-    one after the branch.
+    ``fast(a, b)`` returns ``(value, holds)``. A staged builder stores ``fast`` over a
+    thread's elements, and calls the body and stores again only in a thread where
+    ``holds`` fails for one of them.
     """
 
     body: Callable
@@ -83,35 +81,6 @@ def store_bool_as_int8(op_func):
     return wrapped
 
 
-_SIMPLE_UNARY_NODES = (
-    tirx.Add,
-    tirx.Sub,
-    tirx.Mul,
-    tirx.Min,
-    tirx.Max,
-    tirx.EQ,
-    tirx.NE,
-    tirx.LT,
-    tirx.LE,
-    tirx.GT,
-    tirx.GE,
-    tirx.And,
-    tirx.Or,
-    tirx.Not,
-    tirx.Select,
-)
-_SIMPLE_UNARY_CALLS = frozenset(
-    {
-        "tirx.if_then_else",
-        "tirx.bitwise_and",
-        "tirx.bitwise_or",
-        "tirx.bitwise_xor",
-        "tirx.bitwise_not",
-        "tirx.fabs",
-    }
-)
-
-
 def body_operations(op_func: Callable, *dtypes: str) -> "list | None":
     """The TIR operations *op_func* builds on one operand of each of *dtypes*, leaves left out.
 
@@ -131,14 +100,39 @@ def body_operations(op_func: Callable, *dtypes: str) -> "list | None":
 
 def is_simple_unary(op_func: Callable, dtype: str) -> bool:
     """Whether a unary expression has at most two inexpensive TIR operations."""
+    simple_nodes = (
+        tirx.Add,
+        tirx.Sub,
+        tirx.Mul,
+        tirx.Min,
+        tirx.Max,
+        tirx.EQ,
+        tirx.NE,
+        tirx.LT,
+        tirx.LE,
+        tirx.GT,
+        tirx.GE,
+        tirx.And,
+        tirx.Or,
+        tirx.Not,
+        tirx.Select,
+    )
+    simple_calls = {
+        "tirx.if_then_else",
+        "tirx.bitwise_and",
+        "tirx.bitwise_or",
+        "tirx.bitwise_xor",
+        "tirx.bitwise_not",
+        "tirx.fabs",
+    }
     if isinstance(op_func, GuardedOpFunc):
         return False
     operations = body_operations(op_func, dtype)
     if operations is None:
         return False
     return len(operations) <= 2 and all(
-        str(getattr(node.op, "name", None)) in _SIMPLE_UNARY_CALLS
+        str(getattr(node.op, "name", None)) in simple_calls
         if isinstance(node, tirx.Call)
-        else isinstance(node, _SIMPLE_UNARY_NODES)
+        else isinstance(node, simple_nodes)
         for node in operations
     )

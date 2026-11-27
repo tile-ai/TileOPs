@@ -161,6 +161,7 @@ def _adt(name: str, value, adts: dict):
         if len(value) != 1 or next(iter(value)) not in ctors:
             raise ValueError(f"{value!r} is not one of the constructors {sorted(ctors)}")
         ((ctor, fields),) = value.items()
+        declared = ctors[ctor].get("fields") or {}
         fields = dict(fields or {})
         view = ADTValue(name, value)
     else:
@@ -173,7 +174,6 @@ def _adt(name: str, value, adts: dict):
             raise ValueError(f"{name}: {ctor} lacks fields {missing}")
         fields = {f: getattr(getattr(value, f), "value", getattr(value, f)) for f in declared}
         view = value
-    declared = ctors[ctor].get("fields") or {}
     if set(fields) != set(declared):
         raise ValueError(f"{name}: {ctor} takes fields {sorted(declared)}, got {sorted(fields)}")
     for f, v in fields.items():

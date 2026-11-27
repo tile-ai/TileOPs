@@ -31,11 +31,61 @@ __all__ = [
 
 
 def _code_to_float(code):
-    """The float32 value of an int8 *code*, by an integer add and an FADD instead of I2F,
-    which issues 16 results per clock per SM against FADD's 128."""
+    """The float32 value of an int8 *code*, by an integer add and an FADD instead of the
+    slower I2F."""
     # 0x4B000080 is the float32 bit pattern of 2^23 + 128. Adding c to it gives the pattern
     # of 2^23 + 128 + c exactly, and subtracting 2^23 + 128 leaves float(c).
     return T.reinterpret(T.Cast(T.int32, code) + 0x4B000080, T.float32) - 8388736.0
+
+
+class _INT8DequantKernel(Kernel):
+    """The launch policy the INT8 dequantize kernels share: a block of ``threads`` threads
+    converts ``steps`` 16-byte vectors of ``x`` a thread."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    general: bool = True
+
+    # ``q`` is data: random codes run the same instructions as real ones.
+    autotune_accepts_random_int_inputs: bool = True
+
+    # Calibrated default launch; autotuning uses the candidate ranges below.
+    _THREADS: ClassVar[int] = 64
+    _STEPS: ClassVar[int] = 4
+    _TUNE_THREADS: ClassVar[tuple[int, ...]] = (32, 64, 128)
+    _TUNE_STEPS: ClassVar[tuple[int, ...]] = (2, 4, 8)
+    # Set on a kernel that serves only matrices of fewer codes.
+    _MAX_CODES: ClassVar[int | None] = None
+
+    @classmethod
+    def refusal(cls, call: DequantizeCall) -> str | None:
+        codes = call.m * call.k
+        if cls._MAX_CODES is not None and codes >= cls._MAX_CODES:
+            return f"serves fewer than {cls._MAX_CODES} elements, got {codes}"
+        reason = super().refusal(call)
+        # The last block's indices run up to one block past M * K; the widest block holds
+        # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
+        largest_block = max(cls._TUNE_THREADS) * max(cls._TUNE_STEPS) * VECTOR_ACCESS_BYTES // 2
+        if reason is None and codes > torch.iinfo(torch.int32).max - largest_block:
+            return f"indexes elements with int32, and M * K = {codes}"
+        return reason
+
+    @property
+    def default_config(self) -> dict:
+        return {"threads": self._THREADS, "steps": self._STEPS}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [{"threads": t, "steps": s} for t in self._TUNE_THREADS for s in self._TUNE_STEPS]
+
+    def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        self._require_devices(q=q, scale=scale)
+        x = self.program(self._compile)(q.view(-1), scale.view(-1))
+        return x.view(q.shape)
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(cfg["threads"], cfg["steps"])
 
 
 @target_cache(maxsize=32)
@@ -95,14 +145,8 @@ def _int8_dequant_per_channel_kernel(m: int, k: int, out_dtype: str, npt: int):
     return _int8_dequant_per_channel_func
 
 
-class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
+class INT8DequantPerChannelFwdKernel(_INT8DequantKernel, INT8DequantPerChannelFwdInterface):
     """``x = (q.float() * scale[:, None]).to(out_dtype)`` for one scale per row of ``q``.
-
-    The matrix is read as one flat run of ``m * k`` codes. A thread converts ``npt``
-    contiguous codes per step, one 16-byte store of ``x``, and each block runs ``steps``
-    such chunks with every load issued first; a chunk that crosses a row boundary selects
-    between the two rows' scales. The last block, and every block when ``k < npt``,
-    converts code by code against the run's end.
 
     Args:
         m: Rows of ``q``.
@@ -111,13 +155,6 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         config: Optional dict with "threads" and "steps".
         device_index: The device the kernel is built for.
     """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    general: bool = True
-
-    # ``q`` is data: random codes run the same instructions as real ones.
-    autotune_accepts_random_int_inputs: bool = True
 
     # Launch configs by output element width; two steps overlap two loads per thread.
     _CONFIGS: ClassVar[dict[int, dict]] = {
@@ -132,16 +169,6 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
     _SMALL_N: ClassVar[int] = 1 << 17
     _TUNE_THREADS: ClassVar[tuple[int, ...]] = (128, 256, 512)
     _TUNE_STEPS: ClassVar[tuple[int, ...]] = (1, 2, 4)
-
-    @classmethod
-    def refusal(cls, call: DequantizeCall) -> str | None:
-        reason = super().refusal(call)
-        # The last block's indices run up to one block past M * K; the widest block holds
-        # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
-        largest_block = max(cls._TUNE_THREADS) * max(cls._TUNE_STEPS) * VECTOR_ACCESS_BYTES // 2
-        if reason is None and call.m * call.k > torch.iinfo(torch.int32).max - largest_block:
-            return f"indexes elements with int32, and M * K = {call.m * call.k}"
-        return reason
 
     @classmethod
     def entry_for(cls, call: DequantizeCall) -> Entry:
@@ -170,19 +197,6 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
     def default_config(self) -> dict:
         small = self.m * self.k < self._SMALL_N
         return dict((self._SMALL_CONFIGS if small else self._CONFIGS)[self.dtype.itemsize])
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [{"threads": t, "steps": s} for t in self._TUNE_THREADS for s in self._TUNE_STEPS]
-
-    def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        self._require_devices(q=q, scale=scale)
-        x = self.program(self._compile)(q.view(-1), scale)
-        return x.view(q.shape)
-
-    def _compile(self, cfg: dict):
-        """The program of config *cfg*."""
-        return self.kernel(cfg["threads"], cfg["steps"])
 
 
 @target_cache(maxsize=32)
@@ -262,14 +276,9 @@ def _int8_dequant_per_tensor_kernel(
     return _int8_dequant_per_tensor_func
 
 
-class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
-    """``x = (q.float() * scale).to(out_dtype)`` for one scale over a whole INT8 matrix.
-
-    The matrix is read as one flat run of ``n`` codes. A thread converts one 16-byte
-    vector of ``x`` per step, ``steps`` steps per block with every load issued first, and
-    the block stages its output in shared memory and writes it with one bulk copy. The
-    last block stores only its whole vectors that way and converts the ``n % vec`` codes
-    after them one a thread.
+class INT8DequantPerTensorFwdKernel(_INT8DequantKernel, INT8DequantPerTensorFwdInterface):
+    """``x = (q.float() * scale).to(out_dtype)`` for one scale over a whole INT8 matrix,
+    each block's output staged in shared memory and written with one bulk copy.
 
     Args:
         n: Codes in ``q``, ``M * K``.
@@ -278,32 +287,7 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         device_index: The device the kernel is built for.
     """
 
-    # The bulk copy from shared memory lowers to cp.async.bulk on SM90, to plain stores
-    # before it.
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    general: bool = True
-
-    # ``q`` is data: random codes run the same instructions as real ones.
-    autotune_accepts_random_int_inputs: bool = True
-
     _STAGED: ClassVar[bool] = True
-
-    # Calibrated default launch; autotuning uses the candidate ranges below.
-    _THREADS: ClassVar[int] = 64
-    _STEPS: ClassVar[int] = 4
-    _TUNE_THREADS: ClassVar[tuple[int, ...]] = (32, 64, 128)
-    _TUNE_STEPS: ClassVar[tuple[int, ...]] = (2, 4, 8)
-
-    @classmethod
-    def refusal(cls, call: DequantizeCall) -> str | None:
-        reason = super().refusal(call)
-        # The last block's indices run up to one block past M * K; the widest block holds
-        # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
-        largest_block = max(cls._TUNE_THREADS) * max(cls._TUNE_STEPS) * VECTOR_ACCESS_BYTES // 2
-        if reason is None and call.m * call.k > torch.iinfo(torch.int32).max - largest_block:
-            return f"indexes elements with int32, and M * K = {call.m * call.k}"
-        return reason
 
     @classmethod
     def entry_for(cls, call: DequantizeCall) -> Entry:
@@ -329,26 +313,9 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         )
         self.init_config(config)
 
-    @property
-    def default_config(self) -> dict:
-        return {"threads": self._THREADS, "steps": self._STEPS}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [{"threads": t, "steps": s} for t in self._TUNE_THREADS for s in self._TUNE_STEPS]
-
-    def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        self._require_devices(q=q, scale=scale)
-        x = self.program(self._compile)(q.view(-1), scale)
-        return x.view(q.shape)
-
-    def _compile(self, cfg: dict):
-        """The program of config *cfg*."""
-        return self.kernel(cfg["threads"], cfg["steps"])
-
 
 class INT8DequantPerTensorSmallFwdKernel(INT8DequantPerTensorFwdKernel):
-    """The same conversion for a matrix of fewer than ``_SMALL_N`` codes, stored from registers.
+    """The same conversion for a matrix of fewer than ``_MAX_CODES`` codes, stored from registers.
 
     A matrix that fills few blocks is bound by latency, and staging its output in shared
     memory adds a barrier and a copy to every block's path.
@@ -358,18 +325,11 @@ class INT8DequantPerTensorSmallFwdKernel(INT8DequantPerTensorFwdKernel):
 
     _STAGED: ClassVar[bool] = False
 
-    # Fitted like the parent's policy.
     _THREADS: ClassVar[int] = 512
     _STEPS: ClassVar[int] = 1
     _TUNE_THREADS: ClassVar[tuple[int, ...]] = (128, 256, 512)
     _TUNE_STEPS: ClassVar[tuple[int, ...]] = (1, 2)
-    _SMALL_N: ClassVar[int] = 1 << 19
-
-    @classmethod
-    def refusal(cls, call: DequantizeCall) -> str | None:
-        if call.m * call.k >= cls._SMALL_N:
-            return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
-        return super().refusal(call)
+    _MAX_CODES: ClassVar[int | None] = 1 << 19
 
 
 @target_cache(maxsize=32)
@@ -547,18 +507,9 @@ def _int8_dequant_per_block_kernel(
     return _int8_dequant_per_block_func
 
 
-class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
-    """``x[m, k] = (q[m, k].float() * scale[m, k // 128]).to(out_dtype)``.
-
-    The matrix is read as one flat run of ``m * k`` codes, with the per-tensor kernel's
-    schedule: a thread converts one 16-byte vector of ``x`` per step, ``steps`` steps per
-    block with every load issued first, and the block stages its output in shared memory
-    and writes it with one bulk copy. A block reads the scales its codes need into shared
-    memory once, and each vector takes the scale of the 128 codes it lies in; when ``k``
-    is not a multiple of the vector, a vector crossing a group or row boundary selects
-    among the scales on either side. The last block moves whole vectors where they fit
-    and converts code by code where the run ends; every block converts code by code when
-    ``k`` is shorter than a vector.
+class INT8DequantPerBlockFwdKernel(_INT8DequantKernel, INT8DequantPerBlockFwdInterface):
+    """``x[m, k] = (q[m, k].float() * scale[m, k // 128]).to(out_dtype)``, with the
+    per-tensor kernel's schedule.
 
     Args:
         m: Rows of ``q``.
@@ -568,30 +519,7 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         device_index: The device the kernel is built for.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    general: bool = True
-
-    # ``q`` is data: random codes run the same instructions as real ones.
-    autotune_accepts_random_int_inputs: bool = True
-
     _STAGED: ClassVar[bool] = True
-
-    # Calibrated default launch; autotuning uses the candidate ranges below.
-    _THREADS: ClassVar[int] = 64
-    _STEPS: ClassVar[int] = 4
-    _TUNE_THREADS: ClassVar[tuple[int, ...]] = (32, 64, 128)
-    _TUNE_STEPS: ClassVar[tuple[int, ...]] = (2, 4, 8)
-
-    @classmethod
-    def refusal(cls, call: DequantizeCall) -> str | None:
-        reason = super().refusal(call)
-        # The last block's indices run up to one block past M * K; the widest block holds
-        # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
-        largest_block = max(cls._TUNE_THREADS) * max(cls._TUNE_STEPS) * VECTOR_ACCESS_BYTES // 2
-        if reason is None and call.m * call.k > torch.iinfo(torch.int32).max - largest_block:
-            return f"indexes elements with int32, and M * K = {call.m * call.k}"
-        return reason
 
     @classmethod
     def entry_for(cls, call: DequantizeCall) -> Entry:
@@ -618,26 +546,9 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         )
         self.init_config(config)
 
-    @property
-    def default_config(self) -> dict:
-        return {"threads": self._THREADS, "steps": self._STEPS}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [{"threads": t, "steps": s} for t in self._TUNE_THREADS for s in self._TUNE_STEPS]
-
-    def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        self._require_devices(q=q, scale=scale)
-        x = self.program(self._compile)(q.view(-1), scale.view(-1))
-        return x.view(q.shape)
-
-    def _compile(self, cfg: dict):
-        """The program of config *cfg*."""
-        return self.kernel(cfg["threads"], cfg["steps"])
-
 
 class INT8DequantPerBlockSmallFwdKernel(INT8DequantPerBlockFwdKernel):
-    """The same conversion for a matrix of fewer than ``_SMALL_N`` codes, stored from registers.
+    """The same conversion for a matrix of fewer than ``_MAX_CODES`` codes, stored from registers.
 
     A matrix that fills few blocks is bound by latency, and staging its output in shared
     memory adds a barrier and a copy to every block's path.
@@ -647,15 +558,8 @@ class INT8DequantPerBlockSmallFwdKernel(INT8DequantPerBlockFwdKernel):
 
     _STAGED: ClassVar[bool] = False
 
-    # Fitted like the parent's policy.
     _THREADS: ClassVar[int] = 128
     _STEPS: ClassVar[int] = 1
     _TUNE_THREADS: ClassVar[tuple[int, ...]] = (128, 256, 512)
     _TUNE_STEPS: ClassVar[tuple[int, ...]] = (1, 2)
-    _SMALL_N: ClassVar[int] = 1 << 19
-
-    @classmethod
-    def refusal(cls, call: DequantizeCall) -> str | None:
-        if call.m * call.k >= cls._SMALL_N:
-            return f"serves fewer than {cls._SMALL_N} elements, got {call.m * call.k}"
-        return super().refusal(call)
+    _MAX_CODES: ClassVar[int | None] = 1 << 19

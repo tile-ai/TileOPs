@@ -71,7 +71,41 @@ def _out_dim(size: int, kernel: int, stride: int, before: int, after: int, dilat
     return (size + before + after - dilation * (kernel - 1) - 1) // stride + 1
 
 
-class Conv1dFwdOp(Op):
+class _ConvFwdOp(Op):
+    """What the 1-D, 2-D and 3-D convolutions share: construction and pricing."""
+
+    def __init__(
+        self,
+        stride: int | tuple[int, ...] = 1,
+        padding: int | tuple[int, ...] | str = 0,
+        dilation: int | tuple[int, ...] = 1,
+        groups: int = 1,
+        *,
+        target: Target = None,
+    ) -> None:
+        """Build the op. Shapes and dtypes are taken from the first call.
+
+        Args:
+            stride: Stride, an int or one value per spatial axis (default 1).
+            padding: Padding each side, an int or one value per spatial axis, or ``'valid'``
+                / ``'same'`` (default 0). ``'same'`` puts the extra element of an odd total
+                after.
+            dilation: Dilation, an int or one value per spatial axis (default 1).
+            groups: Number of channel groups (default 1).
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+        """
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+        super().__init__(target=target)
+
+    def roof_key(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.last_call.indices["T"])
+
+
+class Conv1dFwdOp(_ConvFwdOp):
     """1D convolution over an NCL input, as ``torch.nn.functional.conv1d``.
 
     Float32 operands multiply in TF32, as cuDNN does by default.
@@ -86,31 +120,6 @@ class Conv1dFwdOp(Op):
         "group_conv1d": GroupConv1dKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"conv1d": Conv1dFwdInterface}
-
-    def __init__(
-        self,
-        stride: int | tuple[int] = 1,
-        padding: int | tuple[int] | str = 0,
-        dilation: int | tuple[int] = 1,
-        groups: int = 1,
-        *,
-        target: Target = None,
-    ) -> None:
-        """Build the op. Shapes and dtypes are taken from the first call.
-
-        Args:
-            stride: Stride, an int or a 1-tuple (default 1).
-            padding: Padding each side, an int or a 1-tuple, or ``'valid'`` / ``'same'``
-                (default 0). ``'same'`` puts the extra element of an odd total on the right.
-            dilation: Dilation, an int or a 1-tuple (default 1).
-            groups: Number of channel groups (default 1).
-            target: Backend target to serve this op, or ``None`` to decide from the input device.
-        """
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        super().__init__(target=target)
 
     def forward(
         self,
@@ -161,12 +170,8 @@ class Conv1dFwdOp(Op):
         )
         return kernel(input, weight, bias)
 
-    def roof_key(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.indices["T"])
 
-
-class Conv2dFwdOp(Op):
+class Conv2dFwdOp(_ConvFwdOp):
     """2D convolution over an NCHW input, as ``torch.nn.functional.conv2d``.
 
     Float32 operands multiply in TF32, as cuDNN does by default.
@@ -181,31 +186,6 @@ class Conv2dFwdOp(Op):
         "group_conv2d": GroupConv2dKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"conv2d": Conv2dFwdInterface}
-
-    def __init__(
-        self,
-        stride: int | tuple[int, int] = 1,
-        padding: int | tuple[int, int] | str = 0,
-        dilation: int | tuple[int, int] = 1,
-        groups: int = 1,
-        *,
-        target: Target = None,
-    ) -> None:
-        """Build the op. Shapes and dtypes are taken from the first call.
-
-        Args:
-            stride: Stride, an int or a 2-tuple (default 1).
-            padding: Padding each side, an int or a 2-tuple, or ``'valid'`` / ``'same'``
-                (default 0). ``'same'`` puts the extra element of an odd total after.
-            dilation: Dilation, an int or a 2-tuple (default 1).
-            groups: Number of channel groups (default 1).
-            target: Backend target to serve this op, or ``None`` to decide from the input device.
-        """
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        super().__init__(target=target)
 
     def forward(
         self,
@@ -257,12 +237,8 @@ class Conv2dFwdOp(Op):
         )
         return kernel(input, weight, bias)
 
-    def roof_key(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.indices["T"])
 
-
-class Conv3dFwdOp(Op):
+class Conv3dFwdOp(_ConvFwdOp):
     """3D convolution over an NCDHW input, as ``torch.nn.functional.conv3d``.
 
     Float32 operands multiply in TF32, as cuDNN does by default.
@@ -274,31 +250,6 @@ class Conv3dFwdOp(Op):
         "group_conv3d": GroupConv3dKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"conv3d": Conv3dFwdInterface}
-
-    def __init__(
-        self,
-        stride: int | tuple[int, int, int] = 1,
-        padding: int | tuple[int, int, int] | str = 0,
-        dilation: int | tuple[int, int, int] = 1,
-        groups: int = 1,
-        *,
-        target: Target = None,
-    ) -> None:
-        """Build the op. Shapes and dtypes are taken from the first call.
-
-        Args:
-            stride: Stride, an int or a 3-tuple (default 1).
-            padding: Padding each side, an int or a 3-tuple, or ``'valid'`` / ``'same'``
-                (default 0). ``'same'`` puts the extra element of an odd total after.
-            dilation: Dilation, an int or a 3-tuple (default 1).
-            groups: Number of channel groups (default 1).
-            target: Backend target to serve this op, or ``None`` to decide from the input device.
-        """
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        super().__init__(target=target)
 
     def forward(
         self,
@@ -359,7 +310,3 @@ class Conv3dFwdOp(Op):
             ),
         )
         return kernel(input, weight, bias)
-
-    def roof_key(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.indices["T"])

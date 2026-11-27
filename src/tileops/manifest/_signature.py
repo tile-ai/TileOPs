@@ -876,8 +876,7 @@ def expand(sig: Signature, shape: str, point: dict) -> ast.List:
 class SignatureBranch:
     """What one discriminant point selects, folded at that point."""
 
-    # The shape and dtype of every passed input, and every
-    # emitted output.
+    # The shape and dtype of every passed input and every emitted output.
     shapes: dict[str, ast.List]
     dtypes: dict[str, ast.expr]
     # Refinements, and the `let` definitions relevance reaches.
@@ -904,6 +903,7 @@ def branch(sig: Signature, point: dict, complete: bool = True) -> SignatureBranc
     nothing relevant.
     """
     shapes, dtypes_, sequences = {}, {}, {}
+    each = elementwise(sig)
     for t in (*sig.inputs.values(), *sig.outputs.values()):
         if not (output_emitted(t, point) if t.name in sig.outputs else tensor_passed(t, point)):
             continue
@@ -915,7 +915,6 @@ def branch(sig: Signature, point: dict, complete: bool = True) -> SignatureBranc
             continue
         dtypes_[t.name] = fold(parse(t.dtype), point, f"tensor {t.name!r} dtype")
         if t.name in sig.inputs and tensor_passed(t, point) and t.sequence:
-            each = elementwise(sig)
             sequences[t.name] = tuple(
                 dict.fromkeys(items(shapes[t.name], each) + items(dtypes_[t.name], each))
             )

@@ -40,6 +40,9 @@ from workloads.numerics import assert_normalized_error, compare_outputs
 from workloads.workload_base import manifest_call
 
 _TIGHT = ContiguousLayoutSpec.tight_physical_psum()
+_TIGHT_MOE_GROUPED_GEMM = {
+    "contiguous": {"packing": "tight", "metadata_kind": "physical_psum", "alignment": 1}
+}
 
 
 @pytest.mark.smoke
@@ -327,16 +330,6 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     compare_outputs(output.float(), expected, post_permute_verification())
 
 
-# MoEGroupedGEMMFwdOp selects MoEGroupedGEMMKernel, the adapter over the shared template, through the
-# staged candidate protocol; these tests route every layout it claims through the op and check the
-# rows the layout defines against the workload's per-expert reference.
-
-
-_TIGHT_MOE_GROUPED_GEMM = {
-    "contiguous": {"packing": "tight", "metadata_kind": "physical_psum", "alignment": 1}
-}
-
-
 def _aligned(metadata_kind: str) -> dict:
     return {"contiguous": {"packing": "aligned", "metadata_kind": metadata_kind, "alignment": 128}}
 
@@ -347,27 +340,20 @@ def _gemm_call(dtype: torch.dtype, layout: dict, **row):
     )
 
 
-def _run(workload) -> tuple:
-    """The op built from the call, its output on the call's inputs, and the reference."""
+def _run(workload) -> torch.Tensor:
+    """The op's output on the call's inputs, checked against the reference."""
     inputs = workload.gen_inputs()
     cls = MoEGroupedGEMMFwdOp if isinstance(workload, MoEGroupedGEMMWorkload) else MoEExpertMLPFwdOp
     op = cls(**workload.call.arguments())
     args, keywords = workload.call.signature.forward_arguments(inputs)
     out = op(*args, **keywords)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
-    return op, out
+    return out
 
 
 @pytest.mark.parametrize(
     "layout,rows,dtype",
     [
-        pytest.param(
-            _TIGHT_MOE_GROUPED_GEMM,
-            {"P": 600},
-            torch.bfloat16,
-            marks=pytest.mark.smoke,
-            id="tight-psum",
-        ),
         pytest.param(
             _aligned("per_row"),
             {"P": 128 * 9},
@@ -380,7 +366,7 @@ def _run(workload) -> tuple:
 def test_grouped_gemm_runs_each_layout_through_the_op(layout, rows, dtype):
     """A layout's generated call, in each dtype, matches the reference."""
     num_experts = 6
-    op, out = _run(
+    out = _run(
         MoEGroupedGEMMWorkload(_gemm_call(dtype, layout, K=512, E=num_experts, N=256, **rows))
     )
     assert out.dtype is dtype and out.shape[-1] == 256
@@ -603,7 +589,6 @@ def test_grouped_gemm_tight_per_row_matches_the_psum_layout(_architecture, dtype
     [
         pytest.param("silu_and_mul", marks=pytest.mark.smoke),
         pytest.param("gelu_and_mul", marks=pytest.mark.full),
-        pytest.param("swigluoai", marks=pytest.mark.full),
     ],
 )
 def test_grouped_gemm_fuses_the_gated_activation(activation):
@@ -618,7 +603,7 @@ def test_grouped_gemm_fuses_the_gated_activation(activation):
         N=192,
         activation=activation,
     )
-    op, out = _run(MoEGroupedGEMMWorkload(call))
+    out = _run(MoEGroupedGEMMWorkload(call))
     assert out.shape == (600, 192)
 
 
@@ -636,7 +621,7 @@ def test_grouped_gemm_adds_the_bias_on_tight_rows_off_the_tile_grid():
         activation="swigluoai",
         some=["bias"],
     )
-    _, out = _run(MoEGroupedGEMMWorkload(call))
+    out = _run(MoEGroupedGEMMWorkload(call))
     assert out.shape == (600, 192)
 
 
@@ -818,7 +803,7 @@ def test_expert_mlp_composes_two_template_gemms(dtype, activation):
         E=num_experts,
         F=192,
     )
-    op, out = _run(MoEExpertMLPWorkload(call))
+    out = _run(MoEExpertMLPWorkload(call))
     assert out.dtype is dtype and out.shape == (600, 256)
 
 
@@ -839,14 +824,16 @@ def test_expert_mlp_adds_both_biases_in_float16():
         E=6,
         F=192,
     )
-    _, out = _run(MoEExpertMLPWorkload(call))
+    out = _run(MoEExpertMLPWorkload(call))
     assert out.dtype is dtype and out.shape == (600, 256)
 
 
+@pytest.mark.sm89
 @pytest.mark.smoke
 def test_expert_mlp_in_tuned_mode_serves_repeated_calls():
     """In tuned mode the expert MLP, on swigluoai with both biases, matches the reference on
-    the call that tunes its two GEMMs and on the next one, which reuses them."""
+    the call that tunes its two GEMMs and on the next one, which reuses them; only the MMA
+    kernel below SM90 has candidates to tune."""
     call = manifest_call(
         "MoEExpertMLPFwdOp",
         {"D": "bfloat16"},

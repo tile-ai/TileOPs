@@ -1,63 +1,88 @@
 """Workload definitions for the normalization op family."""
 
 import math
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
+from workloads.numerics import Custom, Exact, NegativeControl, compare_outputs
 from workloads.rope import rotate_pairs
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
-class RMSNormWorkload(WorkloadBase):
-    def __init__(
-        self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6, zero_centered: bool = False
-    ):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.eps = eps
-        self.zero_centered = zero_centered
+class _RowNormWorkload(WorkloadBase):
+    """*m* rows of *n* elements through ``_OP``: standard-normal inputs of *dtype*, named by
+    ``_INPUTS``, each ``(m, n)`` but a weight or bias, which is ``(n,)``."""
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        weight = torch.randn(self.n, dtype=self.dtype, device=run_device())
-        return x, weight
+    _OP: str
+    _INPUTS: tuple[str, ...]
 
-    def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        return _norm_reference(
-            "RMSNormFwdOp",
-            (x, weight),
-            dict(eps=self.eps, normalized_shape=(self.n,), zero_centered=self.zero_centered),
-        )
-
-    def verification(self, *inputs):
-        return norm_verification(inputs[0].dtype)
-
-
-class LayerNormWorkload(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m
         self.n = n
         self.dtype = dtype
         self.eps = eps
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        weight = torch.randn(self.n, dtype=self.dtype, device=run_device())
-        bias = torch.randn(self.n, dtype=self.dtype, device=run_device())
-        return x, weight, bias
+    def _params(self) -> dict:
+        return dict(eps=self.eps, normalized_shape=(self.n,))
 
-    def ref_program(
-        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
-    ) -> torch.Tensor:
-        return _norm_reference(
-            "LayerNormFwdOp", (x, weight, bias), dict(eps=self.eps, normalized_shape=(self.n,))
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        return tuple(
+            torch.randn(
+                (self.n,) if name in ("weight", "bias") else (self.m, self.n),
+                dtype=self.dtype,
+                device=run_device(),
+            )
+            for name in self._INPUTS
         )
 
+    def ref_program(self, *inputs: torch.Tensor):
+        return _norm_reference(self._OP, inputs, self._params())
+
     def verification(self, *inputs):
-        return layer_norm_verification(inputs[0].dtype)
+        return normalization_verification(self._OP, inputs[0].dtype)
+
+
+class RMSNormWorkload(_RowNormWorkload):
+    _OP, _INPUTS = "RMSNormFwdOp", ("x", "weight")
+
+    def __init__(
+        self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6, zero_centered: bool = False
+    ):
+        super().__init__(m, n, dtype, eps)
+        self.zero_centered = zero_centered
+
+    def _params(self) -> dict:
+        return super()._params() | dict(zero_centered=self.zero_centered)
+
+
+class LayerNormWorkload(_RowNormWorkload):
+    _OP, _INPUTS = "LayerNormFwdOp", ("x", "weight", "bias")
+
+
+class FusedAddRMSNormWorkload(RMSNormWorkload):
+    _OP, _INPUTS = "FusedAddRMSNormFwdOp", ("x", "residual", "weight")
+
+
+class FusedAddLayerNormWorkload(_RowNormWorkload):
+    _OP, _INPUTS = "FusedAddLayerNormFwdOp", ("x", "residual", "weight", "bias")
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
+        super().__init__(m, n, dtype, eps)
+
+
+class AdaLayerNormWorkload(_RowNormWorkload):
+    """``scale * LayerNorm(x) + shift``."""
+
+    _OP, _INPUTS = "AdaLayerNormFwdOp", ("x", "scale", "shift")
+
+
+class AdaLayerNormZeroWorkload(_RowNormWorkload):
+    """``gate * (scale * LayerNorm(x) + shift)``."""
+
+    _OP, _INPUTS = "AdaLayerNormZeroFwdOp", ("x", "scale", "shift", "gate")
 
 
 def far_from_zero(shape: tuple, row: str) -> torch.Tensor:
@@ -109,9 +134,6 @@ class FarFromZeroWorkload(FarFromZeroInputs, ShiftedFloat64Reference):
 class LayerNormFarFromZeroWorkload(FarFromZeroWorkload, LayerNormWorkload):
     """`far_from_zero` rows, normalized exactly."""
 
-    def verification(self, *inputs):
-        return normalization_verification("LayerNormFwdOp", inputs[0].dtype)
-
 
 def outlier_lead_rows(shape: tuple, leads: list, dtype: torch.dtype) -> torch.Tensor:
     """Rows of 3000 but for 13000.1 at the columns ``leads``: their raw sums fail
@@ -134,41 +156,6 @@ class OutlierLeadWorkload(ShiftedFloat64Reference):
 class LayerNormOutlierLeadWorkload(OutlierLeadWorkload, LayerNormWorkload):
     """`OutlierLeadWorkload` rows, normalized exactly."""
 
-    def verification(self, *inputs):
-        return normalization_verification("LayerNormFwdOp", inputs[0].dtype)
-
-
-class FusedAddRMSNormWorkload(WorkloadBase):
-    def __init__(
-        self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6, zero_centered: bool = False
-    ):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.eps = eps
-        self.zero_centered = zero_centered
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        residual = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        weight = torch.randn(self.n, dtype=self.dtype, device=run_device())
-        return x, residual, weight
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        residual: torch.Tensor,
-        weight: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return _norm_reference(
-            "FusedAddRMSNormFwdOp",
-            (x, residual, weight),
-            dict(eps=self.eps, normalized_shape=(self.n,), zero_centered=self.zero_centered),
-        )
-
-    def verification(self, *inputs):
-        return norm_verification(inputs[0].dtype)
-
 
 def _offset_row(n: int, device) -> tuple[torch.Tensor, torch.Tensor]:
     """A row of *n* values, 3 / 8 of them at +-3 and the rest at +-1, and its signs: its root
@@ -188,7 +175,6 @@ _OFFSET_WEIGHT = 3 * 2**-10
 def _offset_verification(weights: tuple[int, ...]):
     """An exact check whose negative control rounds ``1 + weight`` of the inputs at *weights*
     to bfloat16 before the multiply."""
-    from workloads.numerics import Exact, NegativeControl
 
     def offset_rounded(reference, inputs):
         """The reference with 1 + weight rounded to bfloat16 before the multiply."""
@@ -239,34 +225,6 @@ class FusedAddRMSNormZeroCenteredOffsetWorkload(
     ZeroCenteredOffsetWorkload, FusedAddRMSNormWorkload
 ):
     """`ZeroCenteredOffsetWorkload` inputs for FusedAddRMSNormFwdOp."""
-
-
-class FusedAddLayerNormWorkload(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.eps = eps
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        residual = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        weight = torch.randn(self.n, dtype=self.dtype, device=run_device())
-        bias = torch.randn(self.n, dtype=self.dtype, device=run_device())
-        return x, residual, weight, bias
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        residual: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return _norm_reference(
-            "FusedAddLayerNormFwdOp",
-            (x, residual, weight, bias),
-            dict(eps=self.eps, normalized_shape=(self.n,)),
-        )
 
 
 class FusedAddLayerNormVanishingResidualWorkload(FusedAddLayerNormWorkload):
@@ -328,57 +286,6 @@ class FusedAddLayerNormOutlierLeadWorkload(FusedAddLayerNormFarRowWorkload):
         return outlier_lead_rows(tuple(x.shape), self.leads, x.dtype), residual, weight, bias
 
 
-class AdaLayerNormWorkload(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.eps = eps
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        scale = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        shift = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        return x, scale, shift
-
-    def ref_program(
-        self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor
-    ) -> torch.Tensor:
-        # AdaLN: y = scale * LayerNorm(x) + shift
-        return _norm_reference(
-            "AdaLayerNormFwdOp", (x, scale, shift), dict(eps=self.eps, normalized_shape=(self.n,))
-        )
-
-
-class AdaLayerNormZeroWorkload(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
-        self.m = m
-        self.n = n
-        self.dtype = dtype
-        self.eps = eps
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        scale = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        shift = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        gate = torch.randn(self.m, self.n, dtype=self.dtype, device=run_device())
-        return x, scale, shift, gate
-
-    def ref_program(
-        self,
-        x: torch.Tensor,
-        scale: torch.Tensor,
-        shift: torch.Tensor,
-        gate: torch.Tensor,
-    ) -> torch.Tensor:
-        # AdaLN-Zero: y = gate * (scale * LayerNorm(x) + shift)
-        return _norm_reference(
-            "AdaLayerNormZeroFwdOp",
-            (x, scale, shift, gate),
-            dict(eps=self.eps, normalized_shape=(self.n,)),
-        )
-
-
 class AdaLayerNormFarFromZeroWorkload(FarFromZeroWorkload, AdaLayerNormWorkload):
     """`far_from_zero` rows, normalized exactly."""
 
@@ -395,16 +302,14 @@ class AdaLayerNormZeroOutlierLeadWorkload(OutlierLeadWorkload, AdaLayerNormZeroW
     """`OutlierLeadWorkload` rows, normalized exactly."""
 
 
+@dataclass(eq=False)
 class GroupNormWorkload(WorkloadBase):
-    def __init__(
-        self, n: int, c: int, spatial: tuple, g: int, dtype: torch.dtype, eps: float = 1e-5
-    ):
-        self.n = n
-        self.c = c
-        self.spatial = spatial
-        self.g = g
-        self.dtype = dtype
-        self.eps = eps
+    n: int
+    c: int
+    spatial: tuple
+    g: int
+    dtype: torch.dtype
+    eps: float = 1e-5
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         shape = (self.n, self.c, *self.spatial)
@@ -443,13 +348,13 @@ class GroupNormOutlierWorkload(ShiftedFloat64Reference, GroupNormWorkload):
         return rows_with_outliers(x.shape, rows, 0.0, 10000.1, columns).to(x.dtype), weight, bias
 
 
+@dataclass(eq=False)
 class InstanceNormWorkload(WorkloadBase):
-    def __init__(self, n: int, c: int, spatial: tuple, dtype: torch.dtype, eps: float = 1e-5):
-        self.n = n
-        self.c = c
-        self.spatial = spatial
-        self.dtype = dtype
-        self.eps = eps
+    n: int
+    c: int
+    spatial: tuple
+    dtype: torch.dtype
+    eps: float = 1e-5
 
     def gen_inputs(self) -> tuple:
         """Inputs in ``torch.nn.functional.instance_norm`` order.
@@ -610,12 +515,7 @@ class BatchNormFarFromZeroWorkload(FarFromZeroInputs, BatchNormFwdWorkload):
 
 
 class NormCall(CallWorkload):
-    """One manifest call of a norm op, with its first input's shape and dtype for the report."""
-
-    def __init__(self, call, device: "torch.device | str | None" = None):
-        super().__init__(call, device)
-        spec = call.specs[next(iter(call.signature.inputs))]
-        self.shape, self.dtype = spec.shape, spec.dtype
+    """One manifest call of a norm op."""
 
     def ref_program(self, *inputs):
         return _norm_reference(self.call.signature.name, inputs, self.call.params)
@@ -664,8 +564,6 @@ def _batch_statistics(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def batch_norm_backward_verification(dtype):
-    from workloads.numerics import Custom
-
     atol = rtol = _BATCH_NORM_TOLERANCE[dtype]
     # Channel gradients reduce N * spatial values; cancellation needs an absolute bound.
     sum_atol = 1e-4 if dtype == torch.float32 else atol
@@ -694,8 +592,6 @@ def batch_norm_backward(grad_out, x, mean, rstd, weight=None):
 
 
 def norm_verification(dtype):
-    from workloads.numerics import Exact
-
     if dtype == torch.float16:
         return Exact(atol=1e-2, rtol=1e-2)
     return Exact()
@@ -726,8 +622,6 @@ def assert_mean_close(got, want, deviation, tolerance, adds=0):
 def batch_norm_forward_verification(dtype, momentum=0.1):
     """The training forward's outputs at the dtype's tolerance, the batch mean and the running
     mean by `assert_mean_close`, the running mean against its update's operands."""
-    from workloads.numerics import Custom, Exact, compare_outputs
-
     tol = _BATCH_NORM_TOLERANCE[dtype]
     exact = Exact(atol=tol, rtol=tol)
 
@@ -759,16 +653,12 @@ def batch_norm_forward_verification(dtype, momentum=0.1):
 
 
 def layer_norm_verification(dtype):
-    from workloads.numerics import Exact
-
     tol = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 1e-2}[dtype]
     return Exact(atol=tol, rtol=tol)
 
 
 def normalization_verification(name, dtype, params=None):
     """Select the normalization contract by operation, independently of its consumer."""
-    from workloads.numerics import Exact
-
     if name == "BatchNormFwdOp":
         return batch_norm_forward_verification(dtype, (params or {}).get("momentum", 0.1))
     if name == "BatchNormBwdOp":
@@ -907,6 +797,7 @@ def mrope_rows(part, sections, interleaved):
     return torch.cat([m[i] for i, m in enumerate(part.split(list(sections), -1))], -1)
 
 
+@dataclass(eq=False)
 class FusedQKNormRoPEWorkload(WorkloadBase):
     """A packed projection of one token per entry of ``positions``, normalized and rotated in
     place.
@@ -916,29 +807,19 @@ class FusedQKNormRoPEWorkload(WorkloadBase):
     standard RoPE frequencies at base 1e6 for every one of its ``positions_max`` rows.
     """
 
-    def __init__(
-        self,
-        positions: list[int],
-        num_heads: int,
-        num_kv_heads: int,
-        dim: int,
-        rot: int,
-        positions_max: int,
-        dtype: torch.dtype,
-        cache_dtype: torch.dtype,
-        rope_layout: str = "neox",
-        eps: float = 1e-6,
-        zero_centered: bool = False,
-        mrope_section: "list[int] | None" = None,
-        mrope_interleaved: bool = False,
-    ) -> None:
-        self.positions = positions
-        self.num_heads, self.num_kv_heads = num_heads, num_kv_heads
-        self.dim, self.rot, self.positions_max = dim, rot, positions_max
-        self.dtype, self.cache_dtype = dtype, cache_dtype
-        self.rope_layout, self.eps = rope_layout, eps
-        self.zero_centered = zero_centered
-        self.mrope_section, self.mrope_interleaved = mrope_section, mrope_interleaved
+    positions: list[int]
+    num_heads: int
+    num_kv_heads: int
+    dim: int
+    rot: int
+    positions_max: int
+    dtype: torch.dtype
+    cache_dtype: torch.dtype
+    rope_layout: str = "neox"
+    eps: float = 1e-6
+    zero_centered: bool = False
+    mrope_section: "list[int] | None" = None
+    mrope_interleaved: bool = False
 
     def gen_inputs(self):
         device = run_device()
@@ -1080,16 +961,10 @@ class FusedAddRMSNormPerTokenQuantWorkload(WorkloadBase):
     def verification(self, *inputs):
         """Codes and scale within the bounds one differently rounded ``rrms`` allows.
 
-        Two correct implementations differ only in the float32 ``rrms``, by its reduction order.
-        That moves ``T(s * rrms)`` by at most one ``T`` ulp, ``eps`` of it; the weight multiply
-        and its rounding add at most one more, so ``y`` and the scale move by ``2 * eps`` and
-        a quotient ``y / scale`` by ``4 * eps``. That is below e4m3's smallest relative step,
-        1/16, so an FP8 code moves at most one place in e4m3's ordered code table; an INT8
-        code moves at most ``ceil(4 * eps * 127)``. ``residual_out`` rounds the exact sum of
-        two 16-bit values.
+        The reduction order of ``rrms`` moves ``y`` and the scale by ``2 * eps`` of the input
+        dtype and ``y / scale`` by ``4 * eps``: an FP8 code by at most one place in e4m3's
+        ordered code table, an INT8 code by ``ceil(4 * eps * 127)``. ``residual_out`` is exact.
         """
-        from workloads.numerics import Custom
-
         eps = torch.finfo(inputs[0].dtype).eps
         int8_steps = math.ceil(4 * eps * 127)
 

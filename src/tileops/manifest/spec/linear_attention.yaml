@@ -1,5 +1,3 @@
-# Linear-attention ops. A spec-only entry fixes the Op contract before the implementation conforms.
-
 DeltaNetFwdOp:
   # One inference contract for equal-length prefill, packed varlen, and decode.
   # The five training buffers of the chunkwise forward are not public outputs.

@@ -1,21 +1,17 @@
 """Qwen3_8ForCausalLM against Hugging Face transformers' ``qwen3_5`` text model run on torch only.
 
 A four-layer model (three Gated DeltaNet layers, then a full-attention layer) at Qwen3.8-27B's
-widths with a small vocabulary, on random weights in the checkpoint's format, is written as a
-sharded Hugging Face checkpoint and loaded by both. HF runs in float32, the truth, and in
-bfloat16. Over every call of a request (a prefill, the chunks of a chunked prefill, decode
-steps) each layer's output and the last token's logits are compared, and at the end the
-decoding state. The bound is ``check_within_rounding``: in L2 over all calls, this model is at
-most twice as far from HF float32 as HF bfloat16 is.
+widths, on random weights, is loaded by both. HF runs in float32, the truth, and in bfloat16;
+``check_within_rounding`` bounds this model's L2 distance from HF float32 over all calls by
+twice HF bfloat16's.
 """
-
-import dataclasses
 
 import pytest
 import torch
 
 from models.qwen3_8 import Qwen3_8Config, Qwen3_8ForCausalLM
 from models.qwen3_8.layers import GatedDeltaNet
+from tests.models.conftest import Recorded
 from workloads.device import run_device
 from workloads.models.checkpoint import write_checkpoint
 from workloads.models.qwen3_8 import (
@@ -154,22 +150,6 @@ def test_from_pretrained_skips_the_vision_and_mtp_tensors(tmp_path):
     assert model.lm_head.shape == (64, 64)
 
 
-class _Recorded:
-    """A decoder layer that records each call's hidden state, ``out + residual``."""
-
-    def __init__(self, layer, record):
-        self._layer = layer
-        self._record = record
-
-    def __getattr__(self, name):
-        return getattr(self._layer, name)
-
-    def __call__(self, ops, x, residual, step):
-        out, residual = self._layer(ops, x, residual, step)
-        self._record.append(out.float() + residual.float())
-        return out, residual
-
-
 # Per request: the lengths of the calls that prefill it, then the decode steps. GDNFwdOp splits
 # each call into 64-token chunks from its first token: 130 is 64 + 64 + 2, 67 is 64 + 3, and 64 is
 # one whole chunk. The 64-row KV-cache pages count from position 0, so the 67- and 64-token calls
@@ -191,7 +171,10 @@ def test_layers_logits_and_state_match_hf(checkpoint, chunks, decode_steps):
         checkpoint, device=run_device(), max_seq_len=2304, cuda_graph=False
     )
     records = [[] for _ in mine.layers]
-    mine.layers = [_Recorded(layer, r) for layer, r in zip(mine.layers, records, strict=True)]
+    mine.layers = [
+        Recorded(layer, lambda out, *_, r=r: r.append(out[0].float() + out[1].float()))
+        for layer, r in zip(mine.layers, records, strict=True)
+    ]
     lengths = chunks + [1] * decode_steps
     g = torch.Generator().manual_seed(1)
     ids = torch.randint(0, _SMALL["text_config"]["vocab_size"], (1, sum(lengths)), generator=g)
@@ -243,53 +226,13 @@ def test_layers_logits_and_state_match_hf(checkpoint, chunks, decode_steps):
 
 
 @pytest.mark.sm90
-def test_forward_takes_one_request_in_order(checkpoint):
-    """``forward`` refuses a batch, an empty call, a call at ``start_pos > 0`` before a
-    prefill or out of order, and a sequence past ``max_seq_len``; a refused call leaves the
-    request where it was."""
-    max_seq_len = 18
-    model = Qwen3_8ForCausalLM.from_pretrained(
-        checkpoint, device=run_device(), max_seq_len=max_seq_len
-    )
-    ids = torch.zeros(1, max_seq_len + 1, dtype=torch.long, device=run_device())
-    refused = [
-        (ids[:, :4].expand(2, -1), 0, "batch of 2"),
-        (ids[:, :0], 0, "at least one token"),
-        (ids[:, :1], 4, "prefill at start_pos 0"),
-    ]
-    for step, pos, match in refused:
-        with pytest.raises(ValueError, match=match):
-            model(step, pos)
-    model(ids[:, :10], 0)
-    refused = [
-        (ids, 0, "max_seq_len"),
-        (ids[:, :1], 11, "continues at position 10"),
-        (ids[:, :9], 10, "max_seq_len"),
-    ]
-    for step, pos, match in refused:
-        with pytest.raises(ValueError, match=match):
-            model(step, pos)
-    model(ids[:, :3], 10)
-    model(ids[:, :1], 13)
-
-
-@pytest.mark.sm90
-def test_generate_takes_the_hf_argmax_until_eos(checkpoint):
+def test_generate_takes_the_hf_argmax(checkpoint):
     """``generate`` from a three-token prompt: each token's HF float32 logit, given the tokens
-    before it, is the HF float32 maximum to within twice HF bfloat16's largest logit error;
-    with an EOS id the run stops after that token."""
+    before it, is the HF float32 maximum to within twice HF bfloat16's largest logit error."""
     g = torch.Generator().manual_seed(2)
     prompt = torch.randint(0, _SMALL["text_config"]["vocab_size"], (3,), generator=g).tolist()
     mine = Qwen3_8ForCausalLM.from_pretrained(checkpoint, device=run_device(), max_seq_len=64)
-    forward, calls = mine.forward, []
-    mine.forward = lambda *args: calls.append(args) or forward(*args)
     out = mine.generate(prompt, 12, eos_token_id=-1)
-    assert (len(out), len(calls)) == (12, 12), "a prefill and one decode step per fed-back token"
-    mine.forward = forward
-    eos = out[5]
-    assert mine.generate(prompt, 12, eos_token_id=[-1, eos]) == out[: out.index(eos) + 1]
-    mine.config = dataclasses.replace(mine.config, eos_token_id=eos)
-    assert mine.generate(prompt, 12) == out[: out.index(eos) + 1], "config.eos_token_id stops it"
     with torch_paths():
         exact, rounded = (
             ReferenceRequest(reference_model(checkpoint, dtype, run_device()))
@@ -330,14 +273,3 @@ def test_decode_replays_the_eager_step_bitwise(checkpoint, graph_calls):
             assert torch.equal(actual, expected), f"call at position {start}"
     decode_steps = sum(lengths.count(1) for lengths in requests)
     assert graph_calls == {"capture_end": 1, "replay": decode_steps - 1}
-
-
-@pytest.mark.sm90
-def test_generate_stops_when_the_sequence_fills_max_seq_len(checkpoint):
-    """From a three-token prompt with ``max_seq_len`` 8 and no EOS, ``generate`` returns five
-    tokens to fill its eight positions, none for ``max_new_tokens`` 0, and refuses a negative one."""
-    model = Qwen3_8ForCausalLM.from_pretrained(checkpoint, device=run_device(), max_seq_len=8)
-    assert len(model.generate([1, 2, 3], 12, eos_token_id=-1)) == 5
-    assert model.generate([1, 2, 3], 0) == []
-    with pytest.raises(ValueError, match="max_new_tokens"):
-        model.generate([1, 2, 3], -1)

@@ -107,10 +107,7 @@ def _pick_workloads(entry: dict, cap: int = 6) -> list[tuple[dict, str]]:
 def _declared_read_bytes(op) -> int | None:
     """The op's declared read half, or None when it declares none.
 
-    There is no fallback. Summing the call's input tensors is not the read
-    half: an op that reads a subset of an input -- a routed MoE reading the
-    experts its routing selects -- would be charged the whole of it and fail
-    a correct formula.
+    The input tensors' total is no stand-in: a routed MoE reads only the experts it selects.
     """
     declared = getattr(op, "eval_roofline_read_bytes", None)
     if not callable(declared):
@@ -184,14 +181,8 @@ def read_side_verdict(
     read_bytes: int | None,
     bound: bool = True,
 ) -> str:
-    """The verdict for one measured row. Write traffic never reaches it.
-
-    FAIL says the formula charged reads the implementation did not make, which
-    holds only where every conforming implementation must fetch what the
-    formula charges. Where *bound* is false -- ``READ_BOUND_EXCEPTIONS`` covers
-    this call -- a shortfall is EXEMPT instead:
-    measured and reported, not a verdict on the formula.
-    """
+    """The verdict for one measured row's reads. A shortfall is FAIL, or EXEMPT where
+    *bound* is false because ``READ_BOUND_EXCEPTIONS`` covers the call."""
     if read_bytes is None:
         return "NO-VERDICT"
     if read_bytes < 0:
@@ -208,14 +199,7 @@ def read_side_verdict(
 
 
 def exit_code(counts: dict[str, int]) -> int:
-    """Zero means no unwaived failure, not that every row was judged.
-
-    Three verdicts are green: SKIPPED (never run, reason stated), WARN (more
-    traffic than the formula charges, which passed the lower-bound check) and
-    EXEMPT (a shortfall ``READ_BOUND_EXCEPTIONS`` covers, measured
-    and not judged). Anything else, including a verdict this function does not
-    know, is red: a spelling nobody reads is not a pass.
-    """
+    """0 when every verdict is in ``GREEN_VERDICTS``; an unknown verdict is red."""
     return 0 if set(counts) <= GREEN_VERDICTS else 1
 
 

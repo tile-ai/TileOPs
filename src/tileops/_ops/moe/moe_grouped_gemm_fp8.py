@@ -1,9 +1,5 @@
-"""Block-scaled FP8 M-grouped GEMM over masked expert slabs or contiguous expert rows.
-
-Provides:
-  - MoEGroupedGEMMFP8FwdOp: each expert's rows of a, under their scales, times its b under its
-    scales, in bf16; deep_gemm.m_grouped_fp8_gemm_nt_masked and _nt_contiguous semantics
-"""
+"""Block-scaled FP8 M-grouped GEMM over masked expert slabs or contiguous expert rows, with
+``deep_gemm.m_grouped_fp8_gemm_nt_masked`` and ``_nt_contiguous`` semantics."""
 
 from collections.abc import Mapping
 from typing import ClassVar
@@ -32,27 +28,19 @@ class MoEGroupedGEMMFP8FwdOp(MoELayoutRowsRoofline, Op):
     ``b`` is ``[E, N, K]`` and ``a`` holds the expert rows, both ``float8_e4m3fn``. ``a_scale``
     holds one float32 scale per row and 128 columns of ``a``, ``b_scale`` one per 128x128
     block of ``b`` (``[E, N / 128, K / 128]``); ``K`` and ``N`` are multiples of 128. The
-    layout places the rows, as ``MoEGroupedGEMMFwdOp``'s does:
-
-    | layout                     | ``a``             | ``layout_metadata``           | ``out``           |
-    | -------------------------- | ----------------- | ----------------------------- | ----------------- |
-    | contiguous · physical_psum | ``[M, K]``        | ``[E]`` segment end rows      | ``[M, N]``        |
-    | contiguous · per_row       | ``[M, K]``        | ``[M]`` expert id per row     | ``[M, N]``        |
-    | masked                     | ``[E, max_m, K]`` | ``[E]`` valid rows per expert | ``[E, max_m, N]`` |
-
-    ``a_scale`` is ``a``'s shape with ``K / 128`` columns. Rows an aligned layout pads with,
-    and a masked slab's rows past its valid count, hold unspecified values in ``out``.
+    layout places the rows and fixes ``layout_metadata`` as ``MoEGroupedGEMMFwdOp``'s does;
+    ``a_scale`` is ``a``'s shape with ``K / 128`` columns and ``out`` with ``N`` columns. Rows
+    an aligned layout pads with, and a masked slab's rows past its valid count, hold
+    unspecified values in ``out``.
 
     Each 128-wide K block is contracted from the raw FP8 values, then multiplied by its
-    two scales and added to a float32 accumulator, so the scales are applied once per
-    128 K, as DeepGEMM's grouped FP8 GEMMs do. The result is written in bfloat16. The
+    two scales and added to a float32 accumulator. The result is written in bfloat16. The
     metadata is not checked, since checking would synchronise: a masked count past ``max_m``
     is read as ``max_m`` and a negative one as 0, and nothing outside ``out`` is written.
 
     Accuracy: on the valid rows the output matches an fp32 reference that dequantizes both
     operands under their scales to ``atol = 2e-2 * sqrt(max(1, K / 1024))`` and
-    ``rtol = 2e-2``, a bound that grows with ``K`` as the fp8 accumulation noise does. The
-    scales are applied in DeepGEMM's order.
+    ``rtol = 2e-2``.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

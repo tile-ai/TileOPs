@@ -22,9 +22,8 @@ __all__ = ["TopKTopPMaskFwdKernel"]
 def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
     """Build the top-k then top-p mask of ``batch`` rows of ``vocab`` logits."""
     n = batch * vocab
-    # Bins one level of the nucleus walk splits its key range into. A range narrower than
-    # this settles the bound in one level, which is what a row whose k leaves a handful of
-    # values gives; a wider table trades its own cost against the levels it saves.
+    # Bins one level of the nucleus walk splits its key range into; a narrower range settles
+    # in one level.
     walk_bins = 512
     walk_bits = walk_bins.bit_length() - 1
 
@@ -134,9 +133,8 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                 red = T.alloc_shared((warps,), "int32")
                 wred = T.alloc_shared((warps,), "float32")
                 kred = T.alloc_shared((2 * warps,), "uint32")
-                # The maximum over every key of the row and the maximum over the keys that
-                # are not NaN, packed so that a row reads the one its own ``k`` asks for by
-                # index and two threads write both.
+                # The row's maximum key over every key and over the non-NaN keys; a row reads
+                # the one its ``k`` asks for by index.
                 rowmax = T.alloc_shared((2,), "uint32")
                 pre = T.alloc_shared((1,), "uint32")
                 lowest = T.alloc_shared((1,), "uint32")
@@ -228,11 +226,8 @@ def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
                     settled_bound[0] = 0
                 T.sync_threads()
 
-                # The walk weighs each surviving key by the softmax of the values the top-k
-                # filter left, taken from their largest. A row whose largest is not a number,
-                # +inf or -inf weighs every key NaN, so no bin ever reaches the target, the
-                # walk narrows nothing and the top-k mask stands: that is what the
-                # reference's softmax of such a row leaves.
+                # Keys weigh by the softmax of the top-k survivors. A non-finite largest makes
+                # every weight NaN, so the walk narrows nothing and the top-k mask stands.
                 high[0] = value_of(rowmax[T.if_then_else(kk >= vocab, 0, 1)])
                 for level in T.serial(rows.digits):
                     if settled_bound[0] == 0:
@@ -381,17 +376,13 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
     _THREADS: ClassVar[int] = 1024
     # Cap register-held vectors; larger rows spread over more CTAs to preserve occupancy.
     _MAX_SLOTS: ClassVar[int] = 4
-    # Slots a thread holds where `cluster_limit` keeps a row in one CTA: the fewest that hold
-    # llama 3's float32 vocabulary, 128256 values, at `_THREADS`. Those past the registers
-    # spill to local memory, which every pass then reads back.
-    _MAX_SLOTS_ONE_CTA: ClassVar[int] = 32
 
     @classmethod
     def refusal(cls, call: SamplingCall) -> str | None:
         reason = super().refusal(call)
         if reason is not None:
             return reason
-        return row_refusal(call, cls._THREADS, cls._MAX_SLOTS, cls._MAX_SLOTS_ONE_CTA)
+        return row_refusal(call, cls._THREADS, cls._MAX_SLOTS)
 
     def __init__(self, call: SamplingCall, config: dict | None = None):
         super().__init__(device_index=call.device_index)

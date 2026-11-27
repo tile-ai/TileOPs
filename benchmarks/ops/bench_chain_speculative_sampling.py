@@ -1,8 +1,4 @@
-"""Benchmark for the chain speculative sampling op.
-
-Workload shapes come from the ops manifest; roofline FLOP and byte counts come from the op's
-``eval_roofline()``.
-"""
+"""Benchmark for the chain speculative sampling op."""
 
 import pytest
 import torch
@@ -29,9 +25,7 @@ def _accepted_lengths(result, num_draft: int) -> torch.Tensor:
     return (tokens >= 0).sum(-1).clamp(max=num_draft + 1) - 1
 
 
-@pytest.mark.parametrize(
-    "case", bench.cases(ChainSpeculativeSamplingFwdOp), ids=lambda case: case.id
-)
+@pytest.mark.parametrize("case", bench.cases(ChainSpeculativeSamplingFwdOp))
 def test_chain_speculative_sampling_bench(case) -> None:
     op = ChainSpeculativeSamplingFwdOp(**case.arguments)
     compiled = compiled_reference(case.reference)

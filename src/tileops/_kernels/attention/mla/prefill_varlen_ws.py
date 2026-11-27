@@ -1,19 +1,9 @@
 """SM90 warp-specialized packed variable-length MLA prefill kernel.
 
-The key of head ``h`` is ``k_nope[:, h]`` followed by ``k_pe``, and ``k_pe`` is one
-row per token shared by every head. Nothing here builds that concatenation: the
-score is a ``dim_nope``-wide WGMMA against ``k_nope`` plus a ``dim_pe``-wide one
-against ``k_pe``, issued back to back into the same accumulator, so the rope half
-crosses memory once per token rather than once per token per head.
-
+The key of head ``h`` is ``k_nope[:, h]`` followed by ``k_pe``, one row per token shared
+by every head; the score adds a WGMMA against each, so the concatenation is never built.
 Queries and keys are the same tokens, so one ``cu_seqlens`` describes both and the
 causal mask sits on the diagonal.
-
-The structure is explicit rather than left to a pipeliner: one persistent CTA per
-SM claims work items from a global counter; a 32-thread producer warp issues every
-TMA load and hands each buffer over through an mbarrier; two consumer warpgroups
-own 64 query rows each and overlap the QK of tile ``k`` with the PV of tile
-``k - 1``.
 """
 
 import tilelang
@@ -492,20 +482,8 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
         *,
         device_index: int | None = None,
     ) -> None:
-        """Build the program for one call shape.
-
-        Args:
-            batch: Requests the packing carries, so the length of ``cu_seqlens`` less one.
-            heads: Query heads.
-            dim_nope: Width of the key's per-head half.
-            dim_pe: Width of the key's shared rope half.
-            dim_v: Width of a value row.
-            is_causal: Whether a query row reads only keys at or before its position.
-            dtype: Input and output dtype.
-            sm_scale: Score scale, or ``None`` for ``(dim_nope + dim_pe) ** -0.5``.
-            config: Unused; this kernel's geometry is fixed by its class constants.
-            device_index: CUDA device the program is built for.
-        """
+        """Build the program for one call shape; *config* is unused, the geometry being fixed by
+        the class constants."""
         super().__init__(device_index=device_index)
         self.batch = batch
         self.heads = heads
@@ -550,19 +528,6 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
         v: torch.Tensor,
         cu_seqlens: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Attend each query row to the keys its own request's mask admits.
-
-        Args:
-            q: ``(total_tokens, heads, dim_nope + dim_pe)``.
-            k_nope: ``(total_tokens, heads, dim_nope)``.
-            k_pe: ``(total_tokens, dim_pe)``, one row per token for every head.
-            v: ``(total_tokens, heads, dim_v)``.
-            cu_seqlens: ``(batch + 1)`` packed request offsets.
-
-        Returns:
-            The ``(total_tokens, heads, dim_v)`` output and its float32
-            ``(heads, total_tokens)`` log-sum-exp.
-        """
         self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
         counter = stream_counter(self._counters, q.device)
         out = torch.empty((q.shape[0], self.heads, self.dim_v), dtype=q.dtype, device=q.device)

@@ -1,15 +1,9 @@
-"""Contract-coverage registry for torch.compile fullgraph evidence.
+"""The op classes a test compiles cold with ``torch.compile(op, fullgraph=True)``, and the
+checks those tests share.
 
-Op classes exercised cold with ``torch.compile(op, fullgraph=True)`` by the
-curated compile tests are registered here at evidence-module import time —
-parametrized case tables register their ``op_cls`` entries directly, direct
-tests call :func:`register_compile_contract` next to the test they back.
-:func:`compile_contract_ops` aggregates the registered evidence set, which must
-equal the implemented entries that have a compile boundary: a call-time tensor
-input and no composition.
-
-Exploratory or regression compile tests that do not back the fullgraph
-contract must not register here.
+An evidence module registers each op class it backs at import. The registered set must equal
+the implemented entries with a compile boundary; a compile test that backs no such contract
+does not register.
 """
 
 import importlib
@@ -42,10 +36,8 @@ _registered: set[str] = set()
 
 
 def register_compile_contract(op_cls: type) -> None:
-    """Register ``op_cls`` as fullgraph compile-contract evidence.
-
-    Call at module import, adjacent to the compile test that backs the
-    promise. Side-effect only.
+    """Register ``op_cls`` as fullgraph compile-contract evidence, at module import next to
+    the test that backs it.
 
     Raises:
         AssertionError: The op names no operators, so nothing can be asserted about
@@ -89,12 +81,8 @@ def traced_call_targets(op, *inputs, **kwargs) -> set:
 
 
 def assert_op_owns_graph_nodes(op, *inputs, **kwargs) -> None:
-    """Compile *op* once and assert the graph holds nothing but its own operators.
-
-    A kernel's own registration, or a tensor op left outside the boundary, would show up
-    here — either means the node identity is not the op's alone, so another target could
-    change the graph.
-    """
+    """Compile *op* once and assert the graph holds nothing but its own operators, so
+    another target cannot change the graph."""
     declared = {operator_overload(name) for name in type(op).compile_op_names}
     assert declared, f"{type(op).__name__} declares no compile_op_names"
 
@@ -126,11 +114,7 @@ def assert_same_result(compiled, eager, *, exact: bool) -> None:
 
 
 def assert_fake_matches_eager(op, *inputs, **kwargs) -> None:
-    """Hold the fake's output metadata to what the op actually returns.
-
-    The fake is all the compiler learns about this op's node, and a single-node graph that
-    returns directly never forces its answer to be checked against anything.
-    """
+    """Hold the fake's output dtypes and shapes to what the op returns."""
     import torch._subclasses.fake_tensor as fake_tensor
 
     real = op(*inputs, **kwargs)
@@ -162,11 +146,8 @@ def assert_fake_matches_eager(op, *inputs, **kwargs) -> None:
 
 
 def compile_contract_ops() -> frozenset[str]:
-    """Aggregate registered evidence from all evidence modules.
-
-    Evidence modules are imported lazily here (not at module top) so they
-    can import this module without recursion.
-    """
+    """The registered op names, after importing every evidence module; imported here, so
+    they can import this module."""
     for module in _EVIDENCE_MODULES:
         importlib.import_module(module)
     return frozenset(_registered)

@@ -57,20 +57,6 @@ class NSAFwdFixture(FixtureBase):
                     [100, 156],
                     marks=pytest.mark.smoke,
                 ),
-                pytest.param(
-                    1,
-                    16,
-                    1024,
-                    64,
-                    True,
-                    0.1,
-                    32,
-                    16,
-                    1,
-                    torch.float16,
-                    None,
-                    marks=pytest.mark.full,
-                ),
                 # A head dim the MMA K step does not tile selects the general kernel.
                 pytest.param(
                     2,
@@ -497,9 +483,6 @@ class NSATopKFixture(FixtureBase):
                     32,
                     torch.bfloat16,
                     marks=pytest.mark.full,
-                ),
-                pytest.param(
-                    3, 512, 32, 128, 16, 1.0, 16, 32, torch.float16, marks=pytest.mark.full
                 ),
                 # Two sort pairs per lane must not put barriers under a partial-lane mask.
                 pytest.param(

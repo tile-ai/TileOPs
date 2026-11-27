@@ -1,13 +1,7 @@
 """Mapping a flat tile id onto the group that owns it.
 
-Rows are laid out per group, so an M tile belongs to one group only if the tiles
-are enumerated per group. Enumerated over the whole row range instead, a tile can
-straddle a boundary, and one that resolves a single group computes only the first
-of the ones it covers.
-
-The prefix sum and the search read the same tile counts, so one object holds the
-group count and tile height both of them are built from, and the macros take the
-caller's buffers so each kernel keeps its own scheduler.
+Rows are laid out per group, and the tiles are enumerated per group, so each M tile
+belongs to one group. The macros take the caller's buffers.
 """
 
 import tilelang.language as T
@@ -107,10 +101,8 @@ class GroupTiling:
 def _tile_prefix_sum(num_groups, tiles):
     """Macro writing ``s_cum[g + 1] = tiles(src, 0) + ... + tiles(src, g)`` and ``s_cum[0] = 0``.
 
-    Every CTA of the caller's grid computes the whole sum, so the CTA's threads share
-    it: each warp scans a contiguous run of groups, one group a lane per round, with
-    shuffles, and adds the totals of the warps before it. The macro ends with a block
-    barrier, and every thread of the block must reach it.
+    Every CTA computes the whole sum. Past ``serial_groups`` groups the macro is a block
+    scan that ends with a block barrier, and every thread of the block must reach it.
     """
     # Up to this many groups a loop on every thread costs less than the scan's shuffles
     # and barriers.
@@ -138,10 +130,8 @@ def _tile_prefix_sum(num_groups, tiles):
         threads, rest_y, rest_z = KernelLaunchFrame.Current().get_thread_extents()
         if threads % WARP_LANES != 0:
             raise ValueError(f"the scan needs whole warps along threadIdx.x, got {threads}")
-        # Only as many warps as there are runs of WARP_LANES groups take part. A thread
-        # holds one tile count a round in registers, and the rounds unroll: past
-        # `max_rounds` rounds the CTA scans in passes, each carrying the passes before it.
-        # 32 rounds is 4096 groups on 128 threads.
+        # A thread holds one tile count per unrolled round in registers; past `max_rounds`
+        # rounds the CTA scans in passes, each carrying the sum of the passes before it.
         max_rounds = 32
         runs = -(-num_groups // WARP_LANES)
         warps = min(threads // WARP_LANES, runs)

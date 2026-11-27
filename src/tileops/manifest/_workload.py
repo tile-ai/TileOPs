@@ -871,8 +871,9 @@ def equal_inputs(sig: Signature) -> list[tuple[str, ...]]:
     """The groups of inputs that declare one deterministic `values`, which must be equal."""
     groups: dict[str, list[str]] = {}
     for t in sig.inputs.values():
-        if _dumped(t.values) is not None and _callee_of(t.values) not in RANDOM_GENERATORS:
-            groups.setdefault(_dumped(t.values), []).append(t.name)
+        dumped = _dumped(t.values)
+        if dumped is not None and _callee_of(t.values) not in RANDOM_GENERATORS:
+            groups.setdefault(dumped, []).append(t.name)
     return [tuple(g) for g in groups.values() if len(g) > 1]
 
 

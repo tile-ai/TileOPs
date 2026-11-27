@@ -1,5 +1,7 @@
 """Inputs and the independent reference for the paged KV cache write."""
 
+from dataclasses import dataclass
+
 import torch
 
 from workloads.device import run_device
@@ -19,31 +21,25 @@ def paged_cache_write_result(subject, *inputs):
     return inputs[2], inputs[3]
 
 
+@dataclass(eq=False)
 class PagedKVCacheWriteWorkload(WorkloadBase):
     """New rows scattered into a paged cache by slot, the pool's other rows left alone.
 
     ``slots[n]`` is the pool row token ``n`` writes, or ``-1`` for a token that writes
-    nothing. Omitted, the slots are distinct random rows, which is what a serving step
-    hands over; a caller passing its own list exercises the skip path, a slot at either
-    end of a page, and slots out of order.
+    nothing. Omitted, the slots are distinct random rows.
     """
 
-    def __init__(
-        self,
-        tokens: int,
-        heads_kv: int,
-        dim: int,
-        page_size: int,
-        num_pages: int,
-        dtype: torch.dtype,
-        cache_dtype: torch.dtype | None = None,
-        slots: list[int] | None = None,
-    ) -> None:
-        self.tokens, self.heads_kv, self.dim = tokens, heads_kv, dim
-        self.page_size, self.num_pages = page_size, num_pages
-        self.dtype = dtype
-        self.cache_dtype = dtype if cache_dtype is None else cache_dtype
-        self.slots = slots
+    tokens: int
+    heads_kv: int
+    dim: int
+    page_size: int
+    num_pages: int
+    dtype: torch.dtype
+    cache_dtype: torch.dtype | None = None
+    slots: list[int] | None = None
+
+    def __post_init__(self) -> None:
+        self.cache_dtype = self.dtype if self.cache_dtype is None else self.cache_dtype
 
     @property
     def physical_tokens(self) -> int:

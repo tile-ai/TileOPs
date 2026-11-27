@@ -192,7 +192,6 @@ class _MLAPagedBase(Kernel, MLAPagedFwdInterface):
         cache_seqlens: torch.Tensor,
         kv_scale: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Attend each request's query rows to its cache; see the interface for the contract."""
         batch = q.shape[0]
         if batch == 0:
             return (

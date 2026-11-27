@@ -34,10 +34,9 @@ class TuningFacts(NamedTuple):
 def detect_target(device: torch.device) -> str | None:
     """Return the target whose kernels are written for *device*, or None if there is none.
 
-    None means no backend is installed for this hardware, so the in-tree implementation runs.
-    *device* is passed through untouched: reading ``.type`` is the vendor knowledge being
-    delegated. Neither memoized nor locked — a target is settled once per op instance, and
-    an op's first call can be inside a region dynamo traces.
+    None means the in-tree implementation runs. *device* reaches each detector untouched.
+    Not memoized: a target is settled once per op instance, and a backend registered later
+    takes effect.
 
     Raises:
         AmbiguousTargetError: More than one target claimed it. Pass ``target=`` to choose.
@@ -56,11 +55,7 @@ def detect_target(device: torch.device) -> str | None:
 
 
 def _claims(target: str, detect: DetectFn, device: torch.device) -> bool:
-    """Ask one detector, blaming the right distribution when it misbehaves.
-
-    Letting the exception through unlabelled would point the user at TileOPs; stepping over
-    it would silently hand the device to somebody else.
-    """
+    """Ask one detector; an exception it raises is re-raised naming its target."""
     try:
         return detect(device)
     except Exception as exc:
@@ -72,10 +67,7 @@ def _claims(target: str, detect: DetectFn, device: torch.device) -> bool:
 
 
 def select_target(requested: Target, device: torch.device | None) -> Target:
-    """Decide which target serves this call, in the one place that decides it.
-
-    *requested* wins, then the process default, then detection. A copy of this order per op
-    class is how the three drift apart.
+    """Decide which target serves this call: *requested*, the default, then detection.
 
     Args:
         requested: The op's ``target=``, honoured as named and not checked against *device*.

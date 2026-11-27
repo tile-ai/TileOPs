@@ -25,12 +25,10 @@ ROLE_INDEX_CALL = "tileops::canonical_warp_group_idx"
 def _uniform_role_branches(code: str) -> str:
     """Make a warp-specialized kernel's role branches test the warpgroup index from lane 0.
 
-    TileLang emits each role branch as a test of threadIdx.x, which ptxas cannot prove
-    uniform across a warp, so inside it the WGMMA descriptors stay in ordinary registers
-    and every issue pays an R2UR. TileLang reads each role's thread range from that form,
-    so the generated CUDA is rewritten instead. Code without the marker statement is
-    returned unchanged; so is code whose branches TileLang emitted differently, which
-    stays correct without uniform branches.
+    ptxas cannot prove a threadIdx.x test uniform across a warp, so the WGMMA descriptors
+    inside it stay in ordinary registers; TileLang reads each role's thread range from that
+    form, so the generated CUDA is rewritten instead. Code without the marker statement, or
+    whose branches TileLang emitted differently, is returned unchanged.
     """
     marker = re.compile(rf"^([ \t]*){re.escape(ROLE_INDEX_CALL)}\(\);$", re.MULTILINE)
     role_tests = (
@@ -73,26 +71,14 @@ def _dsa_decode_ws_kernel(
 ):  # fmt: skip
     """One work item per (token, 64-head block); the selected keys are taken in block pairs.
 
-    Consumer 0 scores the even block of a pair and consumer 1 the odd one. Each turns its
-    scores into weights, keeps them in registers for its own half of the value dims and
-    hands them to the other through smem. The row max is one chain through both blocks:
-    consumer 1 continues from consumer 0's max, and consumer 0 rescales its weights to the
-    pair's final max before handing them over.
-
     A slot is live when its index is in ``[0, seq_len_kv)`` and, if *is_causal*, within
     the query's causal limit; slots past ``topk`` are dead. With *skip*, the producer finds
     the row's last live slot and every role skips the blocks past it. With *has_sink* the
     program takes per-head ``Sinks`` logits that join each row's denominator.
 
     *ctas* CTAs run: one item each, or, with fewer CTAs than items, every *ctas*-th item in
-    turn. A CTA that runs several items loads the next item's Q once both consumers have
-    scored the current item's last pair, and stores an item's output while the next one
-    starts: consumer 0 stages its half in four 64-column tiles, and consumer 1, while its
-    first odd block is scored, stores that half with TMA and then its own through the tiles.
-
-    With *split* 2 a cluster of two CTAs runs each item, each taking half the row's blocks.
-    The pair trades each row's max and sum, and each CTA's consumer of one half of the value
-    dims adds the peer's half to its own and stores it; ``Sinks`` join the merged denominator.
+    turn. With *split* 2 a cluster of two CTAs runs each item, each taking half the row's
+    blocks; ``Sinks`` join the merged denominator.
     """
     # The tiles below are fixed; DSADecodeWSKernel.refusal states the shapes they cover.
     block_h = 64  # query heads per CTA: one m64 WGMMA row block
@@ -299,12 +285,8 @@ def _dsa_decode_ws_kernel(
     def producer(Q, KV, Indices, QL, QR, QT, K0L, K0R, K0T, K1L, K1R, K1T, Bias, sLive, q_full, q_free, live_ready, k_ready, k_free, bias_ready, cta, off, own, p):  # fmt: skip
         """Per item: load Q, find the row's last live slot, then gather the pairs up to it.
 
-        The first item's indices are read while its Q loads, a later item's once the CTA's
-        previous item is gathered. An item's count is published only after the consumers
-        have scored the previous item's last pair, so it never runs two phases ahead of them.
-
-        `lanes` lanes per 128-byte tile row: thread p copies one vector of each atom of rows
-        rows_per_pass * r + p // lanes, so a warp request covers whole sectors.
+        An item's count is published only after the consumers have scored the previous item's
+        last pair, so it never runs two phases ahead of them.
         """
         group = p // lanes
         lane = p % lanes
@@ -915,10 +897,8 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
     def ctas_for(items: int, tail_dim: int, sms: int) -> int:
         """The CTAs that run `items` work items, one per (token, 64-head block).
 
-        A CTA takes an SM's shared memory, so more CTAs than SMs run in waves whose CTAs each
-        load Q, gather a first pair and store their output with nothing to overlap. One CTA
-        per SM instead runs item after item and overlaps those with its previous item; its
-        output leaves through four smem tiles, the room a key tail takes.
+        One CTA per SM runs item after item and overlaps each item's Q load and output store with
+        its neighbours; more CTAs than SMs would run in waves with nothing to overlap.
         """
         return sms if items > sms and tail_dim == 0 else items
 
@@ -926,11 +906,9 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
     def split_for(items: int, topk: int, tail_dim: int, sms: int) -> int:
         """2 when a CTA pair should share each item's blocks, else 1.
 
-        With every item's pair in one wave, each CTA streams half the row's n 64-slot blocks,
-        then the pair trades 64 KiB of float32 output through distributed shared memory,
-        merges and stores it, taking time t. The pair beats one CTA when n / 2 + t < n; t is
-        about two and a half blocks' time, so the pair starts at six blocks. The trade's smem
-        does not fit beside a key tail's tiles.
+        A pair streams half the row's 64-slot blocks each, then trades its float32 output through
+        distributed shared memory; it starts at six blocks. The trade's smem does not fit beside a
+        key tail's tiles.
         """
         return 2 if items * 2 <= sms and -(-topk // 64) >= 6 and tail_dim == 0 else 1
 

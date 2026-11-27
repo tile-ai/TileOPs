@@ -63,8 +63,15 @@ class _Unresolved:
 _UNRESOLVED = _Unresolved()
 
 
-# The calls in progress on this thread, innermost last: each one's frame.
-_OPEN_CALLS = threading.local()
+class _OpenCalls(threading.local):
+    """The calls in progress on this thread, innermost last: each one's frame."""
+
+    def __init__(self) -> None:
+        """Start each thread with no call in progress."""
+        self.stack: list = []
+
+
+_OPEN_CALLS = _OpenCalls()
 
 # ``Op._execute``'s *key* when its caller has not observed the call.
 _UNOBSERVED = object()
@@ -73,16 +80,12 @@ _UNOBSERVED = object()
 def _address(t: object) -> "int | None":
     """The address *t* starts at, or None for an absent value, a scalar, or a tensor whose
     storage has no address: a fake one, or a wrapper refusing the read."""
-    if not isinstance(t, torch.Tensor):
+    if not isinstance(t, torch.Tensor) or isinstance(t, FakeTensor):
         return None
-    if type(t) is not torch.Tensor:
-        if isinstance(t, FakeTensor):
-            return None
-        try:
-            return t.data_ptr()
-        except RuntimeError:
-            return None
-    return t.data_ptr()
+    try:
+        return t.data_ptr()
+    except RuntimeError:
+        return None
 
 
 def _slot_spec(t: object) -> object:
@@ -351,13 +354,6 @@ class _CallRecord:
         return built
 
 
-def _open_calls() -> list:
-    calls = getattr(_OPEN_CALLS, "stack", None)
-    if calls is None:
-        calls = _OPEN_CALLS.stack = []
-    return calls
-
-
 class Op(ABC):
     """Base class of every TileOPs op.
 
@@ -595,12 +591,9 @@ class Op(ABC):
         )
 
     def eval_roofline_read_bytes(self) -> int | None:
-        """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
-
-        ``bytes`` minus the write half, which the signature settles: every
-        declared output once, plus a ``mutated`` input that is not an output.
-        An op that reads only part of an input needs no override -- its
-        ``bytes`` already counted that part.
+        """The read half of ``eval_roofline()[1]``, for the NCU bytes audit: ``bytes`` minus
+        the write half the signature settles (every output once, plus each written input that
+        is not an output).
 
         Returns:
             The read half in bytes, or ``None`` from an override whose read half the
@@ -611,31 +604,19 @@ class Op(ABC):
         return int(self.eval_roofline()[1]) - write_bytes
 
     def roofline_data_terms(self) -> "dict[str, int]":
-        """What decided this call's ``bytes``, where its inputs' values decided it.
-
-        Two calls of one shape can move different amounts -- a routed MoE reads
-        the experts its routing selected -- and the benchmark records this
-        beside the reading so such a number says why it moved.
-
-        Nothing judges it, and it is not part of ``(flops, bytes)``. Empty
-        unless the op's traffic follows its inputs' values.
+        """The input values that decided this call's ``bytes``, such as a routed MoE's selected
+        experts, which the benchmark records beside the reading. Empty unless the op's traffic
+        follows its inputs' values.
         """
         return {}
 
     def roof_key(self) -> str:
-        """GPU-profile key of the compute unit that prices this op's FLOPs.
+        """GPU-profile key of the compute unit whose peak bounds ``eval_roofline()``'s FLOPs
+        (docs/design/roofline.md §1.2).
 
-        ``eval_roofline()`` counts the work; ``roof_key()`` names the
-        peak that bounds it (docs/design/roofline.md §1.2). The key is a
-        statement about the *optimal* implementation, declared by the op
-        author — never inferred from the running kernel, so a kernel on the
-        wrong unit is still measured against the right ceiling.
-
-        The base default covers ops whose arithmetic runs on CUDA cores in
-        fp32 (elementwise, reductions, norms, scans). An op whose FLOPs are
-        matmul contractions overrides this with ``tensor_core_roof`` of the
-        contraction's input dtype read from ``self.last_call`` (or a
-        backend-specific key). Valid whenever ``eval_roofline()`` is.
+        It names the unit of the optimal implementation, never the running kernel's. The
+        default is fp32 CUDA cores; an op whose FLOPs are matmul contractions overrides it with
+        ``tensor_core_roof`` of the contraction's input dtype from ``self.last_call``.
         """
         return "cuda_core.fp32"
 
@@ -808,15 +789,11 @@ class Op(ABC):
         )
 
     def kernel_for(self, interface: str, call: Callable[[], CallSpec]) -> object:
-        """Return the in-tree entry that serves this call for *interface*, getting it on a miss.
+        """Return the in-tree entry that serves this call for *interface*, built on a miss.
 
-        The one way an op's in-tree implementation reaches a kernel. It runs only when the
-        in-tree kernels serve the op: a target serves the whole op instead
-        (:meth:`_run_on_target`). The plan of the call in progress holds the call spec of each
-        request, so *call* runs on the specialization's first call only; a request outside a
-        call, such as a traced ``forward``'s, runs it every time. A miss selects the
-        implementation and builds or reuses the entry its build identity names
-        (:meth:`_get_or_build_entry`).
+        The one way an op's in-tree implementation reaches a kernel. The plan of the call in
+        progress holds each request's call spec, so *call* runs on the specialization's first
+        call only; outside a call, such as in a traced ``forward``, it runs every time.
 
         Args:
             interface: The kernel interface, one of ``interfaces``.
@@ -844,7 +821,7 @@ class Op(ABC):
                 f"returning the call spec, not {type(call).__name__}; the call's plan holds "
                 f"what it returns"
             )
-        calls = _OPEN_CALLS.__dict__.get("stack")
+        calls = _OPEN_CALLS.stack
         frame = calls[-1] if calls else None
         if frame is None or frame.op is not self or frame.plan is None or frame.plan.scalar:
             return self._entry(interface, call())
@@ -868,7 +845,7 @@ class Op(ABC):
         For a ``forward`` that reads the spec's facts itself, such as a buffer size, before
         passing the spec to ``kernel_for``.
         """
-        calls = _OPEN_CALLS.__dict__.get("stack")
+        calls = _OPEN_CALLS.stack
         frame = calls[-1] if calls else None
         if frame is None or frame.op is not self or frame.plan is None or frame.plan.scalar:
             return call()
@@ -1001,12 +978,6 @@ class Op(ABC):
         """``forward``'s signature, read once per class: a target call binds it every time."""
         return inspect.signature(cls.forward)
 
-    @classmethod
-    @functools.cache
-    def _forward_outputs(cls) -> "tuple[str, ...]":
-        """The op's declared outputs, in order."""
-        return tuple(cls._signature.sig.outputs)
-
     def _split_forward_args(
         self, args: tuple, kwargs: dict
     ) -> "tuple[tuple, dict[str, torch.Tensor], dict[str, object]]":
@@ -1048,9 +1019,7 @@ class Op(ABC):
         the key is None or the op writes no tensor slot."""
         return type(self)._signature.observe(self, inputs, writes, execution, direct)
 
-    def _resolve_plan(
-        self, key: "tuple | None", inputs: tuple, writes: dict, execution: dict
-    ) -> _Plan:
+    def _resolve_plan(self, key: "tuple | None", inputs: tuple, writes: dict) -> _Plan:
         """Run the generated checks on this call and hold what they decide under *key*.
 
         Construction's checks run again first, for the params as they are now.
@@ -1061,11 +1030,9 @@ class Op(ABC):
         # Calls resolving one specialization together resolve it once.
         with self._building:
             plan = self._plans.get(key) if key is not None else None
-            return plan if plan is not None else self._resolved_plan(key, inputs, writes, execution)
+            return plan if plan is not None else self._resolved_plan(key, inputs, writes)
 
-    def _resolved_plan(
-        self, key: "tuple | None", inputs: tuple, writes: dict, execution: dict
-    ) -> _Plan:
+    def _resolved_plan(self, key: "tuple | None", inputs: tuple, writes: dict) -> _Plan:
         """:meth:`_resolve_plan` for a key no plan is held under yet."""
         signature = type(self)._signature
         self._construction_indices = type(self)._check_construction(self)
@@ -1136,7 +1103,7 @@ class Op(ABC):
             key, addresses = self._observe(inputs, writes, execution or {})
             plan = None if key is None else self._plans.get(key)
         frame = _Frame(self, plan)
-        calls = _OPEN_CALLS.__dict__.get("stack") or _open_calls()
+        calls = _OPEN_CALLS.stack
         calls.append(frame)
         # Whether this call selects the target. Only that call undoes the selection when it
         # fails; a call that fails before selecting leaves an earlier binding, and the sub-ops'
@@ -1144,7 +1111,7 @@ class Op(ABC):
         bound_here = False
         try:
             if plan is None:
-                plan = frame.plan = self._resolve_plan(key, inputs, writes, execution or {})
+                plan = frame.plan = self._resolve_plan(key, inputs, writes)
             if plan.overlaps:
                 if addresses is None:
                     # A call no observer read.
@@ -1249,7 +1216,7 @@ class Op(ABC):
         held = dataclasses.replace(call, indices=copy.deepcopy(call.indices))
         record = _CallRecord(held, call.metadata, (), self._empty_stages())
         self._last_call = record
-        calls = _open_calls()
+        calls = _OPEN_CALLS.stack
         if calls:
             calls[-1].children.append((self, record))
 
@@ -1264,14 +1231,10 @@ class Op(ABC):
     ) -> object:
         """Run the whole op on the target whose *builder* this call selected.
 
-        What the op layer guarantees every target: every tensor on one device, every
-        input the call does not write contiguous, every call tensor on a 16-byte boundary, and
-        the checks generated from the signature.
-        The kernel is built once per builder, device, input dtypes and shapes, the type of each
-        call-time scalar, and the manifest params it is built with.
-
-        *device* is the call device the checks placed the call on; a traced call, which runs
-        no check, places it from its tensors or the ``device`` param.
+        Every target is guaranteed: every tensor on one device, every input the call does not
+        write contiguous, every call tensor on a 16-byte boundary, and the signature's checks.
+        The kernel is built once per builder, device, input specs and manifest params. *device*
+        is the checked call device; a traced call, which runs no check, passes None.
 
         Raises:
             OpNotAvailableError: The builder returned something that is not callable.
@@ -1308,7 +1271,7 @@ class Op(ABC):
                     )
         result = kernel(*inputs, **writes, **(execution or {}))
         # An op whose every output is an input it writes returns nothing, as its forward does.
-        outputs = self._forward_outputs()
+        outputs = type(self)._signature.sig.outputs
         if outputs and all(name in names for name in outputs):
             return None
         return result
@@ -1328,18 +1291,15 @@ class Op(ABC):
         specs: tuple,
         params: "dict[str, object]",
     ) -> object:
-        """Ask *builder* for the kernel serving calls on *device* whose inputs *specs*
-        describe, one :func:`_slot_spec` each, built with the manifest *params*.
+        """Ask *builder*, with *device* current, for the kernel serving calls whose inputs
+        *specs* describe, one :func:`_slot_spec` each, built with the manifest *params*.
 
-        The builder runs with *device* current. In tuned mode the kernel is tuned before it
-        is returned, so a kernel whose tuning raised is never cached and the next call builds
-        it again.
+        In tuned mode the kernel is tuned before it is returned, so one whose tuning raised is
+        never cached.
 
         Raises:
             OpNotAvailableError: The builder returned something that is not callable.
         """
-        # Built with its device current, as an in-tree entry is: a builder may compile or
-        # allocate for whichever device is current.
         with device_context(device):
             kernel = builder(*specs, **params)
         if not callable(kernel):
@@ -1370,15 +1330,11 @@ class Op(ABC):
             )
 
     def _manifest_params(self) -> dict[str, object]:
-        """The op's manifest params, by name, with the values this instance holds.
-
-        ``build_kernel`` is called with these by keyword. Names come from the manifest
-        (``install_param_names``), values off the instance, so a param the manifest defaults to
-        null arrives as the instance holds it: ``None`` unless the caller gave a value.
+        """The op's manifest params, by name, with the values this instance holds: what
+        ``build_kernel`` is called with by keyword.
 
         Raises:
-            AttributeError: The op declares a manifest param it keeps under another name.
-                The manifest is the contract, so the op is what changes.
+            AttributeError: The op keeps a manifest param under another name.
         """
         names = getattr(self, PARAM_NAMES_ATTRIBUTE, None)
         if names is None:
@@ -1396,13 +1352,9 @@ class Op(ABC):
         return values
 
     def _entries_built(self, interface: str) -> Mapping[Hashable, object]:
-        """Return a read-only mapping of the entries built for *interface* so far, whoever built them.
-
-        Empty before the interface's first build. A target serves the whole op, so for an op a
-        target serves every interface maps to a copy of the target's kernels taken at the
-        call, one per input signature; an in-tree op's mapping is a live view. For
-        introspection — tests, benchmark reporting — never for dispatch: an execution path
-        asks ``kernel_for`` so a miss builds rather than raises.
+        """A read-only mapping of the entries built for *interface* so far, for introspection
+        only: a live view for the in-tree kernels, and for an op a target serves a copy of the
+        target's kernels, one per input signature, whatever the interface.
         """
         builder = self._target_builder
         if builder is not None and builder is not _UNRESOLVED:
@@ -1440,7 +1392,7 @@ class Op(ABC):
         entries = self._delegates.setdefault(stage, {})
         if identity is None and given is None and None not in entries:
             # Held by this op's specialization, which the plan of the call in progress fixes.
-            calls = _OPEN_CALLS.__dict__.get("stack")
+            calls = _OPEN_CALLS.stack
             frame = calls[-1] if calls else None
             plan = frame.plan if frame is not None and frame.op is self else None
             if plan is None:
@@ -1484,7 +1436,7 @@ class Op(ABC):
 
     def _settled_delegate(self, stage: str, params: dict) -> "Op":
         """The sub-op of *stage* for this op's params, built from *params* on a miss."""
-        signature = getattr(type(self), "_signature", None)
+        signature = type(self)._signature
         identity = (stage, None if signature is None else param_state(self, signature.sig))
         return self.delegate_for(stage, identity, **params)
 
@@ -1498,11 +1450,9 @@ class Op(ABC):
 
     @property
     def serving_target(self) -> Target:
-        """The target that serves this instance, selected by the first call that runs one.
-
-        ``None`` until a call selects it, and again if the call that selected it fails. ``BUILTIN``
-        for the in-tree implementation however it was chosen — ``target=BUILTIN``, the
-        process default, or no target claiming the device. Otherwise the target's name.
+        """The target that serves this instance: ``None`` until a call selects it, and again
+        if that call fails; ``BUILTIN`` for the in-tree implementation however it was chosen;
+        otherwise the target's name.
         """
         if self._target_builder is _UNRESOLVED:
             return None
@@ -1511,12 +1461,8 @@ class Op(ABC):
         return self._serving_target
 
     def kernel_config(self) -> dict[str, Any] | None:
-        """The configuration the op's kernels published, or ``None``.
-
-        An op given a config of its own answers with it; otherwise the first configured
-        kernel does, which speaks for the whole call: one ``iter_kernels`` yields, else one
-        a target built, whose ``config`` is optional.
-        """
+        """The op's own ``config``, else the first ``config`` an in-tree or target kernel
+        published, or ``None``."""
         own = getattr(self, "config", None)
         if own:
             return own
@@ -1531,16 +1477,8 @@ class Op(ABC):
         return None
 
     def iter_kernels(self) -> Iterator[Kernel]:
-        """Yield every ``Kernel`` instance the op's entries hold, each one once.
-
-        Reached: the entries of every interface, and the same walk over each
-        ``_held_delegates()`` entry. A kernel on any other attribute is not
-        searched for — an op that holds one builds it through an interface.
-
-        What ``request_tune`` tunes and ``kernel_config`` reads of the in-tree kernels. A
-        target's kernels are not ``Kernel`` instances and are not yielded here: those two
-        reach them by device through ``_target_kernels_by_device``. ``_entries_built`` shows
-        every entry, whoever built it.
+        """Yield every in-tree ``Kernel`` the entries of this op and its held sub-ops hold,
+        each one once. A target's kernels are not yielded.
         """
         seen: set[int] = set()
         for op in self._walk_ops():
@@ -1571,15 +1509,6 @@ class Op(ABC):
                 if (device, id(kernel)) not in seen:
                     seen.add((device, id(kernel)))
                     yield op, device, kernel
-
-    def _device_without_call_tensors(self) -> "torch.device | None":
-        """The call device of a call that carries no tensor: the declared ``device`` param,
-        else the accelerator's current one.
-
-        The same rule the generated checks apply, for a caller that runs no check: a traced
-        call, or an op body building a call spec for an op with no tensor input.
-        """
-        return tensorless_device(self)
 
     @staticmethod
     def _entry_kernels(entry: object) -> "list[Kernel]":
@@ -1614,22 +1543,13 @@ class Op(ABC):
             stack.extend(reversed(op._held_delegates()))
 
     def request_tune(self) -> None:
-        """Put the op in tuned mode: what it holds now, and what it builds next.
+        """Put the op and its sub-ops in tuned mode: the kernels built so far, and every kernel
+        built later, specializations not seen yet included.
 
-        It applies to specializations that do not exist yet — an op tuned before its
-        first fp16 call is tuned when bf16 arrives later — because ``_tune_requested`` is what
-        carries it: every entry built while it is set has its kernels put in tuned mode, so
-        no kernel factory needs to read it. A sub-op receives it from ``delegate_for``.
-        Tuning a kernel is idempotent; one without ``autotune_configs`` stays untuned.
-
-        A target's kernels are reached through the kernel, never the builder: each call of
-        this calls ``request_tune()`` on each one built so far, once for each device it was
-        built for, with that device current, and each one built later receives it before
-        its first call. An op a
-        target serves warns once when one of its kernels defines no ``request_tune()``.
-
-        A kernel whose tuning raises leaves the op in tuned mode, so calling this again
-        tunes what was not reached.
+        A target's kernel is tuned once per device it was built for, with that device current;
+        the op warns once for a target kernel that defines no ``request_tune()``. Tuning a
+        kernel is idempotent. A kernel whose tuning raises leaves the op in tuned mode, so
+        calling this again tunes what was not reached.
         """
         for op in self._walk_ops():
             op._tune_requested = True
@@ -1649,14 +1569,10 @@ class Op(ABC):
         raise NotImplementedError("forward method is not implemented")
 
     def __call__(self, *args: object, **kwargs: object) -> torch.Tensor | tuple[torch.Tensor, ...]:
-        """Make the op callable.
+        """Run one call through :meth:`_execute`, via the compile boundary when the op has one.
 
-        ``forward`` is the op's computation, and it runs inside :meth:`_execute`. An op with
-        a compile boundary calls the generated ``_call_boundary``, which runs :meth:`_execute`
-        directly or as its operator's eager body. An op without one binds the call to
-        ``forward``'s signature and calls :meth:`_execute` itself. Traced, an op without a
-        compile boundary runs no check: an instance a target serves calls the target's kernel,
-        and any other runs ``forward``. A traced first call binds the target as an eager one does.
+        Traced, an op without a compile boundary runs no check: it calls its target's kernel,
+        or ``forward``.
 
         Raises:
             TypeError: The op has no manifest entry.
@@ -1732,16 +1648,10 @@ class Op(ABC):
 
     def _bind_target(self, device: "torch.device | None") -> object:
         """Decide which target serves this instance on the call *device*, remember its
-        builder, and return the builder this call runs on: ``None`` for the in-tree kernels.
+        builder, and return it: ``None`` for the in-tree kernels.
 
-        Once decided it does not change: the kernels this instance has built belong to that
-        target. An instance is therefore bound to that target's devices — handing it tensors
-        from elsewhere is a caller error, and the kernel is what reports it. *device* is the
-        one the signature check placed the call on. Without a named or process-default target,
-        a call with none probes nothing, decides nothing and runs on the in-tree kernels.
-
-        A composite — an op that builds no kernel of its own — needs no builder: without
-        one its sub-ops each select a target of their own.
+        The decision is final. Without a named or process-default target, a call with no
+        device decides nothing. A composite without a builder lets each sub-op select its own.
 
         Raises:
             OpNotServedError: The selected target registers no builder for this op,

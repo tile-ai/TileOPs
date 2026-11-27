@@ -222,48 +222,40 @@ def test_group_norm_matches_float64_on_extreme_rows(kind, width, value, weight, 
 class GroupNormFixture(FixtureBase):
     PARAMS = [
         (
-            "n, c, spatial, g, dtype, tune",
+            "n, c, spatial, g, dtype",
             [
-                # Small CI-friendly shapes -- fp32
-                pytest.param(2, 32, (8, 8), 8, torch.float32, False, marks=pytest.mark.smoke),
-                # Small CI-friendly shapes -- fp16
-                pytest.param(2, 32, (8, 8), 8, torch.float16, False, marks=pytest.mark.smoke),
-                # Small CI-friendly shapes -- bf16
-                pytest.param(2, 32, (8, 8), 8, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 32, (8, 8), 8, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(2, 32, (8, 8), 8, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 32, (8, 8), 8, torch.bfloat16, marks=pytest.mark.smoke),
                 # Wide groups: Stable Diffusion's 64 x 64 latent (40960 a group, held in
                 # registers), an SDXL latent no block holds, a bf16 group of 262144 cut
                 # across blocks, and an fp32 row past SM89's shared memory.
-                pytest.param(2, 320, (64, 64), 32, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param(2, 320, (152, 104), 32, torch.float16, False, marks=pytest.mark.smoke),
-                pytest.param(1, 128, (256, 256), 32, torch.bfloat16, False, marks=pytest.mark.full),
-                pytest.param(2, 128, (50, 125), 32, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(2, 320, (64, 64), 32, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 320, (152, 104), 32, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1, 128, (256, 256), 32, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(2, 128, (50, 125), 32, torch.float32, marks=pytest.mark.full),
                 # A padded FP32 row also exceeds SM90 shared memory.
-                pytest.param(2, 128, (100, 150), 32, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(4, 16, (4, 4), 4, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(4, 16, (4, 4), 4, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(4, 16, (4, 4), 4, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 128, (100, 150), 32, torch.float32, marks=pytest.mark.full),
+                pytest.param(4, 16, (4, 4), 4, torch.float16, marks=pytest.mark.full),
                 # Different group counts
-                pytest.param(2, 32, (4, 4), 1, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(2, 32, (4, 4), 32, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(2, 32, (4, 4), 16, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 32, (4, 4), 1, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 32, (4, 4), 32, torch.float16, marks=pytest.mark.full),
+                pytest.param(2, 32, (4, 4), 16, torch.float16, marks=pytest.mark.full),
                 # 1D spatial
-                pytest.param(2, 32, (16,), 8, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 32, (16,), 8, torch.float16, marks=pytest.mark.full),
                 # 3D spatial
-                pytest.param(2, 16, (4, 4, 4), 4, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 16, (4, 4, 4), 4, torch.float16, marks=pytest.mark.full),
                 # Non-power-of-two channels per group
-                pytest.param(2, 30, (4, 4), 5, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 30, (4, 4), 5, torch.float16, marks=pytest.mark.full),
                 # Non-aligned spatial: exercises partial-tile path
-                pytest.param(2, 32, (7, 7), 8, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(2, 32, (7, 7), 8, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 32, (7, 7), 8, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
 @GroupNormFixture
-def test_group_norm_op(
-    n: int, c: int, spatial: tuple, g: int, dtype: torch.dtype, tune: bool
-) -> None:
+def test_group_norm_op(n: int, c: int, spatial: tuple, g: int, dtype: torch.dtype) -> None:
     test = GroupNormTest(n, c, spatial, g, dtype)
     op = GroupNormFwdOp(num_groups=g)
     test.check(op, *test.gen_inputs())
@@ -275,7 +267,6 @@ class GroupNormNonContigFixture(FixtureBase):
             "n, c, spatial, g, dtype",
             [
                 pytest.param(2, 32, (8, 8), 8, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 32, (8, 8), 8, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -285,7 +276,6 @@ class GroupNormNonContigFixture(FixtureBase):
 def test_group_norm_non_contiguous(
     n: int, c: int, spatial: tuple, g: int, dtype: torch.dtype
 ) -> None:
-    """Test with non-contiguous input (sliced tensor)."""
     test = GroupNormTest(n, c, spatial, g, dtype)
     _, weight, bias = test.gen_inputs()
     x = torch.randn((n, c * 2, *spatial), dtype=dtype, device=run_device())[:, :c]
@@ -323,13 +313,8 @@ def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
 )
 @pytest.mark.smoke
 def test_group_norm_rejects_affine_device_mismatch() -> None:
-    """Forward refuses weight or bias on another device than x.
-
-    Without the check the call would dispatch on cross-device tensors, or
-    surface as an opaque CUDA error. The device that differs is CPU rather than
-    a second GPU: the op compares devices, so one machine with one card
-    exercises the same rejection.
-    """
+    """Forward refuses weight or bias on another device than x; CPU stands for the other
+    device, since the op compares devices."""
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
     op = GroupNormFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())

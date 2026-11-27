@@ -1,13 +1,4 @@
-"""Dropout op with PyTorch-compatible semantics.
-
-Implements inverted dropout: output = x * mask / (1 - p) during training,
-identity pass-through during eval (training=False).
-
-Edge cases:
-- p=0: identity (no dropout)
-- p=1: all zeros
-- training=False: identity pass-through
-"""
+"""The dropout op."""
 
 from collections.abc import Mapping
 from typing import ClassVar

@@ -26,12 +26,7 @@ __all__ = ["DSADenseFwdOp", "DSAPagedFwdOp"]
 
 
 class DSADenseFwdOp(Op):
-    """DeepSeek Sparse Attention (DSA) decode.
-
-    This operation is part of a sparse attention mechanism, designed for use in decoding
-    with key-value (KV) caching.
-
-    The layout of the operation is BSHD.
+    """DeepSeek Sparse Attention (DSA) decode. Layout: BSHD.
 
     With ``is_causal`` false only the indices select keys, and -1 pads; ``attn_sink`` adds
     ``exp(attn_sink[h])`` to head ``h``'s softmax denominator.

@@ -1,12 +1,17 @@
 """KDAFwdOp against the FP64 KDA recurrence in ``workloads/linear_attention/kda.py``."""
 
+import functools
 import math
 
 import pytest
 import torch
 
 from tests.cuda_graph_contract import check_replay
-from tests.state_pool_guard import check_padded_slots_skipped
+from tests.state_pool_guard import (
+    check_padded_slots_skipped,
+    check_strided_pool_in_place,
+    pooled_call,
+)
 from tests.workload_test_base import TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import (
@@ -32,6 +37,19 @@ class KDAFwdTest(KDAFwdWorkload, TestBase):
 def _check(*args, **kwargs):
     test = KDAFwdTest(*args, **kwargs)
     test.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *test.gen_inputs())
+
+
+@pytest.fixture
+def chunk_prefill_runs(monkeypatch) -> list:
+    """The calls the KDA chunked prefill makes to ``run_chunk_prefill``, one entry each."""
+    runs = []
+
+    def counted(*args, **kwargs):
+        runs.append(1)
+        return run_chunk_prefill(*args, **kwargs)
+
+    monkeypatch.setattr(kda_prefill, "run_chunk_prefill", counted)
+    return runs
 
 
 @pytest.mark.smoke
@@ -234,7 +252,6 @@ def test_kda_fused_prefill_reads_many_offsets_from_global_memory() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("facts", "reason"),
@@ -261,6 +278,7 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
             "arch": 90,
             "calibration": None,
             "smem_budget": 0,
+            "device": torch.device(*Kernel.devices),
             **facts,
         }
     )
@@ -363,8 +381,8 @@ def test_kda_raw_gate_prefill_refuses_more_sequences_than_its_state_walk_holds()
     ],
 )
 def test_kda_fused_prefill_in_sm89_shared_memory(dim, dtype):
-    """256 sequences over 16 value heads: enough blocks to cover an SM89 device, with
-    output and carried state checked at each width."""
+    """16 sequences of 256 tokens over 16 value heads: enough blocks to cover an SM89 device,
+    with output and carried state checked at each width."""
     torch.manual_seed(42)
     test = KDAFwdTest(16, 256, 16, dim, dtype)
     test.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *test.gen_inputs())
@@ -942,14 +960,7 @@ def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *inputs)
 
 
-def _pooled(dtype: torch.dtype, *, some: tuple[str, ...] = (), **row) -> KDAFwdCallTest:
-    """A manifest call whose states live in a pool: sequence ``n`` starts from slot
-    ``state_indices[n]`` and leaves its final state there, every other slot untouched."""
-    name = "bfloat16" if dtype == torch.bfloat16 else "float16"
-    call = manifest_call(
-        "KDAFwdOp", {"T": name}, some=["initial_state", "state_indices", *some], **row
-    )
-    return KDAFwdCallTest(call)
+_pooled = functools.partial(pooled_call, "KDAFwdOp", KDAFwdCallTest)
 
 
 @pytest.mark.parametrize(
@@ -1022,7 +1033,6 @@ def _one_wave_heads(sequences: int) -> int:
 
 
 @pytest.mark.smoke
-@pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("dtype", "batch", "seq_len", "sequences", "key"),
@@ -1064,6 +1074,7 @@ def test_kda_sm90_given_gate_prefill_walks_one_cta_for_one_chunk_in_one_wave(
         arch=90,
         calibration=None,
         smem_budget=232448,
+        device=torch.device(*Kernel.devices),
     )
     assert KDAFwdOp(use_qk_l2norm_in_kernel=True).key_for("kda", call) == key
 
@@ -1071,24 +1082,17 @@ def test_kda_sm90_given_gate_prefill_walks_one_cta_for_one_chunk_in_one_wave(
 @pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-def test_kda_sm90_fp16_one_cta_prefill_forms_a_strong_chunk_per_pair(monkeypatch) -> None:
+def test_kda_sm90_fp16_one_cta_prefill_forms_a_strong_chunk_per_pair(chunk_prefill_runs) -> None:
     """Sequences of one chunk in one wave of value heads take the SM90 fp16 one-CTA prefill; a
     chunk whose decay overflows fp16 rows centred on it takes per-pair entries beside centred
     ones."""
     torch.manual_seed(42)
-    runs = []
-
-    def counted(*args, **kwargs):
-        runs.append(1)
-        return run_chunk_prefill(*args, **kwargs)
-
-    monkeypatch.setattr(kda_prefill, "run_chunk_prefill", counted)
     workload = KDAFwdTest(4, 64, _one_wave_heads(4), 128, torch.float16)
     q, k, v, g, beta, state = workload.gen_inputs()
     g = g.clone()
     g[1] = torch.empty_like(g[1]).uniform_(*_strong_decays(g.dtype))
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), q, k, v, g, beta, state)
-    assert not runs
+    assert not chunk_prefill_runs
 
 
 # Sequence lengths whose chunk counts differ (one is empty) and lengths of two chunks each.
@@ -1130,7 +1134,7 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
     state_v_first: bool,
     dtype: torch.dtype,
     chunked: bool,
-    monkeypatch,
+    chunk_prefill_runs,
 ) -> None:
     """Packed sequences start from and end in their slots, in either state layout; an empty
     sequence leaves its slot as it was. Enough (sequence, value head) pairs for the one-CTA
@@ -1138,13 +1142,6 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
     and the one-CTA walk fp16 ones of at most one chunk a sequence on average in one wave,
     carrying the longest sequence's state across its two chunks."""
     torch.manual_seed(42)
-    runs = []
-
-    def counted(*args, **kwargs):
-        runs.append(1)
-        return run_chunk_prefill(*args, **kwargs)
-
-    monkeypatch.setattr(kda_prefill, "run_chunk_prefill", counted)
     flags = {"state_v_first": state_v_first, "use_qk_l2norm_in_kernel": True}
     heads = _one_wave_heads(len(_UNEVEN)) if dtype == torch.float16 else _FUSED_HEADS
     test = _pooled(
@@ -1152,7 +1149,7 @@ def test_kda_prefill_updates_its_slots_of_a_state_pool(
         H=4, HV=heads, K=128, V=128, P=12, **flags,
     )  # fmt: skip
     test.check(KDAFwdOp(**flags), *test.gen_inputs())
-    assert bool(runs) == chunked
+    assert bool(chunk_prefill_runs) == chunked
 
 
 @pytest.mark.sm90
@@ -1367,19 +1364,10 @@ def test_kda_fused_prefill_walks_a_value_major_state(arch) -> None:
 def test_kda_decode_updates_a_strided_pool_in_place() -> None:
     """A pool that is a strided view is advanced in place, the call returning that view."""
     torch.manual_seed(42)
-    test = _pooled(torch.bfloat16, B=4, S=1, H=2, HV=4, K=128, V=128, P=8, state_v_first=True)
-    q, k, v, g, beta, pool, *rest = test.gen_inputs()
-    strided = torch.empty((2 * pool.shape[0], *pool.shape[1:]), device=pool.device)[::2]
-    strided.copy_(pool)
-    op = KDAFwdOp(state_v_first=True)
-
-    def run(*args, **keywords):
-        # The compared state is the caller's view, so a missed copy-back fails the check.
-        o, final_state = op(*args, **keywords)
-        assert final_state is args[5]
-        return o, final_state
-
-    test.check(op, q, k, v, g, beta, strided, *rest, runs=run)
+    check_strided_pool_in_place(
+        _pooled(torch.bfloat16, B=4, S=1, H=2, HV=4, K=128, V=128, P=8, state_v_first=True),
+        KDAFwdOp(state_v_first=True),
+    )
 
 
 @pytest.mark.sm90

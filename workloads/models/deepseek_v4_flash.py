@@ -126,18 +126,13 @@ def hc_split_sinkhorn(mixes, hc_scale, hc_base, hc_mult, sinkhorn_iters, eps):
     return pre, 2 * post, comb
 
 
-# DeepSeek-V4-Flash's inference/model.py, unmodified at Hugging Face revision
-# 60d8d70770c6776ff598c94bb586a859a38244f1, under the MIT license beside it.
-_OFFICIAL_MODEL = (
-    Path(__file__).resolve().parents[2] / "third_party" / "deepseek_v4_flash" / "model.py"
-)
-
-
 def _load_official() -> types.ModuleType:
     """Import the official ``model.py`` against a ``kernel`` module of this file's torch
     functions. ``rotate_activation`` is replaced too, so ``fast_hadamard_transform`` is not
     needed."""
-    path = _OFFICIAL_MODEL
+    # DeepSeek-V4-Flash's inference/model.py, unmodified at Hugging Face revision
+    # 60d8d70770c6776ff598c94bb586a859a38244f1, under the MIT license beside it.
+    path = Path(__file__).resolve().parents[2] / "third_party" / "deepseek_v4_flash" / "model.py"
     kernel = types.ModuleType("kernel")
     for fn in (act_quant, fp4_act_quant, fp8_gemm, fp4_gemm, sparse_attn, hc_split_sinkhorn):
         setattr(kernel, fn.__name__, fn)

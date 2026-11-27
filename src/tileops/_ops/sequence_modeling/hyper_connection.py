@@ -154,15 +154,6 @@ class HyperConnectionPostFwdOp(Op):
         "hyper_connection_post": HyperConnectionPostFwdInterface
     }
 
-    def __init__(self, *, target: Target = None):
-        """Build the op. Shapes are taken from each call.
-
-        Args:
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-        """
-        super().__init__(target=target)
-
     def forward(
         self,
         x: torch.Tensor,

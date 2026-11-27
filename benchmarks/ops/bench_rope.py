@@ -1,11 +1,5 @@
 """Benchmarks for the RoPE op family.
 
-Every case is a manifest call of the op (``src/tileops/manifest/spec/rope.yaml``),
-the op is built from the call's parameters and the inputs are the call's tensors.
-
-One ``test_*_bench`` per op, so every op this file is declared the benchmark
-of records a row of its own.
-
 Baselines build their cos/sin caches outside the timed window, so only the
 rotation itself is measured.
 """
@@ -67,27 +61,27 @@ def _bench_rope(op_cls, case: bench.Case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(RoPEFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(RoPEFwdOp))
 def test_rope_bench(case) -> None:
     _bench_rope(RoPEFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(RoPELlama31FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(RoPELlama31FwdOp))
 def test_rope_llama31_bench(case) -> None:
     _bench_rope(RoPELlama31FwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(YaRNFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(YaRNFwdOp))
 def test_yarn_bench(case) -> None:
     _bench_rope(YaRNFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(LongRoPEFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(LongRoPEFwdOp))
 def test_rope_longrope_bench(case) -> None:
     _bench_rope(LongRoPEFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(RoPECosSinFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(RoPECosSinFwdOp))
 def test_rope_cos_sin_bench(case) -> None:
     """Check and time the rotation against flash-attn's ``apply_rotary_emb``, the op's
     reference API, torch and inductor; each rewrites a private ``x`` where the call is in

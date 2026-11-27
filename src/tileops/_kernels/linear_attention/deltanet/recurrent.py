@@ -5,8 +5,6 @@ DeltaNet decode (single-step recurrence, ungated).
     v_new    = beta * (v - old_val)
     o        = S @ q + (q . k) * v_new
     S_new    = S + outer(k, v_new)
-
-Unlike Gated DeltaNet (GDN), there is no gate parameter g and no alpha = exp(g).
 """
 
 import warnings
@@ -38,6 +36,12 @@ def k_tile_refusal(dim_k: int, k_tile: int) -> str | None:
     if dim_k % k_tile != 0:
         return f"requires dim_k a multiple of {k_tile}, got {dim_k}"
     return None
+
+
+def load_state_without_tma(dim_k: int, k_tile: int) -> bool:
+    """Whether a decode program copies its state without TMA: where one key tile holds the
+    whole state, the one-shot bulk copy costs more than the plain copy."""
+    return k_tile == dim_k
 
 
 def stream_state_configs(dim_k: int) -> list[dict]:
@@ -105,11 +109,11 @@ def _decode_inputs(kernel: Kernel, dtype: torch.dtype) -> tuple[torch.Tensor, ..
     """Random ``(q, k, v, beta, state)`` of *kernel*'s shape to time its candidates on."""
     B, H, DK, DV = kernel.batch, kernel.head, kernel.dim_k, kernel.dim_v
     return (
-        torch.randn(B, H, DK, device="cuda", dtype=dtype),
-        torch.randn(B, H, DK, device="cuda", dtype=dtype),
-        torch.randn(B, H, DV, device="cuda", dtype=dtype),
-        torch.rand(B, H, device="cuda", dtype=dtype),
-        torch.randn(B, H, DK, DV, device="cuda", dtype=dtype),
+        torch.randn(B, H, DK, device=kernel._build_device, dtype=dtype),
+        torch.randn(B, H, DK, device=kernel._build_device, dtype=dtype),
+        torch.randn(B, H, DV, device=kernel._build_device, dtype=dtype),
+        torch.rand(B, H, device=kernel._build_device, dtype=dtype),
+        torch.randn(B, H, DK, DV, device=kernel._build_device, dtype=dtype),
     )
 
 
@@ -226,7 +230,7 @@ def _deltanet_decode_warp_tl(
 ):
     reason = DeltaNetDecodeWarpKernel.shape_refusal(dtype, dim_k, dim_v)
     if reason is not None:
-        raise ValueError(f"Raw CUDA DeltaNet decode {reason}")
+        raise ValueError(f"DeltaNet warp decode {reason}")
     if dim_v % v_tile != 0:
         raise ValueError(f"dim_v={dim_v} must be divisible by v_tile={v_tile}")
     if raw_group_size != 2:
@@ -323,15 +327,7 @@ def _deltanet_decode_tl(
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
-    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
-    #
-    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
-    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
-    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
-    #      warp specialization, so the first launch hangs.
-    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
-    #          tile-ai/tilelang#2737.
-    load_state_without_tma = k_tile == dim_k
+    without_tma = load_state_without_tma(dim_k, k_tile)
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -366,11 +362,7 @@ def _deltanet_decode_tl(
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(
-                        state[bid, hid, kt * k_tile, 0],
-                        h_tile_o,
-                        disable_tma=load_state_without_tma,
-                    )
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o, disable_tma=without_tma)
                     for kk in T.Serial(k_tile):
                         k_val = T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype)
                         q_val = T.cast(q[bid, hid, kt * k_tile + kk], accum_dtype)
@@ -387,19 +379,17 @@ def _deltanet_decode_tl(
                         k[bid, hid, kk], accum_dtype
                     )
 
-                # v_new = beta * (v - S @ k) (no alpha)
+                # v_new = beta * (v - S @ k)
                 for j in T.Parallel(dim_v):
                     v_new[j] = beta_val * (T.cast(v[bid, hid, j], accum_dtype) - sk_frag[j])
 
-                # o = S @ q + (q . k) * v_new (no alpha scaling)
+                # o = S @ q + (q . k) * v_new
                 for j in T.Parallel(dim_v):
                     o[bid, hid, j] = T.cast(sq_frag[j] + qk_dot[0] * v_new[j], dtype)
 
-                # new_state = S + outer(k, v_new) (no alpha decay)
+                # new_state = S + outer(k, v_new)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(
-                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
-                    )
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=without_tma)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
                             T.cast(h_tile[kk, j], accum_dtype)
@@ -433,7 +423,9 @@ def _decode_entry(cls: type, call: DeltaNetDecodeCall) -> Entry:
     index = call.device_index
     dtype = Kernel.dtype_to_str(call.dtype)
     identity = (call.batch, call.heads, call.dim_k, call.dim_v, dtype, index)
-    return identity, lambda: cls(call.batch, call.heads, call.dim_k, call.dim_v, dtype=dtype)
+    return identity, lambda: cls(
+        call.batch, call.heads, call.dim_k, call.dim_v, dtype=dtype, device_index=index
+    )
 
 
 class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
@@ -465,8 +457,9 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         dim_v: int,
         dtype: str = "float32",
         config: dict | None = None,
+        device_index: int | None = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.head = head
         self.dim_k = dim_k
@@ -555,8 +548,9 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
         dim_v: int,
         dtype: str = "bfloat16",
         config: dict | None = None,
+        device_index: int | None = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.head = head
         self.dim_k = dim_k
@@ -629,15 +623,7 @@ def _deltanet_decode_fp32_tl(
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
-    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
-    #
-    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
-    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
-    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
-    #      warp specialization, so the first launch hangs.
-    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
-    #          tile-ai/tilelang#2737.
-    load_state_without_tma = k_tile == dim_k
+    without_tma = load_state_without_tma(dim_k, k_tile)
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -682,19 +668,17 @@ def _deltanet_decode_fp32_tl(
                 for kk in T.Serial(dim_k):
                     qk_dot[0] += q[bid, hid, kk] * k[bid, hid, kk]
 
-                # v_new = beta * (v - S @ k) (no alpha)
+                # v_new = beta * (v - S @ k)
                 for j in T.Parallel(dim_v):
                     v_new[j] = beta_val * (v[bid, hid, j] - sk_frag[j])
 
-                # o = S @ q + (q . k) * v_new (no alpha)
+                # o = S @ q + (q . k) * v_new
                 for j in T.Parallel(dim_v):
                     o[bid, hid, j] = sq_frag[j] + qk_dot[0] * v_new[j]
 
-                # new_state = S + outer(k, v_new) (no alpha decay)
+                # new_state = S + outer(k, v_new)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(
-                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
-                    )
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=without_tma)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = (
                             h_tile[kk, j] + k[bid, hid, kt * k_tile + kk] * v_new[j]
@@ -735,8 +719,9 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         dim_v: int,
         dtype: str = "float32",
         config: dict | None = None,
+        device_index: int | None = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if dtype != "float32":
             raise ValueError(f"{self.__class__.__name__} only supports float32")
         self.batch = batch

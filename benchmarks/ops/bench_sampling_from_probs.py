@@ -1,8 +1,4 @@
-"""Benchmark for the seeded categorical draw op.
-
-Workload shapes come from the ops manifest; roofline FLOP and byte counts come
-from the op's ``eval_roofline()``.
-"""
+"""Benchmark for the seeded categorical draw op."""
 
 import pytest
 import torch
@@ -19,7 +15,7 @@ from benchmarks.baselines import (
 from tileops.sampling import SamplingFromProbsFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(SamplingFromProbsFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SamplingFromProbsFwdOp))
 def test_sampling_from_probs_bench(case) -> None:
     probs, seed, _offset = case.inputs
 
@@ -30,9 +26,8 @@ def test_sampling_from_probs_bench(case) -> None:
     flashinfer_draw = flashinfer_op("sampling.sampling_from_probs")
     gumbel_sample = vllm_op("gumbel_sample", "v1.worker.gpu.sample.gumbel")
     generator = torch.Generator(device=probs.device).manual_seed(int(seed.item()))
-    # vllm keys a row's Gumbel noise by its request's seed and the row's position; every row
-    # maps to request 0, which carries the call's seed, and the offset is unused. The index
-    # tensors of each batch size are built on its first call.
+    # vllm keys a row's Gumbel noise by its request's seed and position: every row maps to
+    # request 0, which carries the call's seed; the index tensors are built once per batch.
     temperature = torch.ones(1, dtype=torch.float32, device=probs.device)
     row_indices: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
     # gumbel_sample takes logits, as vllm's sampler hands it; the case's are taken once here,

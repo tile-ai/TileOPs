@@ -335,8 +335,6 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
     """What the two per-block kernels share: the calls they refuse and how they launch."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    # The one integer tensor is ``q``, written before anything reads it.
-    autotune_accepts_random_int_inputs = True
 
     @classmethod
     def refusal(cls, call: QuantizeCall) -> str | None:
@@ -352,10 +350,6 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
         self.dtype = call.dtype
         self.kernel = self._builder(call.rows, call.cols, self.dtype_str)
         self.init_config(config)
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_devices(x=x)
@@ -376,11 +370,8 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
 class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):
     """Quantize each 128-element block of ``x`` against its own amax, reading ``x`` once.
 
-    Serves a K whose blocks start on a 16-byte vector. A group of adjacent lanes owns a
-    block: each lane holds some of its vectors in registers, the group reduces the block's
-    amax by warp shuffles, and each lane quantizes its vectors from the registers. ``q`` and
-    ``scale`` are bit-equal to the torch reference: the scale is the product torch
-    computes, and the quotient is correctly rounded.
+    Serves a K whose blocks start on a 16-byte vector. ``q`` and ``scale`` are bit-equal to
+    the torch reference.
 
     Args:
         call: The call's shape, dtype and device facts.
@@ -389,7 +380,7 @@ class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):
 
     _builder = staticmethod(_int8_quant_per_block_kernel)
 
-    # Calibrated vectors per lane and packed blocks.
+    # Calibrated lanes a block and adjacent vectors a lane stores at once.
     _LANES: ClassVar[int] = 8
     _PACK: ClassVar[int] = 2
     # Block widths for small and large grids.
@@ -417,12 +408,8 @@ class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):
 
 
 class INT8QuantPerBlockShiftedFwdKernel(_INT8QuantPerBlockFwdKernel):
-    """Quantize each 128-element block of ``x`` against its own amax, for any K.
-
-    Each lane loads the aligned vectors its part of a block straddles and shifts them into
-    place; the codes of a CTA are assembled in shared memory and stored as whole vectors.
-    The register kernel serves the calls whose blocks start on a 16-byte vector; this one
-    serves the rest. ``q`` and ``scale`` are bit-equal to the torch reference.
+    """Quantize each 128-element block of ``x`` against its own amax, for any K. ``q`` and
+    ``scale`` are bit-equal to the torch reference.
 
     Args:
         call: The call's shape, dtype and device facts.

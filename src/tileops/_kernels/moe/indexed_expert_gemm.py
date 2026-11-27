@@ -18,7 +18,6 @@ from tileops._kernels.moe.call_spec import (
 
 __all__ = [
     "IndexedExpertDownKernel",
-    "IndexedExpertGEMMTemplate",
     "IndexedExpertGateUpKernel",
     "IndexedRouteStatsKernel",
     "IndexedWeightedReduceKernel",
@@ -250,10 +249,8 @@ class IndexedRouteStatsKernel(Kernel, IndexedRouteStatsFwdInterface):
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
         """One build per route extents and device."""
         index = call.device_index
-        identity = (call.num_tokens, call.top_k, call.num_experts, index)
-        return identity, lambda: cls(
-            call.num_tokens, call.top_k, call.num_experts, device_index=index
-        )
+        args = (call.num_tokens, call.top_k, call.num_experts)
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,
@@ -310,7 +307,6 @@ class IndexedExpertGEMMTemplate(Kernel):
         activation: str = "none",
         route_input: bool = False,
         dispatch_mode: str = "direct",
-        config: dict | None = None,
         device_index: int | None = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -338,7 +334,18 @@ class IndexedExpertGEMMTemplate(Kernel):
             route_input,
             dispatch_mode,
         )
-        self.init_config(config)
+        self.init_config()
+
+    @classmethod
+    def _entry(cls, call: IndexedExpertCall, n: int, k: int, **kwargs) -> Entry:
+        """One build per route extents, projection widths ``n`` and ``k``, dtype and device;
+        ``grouped_dispatch`` decides whether the program reads route metadata."""
+        index = call.device_index
+        args = (call.num_tokens, call.num_experts, call.top_k, n, k, call.dtype)
+        dispatch_mode = "grouped" if call.grouped_dispatch else "direct"
+        return (*args, call.grouped_dispatch, index), lambda: cls(
+            *args, dispatch_mode=dispatch_mode, device_index=index, **kwargs
+        )
 
     @property
     def default_config(self) -> dict:
@@ -425,22 +432,14 @@ class IndexedWeightedReduceKernel(Kernel, IndexedWeightedReduceFwdInterface):
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
         """One build per token count, route width, hidden width, scale, dtype and device."""
         index = call.device_index
-        identity = (
+        args = (
             call.num_tokens,
             call.top_k,
             call.hidden_size,
             call.dtype,
             call.routed_scaling_factor,
-            index,
         )
-        return identity, lambda: cls(
-            call.num_tokens,
-            call.top_k,
-            call.hidden_size,
-            call.dtype,
-            call.routed_scaling_factor,
-            device_index=index,
-        )
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,
@@ -495,32 +494,7 @@ class IndexedExpertGateUpKernel(IndexedExpertGEMMTemplate, IndexedExpertGateUpFw
 
     @classmethod
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
-        """One build per route extents, projection widths, dtype and device.
-
-        ``grouped_dispatch`` decides whether the program reads route metadata.
-        """
-        index = call.device_index
-        identity = (
-            call.num_tokens,
-            call.num_experts,
-            call.top_k,
-            call.ffn_size,
-            call.hidden_size,
-            call.dtype,
-            call.grouped_dispatch,
-            index,
-        )
-        return identity, lambda: cls(
-            call.num_tokens,
-            call.num_experts,
-            call.top_k,
-            call.ffn_size,
-            call.hidden_size,
-            call.dtype,
-            activation="silu_and_mul",
-            dispatch_mode="grouped" if call.grouped_dispatch else "direct",
-            device_index=index,
-        )
+        return cls._entry(call, call.ffn_size, call.hidden_size, activation="silu_and_mul")
 
 
 class IndexedExpertDownKernel(IndexedExpertGEMMTemplate, IndexedExpertDownFwdInterface):
@@ -528,26 +502,4 @@ class IndexedExpertDownKernel(IndexedExpertGEMMTemplate, IndexedExpertDownFwdInt
 
     @classmethod
     def entry_for(cls, call: IndexedExpertCall) -> Entry:
-        """One build per route extents, projection widths, dtype and device."""
-        index = call.device_index
-        identity = (
-            call.num_tokens,
-            call.num_experts,
-            call.top_k,
-            call.hidden_size,
-            call.ffn_size,
-            call.dtype,
-            call.grouped_dispatch,
-            index,
-        )
-        return identity, lambda: cls(
-            call.num_tokens,
-            call.num_experts,
-            call.top_k,
-            call.hidden_size,
-            call.ffn_size,
-            call.dtype,
-            route_input=True,
-            dispatch_mode="grouped" if call.grouped_dispatch else "direct",
-            device_index=index,
-        )
+        return cls._entry(call, call.hidden_size, call.ffn_size, route_input=True)

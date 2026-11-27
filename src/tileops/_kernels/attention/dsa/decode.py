@@ -167,6 +167,32 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
         return self.program(self._compile)(q, kv, indices)
 
 
+def _make_softmax_step(sm_scale: float, accum_dtype: str, rows: int, block_i: int):
+    """The online softmax step both decode programs take per top-k block: fold scores
+    *acc_s* into the running max *m_i* and sum *sumexp*, turn *acc_s* into weights and rescale
+    the first *cols* columns of *acc_o*."""
+
+    @T.macro
+    def softmax_step(acc_s, m_i, m_i_prev, alpha_local, sumexp, sumexp_i, acc_o, cols):
+        T.copy(m_i, m_i_prev)
+        T.reduce_max(acc_s, m_i, dim=1, clear=False)
+        # m_i_prev becomes the scaled max the weights subtract: 0 while the
+        # row has no valid key, so its weights are 0 instead of NaN.
+        for h_i in T.Parallel(rows):
+            m_sub = T.if_then_else(m_i[h_i] == -T.infinity(accum_dtype), 0.0, m_i[h_i] * sm_scale)
+            alpha_local[h_i] = T.exp2(m_i_prev[h_i] * sm_scale - m_sub)
+            m_i_prev[h_i] = m_sub
+        for h_i, bi_i in T.Parallel(rows, block_i):
+            acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i_prev[h_i])
+        T.reduce_sum(acc_s, sumexp_i, dim=1)
+        for h_i in T.Parallel(rows):
+            sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
+        for h_i, d_i in T.Parallel(rows, cols):
+            acc_o[h_i, d_i] *= alpha_local[h_i]
+
+    return softmax_step
+
+
 @target_cache(maxsize=32)
 def _dsa_decode_kernel(
     batch: int,
@@ -190,7 +216,6 @@ def _dsa_decode_kernel(
     sm_scale = ((1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale) * LOG2E
 
     head_kv = heads // kv_group
-    ori_heads = heads
     indices_dtype = "int32"
     accum_dtype = "float"
 
@@ -203,25 +228,21 @@ def _dsa_decode_kernel(
         ],
     )
     def _dsa_decode_fwd_func(block_i: int, threads: int):
-        q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
+        q_shape = (batch, seq_len, heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
-        o_shape = (batch, seq_len, ori_heads, dim)
+        o_shape = (batch, seq_len, heads, dim)
         indices_shape = (batch, seq_len, kv_group, topk)
 
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
 
         if topk % block_i != 0:
             raise ValueError("otherwise will load some index=0 thus causing wrong kv to be loaded")
-        i_block = block_i
         n_i = tilelang.cdiv(topk, block_i)
         if n_i % 2 != 0:
             raise ValueError("n_i should be a multiple of 2")
-        d = dim
-        d_tail = tail_dim
-        stride_kv = kv_stride
 
         # Two 128-thread consumer warpgroups take tx < 256; the rest gather KV,
-        # 8 threads to a row, and must tile i_block exactly.
+        # 8 threads to a row, and must tile block_i exactly.
         consumer_threads = 256
         producer_threads = threads - consumer_threads
         if producer_threads <= 0 or producer_threads % 8 != 0:
@@ -230,18 +251,19 @@ def _dsa_decode_kernel(
                 "the KV gather needs a positive multiple of 8"
             )
         producer_rows = producer_threads // 8
-        if i_block % producer_rows != 0:
+        if block_i % producer_rows != 0:
             raise ValueError(
-                f"block_i={i_block} is not a multiple of the {producer_rows} rows one "
+                f"block_i={block_i} is not a multiple of the {producer_rows} rows one "
                 f"gather pass copies with threads={threads}"
             )
-        reason = DSADecodeKernel.gather_refusal(d, d_tail)
+        reason = DSADecodeKernel.gather_refusal(dim, tail_dim)
         if reason is not None:
             raise ValueError(reason)
 
         replicate_h = head_kv // 64 if head_kv > 64 else 1
 
         h_per_block = padded_h if replicate_h == 1 else 64
+        softmax_step = _make_softmax_step(sm_scale, accum_dtype, h_per_block, block_i)
 
         @T.macro
         def score_block(q_l, q_r, q_tail, kv_l, kv_r, k_tail, is_kv_valid, acc_s, s_shared, acc_o_l, sumexp, sumexp_i, alpha_shared, alpha_local, m_i, m_i_prev, bar_k_ready, bar_k_free, bar_s_ready, bar_s_free, phase, wait_s_free, s_free_parity):  # fmt: skip
@@ -249,7 +271,7 @@ def _dsa_decode_kernel(
             hand the weights and the rescale to consumer 1, and accumulate the left value half."""
             T.barrier_wait(bar_k_ready[0], phase)
 
-            for h_i, bi_i in T.Parallel(h_per_block, i_block):
+            for h_i, bi_i in T.Parallel(h_per_block, block_i):
                 acc_s[h_i, bi_i] = T.if_then_else(is_kv_valid[bi_i], 0, -T.infinity(acc_s.dtype))
             T.wgmma_gemm(q_l, kv_l, acc_s, transpose_B=True)
             T.wgmma_gemm(q_r, kv_r, acc_s, transpose_B=True)
@@ -261,23 +283,7 @@ def _dsa_decode_kernel(
                 T.barrier_arrive(bar_s_free)
                 T.barrier_wait(bar_s_free, s_free_parity)
 
-            T.copy(m_i, m_i_prev)
-            T.reduce_max(acc_s, m_i, dim=1, clear=False)
-            # m_i_prev becomes the scaled max the weights subtract: 0 while the
-            # row has no valid key, so its weights are 0 instead of NaN.
-            for h_i in T.Parallel(h_per_block):
-                m_sub = T.if_then_else(
-                    m_i[h_i] == -T.infinity(accum_dtype), 0.0, m_i[h_i] * sm_scale
-                )
-                alpha_local[h_i] = T.exp2(m_i_prev[h_i] * sm_scale - m_sub)
-                m_i_prev[h_i] = m_sub
-            for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i_prev[h_i])
-            T.reduce_sum(acc_s, sumexp_i, dim=1)
-            for h_i in T.Parallel(h_per_block):
-                sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
-            for h_i, d_i in T.Parallel(h_per_block, d // 2):
-                acc_o_l[h_i, d_i] *= alpha_local[h_i]
+            softmax_step(acc_s, m_i, m_i_prev, alpha_local, sumexp, sumexp_i, acc_o_l, dim // 2)
             T.copy(alpha_local, alpha_shared)
 
             T.copy(acc_s, s_shared)
@@ -291,28 +297,28 @@ def _dsa_decode_kernel(
             """The producer's fill of one KV buffer with top-k block `block`: each thread copies
             8 columns of row (tx - 256) // 8 of every pass."""
             T.barrier_wait(bar_k_free[0], phase ^ 1)
-            for r in T.serial(i_block // producer_rows):
+            for r in T.serial(block_i // producer_rows):
                 row = r * producer_rows + (tx - 256) // 8
                 col = (tx - 256) % 8 * 8
-                indices_local[0] = indices[b_i, s_i, g_i, block * i_block + row]
+                indices_local[0] = indices[b_i, s_i, g_i, block * block_i + row]
                 is_kv_valid[row] = (indices_local[0] >= 0) & (indices_local[0] <= max_kv_i)
                 if is_kv_valid[row]:
                     with T.attr("default", "async_scope", 1):
-                        for u in T.serial(d // 128):
+                        for u in T.serial(dim // 128):
                             for v in T.vectorized(8):
                                 kv_l[row, 64 * u + col + v] = kv[
                                     b_i, indices_local[0], g_i, 64 * u + col + v
                                 ]
                                 kv_r[row, 64 * u + col + v] = kv[
-                                    b_i, indices_local[0], g_i, d // 2 + 64 * u + col + v
+                                    b_i, indices_local[0], g_i, dim // 2 + 64 * u + col + v
                                 ]
                     with T.attr("default", "async_scope", 1):
                         for v in T.vectorized(8):
-                            k_tail[row, col + v] = kv[b_i, indices_local[0], g_i, d + col + v]
+                            k_tail[row, col + v] = kv[b_i, indices_local[0], g_i, dim + col + v]
                 else:
                     # Zero, not stale: the row's softmax weight is zero, and zero times a NaN
                     # an earlier tile left in shared memory is NaN.
-                    for u in T.serial(d // 128):
+                    for u in T.serial(dim // 128):
                         for v in T.vectorized(8):
                             kv_l[row, 64 * u + col + v] = 0
                             kv_r[row, 64 * u + col + v] = 0
@@ -334,26 +340,26 @@ def _dsa_decode_kernel(
                 kv_group,
                 threads=threads,
             ) as (bx, by, bz):
-                q_shared_l = T.alloc_shared([h_per_block, d // 2], dtype)
-                q_shared_r = T.alloc_shared([h_per_block, d // 2], dtype)
-                q_tail_shared = T.alloc_shared([h_per_block, d_tail], dtype)
-                kv_shared_0_l = T.alloc_shared([i_block, d // 2], dtype)
-                kv_shared_0_r = T.alloc_shared([i_block, d // 2], dtype)
-                kv_shared_1_l = T.alloc_shared([i_block, d // 2], dtype)
-                kv_shared_1_r = T.alloc_shared([i_block, d // 2], dtype)
-                k_tail_shared_0 = T.alloc_shared([i_block, d_tail], dtype)
-                k_tail_shared_1 = T.alloc_shared([i_block, d_tail], dtype)
+                q_shared_l = T.alloc_shared([h_per_block, dim // 2], dtype)
+                q_shared_r = T.alloc_shared([h_per_block, dim // 2], dtype)
+                q_tail_shared = T.alloc_shared([h_per_block, tail_dim], dtype)
+                kv_shared_0_l = T.alloc_shared([block_i, dim // 2], dtype)
+                kv_shared_0_r = T.alloc_shared([block_i, dim // 2], dtype)
+                kv_shared_1_l = T.alloc_shared([block_i, dim // 2], dtype)
+                kv_shared_1_r = T.alloc_shared([block_i, dim // 2], dtype)
+                k_tail_shared_0 = T.alloc_shared([block_i, tail_dim], dtype)
+                k_tail_shared_1 = T.alloc_shared([block_i, tail_dim], dtype)
                 o_shared_l = q_shared_l
                 o_shared_r = q_shared_r
                 # One mask per KV buffer: the producer fills the next block's mask while a
                 # consumer still reads the other's.
-                is_kv_valid_0 = T.alloc_shared([i_block], "bool", scope="shared")
-                is_kv_valid_1 = T.alloc_shared([i_block], "bool", scope="shared")
+                is_kv_valid_0 = T.alloc_shared([block_i], "bool", scope="shared")
+                is_kv_valid_1 = T.alloc_shared([block_i], "bool", scope="shared")
 
-                acc_o_l = T.alloc_fragment([h_per_block, d // 2], accum_dtype)
-                acc_o_r = T.alloc_fragment([h_per_block, d // 2], accum_dtype)
-                acc_s = T.alloc_fragment([h_per_block, i_block], accum_dtype)
-                s_shared = T.alloc_shared([h_per_block, i_block], dtype)
+                acc_o_l = T.alloc_fragment([h_per_block, dim // 2], accum_dtype)
+                acc_o_r = T.alloc_fragment([h_per_block, dim // 2], accum_dtype)
+                acc_s = T.alloc_fragment([h_per_block, block_i], accum_dtype)
+                s_shared = T.alloc_shared([h_per_block, block_i], dtype)
                 sumexp = T.alloc_fragment([h_per_block], accum_dtype)
                 sum_exp_shared = T.alloc_shared([h_per_block], accum_dtype)
                 sumexp_i = T.alloc_fragment([h_per_block], accum_dtype)
@@ -380,7 +386,7 @@ def _dsa_decode_kernel(
                 q_i = q_start_index_s + s_i
                 # The causal limit, clamped to the rows kv holds: a padded
                 # top-k slot must not address kv past its last row.
-                max_kv_i = T.min((q_i + 1 - stride_kv) // stride_kv, seq_len_kv - 1)
+                max_kv_i = T.min((q_i + 1 - kv_stride) // kv_stride, seq_len_kv - 1)
 
                 h0 = g_i * padded_h + (0 if replicate_h == 1 else (bx % replicate_h) * 64)
                 h1 = h0 + h_per_block
@@ -392,9 +398,9 @@ def _dsa_decode_kernel(
                 # wider copy writes and a 128-thread WGMMA reads.
                 if tx < 128:
                     T.set_max_nreg(240, 1)
-                    T.copy(q[b_i, s_i, h0:h1, 0 : d // 2], q_shared_l)
-                    T.copy(q[b_i, s_i, h0:h1, d // 2 : d], q_shared_r)
-                    T.copy(q[b_i, s_i, h0:h1, d:], q_tail_shared)
+                    T.copy(q[b_i, s_i, h0:h1, 0 : dim // 2], q_shared_l)
+                    T.copy(q[b_i, s_i, h0:h1, dim // 2 : dim], q_shared_r)
+                    T.copy(q[b_i, s_i, h0:h1, dim:], q_tail_shared)
                     T.fill(sumexp, 0)
                     T.fill(m_i, -T.infinity(accum_dtype))
                     T.fill(acc_o_l, 0)
@@ -420,10 +426,10 @@ def _dsa_decode_kernel(
                         sumexp[h_i] = T.if_then_else(sumexp[h_i] == 0, 1.0, sumexp[h_i])
                         sum_exp_shared[h_i] = sumexp[h_i]
                     T.barrier_arrive(bar_sum_exp_ready)
-                    for h_i, d_i in T.Parallel(h_per_block, d // 2):
+                    for h_i, d_i in T.Parallel(h_per_block, dim // 2):
                         acc_o_l[h_i, d_i] /= sumexp[h_i]
                     T.copy(acc_o_l, o_shared_l)
-                    T.copy(o_shared_l, output[b_i, s_i, h0:h1, 0 : d // 2])
+                    T.copy(o_shared_l, output[b_i, s_i, h0:h1, 0 : dim // 2])
 
                 elif tx >= 128 and tx < 256:
                     T.set_max_nreg(168, 1)
@@ -431,7 +437,7 @@ def _dsa_decode_kernel(
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
                         T.barrier_arrive(bar_s_scale_and_s_ready)
                         T.barrier_wait(bar_s_scale_and_s_ready, ((i_i * 2) & 1))
-                        for h_i, d_i in T.Parallel(h_per_block, d // 2):
+                        for h_i, d_i in T.Parallel(h_per_block, dim // 2):
                             acc_o_r[h_i, d_i] *= alpha_shared[h_i]
                         T.gemm(s_shared, kv_shared_0_r, acc_o_r)
                         T.barrier_arrive(bar_k_0_free[0])
@@ -439,7 +445,7 @@ def _dsa_decode_kernel(
 
                         T.barrier_arrive(bar_s_scale_and_s_ready)
                         T.barrier_wait(bar_s_scale_and_s_ready, ((i_i * 2 + 1) & 1))
-                        for h_i, d_i in T.Parallel(h_per_block, d // 2):
+                        for h_i, d_i in T.Parallel(h_per_block, dim // 2):
                             acc_o_r[h_i, d_i] *= alpha_shared[h_i]
                         T.gemm(s_shared, kv_shared_1_r, acc_o_r)
                         T.barrier_arrive(bar_k_1_free[0])
@@ -447,11 +453,11 @@ def _dsa_decode_kernel(
                             T.barrier_arrive(bar_s_scale_and_s_free)
 
                     T.barrier_wait(bar_sum_exp_ready, 0)
-                    for h_i, d_i in T.Parallel(h_per_block, d // 2):
+                    for h_i, d_i in T.Parallel(h_per_block, dim // 2):
                         acc_o_r[h_i, d_i] /= sum_exp_shared[h_i]
 
                     T.copy(acc_o_r, o_shared_r)
-                    T.copy(o_shared_r, output[b_i, s_i, h0:h1, d // 2 : d])
+                    T.copy(o_shared_r, output[b_i, s_i, h0:h1, dim // 2 : dim])
 
                 elif tx >= 256:
                     T.set_max_nreg(80, 0)
@@ -497,7 +503,6 @@ def _dsa_decode_basic_kernel(
     sm_scale = ((1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale) * LOG2E
 
     head_kv = heads // kv_group
-    ori_heads = heads
     indices_dtype = "int32"
     accum_dtype = "float"
 
@@ -512,12 +517,7 @@ def _dsa_decode_basic_kernel(
     def _dsa_decode_basic_fwd_func(block_i: int, threads: int, num_stages: int, block_h: int):
         if topk % block_i != 0:
             raise ValueError("otherwise will load some index=0 thus causing wrong kv to be loaded")
-        i_block = block_i
         n_i = tilelang.cdiv(topk, block_i)
-
-        d = dim
-        d_tail = tail_dim
-        stride_kv = kv_stride
 
         # A group wider than block_h is covered by several blocks; loads past the heads read
         # zero and stores there are dropped.
@@ -526,12 +526,13 @@ def _dsa_decode_basic_kernel(
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
 
         h_per_block = DSADecodeBasicKernel.heads_per_block(head_kv, block_h)
+        softmax_step = _make_softmax_step(sm_scale, accum_dtype, h_per_block, block_i)
         # Width of the tail buffers; with no tail they are allocated but never read.
-        tail_cols = d_tail if d_tail > 0 else 16
+        tail_cols = tail_dim if tail_dim > 0 else 16
 
-        q_shape = (batch, seq_len, ori_heads, dim + tail_dim)
+        q_shape = (batch, seq_len, heads, dim + tail_dim)
         kv_shape = (batch, seq_len_kv, kv_group, dim + tail_dim)
-        o_shape = (batch, seq_len, ori_heads, dim)
+        o_shape = (batch, seq_len, heads, dim)
         indices_shape = (batch, seq_len, kv_group, topk)
 
         @T.prim_func
@@ -547,20 +548,20 @@ def _dsa_decode_basic_kernel(
                 kv_group,
                 threads=threads,
             ) as (bx, by, bz):
-                # Q/KV are split at [.., :d] / [.., d:] so the PV gemm can
+                # Q/KV are split at [.., :dim] / [.., dim:] so the PV gemm can
                 # consume kv_shared directly: V is the first `dim` columns of
                 # the fused KV cache (v = kv[..., :dim]).
-                q_shared = T.alloc_shared([h_per_block, d], dtype)
+                q_shared = T.alloc_shared([h_per_block, dim], dtype)
                 q_tail_shared = T.alloc_shared([h_per_block, tail_cols], dtype)
-                kv_shared = T.alloc_shared([i_block, d], dtype)
-                kv_tail_shared = T.alloc_shared([i_block, tail_cols], dtype)
-                s_shared = T.alloc_shared([h_per_block, i_block], dtype)
+                kv_shared = T.alloc_shared([block_i, dim], dtype)
+                kv_tail_shared = T.alloc_shared([block_i, tail_cols], dtype)
+                s_shared = T.alloc_shared([h_per_block, block_i], dtype)
                 # Q is dead once the last QK^T gemm has been issued, so the
                 # output staging reuses its shared buffer.
                 o_shared = q_shared
 
-                acc_s = T.alloc_fragment([h_per_block, i_block], accum_dtype)
-                acc_o = T.alloc_fragment([h_per_block, d], accum_dtype)
+                acc_s = T.alloc_fragment([h_per_block, block_i], accum_dtype)
+                acc_o = T.alloc_fragment([h_per_block, dim], accum_dtype)
                 sumexp = T.alloc_fragment([h_per_block], accum_dtype)
                 sumexp_i = T.alloc_fragment([h_per_block], accum_dtype)
                 alpha_local = T.alloc_fragment([h_per_block], accum_dtype)
@@ -572,14 +573,14 @@ def _dsa_decode_basic_kernel(
                 q_i = q_start_index_s + s_i
                 # The causal limit, clamped to the rows kv holds: a padded
                 # top-k slot must not address kv past its last row.
-                max_kv_i = T.min((q_i + 1 - stride_kv) // stride_kv, seq_len_kv - 1)
+                max_kv_i = T.min((q_i + 1 - kv_stride) // kv_stride, seq_len_kv - 1)
 
                 h0 = g_i * padded_h + (0 if replicate_h == 1 else (bx % replicate_h) * block_h)
                 h1 = h0 + h_per_block
 
-                T.copy(q[b_i, s_i, h0:h1, :d], q_shared)
-                if d_tail > 0:
-                    T.copy(q[b_i, s_i, h0:h1, d:], q_tail_shared)
+                T.copy(q[b_i, s_i, h0:h1, :dim], q_shared)
+                if tail_dim > 0:
+                    T.copy(q[b_i, s_i, h0:h1, dim:], q_tail_shared)
                 T.fill(sumexp, 0)
                 T.fill(m_i, -T.infinity(accum_dtype))
                 T.fill(acc_o, 0)
@@ -588,21 +589,21 @@ def _dsa_decode_basic_kernel(
                     # Gather the selected KV rows; zero the rest, so that the
                     # zero weight the mask below gives them cannot meet a NaN
                     # an earlier tile left in shared memory.
-                    for r in T.serial(i_block):
-                        kv_idx = indices[b_i, s_i, g_i, i_i * i_block + r]
+                    for r in T.serial(block_i):
+                        kv_idx = indices[b_i, s_i, g_i, i_i * block_i + r]
                         if (kv_idx >= 0) & (kv_idx <= max_kv_i):
-                            T.copy(kv[b_i, kv_idx, g_i, :d], kv_shared[r, :])
-                            if d_tail > 0:
-                                T.copy(kv[b_i, kv_idx, g_i, d:], kv_tail_shared[r, :])
+                            T.copy(kv[b_i, kv_idx, g_i, :dim], kv_shared[r, :])
+                            if tail_dim > 0:
+                                T.copy(kv[b_i, kv_idx, g_i, dim:], kv_tail_shared[r, :])
                         else:
                             T.clear(kv_shared[r, :])
-                            if d_tail > 0:
+                            if tail_dim > 0:
                                 T.clear(kv_tail_shared[r, :])
 
                     # acc_s starts at 0 for valid rows / -inf for invalid
                     # ones; the gemms below accumulate onto it.
-                    for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                        mask_idx = indices[b_i, s_i, g_i, i_i * i_block + bi_i]
+                    for h_i, bi_i in T.Parallel(h_per_block, block_i):
+                        mask_idx = indices[b_i, s_i, g_i, i_i * block_i + bi_i]
                         acc_s[h_i, bi_i] = T.if_then_else(
                             (mask_idx >= 0) & (mask_idx <= max_kv_i),
                             0,
@@ -615,7 +616,7 @@ def _dsa_decode_basic_kernel(
                         transpose_B=True,
                         policy=T.GemmWarpPolicy.FullCol,
                     )
-                    if d_tail > 0:
+                    if tail_dim > 0:
                         T.gemm(
                             q_tail_shared,
                             kv_tail_shared,
@@ -624,23 +625,7 @@ def _dsa_decode_basic_kernel(
                             policy=T.GemmWarpPolicy.FullCol,
                         )
 
-                    T.copy(m_i, m_i_prev)
-                    T.reduce_max(acc_s, m_i, dim=1, clear=False)
-                    # m_i_prev becomes the scaled max the weights subtract: 0 while the row
-                    # has no valid key, so its weights are 0 instead of NaN.
-                    for h_i in T.Parallel(h_per_block):
-                        m_sub = T.if_then_else(
-                            m_i[h_i] == -T.infinity(accum_dtype), 0.0, m_i[h_i] * sm_scale
-                        )
-                        alpha_local[h_i] = T.exp2(m_i_prev[h_i] * sm_scale - m_sub)
-                        m_i_prev[h_i] = m_sub
-                    for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                        acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i_prev[h_i])
-                    T.reduce_sum(acc_s, sumexp_i, dim=1)
-                    for h_i in T.Parallel(h_per_block):
-                        sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
-                    for h_i, d_i in T.Parallel(h_per_block, d):
-                        acc_o[h_i, d_i] *= alpha_local[h_i]
+                    softmax_step(acc_s, m_i, m_i_prev, alpha_local, sumexp, sumexp_i, acc_o, dim)
 
                     # O += P @ V (V is kv[..., :dim]).
                     T.copy(acc_s, s_shared)
@@ -649,10 +634,10 @@ def _dsa_decode_basic_kernel(
                 # Only a row with no valid key sums to 0; its acc_o is 0, and so is its output.
                 for h_i in T.Parallel(h_per_block):
                     sumexp[h_i] = T.if_then_else(sumexp[h_i] == 0, 1.0, sumexp[h_i])
-                for h_i, d_i in T.Parallel(h_per_block, d):
+                for h_i, d_i in T.Parallel(h_per_block, dim):
                     acc_o[h_i, d_i] /= sumexp[h_i]
                 T.copy(acc_o, o_shared)
-                T.copy(o_shared, output[b_i, s_i, h0:h1, :d])
+                T.copy(o_shared, output[b_i, s_i, h0:h1, :dim])
 
         return _dsa_decode_basic_fwd_main
 

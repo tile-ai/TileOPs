@@ -1,8 +1,4 @@
-"""Benchmark for the per-channel INT8 quantization op.
-
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()``.
-"""
+"""Benchmark for the per-channel INT8 quantization op."""
 
 import pytest
 import torch
@@ -12,7 +8,7 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference
 from tileops.quantization import INT8QuantPerChannelFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(INT8QuantPerChannelFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(INT8QuantPerChannelFwdOp))
 def test_int8_quant_per_channel_bench(case) -> None:
     # Autotuning is a bench-run policy, not a workload property.
     op = INT8QuantPerChannelFwdOp(**case.arguments)

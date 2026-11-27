@@ -11,33 +11,17 @@ import torch
 from workloads.numerics import Request, verify
 from workloads.workload_base import FixtureBase, FixtureMeta, WorkloadBase
 
+# Canonical import hub: tests import fixture types from here, not workloads.
+__all__ = [
+    "FixtureBase",
+    "FixtureMeta",
+    "TestBase",
+]
+
 _logger = logging.getLogger("tileops._ops")
 
 # Thread-local storage for conftest hook to pick up per-test Op info.
 _check_result = threading.local()
-
-
-def _refuse_non_op(op: object, op_name: str, runs: object) -> None:
-    """Raise unless *op* is an Op and *runs* is not a kernel.
-
-    The result is reported under *op*, and what executes reaches the kernel the way a
-    caller does: through the op's dispatch. ``runs`` takes a compiled or wrapped form of
-    the op; a kernel is reached by registering it with ``register_kernel_type`` instead. Raised before the reference
-    runs.
-    """
-    from tileops._kernels.kernel_base import Kernel
-    from tileops._ops.op_base import Op
-
-    if not isinstance(op, Op):
-        raise AssertionError(
-            f"check() takes the Op the result belongs to, got {op_name}; "
-            f"pass a compiled or wrapped form of it as runs="
-        )
-    if isinstance(getattr(runs, "__self__", runs), Kernel):
-        raise AssertionError(
-            "runs= takes a compiled or wrapped form of the op; reach a kernel through the "
-            "op's dispatch, registering it with register_kernel_type"
-        )
 
 
 def _by_signature(op: object, run: Any) -> Any:
@@ -52,14 +36,6 @@ def _by_signature(op: object, run: Any) -> Any:
         return run(*args, **keywords)
 
     return call
-
-
-# Canonical import hub: tests import fixture types from here, not workloads.
-__all__ = [
-    "FixtureBase",
-    "FixtureMeta",
-    "TestBase",
-]
 
 
 class TestBase(WorkloadBase):
@@ -83,16 +59,30 @@ class TestBase(WorkloadBase):
     def check(self, op, *inputs: torch.Tensor, runs=None) -> None:
         """Verify a workload's declaration and attribute the result to its Op.
 
-        Numerical policy belongs to verification(), never to the call site.
-        runs supplies a compiled or wrapped form of the op. *inputs* are in signature order;
-        the op receives a ``kw_only`` one by name.
+        Numerical policy belongs to verification(), never to the call site. *runs* is a
+        compiled or wrapped form of *op*, never a kernel: what executes reaches the kernel
+        through the op's dispatch. *inputs* are in signature order; the op receives a
+        ``kw_only`` one by name.
         """
+        from tileops._kernels.kernel_base import Kernel
+        from tileops._ops.op_base import Op
+
         _check_result.op_name = None
         _check_result.op_module = None
         _check_result.max_abs_err = None
         _check_result.checked_outputs = 0
         name, module = type(op).__name__, type(op).__module__
-        _refuse_non_op(op, name, runs)
+        # Raised before the reference runs.
+        if not isinstance(op, Op):
+            raise AssertionError(
+                f"check() takes the Op the result belongs to, got {name}; "
+                f"pass a compiled or wrapped form of it as runs="
+            )
+        if isinstance(getattr(runs, "__self__", runs), Kernel):
+            raise AssertionError(
+                "runs= takes a compiled or wrapped form of the op; reach a kernel through the "
+                "op's dispatch, registering it with register_kernel_type"
+            )
         _check_result.op_name = name
         _check_result.op_module = module
         result = verify(

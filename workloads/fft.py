@@ -1,14 +1,17 @@
+from dataclasses import dataclass
+
 import torch
 
 from workloads.device import run_device
+from workloads.numerics import Exact
 from workloads.workload_base import WorkloadBase
 
 
+@dataclass(eq=False)
 class FFTWorkload(WorkloadBase):
-    def __init__(self, n: int, dtype: torch.dtype, batch_shape: tuple = ()):
-        self.n = n
-        self.dtype = dtype
-        self.batch_shape = batch_shape
+    n: int
+    dtype: torch.dtype
+    batch_shape: tuple = ()
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(*self.batch_shape, self.n, device=run_device(), dtype=self.dtype)
@@ -18,8 +21,6 @@ class FFTWorkload(WorkloadBase):
         return torch.fft.fft(x, dim=-1)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         single = inputs[0].dtype == torch.complex64
         rtol = 1e-4 if single else 1e-8
         atol = rtol

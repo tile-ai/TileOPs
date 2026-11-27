@@ -75,11 +75,11 @@ def _get_env_metadata() -> list[str]:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    driver = gpu_query_values[0] if len(gpu_query_values) == len(gpu_query_fields) else "N/A"
-    lines.append(f"- **Driver version**: {driver}")
-
-    if len(gpu_query_values) == len(gpu_query_fields):
-        sm_clock, mem_clock, app_sm_clock, app_mem_clock = gpu_query_values[1:]
+    if len(gpu_query_values) != len(gpu_query_fields):
+        lines.append("- **Driver version**: N/A")
+    else:
+        driver, sm_clock, mem_clock, app_sm_clock, app_mem_clock = gpu_query_values
+        lines.append(f"- **Driver version**: {driver}")
         lines.append(
             "- **GPU clocks**: "
             f"SM current {sm_clock} MHz, memory current {mem_clock} MHz, "
@@ -88,18 +88,6 @@ def _get_env_metadata() -> list[str]:
         )
 
     return lines
-
-
-def _kernel_config(op: object) -> dict | None:
-    """What the op ran with, as the op itself reports it.
-
-    An Op answers through ``kernel_config()``. A baseline that is not an Op has no
-    such report, and a row for it carries no config.
-    """
-    kernel_config = getattr(op, "kernel_config", None)
-    if callable(kernel_config):
-        return kernel_config()
-    return None
 
 
 class BenchmarkReport:
@@ -123,31 +111,21 @@ class BenchmarkReport:
         """Record a benchmark result.
 
         Args:
-            op: the Op the row measured. Every row of the report is one op's
-                measurement, which is what lets a consumer group by op and read
-                a name as a manifest entry. A comparison whose subject is not an
-                op — a kernel strategy, a field of library implementations —
-                decides something rather than tracking it, and belongs to
-                ``benchmarks/studies/``, which the nightly sweep does not reach.
+            op: the Op the row measured; a consumer reads its name as a manifest entry.
             params: what distinguishes this case, ``Case.params``: each tensor's
                 shape and dtype, and the manifest parameters.
             result: Dict with device_busy_ms, latency_ms, tflops, bandwidth_tbs
             tag: Label to distinguish implementations (e.g. "tileops", "FA3", "fla")
             unverified: what the row's check left unestablished, empty where it left
-                nothing. It rides with the row because a reader comparing two numbers has
-                to know what stands behind them.
+                nothing.
             ratio: whether this row may be divided against another. False where the two
                 implement different functions, which no tolerance reconciles.
         """
-        if isinstance(op, str):
-            raise TypeError(
-                f"record() takes the Op the row measured, not the name {op!r}. A "
-                "comparison whose subject is not an op belongs in "
-                "benchmarks/studies/, which the nightly does not sweep."
-            )
         name = op.__class__.__name__
         op_module = op.__class__.__module__
-        op_config = _kernel_config(op)
+        # A stand-in op without ``kernel_config()`` records no config.
+        kernel_config = getattr(op, "kernel_config", None)
+        op_config = kernel_config() if kernel_config is not None else None
 
         def _is_serializable(v: Any) -> bool:
             if v is None or isinstance(v, (int, float, bool, str, torch.dtype)):
@@ -168,15 +146,12 @@ class BenchmarkReport:
             "tag": tag,
             "params": filtered_params,
             "result": result,
+            "op_module": op_module,
         }
-        if op_module:
-            record_entry["op_module"] = op_module
         if op_config:
             record_entry["kernel_config"] = op_config
         BenchmarkReport._records.setdefault(name, []).append(record_entry)
-        # The same row, handed to the pytest hook that turns the running case's
-        # rows into XML properties. One row recorded once: the log and the XML
-        # read it, rather than each getting a copy that can drift from the other.
+        # The same row object goes to the pytest hook that writes the XML properties.
         if not hasattr(_bench_results, "entries"):
             _bench_results.entries = []
         _bench_results.entries.append(record_entry)
@@ -184,7 +159,7 @@ class BenchmarkReport:
         _logger.info(
             "op=%s module=%s tag=%s device_busy_ms=%.4f tflops=%.2f",
             name,
-            op_module or "N/A",
+            op_module,
             tag,
             result.get("device_busy_ms", 0),
             result.get("tflops", 0),

@@ -1,15 +1,9 @@
-"""Vector norm kernels (l1, l2, inf) using TileLang.
+"""Vector norm kernels along the last dimension: l1 ``sum(|x|)``, l2 ``sqrt(sum(x^2))``, and
+inf ``max(|x|)`` reduced over IEEE bit patterns as int32, so a row holding NaN norms to NaN.
 
-Computes vector norms along the last dimension:
-  - l1: sum(|x|)
-  - l2: sqrt(sum(x^2))
-  - inf: max(|x|), reduced over IEEE bit patterns as int32 so a row holding NaN
-    norms to NaN without a second look at the input
-
-Rows of whole 16-byte vectors fold in `ReduceFoldKernel`. The row programs here mask a
-row that is not a multiple of the 256-element alignment, reading zero past its end.
-
-Output dtype matches input dtype unless one is given; l1 and l2 compute in fp32.
+Rows of whole 16-byte vectors fold in `ReduceFoldKernel`; the row programs here read zero
+past a row off the 256-element alignment. The output dtype is the input's unless one is
+given; l1 and l2 compute in fp32.
 """
 
 from collections.abc import Callable
@@ -107,15 +101,13 @@ def _vector_norm_kernel(
                             in_bounds = pid_m * block_m + i < M
                         work[i, j] = _prepared(x, pid_m * block_m + i, j, in_bounds, op_kind)
 
-                if op_kind == "l1":
-                    T.reduce_sum(work, acc, dim=1)
-                elif op_kind == "l2":
-                    T.reduce_sum(work, acc, dim=1)
-                    if not partial:
-                        for i in T.Parallel(block_m):
-                            acc[i] = T.sqrt(acc[i])
-                else:
+                if op_kind == "inf":
                     T.reduce_max(work, acc, dim=1)
+                else:
+                    T.reduce_sum(work, acc, dim=1)
+                if op_kind == "l2" and not partial:
+                    for i in T.Parallel(block_m):
+                        acc[i] = T.sqrt(acc[i])
 
                 for i in T.Parallel(block_m):
                     out_local[i] = _finished(acc[i], op_kind, out_dtype)
