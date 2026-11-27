@@ -812,27 +812,30 @@ def best_config(
 
 def gemv_registers(k: int) -> bool:
     """Whether ``GemvKernel``'s one-row bands read rows of ``k`` values into registers
-    (``_gemv_row_kernel``) rather than through the staged ring: rows past 4096 values.
+    (``_gemv_row_kernel``) rather than through the staged ring: rows past 4096 values,
+    one fill of the ring's 128-lane stages.
     """
     return k > 4096
 
 
-def gemv_config(k: int) -> dict:
+def gemv_config(k: int, registers: bool) -> dict:
     """SM90 ``GemvKernel`` config for its one-row bands (single-row / single-column GEMV).
 
-    The staged ring takes 128 threads over four stages. In registers a row is one warp's and
-    one block's, 32 slices a burst, at the ring's ``reduce_threads`` so the bits match: 64 at
-    ``k >= 12288``, 256 at ``k >= 6144``, 128 below.
+    ``reduce_threads``, which fixes a row's bits, is 64 at ``k >= 12288``, 256 at
+    ``k >= 6144`` and 128 below. The staged ring runs one row a block over four stages; in
+    registers a row is one block of a warp for each of the ring's warps, 32 slices a burst.
     """
-    if not gemv_registers(k):
-        return {"block_n": 1, "reduce_threads": 128, "num_stages": 4}
-    if k >= 12288:
-        reduce_threads = 64
-    elif k >= 6144:
-        reduce_threads = 256
-    else:
-        reduce_threads = 128
-    return {"reduce_threads": reduce_threads, "warps": 1, "rows": 1, "depth": 32}
+    reduce_threads = 64 if k >= 12288 else 256 if k >= 6144 else 128
+    if registers:
+        warps = reduce_threads // 32
+        return {
+            "reduce_threads": reduce_threads,
+            "warps": warps,
+            "rows": 1,
+            "depth": 32,
+            "split": warps,
+        }
+    return {"block_n": 1, "reduce_threads": reduce_threads, "num_stages": 4}
 
 
 def small_batch_config(n: int, k: int, sm_count: int) -> dict:

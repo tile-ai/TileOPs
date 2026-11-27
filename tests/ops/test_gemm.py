@@ -14,13 +14,7 @@ from tileops._kernels.gemm import (
     GEMMW4A16Kernel,
 )
 from tileops._kernels.gemm.call_spec import GEMMCall, GEMMW4A16Call
-from tileops._kernels.gemm.dense import (
-    GEMMCpAsyncKernel,
-    GEMMTMAKernel,
-    GemvKernel,
-    _gemm_small_batch_kernel,
-    _gemv_row_kernel,
-)
+from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
 from tileops._kernels.gemm.heuristics import best_config, int8_pingpong_grid
 from tileops._kernels.gemm.w4a8_decode import _select_config as select_w4a8_decode_config
 from tileops._kernels.gemm.w4a16 import (
@@ -3558,114 +3552,111 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm90
 @pytest.mark.parametrize(
-    "n, k, config, bias, out_dtype, dtype",
+    ("m", "n", "k", "trans_b", "bias", "out_dtype", "dtype"),
     [
         pytest.param(
-            129,
-            5120,
-            (128, 1, 1, 32),
-            0,
-            torch.float32,
-            torch.bfloat16,
-            marks=pytest.mark.smoke,
-            id="bf16",
+            1, 257, 4100, True, False, None, torch.bfloat16, marks=pytest.mark.smoke, id="bf16"
         ),
         pytest.param(
-            129,
-            5120,
-            (128, 1, 1, 32),
-            0,
-            torch.float32,
-            torch.float16,
-            marks=pytest.mark.smoke,
-            id="fp16",
+            1, 257, 4100, True, False, None, torch.float16, marks=pytest.mark.smoke, id="fp16"
         ),
         pytest.param(
+            1,
             257,
-            3000,
-            (128, 2, 2, 16),
-            0,
-            torch.float32,
-            torch.float16,
-            marks=pytest.mark.full,
-            id="k-tail-row-tail",
-        ),
-        pytest.param(
-            65,
-            1001,
-            (128, 1, 1, 32),
-            0,
-            torch.float32,
-            torch.float16,
+            5121,
+            True,
+            False,
+            None,
+            torch.bfloat16,
             marks=pytest.mark.full,
             id="k-off-vector",
         ),
         pytest.param(
-            64,
-            17408,
-            (64, 1, 1, 16),
-            0,
-            torch.float32,
-            torch.bfloat16,
-            marks=pytest.mark.full,
-            id="rolled-bursts",
-        ),
-        pytest.param(
-            64,
-            7168,
-            (256, 4, 1, 32),
-            64,
+            1,
+            257,
+            10240,
+            True,
+            False,
             None,
             torch.bfloat16,
             marks=pytest.mark.full,
-            id="column-bias-rounded",
+            id="256-lane-rows",
         ),
         pytest.param(
-            64,
-            5120,
-            (128, 1, 1, 32),
             1,
+            257,
+            17408,
+            True,
+            False,
             torch.float32,
-            torch.float16,
+            torch.bfloat16,
             marks=pytest.mark.full,
-            id="scalar-bias",
+            id="bursts-float32-out",
+        ),
+        pytest.param(
+            1,
+            257,
+            5120,
+            True,
+            True,
+            None,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="column-bias",
+        ),
+        pytest.param(
+            257,
+            1,
+            5120,
+            False,
+            True,
+            None,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="rhs-col-scalar-bias",
         ),
     ],
 )
-def test_gemv_register_body_adds_in_the_staged_order(
+def test_gemv_register_body(
+    m: int,
     n: int,
     k: int,
-    config: tuple[int, int, int, int],
-    bias: int,
+    trans_b: bool,
+    bias: bool,
     out_dtype: torch.dtype | None,
     dtype: torch.dtype,
 ) -> None:
-    """The register body gives the staged ring's bits at the same ``reduce_threads``, over a
-    K tail, a K off the vector width, bursts past the first, a row tail and either bias. The
-    sums are compared unrounded in all but one case."""
-    a, b, *biases = GEMMWorkload(1, n, k, dtype, trans_b=True, bias=bias > 0).gen_inputs()
-    args = (a, b, *(column[:bias] for column in biases))
-    name = str(dtype).removeprefix("torch.")
-    out_name = str(out_dtype).removeprefix("torch.") if out_dtype else None
-    staged = _gemm_small_batch_kernel(1, n, k, name, bias_len=bias, out_dtype=out_name)
-    register = _gemv_row_kernel(n, k, name, bias_len=bias, out_dtype=out_name)
-    expected = staged(1, config[0], 4)(*args)
-    torch.testing.assert_close(register(*config)(*args), expected, rtol=0, atol=0)
+    """One-row calls dispatch reads into registers: a K tail, a K off the vector width,
+    rows reduced over 256 lanes, bursts past the first with a float32 output, a column bias,
+    and the one-column band with its scalar bias."""
+    test = GEMMTest(m, n, k, dtype, trans_b=trans_b, bias=bias, out_dtype=out_dtype)
+    op = GEMMFwdOp(trans_b=trans_b, out_dtype=out_dtype)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op._entries_built("gemm").values()
+    assert isinstance(kernel, GemvKernel) and not kernel.staged
 
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "k, staged",
+    ("k", "staged"),
     [
-        pytest.param(4096, True, marks=pytest.mark.smoke, id="staged"),
-        pytest.param(4104, False, marks=pytest.mark.full, id="registers"),
+        pytest.param(4096, True, marks=pytest.mark.smoke, id="row-of-4096"),
+        pytest.param(4097, False, marks=pytest.mark.full, id="row-of-4097"),
     ],
 )
 def test_gemv_reads_rows_past_4096_into_registers(k: int, staged: bool) -> None:
-    """A one-row band keeps rows of up to 4096 values on the staged ring."""
+    """A one-row band reads rows longer than 4096 values into registers, at any row count,
+    and keeps the staged ring for shorter ones."""
     op = GEMMFwdOp()
-    op(*GEMMWorkload(1, 64, k, torch.bfloat16, trans_b=True).gen_inputs())
+    op(*GEMMWorkload(1, 7, k, torch.bfloat16, trans_b=True).gen_inputs())
     (kernel,) = op._entries_built("gemm").values()
     assert isinstance(kernel, GemvKernel) and kernel.staged is staged
+
+
+@pytest.mark.smoke
+def test_gemv_serves_odd_rows_past_12288() -> None:
+    """A one-row call over a few rows of an odd length past 12288 values builds and gives
+    the product, which a staged ring pairing two rows a block could not copy."""
+    test = GEMMTest(1, 7, 12289, torch.bfloat16, trans_b=True)
+    test.check(GEMMFwdOp(), *test.gen_inputs())
