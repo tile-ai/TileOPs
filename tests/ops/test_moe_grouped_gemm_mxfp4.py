@@ -592,13 +592,19 @@ def test_mxfp4_grouped_gemm_takes_the_prefill_program_past_four_rows_an_expert()
     more than the mean run, on the deepest ring that fits, divides the K steps, keeps a quarter
     of them and unrolls at most 16 steps over the tile's widths: DeepSeek-V4-Flash's prompts of
     512, 2048 and 4096 tokens at top 6, the down projection's 16 steps on a shallower ring.
-    Float32 scales, and K off a multiple of 2048, keep the config's program."""
+    Under 16 K steps a launch filling more than five eighths of the config's 64-row tile on
+    average, the down projection's from 1707 tokens to 2048, keeps the config's program, as do
+    float32 scales and K off a multiple of 2048."""
     kernel = _tight_kernel()
     assert kernel.prefill_tile(4 * 256) is None
     assert kernel.prefill_tile(4 * 256 + 1) == (32, 128, 8)
     assert kernel.prefill_tile(512 * 6) == (32, 128, 8)
     assert _tight_kernel(k=2048).prefill_tile(512 * 6) == (32, 128, 4)
     assert kernel.prefill_tile(2048 * 6) == (64, 128, 4)
+    assert _tight_kernel(k=2048).prefill_tile(64 * 5 * 256 // 8) == (64, 128, 4)
+    assert _tight_kernel(k=2048).prefill_tile(64 * 5 * 256 // 8 + 1) is None
+    assert _tight_kernel(k=2048).prefill_tile(2048 * 6) is None
+    assert _tight_kernel(k=2048).prefill_tile(2048 * 6 + 1) == (128, 128, 4)
     assert kernel.prefill_tile(4096 * 6) == (128, 128, 4)
     assert _tight_kernel(torch.float32).prefill_tile(4096 * 6) is None
     assert _tight_kernel(k=1408).prefill_tile(4096 * 6) is None

@@ -1682,7 +1682,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
     the autotuning candidates and a caller's config all pass ``config_refusal``.
 
     A launch of tight rows under e8m0 scales, K a multiple of 2048, past four rows an expert on
-    average (a prefill) runs the prefill program instead, on the tile ``prefill_tile`` picks.
+    average (a prefill) runs the prefill program instead where ``prefill_tile`` picks it a tile.
     A task there folds when each of its weight rows' codes lie in [64, 190] and span at most
     eleven binades over K and each token code of its own rows is 0 or lies in [64, 190]: its
     sub-blocks carry their scales relative to their row's largest code less six, each step is
@@ -1711,6 +1711,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
     _PREFILL_ROWS: ClassVar[int] = 4
     _PREFILL_BLOCK_M: ClassVar[tuple[int, ...]] = (32, 64, 128)
     _PREFILL_BLOCK_N: ClassVar[int] = 128
+    _PREFILL_FULL_STEPS: ClassVar[int] = 32
 
     @classmethod
     def config_refusal(
@@ -1908,7 +1909,10 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         their mean rows. Its ring is the deepest that fits and divides the K steps (its slots
         are compile-time), no deeper than a quarter of the steps, and shallow enough that the
         tile's width loops, each unrolled by the depth, hold at most 16 steps between them.
-        ``_prefill_tiles`` keeps each row tile's."""
+        ``_prefill_tiles`` keeps each row tile's. Under fewer than ``_PREFILL_FULL_STEPS`` K
+        steps, a launch whose row tile is ``config``'s own and whose mean rows fill more than
+        five eighths of it runs ``config``'s program, which the prefill program does not
+        outrun there."""
         call = self.call
         if (
             call.packing != "tight"
@@ -1921,6 +1925,12 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         block_m = next(
             (bm for bm in self._PREFILL_BLOCK_M if bm >= rows), self._PREFILL_BLOCK_M[-1]
         )
+        if (
+            self.scale_k < self._PREFILL_FULL_STEPS
+            and block_m == self.config["block_m"]
+            and 8 * m > 5 * block_m * call.num_groups
+        ):
+            return None
         if block_m not in self._prefill_tiles:
             block_n = self._PREFILL_BLOCK_N
             unrolled = 16 // len(_prefill_widths(block_m))
