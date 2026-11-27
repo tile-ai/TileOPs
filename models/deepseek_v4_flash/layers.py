@@ -142,9 +142,8 @@ class FP8Linear:
 
     def rows(self, start: int, stop: int) -> FP8Linear:
         """The layer of output rows ``[start, stop)``, viewing this one's weight and scales;
-        ``start`` must open a 128-row scale block, so the view's scales are its own."""
-        if start % 128:
-            raise ValueError(f"row {start} does not open a 128-row scale block")
+        ``start`` must open a 128-row scale block, as the loader's stacking ensures, so the
+        view's scales are its own."""
         return FP8Linear(self.weight[start:stop], self.scale[start // 128 : -(-stop // 128)])
 
 
