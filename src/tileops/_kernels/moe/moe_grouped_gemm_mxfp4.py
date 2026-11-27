@@ -5,6 +5,7 @@ scales 1x32 blocks of ``b``, both e8m0 or both float32. Accumulation is float32;
 bfloat16.
 """
 
+import dataclasses
 import math
 from collections.abc import Callable, Mapping
 from typing import ClassVar
@@ -31,7 +32,7 @@ from tileops._kernels.constants import (
     WARPGROUP_THREADS,
     WGMMA_ROWS,
 )
-from tileops._kernels.kernel_base import Kernel
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import (
     MGroupedGEMMMXFP4Call,
     MGroupedGEMMMXFP4FwdInterface,
@@ -1775,6 +1776,12 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         )
         room = call.smem_budget - cls._SMEM_HEADROOM - least
         return walk_refusal(call.num_groups, call.packing, call.metadata_kind, room)
+
+    @classmethod
+    def entry_for(cls, call: MGroupedGEMMMXFP4Call) -> Entry:
+        """One entry for the calls of every row count, built from the first: the program takes
+        the rows as a dynamic extent, and the first call's count sizes the tuning rows."""
+        return dataclasses.replace(call, m=0), lambda: cls(call)
 
     def __init__(self, call: MGroupedGEMMMXFP4Call) -> None:
         device_index = call.device_index

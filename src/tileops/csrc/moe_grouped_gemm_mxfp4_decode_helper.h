@@ -1,9 +1,12 @@
 #pragma once
 
 // Run lookup, decode, contraction, promotion and store of the MXFP4 grouped
-// GEMM's decode kernel: one 64-row weight tile of one expert times one tile of
-// eight rows of ``a``, the weights decoded to e4m3 register fragments and
-// contracted as moe_grouped_gemm_mxfp4_helper.h's register-fragment path does.
+// GEMM's decode kernel: one 64-row weight tile of one expert times Tiles
+// tiles of RowTile rows of ``a``, the weights decoded once a K step to e4m3
+// register fragments and contracted as moe_grouped_gemm_mxfp4_helper.h's
+// register-fragment path does. RowTile is the fp8 WGMMA's least N: of each
+// tile, a math thread holds the accumulators of tokens 2 (lane % 4) and the
+// next.
 
 #include "moe_grouped_gemm_mxfp4_helper.h"
 
@@ -43,26 +46,27 @@ __device__ __forceinline__ bool mxfp4_decode_find_run(int const* ends, int row,
   return any;
 }
 
-// The token scales of a tile's eight rows from ``row0`` as floats,
-// ``tokens[8 kk + t]`` for row row0 + t at K step kk, a row past ``rows``
+// The token scales of Rows rows of ``a`` from ``row0`` as floats,
+// ``tokens[Rows kk + t]`` for row row0 + t at K step kk, a row past ``rows``
 // reading the last; thread ``thread`` of ``Threads`` fills its share.
-template <int Steps, int Threads>
+template <int Steps, int Threads, int Rows>
 __device__ __forceinline__ void mxfp4_decode_tokens(uint8_t const* a_scale,
                                                     int row0, int rows,
                                                     float* tokens, int thread) {
 #pragma unroll
-  for (int i = thread; i < 8 * Steps; i += Threads) {
-    int const row = min(row0 + i % 8, rows - 1);
+  for (int i = thread; i < Rows * Steps; i += Threads) {
+    int const row = min(row0 + i % Rows, rows - 1);
     tokens[i] =
-        mxfp4_e8m0_value(a_scale[static_cast<int64_t>(row) * Steps + i / 8]);
+        mxfp4_e8m0_value(a_scale[static_cast<int64_t>(row) * Steps + i / Rows]);
   }
 }
 
 // mxfp4_weight_step under kMxfp4Fold, its codes word ``step`` of each row of
-// ``codes`` (rows of four words), each row scale 2 ** (top - 127) formed by a
-// shift: the fragments and scales of a step whose codes lie in
+// ``codes`` (rows of CodeSteps words), each row scale 2 ** (top - 127) formed
+// by a shift: the fragments and scales of a step whose codes lie in
 // [kMxfp4CodeLow, kMxfp4CodeHigh]. ``fits`` is cleared unless both of the
 // thread's rows' four codes lie there and span at most kMxfp4FoldSpan.
+template <int CodeSteps>
 __device__ __forceinline__ void mxfp4_decode_fold_step(
     void const* packed_stage, void const* codes, int step, uint32_t* frags,
     float* scales, int* fits) {
@@ -78,7 +82,7 @@ __device__ __forceinline__ void mxfp4_decode_fold_step(
 #pragma unroll
   for (int r = 0; r < 2; ++r) {
     uint32_t const word =
-        static_cast<uint32_t const*>(codes)[(g + 8 * r) * 4 + step];
+        static_cast<uint32_t const*>(codes)[(g + 8 * r) * CodeSteps + step];
     uint32_t c[4];
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
@@ -111,9 +115,9 @@ __device__ __forceinline__ void mxfp4_decode_fold_step(
   }
 }
 
-// mxfp4_wgmma_rs<8, 0, 4, Sets> on the token stage at ``stage``, its
-// descriptor formed from the stage's shared address.
-template <int Sets>
+// mxfp4_wgmma_rs<N, First, Count, 1> on the N token rows of the stage at
+// ``stage``, its descriptor formed from the stage's shared address.
+template <int N, int First, int Count>
 __device__ __forceinline__ void mxfp4_decode_wgmma(float* accumulator,
                                                    uint32_t* frags,
                                                    void const* stage) {
@@ -121,31 +125,40 @@ __device__ __forceinline__ void mxfp4_decode_wgmma(float* accumulator,
       ((static_cast<uint32_t>(__cvta_generic_to_shared(stage)) >> 4) &
        0x3fffu) |
       0x10000u;
-  mxfp4_wgmma_rs<8, 0, 4, Sets>(accumulator, frags, lo);
+  mxfp4_wgmma_rs<N, First, Count, 1>(accumulator, frags, lo);
 }
 
-// final += step * row scale * token scale over a warp-group's 64 x 8
-// accumulator: the thread's weight rows g and g + 8, its tokens 2 (lane % 4)
-// and the next from ``tokens``. Folded, ``step`` is one set and ``scales``
-// the rows' two; split, ``step`` is four sets, one a sub-block, and
-// ``scales`` the rows' four each, applied by mxfp4_scaled_exact.
-template <bool Fold>
+// final += step * row scale * token scale over the warp-group's 64 x RowTile
+// accumulators of the first ``tiles`` of Tiles token tiles: the thread's
+// weight rows g and g + 8, and its tokens 2 (lane % 4) and the next of each
+// tile from ``tokens``, the K step's Tiles * RowTile token scales. Folded,
+// ``step`` is the chain of the step's four sub-blocks and ``scales`` the
+// rows' two; split, it is sub-block ``sub`` alone and ``scales`` the rows'
+// four each, applied by mxfp4_scaled_exact.
+template <int RowTile, int Tiles, bool Fold>
 __device__ __forceinline__ void mxfp4_decode_promote(float const* step,
                                                      float* final,
                                                      float const* scales,
-                                                     float const* tokens) {
+                                                     float const* tokens,
+                                                     int tiles, int sub) {
+  static_assert(RowTile == 8, "a thread holds 4 accumulators of a tile");
   int const pair = (static_cast<int>(threadIdx.x) & 3) * 2;
-  float const token[2] = {tokens[pair], tokens[pair + 1]};
 #pragma unroll
-  for (int e = 0; e < 4; ++e) {
-    if constexpr (Fold) {
-      final[e] = final[e] + step[e] * scales[e / 2] * token[e % 2];
-    } else {
+  for (int t = 0; t < Tiles; ++t) {
+    if (t < tiles) {
+      float const token[2] = {tokens[t * RowTile + pair],
+                              tokens[t * RowTile + pair + 1]};
 #pragma unroll
-      for (int s = 0; s < 4; ++s) {
-        final[e] =
-            final[e] + mxfp4_scaled_exact(step[4 * s + e],
-                                          scales[e / 2 * 4 + s], token[e % 2]);
+      for (int e = 0; e < 4; ++e) {
+        if constexpr (Fold) {
+          final[4 * t + e] =
+              final[4 * t + e] + step[4 * t + e] * scales[e / 2] * token[e % 2];
+        } else {
+          final[4 * t + e] =
+              final[4 * t + e] + mxfp4_scaled_exact(step[4 * t + e],
+                                                    scales[e / 2 * 4 + sub],
+                                                    token[e % 2]);
+        }
       }
     }
   }
@@ -167,21 +180,27 @@ __device__ __forceinline__ int mxfp4_decode_read(int const* flag) {
   return *reinterpret_cast<int const volatile*>(flag);
 }
 
-// The warp-group's 64 x 8 accumulator in bfloat16 into the first ``valid``
-// rows of the tile at ``tile`` (rows of ``n`` columns): token t's columns g
-// and g + 8.
+// The warp-group's 64 x RowTile accumulators of Tiles token tiles in bfloat16
+// into the first ``valid`` rows of the rows at ``tile`` (rows of ``n``
+// columns): token t's columns g and g + 8.
+template <int RowTile, int Tiles>
 __device__ __forceinline__ void mxfp4_decode_store(float const* final,
                                                    void* tile, int n,
                                                    int valid) {
+  static_assert(RowTile == 8, "a thread holds 4 accumulators of a tile");
   int const lane = static_cast<int>(threadIdx.x) & 31;
   int const col = ((static_cast<int>(threadIdx.x) >> 5) & 3) * 16 + lane / 4;
   int const pair = (lane & 3) * 2;
   __nv_bfloat16* c = static_cast<__nv_bfloat16*>(tile);
 #pragma unroll
-  for (int e = 0; e < 4; ++e) {
-    int const t = pair + (e & 1);
-    if (t < valid) {
-      c[t * n + col + (e >= 2 ? 8 : 0)] = __float2bfloat16_rn(final[e]);
+  for (int t = 0; t < Tiles; ++t) {
+#pragma unroll
+    for (int e = 0; e < 4; ++e) {
+      int const row = t * RowTile + pair + (e & 1);
+      if (row < valid) {
+        c[static_cast<int64_t>(row) * n + col + (e >= 2 ? 8 : 0)] =
+            __float2bfloat16_rn(final[4 * t + e]);
+      }
     }
   }
 }
