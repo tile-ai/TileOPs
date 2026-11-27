@@ -69,7 +69,7 @@ def test_bmm_fp8_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(BMMW8A16FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(BMMW8A16FwdOp))
 def test_bmm_w8a16_bench(case) -> None:
     """Against cuBLAS's bfloat16 batched matmul on the weight dequantized to bfloat16 once
     beforehand, as DeepSeek-V4-Flash's inference holds ``wo_a``."""

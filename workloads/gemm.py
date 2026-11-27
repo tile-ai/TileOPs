@@ -779,6 +779,7 @@ def bmm_w8a16_reference(
     return torch.bmm(activation.float(), w.transpose(1, 2)).to(torch.bfloat16)
 
 
+@dataclass(eq=False)
 class BMMW8A16Workload(WorkloadBase):
     """Batched bfloat16 activations ``[B, M, K]`` against e4m3 weights ``[B, N, K]`` under
     128x128 block scales ``[B, ceil(N / 128), K / 128]``.
@@ -788,11 +789,10 @@ class BMMW8A16Workload(WorkloadBase):
     scales span.
     """
 
-    def __init__(self, batch: int, m: int, n: int, k: int) -> None:
-        self.batch = batch
-        self.m = m
-        self.n = n
-        self.k = k
+    batch: int
+    m: int
+    n: int
+    k: int
 
     @classmethod
     def from_call(cls, call: Any) -> "BMMW8A16Workload":
