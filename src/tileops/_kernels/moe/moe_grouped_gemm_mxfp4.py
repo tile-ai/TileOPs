@@ -1735,8 +1735,9 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
             scale_k: The 128-wide K steps, which size the e8m0 check table.
             alignment: An aligned layout's alignment, which ``block_m`` divides; 0 for any
                 other layout.
-            prefill: Whether the config is of the prefill program, whose ``block_m`` is a
-                multiple of 16, the tokens its promotion takes at a time.
+            prefill: Whether the config is of the prefill program, whose ``block_m`` is one
+                of ``_PREFILL_BLOCK_M``: its task widths (``_prefill_widths``) are then whole
+                16-row TMA boxes and whole 16-token promotions.
 
         Returns:
             The first violated constraint, or ``None``.
@@ -1745,8 +1746,8 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         if reason is not None:
             return reason
         block_m, block_n, stages, _ = (config[key] for key in cls._CONFIG_KEYS)
-        if prefill and block_m % 16:
-            return f"the prefill program promotes 16 tokens at a time, got block_m {block_m}"
+        if prefill and block_m not in cls._PREFILL_BLOCK_M:
+            return f"the prefill program takes block_m in {cls._PREFILL_BLOCK_M}, got {block_m}"
         smem = (
             _prefill_smem_bytes(block_m, block_n, stages, scale_k)
             if prefill

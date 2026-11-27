@@ -933,6 +933,8 @@ template <int N, int Run>
 __device__ __forceinline__ void mxfp4_promote_tokens(float const* step,
                                                      float* final_accum,
                                                      float const* scales) {
+  static_assert(N % 16 == 0,
+                "the promotion reads 16 tokens' scales a float4 pair");
   float const* mine = scales + (static_cast<int>(threadIdx.x) & 3) * Run;
 #pragma unroll
   for (int i = 0; i < N / 8; i += 2) {

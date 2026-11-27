@@ -610,6 +610,28 @@ def test_mxfp4_grouped_gemm_takes_the_prefill_program_past_four_rows_an_expert()
     assert dataclasses.replace(kernel.call, m=4096 * 6) == kernel.call
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_prefill_refuses_row_tiles_off_its_widths() -> None:
+    """The prefill program takes 32-, 64- and 128-row tiles, whose task widths are whole 16-row
+    TMA boxes and whole 16-token promotions; a 16-row tile, which the config's program takes,
+    is refused for it before anything is built."""
+    limits = {"sm_count": 132, "smem_limit": 220 * 1024, "scale_bytes": 1, "scale_k": 32}
+
+    def refusal(block_m: int) -> str | None:
+        config = {"block_m": block_m, "block_n": 128, "num_stages": 4, "num_sms": 132}
+        return MoEGroupedGEMMMXFP4Kernel.config_refusal(config, **limits, prefill=True)
+
+    assert [refusal(block_m) for block_m in (32, 64, 128)] == [None, None, None]
+    assert "block_m" in refusal(16)
+    assert (
+        MoEGroupedGEMMMXFP4Kernel.config_refusal(
+            {"block_m": 16, "block_n": 128, "num_stages": 4, "num_sms": 132}, **limits
+        )
+        is None
+    )
+
+
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
