@@ -12,7 +12,7 @@ import torch
 from tileops._kernels.build_target import BuildTarget, building_on, target_of
 from tileops._utils.device import current_device
 
-__all__ = ["CompiledProgram", "Entry", "Kernel", "KernelInterface"]
+__all__ = ["CompiledProgram", "Entry", "Kernel", "KernelInterface", "dynamic_extent_supply"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
@@ -41,6 +41,28 @@ def _extent(dim: object, inputs: tuple) -> int:
     if kind == 1:
         return inputs[position].stride(axis) * scale
     return inputs[position]
+
+
+def dynamic_extent_supply(extent: int) -> Callable:
+    """An ``autotune_supply_prog`` for a program with one dynamic extent: every scalar and every
+    symbolic dimension is *extent*, every tensor TileLang's default random data."""
+    import tilelang
+    from tilelang.utils.tensor import get_tensor_supply
+
+    default_supply = get_tensor_supply(tilelang.TensorSupplyType.Auto)
+
+    def supply(params):
+        inputs = []
+        for param in params:
+            if param.is_scalar():
+                inputs.append(extent)
+                continue
+            static = copy.copy(param)
+            static.shape = [d if isinstance(d, int) else extent for d in param.shape]
+            inputs.append(default_supply(static))
+        return inputs
+
+    return supply
 
 
 class CompiledProgram:

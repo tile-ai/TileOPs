@@ -1,4 +1,3 @@
-import copy
 import itertools
 
 import tilelang
@@ -20,7 +19,7 @@ from tileops._kernels.attention.online_softmax import (
 )
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
-from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.kernel_base import Entry, Kernel, dynamic_extent_supply
 
 __all__ = ["GQADecodeKernel", "GQADecodeNarrowGroupKernel"]
 
@@ -592,33 +591,11 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         # Forward shrinks the tuned num_split to the runtime KV extent instead of gating
         # dispatch on it; autotune times each candidate on the program forward launches.
         self.kernel = self.split_jit
-        self._supply_prog = self._make_supply_prog()
         self.init_config(config)
-
-    def _make_supply_prog(self):
-        """Supply a representative value for the dynamic KV sequence extent."""
-        from tilelang.utils.tensor import get_tensor_supply as _get_tensor_supply
-
-        default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
-        seqlen_kv = self.seqlen_kv
-
-        def supply_prog(params):
-            inputs = []
-            for param in params:
-                if param.is_scalar():
-                    inputs.append(seqlen_kv)
-                    continue
-                # K and V carry the symbolic extent in their shape; give it the same value.
-                static = copy.copy(param)
-                static.shape = [d if isinstance(d, int) else seqlen_kv for d in param.shape]
-                inputs.append(default_supply(static))
-            return inputs
-
-        return supply_prog
 
     @property
     def autotune_supply_prog(self):
-        return self._supply_prog
+        return dynamic_extent_supply(self.seqlen_kv)
 
     @property
     def default_config(self) -> dict:
