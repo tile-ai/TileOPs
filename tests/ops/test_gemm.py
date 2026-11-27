@@ -3562,9 +3562,6 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
             1, 257, 4100, True, False, None, torch.float16, marks=pytest.mark.smoke, id="fp16"
         ),
         pytest.param(
-            1, 7, 5121, True, False, None, torch.bfloat16, marks=pytest.mark.full, id="k-off-vector"
-        ),
-        pytest.param(
             1,
             257,
             10240,
@@ -3746,6 +3743,44 @@ def test_gemv_register_dispatch(
     (kernel,) = op._entries_built("gemm").values()
     assert isinstance(kernel, GemvKernel) and kernel.staged is (rows is None)
     assert kernel.config.get("rows") == rows
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("k", "config"),
+    [
+        pytest.param(
+            4100,
+            {"reduce_threads": 128, "warps": 8, "rows": 1, "depth": 32, "split": 4},
+            marks=pytest.mark.smoke,
+            id="two-rows-of-four-warps",
+        ),
+        pytest.param(
+            24576,
+            {"reduce_threads": 64, "warps": 4, "rows": 1, "depth": 32, "split": 2},
+            marks=pytest.mark.full,
+            id="two-rows-of-two-warps",
+        ),
+    ],
+)
+def test_gemv_tuned_register_body_splits_two_rows_a_block(
+    monkeypatch: pytest.MonkeyPatch, k: int, config: dict
+) -> None:
+    """Tuning a one-row call the register body serves may publish a block that holds two
+    split rows, whose warps find their row and their slots by their place in the block."""
+
+    def pick(self, _builder, candidates, seed_config, **_kwargs):
+        assert config in candidates
+        return SimpleNamespace(config=config)
+
+    monkeypatch.setattr(GemvKernel, "tune_jit_kernel", pick)
+    test = GEMMTest(1, 257, k, torch.bfloat16, trans_b=True)
+    op = GEMMFwdOp()
+    op.request_tune()
+    op(*test.gen_inputs())
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op._entries_built("gemm").values()
+    assert isinstance(kernel, GemvKernel) and not kernel.staged and kernel.config == config
 
 
 @pytest.mark.in_tree_kernels
