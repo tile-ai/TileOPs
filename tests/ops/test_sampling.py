@@ -263,13 +263,43 @@ def test_top_p_mask_split_rows_cut_where_the_reference_does(batch: int, vocab: i
     compare_outputs(out, top_p_mask(logits, p), top_p_mask_verification(logits, p))
 
 
-@pytest.mark.smoke
-def test_top_p_mask_split_row_repeats_its_mask():
+@pytest.mark.parametrize(
+    "batch",
+    [
+        # A split row: fixed-point bins and a row barrier counter, both integer inputs.
+        pytest.param(4, marks=pytest.mark.smoke),
+        # One block holds each row; its plan still takes an integer counter input.
+        pytest.param(256, marks=pytest.mark.full),
+    ],
+)
+def test_top_p_mask_tuned(batch: int):
+    """Tuned mode cuts where the reference does, on plans whose integer inputs the tuner
+    must supply rather than draw at random."""
+    device = run_device()
+    logits = torch.randn(batch, 32000, device=device)
+    p = torch.rand(batch, device=device) * 0.45 + 0.5
+    p[0] = 1.0
+    op = TopPMaskFwdOp()
+    op.request_tune()
+    out = _run(op, logits, p)
+    compare_outputs(out, top_p_mask(logits, p), top_p_mask_verification(logits, p))
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param(torch.float32, marks=pytest.mark.smoke),
+        # Three passes, so each call leaves the row's barrier counter in the other phase.
+        pytest.param(torch.float16, marks=pytest.mark.smoke),
+    ],
+)
+def test_top_p_mask_split_row_repeats_its_mask(dtype):
     """A row split across blocks gets the same mask on every call, at a ``p`` where another
-    rounding of the bins' totals would move the cut."""
+    rounding of the bins' totals would move the cut, whichever phase the previous call left
+    the row's barrier counter in."""
     device = run_device()
     generator = torch.Generator(device=device).manual_seed(0)
-    logits = -30 * torch.rand(1, 128256, device=device, generator=generator)
+    logits = (-30 * torch.rand(1, 128256, device=device, generator=generator)).to(dtype)
     p = torch.full((1,), 1 - 2**-24, device=device)
     op = TopPMaskFwdOp()
     first = _run(op, logits, p)

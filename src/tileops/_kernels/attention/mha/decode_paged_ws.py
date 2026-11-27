@@ -17,7 +17,6 @@ from tileops._kernels.attention.call_spec import (
     AttentionCall,
     MHAPagedDecodeFwdInterface,
 )
-from tileops._kernels.attention.stream_counter import stream_counter
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
@@ -25,6 +24,7 @@ from tileops._kernels.constants import (
     VECTOR_ACCESS_BYTES,
 )
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.stream_counter import stream_counter
 from tileops._kernels.warp_reduce import warp_reduce
 from tileops._utils import WARP_LANES
 

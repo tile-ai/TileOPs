@@ -16,11 +16,11 @@ from tileops._kernels.attention.call_spec import (
     MLAVarlenCall,
     MLAVarlenFwdInterface,
 )
-from tileops._kernels.attention.stream_counter import stream_counter
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.stream_counter import stream_counter
 
 __all__ = ["MLAVarlenPrefillWSFwdKernel"]
 

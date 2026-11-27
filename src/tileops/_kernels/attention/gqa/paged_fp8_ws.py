@@ -13,11 +13,11 @@ from tileops._kernels.attention.call_spec import (
 )
 from tileops._kernels.attention.gqa.paged_ws import claim_work
 from tileops._kernels.attention.online_softmax import make_apply_softcap
-from tileops._kernels.attention.stream_counter import stream_counter
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.stream_counter import stream_counter
 
 __all__ = ["GQAPagedFP8WSKernel"]
 

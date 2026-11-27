@@ -1,10 +1,12 @@
 """Per-row top-p logit mask: a radix search over the row's values, run on chip."""
 
+from collections.abc import Callable
 from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.utils.tensor import get_tensor_supply
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
@@ -25,6 +27,7 @@ from tileops._kernels.sampling.row_tiles import (
     offset_refusal,
     vector_width,
 )
+from tileops._kernels.stream_counter import stream_counter
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["TopPMaskFwdKernel"]
@@ -45,11 +48,12 @@ def _top_p_mask_kernel(
     """Build the mask of ``batch`` rows of ``vocab`` logits, ``parts`` blocks to a row.
 
     ``parts > 1`` meets the blocks of a row across one grid barrier for the maximum, in
-    ``part_top``, and one a pass, adding the blocks' bins into the pass's own slice of
-    ``part_bins``; every warp then walks the row's bins itself. Where ``vocab`` leaves room,
-    its bins add weights as fixed-point integers, so their totals do not depend on the order
-    threads and blocks add in. ``parts == 1`` takes no grid barrier, and the block walks its
-    bins together.
+    ``part_top``, after which a row at ``p = 1`` writes its chunks back and leaves. A pass adds
+    the blocks' bins into its own slice of ``part_bins`` and meets them across the row's own
+    barrier, on its counter in ``arrived``; every warp then walks the row's bins itself. Where
+    ``vocab`` leaves room, its bins add weights as fixed-point integers, so their totals do not
+    depend on the order threads and blocks add in. ``parts == 1`` takes no grid barrier, and
+    the block walks its bins together.
     """
     grid = batch * parts
     digit_bits = (search_bins - 1).bit_length()
@@ -80,7 +84,11 @@ def _top_p_mask_kernel(
     # and every bit of a negative one, so the keys sort the way the values do.
     sign_bit = 31
 
-    headers = ("streaming_load.h", "fixed_add.h") if fixed else ("streaming_load.h",)
+    headers = ("streaming_load.h",)
+    if parts > 1:
+        headers += ("row_barrier.h",)
+    if fixed:
+        headers += ("fixed_add.h",)
 
     @tilelang.jit(compile_flags=csrc_include(*headers))
     def _top_p_mask_func(reg_tiles: int, smem_tiles: int, pace: int):
@@ -162,6 +170,7 @@ def _top_p_mask_kernel(
             part_top: T.Tensor((grid,), "float32"),
             part_bins: T.Tensor((part_bin_count,), "uint64" if fixed else "float32"),
             masked: T.Tensor((batch * vocab,), dtype),
+            arrived: T.Tensor((batch if parts > 1 else 1,), "int32"),
         ):
             with T.Kernel(grid, threads=threads) as bx:
                 tx = T.get_thread_binding()
@@ -239,6 +248,12 @@ def _top_p_mask_kernel(
                     part_top,
                 )
                 if parts > 1:
+                    # A split row at p = 1 passes through whole and its blocks leave, which the
+                    # rows still searching never wait on: their barriers meet only their own.
+                    if row_p[0] == T.float32(1):
+                        cut[0] = T.reinterpret(T.uint32(QUIET_NAN), "float32")
+                        tiles.write_masked(masked, logits, start, head, in_regs, in_smem, cur, cut)
+                        T.evaluate(T.thread_return())
                     row_max[0] = top[0]
                     carried[0] = T.float32(0)
                     bracket[0] = T.uint32(0)
@@ -342,7 +357,15 @@ def _top_p_mask_kernel(
                                         part_bins[(line * passes + level) * search_bins + tx],
                                         fold_bins[0],
                                     )
-                        T.sync_grid()
+                        # The maximum's grid barrier makes the launch cooperative, so every block
+                        # this barrier waits for is resident.
+                        T.call_extern(
+                            "handle",
+                            "tileops::row_barrier",
+                            T.address_of(arrived[line]),
+                            parts,
+                            bx % parts == 0,
+                        )
                         # The row's totals load while the block clears its copies for the next
                         # pass; the barrier after them orders the clear before the next add.
                         if tx < search_bins:
@@ -380,13 +403,8 @@ def _top_p_mask_kernel(
                         if lane + 1 < WARP_LANES:
                             for i in T.unroll(lane_bins):
                                 seg[i] += fold_bins[0]
-                        # A row at p = 1 takes an infinite target, which no bin reaches.
                         if level == 0:
-                            target[0] = T.if_then_else(
-                                row_p[0] != T.float32(1),
-                                T.shfl_sync(seg[0], 0) * row_p[0],
-                                T.infinity("float32"),
-                            )
+                            target[0] = T.shfl_sync(seg[0], 0) * row_p[0]
                         # The highest bin the weight still reaches over, as the block's walk
                         # below picks it.
                         picked[0] = -1
@@ -489,7 +507,8 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
     ``p[b] * Z``. A radix search over the values' order-preserving unsigned keys finds that
     key exactly, one digit a pass, and the chunk stays on chip across the passes. A batch
     that leaves blocks idle splits each row across several of them. A row at ``p[b] = 1``
-    searches toward an infinite target and passes through whole.
+    passes through whole: a split row right after its maximum's grid barrier, a row one block
+    holds by searching toward an infinite target.
 
     Args:
         call: The call's shape, dtype and device facts.
@@ -573,6 +592,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
             self._SEARCH_BINS,
             tuple(widths),
         )
+        self._counters: dict = {}
         self.init_config(config)
 
     @property
@@ -582,6 +602,35 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
+
+    @property
+    def autotune_supply_prog(self) -> Callable:
+        """Supply tuning candidates random logits, ``p`` in ``[0, 1)`` and zeroed scratch.
+
+        A row barrier needs its counter's low bits zero, so the counters and bins are zeroed.
+        ``p`` stays below 1 because a split row at 1 leaves after the maximum, and a candidate
+        timed on it would not time the search.
+        """
+        random_supply = get_tensor_supply(tilelang.TensorSupplyType.Auto)
+
+        def supply_prog(params):
+            logits, p, part_top, part_bins, masked, arrived = params
+            held = random_supply(logits)
+
+            def zeros(param):
+                shape = [int(extent) for extent in param.shape]
+                return torch.zeros(shape, dtype=param.torch_dtype(), device=held.device)
+
+            return [
+                held,
+                torch.rand([int(extent) for extent in p.shape], device=held.device),
+                random_supply(part_top),
+                zeros(part_bins),
+                random_supply(masked),
+                zeros(arrived),
+            ]
+
+        return supply_prog
 
     def forward(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
         self._require_devices(logits=logits, p=p)
@@ -593,7 +642,18 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
             device=logits.device,
         )
         masked = torch.empty_like(logits)
-        self.program(self._compile)(logits.view(-1), p, part_top, part_bins, masked.view(-1))
+        self.program(self._compile)(
+            logits.view(-1),
+            p,
+            part_top,
+            part_bins,
+            masked.view(-1),
+            (
+                stream_counter(self._counters, logits.device, self.call.batch)
+                if self._parts > 1
+                else torch.empty(1, dtype=torch.int32, device=logits.device)
+            ),
+        )
         return masked
 
     def _compile(self, cfg: dict):
