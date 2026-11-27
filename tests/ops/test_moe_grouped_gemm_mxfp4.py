@@ -522,6 +522,7 @@ def test_mxfp4_grouped_gemm_decodes_aligned_rows_into_shared_memory(
 
 
 PREFILL_SIZES = {
+    "sizes": SIZES,
     "tile-128": [16 * w - 3 for w in range(1, 9)] + [0, 300],
     "tile-32": [5, 13, 30, 0, 9, 40, 16, 7],
     "tile-64": [20, 50, 40, 3, 0, 70, 24],
@@ -534,12 +535,15 @@ PREFILL_SIZES = {
     ("sizes", "metadata_kind", "n", "k", "tile"),
     [
         pytest.param(
+            "sizes", "physical_psum", 256, 2048, 128, marks=pytest.mark.smoke, id="sizes-psum-k2048"
+        ),
+        pytest.param(
             "tile-128",
             "physical_psum",
             256,
             2048,
             128,
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="tile-128-psum-k2048",
         ),
         pytest.param(
@@ -554,16 +558,17 @@ def test_mxfp4_grouped_gemm_prefill_runs_tasks_of_every_width(
     sizes: str, metadata_kind: str, n: int, k: int, tile: int
 ) -> None:
     """Tight runs of more than four rows an expert under e8m0 scales, K a multiple of 2048,
-    take the prefill program on row tiles holding twice the mean run: each task
-    contracts its rows rounded up to a quarter of the tile (16 tokens on 32-row tiles), which
-    the producer loads in 16-row boxes, and stores only its own rows, so tasks of every width,
-    runs over several row tiles and an empty expert match the reference and leave the next
-    expert's rows as they are. ``tile-128``: 3 rows under each multiple of 16 up to 128 (every
-    32-token width and rows within one), an empty expert and 300 rows over three tiles (mean
-    85); ``tile-32``: 16- and 32-token tasks and 40 rows over two tiles (mean 15); ``tile-64``:
-    16-, 32-, 48- and 64-token tasks of 64-row tiles (40 rows take the 48-token width and three
-    16-row boxes), a run over two tiles (mean 30) and a last weight tile holding 72 of N's
-    columns."""
+    take the prefill program on row tiles holding twice the mean run: each task contracts its
+    rows rounded up to a quarter of the tile (16 tokens on 32-row tiles), which the producer
+    loads in 16-row boxes, and stores only its own rows, so tasks of every width, runs over
+    several row tiles and an empty expert match the reference and leave the next expert's rows
+    as they are. ``sizes`` (``SIZES``, mean 82): 32-, 64-, 96- and 128-token tasks of 128-row
+    tiles, an empty expert and runs over two and three tiles; ``tile-128``: 3 rows under each
+    multiple of 16 up to 128 (every 32-token width and rows within one), an empty expert and
+    300 rows over three tiles (mean 85); ``tile-32``: 16- and 32-token tasks and 40 rows over
+    two tiles (mean 15); ``tile-64``: 16-, 32-, 48- and 64-token tasks of 64-row tiles (40 rows
+    take the 48-token width and three 16-row boxes), a run over two tiles (mean 30) and a last
+    weight tile holding 72 of N's columns."""
     layout = contiguous_layout("tight", metadata_kind)
     workload = _contiguous_workload(layout, PREFILL_SIZES[sizes], N=n, K=k)
     inputs = workload.gen_inputs()
