@@ -856,7 +856,9 @@ def _two_rows_a_warp_from(k: int) -> int:
 def _wave_window(k: int, sm_count: int) -> tuple[int, int]:
     """Rows over which bf16 default split rows of ``k`` values need a second wave while the
     staged ring's two-row blocks still fit one: an SM holds 12 split-row blocks and 9 ring
-    blocks (their bf16 builds' register counts)."""
+    blocks (their bf16 builds' register counts). The 9 fails at the K where
+    ``gemv_registers`` names a 7-block ring build: there the ring's first wave ends at 14
+    rows an SM."""
     return 12 * sm_count, 9 * _ring_config(k)["block_n"] * sm_count
 
 
@@ -870,10 +872,17 @@ def gemv_registers(n: int, k: int, sm_count: int, dtype: str) -> bool:
     or more at a time; and aligned bf16 rows over ``_wave_window``, where the split rows
     need a second wave and the ring one. The window skips the first two-row K, where the
     ring's shorter loop unrolls and its registers cut it to 3 blocks an SM, and every K off
-    the ring's stage width, where each of its copies is predicated. Odd rows the two-row
-    ring cannot copy always take registers. The register body is slower than the ring on
-    three calls this leaves it: bf16 1 x 3328 / 3456 / 3584 x 32768, where the ring alone
-    runs fast.
+    the ring's stage width, where each of its steady-state copies is predicated. Odd rows
+    the two-row ring cannot copy always take registers.
+
+    The register body is slower than the ring on bf16 calls over about 25 to 28 rows an SM
+    at the K where the ring's steady-state trip count is a multiple of its 5 stages
+    (K = 14848 + 2560 j, to 48128). Ptxas builds the ring there at 68 registers, 7 blocks
+    an SM where it fits 9 at the other stage multiples past the first two-row K, so the
+    ring finishes those rows in two waves and the split rows need three. The ring's code
+    there differs from its neighbours' only in K's constants and the slots its last four
+    stages read, so the 68 registers are ptxas's allocation rather than a cost of that code
+    and no rule keeps those calls on the ring; no model shape falls there.
     """
     if k <= 4096:
         return False
@@ -881,10 +890,11 @@ def gemv_registers(n: int, k: int, sm_count: int, dtype: str) -> bool:
         return _ring_config(k)["block_n"] == 2 or not (
             2 * sm_count < n < _two_rows_a_warp_from(k) * sm_count
         )
-    slices = -(-k // _stage_values(k))
+    stage = _stage_values(k)
+    slices = -(-k // stage)
     if _ring_copy_bytes(k) >= 8 and not gemv_unrolled(True, slices):
         return False
-    if dtype != "bfloat16" or k % _stage_values(k) or k <= 12288:
+    if dtype != "bfloat16" or k % stage or _ring_config(k - stage)["block_n"] == 1:
         return True
     low, high = _wave_window(k, sm_count)
     return not low < n <= high

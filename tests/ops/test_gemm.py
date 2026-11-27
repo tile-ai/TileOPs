@@ -3743,10 +3743,10 @@ def test_gemv_register_dispatch(
 ) -> None:
     """Which one-row calls read into registers, and how many rows a warp then holds. The
     staged ring keeps rows of up to 4096 values, odd rows below 12288 values over 2 to 12
-    rows an SM, rows past the split row's unroll limit that it copies 8 bytes at a time, and
-    aligned bf16 rows past the first two-row K, at a multiple of its stage width, over 12 to
-    18 rows an SM. Odd rows of 12288 or more values, fp16 rows and rows off the stage width
-    keep registers. Two rows a warp run three bursts of odd rows in a loop."""
+    rows an SM, rows past the split row's unroll limit that it copies 8 bytes or more at a
+    time, and aligned bf16 rows past the first two-row K, at a multiple of its stage width,
+    over 12 to 18 rows an SM. Odd rows of 12288 or more values, fp16 rows and rows off the
+    stage width keep registers. Two rows a warp run three bursts of odd rows in a loop."""
     n = per_sm * get_sm_count(torch.device(run_device()).index) + extra
     test = GEMMTest(1, n, k, dtype, trans_b=True)
     op = GEMMFwdOp()
