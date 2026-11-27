@@ -1913,8 +1913,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         skews the rows, so the busiest experts run well past the mean. Its ring is the deepest
         that fits and divides the K steps (its slots are compile-time), no deeper than a quarter
         of the steps, and shallow enough that the tile's width loops, each unrolled by the
-        depth, hold at most 16 steps between them; both bounds come from measuring
-        DeepSeek-V4-Flash's calls. ``_prefill_tiles`` keeps each row tile's.
+        depth, hold at most 16 steps between them. ``_prefill_tiles`` keeps each row tile's.
 
         The plan follows each launch's rows, which the call spec does not compare, so tuning,
         which sets the call spec's ``config``, does not reach it.
