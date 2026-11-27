@@ -593,8 +593,8 @@ def test_mxfp4_grouped_gemm_prefill_runs_tasks_of_every_width(
 
 
 def _tight_kernel(scale_dtype: torch.dtype = torch.float8_e8m0fnu, k: int = 4096):
-    """The register-fragment kernel the op selects for DeepSeek-V4-Flash's 256 experts in tight
-    runs, N = 4096."""
+    """The register-fragment kernel the op selects for a 4096-token prefill of
+    DeepSeek-V4-Flash's 256 experts in tight runs, N = 4096."""
     call = MGroupedGEMMMXFP4Call(
         device=torch.device(run_device()),
         kind="contiguous",
@@ -603,7 +603,7 @@ def _tight_kernel(scale_dtype: torch.dtype = torch.float8_e8m0fnu, k: int = 4096
         alignment=1,
         scale_dtype=scale_dtype,
         num_groups=256,
-        m=6,
+        m=4096 * 6,
         n=4096,
         k=k,
     )
@@ -621,9 +621,9 @@ def test_mxfp4_grouped_gemm_takes_the_prefill_program_past_four_rows_an_expert()
     the mean run, on the deepest ring that fits, divides the K steps, keeps a quarter of them
     and unrolls at most 16 steps over the tile's widths: the tile's bounds at 16 and 32 rows
     an expert, and the down projection's 16 steps on a shallower ring. Float32 scales, and K
-    off a multiple of 2048, keep the config's program. The call spec does not compare the
-    rows, so one tuned entry serves decode and prefill launches alike, and its config does not
-    reach the prefill plan."""
+    off a multiple of 2048, keep the config's program. The kernel keys its entry on the call
+    without its rows, so one tuned entry serves the launches of every row count it takes, and
+    its config does not reach the prefill plan."""
     kernel, down = _tight_kernel(), _tight_kernel(k=2048)
     assert kernel.prefill_tile(4 * 256) is None
     assert kernel.prefill_tile(4 * 256 + 1) == (32, 128, 8)
@@ -635,7 +635,8 @@ def test_mxfp4_grouped_gemm_takes_the_prefill_program_past_four_rows_an_expert()
     assert down.prefill_tile(4096 * 6) == (128, 128, 4)
     assert _tight_kernel(torch.float32).prefill_tile(4096 * 6) is None
     assert _tight_kernel(k=1408).prefill_tile(4096 * 6) is None
-    assert dataclasses.replace(kernel.call, m=4096 * 6) == kernel.call
+    identity, _ = type(kernel).entry_for(kernel.call)
+    assert type(kernel).entry_for(dataclasses.replace(kernel.call, m=6))[0] == identity
 
 
 @pytest.mark.in_tree_kernels
