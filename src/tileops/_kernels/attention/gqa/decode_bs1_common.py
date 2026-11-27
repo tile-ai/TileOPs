@@ -270,18 +270,8 @@ def make_gqa_decode_bs1_split(
             ss = T.alloc_fragment([block_m], accum_dtype)
             logsum = T.alloc_fragment([block_m], accum_dtype)
 
-            if paged:
-                seqlen_kv_b = real_seqlen_kv[bid]
-                base_len = seqlen_kv_b // (ctx_splits * block_n) * block_n
-                this_len = T.if_then_else(
-                    sid == ctx_splits - 1,
-                    seqlen_kv_b - (ctx_splits - 1) * base_len,
-                    base_len,
-                )
-                base = base_len * sid
-            else:
-                seqlen_kv_b = real_seqlen_kv
-                base, this_len = balanced_split(seqlen_kv_b, block_n, ctx_splits, sid)
+            seqlen_kv_b = real_seqlen_kv[bid] if paged else real_seqlen_kv
+            base, this_len = balanced_split(seqlen_kv_b, block_n, ctx_splits, sid)
             loop_range = T.ceildiv(this_len, block_n)
             tx = T.get_thread_binding()
 

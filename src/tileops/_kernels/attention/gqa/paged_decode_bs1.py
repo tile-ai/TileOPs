@@ -133,8 +133,6 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
     preferred_over = frozenset({"gqa_paged_varlen_kernel"})
     # A table shorter than this runs the single-pass program; longer ones split the context.
     _MIN_CTX = 1024
-    # Split counts, largest first; the first that divides the table into whole key tiles wins.
-    _CTX_SPLIT_CANDIDATES = (32, 16, 8)
 
     @classmethod
     def refusal(cls, call) -> "str | None":
@@ -142,7 +140,7 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
             return f"serves one query position, got {call.max_seqlen_q}"
         if call.paged_decode_refusal is not None:
             return call.paged_decode_refusal
-        if not call.decode_bs1_region:
+        if not call.paged_decode_bs1_region:
             return "serves the batch-1 decode region only"
         # The warp-specialized softmax reduces raw QK before applying the scale.
         # Zero needs scores cleared before masking; the general paged path does this.
@@ -225,12 +223,12 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         return {"block_M": 64, "block_N": block_n, "threads": 160}
 
     def _ctx_splits_for(self, capacity: int) -> int:
-        """The most splits that divide a table of *capacity* keys into whole key tiles."""
-        block_n = self.config["block_N"]
-        for ctx_splits in self._CTX_SPLIT_CANDIDATES:
-            if capacity % (ctx_splits * block_n) == 0:
-                return ctx_splits
-        return self._CTX_SPLIT_CANDIDATES[-1]
+        """The most splits up to 32, a power of two as the combine's reductions take, that
+        still give each split a key tile of a table of *capacity* keys. A call's live keys
+        are shared out among the splits by whole tiles, so a split streams fewer tiles as the
+        live length falls, and the splits a short call leaves empty only launch."""
+        tiles = capacity // self.config["block_N"]
+        return min(32, 1 << (tiles.bit_length() - 1))
 
     def forward(
         self,

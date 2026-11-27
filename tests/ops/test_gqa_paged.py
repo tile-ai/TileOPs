@@ -1243,6 +1243,30 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
     _check(op, workload, inputs)
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("cache_len", "dtype"),
+    [
+        pytest.param(4097, torch.bfloat16, marks=pytest.mark.smoke, id="bf16-full-table"),
+        pytest.param(4097, torch.float16, marks=pytest.mark.smoke, id="fp16-full-table"),
+        pytest.param(513, torch.bfloat16, marks=pytest.mark.full, id="bf16-short-of-table"),
+    ],
+)
+def test_gqa_paged_decode_bs1_serves_head_dim_256(cache_len: int, dtype: torch.dtype) -> None:
+    """Qwen3.8-27B's decode attention, 24 query and 4 KV heads of 256 in 64-row pages over a
+    65-page table, runs the batch-1 kernel, its splits sharing the live keys by whole tiles
+    whether they fill the table or an eighth of it."""
+    torch.manual_seed(0)
+    workload = GQAPagedFwdWorkload(24, 4, 256, [1], [cache_len], 64, 65, 65, dtype)
+    inputs = workload.gen_inputs()
+    op = GQAPagedFwdOp(is_causal=True)
+    q, k_cache, _, block_table, _, _, _, k_scale, _, rope_cos, _, sinks = inputs
+    call = op._paged_call(q, k_cache, block_table, k_scale, rope_cos, sinks)
+    assert op.key_for("gqa_paged", call) == "gqa_decode_paged_bs1_kernel"
+    _check(op, workload, inputs)
+
+
 @pytest.mark.parametrize(
     ("q_lens", "cache_lens", "page_size", "dim", "dtype", "op_kwargs"),
     [

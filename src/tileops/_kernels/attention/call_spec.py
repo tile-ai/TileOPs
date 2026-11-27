@@ -147,11 +147,19 @@ class AttentionCall(CallSpec):
     @property
     def decode_bs1_region(self) -> bool:
         """The batch-1 decode shape the contiguous and paged batch-1 kernels share."""
+        return self._batch1_decode((torch.float16,), (128,))
+
+    @property
+    def paged_decode_bs1_region(self) -> bool:
+        """The batch-1 decode shape the paged batch-1 kernel serves: the shared region, also
+        in bfloat16 and at head dimension 256."""
+        return self._batch1_decode((torch.float16, torch.bfloat16), (128, 256))
+
+    def _batch1_decode(self, dtypes: tuple[torch.dtype, ...], dims: tuple[int, ...]) -> bool:
+        """Whether this is a batch-1 call in one of *dtypes* at one of *dims*, unsoftcapped,
+        with up to 64 query heads a KV head."""
         if not (
-            self.batch == 1
-            and self.dtype == torch.float16
-            and self.dim == 128
-            and self.softcap == 0.0
+            self.batch == 1 and self.dtype in dtypes and self.dim in dims and self.softcap == 0.0
         ):
             return False
         if self.heads_kv <= 0 or self.heads % self.heads_kv != 0:
