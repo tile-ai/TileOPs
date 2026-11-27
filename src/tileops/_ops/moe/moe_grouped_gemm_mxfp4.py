@@ -11,6 +11,7 @@ from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.moe import (
     MGroupedGEMMMXFP4Call,
     MGroupedGEMMMXFP4FwdInterface,
+    MoEGroupedGEMMMXFP4DecodeKernel,
     MoEGroupedGEMMMXFP4Kernel,
     MoEGroupedGEMMMXFP4SharedDecodeKernel,
 )
@@ -62,10 +63,12 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "grouped_gemm_mxfp4": MoEGroupedGEMMMXFP4Kernel,
         "grouped_gemm_mxfp4_shared_decode": MoEGroupedGEMMMXFP4SharedDecodeKernel,
+        "grouped_gemm_mxfp4_decode": MoEGroupedGEMMMXFP4DecodeKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "grouped_gemm_mxfp4": MGroupedGEMMMXFP4FwdInterface
     }
+    _DECODE_ROWS_PER_EXPERT: ClassVar[int] = 4
 
     def __init__(
         self,
@@ -117,6 +120,7 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
         """
         num_experts, n, _ = b.shape
         k = a.shape[-1]
+        m = math.prod(a.shape[:-1])
         kernel = self.kernel_for(
             "grouped_gemm_mxfp4",
             lambda: MGroupedGEMMMXFP4Call(
@@ -124,9 +128,10 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
                 **layout_call_fields(self.layout),
                 scale_dtype=a_scale.dtype,
                 num_groups=num_experts,
-                m=math.prod(a.shape[:-1]),
+                m=m,
                 n=n,
                 k=k,
+                decode=m <= self._DECODE_ROWS_PER_EXPERT * num_experts,
             ),
         )
         return kernel(a, a_scale, b, b_scale, layout_metadata, out=out)

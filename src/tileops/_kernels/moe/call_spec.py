@@ -178,7 +178,8 @@ class MGroupedGEMMMXFP4Call(_MGroupedLayoutCall):
     ``scale_dtype`` is the dtype of both
     scale tensors, ``float8_e8m0fnu`` or ``float32``. ``m``, the materialized row count, is a
     fact of the call and not of the built kernel, so it is excluded from this record's
-    equality.
+    equality. ``decode`` states that the call is decode-sized, a few rows per expert on average
+    (the op sets the bound); it selects a kernel, so it takes part in equality.
     """
 
     scale_dtype: torch.dtype | None = None
@@ -186,6 +187,7 @@ class MGroupedGEMMMXFP4Call(_MGroupedLayoutCall):
     m: int = dataclasses.field(default=0, compare=False)
     n: int = 0
     k: int = 0
+    decode: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
