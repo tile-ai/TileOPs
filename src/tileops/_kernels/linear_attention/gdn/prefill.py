@@ -48,9 +48,10 @@ def _token_rows(tensor: torch.Tensor) -> torch.Tensor:
     projection do: the copy engine and the vector loads read it there. A packed copy of it
     otherwise."""
     stride, row = tensor.stride(1), tensor[0, 0].numel()
-    if tensor.select(1, 0).is_contiguous() and (
-        tensor.shape[1] == 1
-        or (stride >= row and stride * tensor.element_size() % VECTOR_ACCESS_BYTES == 0)
+    if (
+        tensor.select(1, 0).is_contiguous()
+        and stride >= row
+        and stride * tensor.element_size() % VECTOR_ACCESS_BYTES == 0
     ):
         return tensor
     return tensor.contiguous()
@@ -60,9 +61,7 @@ def _token_stride(tensor: torch.Tensor) -> int | None:
     """The elements between two tokens of *tensor*, ``(1, tokens, *row)``, or ``None`` where
     they lie back to back."""
     row = tensor[0, 0].numel()
-    if tensor.shape[1] == 1 or tensor.stride(1) == row:
-        return None
-    return tensor.stride(1)
+    return None if tensor.stride(1) == row else tensor.stride(1)
 
 
 class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
