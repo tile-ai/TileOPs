@@ -32,7 +32,11 @@ from tileops._kernels.constants import (
 )
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import MGroupedGEMMMXFP4Call, MGroupedGEMMMXFP4FwdInterface
-from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import _B_SCALE_BLOCK, _SUB_BLOCKS
+from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import (
+    _B_SCALE_BLOCK,
+    _SUB_BLOCKS,
+    MoEGroupedGEMMMXFP4Kernel,
+)
 from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = ["MoEGroupedGEMMMXFP4DecodeKernel"]
@@ -526,7 +530,7 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
     _TOKENS_BARRIER: ClassVar[int] = 14
     _VOTE_BARRIER: ClassVar[int] = 15
     _NUM_STAGES: ClassVar[tuple[int, ...]] = (_CODE_SLOTS * _CODE_STEPS,)
-    _SMEM_HEADROOM: ClassVar[int] = 2048
+    _SMEM_HEADROOM: ClassVar[int] = MoEGroupedGEMMMXFP4Kernel._SMEM_HEADROOM
 
     @classmethod
     def refusal(cls, call: MGroupedGEMMMXFP4Call) -> str | None:

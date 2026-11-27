@@ -61,7 +61,8 @@ __device__ __forceinline__ void mxfp4_decode_tokens(uint8_t const* a_scale,
   }
 }
 
-// mxfp4_weight_step under kMxfp4Fold, its codes word ``step`` of each row of
+// mxfp4_weight_fragments of the warp-group's 64 rows as mxfp4_weight_step
+// makes them under kMxfp4Fold, its codes word ``step`` of each row of
 // ``codes`` (rows of CodeSteps words), each row scale 2 ** (top - 127) formed
 // by a shift: the fragments and scales of a step whose codes lie in
 // [kMxfp4CodeLow, kMxfp4CodeHigh]. ``fits`` is cleared unless both of the
@@ -70,49 +71,33 @@ template <int CodeSteps>
 __device__ __forceinline__ void mxfp4_decode_fold_step(
     void const* packed_stage, void const* codes, int step, uint32_t* frags,
     float* scales, int* fits) {
-  int const lane = static_cast<int>(threadIdx.x) & 31;
-  int const g = ((static_cast<int>(threadIdx.x) >> 5) & 3) * 16 + lane / 4;
-  int const offset = 2 * (lane & 3);
-  int const swizzle = (g >> 1) & 3;
-  uint8_t const* rows[2] = {
-      static_cast<uint8_t const*>(packed_stage) + g * 64 + offset,
-      static_cast<uint8_t const*>(packed_stage) + (g + 8) * 64 + offset};
-  uint2 folds[2][4];
-  bool fold = true;
+  mxfp4_weight_fragments(
+      packed_stage, 0, frags, [&](int g, uint2(&folds)[2][4]) {
+        bool fold = true;
 #pragma unroll
-  for (int r = 0; r < 2; ++r) {
-    uint32_t const word =
-        static_cast<uint32_t const*>(codes)[(g + 8 * r) * CodeSteps + step];
-    uint32_t c[4];
+        for (int r = 0; r < 2; ++r) {
+          uint32_t const word = static_cast<uint32_t const*>(
+              codes)[(g + 8 * r) * CodeSteps + step];
+          uint32_t c[4];
 #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-      c[i] = __byte_perm(word, 0, 0x4440u + i);
-    }
-    uint32_t const top = max(max(c[0], c[1]), max(c[2], c[3]));
-    uint32_t const low = min(min(c[0], c[1]), min(c[2], c[3]));
-    fold = fold && top - low <= kMxfp4FoldSpan && mxfp4_code_fast(top) &&
-           mxfp4_code_fast(low);
-    scales[r] = __uint_as_float(top << 23);
-    uint32_t const lo = kMxfp4MagnitudesLo - top * kMxfp4BinadeLo;
-    uint32_t const hi = kMxfp4MagnitudesHi - top * kMxfp4BinadeHi;
+          for (int i = 0; i < 4; ++i) {
+            c[i] = __byte_perm(word, 0, 0x4440u + i);
+          }
+          uint32_t const top = max(max(c[0], c[1]), max(c[2], c[3]));
+          uint32_t const low = min(min(c[0], c[1]), min(c[2], c[3]));
+          fold = fold && top - low <= kMxfp4FoldSpan && mxfp4_code_fast(top) &&
+                 mxfp4_code_fast(low);
+          scales[r] = __uint_as_float(top << 23);
+          uint32_t const lo = kMxfp4MagnitudesLo - top * kMxfp4BinadeLo;
+          uint32_t const hi = kMxfp4MagnitudesHi - top * kMxfp4BinadeHi;
 #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-      folds[r][i] =
-          make_uint2(lo + c[i] * kMxfp4BinadeLo, hi + c[i] * kMxfp4BinadeHi);
-    }
-  }
-  *fits = *fits & static_cast<int>(fold);
-#pragma unroll
-  for (int i = 0; i < 4; ++i) {
-#pragma unroll
-    for (int r = 0; r < 2; ++r) {
-      uint8_t const* chunk = rows[r] + 16 * (i ^ swizzle);
-      uint32_t const lo = *reinterpret_cast<uint16_t const*>(chunk);
-      uint32_t const hi = *reinterpret_cast<uint16_t const*>(chunk + 8);
-      frags[4 * i + r] = mxfp4_e2m1x4_e4m3(lo, folds[r][i]);
-      frags[4 * i + 2 + r] = mxfp4_e2m1x4_e4m3(hi, folds[r][i]);
-    }
-  }
+          for (int i = 0; i < 4; ++i) {
+            folds[r][i] = make_uint2(lo + c[i] * kMxfp4BinadeLo,
+                                     hi + c[i] * kMxfp4BinadeHi);
+          }
+        }
+        *fits = *fits & static_cast<int>(fold);
+      });
 }
 
 // mxfp4_wgmma_rs<N, First, Count, 1> on the N token rows of the stage at

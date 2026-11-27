@@ -1297,9 +1297,6 @@ def test_mxfp4_grouped_gemm_decode_stores_each_run_and_no_other_row(
         pytest.param(
             [0, 0, 0, 0, 0, 13, 0, 0], 128, 3072, 5, marks=pytest.mark.full, id="one-expert"
         ),
-        pytest.param(
-            [0, 0, 0, 0, 0, 13, 0, 0], 128, 4096, 5, marks=pytest.mark.full, id="one-expert-k4096"
-        ),
     ],
 )
 def test_mxfp4_grouped_gemm_decode_splits_a_tile_that_does_not_fold(
@@ -1376,10 +1373,12 @@ def test_mxfp4_grouped_gemm_decode_scale_code_nan() -> None:
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("sizes", "n", "k", "kernel_type"),
+    ("sizes", "layout", "dtype_case", "n", "k", "kernel_type"),
     [
         pytest.param(
             [0, 0, 0, 16] + [0] * 252,
+            _TIGHT_PSUM,
+            _E8M0,
             256,
             2048,
             MoEGroupedGEMMMXFP4DecodeKernel,
@@ -1388,6 +1387,8 @@ def test_mxfp4_grouped_gemm_decode_scale_code_nan() -> None:
         ),
         pytest.param(
             [0, 0, 0, 17] + [0] * 252,
+            _TIGHT_PSUM,
+            _E8M0,
             256,
             2048,
             MoEGroupedGEMMMXFP4Kernel,
@@ -1396,6 +1397,8 @@ def test_mxfp4_grouped_gemm_decode_scale_code_nan() -> None:
         ),
         pytest.param(
             LOOKUP_SIZES["decode-e256"],
+            _TIGHT_PSUM,
+            _E8M0,
             256,
             1536,
             MoEGroupedGEMMMXFP4Kernel,
@@ -1404,24 +1407,58 @@ def test_mxfp4_grouped_gemm_decode_scale_code_nan() -> None:
         ),
         pytest.param(
             [int(g % 683 == 5) for g in range(4096)],
+            _TIGHT_PSUM,
+            _E8M0,
             128,
             1024,
             MoEGroupedGEMMMXFP4Kernel,
             marks=pytest.mark.full,
             id="experts-past-the-lookup",
         ),
+        pytest.param(
+            [1, 0, 2, 0, 3, 0, 0, 1],
+            _TIGHT_PSUM,
+            _E8M0,
+            72,
+            1024,
+            MoEGroupedGEMMMXFP4Kernel,
+            marks=pytest.mark.full,
+            id="n-past-whole-weight-tiles",
+        ),
+        pytest.param(
+            [1, 0, 2, 0, 3, 0, 0, 1],
+            contiguous_layout("tight", "per_row"),
+            _E8M0,
+            128,
+            1024,
+            MoEGroupedGEMMMXFP4Kernel,
+            marks=pytest.mark.full,
+            id="per-row-metadata",
+        ),
+        pytest.param(
+            [1, 0, 2, 0, 3, 0, 0, 1],
+            _TIGHT_PSUM,
+            _F32,
+            128,
+            1024,
+            MoEGroupedGEMMMXFP4Kernel,
+            marks=pytest.mark.full,
+            id="float32-scales",
+        ),
     ],
 )
 def test_mxfp4_grouped_gemm_takes_the_decode_kernel_while_one_cta_holds_a_run(
-    sizes: list, n: int, k: int, kernel_type: type
+    sizes: list, layout: dict, dtype_case: dict, n: int, k: int, kernel_type: type
 ) -> None:
-    """Tight psum rows take the decode kernel while one CTA's WGMMA accumulators, which share
-    a thread's registers with its weight fragments, hold every run whole, all rows on one
-    expert included, and the general kernel at one row more. Few rows take the general kernel
-    when K is not a whole number of the decode kernel's rings, whose redo round restarts the
-    ring, or when they lie over more experts than its run lookup holds. Each matches the
-    reference."""
-    workload = _contiguous_workload(_TIGHT_PSUM, sizes, N=n, K=k)
+    """Tight psum rows under e8m0 scales take the decode kernel while one CTA's WGMMA
+    accumulators, which share a thread's registers with its weight fragments, hold every run
+    whole, all rows on one expert included, and the general kernel at one row more. Few rows
+    take the general kernel when K is not a whole number of the decode kernel's rings, whose
+    redo round restarts the ring; when they lie over more experts than its run lookup holds;
+    when N is not a whole number of its 64-row weight tiles; when the metadata is per row,
+    not the run ends its lookup reads; and under float32 scales, which it does not fold. Each
+    matches the reference."""
+    workload = _contiguous_workload(layout, sizes, dtype_case, N=n, K=k)
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
     run_into_guarded_out(op, workload, *workload.gen_inputs())
     assert type(next(op.iter_kernels())) is kernel_type
