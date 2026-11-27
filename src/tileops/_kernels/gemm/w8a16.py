@@ -22,6 +22,7 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
+    QUANT_SCALE_BLOCK,
     SETMAXNREG_GRANULARITY,
     SHARED_BUFFER_ALIGN_BYTES,
     SM90_REGISTERS,
@@ -35,7 +36,6 @@ from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = ["BMMW8A16Kernel"]
 
-_SCALE_BLOCK = 128
 _HALF_K = 64
 _PRODUCER_REGS = 24
 
@@ -52,7 +52,7 @@ def _in_place(t: torch.Tensor) -> bool:
 
 def _stage_bytes(tile_m: int, wgs: int) -> int:
     """Shared bytes one ring stage holds: the weight rows' e4m3 step and the activation's."""
-    return wgs * WGMMA_ROWS * _SCALE_BLOCK + tile_m * _SCALE_BLOCK * 2
+    return wgs * WGMMA_ROWS * QUANT_SCALE_BLOCK + tile_m * QUANT_SCALE_BLOCK * 2
 
 
 def _fixed_bytes(k: int, tile: dict) -> int:
@@ -62,7 +62,7 @@ def _fixed_bytes(k: int, tile: dict) -> int:
     tile_m, wgs, ksplit = tile["tile_m"], tile["wgs"], tile["ksplit"]
     kib = [
         wgs * tile_m * WGMMA_ROWS * 2,
-        wgs * (k // _SCALE_BLOCK) * 4,
+        wgs * (k // QUANT_SCALE_BLOCK) * 4,
         (ksplit - 1) * wgs * tile_m // 2 * WARPGROUP_THREADS * 4,
     ]
     align = SHARED_BUFFER_ALIGN_BYTES
@@ -96,7 +96,7 @@ def _ring_limits(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) 
     units = batch * -(-m // tile_m) * -(-n // (wgs * WGMMA_ROWS))
     rounds = -(-units // sm_count)
     deepest = (BLOCK_SHARED_BYTES_OPT_IN[90] - _fixed_bytes(k, tile)) // _stage_bytes(tile_m, wgs)
-    return deepest, rounds * (k // _SCALE_BLOCK), -(-units // rounds)
+    return deepest, rounds * (k // QUANT_SCALE_BLOCK), -(-units // rounds)
 
 
 def _ring_config(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) -> dict:
@@ -111,9 +111,9 @@ def _ring_config(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) 
     while True:
         deepest, steps, ctas = _ring_limits(m, n, k, batch, sm_count, tile)
         stages, parts = min(deepest, steps), tile["ksplit"]
-        if stages < k // _SCALE_BLOCK:
+        if stages < k // QUANT_SCALE_BLOCK:
             stages -= stages % parts
-        if stages >= k // _SCALE_BLOCK or parts == 1 or stages >= 2 * parts:
+        if stages >= k // QUANT_SCALE_BLOCK or parts == 1 or stages >= 2 * parts:
             return {**tile, "num_stages": stages, "ctas": ctas}
         tile = {**tile, "ksplit": parts // 2}
 
@@ -154,11 +154,11 @@ def _bmm_w8a16_kernel(
         A ``@tilelang.jit`` factory taking ``(num_stages, ctas, a_strides, c_strides)``.
     """
     rows = wgs * WGMMA_ROWS
-    k_steps = k // _SCALE_BLOCK
+    k_steps = k // QUANT_SCALE_BLOCK
     nblk = -(-n // rows)
     mblk = -(-m // tile_m)
     units = batch * nblk * mblk
-    scale_rows = -(-n // _SCALE_BLOCK)
+    scale_rows = -(-n // QUANT_SCALE_BLOCK)
     regs = tile_m // 2
     groups = wgs * ksplit
     threads = WARPGROUP_THREADS
@@ -203,7 +203,7 @@ def _bmm_w8a16_kernel(
             c: c_param,  # type: ignore
         ) -> None:
             with T.Kernel(ctas, threads=consumers + threads) as bx:
-                codes = T.alloc_shared((num_stages, rows, _SCALE_BLOCK), "float8_e4m3fn")
+                codes = T.alloc_shared((num_stages, rows, QUANT_SCALE_BLOCK), "float8_e4m3fn")
                 acts = T.alloc_shared((num_stages, 2, tile_m, _HALF_K), "bfloat16")
                 staged = T.alloc_shared((wgs, tile_m, WGMMA_ROWS), "bfloat16")
                 scales = T.alloc_shared((wgs, k_steps), "float32")
@@ -245,7 +245,7 @@ def _bmm_w8a16_kernel(
                                 if i * threads + t < k_steps:
                                     scales[wg, i * threads + t] = scale[
                                         g,
-                                        T.min(n0 // _SCALE_BLOCK, scale_rows - 1),
+                                        T.min(n0 // QUANT_SCALE_BLOCK, scale_rows - 1),
                                         i * threads + t,
                                     ]
                         T.sync_threads(barrier_id=15, arrive_count=consumers)
@@ -301,13 +301,13 @@ def _bmm_w8a16_kernel(
                         for ki in T.serial(k_steps):
                             step = unit_step[0] + ki
                             slot = step % num_stages
-                            k0 = ki * _SCALE_BLOCK
+                            k0 = ki * QUANT_SCALE_BLOCK
                             T.barrier_wait(
                                 empty[slot], ((step % (2 * num_stages)) // num_stages) ^ 1
                             )
                             if unit < units:
                                 T.tma_copy(
-                                    b[g, n0 : n0 + rows, k0 : k0 + _SCALE_BLOCK],
+                                    b[g, n0 : n0 + rows, k0 : k0 + QUANT_SCALE_BLOCK],
                                     codes[slot, :, :],
                                     barrier=full[slot],
                                     eviction_policy="evict_first",
@@ -347,8 +347,8 @@ class BMMW8A16Kernel(Kernel, BMMW8A16FwdInterface):
 
     @classmethod
     def refusal(cls, call: BMMW8A16Call) -> "str | None":
-        if call.k == 0 or call.k % _SCALE_BLOCK:
-            return f"k={call.k} is not a positive multiple of {_SCALE_BLOCK}, the scale block"
+        if call.k == 0 or call.k % QUANT_SCALE_BLOCK:
+            return f"k={call.k} is not a positive multiple of {QUANT_SCALE_BLOCK}, the scale block"
         if call.n % 8:
             return f"n={call.n} is not a multiple of 8, the output's 16-byte store"
         tile = _tile_config(call.m, call.n, call.batch, call.sm_count)
@@ -356,7 +356,7 @@ class BMMW8A16Kernel(Kernel, BMMW8A16FwdInterface):
         if cfg["num_stages"] < 1:
             return (
                 f"k={call.k} leaves shared memory no ring stages beside the "
-                f"{call.k // _SCALE_BLOCK} K steps' staged scales"
+                f"{call.k // QUANT_SCALE_BLOCK} K steps' staged scales"
             )
         return super().refusal(call)
 

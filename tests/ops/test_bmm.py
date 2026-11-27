@@ -678,9 +678,9 @@ def test_bmm_w8a16_k_past_its_ring_is_refused() -> None:
 @pytest.mark.parametrize(
     "m",
     [
-        pytest.param(64, marks=pytest.mark.smoke, id="ds-v4-flash-wo-a-64"),
+        pytest.param(1, marks=pytest.mark.smoke, id="ds-v4-flash-wo-a-decode"),
         pytest.param(40, marks=pytest.mark.full, id="ds-v4-flash-wo-a-40"),
-        pytest.param(1, marks=pytest.mark.full, id="ds-v4-flash-wo-a-decode"),
+        pytest.param(64, marks=pytest.mark.full, id="ds-v4-flash-wo-a-64"),
     ],
 )
 def test_bmm_w8a16_ring_gives_each_slot_one_k_part(m: int) -> None:
