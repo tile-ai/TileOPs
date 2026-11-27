@@ -1213,9 +1213,9 @@ _TIGHT_PSUM = contiguous_layout("tight", "physical_psum")
             LOOKUP_SIZES["decode-e256"], 256, 2048, None, marks=pytest.mark.smoke, id="decode-e256"
         ),
         pytest.param(
-            [0, 0, 0, 32, 0, 0, 0, 0], 128, 1024, None, marks=pytest.mark.full, id="one-expert"
+            [0, 0, 0, 16, 0, 0, 0, 0], 128, 1024, None, marks=pytest.mark.full, id="one-expert"
         ),
-        pytest.param([13, 0, 1, 3, 9, 2], 192, 512, None, marks=pytest.mark.full, id="runs"),
+        pytest.param([9, 0, 1, 3, 2, 1], 192, 1024, None, marks=pytest.mark.full, id="runs"),
         pytest.param(
             LOOKUP_SIZES["decode-e256"],
             256,
@@ -1231,8 +1231,9 @@ def test_mxfp4_grouped_gemm_decode_matches_the_general_kernel_bitwise(
 ) -> None:
     """Few rows in all take the decode kernel, whose output equals the general kernel's bit for
     bit: the same folded steps contracted on the same fp8 WGMMA, promoted by the same fused
-    multiply-adds in the same order. The rows: DeepSeek-V4-Flash's decode, one in each of six
-    experts spread over 256; all on one expert; runs of one to thirteen; and DeepSeek-V4-Flash's
+    multiply-adds in the same order. The general kernel serves the same call with a 64-row tile
+    of rows that no expert owns appended. The rows: DeepSeek-V4-Flash's decode, one in each of
+    six experts spread over 256; all on one expert; runs of one to nine; and DeepSeek-V4-Flash's
     decode under token scales of ``2 ** -126`` to ``2 ** -124``, whose products with a step fall
     below float32's normal range, where an unfused multiply flushes them to zero."""
     workload = _contiguous_workload(_TIGHT_PSUM, sizes, N=n, K=k)
@@ -1240,22 +1241,20 @@ def test_mxfp4_grouped_gemm_decode_matches_the_general_kernel_bitwise(
     if token_codes is not None:
         codes = torch.randint(*token_codes, a_scale.shape, dtype=torch.uint8, device=a.device)
         a_scale = codes.view(a_scale.dtype)
-    inputs = (a, a_scale, b, b_scale, ends)
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
-    out = run_into_guarded_out(op, workload, *inputs)
-    assert isinstance(next(op.iter_kernels()), MoEGroupedGEMMMXFP4DecodeKernel)
-    general = MoEGroupedGEMMMXFP4Kernel(  # lint: test-placement allow: the bitwise oracle
-        MGroupedGEMMMXFP4Call(
-            device=a.device,
-            **layout_call_fields(workload.call.arguments()["layout"]),
-            scale_dtype=torch.float8_e8m0fnu,
-            num_groups=b.shape[0],
-            m=a.shape[0],
-            n=b.shape[1],
-            k=a.shape[1],
-        )
+    out = run_into_guarded_out(op, workload, a, a_scale, b, b_scale, ends)
+    unowned = 64
+    a_bytes, scale_codes = a.view(torch.uint8), a_scale.view(torch.uint8)
+    wide = op(
+        torch.cat([a_bytes, a_bytes[:1].repeat(unowned, 1)]).view(a.dtype),
+        torch.cat([scale_codes, scale_codes[:1].repeat(unowned, 1)]).view(a_scale.dtype),
+        b,
+        b_scale,
+        ends,
     )
-    assert torch.equal(out.view(torch.int16), general(*inputs).view(torch.int16))
+    kinds = {type(kernel) for kernel in op.iter_kernels()}
+    assert kinds == {MoEGroupedGEMMMXFP4DecodeKernel, MoEGroupedGEMMMXFP4Kernel}
+    assert torch.equal(out.view(torch.int16), wide[: a.shape[0]].view(torch.int16))
 
 
 @pytest.mark.sm90
@@ -1263,22 +1262,20 @@ def test_mxfp4_grouped_gemm_decode_matches_the_general_kernel_bitwise(
 @pytest.mark.parametrize(
     ("sizes", "n", "k"),
     [
-        pytest.param(
-            [13, 0, 1, 3] + [0] * 251 + [1], 256, 2048, marks=pytest.mark.smoke, id="e256"
-        ),
-        pytest.param([13, 0, 1, 3] + [0] * 27 + [1], 128, 512, marks=pytest.mark.full, id="e32"),
+        pytest.param([9, 0, 1, 3] + [0] * 251 + [1], 256, 2048, marks=pytest.mark.smoke, id="e256"),
+        pytest.param([9, 0, 1, 3] + [0] * 27 + [1], 128, 1024, marks=pytest.mark.full, id="e32"),
     ],
 )
 def test_mxfp4_grouped_gemm_decode_stores_each_run_and_no_other_row(
     sizes: list, n: int, k: int
 ) -> None:
-    """Few tight runs: one of thirteen rows, which one CTA's WGMMA takes as two 8-row tiles,
-    the second of five rows; one of three; single rows; empty experts; and three rows past the
-    last run that no expert owns. Each run's rows match the reference; the unowned rows keep
-    what the output held."""
+    """Few tight runs: one of nine rows, which one CTA's WGMMA takes as two 8-row tiles, the
+    second of one row; one of three; single rows; empty experts; and two rows past the last run
+    that no expert owns. Each run's rows match the reference; the unowned rows keep what the
+    output held."""
     workload = _contiguous_workload(_TIGHT_PSUM, sizes, N=n, K=k)
     a, a_scale, b, b_scale, ends = workload.gen_inputs()
-    extra = 3
+    extra = 2
     a = torch.cat([a, a[:extra]])
     a_scale = torch.cat([a_scale, a_scale[:extra]])
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
@@ -1299,6 +1296,9 @@ def test_mxfp4_grouped_gemm_decode_stores_each_run_and_no_other_row(
         ),
         pytest.param(
             [0, 0, 0, 0, 0, 13, 0, 0], 128, 3072, 5, marks=pytest.mark.full, id="one-expert"
+        ),
+        pytest.param(
+            [0, 0, 0, 0, 0, 13, 0, 0], 128, 4096, 5, marks=pytest.mark.full, id="one-expert-k4096"
         ),
     ],
 )
@@ -1379,7 +1379,7 @@ def test_mxfp4_grouped_gemm_decode_scale_code_nan() -> None:
     ("sizes", "n", "k", "kernel_type"),
     [
         pytest.param(
-            [0, 0, 0, 32] + [0] * 252,
+            [0, 0, 0, 16] + [0] * 252,
             256,
             2048,
             MoEGroupedGEMMMXFP4DecodeKernel,
@@ -1387,7 +1387,7 @@ def test_mxfp4_grouped_gemm_decode_scale_code_nan() -> None:
             id="one-cta-holds-the-rows",
         ),
         pytest.param(
-            [0, 0, 0, 33] + [0] * 252,
+            [0, 0, 0, 17] + [0] * 252,
             256,
             2048,
             MoEGroupedGEMMMXFP4Kernel,
@@ -1395,9 +1395,17 @@ def test_mxfp4_grouped_gemm_decode_scale_code_nan() -> None:
             id="one-row-past",
         ),
         pytest.param(
+            LOOKUP_SIZES["decode-e256"],
+            256,
+            1536,
+            MoEGroupedGEMMMXFP4Kernel,
+            marks=pytest.mark.full,
+            id="k-past-a-whole-ring",
+        ),
+        pytest.param(
             [int(g % 683 == 5) for g in range(4096)],
             128,
-            512,
+            1024,
             MoEGroupedGEMMMXFP4Kernel,
             marks=pytest.mark.full,
             id="experts-past-the-lookup",
@@ -1409,8 +1417,10 @@ def test_mxfp4_grouped_gemm_takes_the_decode_kernel_while_one_cta_holds_a_run(
 ) -> None:
     """Tight psum rows take the decode kernel while one CTA's WGMMA accumulators, which share
     a thread's registers with its weight fragments, hold every run whole, all rows on one
-    expert included, and the general kernel at one row more; few rows over more experts than
-    the decode kernel's run lookup holds take the general kernel. Each matches the reference."""
+    expert included, and the general kernel at one row more. Few rows take the general kernel
+    when K is not a whole number of the decode kernel's rings, whose redo round restarts the
+    ring, or when they lie over more experts than its run lookup holds. Each matches the
+    reference."""
     workload = _contiguous_workload(_TIGHT_PSUM, sizes, N=n, K=k)
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
     run_into_guarded_out(op, workload, *workload.gen_inputs())
@@ -1421,13 +1431,17 @@ def test_mxfp4_grouped_gemm_takes_the_decode_kernel_while_one_cta_holds_a_run(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_mxfp4_grouped_gemm_decode_tune_picks_a_correct_config() -> None:
-    """Tuning DeepSeek-V4-Flash's decode, sixteen K steps that a ring of four or eight stages
-    divides, picks a ring depth of the decode kernel that computes the GEMM correctly."""
+    """Tuning DeepSeek-V4-Flash's decode picks a config of the decode kernel that computes the
+    GEMM correctly, and offers no ring shallower than two code boxes' eight K steps, which the
+    redo round's code-box wait needs to return."""
     workload = _contiguous_workload(_TIGHT_PSUM, LOOKUP_SIZES["decode-e256"], N=256, K=2048)
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
     op.request_tune()
     run_into_guarded_out(op, workload, *workload.gen_inputs())
-    assert isinstance(next(op.iter_kernels()), MoEGroupedGEMMMXFP4DecodeKernel)
+    kernel = next(op.iter_kernels())
+    assert isinstance(kernel, MoEGroupedGEMMMXFP4DecodeKernel)
+    assert min(config["num_stages"] for config in kernel.autotune_configs) >= 8
+    assert kernel.config["num_stages"] >= 8
 
 
 @pytest.mark.sm90
@@ -1438,7 +1452,7 @@ def test_mxfp4_grouped_gemm_decode_tune_picks_a_correct_config() -> None:
         pytest.param(
             _E8M0,
             LOOKUP_SIZES["decode-e256"],
-            [0, 0, 0, 32] + [0] * 252,
+            [0, 0, 0, 16] + [0] * 252,
             256,
             2048,
             marks=pytest.mark.smoke,

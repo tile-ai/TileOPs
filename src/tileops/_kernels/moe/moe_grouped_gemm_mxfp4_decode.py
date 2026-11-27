@@ -68,7 +68,7 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
     kernel = MoEGroupedGEMMMXFP4DecodeKernel
     row_tile, row_tiles, code_steps = kernel._ROW_TILE, kernel._ROW_TILES, kernel._CODE_STEPS
     threads, blocks_per_sm = kernel._THREADS, kernel._BLOCKS_PER_SM
-    vote_barrier = kernel._VOTE_BARRIER
+    tokens_barrier, vote_barrier = kernel._TOKENS_BARRIER, kernel._VOTE_BARRIER
     block_k = QUANT_SCALE_BLOCK
     packed_k = block_k // 2
     scale_k = k // block_k
@@ -100,6 +100,7 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
         def issue(
             a_desc,
             a_bytes,
+            again,
             b_desc,
             s_desc,
             a_shared,
@@ -110,7 +111,6 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
             row,
             n0,
             g,
-            again,
         ):
             """Stream the group's K steps through the ring in round ``again``: each step's box of
             ``a_bytes`` of rows and its packed weights, and every ``code_steps``-th step the codes
@@ -204,6 +204,11 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
             fold,
             built,
             again,
+            frags,
+            scales,
+            frags_next,
+            scales_next,
+            kk,
             a_shared,
             b_packed,
             codes,
@@ -212,13 +217,8 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
             empty,
             final,
             step,
-            frags,
-            scales,
-            frags_next,
-            scales_next,
             fits,
             tiles,
-            kk,
             tx,
         ):
             """K step ``kk``: its first WGMMAs while the next step's weights decode, then the rest
@@ -269,51 +269,12 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
             unroll two, the fragment buffers' period, which keeps the program's code within what
             the instruction caches hold when other kernels run between its calls."""
             decode(fold, again, b_packed, codes, full, frags0, scales0, fits, 0)
+            rest = (a_shared, b_packed, codes, tokens, full, empty, final, step, fits, tiles, tx)
             for kk in T.unroll(scale_k, unroll_factor=num_stages if fold and built == 1 else 2):
                 if kk % 2 == 0:
-                    run_step(
-                        fold,
-                        built,
-                        again,
-                        a_shared,
-                        b_packed,
-                        codes,
-                        tokens,
-                        full,
-                        empty,
-                        final,
-                        step,
-                        frags0,
-                        scales0,
-                        frags1,
-                        scales1,
-                        fits,
-                        tiles,
-                        kk,
-                        tx,
-                    )
+                    run_step(fold, built, again, frags0, scales0, frags1, scales1, kk, *rest)
                 else:
-                    run_step(
-                        fold,
-                        built,
-                        again,
-                        a_shared,
-                        b_packed,
-                        codes,
-                        tokens,
-                        full,
-                        empty,
-                        final,
-                        step,
-                        frags1,
-                        scales1,
-                        frags0,
-                        scales0,
-                        fits,
-                        tiles,
-                        kk,
-                        tx,
-                    )
+                    run_step(fold, built, again, frags1, scales1, frags0, scales0, kk, *rest)
 
         @T.prim_func
         def _moe_grouped_gemm_mxfp4_decode_main(
@@ -340,8 +301,8 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                 voted = T.alloc_barrier([1])
                 run = T.alloc_local((3,), "int32")
                 fits = T.alloc_local((1,), "int32")
-                final = T.alloc_local((4 * row_tiles,), "float32")
-                step = T.alloc_local((4 * row_tiles,), "float32")
+                final = T.alloc_local((row_tile // 2 * row_tiles,), "float32")
+                step = T.alloc_local((row_tile // 2 * row_tiles,), "float32")
                 frags0 = T.alloc_local((16,), "uint32")
                 frags1 = T.alloc_local((16,), "uint32")
                 scales0 = T.alloc_local((8,), "float32")
@@ -423,17 +384,6 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                     TMA_L2_PROMOTION_128B,
                     TMA_OOB_FILL_NONE,
                 )
-                if tx < math_threads:
-                    T.call_extern(
-                        "handle",
-                        f"tileops::mxfp4_decode_tokens<{scale_k}, {math_threads}, "
-                        f"{row_tile * row_tiles}>",
-                        A_scale.data,
-                        row,
-                        m,
-                        T.address_of(tokens[0]),
-                        tx,
-                    )
                 found = T.call_extern(
                     "bool",
                     f"tileops::mxfp4_decode_find_run<{threads}, {num_groups}>",
@@ -446,102 +396,51 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                 rows = T.min(T.min(run[2], m) - row, row_tile * row_tiles)
                 tiles = (rows + row_tile - 1) // row_tile
                 n0 = tile * block_n
+                state = (
+                    a_shared,
+                    b_packed,
+                    codes,
+                    tokens,
+                    full,
+                    empty,
+                    final,
+                    step,
+                    frags0,
+                    scales0,
+                    frags1,
+                    scales1,
+                    fits,
+                    tiles,
+                    tx,
+                )
                 if T.And(found, (row - run[1]) % (row_tile * row_tiles) == 0):
+                    stream = (b_desc, s_desc, a_shared, b_packed, codes, full, empty, row, n0, g)
                     if tx == math_threads:
                         if tiles == 1:
-                            issue(
-                                a_desc,
-                                tile_bytes,
-                                b_desc,
-                                s_desc,
-                                a_shared,
-                                b_packed,
-                                codes,
-                                full,
-                                empty,
-                                row,
-                                n0,
-                                g,
-                                0,
-                            )
+                            issue(a_desc, tile_bytes, 0, *stream)
                         else:
-                            issue(
-                                group_desc,
-                                group_bytes,
-                                b_desc,
-                                s_desc,
-                                a_shared,
-                                b_packed,
-                                codes,
-                                full,
-                                empty,
-                                row,
-                                n0,
-                                g,
-                                0,
-                            )
+                            issue(group_desc, group_bytes, 0, *stream)
                         T.barrier_wait(voted[0], 0)
                         if T.call_extern("int32", "tileops::mxfp4_decode_read", vote.data) == 0:
-                            issue(
-                                group_desc,
-                                group_bytes,
-                                b_desc,
-                                s_desc,
-                                a_shared,
-                                b_packed,
-                                codes,
-                                full,
-                                empty,
-                                row,
-                                n0,
-                                g,
-                                1,
-                            )
+                            issue(group_desc, group_bytes, 1, *stream)
                     elif tx < math_threads:
+                        T.call_extern(
+                            "handle",
+                            f"tileops::mxfp4_decode_tokens<{scale_k}, {math_threads}, "
+                            f"{row_tile * row_tiles}>",
+                            A_scale.data,
+                            row,
+                            m,
+                            T.address_of(tokens[0]),
+                            tx,
+                        )
+                        T.sync_threads(barrier_id=tokens_barrier, arrive_count=math_threads)
                         T.clear(final)
                         fits[0] = 1
                         if tiles == 1:
-                            steps(
-                                True,
-                                1,
-                                0,
-                                a_shared,
-                                b_packed,
-                                codes,
-                                tokens,
-                                full,
-                                empty,
-                                final,
-                                step,
-                                frags0,
-                                scales0,
-                                frags1,
-                                scales1,
-                                fits,
-                                tiles,
-                                tx,
-                            )
+                            steps(True, 1, 0, *state)
                         else:
-                            steps(
-                                True,
-                                row_tiles,
-                                0,
-                                a_shared,
-                                b_packed,
-                                codes,
-                                tokens,
-                                full,
-                                empty,
-                                final,
-                                step,
-                                frags0,
-                                scales0,
-                                frags1,
-                                scales1,
-                                fits,
-                                tiles,
-                                tx,
-                            )
+                            steps(True, row_tiles, 0, *state)
                         folds = T.call_extern(
                             "int32",
                             "tileops::mxfp4_all_threads",
@@ -559,26 +458,7 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                             )
                         if folds == 0:
                             T.clear(final)
-                            steps(
-                                False,
-                                row_tiles,
-                                1,
-                                a_shared,
-                                b_packed,
-                                codes,
-                                tokens,
-                                full,
-                                empty,
-                                final,
-                                step,
-                                frags0,
-                                scales0,
-                                frags1,
-                                scales1,
-                                fits,
-                                tiles,
-                                tx,
-                            )
+                            steps(False, row_tiles, 1, *state)
                         if tiles == 1:
                             T.call_extern(
                                 "handle",
@@ -615,37 +495,42 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
     scale; another contracts sub-block by sub-block, its scale products split into mantissa and
     exponent.
 
-    ``_ROW_TILE`` is the fp8 WGMMA's least N. ``_ROW_TILES`` is the most tiles whose two
-    accumulators a thread fit beside the fragments in 128 registers; eight spill.
-    ``_MAX_ROWS`` is one group, so each run streams its weights once: past it, with every row
-    on one expert, the second group streams them again and the general kernel's 64-row tiles
-    overtake. ``_BLOCKS_PER_SM`` caps registers at 128 so that three CTAs share a SM, which
-    streams a decode step's weights faster than two. A config is ``{num_stages}``, the depth of
-    the ring of row and weight stages, a multiple of ``_CODE_STEPS`` that divides the K steps; the
-    deeper is the default, as it decodes a token of DeepSeek-V4-Flash faster. The run lookup holds
-    ``_LOOKUP_ENDS`` experts' ends a thread in registers it frees before the K steps, which serves
-    ``_LOOKUP_ENDS * _THREADS`` experts. TileLang numbers its own named barriers up from 0, so the
-    math warp-group's vote takes an id from the top of the 16.
+    ``_ROW_TILE`` is the fp8 WGMMA's least N. ``_MAX_ROWS`` is one group, so each run streams its
+    weights once; a group is ``_ROW_TILES`` tiles, sixteen rows, because past them two to four
+    experts holding 8 to 17 rows each lose to the general kernel's 64-row tiles.
+    ``_BLOCKS_PER_SM`` caps registers at 128 so that three CTAs share a SM, which streams a
+    decode step's weights faster than two; their shared memory holds three to K = 32768. A config
+    is ``{num_stages}``, the depth of the ring of row and weight stages, which holds two code
+    boxes' steps: the redo round's first code-box wait targets the last round-0 step that read
+    the box, and a ring that deep keeps that step's release one barrier phase behind, where a
+    shallower ring lets round 0's last releases run its barrier two phases ahead and the wait
+    never returns. ``K`` is a whole number of rings, so the redo round starts on the ring's and
+    the code boxes' first slots. The run lookup holds ``_LOOKUP_ENDS`` experts' ends a thread in
+    registers it frees before the K steps, which serves ``_LOOKUP_ENDS * _THREADS`` experts.
+    The math warp-group of a CTA that serves a group fills the group's token scales after the
+    lookup, so the CTAs of rows that start no group exit without loads. TileLang numbers its own
+    named barriers up from 0, so the warp-group's token and vote barriers take the last two.
     """
 
     supported_archs: list[int] = [90]
     preferred_over: ClassVar[frozenset[str]] = frozenset({"grouped_gemm_mxfp4"})
     _ROW_TILE: ClassVar[int] = 8
-    _ROW_TILES: ClassVar[int] = 4
+    _ROW_TILES: ClassVar[int] = 2
     _MAX_ROWS: ClassVar[int] = _ROW_TILE * _ROW_TILES
     _CODE_STEPS: ClassVar[int] = 4
     _LOOKUP_ENDS: ClassVar[int] = 16
     _THREADS: ClassVar[int] = WARPGROUP_THREADS + 32
     _BLOCKS_PER_SM: ClassVar[int] = 3
-    _VOTE_BARRIER: ClassVar[int] = 13
-    _NUM_STAGES: ClassVar[tuple[int, ...]] = (4, 8)
+    _TOKENS_BARRIER: ClassVar[int] = 14
+    _VOTE_BARRIER: ClassVar[int] = 15
+    _NUM_STAGES: ClassVar[tuple[int, ...]] = (2 * _CODE_STEPS,)
     _SMEM_HEADROOM: ClassVar[int] = 2048
 
     @classmethod
     def refusal(cls, call: MGroupedGEMMMXFP4Call) -> str | None:
         """At most ``_MAX_ROWS`` rows in all, in tight ``physical_psum`` runs under e8m0 scales,
-        experts the run lookup holds, ``K`` a positive multiple of ``_CODE_STEPS`` K steps, ``N`` of 64,
-        and the shallowest ring fitting in shared memory."""
+        experts the run lookup holds, ``K`` a positive multiple of the ring's K steps, ``N`` of 64,
+        and the ring fitting in shared memory."""
         if call.kind != "contiguous" or call.packing != "tight":
             return f"reads tight contiguous rows, got {call.kind} {call.packing}"
         if call.metadata_kind != "physical_psum":
@@ -657,17 +542,15 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
         most = cls._LOOKUP_ENDS * cls._THREADS
         if call.num_groups > most:
             return f"looks up a row's run among at most {most} experts, got {call.num_groups}"
-        step_k = QUANT_SCALE_BLOCK * cls._CODE_STEPS
-        if call.k <= 0 or call.k % step_k:
-            return (
-                f"loads {cls._CODE_STEPS} K steps' codes a box, so needs K a multiple of {step_k}"
-            )
+        ring_k = QUANT_SCALE_BLOCK * min(cls._NUM_STAGES)
+        if call.k <= 0 or call.k % ring_k:
+            return f"redoes a tile from the ring's first slot, so needs K a multiple of {ring_k}"
         if call.n % WGMMA_ROWS:
             return f"tiles N by {WGMMA_ROWS} weight rows, got N = {call.n}"
         least = _decode_smem_bytes(min(cls._NUM_STAGES), call.k // QUANT_SCALE_BLOCK)
         room = call.smem_budget - cls._SMEM_HEADROOM
         if least > room:
-            return f"takes {least} bytes of shared memory on the shallowest ring, past {room}"
+            return f"takes {least} bytes of shared memory on its ring, past {room}"
         return super().refusal(call)
 
     @classmethod
