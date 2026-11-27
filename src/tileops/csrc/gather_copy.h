@@ -29,6 +29,38 @@ __device__ __forceinline__ void cp_async_evict_last(void* dst,
   }
 }
 
+// Loads B bytes (4, 8 or 16) from global src into the registers at dst with
+// the cache operator and L2 policy cp_async_evict_last<B> uses: .cg for 16
+// bytes, .ca for 4 and 8, evict-last.
+template <int B>
+__device__ __forceinline__ void load_vector_evict_last(void* dst,
+                                                       const void* src) {
+  static_assert(B == 4 || B == 8 || B == 16,
+                "a vector load moves 4, 8 or 16 bytes");
+  uint64_t policy;
+  asm("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(policy));
+  if constexpr (B == 16) {
+    uint4& v = *static_cast<uint4*>(dst);
+    asm volatile(
+        "ld.global.cg.L2::cache_hint.v4.u32 {%0, %1, %2, %3}, [%4], %5;"
+        : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+        : "l"(src), "l"(policy)
+        : "memory");
+  } else if constexpr (B == 8) {
+    uint2& v = *static_cast<uint2*>(dst);
+    asm volatile("ld.global.ca.L2::cache_hint.v2.u32 {%0, %1}, [%2], %3;"
+                 : "=r"(v.x), "=r"(v.y)
+                 : "l"(src), "l"(policy)
+                 : "memory");
+  } else {
+    unsigned& v = *static_cast<unsigned*>(dst);
+    asm volatile("ld.global.ca.L2::cache_hint.u32 %0, [%1], %2;"
+                 : "=r"(v)
+                 : "l"(src), "l"(policy)
+                 : "memory");
+  }
+}
+
 // Stores the B bytes (4, 8 or 16) at src to global dst as streaming data
 // (st.global.cs), which no later read of this kernel needs.
 template <int B>

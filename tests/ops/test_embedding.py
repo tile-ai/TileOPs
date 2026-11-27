@@ -148,7 +148,8 @@ def test_embedding_launches_by_id_count(D, monkeypatch) -> None:
     """A one-row tile's call launches the default program within one wave of its CTAs and the
     spread program past it; where the row has a one-wave program, the call launches that,
     asking for the CTAs an SM holds of it, while those fit the call in one wave and the spread
-    program's waves outnumber the ratio of passes a thread (five for two)."""
+    program's waves outnumber the ratio of passes a thread (five for two). That program lands
+    its vectors in shared memory; every other lands them in registers."""
     call = EmbeddingCall(
         dim=D, dtype=torch.bfloat16, index_dtype=torch.int64, device=torch.device(run_device())
     )
@@ -161,7 +162,7 @@ def test_embedding_launches_by_id_count(D, monkeypatch) -> None:
     if wave != threads:
         assert (cfg["block_rows"], spread, wave) == (1, 160, 64), cfg
         passes_over = kernel._resident(cfg, spread) * 5 // 2
-        two_warp_wave = kernel._resident(cfg, wave)
+        two_warp_wave = kernel._resident(cfg, wave, staged=True)
         held = two_warp_wave // call.sm_count
         if passes_over < two_warp_wave:
             launches += [
@@ -178,9 +179,13 @@ def test_embedding_launches_by_id_count(D, monkeypatch) -> None:
         test = _test([tokens], 50, D, "int64", "bfloat16")
         test.check(op, *test.gen_inputs())
         assert launched[-1] == facts, (tokens, launched)
-    for launch_threads, min_blocks in {facts for _, facts in launches if facts[1]}:
+    for launch_threads, min_blocks in {facts for _, facts in launches}:
         source = kernel.program(kernel._compile, launch_threads, min_blocks).get_kernel_source()
-        assert f"__launch_bounds__({launch_threads}, {min_blocks})" in source, source[:2000]
+        if min_blocks:
+            assert f"__launch_bounds__({launch_threads}, {min_blocks})" in source, source[:2000]
+        # Only the program that asks for its CTA limit lands its vectors in shared memory.
+        assert ("cp_async_evict_last" in source) == bool(min_blocks), source[:2000]
+        assert ("load_vector_evict_last" in source) != bool(min_blocks), source[:2000]
 
 
 @pytest.mark.smoke
@@ -205,7 +210,7 @@ def test_embedding_one_wave_program_counts_shared_memory() -> None:
     stage = 320 * 16
     by_smem = call.smem_per_sm // (stage + call.smem_per_sm - call.smem_budget)
     held = min(SM_RESIDENT_BLOCKS[call.arch], by_smem)
-    assert kernel._resident(cfg, 64) == call.sm_count * held
+    assert kernel._resident(cfg, 64, staged=True) == call.sm_count * held
 
 
 def _record_launches(kernel, monkeypatch) -> list:
