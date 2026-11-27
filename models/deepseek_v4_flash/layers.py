@@ -142,7 +142,9 @@ class FP8Linear:
 
     def rows(self, start: int, stop: int) -> FP8Linear:
         """The layer of output rows ``[start, stop)``, viewing this one's weight and scales;
-        ``start`` opens a 128-row scale block."""
+        ``start`` must open a 128-row scale block, so the view's scales are its own."""
+        if start % 128:
+            raise ValueError(f"row {start} does not open a 128-row scale block")
         return FP8Linear(self.weight[start:stop], self.scale[start // 128 : -(-stop // 128)])
 
 
@@ -236,7 +238,6 @@ class Indexer:
         self.ratio = ratio
         self.max_entries = max_entries
         self.compressor = Compressor(cfg, ratio, self.head_dim, rotate=True, device=device)
-        self.wq_b: FP8Linear
         self.weights_proj: torch.Tensor
         self.weight_scale = torch.tensor(
             [self.head_dim**-0.5 * self.n_heads**-0.5], dtype=torch.float32, device=device
@@ -253,7 +254,8 @@ class Indexer:
     ) -> torch.Tensor:
         """Return ``[1, S, index_topk]`` int32 indices of compressed entries, shifted by
         ``step.offset`` and padded with -1, for the queries ``q`` (``[S, n_heads *
-        head_dim]``) that ``wq_b`` projects from the attention's low-rank queries."""
+        head_dim]``) that the attention's ``indexer_wq_b`` projects from its low-rank
+        queries."""
         start_pos, seqlen = step.start_pos, step.seqlen
         q = q.view(1, seqlen, self.n_heads, self.head_dim)
         ops.rope(q[..., -self.rope_dim :], rope.cos, rope.sin, seqlen_offsets=step.starts)
@@ -287,9 +289,9 @@ class Attention:
     whose trailing ``rope_head_dim`` dimensions carry interleaved RoPE. The output is rotated
     back, projected per group by ``wo_a`` and mixed by ``wo_b``. ``wq_a_kv`` stacks the rows of
     ``wq_a`` and ``wkv``, which read the same input, and ``wq_b_index`` those of ``wq_b`` and
-    the indexer's ``wq_b``: a one-token call quantizes the input once and runs one GEMM for
-    each pair, whose columns are bit for bit the two GEMMs' and lie in place, where a longer
-    call's would be strided.
+    ``indexer_wq_b``, the indexer's query projection; each layer of a pair is a row view of its
+    stack. A one-token call quantizes the input once and runs one GEMM for each pair, whose
+    output columns lie in place; a longer call's would be strided, so it runs the two views.
     """
 
     def __init__(
@@ -302,6 +304,7 @@ class Attention:
         self.o_groups = cfg.o_groups
         self.o_rank = cfg.o_lora_rank
         self.q_rank = cfg.q_lora_rank
+        self.q_width = cfg.n_heads * cfg.head_dim
         self.ratio = cfg.compress_ratios[layer_id]
         self.max_entries = max_seq_len // self.ratio if self.ratio else 0
         self.compressor = (
@@ -317,6 +320,7 @@ class Attention:
         self.q_norm: torch.Tensor
         self.wq_b_index: FP8Linear | None
         self.wq_b: FP8Linear
+        self.indexer_wq_b: FP8Linear | None
         self.wkv: FP8Linear
         self.kv_norm: torch.Tensor
         self.wo_a: torch.Tensor
@@ -337,13 +341,12 @@ class Attention:
         else:
             q_low, kv = self.wq_a(ops, x), self.wkv(ops, x)
         qr = ops.norm(q_low, self.q_norm)
-        q_width = self.n_heads * self.head_dim
         if one and self.wq_b_index is not None:
             q_both = self.wq_b_index(ops, qr)
-            q, index_q = q_both[:, :q_width], q_both[:, q_width:]
+            q, index_q = q_both[:, : self.q_width], q_both[:, self.q_width :]
         else:
             q = self.wq_b(ops, qr)
-            index_q = self.indexer.wq_b(ops, qr) if self.indexer is not None else None
+            index_q = self.indexer_wq_b(ops, qr) if self.indexer_wq_b is not None else None
         q = ops.norm(q.view(1, seqlen, self.n_heads, self.head_dim), None)
         ops.rope(q[..., -rd:], rope.cos, rope.sin, seqlen_offsets=step.starts)
         kv = ops.norm(kv, self.kv_norm)

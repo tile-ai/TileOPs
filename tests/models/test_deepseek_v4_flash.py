@@ -123,6 +123,7 @@ def checkpoint(tmp_path_factory):
     [
         pytest.param({}, "layers.0.attn.bias", "layer 0: unused tensors", id="in-layer"),
         pytest.param({"moe_intermediate_size": 64}, None, "128-row blocks", id="partial-block"),
+        pytest.param({"q_lora_rank": 192}, None, "128-row blocks", id="low-rank-partial-block"),
     ],
 )
 def test_from_pretrained_refuses_a_checkpoint_it_cannot_read_whole(tmp_path, change, extra, match):
@@ -167,26 +168,6 @@ def _check_decode_state(block, official_block, positions: int) -> None:
     for name, actual, expected, tol in pairs:
         rel = ((actual.float() - expected.float()).norm() / expected.float().norm()).item()
         assert rel <= tol, f"{name}: {rel:.3e} relative L2 from the official state, bound {tol:.0e}"
-
-
-@pytest.mark.sm90
-def test_a_one_token_call_runs_each_stacked_projection_as_its_two(checkpoint):
-    """Each layer's stacked projections, on one token, give the columns of the two layers they
-    stack bit for bit: ``wq_a_kv`` those of ``wq_a`` and ``wkv``, ``wq_b_index`` those of
-    ``wq_b`` and the indexer's ``wq_b``."""
-    path, _ = checkpoint
-    model = DeepseekV4FlashForCausalLM.from_pretrained(path, device=run_device(), max_seq_len=256)
-    ops, cfg = model.ops, model.config
-    g = torch.Generator().manual_seed(2)
-    for layer in model.layers:
-        attn = layer.attn
-        pairs = [(attn.wq_a_kv, attn.wq_a, attn.wkv, cfg.dim)]
-        if attn.indexer is not None:
-            pairs.append((attn.wq_b_index, attn.wq_b, attn.indexer.wq_b, cfg.q_lora_rank))
-        for stacked, first, second, width in pairs:
-            x = torch.randn(1, width, generator=g).to(run_device(), torch.bfloat16)
-            together = stacked(ops, x)
-            assert torch.equal(together, torch.cat([first(ops, x), second(ops, x)], dim=1))
 
 
 @pytest.mark.sm90

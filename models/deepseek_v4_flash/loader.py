@@ -95,13 +95,12 @@ def load_layer(block: Block, t: dict[str, torch.Tensor], n_experts: int) -> None
     attn.wkv = attn.wq_a_kv.rows(attn.q_rank, attn.wq_a_kv.weight.shape[0])
     attn.q_norm = t.pop("attn.q_norm.weight")
     if attn.indexer is None:
-        attn.wq_b_index = None
+        attn.wq_b_index = attn.indexer_wq_b = None
         attn.wq_b = _fp8(t, "attn.wq_b")
     else:
         attn.wq_b_index = _fp8_stacked(t, "attn.wq_b", "attn.indexer.wq_b")
-        width = attn.n_heads * attn.head_dim
-        attn.wq_b = attn.wq_b_index.rows(0, width)
-        attn.indexer.wq_b = attn.wq_b_index.rows(width, attn.wq_b_index.weight.shape[0])
+        attn.wq_b = attn.wq_b_index.rows(0, attn.q_width)
+        attn.indexer_wq_b = attn.wq_b_index.rows(attn.q_width, attn.wq_b_index.weight.shape[0])
     attn.kv_norm = t.pop("attn.kv_norm.weight")
     attn.wo_b = _fp8(t, "attn.wo_b")
     attn.attn_sink = t.pop("attn.attn_sink")
