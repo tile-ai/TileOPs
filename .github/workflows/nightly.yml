@@ -329,7 +329,7 @@ jobs:
   # is the heavy tier that runs nowhere else; `full` stays as a scheduled
   # regression / environment-drift net.
   # =========================================================================
-  op_test:
+  op-test:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     timeout-minutes: 180
     runs-on: [self-hosted, tile-ops, shared]
@@ -361,7 +361,7 @@ jobs:
           python3 -m pip install -q -c constraints.txt pytest-timeout pytest-cov
           # Coverage reflects the full/nightly tiers only. Smoke-only cases run in
           # gpu-smoke.yml and their code reads as untested here.
-          # tests/models runs in the model_test job.
+          # tests/models runs in the model-test job.
           python3 -m pytest tests/ --ignore=tests/models -m "full or nightly" -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=test_results.xml --cov=tileops --cov-branch --cov-report=html:htmlcov --cov-report=xml:coverage.xml | tee tileops_op_test.log
         shell: bash
 
@@ -384,7 +384,7 @@ jobs:
         run: exit 1
         shell: bash
 
-  model_test:
+  model-test:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     timeout-minutes: 90
     runs-on: [self-hosted, tile-ops, shared]
@@ -445,7 +445,7 @@ jobs:
   # =========================================================================
   nightly-report:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    needs: [benchmark, op_test, model_test]
+    needs: [benchmark, op-test, model-test]
     timeout-minutes: 30
     runs-on: [self-hosted, tile-ops, shared]
     steps:
@@ -659,7 +659,7 @@ jobs:
       - name: Fail when tonight's snapshot was not published
         if: ${{ steps.assemble.outputs.ok != '1' }}
         run: |
-          echo "::error::The snapshot still shows the previous run. Check whether the benchmark, op_test and nightly-report jobs produced the files named above and whether their artifact uploads reached GitHub."
+          echo "::error::The snapshot still shows the previous run. Check whether the benchmark, op-test and nightly-report jobs produced the files named above and whether their artifact uploads reached GitHub."
           exit 1
         shell: bash
 
@@ -667,7 +667,7 @@ jobs:
   # Phase 2c — Write tonight's perf gap queue to the wiki's Perf Tracker
   # =========================================================================
   publish-perf-tracker:
-    # A failed benchmark or op_test job still publishes a snapshot; follow the publish job only.
+    # A failed benchmark or op-test job still publishes a snapshot; follow the publish job only.
     if: ${{ !cancelled() && needs.publish-bench-data.result == 'success' }}
     needs: [publish-bench-data]
     runs-on: ubuntu-latest
@@ -756,7 +756,7 @@ jobs:
   # =========================================================================
   packaging:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    needs: [op_test]
+    needs: [op-test]
     runs-on: [self-hosted, tile-ops, shared]
     steps:
       - name: Checkout code
