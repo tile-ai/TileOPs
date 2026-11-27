@@ -370,6 +370,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
         token_row = 4 * token_run
         token_slices_shape = (2, scale_k * token_row) if prefill else (math_warps, 2, block_m)
         widths = _prefill_widths(block_m)
+        a_box_rows = 16
 
         def rows_width(cursor, tile):
             """The task's rows, past its tile's first up to ``block_m``, rounded up to the
@@ -793,7 +794,7 @@ def _moe_grouped_gemm_mxfp4_kernel(
                         block_k,
                         TMA_SWIZZLE_128B,
                         TMA_L2_PROMOTION_256B,
-                        box_rows=16,
+                        box_rows=a_box_rows,
                     )
 
                 if tx >= math_threads:
@@ -830,13 +831,13 @@ def _moe_grouped_gemm_mxfp4_kernel(
                                             full[slot],
                                             rows_width(cursor, tile) * block_k + block_n * packed_k,
                                         )
-                                        for box in T.serial(rows_width(cursor, tile) // 16):
+                                        for box in T.serial(rows_width(cursor, tile) // a_box_rows):
                                             T.tma_load(
                                                 a_box_desc,
                                                 full[slot],
-                                                T.address_of(a_shared[slot, box * 16, 0]),
+                                                T.address_of(a_shared[slot, box * a_box_rows, 0]),
                                                 kk * block_k,
-                                                m_start + box * 16,
+                                                m_start + box * a_box_rows,
                                                 0,
                                             )
                                     elif tables:
