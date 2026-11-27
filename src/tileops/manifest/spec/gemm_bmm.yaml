@@ -96,13 +96,11 @@ BMMW8A16FwdOp:
 
   workloads:
   # DeepSeek-V4-Flash's wo_a: eight groups of 4096 attention-output columns, each projected
-  # to 1024; a decode step, the prompt lengths the model's throughput run prefills, and a
-  # prompt whose length is no power of two.
+  # to 1024, at the calls the model sends this op, those of at most 64 tokens: a decode step,
+  # a prompt whose length is no power of two, and the 64-token edge.
   - {B: 8, M: 1, N: 1024, K: 4096, label: ds-v4-flash-wo-a-decode}
-  - {B: 8, M: 512, N: 1024, K: 4096, label: ds-v4-flash-wo-a-512}
-  - {B: 8, M: 1000, N: 1024, K: 4096, label: ds-v4-flash-wo-a-1000}
-  - {B: 8, M: 2048, N: 1024, K: 4096, label: ds-v4-flash-wo-a-2048}
-  - {B: 8, M: 4096, N: 1024, K: 4096, label: ds-v4-flash-wo-a-4096}
+  - {B: 8, M: 40, N: 1024, K: 4096, label: ds-v4-flash-wo-a-40}
+  - {B: 8, M: 64, N: 1024, K: 4096, label: ds-v4-flash-wo-a-64}
 
   roofline:
     # The contraction, and one multiply dequantizing each weight.
