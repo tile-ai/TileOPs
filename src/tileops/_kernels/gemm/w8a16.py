@@ -74,7 +74,8 @@ def _tile_config(m: int, n: int, batch: int, sm_count: int) -> dict:
 
     Up to 64 rows run as one tile, padded to WGMMA's eight-column step, under one weight
     warpgroup whose K steps several warpgroups share, so they widen weights at once: seven
-    for an eight-column tile, four for wider ones, whose accumulators take more registers.
+    for an eight-column tile, which with the producer fill the block's 1024-thread limit, four
+    for wider ones, whose accumulators take more registers.
     More rows run 128 at a time over two weight warpgroups sharing the activation tile,
     unless the 128-row units would leave SMs idle that 64-row ones fill.
     """

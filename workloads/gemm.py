@@ -828,7 +828,8 @@ class BMMW8A16BasisWorkload(BMMW8A16Workload):
     """Each activation row a basis vector, so each output is one weight and no sum rounds it.
     That weight is the code times its block's scale rounded twice, to float32 and then to
     bfloat16, the same way in the op and the reference. Row ``i`` of batch item ``b`` selects K
-    index ``(37 * i + 5 * b) % K``, which visits every 16-byte chunk of a K step's codes. The
+    index ``(37 * i + 17 * b) % K``, which visits every 16-byte chunk of a K step's codes, the
+    eight items of a one-row call one chunk each. The
     weights take every e4m3 code but NaN, under scales that differ per block and are not all
     powers of two."""
 
@@ -837,7 +838,7 @@ class BMMW8A16BasisWorkload(BMMW8A16Workload):
         rows = torch.arange(self.m, device=device)
         activation = torch.zeros(self.batch, self.m, self.k, device=device, dtype=torch.bfloat16)
         for b in range(self.batch):
-            activation[b, rows, (37 * rows + 5 * b) % self.k] = 1
+            activation[b, rows, (37 * rows + 17 * b) % self.k] = 1
         codes = torch.randint(0, 254, (self.batch, self.n, self.k), generator=self.rng("codes"))
         codes = torch.where(codes >= 127, codes + 1, codes).to(torch.uint8)
         weight = codes.view(torch.float8_e4m3fn).to(device)
@@ -846,8 +847,6 @@ class BMMW8A16BasisWorkload(BMMW8A16Workload):
         return activation, weight, scale.to(device)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         return Exact(atol=0, rtol=0)
 
 
