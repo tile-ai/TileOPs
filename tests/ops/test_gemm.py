@@ -3662,42 +3662,86 @@ def test_gemv_register_body(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("per_sm", "extra", "k", "rows"),
+    ("per_sm", "extra", "k", "dtype", "rows"),
     [
-        pytest.param(0, 7, 4096, None, marks=pytest.mark.smoke, id="row-of-4096"),
-        pytest.param(0, 7, 4097, 1, marks=pytest.mark.full, id="row-of-4097"),
-        pytest.param(15, 0, 10240, 1, marks=pytest.mark.full, id="mid-rows-at-15-an-sm"),
-        pytest.param(12, 0, 24576, 1, marks=pytest.mark.full, id="long-rows-at-12-an-sm"),
-        pytest.param(12, 1, 24576, None, marks=pytest.mark.full, id="long-rows-past-12-an-sm"),
-        pytest.param(18, 0, 24576, None, marks=pytest.mark.full, id="long-rows-at-18-an-sm"),
-        pytest.param(18, 1, 24576, 1, marks=pytest.mark.full, id="long-rows-past-18-an-sm"),
-        pytest.param(25, 0, 32768, 1, marks=pytest.mark.full, id="rows-of-32768-at-25-an-sm"),
-        pytest.param(25, 1, 32768, None, marks=pytest.mark.full, id="rows-of-32768-past-25-an-sm"),
-        pytest.param(28, 0, 32768, None, marks=pytest.mark.full, id="rows-of-32768-at-28-an-sm"),
-        pytest.param(28, 1, 32768, 1, marks=pytest.mark.full, id="rows-of-32768-past-28-an-sm"),
-        pytest.param(0, 7, 49152, 1, marks=pytest.mark.full, id="row-of-49152"),
-        pytest.param(0, 7, 49160, None, marks=pytest.mark.full, id="row-past-49152"),
-        pytest.param(2, 0, 6143, 1, marks=pytest.mark.full, id="odd-rows-at-2-an-sm"),
-        pytest.param(2, 1, 6143, None, marks=pytest.mark.full, id="odd-rows-past-2-an-sm"),
-        pytest.param(12, -1, 6143, None, marks=pytest.mark.full, id="odd-rows-under-12-an-sm"),
-        pytest.param(12, 0, 6143, 2, marks=pytest.mark.full, id="odd-rows-at-12-an-sm"),
-        pytest.param(8, -1, 12289, 1, marks=pytest.mark.full, id="odd-long-rows-under-8-an-sm"),
-        pytest.param(8, 0, 12289, 2, marks=pytest.mark.full, id="odd-long-rows-at-8-an-sm"),
+        pytest.param(0, 7, 4096, torch.bfloat16, None, marks=pytest.mark.smoke, id="row-of-4096"),
+        pytest.param(0, 7, 4100, torch.float16, 1, marks=pytest.mark.smoke, id="fp16-row-of-4100"),
+        pytest.param(0, 7, 4097, torch.bfloat16, 1, marks=pytest.mark.full, id="row-of-4097"),
+        pytest.param(
+            15, 0, 10240, torch.bfloat16, 1, marks=pytest.mark.full, id="mid-rows-at-15-an-sm"
+        ),
+        pytest.param(
+            12, 0, 24576, torch.bfloat16, 1, marks=pytest.mark.full, id="long-rows-at-12-an-sm"
+        ),
+        pytest.param(
+            12, 1, 24576, torch.bfloat16, None, marks=pytest.mark.full, id="long-rows-past-12-an-sm"
+        ),
+        pytest.param(
+            18, 0, 24576, torch.bfloat16, None, marks=pytest.mark.full, id="long-rows-at-18-an-sm"
+        ),
+        pytest.param(
+            18, 1, 24576, torch.bfloat16, 1, marks=pytest.mark.full, id="long-rows-past-18-an-sm"
+        ),
+        pytest.param(
+            15, 0, 12800, torch.bfloat16, None, marks=pytest.mark.full, id="window-from-12800"
+        ),
+        pytest.param(
+            15, 0, 12792, torch.bfloat16, 1, marks=pytest.mark.full, id="window-not-below-12800"
+        ),
+        pytest.param(
+            15, 0, 24576, torch.float16, 1, marks=pytest.mark.full, id="fp16-in-the-window"
+        ),
+        pytest.param(
+            15, 0, 24580, torch.bfloat16, 1, marks=pytest.mark.full, id="unaligned-in-the-window"
+        ),
+        pytest.param(0, 7, 49152, torch.bfloat16, 1, marks=pytest.mark.full, id="row-of-49152"),
+        pytest.param(
+            0, 7, 49160, torch.bfloat16, None, marks=pytest.mark.full, id="aligned-row-past-49152"
+        ),
+        pytest.param(
+            0, 7, 49156, torch.bfloat16, 1, marks=pytest.mark.full, id="unaligned-row-past-49152"
+        ),
+        pytest.param(
+            2, 0, 6143, torch.bfloat16, 1, marks=pytest.mark.full, id="odd-rows-at-2-an-sm"
+        ),
+        pytest.param(
+            2, 1, 6143, torch.bfloat16, None, marks=pytest.mark.full, id="odd-rows-past-2-an-sm"
+        ),
+        pytest.param(
+            12, -1, 6143, torch.bfloat16, None, marks=pytest.mark.full, id="odd-rows-under-12-an-sm"
+        ),
+        pytest.param(
+            12, 0, 6143, torch.bfloat16, 2, marks=pytest.mark.full, id="odd-rows-at-12-an-sm"
+        ),
+        pytest.param(
+            8,
+            -1,
+            12289,
+            torch.bfloat16,
+            1,
+            marks=pytest.mark.full,
+            id="odd-long-rows-under-8-an-sm",
+        ),
+        pytest.param(
+            8, 0, 12289, torch.bfloat16, 2, marks=pytest.mark.full, id="odd-long-rows-at-8-an-sm"
+        ),
     ],
 )
-def test_gemv_register_dispatch(per_sm: int, extra: int, k: int, rows: int | None) -> None:
+def test_gemv_register_dispatch(
+    per_sm: int, extra: int, k: int, dtype: torch.dtype, rows: int | None
+) -> None:
     """Which one-row calls read into registers, and how many rows a warp then holds: not
-    rows of up to 4096 values, odd rows over 2 to 12 rows an SM, or even rows of 12288 or
-    more values past 49152 values, over 12 to 18 rows an SM, or of 32768 values over 25 to
-    28 rows an SM. Two rows a warp run three bursts of odd rows in a loop."""
+    rows of up to 4096 values, odd rows over 2 to 12 rows an SM, aligned rows past what the
+    split row unrolls, or aligned bf16 rows from 12800 values over 12 to 18 rows an SM;
+    fp16 and unaligned rows keep registers there. Two rows a warp run three bursts of odd rows in a
+    loop."""
     n = per_sm * get_sm_count(torch.device(run_device()).index) + extra
-    test = GEMMTest(1, n, k, torch.bfloat16, trans_b=True)
+    test = GEMMTest(1, n, k, dtype, trans_b=True)
     op = GEMMFwdOp()
     test.check(op, *test.gen_inputs())
     (kernel,) = op._entries_built("gemm").values()
     assert isinstance(kernel, GemvKernel) and kernel.staged is (rows is None)
-    if rows is not None:
-        assert kernel.config["rows"] == rows
+    assert kernel.config.get("rows") == rows
 
 
 @pytest.mark.smoke

@@ -20,6 +20,7 @@ __all__ = [
     "fp8_ws_config",
     "gemv_config",
     "gemv_registers",
+    "gemv_unrolled",
     "int8_pingpong_grid",
     "int8_w8a8_config",
     "small_batch_config",
@@ -810,43 +811,78 @@ def best_config(
     return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count, l2_bytes, cal, out_bytes))
 
 
-def gemv_registers(n: int, k: int, sm_count: int) -> bool:
+def gemv_unrolled(aligned: bool, slices: int) -> bool:
+    """Whether a register-body warp that loads ``slices`` 16-byte slices unrolls its bursts:
+    over vector-aligned rows, up to 96 slices. Rolled, the burst loop more than doubles a
+    warp's registers and so halves the blocks an SM fits; unrolled past that, or over the
+    scalar loads of unaligned rows, the body outgrows the instruction cache."""
+    return aligned and slices <= 96
+
+
+def _reduce_threads(k: int) -> int:
+    """The lanes that reduce a row of ``k`` values, on the ring and in registers alike, which
+    fixes the row's bits: 64 over rows of 12288 values or more, 256 from 6144, else 128."""
+    return 64 if k >= 12288 else 256 if k >= 6144 else 128
+
+
+def _ring_config(k: int) -> dict:
+    """Main's staged-ring config for one-row bands: two rows a block over five stages from
+    12288 values, else one row over four."""
+    if k >= 12288:
+        return {"block_n": 2, "reduce_threads": 64, "num_stages": 5}
+    return {"block_n": 1, "reduce_threads": _reduce_threads(k), "num_stages": 4}
+
+
+def _two_rows_a_warp_from(k: int) -> int:
+    """Rows an SM from which odd rows of ``k`` values go two to a warp: 8 from 12288 values,
+    12 below, where the ring keeps them from 2 rows an SM up to this."""
+    return 8 if k >= 12288 else 12
+
+
+def _split_row_wave(sm_count: int) -> int:
+    """Rows one wave of bf16 default split rows covers at ``reduce_threads`` 64: a 64-thread
+    block holds 80 registers a thread (ptxas, sm_90a), so 12 fit an SM's 65536 registers."""
+    return 65536 // (80 * 64) * sm_count
+
+
+def gemv_registers(n: int, k: int, sm_count: int, dtype: str) -> bool:
     """Whether ``GemvKernel``'s one-row bands read ``n`` rows of ``k`` values into registers
     (``_gemv_row_kernel``) rather than through the staged ring.
 
-    Calibrated on SM90 against the ring at the same ``reduce_threads``. The ring keeps rows
-    of up to 4096 values; odd rows over 2 to 12 rows an SM; and even rows of 12288 values or
-    more past 49152 values, over 12 to 18 rows an SM, a fraction of a wave past what the
-    register body's one-row blocks fill, or of 32768 values over 25 to 28 rows an SM, where
-    the ring's two-row blocks stream them faster. Odd rows of 12288 or more, which those
-    blocks cannot copy, always take registers.
+    Calibrated on SM90 against the ring at the same ``reduce_threads``, so that no call the
+    default register config serves is slower than the ring. The ring keeps rows of up to
+    4096 values; odd rows over 2 rows an SM up to where they go two to a warp; aligned rows
+    the default split row cannot unroll; and aligned bf16 rows of 12800 values or more over
+    one to one and a half waves of split rows, whose second wave runs at most half full.
+    From 12800 values, 25 of its 512-value steps, main's two-row ring keeps pace with a full
+    wave of split rows; below that it is slower than the partial wave too. fp16 split rows,
+    at 98 registers, and rows off the vector width, which run the rolled body, still beat
+    the ring over that range. Odd rows the ring's two-row blocks cannot copy always take
+    registers.
     """
     if k <= 4096:
         return False
     if k % 2:
-        return k >= 12288 or not 2 * sm_count < n < 12 * sm_count
-    if k < 12288:
-        return True
-    if k > 49152 or 12 * sm_count < n <= 18 * sm_count:
+        return _ring_config(k)["block_n"] == 2 or not (
+            2 * sm_count < n < _two_rows_a_warp_from(k) * sm_count
+        )
+    if k % 8 == 0 and not gemv_unrolled(True, -(-k // (_reduce_threads(k) * 8))):
         return False
-    return k != 32768 or not 25 * sm_count < n <= 28 * sm_count
+    wave = _split_row_wave(sm_count)
+    return dtype != "bfloat16" or k % 8 != 0 or k < 12800 or not wave < n <= wave * 3 // 2
 
 
 def gemv_config(n: int, k: int, sm_count: int, registers: bool) -> dict:
     """SM90 ``GemvKernel`` config for its one-row bands (single-row / single-column GEMV).
 
-    ``reduce_threads``, which fixes a row's bits, is 64 at ``k >= 12288``, 256 at
-    ``k >= 6144`` and 128 below. The staged ring takes two rows a block over five stages at
-    64 threads, else one over four. In registers a row is one block of a warp for each of the
-    ring's warps, 32 slices a burst. Odd rows, whose loads are scalar, go two to a warp at
-    bursts of 8 from 12 rows an SM, or from 8 for rows of 12288 values or more.
+    ``_reduce_threads`` fixes a row's bits. In registers a row is one block of a warp for
+    each of the ring's warps, 32 slices a burst. Odd rows, whose loads are scalar, go two to
+    a warp at bursts of 8 from ``_two_rows_a_warp_from`` rows an SM.
     """
-    reduce_threads = 64 if k >= 12288 else 256 if k >= 6144 else 128
     if not registers:
-        if k >= 12288:
-            return {"block_n": 2, "reduce_threads": 64, "num_stages": 5}
-        return {"block_n": 1, "reduce_threads": reduce_threads, "num_stages": 4}
-    if k % 2 and n >= (8 if k >= 12288 else 12) * sm_count:
+        return _ring_config(k)
+    reduce_threads = _reduce_threads(k)
+    if k % 2 and n >= _two_rows_a_warp_from(k) * sm_count:
         return {"reduce_threads": reduce_threads, "warps": 1, "rows": 2, "depth": 8, "split": 1}
     warps = reduce_threads // 32
     return {
