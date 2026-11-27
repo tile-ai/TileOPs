@@ -140,6 +140,11 @@ class FP8Linear:
         q, s, _ = ops.act_quant(x)
         return ops.gemm_fp8(q, self.weight, s, self.scale)
 
+    def rows(self, start: int, stop: int) -> FP8Linear:
+        """The layer of output rows ``[start, stop)``, viewing this one's weight and scales;
+        ``start`` opens a 128-row scale block."""
+        return FP8Linear(self.weight[start:stop], self.scale[start // 128 : -(-stop // 128)])
+
 
 class Compressor:
     """Pools every ``ratio`` tokens of a request's KV into one compressed entry.
@@ -243,13 +248,14 @@ class Indexer:
         ops: ModelOps,
         rope: RoPETable,
         x: torch.Tensor,
-        qr: torch.Tensor,
+        q: torch.Tensor,
         step: Step,
     ) -> torch.Tensor:
         """Return ``[1, S, index_topk]`` int32 indices of compressed entries, shifted by
-        ``step.offset`` and padded with -1."""
+        ``step.offset`` and padded with -1, for the queries ``q`` (``[S, n_heads *
+        head_dim]``) that ``wq_b`` projects from the attention's low-rank queries."""
         start_pos, seqlen = step.start_pos, step.seqlen
-        q = self.wq_b(ops, qr).view(1, seqlen, self.n_heads, self.head_dim)
+        q = q.view(1, seqlen, self.n_heads, self.head_dim)
         ops.rope(q[..., -self.rope_dim :], rope.cos, rope.sin, seqlen_offsets=step.starts)
         q = ops.hadamard(q)
         ops.fp4_fake_quant(q)
@@ -279,7 +285,11 @@ class Attention:
 
     Queries come from a low-rank projection; keys and values share one ``head_dim``-wide row
     whose trailing ``rope_head_dim`` dimensions carry interleaved RoPE. The output is rotated
-    back, projected per group by ``wo_a`` and mixed by ``wo_b``.
+    back, projected per group by ``wo_a`` and mixed by ``wo_b``. ``wq_a_kv`` stacks the rows of
+    ``wq_a`` and ``wkv``, which read the same input, and ``wq_b_index`` those of ``wq_b`` and
+    the indexer's ``wq_b``: a one-token call quantizes the input once and runs one GEMM for
+    each pair, whose columns are bit for bit the two GEMMs' and lie in place, where a longer
+    call's would be strided.
     """
 
     def __init__(
@@ -291,6 +301,7 @@ class Attention:
         self.window = cfg.window_size
         self.o_groups = cfg.o_groups
         self.o_rank = cfg.o_lora_rank
+        self.q_rank = cfg.q_lora_rank
         self.ratio = cfg.compress_ratios[layer_id]
         self.max_entries = max_seq_len // self.ratio if self.ratio else 0
         self.compressor = (
@@ -301,8 +312,10 @@ class Attention:
         self.indexer = (
             Indexer(cfg, self.ratio, self.max_entries, device) if cfg.indexed(self.ratio) else None
         )
+        self.wq_a_kv: FP8Linear
         self.wq_a: FP8Linear
         self.q_norm: torch.Tensor
+        self.wq_b_index: FP8Linear | None
         self.wq_b: FP8Linear
         self.wkv: FP8Linear
         self.kv_norm: torch.Tensor
@@ -317,11 +330,23 @@ class Attention:
         """Attend ``x`` (``[S, dim]`` bfloat16) and return ``[S, dim]``."""
         seqlen, start_pos = step.seqlen, step.start_pos
         win, rd = self.window, self.rope_dim
-        qr = ops.norm(self.wq_a(ops, x), self.q_norm)
-        q = self.wq_b(ops, qr).view(1, seqlen, self.n_heads, self.head_dim)
-        q = ops.norm(q, None)
+        one = seqlen == 1
+        if one:
+            q_kv = self.wq_a_kv(ops, x)
+            q_low, kv = q_kv[:, : self.q_rank], q_kv[:, self.q_rank :]
+        else:
+            q_low, kv = self.wq_a(ops, x), self.wkv(ops, x)
+        qr = ops.norm(q_low, self.q_norm)
+        q_width = self.n_heads * self.head_dim
+        if one and self.wq_b_index is not None:
+            q_both = self.wq_b_index(ops, qr)
+            q, index_q = q_both[:, :q_width], q_both[:, q_width:]
+        else:
+            q = self.wq_b(ops, qr)
+            index_q = self.indexer.wq_b(ops, qr) if self.indexer is not None else None
+        q = ops.norm(q.view(1, seqlen, self.n_heads, self.head_dim), None)
         ops.rope(q[..., -rd:], rope.cos, rope.sin, seqlen_offsets=step.starts)
-        kv = ops.norm(self.wkv(ops, x), self.kv_norm)
+        kv = ops.norm(kv, self.kv_norm)
         ops.rope(
             kv.view(1, seqlen, 1, self.head_dim)[..., -rd:],
             rope.cos,
@@ -332,7 +357,7 @@ class Attention:
         kv = kv.view(1, seqlen, self.head_dim)
 
         if self.indexer is not None:
-            selected = self.indexer(ops, rope, x, qr, step)[0]
+            selected = self.indexer(ops, rope, x, index_q, step)[0]
             idx = torch.cat([step.window, selected], dim=-1).view(1, seqlen, 1, -1)
         elif self.ratio:
             width = seqlen // self.ratio if start_pos == 0 else self.max_entries
