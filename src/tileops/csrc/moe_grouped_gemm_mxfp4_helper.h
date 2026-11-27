@@ -796,4 +796,176 @@ __device__ __forceinline__ void mxfp4_store_flag(int* flag, int value) {
   *reinterpret_cast<volatile int*>(flag) = value;
 }
 
+// ---------------------------------------------------------------------------
+// Prefill register-fragment path: each weight row folds every sub-block of
+// every K step to one reference code, as the shared-memory decode does, so a
+// step is promoted under its token scales alone and each row is scaled by
+// 2 ** (ref - 127) once after the last step. The token scales come from a
+// per-task table of floats the producer warp-group fills.
+// ---------------------------------------------------------------------------
+
+// Whether the thread's weight rows g and g + 8 (mxfp4_weight_step's, from row
+// ``wg_row0`` of mxfp4_table_chunk's table; a row past ``last`` reads row
+// ``last``) fold: codes in [kMxfp4CodeLow, kMxfp4CodeHigh] spanning at most
+// kMxfp4RowSpan binades over K. The four lanes of a row each scan a quarter of
+// its 16-byte chunks and share their largest code by shuffles; ``refs`` gets
+// each row's reference, that code less kMxfp4FoldRise.
+template <int Steps, int BoxBytes, int Rows>
+__device__ __forceinline__ bool mxfp4_rows_ref_shared(void const* codes,
+                                                      int wg_row0, int last,
+                                                      int* refs) {
+  static_assert(BoxBytes > 0 && Steps % 16 == 0,
+                "the code table comes by TMA in boxes");
+  int const lane = static_cast<int>(threadIdx.x) & 31;
+  int const g =
+      wg_row0 + ((static_cast<int>(threadIdx.x) >> 5) & 3) * 16 + lane / 4;
+  int const lane_chunk = lane & 3;
+  bool fast = true;
+#pragma unroll
+  for (int r = 0; r < 2; ++r) {
+    int const row = min(g + 8 * r, last);
+    uint32_t tops = 0, lows = 0xffffffffu;
+#pragma unroll
+    for (int j = 0; j < Steps / 16; ++j) {
+      uint4 const words = *reinterpret_cast<uint4 const*>(
+          mxfp4_table_chunk<BoxBytes, Rows>(codes, row, 4 * j + lane_chunk));
+      tops = __vmaxu4(__vmaxu4(tops, words.x),
+                      __vmaxu4(words.y, __vmaxu4(words.z, words.w)));
+      lows = __vminu4(__vminu4(lows, words.x),
+                      __vminu4(words.y, __vminu4(words.z, words.w)));
+    }
+    uint32_t top = max(max(tops & 0xffu, (tops >> 8) & 0xffu),
+                       max((tops >> 16) & 0xffu, tops >> 24));
+    uint32_t const low = min(min(lows & 0xffu, (lows >> 8) & 0xffu),
+                             min((lows >> 16) & 0xffu, lows >> 24));
+    top = max(top, __shfl_xor_sync(0xffffffffu, top, 1));
+    top = max(top, __shfl_xor_sync(0xffffffffu, top, 2));
+    fast = fast && top - low <= kMxfp4RowSpan && mxfp4_code_fast(top) &&
+           mxfp4_code_fast(low);
+    refs[r] = static_cast<int>(top - kMxfp4FoldRise);
+  }
+  return fast;
+}
+
+// mxfp4_weight_step's fragments of K step ``kk`` under kMxfp4Fold, but each
+// sub-block scaled by 2 ** (code - ref) relative to its row's reference
+// ``refs`` (mxfp4_rows_ref_shared's), its codes from mxfp4_table_word's table:
+// exact while code - ref lies in [-5, 6], which a folding row's codes do.
+template <int Steps, int BoxBytes, int Rows>
+__device__ __forceinline__ void mxfp4_weight_step_ref(void const* packed_stage,
+                                                      void const* table,
+                                                      int row0, int const* refs,
+                                                      uint32_t* frags, int kk) {
+  int const lane = static_cast<int>(threadIdx.x) & 31;
+  int const g =
+      row0 + ((static_cast<int>(threadIdx.x) >> 5) & 3) * 16 + lane / 4;
+  int const offset = 2 * (lane & 3);
+  int const swizzle = (g >> 1) & 3;
+  uint8_t const* rows[2] = {
+      static_cast<uint8_t const*>(packed_stage) + g * 64 + offset,
+      static_cast<uint8_t const*>(packed_stage) + (g + 8) * 64 + offset};
+  uint2 folds[2][4];
+#pragma unroll
+  for (int r = 0; r < 2; ++r) {
+    uint32_t const word =
+        mxfp4_table_word<Steps, BoxBytes, Rows>(table, g + 8 * r, kk);
+    uint32_t const ref = static_cast<uint32_t>(refs[r]);
+    uint32_t const lo = kMxfp4MagnitudesLo - ref * kMxfp4BinadeLo;
+    uint32_t const hi = kMxfp4MagnitudesHi - ref * kMxfp4BinadeHi;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+      uint32_t const code = __byte_perm(word, 0, 0x4440u + i);
+      folds[r][i] =
+          make_uint2(lo + code * kMxfp4BinadeLo, hi + code * kMxfp4BinadeHi);
+    }
+  }
+#pragma unroll
+  for (int i = 0; i < 4; ++i) {
+#pragma unroll
+    for (int r = 0; r < 2; ++r) {
+      uint8_t const* chunk = rows[r] + 16 * (i ^ swizzle);
+      uint32_t const lo = *reinterpret_cast<uint16_t const*>(chunk);
+      uint32_t const hi = *reinterpret_cast<uint16_t const*>(chunk + 8);
+      frags[4 * i + r] = mxfp4_e2m1x4_e4m3(lo, folds[r][i]);
+      frags[4 * i + 2 + r] = mxfp4_e2m1x4_e4m3(hi, folds[r][i]);
+    }
+  }
+}
+
+// Where token ``t`` sits in a step's row of the token table, four runs of Run
+// floats (a tile's tokens over four and padding the builder picks, so the
+// four runs a warp's 16-byte loads read start in distinct banks): q * Run +
+// 2 i + e for t = 8 i + 2 q + e, so the scales of the tokens a math thread's
+// accumulator holds (q its lane % 4) are contiguous.
+template <int Run>
+__device__ __forceinline__ int mxfp4_token_slot(int t) {
+  return (t % 8 / 2) * Run + t / 8 * 2 + t % 2;
+}
+
+// The task's token table: row kk holds each token's scale of K step kk as a
+// float (mxfp4_e8m0_value), token t at mxfp4_token_slot<Run>(t), from
+// ``codes``' rows of Steps codes back to back. Thread ``thread`` of
+// ``Threads`` takes codes thread, thread + Threads, ... in that order, a
+// warp's reads running along a token's row. Returns whether each code of a
+// token below ``rows`` it read is 0 or lies in [kMxfp4CodeLow,
+// kMxfp4CodeHigh], the codes a folded task's promotion takes.
+template <int BM, int Run, int Steps, int Threads>
+__device__ __forceinline__ bool mxfp4_token_table(uint8_t const* codes,
+                                                  float* table, int rows,
+                                                  int thread) {
+  bool fast = true;
+#pragma unroll 4
+  for (int entry = thread; entry < BM * Steps; entry += Threads) {
+    int const t = entry / Steps;
+    int const kk = entry % Steps;
+    uint32_t const code = codes[entry];
+    fast = fast && (t >= rows || code == 0 || mxfp4_code_fast(code));
+    table[kk * 4 * Run + mxfp4_token_slot<Run>(t)] = mxfp4_e8m0_value(code);
+  }
+  return fast;
+}
+
+// final += step * token scale over a warp-group's 64 x N accumulator, the
+// thread's tokens' scales (8 i + 2 q + e, q its lane % 4) read from
+// ``scales``, a row of mxfp4_token_table's table of runs of Run floats. N is a
+// multiple of 16.
+template <int N, int Run>
+__device__ __forceinline__ void mxfp4_promote_tokens(float const* step,
+                                                     float* final_accum,
+                                                     float const* scales) {
+  float const* mine = scales + (static_cast<int>(threadIdx.x) & 3) * Run;
+#pragma unroll
+  for (int i = 0; i < N / 8; i += 2) {
+    float4 const s = *reinterpret_cast<float4 const*>(mine + 2 * i);
+    float const t[4] = {s.x, s.y, s.z, s.w};
+#pragma unroll
+    for (int j = 0; j < 2; ++j) {
+#pragma unroll
+      for (int e = 0; e < 4; ++e) {
+        int const v = (i + j) * 4 + e;
+        final_accum[v] = fmaf(step[v], t[2 * j + e % 2], final_accum[v]);
+      }
+    }
+  }
+}
+
+// A warp-group's 64 x N accumulator, rows g and g + 8 of the thread times
+// 2 ** (ref - 127) of their references ``refs``: the scale each row's steps
+// left out.
+template <int N>
+__device__ __forceinline__ void mxfp4_scale_rows(float* final_accum,
+                                                 int const* refs) {
+  float const s0 =
+      __uint_as_float(static_cast<uint32_t>(max(refs[0], 1)) << 23);
+  float const s1 =
+      __uint_as_float(static_cast<uint32_t>(max(refs[1], 1)) << 23);
+#pragma unroll
+  for (int i = 0; i < N / 8; ++i) {
+    final_accum[i * 4 + 0] *= s0;
+    final_accum[i * 4 + 1] *= s0;
+    final_accum[i * 4 + 2] *= s1;
+    final_accum[i * 4 + 3] *= s1;
+  }
+}
+
 }  // namespace tileops
