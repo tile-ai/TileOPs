@@ -1,5 +1,6 @@
 """Tests for the MXFP4 M-grouped GEMM op."""
 
+import dataclasses
 import re
 
 import pytest
@@ -546,7 +547,7 @@ def test_mxfp4_grouped_gemm_prefill_runs_tasks_of_every_width(
     sizes: str, metadata_kind: str, n: int, k: int, tile: int
 ) -> None:
     """Tight runs of more than four rows an expert under e8m0 scales, K a multiple of 2048,
-    take the prefill program on row tiles holding a third more than the mean run: each task
+    take the prefill program on row tiles holding twice the mean run: each task
     contracts its rows rounded up to a quarter of the tile (16 tokens on 32-row tiles), which
     the producer loads in 16-row boxes, and stores only its own rows, so tasks of every width,
     runs over several row tiles and an empty expert match the reference and leave the next
@@ -588,26 +589,25 @@ def _tight_kernel(scale_dtype: torch.dtype = torch.float8_e8m0fnu, k: int = 4096
 @pytest.mark.smoke
 def test_mxfp4_grouped_gemm_takes_the_prefill_program_past_four_rows_an_expert() -> None:
     """Up to four rows an expert on average (decode) a tight launch runs the config's program;
-    past that, the prefill program on the shortest of 32-, 64- and 128-row tiles holding a third
-    more than the mean run, on the deepest ring that fits, divides the K steps, keeps a quarter
-    of them and unrolls at most 16 steps over the tile's widths: DeepSeek-V4-Flash's prompts of
-    512, 2048 and 4096 tokens at top 6, the down projection's 16 steps on a shallower ring.
-    Under 16 K steps a launch filling more than five eighths of the config's 64-row tile on
-    average, the down projection's from 1707 tokens to 2048, keeps the config's program, as do
-    float32 scales and K off a multiple of 2048."""
-    kernel = _tight_kernel()
+    past that, the prefill program on the shortest of 32-, 64- and 128-row tiles holding twice
+    the mean run, on the deepest ring that fits, divides the K steps, keeps a quarter of them
+    and unrolls at most 16 steps over the tile's widths: the tile's bounds at 16 and 32 rows
+    an expert, and the down projection's 16 steps on a shallower ring. Float32 scales, and K
+    off a multiple of 2048, keep the config's program. The call spec does not compare the
+    rows, so one tuned entry serves decode and prefill launches alike, and its config does not
+    reach the prefill plan."""
+    kernel, down = _tight_kernel(), _tight_kernel(k=2048)
     assert kernel.prefill_tile(4 * 256) is None
     assert kernel.prefill_tile(4 * 256 + 1) == (32, 128, 8)
-    assert kernel.prefill_tile(512 * 6) == (32, 128, 8)
-    assert _tight_kernel(k=2048).prefill_tile(512 * 6) == (32, 128, 4)
-    assert kernel.prefill_tile(2048 * 6) == (64, 128, 4)
-    assert _tight_kernel(k=2048).prefill_tile(64 * 5 * 256 // 8) == (64, 128, 4)
-    assert _tight_kernel(k=2048).prefill_tile(64 * 5 * 256 // 8 + 1) is None
-    assert _tight_kernel(k=2048).prefill_tile(2048 * 6) is None
-    assert _tight_kernel(k=2048).prefill_tile(2048 * 6 + 1) == (128, 128, 4)
-    assert kernel.prefill_tile(4096 * 6) == (128, 128, 4)
+    assert kernel.prefill_tile(16 * 256) == (32, 128, 8)
+    assert down.prefill_tile(16 * 256) == (32, 128, 4)
+    assert kernel.prefill_tile(16 * 256 + 1) == (64, 128, 4)
+    assert kernel.prefill_tile(32 * 256) == (64, 128, 4)
+    assert kernel.prefill_tile(32 * 256 + 1) == (128, 128, 4)
+    assert down.prefill_tile(4096 * 6) == (128, 128, 4)
     assert _tight_kernel(torch.float32).prefill_tile(4096 * 6) is None
     assert _tight_kernel(k=1408).prefill_tile(4096 * 6) is None
+    assert dataclasses.replace(kernel.call, m=4096 * 6) == kernel.call
 
 
 @pytest.mark.sm90

@@ -1682,7 +1682,8 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
     the autotuning candidates and a caller's config all pass ``config_refusal``.
 
     A launch of tight rows under e8m0 scales, K a multiple of 2048, past four rows an expert on
-    average (a prefill) runs the prefill program instead where ``prefill_tile`` picks it a tile.
+    average (a prefill) runs the prefill program instead, on the plan ``prefill_tile`` picks
+    from its rows, which tuning does not reach.
     A task there folds when each of its weight rows' codes lie in [64, 190] and span at most
     eleven binades over K and each token code of its own rows is 0 or lies in [64, 190]: its
     sub-blocks carry their scales relative to their row's largest code less six, each step is
@@ -1711,7 +1712,6 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
     _PREFILL_ROWS: ClassVar[int] = 4
     _PREFILL_BLOCK_M: ClassVar[tuple[int, ...]] = (32, 64, 128)
     _PREFILL_BLOCK_N: ClassVar[int] = 128
-    _PREFILL_FULL_STEPS: ClassVar[int] = 32
 
     @classmethod
     def config_refusal(
@@ -1903,16 +1903,21 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
     def prefill_tile(self, m: int) -> tuple[int, int, int] | None:
         """``(block_m, block_n, num_stages)`` of the prefill program for a launch of ``m`` rows,
-        or ``None`` when the launch runs ``config``'s program: under e8m0 scales whose code
-        tables come by TMA, tight rows of more than ``_PREFILL_ROWS`` an expert on average take
-        it. Its row tile is the shortest of ``_PREFILL_BLOCK_M`` that holds a third more than
-        their mean rows. Its ring is the deepest that fits and divides the K steps (its slots
-        are compile-time), no deeper than a quarter of the steps, and shallow enough that the
-        tile's width loops, each unrolled by the depth, hold at most 16 steps between them.
-        ``_prefill_tiles`` keeps each row tile's. Under fewer than ``_PREFILL_FULL_STEPS`` K
-        steps, a launch whose row tile is ``config``'s own and whose mean rows fill more than
-        five eighths of it runs ``config``'s program, which the prefill program does not
-        outrun there."""
+        or ``None`` when the launch runs ``config``'s program.
+
+        Tight rows under e8m0 scales whose code tables come by TMA take it past
+        ``_PREFILL_ROWS`` rows an expert on average; decode-sized launches, up to that, keep the
+        config's program. Its row tile is the shortest of ``_PREFILL_BLOCK_M`` that holds twice
+        the mean rows an expert, the rule ``default_tile`` applies to masked slabs: routing
+        skews the rows, so the busiest experts run well past the mean. Its ring is the deepest
+        that fits and divides the K steps (its slots are compile-time), no deeper than a quarter
+        of the steps, and shallow enough that the tile's width loops, each unrolled by the
+        depth, hold at most 16 steps between them; both bounds come from measuring
+        DeepSeek-V4-Flash's calls. ``_prefill_tiles`` keeps each row tile's.
+
+        The plan follows each launch's rows, which the call spec does not compare, so tuning,
+        which sets the call spec's ``config``, does not reach it.
+        """
         call = self.call
         if (
             call.packing != "tight"
@@ -1921,16 +1926,10 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
             or m <= self._PREFILL_ROWS * call.num_groups
         ):
             return None
-        rows = 4 * m / (3 * call.num_groups)
+        rows = 2 * m / call.num_groups
         block_m = next(
             (bm for bm in self._PREFILL_BLOCK_M if bm >= rows), self._PREFILL_BLOCK_M[-1]
         )
-        if (
-            self.scale_k < self._PREFILL_FULL_STEPS
-            and block_m == self.config["block_m"]
-            and 8 * m > 5 * block_m * call.num_groups
-        ):
-            return None
         if block_m not in self._prefill_tiles:
             block_n = self._PREFILL_BLOCK_N
             unrolled = 16 // len(_prefill_widths(block_m))
@@ -2099,6 +2098,10 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
             "scale_k": self.scale_k,
             "alignment": self.alignment,
         }
+
+    def prefill_tile(self, m: int) -> None:
+        """``None``: aligned rows decode into shared memory at every row count."""
+        return None
 
     @property
     def autotune_configs(self) -> list[dict]:
