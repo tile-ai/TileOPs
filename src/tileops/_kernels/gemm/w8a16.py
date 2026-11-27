@@ -101,9 +101,21 @@ def _ring_limits(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) 
 
 def _ring_config(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) -> dict:
     """``tile`` with its ring depth, as many stages as shared memory holds and at most the K
-    steps one CTA streams, and its CTA count, from :func:`_ring_limits`."""
-    deepest, steps, ctas = _ring_limits(m, n, k, batch, sm_count, tile)
-    return {**tile, "num_stages": min(deepest, steps), "ctas": ctas}
+    steps one CTA streams, and its CTA count, from :func:`_ring_limits`.
+
+    A ring that wraps within a unit holds a whole number of K parts' steps, so every fill of a
+    slot within a unit belongs to one part: a part waits on a slot's fills by their parity
+    alone, which another part's fill still in flight would satisfy early. The ring drops to
+    whole parts while each part keeps two stages, one in flight while it multiplies the other;
+    with fewer, the K parts halve instead, which also frees the shared memory their sums take."""
+    while True:
+        deepest, steps, ctas = _ring_limits(m, n, k, batch, sm_count, tile)
+        stages, parts = min(deepest, steps), tile["ksplit"]
+        if stages < k // _SCALE_BLOCK:
+            stages -= stages % parts
+        if stages >= k // _SCALE_BLOCK or parts == 1 or stages >= 2 * parts:
+            return {**tile, "num_stages": stages, "ctas": ctas}
+        tile = {**tile, "ksplit": parts // 2}
 
 
 @target_cache(maxsize=32)
@@ -340,12 +352,11 @@ class BMMW8A16Kernel(Kernel, BMMW8A16FwdInterface):
         if call.n % 8:
             return f"n={call.n} is not a multiple of 8, the output's 16-byte store"
         tile = _tile_config(call.m, call.n, call.batch, call.sm_count)
-        deepest, steps, _ = _ring_limits(call.m, call.n, call.k, call.batch, call.sm_count, tile)
-        if deepest < min(tile["ksplit"], steps):
+        cfg = _ring_config(call.m, call.n, call.k, call.batch, call.sm_count, tile)
+        if cfg["num_stages"] < 1:
             return (
-                f"k={call.k} leaves shared memory {max(deepest, 0)} ring stages for "
-                f"{steps} K steps, fewer than the {tile['ksplit']} K parts that each wait on a "
-                "stage of their own"
+                f"k={call.k} leaves shared memory no ring stages beside the "
+                f"{call.k // _SCALE_BLOCK} K steps' staged scales"
             )
         return super().refusal(call)
 

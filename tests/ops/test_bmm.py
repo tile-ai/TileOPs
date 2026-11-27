@@ -667,11 +667,32 @@ def test_bmm_w8a16_takes_operands_of_any_strides() -> None:
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_bmm_w8a16_k_past_its_ring_is_refused() -> None:
-    """The in-tree kernel refuses a K whose staged scales leave the ring fewer stages than the
-    warpgroups splitting K, each of which waits on a stage of its own."""
-    call = BMMW8A16Call(batch=1, m=64, n=1024, k=128 * 20000, device=run_device())
+    """The in-tree kernel refuses a K whose staged scales leave shared memory no ring stage,
+    even with K unsplit."""
+    call = BMMW8A16Call(batch=1, m=64, n=1024, k=128 * 60000, device=run_device())
     with pytest.raises(OpNotAvailableError, match="ring stages"):
         BMMW8A16FwdOp().key_for("bmm_w8a16", call)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "m",
+    [
+        pytest.param(64, marks=pytest.mark.smoke, id="ds-v4-flash-wo-a-64"),
+        pytest.param(40, marks=pytest.mark.full, id="ds-v4-flash-wo-a-40"),
+        pytest.param(1, marks=pytest.mark.full, id="ds-v4-flash-wo-a-decode"),
+    ],
+)
+def test_bmm_w8a16_ring_gives_each_slot_one_k_part(m: int) -> None:
+    """A ring that wraps within a unit holds a whole number of K parts' steps, so a part never
+    waits on a slot whose previous fill another part owns: its parity wait would return while
+    that fill's copy is in flight."""
+    test = BMMW8A16Test(8, m, 1024, 4096)
+    op = BMMW8A16FwdOp()
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.iter_kernels()
+    cfg = kernel.config
+    assert cfg["num_stages"] >= 4096 // 128 or cfg["num_stages"] % cfg["ksplit"] == 0
 
 
 @pytest.mark.smoke
