@@ -812,7 +812,11 @@ class BMMW8A16Workload(WorkloadBase):
         return bmm_w8a16_reference(*inputs)
 
     def verification(self, *inputs):
-        return _summation_order_verification(torch.bfloat16, self.k)
+        """The unit-scale bounds of a bfloat16 product summing ``k`` terms, the absolute one
+        scaled by 2^-9, the largest block scale ``gen_inputs`` draws, so it follows the
+        outputs' magnitude."""
+        unit = _summation_order_verification(torch.bfloat16, self.k)
+        return Exact(atol=unit.atol * 2**-9, rtol=unit.rtol)
 
 
 class BMMW8A16BatchStridedWorkload(BMMW8A16Workload):
