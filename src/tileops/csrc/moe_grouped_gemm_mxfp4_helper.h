@@ -172,13 +172,13 @@ __device__ __forceinline__ uint32_t mxfp4_table_word(void const* table, int row,
 // slice i (the i-th 32-wide sub-block) in ``frags[4 i .. 4 i + 3]`` as an fp8
 // WGMMA A operand holds it: (g, k 4q .. 4q + 3), (g + 8, same), (g, k 4q + 16
 // .. 4q + 19), (g + 8, same) with q = lane % 4. Byte j of a row holds k = 2j
-// (low nibble) and 2j + 1. ``scales`` gets the rows' scales as ``Mode`` says:
-// rows g's then g + 8's, one each under kMxfp4Fold, four each otherwise.
-template <int Mode, int Steps = 0, int BoxBytes = 0, int Rows = 0>
-__device__ __forceinline__ void mxfp4_weight_step(void const* packed_stage,
-                                                  void const* scale_stage,
-                                                  int row0, uint32_t* frags,
-                                                  float* scales, int kk = 0) {
+// (low nibble) and 2j + 1. ``fill_folds(g, folds)`` sets folds[r][i], the
+// magnitudes sub-block i of row g + 8 r decodes under (mxfp4_e2m1x4_e4m3's).
+template <typename FillFolds>
+__device__ __forceinline__ void mxfp4_weight_fragments(void const* packed_stage,
+                                                       int row0,
+                                                       uint32_t* frags,
+                                                       FillFolds fill_folds) {
   int const lane = static_cast<int>(threadIdx.x) & 31;
   int const g =
       row0 + ((static_cast<int>(threadIdx.x) >> 5) & 3) * 16 + lane / 4;
@@ -190,50 +190,7 @@ __device__ __forceinline__ void mxfp4_weight_step(void const* packed_stage,
       static_cast<uint8_t const*>(packed_stage) + g * 64 + offset,
       static_cast<uint8_t const*>(packed_stage) + (g + 8) * 64 + offset};
   uint2 folds[2][4];
-#pragma unroll
-  for (int r = 0; r < 2; ++r) {
-    if constexpr (Mode == kMxfp4SplitF32) {
-      float4 const f = static_cast<float4 const*>(scale_stage)[g + 8 * r];
-      scales[4 * r] = f.x;
-      scales[4 * r + 1] = f.y;
-      scales[4 * r + 2] = f.z;
-      scales[4 * r + 3] = f.w;
-    } else {
-      // A ring stage's scales (a word a row), or the task's code table's.
-      uint32_t const word =
-          Steps > 0 ? mxfp4_table_word<Steps, BoxBytes, Rows>(scale_stage,
-                                                              g + 8 * r, kk)
-                    : static_cast<uint32_t const*>(scale_stage)[g + 8 * r];
-      uint32_t codes[4];
-#pragma unroll
-      for (int i = 0; i < 4; ++i) {
-        codes[i] = __byte_perm(word, 0, 0x4440u + i);
-      }
-      if constexpr (Mode == kMxfp4Fold) {
-        uint32_t const top =
-            max(max(codes[0], codes[1]), max(codes[2], codes[3]));
-        scales[r] = mxfp4_e8m0_value(top);
-        uint32_t const lo = kMxfp4MagnitudesLo - top * kMxfp4BinadeLo;
-        uint32_t const hi = kMxfp4MagnitudesHi - top * kMxfp4BinadeHi;
-#pragma unroll
-        for (int i = 0; i < 4; ++i) {
-          folds[r][i] = make_uint2(lo + codes[i] * kMxfp4BinadeLo,
-                                   hi + codes[i] * kMxfp4BinadeHi);
-        }
-      } else {
-#pragma unroll
-        for (int i = 0; i < 4; ++i) {
-          scales[4 * r + i] = mxfp4_e8m0_value(codes[i]);
-        }
-      }
-    }
-    if constexpr (Mode != kMxfp4Fold) {
-#pragma unroll
-      for (int i = 0; i < 4; ++i) {
-        folds[r][i] = make_uint2(kMxfp4MagnitudesLo, kMxfp4MagnitudesHi);
-      }
-    }
-  }
+  fill_folds(g, folds);
 #pragma unroll
   for (int i = 0; i < 4; ++i) {
 #pragma unroll
@@ -245,6 +202,64 @@ __device__ __forceinline__ void mxfp4_weight_step(void const* packed_stage,
       frags[4 * i + 2 + r] = mxfp4_e2m1x4_e4m3(hi, folds[r][i]);
     }
   }
+}
+
+// mxfp4_weight_fragments of K step ``kk``, the rows' scales read from
+// ``scale_stage`` as ``Mode`` says into ``scales``: rows g's then g + 8's, one
+// each under kMxfp4Fold, four each otherwise.
+template <int Mode, int Steps = 0, int BoxBytes = 0, int Rows = 0>
+__device__ __forceinline__ void mxfp4_weight_step(void const* packed_stage,
+                                                  void const* scale_stage,
+                                                  int row0, uint32_t* frags,
+                                                  float* scales, int kk = 0) {
+  mxfp4_weight_fragments(
+      packed_stage, row0, frags, [&](int g, uint2(&folds)[2][4]) {
+#pragma unroll
+        for (int r = 0; r < 2; ++r) {
+          if constexpr (Mode == kMxfp4SplitF32) {
+            float4 const f = static_cast<float4 const*>(scale_stage)[g + 8 * r];
+            scales[4 * r] = f.x;
+            scales[4 * r + 1] = f.y;
+            scales[4 * r + 2] = f.z;
+            scales[4 * r + 3] = f.w;
+          } else {
+            // A ring stage's scales (a word a row), or the task's code table's.
+            uint32_t const word =
+                Steps > 0
+                    ? mxfp4_table_word<Steps, BoxBytes, Rows>(scale_stage,
+                                                              g + 8 * r, kk)
+                    : static_cast<uint32_t const*>(scale_stage)[g + 8 * r];
+            uint32_t codes[4];
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+              codes[i] = __byte_perm(word, 0, 0x4440u + i);
+            }
+            if constexpr (Mode == kMxfp4Fold) {
+              uint32_t const top =
+                  max(max(codes[0], codes[1]), max(codes[2], codes[3]));
+              scales[r] = mxfp4_e8m0_value(top);
+              uint32_t const lo = kMxfp4MagnitudesLo - top * kMxfp4BinadeLo;
+              uint32_t const hi = kMxfp4MagnitudesHi - top * kMxfp4BinadeHi;
+#pragma unroll
+              for (int i = 0; i < 4; ++i) {
+                folds[r][i] = make_uint2(lo + codes[i] * kMxfp4BinadeLo,
+                                         hi + codes[i] * kMxfp4BinadeHi);
+              }
+            } else {
+#pragma unroll
+              for (int i = 0; i < 4; ++i) {
+                scales[4 * r + i] = mxfp4_e8m0_value(codes[i]);
+              }
+            }
+          }
+          if constexpr (Mode != kMxfp4Fold) {
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+              folds[r][i] = make_uint2(kMxfp4MagnitudesLo, kMxfp4MagnitudesHi);
+            }
+          }
+        }
+      });
 }
 
 // Folds a word of four e8m0 codes (a K step of a row) into running maxima:
@@ -847,49 +862,33 @@ __device__ __forceinline__ bool mxfp4_rows_ref_shared(void const* codes,
   return fast;
 }
 
-// mxfp4_weight_step's fragments of K step ``kk`` under kMxfp4Fold, but each
-// sub-block scaled by 2 ** (code - ref) relative to its row's reference
-// ``refs`` (mxfp4_rows_ref_shared's), its codes from mxfp4_table_word's table:
-// exact while code - ref lies in [-5, 6], which a folding row's codes do.
+// mxfp4_weight_fragments of K step ``kk`` as mxfp4_weight_step makes them under
+// kMxfp4Fold, but each sub-block scaled by 2 ** (code - ref) relative to its
+// row's reference ``refs`` (mxfp4_rows_ref_shared's), its codes from
+// mxfp4_table_word's table: exact while code - ref lies in [-5, 6], which a
+// folding row's codes do.
 template <int Steps, int BoxBytes, int Rows>
 __device__ __forceinline__ void mxfp4_weight_step_ref(void const* packed_stage,
                                                       void const* table,
                                                       int row0, int const* refs,
                                                       uint32_t* frags, int kk) {
-  int const lane = static_cast<int>(threadIdx.x) & 31;
-  int const g =
-      row0 + ((static_cast<int>(threadIdx.x) >> 5) & 3) * 16 + lane / 4;
-  int const offset = 2 * (lane & 3);
-  int const swizzle = (g >> 1) & 3;
-  uint8_t const* rows[2] = {
-      static_cast<uint8_t const*>(packed_stage) + g * 64 + offset,
-      static_cast<uint8_t const*>(packed_stage) + (g + 8) * 64 + offset};
-  uint2 folds[2][4];
+  mxfp4_weight_fragments(
+      packed_stage, row0, frags, [&](int g, uint2(&folds)[2][4]) {
 #pragma unroll
-  for (int r = 0; r < 2; ++r) {
-    uint32_t const word =
-        mxfp4_table_word<Steps, BoxBytes, Rows>(table, g + 8 * r, kk);
-    uint32_t const ref = static_cast<uint32_t>(refs[r]);
-    uint32_t const lo = kMxfp4MagnitudesLo - ref * kMxfp4BinadeLo;
-    uint32_t const hi = kMxfp4MagnitudesHi - ref * kMxfp4BinadeHi;
+        for (int r = 0; r < 2; ++r) {
+          uint32_t const word =
+              mxfp4_table_word<Steps, BoxBytes, Rows>(table, g + 8 * r, kk);
+          uint32_t const ref = static_cast<uint32_t>(refs[r]);
+          uint32_t const lo = kMxfp4MagnitudesLo - ref * kMxfp4BinadeLo;
+          uint32_t const hi = kMxfp4MagnitudesHi - ref * kMxfp4BinadeHi;
 #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-      uint32_t const code = __byte_perm(word, 0, 0x4440u + i);
-      folds[r][i] =
-          make_uint2(lo + code * kMxfp4BinadeLo, hi + code * kMxfp4BinadeHi);
-    }
-  }
-#pragma unroll
-  for (int i = 0; i < 4; ++i) {
-#pragma unroll
-    for (int r = 0; r < 2; ++r) {
-      uint8_t const* chunk = rows[r] + 16 * (i ^ swizzle);
-      uint32_t const lo = *reinterpret_cast<uint16_t const*>(chunk);
-      uint32_t const hi = *reinterpret_cast<uint16_t const*>(chunk + 8);
-      frags[4 * i + r] = mxfp4_e2m1x4_e4m3(lo, folds[r][i]);
-      frags[4 * i + 2 + r] = mxfp4_e2m1x4_e4m3(hi, folds[r][i]);
-    }
-  }
+          for (int i = 0; i < 4; ++i) {
+            uint32_t const code = __byte_perm(word, 0, 0x4440u + i);
+            folds[r][i] = make_uint2(lo + code * kMxfp4BinadeLo,
+                                     hi + code * kMxfp4BinadeHi);
+          }
+        }
+      });
 }
 
 // Where token ``t`` sits in a step's row of the token table, four runs of Run
