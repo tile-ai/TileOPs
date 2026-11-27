@@ -1,7 +1,7 @@
 """Warp-specialized batch=1 paged GQA decode kernel (SM90), context-split.
 
 ``GQADecodePagedBs1Kernel`` cuts every page table into a power-of-two number of splits of
-whole key tiles, one per table tile up to 32.
+whole key tiles, at most one per table tile, up to 32.
 """
 
 import tilelang

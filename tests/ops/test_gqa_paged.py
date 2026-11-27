@@ -1228,12 +1228,13 @@ def test_gqa_paged_calls_overlapping_on_two_streams_each_claim_every_tile() -> N
 @pytest.mark.parametrize(
     ("cache_len", "reverse_pages"),
     [
-        pytest.param(512, False, id="no-split"),
+        pytest.param(512, False, id="four-splits"),
         pytest.param(4096, True, id="ctx-reversed-pages"),
     ],
 )
 def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None:
-    """Both batch-1 tiers, including a page translation that changes the output."""
+    """A 4-split and a 32-split table, the second with reversed pages, a page translation
+    that changes the output."""
     torch.manual_seed(0)
     workload = _decode(1, 32, 4, [cache_len], 128, 256)
     inputs = list(workload.gen_inputs())
@@ -1297,8 +1298,8 @@ def test_gqa_paged_decode_bs1_wider_region(
     """The batch-1 kernel, whose warp-specialized producer feeds SM90 WGMMA through TMA,
     serves bfloat16 and head dimension 256: Qwen3.8-27B's decode attention over a full and
     an eighth-full table, bfloat16 at head dimension 128, 128-row pages at head dimension
-    256, and tables shorter than 1024 rows, down to one page. NaN in every row past the
-    cache keeps a split that reads one key too many from passing."""
+    256, and short tables, down to one page. NaN in every row past the cache keeps a split
+    that reads one key too many from passing."""
     torch.manual_seed(0)
     workload = GQAPagedFwdWorkload(
         heads, heads_kv, dim, [1], [cache_len], page_size, pages, pages, dtype
