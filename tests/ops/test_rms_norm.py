@@ -22,13 +22,14 @@ from tileops._kernels.tiling import ALIGNMENT
 from tileops._ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
 from tileops._utils import RESIDENT_CTAS, get_shared_memory_optin, get_sm_count
-from tileops.backend import OpNotAvailableError
 from tileops.backend._dispatch import device_facts_of
 from workloads.device import run_device
 from workloads.norm import (
     FusedAddRMSNormWorkload,
     FusedAddRMSNormZeroCenteredOffsetWorkload,
     NormCall,
+    RMSNormGroupedCall,
+    RMSNormGroupedOffsetCall,
     RMSNormWorkload,
     RMSNormZeroCenteredOffsetWorkload,
     norm_verification,
@@ -109,6 +110,14 @@ def test_rms_norm_views(view: str, dtype: torch.dtype) -> None:
     "T, B, n, row",
     [
         pytest.param("float16", 1024, 4096, {}, marks=pytest.mark.smoke, id="fp16"),
+        pytest.param(
+            "bfloat16",
+            3,
+            10240,
+            {"zero_centered": True, "group_size": 2560},
+            marks=pytest.mark.smoke,
+            id="grouped",
+        ),
         *(
             pytest.param("bfloat16", *case, marks=pytest.mark.full, id=f"deepseek-v4-flash-{name}")
             for name, *case in (
@@ -262,17 +271,123 @@ def test_rms_norm_zero_centered_without_weight() -> None:
     compare_outputs(op(x), test.ref_program(x, None), test.verification(x))
 
 
+class RMSNormGroupedTest(RMSNormGroupedCall, TestBase):
+    pass
+
+
+@pytest.mark.parametrize(
+    "dtype, batch, shape, group, centered, weighted, tune",
+    [
+        pytest.param(
+            "float16", [3], [3, 33], 33, False, True, False, marks=pytest.mark.smoke, id="fp16-tail"
+        ),
+        pytest.param(
+            "bfloat16", [5], [12], 1, True, True, False, marks=pytest.mark.smoke, id="unit-group"
+        ),
+        pytest.param(
+            "bfloat16",
+            [2, 3],
+            [4, 2560],
+            2560,
+            True,
+            True,
+            False,
+            marks=pytest.mark.full,
+            id="trailing-axes",
+        ),
+        pytest.param(
+            "bfloat16",
+            [1],
+            [10240],
+            2560,
+            True,
+            True,
+            False,
+            marks=pytest.mark.full,
+            id="decode-one",
+        ),
+        pytest.param(
+            "bfloat16",
+            [64],
+            [10240],
+            2560,
+            True,
+            True,
+            True,
+            marks=pytest.mark.full,
+            id="decode-tuned",
+        ),
+        pytest.param(
+            "float16",
+            [7],
+            [4, 130],
+            130,
+            True,
+            False,
+            False,
+            marks=pytest.mark.full,
+            id="no-weight-tail",
+        ),
+    ],
+)
+def test_rms_norm_grouped(dtype, batch, shape, group, centered, weighted, tune) -> None:
+    """Each group has independent statistics and its own slice of the full-width weight."""
+    call = manifest_call(
+        "RMSNormFwdOp",
+        {"T": dtype},
+        B=batch,
+        normalized_shape=shape,
+        group_size=group,
+        zero_centered=centered,
+        eps=1e-6,
+        some=["weight"] if weighted else [],
+    )
+    test = RMSNormGroupedTest(call)
+    op = RMSNormFwdOp(**call.arguments())
+    inputs = test.gen_inputs()
+    if tune:
+        op.request_tune()
+        op(*inputs)
+    test.check(op, *inputs)
+
+
 @pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-def test_rms_norm_refuses_runs_shorter_than_the_row() -> None:
-    """No in-tree kernel normalizes runs of ``group_size`` elements: the op refuses such a call,
-    naming the reason, before it builds a kernel."""
-    op = RMSNormFwdOp(normalized_shape=(512,), eps=1e-6, group_size=256, zero_centered=True)
-    x = torch.randn(4, 512, dtype=torch.bfloat16, device=run_device())
-    weight = torch.randn(512, dtype=torch.bfloat16, device=run_device())
-    with pytest.raises(OpNotAvailableError, match="group_size is not served"):
-        op(x, weight)
-    assert not op._entries_built("rms_norm")
+def test_rms_norm_grouped_changing_row_count() -> None:
+    """One op must not reuse stale row bounds when the input size changes and changes back."""
+    op = RMSNormFwdOp(normalized_shape=(10240,), group_size=2560, eps=1e-6, zero_centered=True)
+    for rows in (3, 4, 3):
+        call = manifest_call(
+            "RMSNormFwdOp",
+            {"T": "bfloat16"},
+            B=[rows],
+            normalized_shape=[10240],
+            group_size=2560,
+            zero_centered=True,
+            eps=1e-6,
+            some=["weight"],
+        )
+        test = RMSNormGroupedTest(call)
+        test.check(op, *test.gen_inputs())
+
+
+class RMSNormGroupedOffsetTest(RMSNormGroupedOffsetCall, TestBase):
+    pass
+
+
+@pytest.mark.smoke
+def test_rms_norm_grouped_rounds_once() -> None:
+    call = manifest_call(
+        "RMSNormFwdOp",
+        {"T": "bfloat16"},
+        B=[3],
+        normalized_shape=[10240],
+        group_size=2560,
+        zero_centered=True,
+        eps=1e-6,
+        some=["weight"],
+    )
+    test = RMSNormGroupedOffsetTest(call)
+    test.check(RMSNormFwdOp(**call.arguments()), *test.gen_inputs())
 
 
 def _check_without_weight(test: RMSNormTest, op: RMSNormFwdOp) -> None:
