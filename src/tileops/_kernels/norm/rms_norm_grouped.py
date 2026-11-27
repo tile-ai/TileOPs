@@ -1,6 +1,5 @@
 """Independent RMS reductions over groups, with an affine weight over the full row."""
 
-import copy
 import math
 import operator
 
@@ -10,7 +9,7 @@ import torch
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.kernel_base import Entry, Kernel, dynamic_extent_supply
 from tileops._kernels.norm._config import rms_scale
 from tileops._kernels.norm.call_spec import RMSNormCall, RMSNormFwdInterface
 from tileops._kernels.warp_reduce import warp_reduce
@@ -123,24 +122,8 @@ class RMSNormGroupedKernel(Kernel, RMSNormFwdInterface):
 
     @property
     def autotune_supply_prog(self):
-        from tilelang.utils.tensor import get_tensor_supply
-
-        default_supply = get_tensor_supply(tilelang.TensorSupplyType.Auto)
-        # Supply at least two groups per SM without specializing the runtime row count.
-        rows = -(-2 * self.build_target.sm_count // (self.n // self.group))
-
-        def supply(params):
-            inputs = []
-            for param in params:
-                if param.is_scalar():
-                    inputs.append(rows)
-                    continue
-                static = copy.copy(param)
-                static.shape = [d if isinstance(d, int) else rows for d in param.shape]
-                inputs.append(default_supply(static))
-            return inputs
-
-        return supply
+        # Tune on at least two groups per SM.
+        return dynamic_extent_supply(-(-2 * self.build_target.sm_count // (self.n // self.group)))
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor | None) -> torch.Tensor:
         self._require_devices(x=x, weight=weight)

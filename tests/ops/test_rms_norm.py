@@ -275,6 +275,21 @@ class RMSNormGroupedTest(RMSNormGroupedCall, TestBase):
     pass
 
 
+def _grouped_call(
+    dtype="bfloat16", batch=(3,), shape=(10240,), group=2560, weighted=True, centered=True
+):
+    return manifest_call(
+        "RMSNormFwdOp",
+        {"T": dtype},
+        B=list(batch),
+        normalized_shape=list(shape),
+        group_size=group,
+        zero_centered=centered,
+        eps=1e-6,
+        some=["weight"] if weighted else [],
+    )
+
+
 @pytest.mark.parametrize(
     "dtype, batch, shape, group, centered, weighted, tune",
     [
@@ -294,17 +309,6 @@ class RMSNormGroupedTest(RMSNormGroupedCall, TestBase):
             False,
             marks=pytest.mark.full,
             id="trailing-axes",
-        ),
-        pytest.param(
-            "bfloat16",
-            [1],
-            [10240],
-            2560,
-            True,
-            True,
-            False,
-            marks=pytest.mark.full,
-            id="decode-one",
         ),
         pytest.param(
             "bfloat16",
@@ -332,21 +336,13 @@ class RMSNormGroupedTest(RMSNormGroupedCall, TestBase):
 )
 def test_rms_norm_grouped(dtype, batch, shape, group, centered, weighted, tune) -> None:
     """Each group has independent statistics and its own slice of the full-width weight."""
-    call = manifest_call(
-        "RMSNormFwdOp",
-        {"T": dtype},
-        B=batch,
-        normalized_shape=shape,
-        group_size=group,
-        zero_centered=centered,
-        eps=1e-6,
-        some=["weight"] if weighted else [],
-    )
+    call = _grouped_call(dtype, batch, shape, group, weighted, centered)
     test = RMSNormGroupedTest(call)
     op = RMSNormFwdOp(**call.arguments())
     inputs = test.gen_inputs()
     if tune:
         op.request_tune()
+        # The tune runs after the first launch, so check compares the tuned program.
         op(*inputs)
     test.check(op, *inputs)
 
@@ -355,18 +351,8 @@ def test_rms_norm_grouped(dtype, batch, shape, group, centered, weighted, tune) 
 def test_rms_norm_grouped_changing_row_count() -> None:
     """One op must not reuse stale row bounds when the input size changes and changes back."""
     op = RMSNormFwdOp(normalized_shape=(10240,), group_size=2560, eps=1e-6, zero_centered=True)
-    for rows in (3, 4, 3):
-        call = manifest_call(
-            "RMSNormFwdOp",
-            {"T": "bfloat16"},
-            B=[rows],
-            normalized_shape=[10240],
-            group_size=2560,
-            zero_centered=True,
-            eps=1e-6,
-            some=["weight"],
-        )
-        test = RMSNormGroupedTest(call)
+    for rows in (3, 1, 3):
+        test = RMSNormGroupedTest(_grouped_call(batch=(rows,)))
         test.check(op, *test.gen_inputs())
 
 
@@ -376,16 +362,7 @@ class RMSNormGroupedOffsetTest(RMSNormGroupedOffsetCall, TestBase):
 
 @pytest.mark.smoke
 def test_rms_norm_grouped_rounds_once() -> None:
-    call = manifest_call(
-        "RMSNormFwdOp",
-        {"T": "bfloat16"},
-        B=[3],
-        normalized_shape=[10240],
-        group_size=2560,
-        zero_centered=True,
-        eps=1e-6,
-        some=["weight"],
-    )
+    call = _grouped_call()
     test = RMSNormGroupedOffsetTest(call)
     test.check(RMSNormFwdOp(**call.arguments()), *test.gen_inputs())
 
