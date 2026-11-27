@@ -524,7 +524,7 @@ def test_mxfp4_grouped_gemm_decodes_aligned_rows_into_shared_memory(
 PREFILL_SIZES = {
     "tile-128": [16 * w - 3 for w in range(1, 9)] + [0, 300],
     "tile-32": [5, 13, 30, 0, 9, 40, 16, 7],
-    "tile-64": [20, 50, 30, 3, 0, 70, 24],
+    "tile-64": [20, 50, 40, 3, 0, 70, 24],
 }
 
 
@@ -561,8 +561,9 @@ def test_mxfp4_grouped_gemm_prefill_runs_tasks_of_every_width(
     expert's rows as they are. ``tile-128``: 3 rows under each multiple of 16 up to 128 (every
     32-token width and rows within one), an empty expert and 300 rows over three tiles (mean
     85); ``tile-32``: 16- and 32-token tasks and 40 rows over two tiles (mean 15); ``tile-64``:
-    16-token widths of 64-row tiles, a run over two tiles (mean 28) and a last weight tile
-    holding 72 of N's columns."""
+    16-, 32-, 48- and 64-token tasks of 64-row tiles (40 rows take the 48-token width and three
+    16-row boxes), a run over two tiles (mean 30) and a last weight tile holding 72 of N's
+    columns."""
     layout = contiguous_layout("tight", metadata_kind)
     workload = _contiguous_workload(layout, PREFILL_SIZES[sizes], N=n, K=k)
     inputs = workload.gen_inputs()
