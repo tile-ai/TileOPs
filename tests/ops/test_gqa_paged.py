@@ -1360,6 +1360,16 @@ def test_gqa_paged_decode_bs1_wider_region(
             marks=pytest.mark.full,
             id="page-no-tile-fits",
         ),
+        pytest.param(
+            [1],
+            [300],
+            32,
+            256,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="batch-1-head-dim-256-on-32-row-pages",
+        ),
         # The only shape where the causal bound and the window bound both bind: a request
         # with one query token sees its whole cache, so its causal bound masks nothing.
         pytest.param(
@@ -1430,7 +1440,8 @@ def test_gqa_paged_packed_query_lengths(
     dtype: torch.dtype,
     op_kwargs: dict,
 ) -> None:
-    """Calls the decode region does not serve: ragged lengths, windows, and odd pages."""
+    """Calls the decode region does not serve: ragged lengths, windows, and odd pages, among
+    them a batch-1 head-dimension-256 decode on pages that hold no whole 64-row key tile."""
     width = -(-max(cache_lens) // page_size)
     workload = GQAPagedFwdWorkload(
         32, 8, dim, q_lens, cache_lens, page_size, width, len(q_lens) * width, dtype, **op_kwargs
