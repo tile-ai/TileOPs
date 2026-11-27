@@ -44,7 +44,7 @@ class MoEGroupedGEMMMXFP4FwdOp(MoELayoutRowsRoofline, Op):
     float32 scales each 32-wide sub-block is added under its own two scales. No scale product
     overflows or flushes before it is added. An ``a_scale`` of e8m0 code 0 (``2 ** -127``) may
     be flushed to zero, and a row under it then loses results below ``K * 2 ** -52``; the
-    accumulator flushes terms and sums below ``2 ** -126`` to zero. The result is written in
+    accumulator may flush terms and sums below ``2 ** -126`` to zero. The result is written in
     bfloat16.
 
     Accuracy: on the valid rows the output matches an fp32 reference that dequantizes both
