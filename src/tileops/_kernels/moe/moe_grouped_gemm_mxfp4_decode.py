@@ -45,7 +45,7 @@ def _decode_smem_bytes(num_stages: int, scale_k: int) -> int:
     kernel = MoEGroupedGEMMMXFP4DecodeKernel
     rows = kernel._ROW_TILE * kernel._ROW_TILES
     ring = num_stages * (rows * QUANT_SCALE_BLOCK + WGMMA_ROWS * QUANT_SCALE_BLOCK // 2)
-    codes = max(2, num_stages // kernel._CODE_STEPS) * WGMMA_ROWS * kernel._CODE_STEPS * _SUB_BLOCKS
+    codes = kernel._CODE_SLOTS * WGMMA_ROWS * kernel._CODE_STEPS * _SUB_BLOCKS
     tokens = rows * scale_k * 4
     return ring + codes + tokens + 32 + (2 * num_stages + 1) * 8
 
@@ -67,6 +67,7 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
     """
     kernel = MoEGroupedGEMMMXFP4DecodeKernel
     row_tile, row_tiles, code_steps = kernel._ROW_TILE, kernel._ROW_TILES, kernel._CODE_STEPS
+    code_slots = kernel._CODE_SLOTS
     threads, blocks_per_sm = kernel._THREADS, kernel._BLOCKS_PER_SM
     tokens_barrier, vote_barrier = kernel._TOKENS_BARRIER, kernel._VOTE_BARRIER
     block_k = QUANT_SCALE_BLOCK
@@ -93,7 +94,6 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
     )
     def _moe_grouped_gemm_mxfp4_decode_func(num_stages: int) -> Callable:
         m = T.dynamic("m")
-        code_slots = max(2, num_stages // code_steps)
         rounds = scale_k // num_stages
 
         @T.macro
@@ -500,16 +500,17 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
     experts holding 8 to 17 rows each lose to the general kernel's 64-row tiles.
     ``_BLOCKS_PER_SM`` caps registers at 128 so that three CTAs share a SM, which streams a
     decode step's weights faster than two; their shared memory holds three to K = 32768. A config
-    is ``{num_stages}``, the depth of the ring of row and weight stages, which holds two code
-    boxes' steps: the redo round's first code-box wait targets the last round-0 step that read
-    the box, and a ring that deep keeps that step's release one barrier phase behind, where a
-    shallower ring lets round 0's last releases run its barrier two phases ahead and the wait
-    never returns. ``K`` is a whole number of rings, so the redo round starts on the ring's and
-    the code boxes' first slots. The run lookup holds ``_LOOKUP_ENDS`` experts' ends a thread in
-    registers it frees before the K steps, which serves ``_LOOKUP_ENDS * _THREADS`` experts.
-    The math warp-group of a CTA that serves a group fills the group's token scales after the
-    lookup, so the CTAs of rows that start no group exit without loads. TileLang numbers its own
-    named barriers up from 0, so the warp-group's token and vote barriers take the last two.
+    is ``{num_stages}``, the depth of the ring of row and weight stages, which holds the steps of
+    its ``_CODE_SLOTS`` code boxes: the redo round's first code-box wait targets the last round-0
+    step that read the box, and a ring that deep keeps that step's release one barrier phase
+    behind, where a shallower ring lets round 0's last releases run its barrier two phases ahead
+    and the wait never returns. ``K`` is a whole number of rings, so the redo round starts on the
+    ring's and the code boxes' first slots. The run lookup holds ``_LOOKUP_ENDS`` experts' ends a
+    thread in registers it frees before the K steps, which serves ``_LOOKUP_ENDS * _THREADS``
+    experts. The math warp-group of a CTA that serves a group fills the group's token scales
+    after the lookup, so the CTAs of rows that start no group exit after the lookup without
+    loading token scales. TileLang numbers its own named barriers up from 0, so the warp-group's
+    token and vote barriers take the last two.
     """
 
     supported_archs: list[int] = [90]
@@ -518,12 +519,13 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
     _ROW_TILES: ClassVar[int] = 2
     _MAX_ROWS: ClassVar[int] = _ROW_TILE * _ROW_TILES
     _CODE_STEPS: ClassVar[int] = 4
+    _CODE_SLOTS: ClassVar[int] = 2
     _LOOKUP_ENDS: ClassVar[int] = 16
     _THREADS: ClassVar[int] = WARPGROUP_THREADS + 32
     _BLOCKS_PER_SM: ClassVar[int] = 3
     _TOKENS_BARRIER: ClassVar[int] = 14
     _VOTE_BARRIER: ClassVar[int] = 15
-    _NUM_STAGES: ClassVar[tuple[int, ...]] = (2 * _CODE_STEPS,)
+    _NUM_STAGES: ClassVar[tuple[int, ...]] = (_CODE_SLOTS * _CODE_STEPS,)
     _SMEM_HEADROOM: ClassVar[int] = 2048
 
     @classmethod
