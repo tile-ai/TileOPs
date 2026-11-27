@@ -57,12 +57,13 @@ def _stage_bytes(tile_m: int, wgs: int) -> int:
 
 def _fixed_bytes(k: int, tile: dict) -> int:
     """Shared bytes beside the ring, each buffer in whole KiB as TileLang aligns them: the
-    output staging tile, the unit's scales, the K parts' sums, and the static barriers."""
+    output staging tile, the unit's scales, the sums of every K part but the first, which only
+    a tile that splits K holds, and the static barriers."""
     tile_m, wgs, ksplit = tile["tile_m"], tile["wgs"], tile["ksplit"]
     kib = [
         wgs * tile_m * WGMMA_ROWS * 2,
         wgs * (k // _SCALE_BLOCK) * 4,
-        max(ksplit - 1, 1) * wgs * tile_m // 2 * WARPGROUP_THREADS * 4,
+        (ksplit - 1) * wgs * tile_m // 2 * WARPGROUP_THREADS * 4,
     ]
     align = SHARED_BUFFER_ALIGN_BYTES
     return _STATIC_SMEM_BYTES + sum(-(-b // align) * align for b in kib)
@@ -193,7 +194,8 @@ def _bmm_w8a16_kernel(
                 acts = T.alloc_shared((num_stages, 2, tile_m, _HALF_K), "bfloat16")
                 staged = T.alloc_shared((wgs, tile_m, WGMMA_ROWS), "bfloat16")
                 scales = T.alloc_shared((wgs, k_steps), "float32")
-                parts = T.alloc_shared((max(ksplit - 1, 1), wgs, regs, threads), "float32")
+                if ksplit > 1:
+                    parts = T.alloc_shared((ksplit - 1, wgs, regs, threads), "float32")
                 T.annotate_layout(
                     {
                         codes: tilelang.layout.make_swizzled_layout(codes),
