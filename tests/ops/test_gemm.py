@@ -3562,15 +3562,7 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
             1, 257, 4100, True, False, None, torch.float16, marks=pytest.mark.smoke, id="fp16"
         ),
         pytest.param(
-            1,
-            257,
-            5121,
-            True,
-            False,
-            None,
-            torch.bfloat16,
-            marks=pytest.mark.full,
-            id="k-off-vector",
+            1, 7, 5121, True, False, None, torch.bfloat16, marks=pytest.mark.full, id="k-off-vector"
         ),
         pytest.param(
             1,
@@ -3756,9 +3748,29 @@ def test_gemv_register_dispatch(
     assert kernel.config.get("rows") == rows
 
 
-@pytest.mark.smoke
-def test_gemv_serves_odd_rows_past_12288() -> None:
-    """A one-row call over a few rows of an odd length past 12288 values builds and gives
-    the product, which a staged ring pairing two rows a block could not copy."""
-    test = GEMMTest(1, 7, 12289, torch.bfloat16, trans_b=True)
-    test.check(GEMMFwdOp(), *test.gen_inputs())
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("per_sm", "extra", "k"),
+    [
+        pytest.param(2, 1, 8191, marks=pytest.mark.smoke, id="split-row-of-eight-warps"),
+        pytest.param(12, -1, 8191, marks=pytest.mark.full, id="two-rows-a-warp"),
+        pytest.param(12, 1, 24576, marks=pytest.mark.full, id="split-row-of-two-warps"),
+    ],
+)
+def test_gemv_register_body_keeps_the_ring_bits(per_sm: int, extra: int, k: int) -> None:
+    """The register body gives each row the staged ring's bits: the same bf16 rows, read into
+    registers at ``per_sm`` rows an SM and through the ring with ``extra`` rows more (one
+    fewer at -1), agree exactly on the rows both calls hold, for a row split over eight
+    warps, two rows a warp and a row split over two warps. The output is float32, so a sum
+    taken in another order shows."""
+    n = per_sm * get_sm_count(torch.device(run_device()).index)
+    rows = (n, n + extra)
+    a, b = GEMMTest(1, max(rows), k, torch.bfloat16, trans_b=True).gen_inputs()
+    outputs = []
+    for count, staged in zip(rows, (False, True), strict=True):
+        op = GEMMFwdOp(out_dtype=torch.float32)
+        outputs.append(op(a, b[:count]))
+        (kernel,) = op._entries_built("gemm").values()
+        assert isinstance(kernel, GemvKernel) and kernel.staged is staged
+    shared = min(rows)
+    assert torch.equal(outputs[0][:, :shared], outputs[1][:, :shared])
