@@ -825,11 +825,12 @@ class BMMW8A16BatchStridedWorkload(BMMW8A16Workload):
 
 
 class BMMW8A16BasisWorkload(BMMW8A16Workload):
-    """Each activation row a basis vector, so each output is one weight, the code times its
-    block's scale rounded once to bfloat16, and no sum rounds it: row ``i`` of batch item
-    ``b`` selects K index ``(37 * i + 5 * b) % K``, which visits every 16-byte chunk of a K
-    step's codes. The weights take every e4m3 code but NaN, under scales that differ per block
-    and are not all powers of two."""
+    """Each activation row a basis vector, so each output is one weight and no sum rounds it.
+    That weight is the code times its block's scale rounded twice, to float32 and then to
+    bfloat16, the same way in the op and the reference. Row ``i`` of batch item ``b`` selects K
+    index ``(37 * i + 5 * b) % K``, which visits every 16-byte chunk of a K step's codes. The
+    weights take every e4m3 code but NaN, under scales that differ per block and are not all
+    powers of two."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         device = run_device()

@@ -5,7 +5,7 @@ from tests.cuda_graph_contract import CapturedGraph, check_replay
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops._kernels.gemm import BMMCall, BMMW8A16Call
+from tileops._kernels.gemm import BMMCall, BMMW8A16Call, BMMW8A16Kernel
 from tileops.backend import OpNotAvailableError
 from tileops.gemm import BMMFP8FwdOp, BMMFwdOp, BMMW8A16FwdOp
 from workloads.device import run_device
@@ -672,6 +672,16 @@ def test_bmm_w8a16_k_past_its_ring_is_refused() -> None:
     call = BMMW8A16Call(batch=1, m=64, n=1024, k=128 * 20000, device=run_device())
     with pytest.raises(OpNotAvailableError, match="ring stages"):
         BMMW8A16FwdOp().key_for("bmm_w8a16", call)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_bmm_w8a16_serves_an_empty_call() -> None:
+    """The in-tree kernel's refusal answers a call that writes no elements instead of
+    dividing by its empty batch, rows or columns."""
+    for batch, m, n in ((0, 4, 128), (2, 0, 128), (2, 4, 0)):
+        call = BMMW8A16Call(batch=batch, m=m, n=n, k=256, device=run_device())
+        assert BMMW8A16Kernel.refusal(call) is None
 
 
 @pytest.mark.smoke
