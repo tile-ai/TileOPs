@@ -104,8 +104,11 @@ def load_layer(block: Block, t: dict[str, torch.Tensor], n_experts: int) -> None
     attn.kv_norm = t.pop("attn.kv_norm.weight")
     attn.wo_b = _fp8(t, "attn.wo_b")
     attn.attn_sink = t.pop("attn.attn_sink")
-    wo_a = _dequant_fp8(t.pop("attn.wo_a.weight"), t.pop("attn.wo_a.scale"))
-    attn.wo_a = wo_a.view(attn.o_groups, attn.o_rank, -1).transpose(1, 2).contiguous()
+    codes, scales = t.pop("attn.wo_a.weight"), t.pop("attn.wo_a.scale").float()
+    grouped = _dequant_fp8(codes, scales).view(attn.o_groups, attn.o_rank, -1)
+    attn.wo_a = grouped.transpose(1, 2).contiguous()
+    attn.wo_a_codes = codes.view(attn.o_groups, attn.o_rank, -1)
+    attn.wo_a_scales = scales.view(attn.o_groups, -1, codes.shape[1] // _SCALE_BLOCK)
     if attn.compressor is not None:
         _load_compressor(attn.compressor, t, "attn.compressor")
     if attn.indexer is not None:

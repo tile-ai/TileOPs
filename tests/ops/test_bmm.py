@@ -6,9 +6,17 @@ from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm import BMMCall
-from tileops.gemm import BMMFP8FwdOp, BMMFwdOp
+from tileops.backend import OpNotAvailableError
+from tileops.gemm import BMMFP8FwdOp, BMMFwdOp, BMMW8A16FwdOp
 from workloads.device import run_device
-from workloads.gemm import BMMBatchStridedWorkload, BMMFP8Workload, BMMWorkload
+from workloads.gemm import (
+    BMMBatchStridedWorkload,
+    BMMFP8Workload,
+    BMMW8A16BasisWorkload,
+    BMMW8A16BatchStridedWorkload,
+    BMMW8A16Workload,
+    BMMWorkload,
+)
 from workloads.numerics import compare_outputs
 
 # Covering the [B,K,N] path is the point of these tests, so the perf hint
@@ -537,3 +545,146 @@ def test_bmm_offset_operand_runs_as_an_aligned_one(shifted: int) -> None:
     expected = op(*inputs)
     inputs[shifted] = misaligned(inputs[shifted])
     torch.testing.assert_close(op(*inputs), expected, rtol=0, atol=0)
+
+
+class BMMW8A16Test(BMMW8A16Workload, TestBase):
+    pass
+
+
+class BMMW8A16BatchStridedTest(BMMW8A16BatchStridedWorkload, TestBase):
+    pass
+
+
+class BMMW8A16BasisTest(BMMW8A16BasisWorkload, TestBase):
+    pass
+
+
+class BMMW8A16Fixture(FixtureBase):
+    PARAMS = [
+        (
+            "batch, m, n, k",
+            [
+                pytest.param(
+                    8,
+                    1,
+                    1024,
+                    4096,
+                    marks=[pytest.mark.smoke, pytest.mark.packaging(family="gemm")],
+                    id="ds-v4-flash-wo-a-decode",
+                ),
+                pytest.param(2, 3, 136, 384, marks=pytest.mark.full, id="more-k-parts-than-steps"),
+                pytest.param(2, 64, 192, 512, marks=pytest.mark.full, id="widest-split-k-tile"),
+                pytest.param(3, 17, 200, 384, marks=pytest.mark.full, id="ragged-rows-and-n"),
+                pytest.param(2, 130, 520, 640, marks=pytest.mark.full, id="few-64-row-units"),
+                pytest.param(2, 260, 4232, 256, marks=pytest.mark.full, id="two-weight-warpgroups"),
+                pytest.param(1, 300, 72, 256, marks=pytest.mark.full, id="n-in-one-block"),
+            ],
+        ),
+    ]
+
+
+@BMMW8A16Fixture
+def test_bmm_w8a16(batch: int, m: int, n: int, k: int) -> None:
+    test = BMMW8A16Test(batch, m, n, k)
+    test.check(BMMW8A16FwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "batch, m, n, k",
+    [
+        pytest.param(2, 64, 192, 512, marks=pytest.mark.smoke, id="split-k-tile"),
+        pytest.param(2, 200, 520, 1024, marks=pytest.mark.full, id="64-row-tiles"),
+        pytest.param(2, 260, 4232, 256, marks=pytest.mark.full, id="two-weight-warpgroups"),
+    ],
+)
+def test_bmm_w8a16_dequantizes_each_weight_exactly(batch: int, m: int, n: int, k: int) -> None:
+    """Basis-vector rows select single weights, so each output is one weight as the reference
+    dequantizes it, the code times its block's scale rounded to bfloat16, bit for bit: every
+    e4m3 code, every 16-byte chunk of a K step, scales that are not powers of two."""
+    test = BMMW8A16BasisTest(batch, m, n, k)
+    test.check(BMMW8A16FwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "batch, m, n, k",
+    [
+        pytest.param(8, 1, 1024, 4096, marks=pytest.mark.smoke, id="ds-v4-flash-wo-a-decode"),
+        pytest.param(2, 260, 4232, 256, marks=pytest.mark.full, id="two-weight-warpgroups"),
+    ],
+)
+def test_bmm_w8a16_reads_and_writes_batch_strided_views(batch: int, m: int, n: int, k: int) -> None:
+    """DeepSeek-V4-Flash's grouped output projection: ``activation`` and ``out`` are the
+    batch-major views of ``[M, B, K]`` and ``[M, B, N]`` tensors, read and written where they
+    lie, the product equal bit for bit to the contiguous call's."""
+    test = BMMW8A16BatchStridedTest(batch, m, n, k)
+    op = BMMW8A16FwdOp()
+    test.check(op, *test.gen_inputs())
+    a, weight, scale = test.gen_inputs()
+    rows = torch.full((m, batch, n), float("nan"), dtype=a.dtype, device=a.device)
+    out = rows.transpose(0, 1)
+    assert op(a, weight, scale, out=out) is out
+    assert torch.equal(out, op(a.contiguous(), weight, scale))
+
+
+@pytest.mark.smoke
+def test_bmm_w8a16_takes_operands_of_any_strides() -> None:
+    """Operands around ``n`` = 136, which ends inside a 64-row weight block: ``activation``
+    whose rows lie four elements past their width, 8 bytes, which TMA cannot address, and
+    ``out`` likewise; ``out`` whose rows lie eight elements past their width, which the kernel
+    writes in place; ``activation`` of every other element; ``out`` transposed in its last two
+    axes. Each gives the contiguous call's product, and every padding element stays
+    untouched."""
+    batch, m, n, k = 2, 24, 136, 256
+    test = BMMW8A16Test(batch, m, n, k)
+    a, weight, scale = test.gen_inputs()
+    op = BMMW8A16FwdOp()
+    expected = op(a, weight, scale)
+    a_rows = torch.zeros(batch, m, k + 4, dtype=a.dtype, device=a.device)
+    a_rows[..., :k] = a
+    for pad in (4, 8):
+        out_rows = torch.full((batch, m, n + pad), float("nan"), dtype=a.dtype, device=a.device)
+        out = out_rows[..., :n]
+        assert op(a_rows[..., :k], weight, scale, out=out) is out
+        assert torch.equal(out, expected)
+        assert out_rows[..., n:].isnan().all()
+    a_wide = torch.zeros(batch, m, 2 * k, dtype=a.dtype, device=a.device)
+    a_wide[..., ::2] = a
+    out = torch.full((batch, n, m), float("nan"), dtype=a.dtype, device=a.device).mT
+    assert op(a_wide[..., ::2], weight, scale, out=out) is out
+    assert torch.equal(out, expected)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_bmm_w8a16_n_not_multiple_of_8_is_refused() -> None:
+    """The in-tree kernel refuses an ``n`` that is not a multiple of 8, which the signature
+    admits."""
+    test = BMMW8A16Test(1, 4, 132, 256)
+    with pytest.raises(OpNotAvailableError, match="not a multiple of 8"):
+        BMMW8A16FwdOp()(*test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="BMMW8A16FwdOp")
+@pytest.mark.parametrize(
+    "batch, m, n, k",
+    [
+        pytest.param(8, 1, 1024, 4096, marks=pytest.mark.smoke, id="ds-v4-flash-wo-a-decode"),
+        pytest.param(2, 260, 4232, 256, marks=pytest.mark.full, id="two-weight-warpgroups"),
+    ],
+)
+def test_bmm_w8a16_graph_replay_into_batch_strided_views(
+    batch: int, m: int, n: int, k: int
+) -> None:
+    """A replay reading ``activation`` and writing ``out`` as batch-strided views, as
+    DeepSeek-V4-Flash's decode step calls ``wo_a``, on fresh activations, weights and scales."""
+    test = BMMW8A16BatchStridedTest(batch, m, n, k)
+    op = BMMW8A16FwdOp()
+    a, weight, scale = test.gen_inputs()
+    out = torch.empty(m, batch, n, dtype=a.dtype, device=a.device).transpose(0, 1)
+    graph = CapturedGraph((lambda *inputs: op(*inputs, out=out), (a, weight, scale)))
+    assert graph.outputs[0] is out
+    fresh = test.gen_inputs()
+    graph.renew(fresh)
+    graph.replay()
+    compare_outputs(out, test.ref_program(*fresh), test.verification(*fresh))

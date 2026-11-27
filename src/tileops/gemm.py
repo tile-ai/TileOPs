@@ -3,6 +3,7 @@
 from tileops._ops.gemm import (
     BMMFP8FwdOp,
     BMMFwdOp,
+    BMMW8A16FwdOp,
     GEMMFP8FwdOp,
     GEMMFwdOp,
     GEMMINT8W8A8FwdOp,
@@ -14,6 +15,7 @@ from tileops._ops.gemm import (
 __all__ = [
     "BMMFP8FwdOp",
     "BMMFwdOp",
+    "BMMW8A16FwdOp",
     "GEMMFP8FwdOp",
     "GEMMFwdOp",
     "GEMMINT8W8A8FwdOp",

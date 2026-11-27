@@ -41,7 +41,7 @@ from tileops._ops.attention.nsa import (
 )
 from tileops._ops.attention.topk_select import TopKSelectFwdOp
 from tileops._ops.fft import FFTC2CFwdOp
-from tileops._ops.gemm.bmm import BMMFP8FwdOp, BMMFwdOp
+from tileops._ops.gemm.bmm import BMMFP8FwdOp, BMMFwdOp, BMMW8A16FwdOp
 from tileops._ops.gemm.gemm import (
     GEMMFP8FwdOp,
     GEMMFwdOp,
@@ -376,6 +376,15 @@ def _gemm_cases():
             scale.clone(),
         )
 
+    def bmm_w8a16():
+        batch = 2
+        exponent = torch.randint(-12, -8, (batch, _N // 128, _K // 128), device=run_device())
+        return BMMW8A16FwdOp(), (
+            _x(batch, _M, _K, dtype=torch.bfloat16),
+            _x(batch, _N, _K).to(torch.float8_e4m3fn),
+            torch.exp2(exponent.float()),
+        )
+
     return (
         ("gemm", gemm),
         ("gemm-fp8", gemm_fp8),
@@ -386,6 +395,7 @@ def _gemm_cases():
         ("grouped-gemm", grouped_gemm),
         ("bmm", bmm),
         ("bmm-fp8", bmm_fp8),
+        ("bmm-w8a16", bmm_w8a16),
     )
 
 
@@ -981,6 +991,7 @@ for _op_cls in (
     GroupedGEMMFwdOp,
     BMMFwdOp,
     BMMFP8FwdOp,
+    BMMW8A16FwdOp,
     CausalConv1dFwdOp,
     CausalConv1dUpdateFwdOp,
     SelectiveScanFwdOp,

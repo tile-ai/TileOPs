@@ -749,6 +749,103 @@ class BMMFP8Workload(WorkloadBase):
         return fp8_matmul_verification(self.k)
 
 
+def dequantize_block_scaled(weight: torch.Tensor, weight_scale: torch.Tensor) -> torch.Tensor:
+    """``[B, N, K]`` e4m3 codes, each times its 128x128 block's scale in ``weight_scale``
+    (``[B, ceil(N / 128), K / 128]``) and rounded to bfloat16, as the official ``convert.py``
+    dequantizes DeepSeek-V4-Flash's ``wo_a``."""
+    n, k = weight.shape[1:]
+    scale = weight_scale.repeat_interleave(128, 1)[:, :n].repeat_interleave(128, 2)[..., :k]
+    return (weight.float() * scale).to(torch.bfloat16)
+
+
+def bmm_w8a16_reference(
+    activation: torch.Tensor, weight: torch.Tensor, weight_scale: torch.Tensor
+) -> torch.Tensor:
+    """The batched W8A16 product as DeepSeek-V4-Flash's inference computes ``wo_a``.
+
+    Args:
+        activation: ``[B, M, K]`` bfloat16.
+        weight: ``[B, N, K]`` e4m3 codes.
+        weight_scale: ``[B, ceil(N / 128), K / 128]`` float32, one per 128x128 block.
+
+    Returns:
+        ``activation`` times the transpose of :func:`dequantize_block_scaled`'s weight,
+        contracted in float32 and rounded to bfloat16, ``[B, M, N]``.
+    """
+    w = dequantize_block_scaled(weight, weight_scale)
+    return torch.bmm(activation.float(), w.float().transpose(1, 2)).to(torch.bfloat16)
+
+
+class BMMW8A16Workload(WorkloadBase):
+    """Batched bfloat16 activations ``[B, M, K]`` against e4m3 weights ``[B, N, K]`` under
+    128x128 block scales ``[B, ceil(N / 128), K / 128]``.
+
+    Activations are standard normal; weights are standard normal samples rounded to e4m3,
+    under power-of-two scales from 2^-12 to 2^-9, the range DeepSeek-V4-Flash's ``wo_a``
+    scales span.
+    """
+
+    def __init__(self, batch: int, m: int, n: int, k: int) -> None:
+        self.batch = batch
+        self.m = m
+        self.n = n
+        self.k = k
+
+    @classmethod
+    def from_call(cls, call: Any) -> "BMMW8A16Workload":
+        """The workload of one manifest call of ``BMMW8A16FwdOp``."""
+        indices = call.indices
+        return cls(indices["B"], indices["M"], indices["N"], indices["K"])
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        device = run_device()
+        activation = torch.randn(self.batch, self.m, self.k, device=device, dtype=torch.bfloat16)
+        weight = torch.randn(self.batch, self.n, self.k, device=device).to(torch.float8_e4m3fn)
+        blocks = (self.batch, -(-self.n // 128), self.k // 128)
+        exponent = torch.randint(-12, -8, blocks, device=device)
+        return activation, weight, torch.exp2(exponent.float())
+
+    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
+        return bmm_w8a16_reference(*inputs)
+
+    def verification(self, *inputs):
+        return _summation_order_verification(torch.bfloat16, self.k)
+
+
+class BMMW8A16BatchStridedWorkload(BMMW8A16Workload):
+    """``BMMW8A16Workload`` with ``activation`` the batch-major view of an ``[M, B, K]``
+    tensor, as DeepSeek-V4-Flash's ``wo_a`` reads each group of the attention output."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        activation, weight, scale = super().gen_inputs()
+        return activation.transpose(0, 1).contiguous().transpose(0, 1), weight, scale
+
+
+class BMMW8A16BasisWorkload(BMMW8A16Workload):
+    """Each activation row a basis vector, so each output is one dequantized weight and no
+    sum rounds it: row ``i`` of batch item ``b`` selects K index ``(37 * i + 5 * b) % K``,
+    which visits every 16-byte chunk of a K step's codes. The weights take every e4m3 code
+    but NaN, under scales that differ per block and are not all powers of two."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        device = run_device()
+        rows = torch.arange(self.m, device=device)
+        activation = torch.zeros(self.batch, self.m, self.k, device=device, dtype=torch.bfloat16)
+        for b in range(self.batch):
+            activation[b, rows, (37 * rows + 5 * b) % self.k] = 1
+        codes = torch.randint(0, 254, (self.batch, self.n, self.k), generator=self.rng("codes"))
+        codes = torch.where(codes >= 127, codes + 1, codes).to(torch.uint8)
+        weight = codes.view(torch.float8_e4m3fn).to(device)
+        blocks = (self.batch, -(-self.n // 128), self.k // 128)
+        scale = torch.rand(blocks, generator=self.rng("scale")) * 2**-9 + 2**-12
+        return activation, weight, scale.to(device)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
+
+
 class GroupedGEMMWorkload(WorkloadBase):
     def __init__(
         self,

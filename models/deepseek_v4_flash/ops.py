@@ -9,7 +9,7 @@ import torch
 from models.deepseek_v4_flash.config import DeepseekV4FlashConfig
 from tileops.attention import DSADenseFwdOp, GatedPoolCompressFwdOp, TopKSelectFwdOp
 from tileops.elementwise import MulFwdOp, ReLUFwdOp, SiLUAndMulFwdOp
-from tileops.gemm import BMMFwdOp, GEMMFP8FwdOp, GEMMFwdOp
+from tileops.gemm import BMMFwdOp, BMMW8A16FwdOp, GEMMFP8FwdOp, GEMMFwdOp
 from tileops.indexing import EmbeddingFwdOp
 from tileops.moe import (
     ContiguousLayoutSpec,
@@ -55,6 +55,7 @@ class ModelOps:
         self.gemm = GEMMFwdOp()
         self.gemm_f32 = GEMMFwdOp(out_dtype=torch.float32)
         self.bmm = BMMFwdOp()
+        self.bmm_w8a16 = BMMW8A16FwdOp()
         self.rope = RoPECosSinFwdOp(interleaved=True, inplace=True)
         self.hadamard = HadamardTransformFwdOp()
         self.relu = ReLUFwdOp()

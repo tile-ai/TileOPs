@@ -1,5 +1,5 @@
-"""Benchmark TileOPs batched matmul and its FP8 variant, one case per manifest call, against
-cuBLAS, FlagGems and FlashInfer."""
+"""Benchmark TileOPs batched matmul and its FP8 and W8A16 variants, one case per manifest
+call, against cuBLAS, FlagGems and FlashInfer."""
 
 import pytest
 import torch
@@ -12,8 +12,8 @@ from benchmarks.baselines import (
     flaggems_op,
     quack_op,
 )
-from tileops.gemm import BMMFP8FwdOp, BMMFwdOp
-from workloads.gemm import BMMFP8Workload
+from tileops.gemm import BMMFP8FwdOp, BMMFwdOp, BMMW8A16FwdOp
+from workloads.gemm import BMMFP8Workload, dequantize_block_scaled
 
 
 def _flashinfer_bmm_fp8_row(
@@ -67,3 +67,18 @@ def test_bmm_fp8_bench(case) -> None:
     if row is not None:
         implementations["flashinfer-bmm-fp8"] = row
     bench.Runner(op, case).compare(implementations)
+
+
+@pytest.mark.parametrize("case", bench.cases(BMMW8A16FwdOp), ids=lambda case: case.id)
+def test_bmm_w8a16_bench(case) -> None:
+    """Against cuBLAS's bfloat16 batched matmul on the weight dequantized once beforehand, as
+    DeepSeek-V4-Flash's inference holds ``wo_a``."""
+    activation, weight, weight_scale = case.inputs
+    dequantized = dequantize_block_scaled(weight, weight_scale).transpose(1, 2).contiguous()
+    bench.Runner(BMMW8A16FwdOp(**case.arguments), case).compare(
+        {
+            "torch-cublas-dequantized": bench.Implementation(
+                run=torch.bmm, args=(activation, dequantized)
+            )
+        }
+    )

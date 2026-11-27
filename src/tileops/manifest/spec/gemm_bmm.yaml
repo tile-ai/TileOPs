@@ -74,3 +74,36 @@ BMMFP8FwdOp:
   roofline:
     # The contraction, and the epilogue's two multiplies of each result by a_scale and b_scale.
     flops: "2 * B * M * N * K + 2 * B * M * N"
+
+# Batched NT GEMM of bfloat16 activations against e4m3 weights under one float32 scale per
+# 128x128 block, each weight dequantized to bfloat16 before the contraction, as
+# DeepSeek-V4-Flash's inference dequantizes its grouped output projection wo_a.
+BMMW8A16FwdOp:
+  family: gemm
+  status: implemented
+  ref_api: workloads.gemm.bmm_w8a16_reference
+
+  signature:
+    forall: {B: Dim, M: Dim, N: Dim, K: Dim}
+    inputs:
+      activation: {dtype: bfloat16, shape: "[B, M, K]"}
+      weight: {dtype: float8_e4m3fn, shape: "[B, N, K]"}
+      weight_scale: {dtype: float32, shape: "[B, ceil_div(N, 128), K // 128]"}
+    outputs:
+      d: {dtype: bfloat16, shape: "[B, M, N]", buffer: out}
+    shape_rules:
+    - "K % 128 == 0"
+
+  workloads:
+  # DeepSeek-V4-Flash's wo_a: eight groups of 4096 attention-output columns, each projected
+  # to 1024; a decode step, the prompt lengths the model's throughput run prefills, and a
+  # prompt whose length is no power of two.
+  - {B: 8, M: 1, N: 1024, K: 4096, label: ds-v4-flash-wo-a-decode}
+  - {B: 8, M: 512, N: 1024, K: 4096, label: ds-v4-flash-wo-a-512}
+  - {B: 8, M: 1000, N: 1024, K: 4096, label: ds-v4-flash-wo-a-1000}
+  - {B: 8, M: 2048, N: 1024, K: 4096, label: ds-v4-flash-wo-a-2048}
+  - {B: 8, M: 4096, N: 1024, K: 4096, label: ds-v4-flash-wo-a-4096}
+
+  roofline:
+    # The contraction, and one multiply dequantizing each weight.
+    flops: "2 * B * M * N * K + B * N * K"
