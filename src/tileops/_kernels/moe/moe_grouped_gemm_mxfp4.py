@@ -23,10 +23,8 @@ from tileops._kernels.constants import (
     SM90_REGISTERS,
     TMA_DTYPE_BFLOAT16,
     TMA_DTYPE_UINT8,
-    TMA_INTERLEAVE_NONE,
     TMA_L2_PROMOTION_128B,
     TMA_L2_PROMOTION_256B,
-    TMA_OOB_FILL_NONE,
     TMA_SWIZZLE_64B,
     TMA_SWIZZLE_128B,
     TMA_SWIZZLE_NONE,
@@ -787,22 +785,15 @@ def _moe_grouped_gemm_mxfp4_kernel(
                         tasks, A_scale, B_scale, scale_k, table_box
                     )
                 if prefill:
-                    a_box_desc = T.create_tma_descriptor(
+                    a_box_desc = tasks.row_tiles_descriptor(
                         TMA_DTYPE_UINT8,
-                        2,
-                        A.data,
+                        A,
                         k,
-                        m,
-                        1,
                         k,
                         block_k,
-                        16,
-                        1,
-                        1,
-                        TMA_INTERLEAVE_NONE,
                         TMA_SWIZZLE_128B,
                         TMA_L2_PROMOTION_256B,
-                        TMA_OOB_FILL_NONE,
+                        box_rows=16,
                     )
 
                 if tx >= math_threads:

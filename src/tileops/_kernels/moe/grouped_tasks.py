@@ -264,12 +264,15 @@ def task_walk(
                             hi = mid
                 ends[group] = lo
 
-    def row_tiles_descriptor(dtype, tensor, row, row_bytes, box_row, swizzle, promotion):
-        """A TMA descriptor of ``block_m``-row tiles of a tensor laid out like ``a``.
+    def row_tiles_descriptor(
+        dtype, tensor, row, row_bytes, box_row, swizzle, promotion, *, box_rows=block_m
+    ):
+        """A TMA descriptor of ``box_rows``-row tiles (``block_m`` unless given) of a tensor laid
+        out like ``a``.
 
         Its rows are ``row`` elements over ``row_bytes`` bytes: ``[m, row]`` for contiguous
         rows, ``[E, max_m, row]`` for masked slabs; a box is ``box_row`` elements of each of
-        ``block_m`` rows.
+        ``box_rows`` rows.
         """
         if contiguous:
             return T.create_tma_descriptor(
@@ -281,7 +284,7 @@ def task_walk(
                 1,
                 row_bytes,
                 box_row,
-                block_m,
+                box_rows,
                 1,
                 1,
                 TMA_INTERLEAVE_NONE,
@@ -300,7 +303,7 @@ def task_walk(
             row_bytes,
             max_m * row_bytes,
             box_row,
-            block_m,
+            box_rows,
             1,
             1,
             1,
