@@ -2100,9 +2100,9 @@ def test_gemm_float32_output_on_pilot_model_rows(m: int, n: int) -> None:
             id="qwen3.8-27b-deltanet-in",
         ),
         pytest.param(
-            (24 + 2 * 4) * 256, 5120, None, marks=pytest.mark.full, id="qwen3.8-27b-attention-qkv"
+            (24 + 2 * 4 + 24) * 256, 5120, None, marks=pytest.mark.full,
+            id="qwen3.8-27b-attention-qkv-gate",
         ),
-        pytest.param(24 * 256, 5120, None, marks=pytest.mark.full, id="qwen3.8-27b-attention-gate"),
         pytest.param(5120, 24 * 256, None, marks=pytest.mark.full, id="qwen3.8-27b-mixer-out"),
         pytest.param(2 * 17408, 5120, None, marks=pytest.mark.full, id="qwen3.8-27b-mlp-gate-up"),
         pytest.param(5120, 17408, None, marks=pytest.mark.full, id="qwen3.8-27b-mlp-down"),
