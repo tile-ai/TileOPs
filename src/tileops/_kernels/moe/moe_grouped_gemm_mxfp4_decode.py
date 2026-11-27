@@ -57,22 +57,25 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
 
     The grid is one CTA per 64-column weight tile and row of ``a``; the CTA of row ``r`` runs
     when ``r`` starts a group of up to ``_ROW_TILES`` row tiles of its expert's run, and takes
-    the one-tile path when the group is one tile. A producer thread streams each K step's row
-    tiles and packed weights, and every ``_CODE_STEPS``-th step's weight codes, through a ring.
-    The math warp-group decodes each step once (``mxfp4_decode_fold_step``), folding it and
-    checking that it may, and contracts it with the group's rows in one WGMMA chain; a group
-    with a step that may not fold is streamed again and contracted sub-block by sub-block.
+    the one-tile path when the group is one tile. A producer thread streams each K step's rows,
+    one tile's box on the one-tile path and the group's box otherwise, its packed weights, and
+    every ``_CODE_STEPS``-th step's weight codes, through a ring. The math warp-group decodes each
+    step once (``mxfp4_decode_fold_step``), folding it and checking that it may, and contracts it
+    with the group's rows in one WGMMA chain; a group with a step that may not fold is streamed
+    again in the group's box and contracted sub-block by sub-block on the group's full width,
+    one split path for every group.
     """
     kernel = MoEGroupedGEMMMXFP4DecodeKernel
     row_tile, row_tiles, code_steps = kernel._ROW_TILE, kernel._ROW_TILES, kernel._CODE_STEPS
     threads, blocks_per_sm = kernel._THREADS, kernel._BLOCKS_PER_SM
-    tokens_barrier, vote_barrier = kernel._TOKENS_BARRIER, kernel._VOTE_BARRIER
+    vote_barrier = kernel._VOTE_BARRIER
     block_k = QUANT_SCALE_BLOCK
     packed_k = block_k // 2
     scale_k = k // block_k
     block_n = WGMMA_ROWS
     math_threads = WARPGROUP_THREADS
     tile_bytes = row_tile * block_k
+    group_bytes = tile_bytes * row_tiles
     weight_bytes = block_n * packed_k
     code_bytes = block_n * code_steps * _SUB_BLOCKS
 
@@ -95,11 +98,23 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
 
         @T.macro
         def issue(
-            a_desc, b_desc, s_desc, a_shared, b_packed, codes, full, empty, row, tiles, n0, g, again
+            a_desc,
+            a_bytes,
+            b_desc,
+            s_desc,
+            a_shared,
+            b_packed,
+            codes,
+            full,
+            empty,
+            row,
+            n0,
+            g,
+            again,
         ):
-            """Stream the group's K steps through the ring in round ``again``: each step's
-            ``tiles`` row tiles and packed weights, and every ``code_steps``-th step the codes of
-            that many steps, once the last step that read their box before has released it."""
+            """Stream the group's K steps through the ring in round ``again``: each step's box of
+            ``a_bytes`` of rows and its packed weights, and every ``code_steps``-th step the codes
+            of that many steps, once the last step that read their box before has released it."""
             for kk in T.serial(scale_k):
                 slot = kk % num_stages
                 phase = (kk // num_stages + again * rounds) & 1
@@ -108,9 +123,7 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                     T.barrier_wait(empty[reader % num_stages], (reader // num_stages) & 1)
                 T.barrier_wait(empty[slot], phase ^ 1)
                 if kk % code_steps == 0:
-                    T.mbarrier_arrive_expect_tx(
-                        full[slot], tiles * tile_bytes + weight_bytes + code_bytes
-                    )
+                    T.mbarrier_arrive_expect_tx(full[slot], a_bytes + weight_bytes + code_bytes)
                     T.tma_load(
                         s_desc,
                         full[slot],
@@ -121,17 +134,10 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                         0,
                     )
                 else:
-                    T.mbarrier_arrive_expect_tx(full[slot], tiles * tile_bytes + weight_bytes)
-                for t in T.unroll(row_tiles):
-                    if t < tiles:
-                        T.tma_load(
-                            a_desc,
-                            full[slot],
-                            T.address_of(a_shared[slot, t * row_tile, 0]),
-                            kk * block_k,
-                            row + t * row_tile,
-                            0,
-                        )
+                    T.mbarrier_arrive_expect_tx(full[slot], a_bytes + weight_bytes)
+                T.tma_load(
+                    a_desc, full[slot], T.address_of(a_shared[slot, 0, 0]), kk * block_k, row, 0
+                )
                 T.tma_load(
                     b_desc, full[slot], T.address_of(b_packed[slot, 0, 0]), kk * packed_k, n0, g, 0
                 )
@@ -188,7 +194,7 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                 step.data,
                 final.data,
                 scales.data,
-                T.address_of(tokens[kk * row_tile * built]),
+                T.address_of(tokens[kk * row_tile * row_tiles]),
                 tiles,
                 sub,
             )
@@ -258,9 +264,12 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
             tx,
         ):
             """The group's K steps on ``built`` row tiles in round ``again``, folded or split by
-            sub-block."""
+            sub-block. The one-tile fold, a decode step's path, unrolls a ring's worth of steps so
+            each step's stage is a constant; the group fold and the split, which few calls take,
+            unroll two, the fragment buffers' period, which keeps the program's code within what
+            the instruction caches hold when other kernels run between its calls."""
             decode(fold, again, b_packed, codes, full, frags0, scales0, fits, 0)
-            for kk in T.unroll(scale_k, unroll_factor=num_stages):
+            for kk in T.unroll(scale_k, unroll_factor=num_stages if fold and built == 1 else 2):
                 if kk % 2 == 0:
                     run_step(
                         fold,
@@ -305,109 +314,6 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                         kk,
                         tx,
                     )
-
-        @T.macro
-        def group(
-            built,
-            a_shared,
-            b_packed,
-            codes,
-            tokens,
-            full,
-            empty,
-            voted,
-            vote,
-            final,
-            step,
-            frags0,
-            scales0,
-            frags1,
-            scales1,
-            fits,
-            A_scale,
-            C,
-            row,
-            rows,
-            tiles,
-            n0,
-            tx,
-        ):
-            """The math warp-group's share of a group of ``built`` row tiles: its token scales,
-            its folded steps, the vote on them, the split redo of a group that may not fold, and
-            the store of its ``rows`` rows."""
-            T.call_extern(
-                "handle",
-                f"tileops::mxfp4_decode_tokens<{scale_k}, {math_threads}, {row_tile * built}>",
-                A_scale.data,
-                row,
-                m,
-                T.address_of(tokens[0]),
-                tx,
-            )
-            T.sync_threads(barrier_id=tokens_barrier, arrive_count=math_threads)
-            T.clear(final)
-            fits[0] = 1
-            steps(
-                True,
-                built,
-                0,
-                a_shared,
-                b_packed,
-                codes,
-                tokens,
-                full,
-                empty,
-                final,
-                step,
-                frags0,
-                scales0,
-                frags1,
-                scales1,
-                fits,
-                tiles,
-                tx,
-            )
-            folds = T.call_extern(
-                "int32", "tileops::mxfp4_all_threads", fits[0], vote_barrier, math_threads
-            )
-            if tx == 0:
-                T.call_extern(
-                    "handle",
-                    "tileops::mxfp4_decode_publish",
-                    vote.data,
-                    folds,
-                    T.address_of(voted[0]),
-                )
-            if folds == 0:
-                T.clear(final)
-                steps(
-                    False,
-                    built,
-                    1,
-                    a_shared,
-                    b_packed,
-                    codes,
-                    tokens,
-                    full,
-                    empty,
-                    final,
-                    step,
-                    frags0,
-                    scales0,
-                    frags1,
-                    scales1,
-                    fits,
-                    tiles,
-                    tx,
-                )
-            T.call_extern(
-                "handle",
-                f"tileops::mxfp4_decode_store<{row_tile}, {built}>",
-                final.data,
-                T.access_ptr(C[row, n0], "w"),
-                n,
-                rows,
-            )
 
         @T.prim_func
         def _moe_grouped_gemm_mxfp4_decode_main(
@@ -458,6 +364,23 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                     TMA_L2_PROMOTION_256B,
                     TMA_OOB_FILL_NONE,
                 )
+                group_desc = T.create_tma_descriptor(
+                    TMA_DTYPE_UINT8,
+                    2,
+                    A.data,
+                    k,
+                    m,
+                    1,
+                    k,
+                    block_k,
+                    row_tile * row_tiles,
+                    1,
+                    1,
+                    TMA_INTERLEAVE_NONE,
+                    TMA_SWIZZLE_128B,
+                    TMA_L2_PROMOTION_256B,
+                    TMA_OOB_FILL_NONE,
+                )
                 b_desc = T.create_tma_descriptor(
                     TMA_DTYPE_UINT8,
                     3,
@@ -500,6 +423,17 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                     TMA_L2_PROMOTION_128B,
                     TMA_OOB_FILL_NONE,
                 )
+                if tx < math_threads:
+                    T.call_extern(
+                        "handle",
+                        f"tileops::mxfp4_decode_tokens<{scale_k}, {math_threads}, "
+                        f"{row_tile * row_tiles}>",
+                        A_scale.data,
+                        row,
+                        m,
+                        T.address_of(tokens[0]),
+                        tx,
+                    )
                 found = T.call_extern(
                     "bool",
                     f"tileops::mxfp4_decode_find_run<{threads}, {num_groups}>",
@@ -514,25 +448,10 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                 n0 = tile * block_n
                 if T.And(found, (row - run[1]) % (row_tile * row_tiles) == 0):
                     if tx == math_threads:
-                        issue(
-                            a_desc,
-                            b_desc,
-                            s_desc,
-                            a_shared,
-                            b_packed,
-                            codes,
-                            full,
-                            empty,
-                            row,
-                            tiles,
-                            n0,
-                            g,
-                            0,
-                        )
-                        T.barrier_wait(voted[0], 0)
-                        if T.call_extern("int32", "tileops::mxfp4_decode_read", vote.data) == 0:
+                        if tiles == 1:
                             issue(
                                 a_desc,
+                                tile_bytes,
                                 b_desc,
                                 s_desc,
                                 a_shared,
@@ -541,14 +460,108 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                                 full,
                                 empty,
                                 row,
-                                tiles,
+                                n0,
+                                g,
+                                0,
+                            )
+                        else:
+                            issue(
+                                group_desc,
+                                group_bytes,
+                                b_desc,
+                                s_desc,
+                                a_shared,
+                                b_packed,
+                                codes,
+                                full,
+                                empty,
+                                row,
+                                n0,
+                                g,
+                                0,
+                            )
+                        T.barrier_wait(voted[0], 0)
+                        if T.call_extern("int32", "tileops::mxfp4_decode_read", vote.data) == 0:
+                            issue(
+                                group_desc,
+                                group_bytes,
+                                b_desc,
+                                s_desc,
+                                a_shared,
+                                b_packed,
+                                codes,
+                                full,
+                                empty,
+                                row,
                                 n0,
                                 g,
                                 1,
                             )
                     elif tx < math_threads:
+                        T.clear(final)
+                        fits[0] = 1
                         if tiles == 1:
-                            group(
+                            steps(
+                                True,
+                                1,
+                                0,
+                                a_shared,
+                                b_packed,
+                                codes,
+                                tokens,
+                                full,
+                                empty,
+                                final,
+                                step,
+                                frags0,
+                                scales0,
+                                frags1,
+                                scales1,
+                                fits,
+                                tiles,
+                                tx,
+                            )
+                        else:
+                            steps(
+                                True,
+                                row_tiles,
+                                0,
+                                a_shared,
+                                b_packed,
+                                codes,
+                                tokens,
+                                full,
+                                empty,
+                                final,
+                                step,
+                                frags0,
+                                scales0,
+                                frags1,
+                                scales1,
+                                fits,
+                                tiles,
+                                tx,
+                            )
+                        folds = T.call_extern(
+                            "int32",
+                            "tileops::mxfp4_all_threads",
+                            fits[0],
+                            vote_barrier,
+                            math_threads,
+                        )
+                        if tx == 0:
+                            T.call_extern(
+                                "handle",
+                                "tileops::mxfp4_decode_publish",
+                                vote.data,
+                                folds,
+                                T.address_of(voted[0]),
+                            )
+                        if folds == 0:
+                            T.clear(final)
+                            steps(
+                                False,
+                                row_tiles,
                                 1,
                                 a_shared,
                                 b_packed,
@@ -556,8 +569,6 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                                 tokens,
                                 full,
                                 empty,
-                                voted,
-                                vote,
                                 final,
                                 step,
                                 frags0,
@@ -565,39 +576,26 @@ def _moe_grouped_gemm_mxfp4_decode_kernel(num_groups: int, n: int, k: int) -> Ca
                                 frags1,
                                 scales1,
                                 fits,
-                                A_scale,
-                                C,
-                                row,
-                                rows,
                                 tiles,
-                                n0,
                                 tx,
                             )
-                        else:
-                            group(
-                                row_tiles,
-                                a_shared,
-                                b_packed,
-                                codes,
-                                tokens,
-                                full,
-                                empty,
-                                voted,
-                                vote,
-                                final,
-                                step,
-                                frags0,
-                                scales0,
-                                frags1,
-                                scales1,
-                                fits,
-                                A_scale,
-                                C,
-                                row,
+                        if tiles == 1:
+                            T.call_extern(
+                                "handle",
+                                f"tileops::mxfp4_decode_store<{row_tile}, 1>",
+                                final.data,
+                                T.access_ptr(C[row, n0], "w"),
+                                n,
                                 rows,
-                                tiles,
-                                n0,
-                                tx,
+                            )
+                        else:
+                            T.call_extern(
+                                "handle",
+                                f"tileops::mxfp4_decode_store<{row_tile}, {row_tiles}>",
+                                final.data,
+                                T.access_ptr(C[row, n0], "w"),
+                                n,
+                                rows,
                             )
 
         return _moe_grouped_gemm_mxfp4_decode_main
@@ -627,7 +625,7 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
     deeper is the default, as it decodes a token of DeepSeek-V4-Flash faster. The run lookup holds
     ``_LOOKUP_ENDS`` experts' ends a thread in registers it frees before the K steps, which serves
     ``_LOOKUP_ENDS * _THREADS`` experts. TileLang numbers its own named barriers up from 0, so the
-    math warp-group's token-scale and vote barriers take ids from the top of the 16.
+    math warp-group's vote takes an id from the top of the 16.
     """
 
     supported_archs: list[int] = [90]
@@ -639,7 +637,6 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
     _LOOKUP_ENDS: ClassVar[int] = 16
     _THREADS: ClassVar[int] = WARPGROUP_THREADS + 32
     _BLOCKS_PER_SM: ClassVar[int] = 3
-    _TOKENS_BARRIER: ClassVar[int] = 12
     _VOTE_BARRIER: ClassVar[int] = 13
     _NUM_STAGES: ClassVar[tuple[int, ...]] = (4, 8)
     _SMEM_HEADROOM: ClassVar[int] = 2048

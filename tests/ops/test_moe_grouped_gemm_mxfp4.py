@@ -1292,23 +1292,25 @@ def test_mxfp4_grouped_gemm_decode_stores_each_run_and_no_other_row(
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("sizes", "n", "expert"),
+    ("sizes", "n", "k", "expert"),
     [
         pytest.param(
-            LOOKUP_SIZES["decode-e256"], 256, 51, marks=pytest.mark.smoke, id="decode-e256"
+            LOOKUP_SIZES["decode-e256"], 256, 2048, 51, marks=pytest.mark.smoke, id="decode-e256"
         ),
-        pytest.param([0, 0, 0, 0, 0, 13, 0, 0], 128, 5, marks=pytest.mark.full, id="one-expert"),
+        pytest.param(
+            [0, 0, 0, 0, 0, 13, 0, 0], 128, 3072, 5, marks=pytest.mark.full, id="one-expert"
+        ),
     ],
 )
 def test_mxfp4_grouped_gemm_decode_splits_a_tile_that_does_not_fold(
-    sizes: list, n: int, expert: int
+    sizes: list, n: int, k: int, expert: int
 ) -> None:
     """One weight row whose codes at one K step span six binades, one past what a fold keeps in
     e4m3's normal range, its other weights zero and its weights at the far sub-block 0.5: under
     a fold those would encode as zero. Its 64-row tile is streamed again and contracted
     sub-block by sub-block, while the tiles beside it fold, and every row matches the
     reference."""
-    workload = _contiguous_workload(_TIGHT_PSUM, sizes, N=n, K=2048)
+    workload = _contiguous_workload(_TIGHT_PSUM, sizes, N=n, K=k)
     a, a_scale, b, b_scale, ends = workload.gen_inputs()
     b = b.clone()
     b[expert, 70] = 0
