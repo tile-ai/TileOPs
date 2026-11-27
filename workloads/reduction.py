@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
 
 from workloads.device import run_device
 from workloads.numerics import Custom, Exact, compare_outputs, reference_tolerance
@@ -409,7 +410,8 @@ def _reduction_reference(name, x, p, native=False):
         return torch.count_nonzero(x, dim=dim).to(torch.int64)
     wide = x if native else x.float()
     if name in ("SoftmaxFwdOp", "LogSoftmaxFwdOp"):
-        fn = torch.softmax if name == "SoftmaxFwdOp" else torch.log_softmax
+        # F's form takes dim=None, choosing torch's implicit axis; torch.softmax does not.
+        fn = F.softmax if name == "SoftmaxFwdOp" else F.log_softmax
         return fn(wide, dim=dim, **kw).to(dtype)
     if name == "LogSumExpFwdOp":
         return torch.logsumexp(wide, dim=dim, keepdim=keep).to(dtype)

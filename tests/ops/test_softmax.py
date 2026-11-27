@@ -290,8 +290,9 @@ def test_logsumexp_accepts_multidim() -> None:
         )
     ],
 )
+@pytest.mark.in_tree_kernels
 def test_softmax_dim_none_implicit_axis(op_kind: str, shape: tuple, dtype: torch.dtype) -> None:
-    """``dim=None`` takes PyTorch's implicit axis for each rank and warns as it does."""
+    """``dim=None`` takes PyTorch's implicit axis for each rank, and the in-tree op warns as it does."""
     x = torch.randn(*shape, dtype=dtype, device=run_device())
     with pytest.warns(UserWarning, match="Implicit dimension choice"):
         y = _OPS[op_kind](dim=None)(x)
