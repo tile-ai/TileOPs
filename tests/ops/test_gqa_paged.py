@@ -1277,6 +1277,12 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
         pytest.param(
             32, 8, 128, 64, 2, 127, torch.bfloat16, marks=pytest.mark.full, id="two-page-table"
         ),
+        pytest.param(
+            32, 8, 128, 64, 8, 300, torch.float16, marks=pytest.mark.full, id="fp16-short-table"
+        ),
+        pytest.param(
+            32, 8, 128, 64, 1, 1, torch.float16, marks=pytest.mark.full, id="one-page-table"
+        ),
     ],
 )
 def test_gqa_paged_decode_bs1_wider_region(
@@ -1291,8 +1297,8 @@ def test_gqa_paged_decode_bs1_wider_region(
     """The batch-1 kernel, whose warp-specialized producer feeds SM90 WGMMA through TMA,
     serves bfloat16 and head dimension 256: Qwen3.8-27B's decode attention over a full and
     an eighth-full table, bfloat16 at head dimension 128, 128-row pages at head dimension
-    256, and tables shorter than 1024 rows. NaN in every row past the cache keeps a split
-    that reads one key too many from passing."""
+    256, and tables shorter than 1024 rows, down to one page. NaN in every row past the
+    cache keeps a split that reads one key too many from passing."""
     torch.manual_seed(0)
     workload = GQAPagedFwdWorkload(
         heads, heads_kv, dim, [1], [cache_len], page_size, pages, pages, dtype
