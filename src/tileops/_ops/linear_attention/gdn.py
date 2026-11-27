@@ -138,6 +138,12 @@ class GDNFwdOp(Op):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run prefill or decode and return ``(o, final_state)``.
 
+        ``q``, ``k``, ``v``, ``g`` and ``beta`` may be token-strided, as the columns of a fused
+        projection are. SM90 prefill reads them in place when each token's row is contiguous
+        and the tokens lie a whole number of 16-byte vectors apart, at least a row, but for
+        q, k, v and beta under its one-kernel prefill; every other call and layout reads
+        packed copies.
+
         Args:
             q: Queries, $[B \\times S \\times H \\times K]$, ``float16`` or ``bfloat16``.
             k: Keys, $[B \\times S \\times H \\times K]$, same dtype as ``q``.
@@ -174,14 +180,9 @@ class GDNFwdOp(Op):
             ``initial_state`` takes, or the pool itself with ``state_indices``.
             $N = B$ unless ``cu_seqlens`` is given.
         """
-        inputs = tuple(
+        inputs = (q, k, v, g, beta) + tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (
-                q,
-                k,
-                v,
-                g,
-                beta,
                 initial_state,
                 cu_seqlens,
                 cu_seqlens_cpu,

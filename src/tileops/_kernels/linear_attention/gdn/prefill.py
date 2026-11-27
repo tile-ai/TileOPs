@@ -8,6 +8,7 @@ import tilelang
 import torch
 
 from tileops._kernels.build_target import target_cache
+from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     GDNCall,
@@ -41,9 +42,33 @@ from tileops._kernels.linear_attention.gdn.prefill_prepare import (
 __all__ = ["GDNDensePrefillFwdKernel"]
 
 
+def _token_rows(tensor: torch.Tensor) -> torch.Tensor:
+    """*tensor*, ``(1, tokens, *row)``, where each token's row is packed and the tokens lie
+    apart by a whole number of 16-byte vectors, at least a row, as the columns of a wider
+    projection do: the copy engine and the vector loads read it there. A packed copy of it
+    otherwise."""
+    stride, row = tensor.stride(1), tensor[0, 0].numel()
+    if (
+        tensor.select(1, 0).is_contiguous()
+        and stride >= row
+        and stride * tensor.element_size() % VECTOR_ACCESS_BYTES == 0
+    ):
+        return tensor
+    return tensor.contiguous()
+
+
+def _token_stride(tensor: torch.Tensor) -> int | None:
+    """The elements between two tokens of *tensor*, ``(1, tokens, *row)``, or ``None`` where
+    they lie back to back."""
+    row = tensor[0, 0].numel()
+    return None if tensor.stride(1) == row else tensor.stride(1)
+
+
 class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     """SM90 BTHD inference prefill: the one-kernel prefill, or the block solve and the
-    partitioned walk."""
+    partitioned walk. ``q``, ``k``, ``v``, ``g`` and ``beta`` are read in place when each
+    token's row is packed and their tokens lie a whole number of 16-byte vectors apart and
+    at least a row; the one-kernel prefill reads packed copies."""
 
     supported_archs = [90]
 
@@ -382,6 +407,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         uniform: int,
         partitions: int,
         device_index: int | None,
+        strides: tuple,
     ) -> tuple:
         """The programs one launch runs, ``None`` for a pass it skips: the gate cumsum, the
         one-kernel prefill or the block solve, the warmup, partition and correction passes,
@@ -391,8 +417,11 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         ``"blocksolve"`` for the solve pass over rows of length *uniform* (0 when they
         differ); *partitions* is how many partitions the sequences are split into, 0 when
         they are walked whole; *state_dtype* is the initial state's dtype, ``None`` without
-        one.
+        one; *strides* holds the elements between two tokens of ``q``, ``k``, ``v``, ``g``
+        and ``beta``, each ``None`` where that tensor is packed or, under the one-kernel
+        prefill, read as a packed copy.
         """
+        q_stride, k_stride, v_stride, g_stride, beta_stride = strides
         total = self.batch * self.seq_len
         heads, value_heads, dim, dtype = self.heads, self.value_heads, self.dim, self.dtype
         dtype_name, offsets_name = self.dtype_to_str(dtype), self.dtype_to_str(offsets_dtype)
@@ -406,6 +435,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             dtype_name,
             offsets_name,
             self.gate_in_kernel,
+            g_stride,
         )
         if solve == "fused":
             prefill = fused_gdr_prefill_program(
@@ -435,6 +465,8 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
                 self.beta_sigmoid,
                 self.allow_neg_eigval,
                 uniform,
+                k_stride,
+                beta_stride,
             )
         else:
             inverse = prefill_blocksolve_A_bthd_tl(
@@ -451,6 +483,8 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
                 beta_sigmoid=self.beta_sigmoid,
                 allow_neg_eigval=self.allow_neg_eigval,
                 uniform_seq_len=uniform,
+                k_stride=k_stride,
+                beta_stride=beta_stride,
             )
         warmup = states = correct = None
         start_dtype = state_dtype
@@ -473,6 +507,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
                     l2norm=self.l2norm,
                     beta_sigmoid=self.beta_sigmoid,
                     allow_neg_eigval=self.allow_neg_eigval,
+                    k_stride=k_stride,
+                    v_stride=v_stride,
+                    b_stride=beta_stride,
                 )
             )
             correct = CompiledProgram(
@@ -507,6 +544,10 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             allow_neg_eigval=self.allow_neg_eigval,
             pooled=self.pooled,
             sm_count=self.build_target.sm_count,
+            q_stride=q_stride,
+            k_stride=k_stride,
+            v_stride=v_stride,
+            b_stride=beta_stride,
         )
         return (
             CompiledProgram(cumsum),
@@ -538,7 +579,8 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         batch, seq_len = q.shape[:2]
         value_heads, dim_v = v.shape[2:]
         q, k, v, g, beta = (
-            tensor.reshape(1, batch * seq_len, *tensor.shape[2:]) for tensor in (q, k, v, g, beta)
+            _token_rows(tensor.reshape(1, batch * seq_len, *tensor.shape[2:]))
+            for tensor in (q, k, v, g, beta)
         )
         lengths: tuple[int, ...] | None
         if cu_seqlens is None:
@@ -587,6 +629,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             uniform,
             0 if split is None else split[1].shape[0] - 1,
             device_index,
+            (None, None, None, _token_stride(g), None)
+            if solve == "fused"
+            else tuple(_token_stride(tensor) for tensor in (q, k, v, g, beta)),
         )
         cumsum, solve_program = programs[:2]
         g = cumsum(g, cu_seqlens, A_log, dt_bias) if self.gate_in_kernel else cumsum(g, cu_seqlens)

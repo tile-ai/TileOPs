@@ -12,6 +12,7 @@ from tileops._kernels.constants import LOG2E, WARP_MMA_ROWS
 from tileops._kernels.linear_attention.gdn.prefill_common import (
     L2NORM_EPS,
     step_size,
+    token_tensor,
 )
 from tileops._kernels.state_pool import state_row
 
@@ -49,6 +50,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
     block_DV=128,
     state_v_first=False,
     pooled=False,
+    q_stride=None,
+    k_stride=None,
+    v_stride=None,
+    b_stride=None,
 ):
     batch_size = T.dynamic("batch_size")
     num_tokens = T.dynamic("num_tokens")
@@ -87,6 +92,10 @@ def _build_fused_chunk_gdr_fwd_kernel(
     h0_shape = (batch_size, H, *state_axes)
     ht_shape = (raw_batch_size, H, *state_axes)
     pool_shape = (pool_size, H, *state_axes)
+    q_type = token_tensor(q_shape, q_stride, qkva_dtype)
+    k_type = token_tensor(k_shape, k_stride, qkva_dtype)
+    v_type = token_tensor(v_shape, v_stride, qkva_dtype)
+    b_type = token_tensor(b_shape, b_stride, b_dtype)
 
     @T.macro
     def walk(q, k, v, a, g, b, k_rnorm, h0, slots, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, ht):
@@ -571,12 +580,12 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
         @T.prim_func
         def fused_chunk_gdr_fwd_kernel(
-            q: T.Tensor(q_shape, dtype=qkva_dtype),
-            k: T.Tensor(k_shape, dtype=qkva_dtype),
-            v: T.Tensor(v_shape, dtype=qkva_dtype),
+            q: q_type,
+            k: k_type,
+            v: v_type,
             a: T.Tensor(a_shape, dtype=qkva_dtype),
             g: T.Tensor(g_shape, dtype=g_dtype),
-            b: T.Tensor(b_shape, dtype=b_dtype),
+            b: b_type,
             k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
             h0: T.Tensor(h0_shape, dtype=h0_dtype),
             cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
@@ -591,12 +600,12 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
         @T.prim_func
         def fused_chunk_gdr_fwd_kernel(
-            q: T.Tensor(q_shape, dtype=qkva_dtype),
-            k: T.Tensor(k_shape, dtype=qkva_dtype),
-            v: T.Tensor(v_shape, dtype=qkva_dtype),
+            q: q_type,
+            k: k_type,
+            v: v_type,
             a: T.Tensor(a_shape, dtype=qkva_dtype),
             g: T.Tensor(g_shape, dtype=g_dtype),
-            b: T.Tensor(b_shape, dtype=b_dtype),
+            b: b_type,
             k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
             h0: T.Tensor(h0_shape, dtype=h0_dtype),
             slots: T.Tensor([raw_batch_size], dtype="int32"),
@@ -616,12 +625,12 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
         @T.prim_func
         def fused_chunk_gdr_fwd_kernel(
-            q: T.Tensor(q_shape, dtype=qkva_dtype),
-            k: T.Tensor(k_shape, dtype=qkva_dtype),
-            v: T.Tensor(v_shape, dtype=qkva_dtype),
+            q: q_type,
+            k: k_type,
+            v: v_type,
             a: T.Tensor(a_shape, dtype=qkva_dtype),
             g: T.Tensor(g_shape, dtype=g_dtype),
-            b: T.Tensor(b_shape, dtype=b_dtype),
+            b: b_type,
             k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
             h0: T.Tensor(pool_shape, dtype=h0_dtype),
             slots: T.Tensor([batch_size], dtype="int32"),
@@ -682,6 +691,10 @@ def fused_gdr_fwd_program(
     allow_neg_eigval=False,
     pooled=False,
     sm_count,
+    q_stride=None,
+    k_stride=None,
+    v_stride=None,
+    b_stride=None,
 ):
     """The program :func:`fused_gdr_fwd` launches, over 64-token chunks.
 
@@ -689,6 +702,8 @@ def fused_gdr_fwd_program(
     initial state's dtype, ``None`` without one; *seqlen_dtype* is the offsets' dtype, int32
     for an equal-length call that passes none. Under *pooled* each sequence's final state is
     written to its slot of a state pool, and a whole walk also starts from that slot.
+    *q_stride*, *k_stride*, *v_stride* and *b_stride* are the elements between two tokens of
+    ``q``, ``k``, ``v`` and ``b``, each ``None`` where that tensor is packed.
     """
     assert dim in (64, 128)
     block_DV = forward_value_tile(rows * heads, dim, state_v_first, sm_count)
@@ -718,6 +733,10 @@ def fused_gdr_fwd_program(
         block_DV=block_DV,
         state_v_first=state_v_first,
         pooled=pooled,
+        q_stride=q_stride,
+        k_stride=k_stride,
+        v_stride=v_stride,
+        b_stride=b_stride,
     )
 
 
@@ -764,7 +783,7 @@ def fused_gdr_fwd(
 
     if raw_cu_seqlens is None:
         raw_cu_seqlens = torch.empty((real_batch_size + 1,), dtype=seqlen_dtype, device=k.device)
-    o = torch.empty_like(v)
+    o = v.new_empty(v.shape)
     if k_rnorm is None:
         k_rnorm = torch.empty((batch_size, 1, Hg), dtype=torch.float32, device=k.device)
     if state_indices is not None:

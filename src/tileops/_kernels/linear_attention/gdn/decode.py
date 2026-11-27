@@ -25,6 +25,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
     projection reuse the same load. The gate transform, the beta sigmoid, the Q/K
     L2 normalization and the starting state are build flags of the program, so a
     call that asks for none of them runs a program that contains none of them.
+    ``q``, ``k``, ``v``, ``g`` and ``beta`` are read packed.
     """
 
     supported_archs = [80, 89, 90]
@@ -212,6 +213,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         del cu_seqlens_cpu
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
+        q, k, v, g, beta = (tensor.contiguous() for tensor in (q, k, v, g, beta))
         if self.has_initial_state and initial_state is None:
             raise ValueError("the build reads initial_state, but the call passed none")
         state = initial_state if self.has_initial_state else self._unread
@@ -297,7 +299,8 @@ def _gdn_decode_column_kernel(batch_size, heads, scale, neg_eigval):
 
 
 class GDNColumnDecodeKernel(Kernel, GDNFwdInterface):
-    """Keep a narrow column tile of the FP32 state in registers on Hopper."""
+    """Keep a narrow column tile of the FP32 state in registers on Hopper; ``q``, ``k``, ``v``,
+    ``g`` and ``beta`` are read packed."""
 
     supported_archs = [90]
     preferred_over = frozenset({"gdn_dense_decode"})
@@ -354,4 +357,5 @@ class GDNColumnDecodeKernel(Kernel, GDNFwdInterface):
         state_indices=None,
         num_accepted_tokens=None,
     ):
+        q, k, v, g, beta = (tensor.contiguous() for tensor in (q, k, v, g, beta))
         return self.program(self._compile)(q, k, v, g, beta, initial_state)
