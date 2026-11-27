@@ -634,6 +634,23 @@ def test_mxfp4_grouped_gemm_prefill_refuses_row_tiles_off_its_widths() -> None:
 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_decode_sized_tight_run_over_row_tiles() -> None:
+    """At most four rows an expert on average, tight runs under e8m0 scales at K = 2048 keep the
+    config's program, whose code tables come by TMA: the last expert's 150 rows run over three
+    64-row tiles beside 63 one-row experts, its last tile's token rows past m zero-filled, and
+    every run matches the reference with the next expert's rows left as they are."""
+    workload = _contiguous_workload(
+        contiguous_layout("tight", "per_row"), [1] * 63 + [150], N=256, K=2048
+    )
+    inputs = workload.gen_inputs()
+    op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
+    run_into_guarded_out(op, workload, *inputs)
+    assert next(op.iter_kernels()).prefill_tile(inputs[0].shape[0]) is None
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("k", "block_m"),
     [
